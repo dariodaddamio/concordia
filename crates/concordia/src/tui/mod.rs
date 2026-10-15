@@ -118,6 +118,62 @@ enum MsgRole {
     Assistant,
     System,
     Card,
+    /// The model's reasoning for a finished turn: dimmed, never part of the context pack.
+    Thinking,
+}
+
+/// What the running turn is doing right now, so the wait is never a blank spinner.
+#[derive(Clone, PartialEq, Eq)]
+enum Phase {
+    /// Sent, nothing back yet.
+    Waiting,
+    Thinking,
+    Tool(String),
+    Writing,
+}
+
+impl Phase {
+    fn label(&self) -> String {
+        match self {
+            Phase::Waiting => "waiting for the model".into(),
+            Phase::Thinking => "thinking".into(),
+            Phase::Tool(name) => format!("running {name}"),
+            Phase::Writing => "writing".into(),
+        }
+    }
+
+    fn color(&self) -> Color {
+        match self {
+            Phase::Waiting => Color::Cyan,
+            Phase::Thinking => Color::Magenta,
+            Phase::Tool(_) => Color::Yellow,
+            Phase::Writing => Color::Green,
+        }
+    }
+
+    /// Each phase has its own width-1 braille animation, so the state reads from motion alone.
+    fn frames(&self) -> &'static [&'static str] {
+        match self {
+            Phase::Waiting => &SPINNER,
+            Phase::Thinking => &[
+                "\u{2801}", "\u{2802}", "\u{2804}", "\u{2840}", "\u{2880}", "\u{2820}", "\u{2810}",
+                "\u{2808}",
+            ],
+            Phase::Tool(_) => &[
+                "\u{28fe}", "\u{28fd}", "\u{28fb}", "\u{28bf}", "\u{287f}", "\u{28df}", "\u{28ef}",
+                "\u{28f7}",
+            ],
+            Phase::Writing => &[
+                "\u{2809}", "\u{2819}", "\u{281a}", "\u{2812}", "\u{2832}", "\u{2834}", "\u{2824}",
+                "\u{2834}", "\u{2832}", "\u{2812}", "\u{281a}", "\u{2819}",
+            ],
+        }
+    }
+
+    fn frame(&self, tick: u64) -> &'static str {
+        let f = self.frames();
+        f[(tick as usize) % f.len()]
+    }
 }
 
 #[derive(Clone)]
@@ -227,6 +283,8 @@ pub struct App {
     usage_tone: UsageTone,
     live_cards: Vec<StreamCard>,
     live_text: String,
+    live_thinking: String,
+    phase: Phase,
     /// A background `/update` or `/update check`; the UI stays live while it runs.
     job: Option<Job>,
     /// `NO_COLOR` is set: draw with the terminal's own colours only.
@@ -433,9 +491,19 @@ impl App {
     }
 
     fn push_system(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        // A provider often reports one failure several ways (an event, a result, stderr).
+        // Say it once.
+        if self
+            .messages
+            .last()
+            .is_some_and(|m| m.role == MsgRole::System && m.text.trim() == text.trim())
+        {
+            return;
+        }
         self.messages.push(ChatLine {
             role: MsgRole::System,
-            text: text.into(),
+            text,
             card: None,
         });
     }
@@ -478,13 +546,26 @@ impl App {
             TurnProgress::Session(id) => {
                 self.native_session_id = Some(id);
             }
+            TurnProgress::Thinking(t) => {
+                self.phase = Phase::Thinking;
+                self.live_thinking.push_str(&t);
+                if !t.ends_with('\n') {
+                    self.live_thinking.push('\n');
+                }
+            }
             TurnProgress::Text(t) => {
+                self.phase = Phase::Writing;
                 self.live_text.push_str(&t);
                 if !t.ends_with('\n') {
                     self.live_text.push('\n');
                 }
             }
             TurnProgress::Card(card) => {
+                self.phase = if card.status == CardStatus::Running {
+                    Phase::Tool(card.title.clone())
+                } else {
+                    Phase::Waiting
+                };
                 upsert_card(&mut self.live_cards, card.clone());
                 self.push_card(card);
             }
@@ -541,6 +622,14 @@ impl App {
                 Some(code) => code != 0,
                 None => !outcome.stderr_tail.trim().is_empty(),
             };
+        let thought = condense_thinking(&self.live_thinking);
+        if !thought.is_empty() {
+            self.messages.push(ChatLine {
+                role: MsgRole::Thinking,
+                text: thought,
+                card: None,
+            });
+        }
         if outcome.cancelled {
             self.push_system("cancelled");
         } else if !text.is_empty() {
@@ -555,12 +644,26 @@ impl App {
             });
             let tail = outcome.stderr_tail.trim();
             let lines: Vec<&str> = tail.lines().collect();
+            let said: Vec<String> = self
+                .messages
+                .iter()
+                .rev()
+                .take(8)
+                .filter(|m| m.role == MsgRole::System)
+                .map(|m| m.text.trim().to_string())
+                .collect();
             for l in lines.iter().skip(lines.len().saturating_sub(6)) {
+                let t = l.trim();
+                // Skip CLI chatter and anything already reported above.
+                if t.is_empty() || is_cli_noise(t) || said.iter().any(|s| s == t) {
+                    continue;
+                }
                 self.push_system(format!("  {}", l.trim_end()));
             }
         }
         self.live_cards.clear();
         self.live_text.clear();
+        self.live_thinking.clear();
         self.refresh_usage();
     }
 
@@ -576,7 +679,7 @@ impl App {
                     role: PackRole::Assistant,
                     text: m.text.clone(),
                 }),
-                MsgRole::System | MsgRole::Card => None,
+                MsgRole::System | MsgRole::Card | MsgRole::Thinking => None,
             })
             .collect()
     }
@@ -1367,6 +1470,8 @@ impl App {
         }
         self.push_user(line.clone());
         self.turn_started = Some(Instant::now());
+        self.phase = Phase::Waiting;
+        self.live_thinking.clear();
         self.busy = true;
         self.pulse_on = true;
         let _ = turn_tx.send(line);
@@ -1427,6 +1532,8 @@ impl App {
             usage_tone: UsageTone::Mute,
             live_cards: Vec::new(),
             live_text: String::new(),
+            live_thinking: String::new(),
+            phase: Phase::Waiting,
             job: None,
             no_color: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             turn_started: None,
@@ -1593,6 +1700,8 @@ pub async fn run_chat_tui() -> Result<()> {
             app.need_context_pack = false;
             app.live_cards.clear();
             app.live_text.clear();
+            app.live_thinking.clear();
+            app.phase = Phase::Waiting;
             tokio::spawn(async move {
                 let home = get_account(&state_root, &account)
                     .and_then(|a| a.home_path)
@@ -2287,7 +2396,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         text: "\n",
         markdown: false,
     };
-    let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 2 + 2);
+    let live_thought = tail_lines(&condense_thinking(&app.live_thinking), 3);
+    let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 2 + 3);
     let count = app.messages.len();
     for (i, m) in app.messages.iter().enumerate() {
         let (gutter, gutter_style, style) = match m.role {
@@ -2307,6 +2417,13 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 "\u{b7} ",
                 Style::default().fg(Color::DarkGray),
                 Style::default().fg(Color::DarkGray),
+            ),
+            MsgRole::Thinking => (
+                "~ ",
+                Style::default().fg(Color::Magenta),
+                Style::default()
+                    .fg(Color::Indexed(244))
+                    .add_modifier(Modifier::ITALIC),
             ),
             MsgRole::Card => (
                 "  ",
@@ -2336,6 +2453,18 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         if m.role == MsgRole::Assistant && i + 1 < count && !next_is_card {
             blocks.push(spacer());
         }
+    }
+    // Live reasoning while the turn runs: the last few lines, dimmed.
+    if app.busy && !live_thought.is_empty() {
+        blocks.push(TBlock {
+            gutter: "~ ",
+            gutter_style: Style::default().fg(Color::Magenta),
+            style: Style::default()
+                .fg(Color::Indexed(244))
+                .add_modifier(Modifier::ITALIC),
+            text: &live_thought,
+            markdown: false,
+        });
     }
     // Live assistant text while the turn is still running.
     if app.busy && !app.live_text.trim().is_empty() {
@@ -2398,16 +2527,22 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
 
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let border = if app.busy {
-        Color::Cyan
+        app.phase.color()
     } else {
         Color::Indexed(240)
     };
     let title = if app.busy {
+        let color = app.phase.color();
+        let secs = app.turn_started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(spinner(app.tick_count), Style::default().fg(Color::Cyan)),
+            Span::styled(app.phase.frame(app.tick_count), Style::default().fg(color)),
             Span::styled(
-                " working \u{b7} Esc to cancel ",
+                format!(" {}", app.phase.label()),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" \u{b7} {secs}s \u{b7} Esc to cancel "),
                 Style::default().fg(Color::Gray),
             ),
         ])
@@ -2554,3 +2689,32 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests;
+
+/// Reasoning text as a few readable lines: blank lines and runs of spaces collapsed, long ones cut.
+fn condense_thinking(raw: &str) -> String {
+    let lines: Vec<String> = raw
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let joined = lines.join("\n");
+    let chars: Vec<char> = joined.chars().collect();
+    if chars.len() <= 600 {
+        joined
+    } else {
+        let tail: String = chars[chars.len() - 600..].iter().collect();
+        format!("...{tail}")
+    }
+}
+
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// Provider chatter on stderr that tells the user nothing.
+fn is_cli_noise(line: &str) -> bool {
+    let l = line.to_ascii_lowercase();
+    l.starts_with("reading additional input from stdin")
+        || l.starts_with("reading prompt from stdin")
+}

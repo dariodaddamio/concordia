@@ -34,7 +34,12 @@ pub fn find_claude_bin() -> String {
 
 pub fn plan_claude_turn(req: &ClaudeTurnRequest<'_>) -> Result<ClaudePlan> {
     let mut new_session_id = None;
-    let mut argv = vec!["-p".into(), "--output-format".into(), "text".into()];
+    let mut argv = vec![
+        "-p".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+    ];
     if let Some(model) = req.model.map(str::trim).filter(|m| !m.is_empty()) {
         argv.push("--model".into());
         argv.push(model.to_string());

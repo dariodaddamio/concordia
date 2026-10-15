@@ -21,6 +21,8 @@ pub enum StreamPart {
     Card(StreamCard),
     Error(String),
     Session(String),
+    /// The model's reasoning, shown dimmed and never added to the reply or the context pack.
+    Thinking(String),
 }
 
 pub fn parse_codex_stream_chunk(chunk: &str) -> Vec<StreamPart> {
@@ -83,6 +85,17 @@ fn classify_item_event(typ: &str, ev: &serde_json::Value) -> Vec<StreamPart> {
         .and_then(|x| x.as_str())
         .map(str::to_string)
         .unwrap_or_else(|| format!("{item_type}-{typ}"));
+
+    if item_type == "reasoning" {
+        let text = pick_plain_text(item)
+            .or_else(|| content_to_text(item.get("summary")))
+            .unwrap_or_default();
+        return if text.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![StreamPart::Thinking(text)]
+        };
+    }
 
     if item_type == "agent_message" || item_type == "message" {
         if let Some(text) = pick_plain_text(item).or_else(|| pick_plain_text(ev)) {

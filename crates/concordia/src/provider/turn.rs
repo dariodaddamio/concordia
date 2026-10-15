@@ -7,6 +7,7 @@ use crate::provider::codex::{
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
 use crate::provider::launch::prepare;
 use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart};
+use crate::provider::stream_json::{Flavor, StreamParser};
 use crate::store::{ProviderKind, TrustMode};
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
@@ -74,6 +75,7 @@ pub enum TurnProgress {
     Text(String),
     Card(StreamCard),
     Error(String),
+    Thinking(String),
 }
 
 pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
@@ -293,6 +295,12 @@ pub async fn run_provider_turn_with_progress(
     let mut line_buf: Vec<u8> = Vec::new();
     let mut out = TurnOutcome::default();
     let mut raw = String::new();
+    let flavor = match plan.provider {
+        ProviderKind::Claude => Some(Flavor::Claude),
+        ProviderKind::Cursor => Some(Flavor::Cursor),
+        ProviderKind::Codex => None,
+    };
+    let mut json_parser = flavor.map(StreamParser::new);
     loop {
         if handle.cancel_flag.load(Ordering::SeqCst) {
             out.cancelled = true;
@@ -314,8 +322,11 @@ pub async fn run_provider_turn_with_progress(
                     raw.push_str(&line);
                     raw.push('\n');
                 }
-                if plan.provider == ProviderKind::Codex {
-                    let parts = parse_codex_stream_chunk(&line);
+                {
+                    let parts = match json_parser.as_mut() {
+                        Some(p) => p.parse_line(&line),
+                        None => parse_codex_stream_chunk(&line),
+                    };
                     emit_progress(&parts, &on_progress);
                     let mut chunk = codex::StreamOutcome::default();
                     apply_stream_parts(parts, &mut chunk);
@@ -327,12 +338,6 @@ pub async fn run_provider_turn_with_progress(
                     }
                     for card in chunk.cards {
                         crate::provider::stream_cards::upsert_card(&mut out.cards, card);
-                    }
-                } else {
-                    out.text.push_str(&line);
-                    out.text.push('\n');
-                    if let Some(tx) = &on_progress {
-                        let _ = tx.send(TurnProgress::Text(format!("{line}\n")));
                     }
                 }
             }
@@ -435,6 +440,7 @@ fn emit_progress(parts: &[StreamPart], on_progress: &Option<mpsc::UnboundedSende
             StreamPart::Text(t) => TurnProgress::Text(t.clone()),
             StreamPart::Card(c) => TurnProgress::Card(c.clone()),
             StreamPart::Error(e) => TurnProgress::Error(e.clone()),
+            StreamPart::Thinking(t) => TurnProgress::Thinking(t.clone()),
         };
         let _ = tx.send(ev);
     }
