@@ -6,6 +6,9 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed
+- After `/update`, the old process now stays as the parent until the new one exits. Before, it handed the console back to the shell early, so the shell and Concordia both read the keyboard and the prompt box lost or scrambled keystrokes.
+
 ### Added
 - Native Rust TUI: streaming chat with tool and command cards, account picker, model picker,
   usage, explicit session resume, trust modes, WezTerm splits.

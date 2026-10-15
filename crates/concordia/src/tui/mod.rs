@@ -1700,8 +1700,8 @@ pub async fn run_chat_tui() -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     if let Some(path) = reexec {
-        reexec_into(&path, &cwd)?;
-        std::process::exit(0);
+        let code = reexec_into(&path, &cwd)?;
+        std::process::exit(code);
     }
     Ok(())
 }
