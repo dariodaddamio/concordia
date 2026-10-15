@@ -590,3 +590,28 @@ fn an_update_that_fails_verification_is_an_error_and_installs_nothing() {
     );
     sb.assert_nothing_installed();
 }
+
+#[test]
+fn the_powershell_hasher_matches_a_known_sha256_and_handles_odd_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    // SHA-256("abc"), the standard test vector.
+    let p = dir.path().join("with space [and] 'quote'.bin");
+    std::fs::write(&p, b"abc").unwrap();
+    assert_eq!(
+        PowerShellFetcher.sha256(&p).unwrap(),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    // The empty file, and agreement with the independent Rust implementation on real bytes.
+    let e = dir.path().join("empty.bin");
+    std::fs::write(&e, b"").unwrap();
+    assert_eq!(
+        PowerShellFetcher.sha256(&e).unwrap(),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    let big = real_concordia();
+    let f = dir.path().join("orc.bin");
+    std::fs::write(&f, &big).unwrap();
+    assert_eq!(PowerShellFetcher.sha256(&f).unwrap(), sha_hex(&big));
+    // A missing file is an error, never an empty hash.
+    assert!(PowerShellFetcher.sha256(&dir.path().join("nope")).is_err());
+}

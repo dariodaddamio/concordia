@@ -322,8 +322,13 @@ impl Fetcher for PowerShellFetcher {
     }
 
     fn sha256(&self, path: &Path) -> Result<String> {
+        // .NET directly: `Get-FileHash` lives in a module that is not always loadable (it was
+        // missing for the PowerShell on a clean CI runner), and a checksum must never be skipped.
         let out = run_ps(
-            "(Get-FileHash -Algorithm SHA256 -LiteralPath $env:CONCORDIA_FILE).Hash.ToLower()",
+            "$s=[IO.File]::OpenRead($env:CONCORDIA_FILE); \
+             try { $h=[Security.Cryptography.SHA256]::Create(); \
+                   ([BitConverter]::ToString($h.ComputeHash($s)) -replace '-','').ToLower() } \
+             finally { $s.Dispose() }",
             &[("CONCORDIA_FILE", &path.to_string_lossy())],
         )?;
         Ok(out.trim().to_string())
