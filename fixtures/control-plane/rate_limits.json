@@ -1,0 +1,5 @@
+{
+  "primary": { "used_percent": 74.2, "window_minutes": 300 },
+  "secondary": { "used_percent": 30.1, "window_minutes": 10080 },
+  "plan_type": "plus"
+}

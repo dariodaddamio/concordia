@@ -1,0 +1,91 @@
+name: release
+
+# Tag vX.Y.Z (matching crates/concordia/Cargo.toml) to publish. workflow_dispatch builds and
+# verifies everything but does not publish, so the pipeline can be rehearsed.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $toml = Get-Content crates/concordia/Cargo.toml -Raw
+          if ($toml -notmatch '(?m)^version\s*=\s*"([^"]+)"') { throw "no version in Cargo.toml" }
+          $want = "v$($Matches[1])"
+          if ($env:GITHUB_REF_NAME -ne $want) { throw "tag $env:GITHUB_REF_NAME does not match Cargo.toml version $want" }
+
+      # The same gates as CI: a tag must never ship something CI would have rejected.
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy -p concordia --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test -p concordia --tests --locked --no-fail-fast
+
+      - name: Build release
+        run: cargo build -p concordia --release --locked
+
+      - name: Smoke the exact artifact
+        shell: pwsh
+        run: ./scripts/smoke-ci.ps1
+
+      - name: Third-party licenses
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Generate THIRD-PARTY-LICENSES
+        shell: pwsh
+        run: cargo about generate about.hbs --output-file THIRD-PARTY-LICENSES.txt
+
+      - name: Stage assets
+        shell: pwsh
+        run: |
+          $name = "concordia-x86_64-pc-windows-msvc.exe"
+          # Only concordia.exe ships. target\release also holds the test-only concordia-fake-provider.
+          Copy-Item target\release\concordia.exe $name
+          $hash = (Get-FileHash $name -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path SHA256SUMS -Value "$hash  $name" -Encoding ascii
+          Get-Content SHA256SUMS
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            concordia-x86_64-pc-windows-msvc.exe
+            SHA256SUMS
+            THIRD-PARTY-LICENSES.txt
+            LICENSE
+          # 0.x and any -suffix tag are pre-releases.
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') || contains(github.ref_name, '-') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Keep the rehearsal artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: concordia-rehearsal
+          path: |
+            concordia-x86_64-pc-windows-msvc.exe
+            SHA256SUMS
+            THIRD-PARTY-LICENSES.txt

@@ -1,0 +1,6 @@
+# Pinned so CI and every contributor build with the same compiler and the same clippy lints.
+# A new stable adding a lint must not turn unrelated PRs red; bump this deliberately.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

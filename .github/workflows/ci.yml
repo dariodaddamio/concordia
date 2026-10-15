@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the compiler (and clippy/rustfmt) so lints cannot drift.
+      - name: Install pinned toolchain
+        shell: pwsh
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy -p concordia --all-targets --locked -- -D warnings
+
+      # Unit, TUI end-to-end, CLI, and fake-provider tests. No provider CLI or network needed.
+      - name: Test
+        run: cargo test -p concordia --tests --locked --no-fail-fast
+
+      - name: Build release
+        run: cargo build -p concordia --release --locked
+
+      - name: Smoke the release binary
+        shell: pwsh
+        run: ./scripts/smoke-ci.ps1
+
+      - name: OSS gates
+        shell: pwsh
+        run: ./scripts/verify-oss-gates.ps1
+
+  # Licenses, advisories, banned/duplicate crates, and registry sources (see deny.toml).
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

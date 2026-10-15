@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}
+{"type":"item.started","item":{"type":"command_execution","id":"c1","command":"npm test","status":"in_progress"}}
+{"type":"item.completed","item":{"type":"command_execution","id":"c1","command":"npm test","status":"completed"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"parity hello"}}
+{"type":"noise","x":1}

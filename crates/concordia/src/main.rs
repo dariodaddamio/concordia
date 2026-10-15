@@ -1,0 +1,101 @@
+use anyhow::Result;
+use concordia::store::default_store_root;
+use concordia::tui;
+use concordia::update::resolve_active_exe;
+use concordia::version::version_line;
+
+fn print_help() {
+    println!(
+        "{}\n\
+         \n\
+           concordia           chat TUI in this terminal\n\
+           concordia --help    this message\n\
+           concordia --version build stamp (confirm pane is not stale)\n\
+           concordia install   install this exe as the `concordia` on your PATH (new panes get it)\n\
+           concordia wezterm open WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
+           concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
+         \n\
+         Slash: /use [add] /model /usage /resume /trust /config /new /split /update /version /copy /doctor /exit\n\
+         Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
+         Connect: /use add [codex|claude|cursor] makes an isolated home and opens its login.\n\
+         Mouse: click places the caret, drag selects, double/triple-click picks word/line,\n\
+         wheel scrolls, right-click copies the selection or pastes.\n\
+         Keys: Ctrl+A/X/V select-all/cut/paste · Shift+Enter or Ctrl+J newline · PgUp/PgDn scroll.\n\
+         Never uses resume --last — bind an explicit session id via /resume.\n\
+         \n\
+         Active exe: {}\n\
+         State: {}\n\
+         Install: .\\scripts\\install-dev.ps1  or  /update",
+        version_line(),
+        resolve_active_exe().display(),
+        default_store_root().display()
+    );
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        tui::run_chat_tui().await?;
+        return Ok(());
+    }
+    match args[0].as_str() {
+        "--host" | "host" => {
+            // Alias: same as bare concordia (TUI in current pane).
+            tui::run_chat_tui().await?;
+        }
+        "--help" | "-h" | "help" => print_help(),
+        "install" => {
+            match concordia::update::install_self() {
+                Ok(r) => {
+                    println!("installed {}", r.installed.display());
+                    if r.path_added {
+                        println!(
+                            "added {} to your PATH",
+                            concordia::update::install_bin_dir().display()
+                        );
+                    }
+                    if r.state_adopted {
+                        println!("carried over your settings and registered accounts from the old orc state");
+                    }
+                    if let Some(old) = r.legacy_retired {
+                        println!(
+                        "removed the old `orc` install from your PATH ({}); delete that folder when you are ready",
+                        old.display()
+                    );
+                    }
+                    println!("open a NEW terminal, then run: concordia --version");
+                }
+                Err(e) => {
+                    eprintln!("install failed: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "wezterm" => {
+            if let Err(e) = concordia::host::wezterm::launch_window() {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        "doctor" | "--doctor" => {
+            let (report, healthy) = concordia::doctor::run_cli_report();
+            println!("{report}");
+            if !healthy {
+                std::process::exit(1);
+            }
+        }
+        "--version" | "-V" | "version" => {
+            println!("{}", version_line());
+            // Read-only: reporting a version must never repoint the install at this exe.
+            if let Ok(exe) = std::env::current_exe() {
+                println!("exe: {}", exe.display());
+            }
+        }
+        other => {
+            eprintln!("unknown argument: {other} (try --help)");
+            std::process::exit(2);
+        }
+    }
+    Ok(())
+}

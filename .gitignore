@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/
+*.log
+.DS_Store
+.env
+.env.*
+coverage/
+.ao/
+dist-release/
+SHA256SUMS
+concordia-x86_64-pc-windows-msvc.exe
