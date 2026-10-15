@@ -19,13 +19,12 @@ decided or verified by the code alone.
 
 ## Blockers
 
-### 1. Git history still contains the removed material - needs you
+### 1. Fresh history - done
 
-The working tree is clean, but earlier commits in this local repository still contain the removed
-files (private project names, the TypeScript prototype, evidence dumps with a username and local
-paths). Before the first push, publish from a fresh history: create an orphan branch from the
-current tree (keeping the old history only in your private clone), or squash. Nothing has been
-pushed yet.
+Published as a single clean root commit to a **private** repository
+(`dariodaddamio/concordia`). The old history (which contained the removed material and a username) is
+kept only locally: the `archive/pre-release` branch and `concordia-pre-release-history.bundle` next to the
+repo. It was never pushed. Keep it that way: push only `main`.
 
 ### 2. Product name - decided: Concordia
 
@@ -47,8 +46,10 @@ spend tokens except the last item, which needs your explicit budget.)
 - [ ] `/use add codex` opens a real login window and the "connected" announcement fires
 - [ ] Mouse selection, click-to-caret, wheel and right-click in a live WezTerm pane
 - [ ] `concordia install` from a fresh download, then `concordia --version` in a new terminal
-- [ ] `/update` from a real GitHub release (needs a published repo)
-- [ ] The GitHub workflows run green on a real runner (no remote exists yet)
+- [ ] `/update` from a real GitHub release (needs a tagged release in the repo)
+- [x] The GitHub workflows run green on a real runner (CI and a release rehearsal both passed; the first run
+      caught a real bug: `Get-FileHash` missing on a clean machine, now replaced by .NET hashing)
+- [x] A CI-built release artifact verified as a stranger would: checksum matches, runs, installs
 - [ ] One short real turn with a multi-line prompt (stdin path), under a budget you set
 
 ### 5. Not built yet (product, not packaging)
