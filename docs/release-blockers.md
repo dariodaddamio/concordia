@@ -22,7 +22,7 @@ decided or verified by the code alone.
 ### 1. Fresh history - done
 
 Published as a single clean root commit to a **private** repository
-(`dariodaddamio/concordia`). The old history (which contained the removed material and a username) is
+(the private `concordia` repository). The old history (which contained the removed material and a username) is
 kept only locally: the `archive/pre-release` branch and `concordia-pre-release-history.bundle` next to the
 repo. It was never pushed. Keep it that way: push only `main`.
 
