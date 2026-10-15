@@ -14,6 +14,11 @@ also bumps the build stamp shown by `concordia --version`.
 - After `/update`, the old process now stays as the parent until the new one exits. Before, it handed the console back to the shell early, so the shell and Concordia both read the keyboard and the prompt box lost or scrambled keystrokes.
 
 ### Added
+- Usage display: limits say used and left everywhere (footer `5h 59% left`, `/use` and `/usage all` rows
+  `5h 41% used / 59% left`). `/usage` shows only the current account with a bar per window and reset
+  time; `/usage all` lists every account. Claude limits come from `claude -p "/usage"` on a background
+  thread, cached 5 minutes under `usage-cache/`. Cursor says "not shown by Cursor CLI"; Codex with no
+  data says "no data yet - chat once". Rows and footer are coloured by how much is used.
 - Native Rust TUI: streaming chat with tool and command cards, account picker, model picker,
   usage, explicit session resume, trust modes, WezTerm splits.
 - Mouse support: click to place the caret, drag / double-click / triple-click selection in the

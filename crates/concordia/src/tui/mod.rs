@@ -20,7 +20,9 @@ use crate::store::{
 use crate::update::{
     reexec_into, start_check, start_update, Job, JobKind, JobResult, UpdateOutcome,
 };
-use crate::usage::{read_provider_usage, usage_rows_for_accounts, usage_tone, UsageTone};
+use crate::usage::{
+    picker_row, usage_icon, usage_rows_for_accounts, usage_tone, UsageFetcher, UsageTone,
+};
 use crate::version::short_stamp;
 use anyhow::Result;
 use crossterm::event::{
@@ -37,6 +39,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
+use std::collections::HashMap;
 use std::io::{self, stdout, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -281,6 +284,12 @@ pub struct App {
     need_context_pack: bool,
     usage_summary: String,
     usage_tone: UsageTone,
+    /// Width-1 ASCII bar drawn before the footer usage text.
+    usage_icon: String,
+    /// Claude limits are fetched on a worker thread and cached; never block the UI on them.
+    usage_fetcher: UsageFetcher,
+    /// Tone of each `/use` or `/usage all` picker row, by row id.
+    picker_tones: HashMap<String, UsageTone>,
     live_cards: Vec<StreamCard>,
     live_text: String,
     live_thinking: String,
@@ -324,13 +333,38 @@ impl App {
                 .map(PathBuf::from)
         });
         let Some(home) = home else {
-            self.usage_summary = "limits unknown".into();
+            self.usage_summary = "no account yet".into();
             self.usage_tone = UsageTone::Mute;
+            self.usage_icon = usage_icon(&crate::usage::UsageSnapshot::no_data("", ""));
             return;
         };
-        let snap = read_provider_usage(self.provider, &home);
+        let snap = self
+            .usage_fetcher
+            .snapshot(self.provider, &self.account, &home);
+        self.set_usage_footer(&snap);
+    }
+
+    fn set_usage_footer(&mut self, snap: &crate::usage::UsageSnapshot) {
         self.usage_summary = snap.summary.clone();
-        self.usage_tone = usage_tone(&snap);
+        self.usage_tone = usage_tone(snap);
+        self.usage_icon = usage_icon(snap);
+    }
+
+    /// `/usage`: the current account's limits, one line per window; Claude is re-checked in the
+    /// background and the footer updates when it answers.
+    fn show_usage(&mut self) {
+        let Some(home) = self.home_path.clone() else {
+            self.push_system("usage - no account selected; try /use");
+            return;
+        };
+        let snap = self
+            .usage_fetcher
+            .snapshot_refresh(self.provider, &self.account, &home);
+        self.set_usage_footer(&snap);
+        self.push_system(format!("limits - {}", self.account_label()));
+        for line in snap.detail.lines() {
+            self.push_system(format!("  {line}"));
+        }
     }
 
     fn account_label(&self) -> String {
@@ -693,6 +727,9 @@ impl App {
         }
         self.poll_pending_login();
         self.poll_job();
+        if self.usage_fetcher.poll() {
+            self.refresh_usage();
+        }
     }
 
     /// Announce when a login we launched has completed (cheap file-existence checks, ~2 s apart).
@@ -811,7 +848,10 @@ impl App {
                 continue;
             };
             let idn = inspect_provider(a.provider, home);
-            let usage = read_provider_usage(a.provider, home);
+            let usage = self.usage_fetcher.snapshot(a.provider, &a.account, home);
+            let urow = picker_row(&a.account, a.provider, &usage);
+            self.picker_tones
+                .insert(format!("use:{}", a.account), urow.tone);
             let mut detail = format_identity_label(&idn);
             if let Some(other) = duplicates
                 .iter()
@@ -824,11 +864,7 @@ impl App {
                 id: format!("use:{}", a.account),
                 // The account's own name ("Codex 3"), so several accounts of one provider are
                 // told apart at a glance.
-                label: format!(
-                    "{}  {}",
-                    display_account_name(a.provider, &a.account),
-                    usage.summary
-                ),
+                label: urow.label,
                 detail,
             });
         }
@@ -1053,7 +1089,7 @@ impl App {
             .into_iter()
             .filter_map(|a| a.home_path.map(|h| (a.account, a.provider, h)))
             .collect();
-        let rows_data = usage_rows_for_accounts(&accounts, &self.account);
+        let rows_data = usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account);
         let rows: Vec<PickerRow> = if rows_data.is_empty() {
             vec![PickerRow {
                 id: "none".into(),
@@ -1063,10 +1099,13 @@ impl App {
         } else {
             rows_data
                 .into_iter()
-                .map(|(id, label, detail)| PickerRow {
-                    id: format!("usage:{id}"),
-                    label,
-                    detail,
+                .map(|r| {
+                    self.picker_tones.insert(format!("usage:{}", r.id), r.tone);
+                    PickerRow {
+                        id: format!("usage:{}", r.id),
+                        label: r.label,
+                        detail: r.detail,
+                    }
                 })
                 .collect()
         };
@@ -1378,6 +1417,7 @@ impl App {
             CommandOutcome::OpenRemovePicker => self.open_remove_picker(None),
             CommandOutcome::AddAccount(p) => self.begin_add_account(p),
             CommandOutcome::OpenModel => self.open_model_picker(),
+            CommandOutcome::ShowUsage => self.show_usage(),
             CommandOutcome::OpenUsage => self.open_usage_picker(),
             CommandOutcome::CopyLastReply => match self.last_assistant_text() {
                 Some(t) => self.write_clipboard(&t),
@@ -1490,6 +1530,7 @@ impl App {
 
 impl App {
     fn new(state_root: PathBuf, cwd: PathBuf) -> App {
+        let state_root_for_usage = state_root.clone();
         App {
             state_root,
             cwd,
@@ -1530,6 +1571,9 @@ impl App {
             need_context_pack: false,
             usage_summary: "limits unknown".into(),
             usage_tone: UsageTone::Mute,
+            usage_icon: usage_icon(&crate::usage::UsageSnapshot::no_data("", "")),
+            usage_fetcher: UsageFetcher::new(state_root_for_usage),
+            picker_tones: HashMap::new(),
             live_cards: Vec::new(),
             live_text: String::new(),
             live_thinking: String::new(),
@@ -2375,7 +2419,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         UsageTone::Bad => Color::Red,
         UsageTone::Mute => Color::DarkGray,
     };
-    let right = format!(" {} ", app.usage_summary);
+    let right = format!(" {} {} ", app.usage_icon, app.usage_summary);
     let used: usize = left.iter().map(|s| s.content.chars().count()).sum();
     let pad = (area.width as usize).saturating_sub(used + right.chars().count());
     left.push(Span::styled(" ".repeat(pad), bar));
@@ -2501,12 +2545,20 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         format!("{} · filter: {}", picker.title, picker.filter)
     };
+    let tones = &app.picker_tones;
     let items: Vec<ListItem> = picker
         .filtered()
         .into_iter()
         .map(|r| {
+            let label_style = match tones.get(&r.id) {
+                Some(UsageTone::Ok) => Style::default().fg(Color::Green),
+                Some(UsageTone::Warn) => Style::default().fg(Color::Yellow),
+                Some(UsageTone::Bad) => Style::default().fg(Color::Red),
+                Some(UsageTone::Mute) => Style::default().fg(Color::DarkGray),
+                None => Style::default(),
+            };
             ListItem::new(Line::from(vec![
-                Span::raw(r.label.clone()),
+                Span::styled(r.label.clone(), label_style),
                 Span::styled(
                     format!("  {}", r.detail),
                     Style::default().fg(Color::DarkGray),
