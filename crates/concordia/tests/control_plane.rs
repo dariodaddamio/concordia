@@ -122,8 +122,8 @@ fn usage_reads_rate_limits_fixture() {
     std::fs::create_dir_all(&tmp_dir).unwrap();
     std::fs::copy(fixture("rate_limits.json"), tmp_dir.join("rate.json")).unwrap();
     let snap = read_codex_usage(&codex_home);
-    assert!(snap.summary.contains("5h 74%"), "got {}", snap.summary);
-    assert!(snap.summary.contains("7d 30%"), "got {}", snap.summary);
+    assert!(snap.summary.contains("5h 26% left"), "got {}", snap.summary);
+    assert!(snap.summary.contains("7d 70% left"), "got {}", snap.summary);
 }
 
 #[test]
@@ -143,8 +143,8 @@ fn usage_reads_session_jsonl_when_tmp_empty() {
     )
     .unwrap();
     let snap = read_codex_usage(&codex_home);
-    assert!(snap.summary.contains("5h 24%"), "got {}", snap.summary);
-    assert!(snap.summary.contains("7d 56%"), "got {}", snap.summary);
+    assert!(snap.summary.contains("5h 76% left"), "got {}", snap.summary);
+    assert!(snap.summary.contains("7d 44% left"), "got {}", snap.summary);
     assert_eq!(snap.primary_pct, Some(24.0));
 }
 

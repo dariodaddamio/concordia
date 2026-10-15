@@ -10,7 +10,10 @@ pub enum SlashCommand {
     /// `/use remove [account]`; `None` opens the account picker.
     UseRemove(Option<String>),
     Model,
+    /// `/usage`: limits for the current account.
     Usage,
+    /// `/usage all`: limits for every ready account.
+    UsageAll,
     Resume,
     New,
     Config,
@@ -54,6 +57,7 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
             false,
         )),
         "model" => Some((SlashCommand::Model, false)),
+        "usage" if rest.eq_ignore_ascii_case("all") => Some((SlashCommand::UsageAll, false)),
         "usage" => Some((SlashCommand::Usage, false)),
         "chats" | "resume" => Some((SlashCommand::Resume, false)),
         "new" => Some((SlashCommand::New, false)),
@@ -87,7 +91,8 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/use add", "connect a new account"),
     ("/use remove", "remove an account"),
     ("/model", "choose the model"),
-    ("/usage", "show limits for your accounts"),
+    ("/usage", "limits for this account"),
+    ("/usage all", "limits for every account"),
     ("/resume", "continue an earlier session"),
     ("/trust", "approvals: ask, workspace or full"),
     ("/config", "how to connect providers"),
@@ -135,6 +140,9 @@ pub enum CommandOutcome {
     /// Connect a new account for this provider.
     AddAccount(ProviderKind),
     OpenModel,
+    /// `/usage`: show the current account's limits in the transcript.
+    ShowUsage,
+    /// `/usage all`: picker with every ready account.
     OpenUsage,
     /// Copy the last assistant reply to the clipboard.
     CopyLastReply,
@@ -178,7 +186,8 @@ pub fn dispatch_slash(
             ),
         },
         SlashCommand::Model => (CommandOutcome::OpenModel, Vec::new()),
-        SlashCommand::Usage => (CommandOutcome::OpenUsage, Vec::new()),
+        SlashCommand::Usage => (CommandOutcome::ShowUsage, Vec::new()),
+        SlashCommand::UsageAll => (CommandOutcome::OpenUsage, Vec::new()),
         SlashCommand::Copy => (CommandOutcome::CopyLastReply, Vec::new()),
         SlashCommand::Doctor => (
             CommandOutcome::Ok,
@@ -280,6 +289,38 @@ mod tests {
         let (o, lines) = dispatch_slash(SlashCommand::UseAdd(Some("gemini".into())), &ctx);
         assert_eq!(o, CommandOutcome::Ok);
         assert!(lines[0].contains("unknown provider 'gemini'"));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn usage_is_current_account_and_usage_all_lists_everyone() {
+        assert_eq!(parse_slash("/usage").unwrap().0, SlashCommand::Usage);
+        assert_eq!(parse_slash("/usage all").unwrap().0, SlashCommand::UsageAll);
+        assert_eq!(parse_slash("/usage ALL").unwrap().0, SlashCommand::UsageAll);
+        let dir = std::env::temp_dir();
+        let ctx = CommandContext {
+            state_root: &dir,
+            cwd: &dir,
+            provider: ProviderKind::Codex,
+            account: "codex",
+            trust: TrustMode::Workspace,
+            split_vertical: false,
+        };
+        assert_eq!(
+            dispatch_slash(SlashCommand::Usage, &ctx).0,
+            CommandOutcome::ShowUsage
+        );
+        assert_eq!(
+            dispatch_slash(SlashCommand::UsageAll, &ctx).0,
+            CommandOutcome::OpenUsage
+        );
+        let help = |c: &str| SLASH_COMMANDS.iter().find(|(n, _)| *n == c).unwrap().1;
+        assert_eq!(help("/usage"), "limits for this account");
+        assert_eq!(help("/usage all"), "limits for every account");
     }
 }
 
