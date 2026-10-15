@@ -187,10 +187,10 @@ pub fn dispatch_slash(
                 .map(str::to_string)
                 .collect(),
         ),
-        SlashCommand::Update => (CommandOutcome::Update, vec!["updating…".into()]),
+        SlashCommand::Update => (CommandOutcome::Update, vec!["updating...".into()]),
         SlashCommand::UpdateCheck => (
             CommandOutcome::UpdateCheck,
-            vec!["checking for updates…".into()],
+            vec!["checking for updates...".into()],
         ),
         SlashCommand::Version => {
             let exe = std::env::current_exe()

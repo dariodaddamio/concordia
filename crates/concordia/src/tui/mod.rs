@@ -1375,7 +1375,7 @@ impl App {
     fn request_cancel(&mut self) {
         if let Some(h) = &self.cancel_handle {
             h.cancel();
-            self.push_system("cancelling…");
+            self.push_system("cancelling...");
         } else {
             self.busy = false;
             self.push_system("cancelled");
@@ -2203,7 +2203,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                 .bg(Color::Indexed(238))
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("\u{276f} ");
+        .highlight_symbol("> ");
     let mut state = ListState::default();
     state.select(Some(app.palette.selected));
     f.render_stateful_widget(list, rect, &mut state);
@@ -2292,7 +2292,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     for (i, m) in app.messages.iter().enumerate() {
         let (gutter, gutter_style, style) = match m.role {
             MsgRole::User => (
-                "\u{276f} ",
+                "> ",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -2392,7 +2392,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("❯ ");
+        .highlight_symbol("> ");
     f.render_stateful_widget(list, popup, &mut picker.state);
 }
 
@@ -2453,13 +2453,13 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|(i, r)| {
             let seg = |a: usize, b: usize| -> String { chars[a..b].iter().collect() };
             let mut spans = vec![if i == 0 {
-                Span::styled("\u{276f} ", prompt)
+                Span::styled("> ", prompt)
             } else {
                 Span::raw("  ")
             }];
             if empty && i == 0 {
                 spans.push(Span::styled(
-                    "Message Concordia\u{2026}  (/ for commands)",
+                    "Message Concordia...  (/ for commands)",
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),

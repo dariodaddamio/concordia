@@ -7,6 +7,7 @@ also bumps the build stamp shown by `concordia --version`.
 ## [Unreleased]
 
 ### Fixed
+- The prompt marker, palette and picker highlight use plain ASCII `>` and `...`, whose width is the same in every terminal font; ambiguous-width glyphs could shift the caret.
 - After `/update`, the old process now stays as the parent until the new one exits. Before, it handed the console back to the shell early, so the shell and Concordia both read the keyboard and the prompt box lost or scrambled keystrokes.
 
 ### Added
@@ -42,6 +43,7 @@ also bumps the build stamp shown by `concordia --version`.
   backtrace there. `NO_COLOR` is honored; `CONCORDIA_LOG=off` disables the log.
 
 ### Fixed
+- The prompt marker, palette and picker highlight use plain ASCII `>` and `...`, whose width is the same in every terminal font; ambiguous-width glyphs could shift the caret.
 - `concordia` on PATH could resolve to a months-old binary: the installer now always replaces `concordia.exe`,
   even while an older Concordia is running from it (the old file is moved aside), and `doctor` reports
   when PATH resolves to anything other than the active build.
@@ -57,10 +59,6 @@ also bumps the build stamp shown by `concordia --version`.
 - Long sessions made drawing slow (about 500 ms per frame at 40k rows); rows are now cached (~17 ms).
 
 ### Changed
-- Renamed from `orc` to **Concordia**; the command is `concordia`. State moves to
-  `%LOCALAPPDATA%\concordia` (your old `store.json` is copied on first run and accounts keep
-  working), environment variables are now `CONCORDIA_*`, and `concordia install` takes the old
-  `orc` install off your PATH.
 - The npm shim and the `-a/-b/-next` install slots are gone: `concordia.exe` is always the
   newest build.
 - `Esc` no longer quits (it clears a selection or interrupts a running turn).

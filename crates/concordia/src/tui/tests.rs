@@ -1260,9 +1260,7 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     h.draw();
     let s = h.screen();
     assert!(
-        s.contains("\u{276f} first")
-            && s.contains("\u{25cf} reply")
-            && s.contains("\u{276f} second"),
+        s.contains("> first") && s.contains("\u{25cf} reply") && s.contains("> second"),
         "{s}"
     );
     // A blank row separates turns.
@@ -1306,7 +1304,7 @@ fn no_color_draws_with_the_terminals_own_colours_but_keeps_emphasis() {
         if cell.modifier.contains(ratatui::style::Modifier::BOLD) {
             bold += 1;
         }
-        if cell.symbol() == "\u{276f}" {
+        if cell.symbol() == ">" {
             reversed_or_marker = true;
         }
     }
