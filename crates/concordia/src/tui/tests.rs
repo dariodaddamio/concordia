@@ -881,7 +881,7 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         assert!(s.contains(needle), "palette missing {needle:?}:\n{s}");
     }
     assert!(
-        s.contains("commands · 16"),
+        s.contains("commands · 17"),
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);
@@ -1260,9 +1260,7 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     h.draw();
     let s = h.screen();
     assert!(
-        s.contains("\u{276f} first")
-            && s.contains("\u{25cf} reply")
-            && s.contains("\u{276f} second"),
+        s.contains("> first") && s.contains("\u{25cf} reply") && s.contains("> second"),
         "{s}"
     );
     // A blank row separates turns.
@@ -1285,7 +1283,10 @@ fn a_running_turn_shows_a_spinner_and_how_to_cancel() {
     h.app.busy = true;
     h.draw();
     let s = h.screen();
-    assert!(s.contains("working") && s.contains("Esc to cancel"), "{s}");
+    assert!(
+        s.contains("waiting for the model") && s.contains("Esc to cancel"),
+        "{s}"
+    );
     assert!(SPINNER.iter().any(|f| s.contains(f)), "{s}");
 }
 
@@ -1306,7 +1307,7 @@ fn no_color_draws_with_the_terminals_own_colours_but_keeps_emphasis() {
         if cell.modifier.contains(ratatui::style::Modifier::BOLD) {
             bold += 1;
         }
-        if cell.symbol() == "\u{276f}" {
+        if cell.symbol() == ">" {
             reversed_or_marker = true;
         }
     }
@@ -1441,4 +1442,93 @@ fn a_second_update_cannot_start_while_one_is_running() {
     h.enter();
     assert!(h.transcript_text().contains("an update is already running"));
     h.app.job.as_ref().unwrap().cancel();
+}
+
+// ---- waiting states, thinking, repeated errors ----------------------------------------------------
+
+#[test]
+fn the_wait_names_what_the_model_is_doing_and_the_colour_follows_it() {
+    use ratatui::style::Color;
+    let mut h = Harness::new(100, 24);
+    h.app.busy = true;
+    h.app.turn_started = Some(Instant::now());
+    h.draw();
+    assert!(h.screen().contains("waiting for the model"));
+
+    h.app
+        .apply_progress(TurnProgress::Thinking("weighing the options".into()));
+    h.draw();
+    let s = h.screen();
+    assert!(
+        s.contains("thinking") && s.contains("weighing the options"),
+        "{s}"
+    );
+    assert_eq!(h.app.phase.color(), Color::Magenta);
+
+    h.app.apply_progress(TurnProgress::Card(
+        crate::provider::stream_cards::StreamCard {
+            id: "1".into(),
+            title: "Bash".into(),
+            detail: Some("cargo test".into()),
+            status: CardStatus::Running,
+        },
+    ));
+    h.draw();
+    assert!(h.screen().contains("running Bash"));
+    assert_eq!(h.app.phase.color(), Color::Yellow);
+
+    h.app.apply_progress(TurnProgress::Text("Done.".into()));
+    h.draw();
+    assert!(h.screen().contains("writing"));
+    assert_eq!(h.app.phase.color(), Color::Green);
+}
+
+#[test]
+fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
+    let _iso = Isolated::new();
+    let mut h = Harness::new(100, 24);
+    h.app.push_user("why".into());
+    h.app.busy = true;
+    h.app.apply_progress(TurnProgress::Thinking(
+        "first   idea\n\n\nsecond idea".into(),
+    ));
+    h.app.apply_progress(TurnProgress::Text("Because.".into()));
+    h.app.finalize_turn(TurnOutcome::default());
+    let thought = h
+        .app
+        .messages
+        .iter()
+        .find(|m| m.role == MsgRole::Thinking)
+        .expect("a thinking line");
+    assert_eq!(thought.text, "first idea\nsecond idea");
+    assert!(h
+        .app
+        .pack_messages()
+        .iter()
+        .all(|m| !m.text.contains("idea")));
+    assert!(h.app.live_thinking.is_empty());
+}
+
+#[test]
+fn one_failure_reported_three_ways_is_shown_once_and_cli_noise_is_dropped() {
+    let _iso = Isolated::new();
+    let mut h = Harness::new(100, 24);
+    h.app.push_user("hi".into());
+    h.app.busy = true;
+    let cap = "You hit your spend cap set by the owner of your workspace.";
+    // The `error` event, then `turn.failed`, both stream in as the same message.
+    h.app.apply_progress(TurnProgress::Error(cap.into()));
+    h.app.apply_progress(TurnProgress::Error(cap.into()));
+    h.app.finalize_turn(TurnOutcome {
+        exit_code: Some(1),
+        stderr_tail: format!("Reading additional input from stdin...\n{cap}\nsomething new"),
+        ..TurnOutcome::default()
+    });
+    let text = h.transcript_text();
+    assert_eq!(text.matches("spend cap").count(), 1, "{text}");
+    assert!(!text.contains("Reading additional input"), "{text}");
+    assert!(
+        text.contains("something new") && text.contains("exited with code 1"),
+        "{text}"
+    );
 }

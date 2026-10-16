@@ -6,7 +6,19 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed
+- Claude and Cursor turns now stream (`stream-json`) like Codex: tool cards and replies appear as they happen instead of all at once at the end.
+- The wait shows what the model is doing (waiting, thinking, running a tool, writing) with a per-phase colour, animation and timer; reasoning is shown live as dim lines and kept after the turn, never sent as context.
+- A failure reported as an event, a result and stderr is shown once, and `Reading additional input from stdin...` is hidden.
+- The prompt marker, palette and picker highlight use plain ASCII `>` and `...`, whose width is the same in every terminal font; ambiguous-width glyphs could shift the caret.
+- After `/update`, the old process now stays as the parent until the new one exits. Before, it handed the console back to the shell early, so the shell and Concordia both read the keyboard and the prompt box lost or scrambled keystrokes.
+
 ### Added
+- Usage display: limits say used and left everywhere (footer `5h 59% left`, `/use` and `/usage all` rows
+  `5h 41% used / 59% left`). `/usage` shows only the current account with a bar per window and reset
+  time; `/usage all` lists every account. Claude limits come from `claude -p "/usage"` on a background
+  thread, cached 5 minutes under `usage-cache/`. Cursor says "not shown by Cursor CLI"; Codex with no
+  data says "no data yet - chat once". Rows and footer are coloured by how much is used.
 - Native Rust TUI: streaming chat with tool and command cards, account picker, model picker,
   usage, explicit session resume, trust modes, WezTerm splits.
 - Mouse support: click to place the caret, drag / double-click / triple-click selection in the
@@ -39,6 +51,7 @@ also bumps the build stamp shown by `concordia --version`.
   backtrace there. `NO_COLOR` is honored; `CONCORDIA_LOG=off` disables the log.
 
 ### Fixed
+- The prompt marker, palette and picker highlight use plain ASCII `>` and `...`, whose width is the same in every terminal font; ambiguous-width glyphs could shift the caret.
 - `concordia` on PATH could resolve to a months-old binary: the installer now always replaces `concordia.exe`,
   even while an older Concordia is running from it (the old file is moved aside), and `doctor` reports
   when PATH resolves to anything other than the active build.
@@ -54,10 +67,6 @@ also bumps the build stamp shown by `concordia --version`.
 - Long sessions made drawing slow (about 500 ms per frame at 40k rows); rows are now cached (~17 ms).
 
 ### Changed
-- Renamed from `orc` to **Concordia**; the command is `concordia`. State moves to
-  `%LOCALAPPDATA%\concordia` (your old `store.json` is copied on first run and accounts keep
-  working), environment variables are now `CONCORDIA_*`, and `concordia install` takes the old
-  `orc` install off your PATH.
 - The npm shim and the `-a/-b/-next` install slots are gone: `concordia.exe` is always the
   newest build.
 - `Esc` no longer quits (it clears a selection or interrupts a running turn).

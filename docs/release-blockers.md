@@ -28,7 +28,7 @@ repo. It was never pushed. Keep it that way: push only `main`.
 
 ### 2. Product name - decided: Concordia
 
-Renamed from `orc` (Latin *concordia*, "harmony, agreeing together": many providers in concord).
+The name is Latin *concordia*, "harmony, agreeing together": many providers in concord.
 The command is `concordia`. `concordia` is free on crates.io. Still to do before publishing: check
 the name against trademarks and existing products, and pick the GitHub organization and repository.
 

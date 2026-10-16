@@ -1,15 +1,187 @@
-use serde::Deserialize;
+//! Account limits: what is left of each provider's rolling windows.
+//!
+//! Codex reports its limits in its own session files. Claude answers `claude -p "/usage"`
+//! locally (no model call) but takes seconds, so it is fetched on a background thread and cached
+//! (see [`UsageFetcher`]). Cursor's CLI has no usage command at all.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
+
+/// How long a fetched Claude reading is trusted before it is refreshed in the background.
+pub const USAGE_TTL_SECS: u64 = 300;
+/// A hung `claude -p "/usage"` is killed (with its process tree) after this long.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageWindow {
+    /// Short name: `5h`, `7d`, `7d Opus`.
+    pub label: String,
+    pub used_pct: f64,
+    /// When the window resets, already human-readable (`3h`, `Oct 21, 9am`).
+    pub resets: Option<String>,
+}
+
+impl UsageWindow {
+    pub fn left_pct(&self) -> f64 {
+        (100.0 - self.used_pct).clamp(0.0, 100.0)
+    }
+
+    fn used_i(&self) -> i64 {
+        self.used_pct.clamp(0.0, 100.0).round() as i64
+    }
+
+    fn left_i(&self) -> i64 {
+        self.left_pct().round() as i64
+    }
+
+    /// `5h 41% used / 59% left`
+    fn used_left(&self) -> String {
+        format!(
+            "{} {}% used / {}% left",
+            self.label,
+            self.used_i(),
+            self.left_i()
+        )
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct UsageSnapshot {
+    /// Short, for the footer: `5h 59% left · 7d 41% left`.
     pub summary: String,
+    /// Multi-line, one line per window with a text bar.
     pub detail: String,
     pub primary_pct: Option<f64>,
     pub weekly_pct: Option<f64>,
+    pub windows: Vec<UsageWindow>,
+    pub limit_hit: bool,
+}
+
+impl UsageSnapshot {
+    /// A snapshot with no numbers, only an explanation.
+    pub fn no_data(summary: impl Into<String>, detail: impl Into<String>) -> Self {
+        UsageSnapshot {
+            summary: summary.into(),
+            detail: detail.into(),
+            primary_pct: None,
+            weekly_pct: None,
+            windows: Vec::new(),
+            limit_hit: false,
+        }
+    }
+
+    /// Full `used / left` text for picker rows:
+    /// `5h 41% used / 59% left · 7d 59% used / 41% left · resets 3h`.
+    pub fn used_left_text(&self) -> String {
+        if self.windows.is_empty() {
+            return self.summary.clone();
+        }
+        let mut parts: Vec<String> = self.windows.iter().map(UsageWindow::used_left).collect();
+        if self.limit_hit {
+            parts.insert(0, "LIMIT HIT".into());
+        }
+        if let Some(r) = self.windows.iter().find_map(|w| w.resets.as_deref()) {
+            parts.push(format!("resets {r}"));
+        }
+        parts.join(" · ")
+    }
+
+    fn max_used(&self) -> Option<f64> {
+        self.windows
+            .iter()
+            .map(|w| w.used_pct)
+            .reduce(f64::max)
+            .or_else(|| match (self.primary_pct, self.weekly_pct) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            })
+    }
+}
+
+/// `[###-------]`: ASCII only, so every terminal draws it one cell per glyph.
+pub fn text_bar(used_pct: f64, cells: usize) -> String {
+    let filled =
+        (((used_pct.clamp(0.0, 100.0) / 100.0) * cells as f64).round() as usize).min(cells);
+    format!("[{}{}]", "#".repeat(filled), "-".repeat(cells - filled))
+}
+
+/// Short bar for the footer and picker rows; dots when there is nothing to show.
+pub fn usage_icon(snap: &UsageSnapshot) -> String {
+    match snap.max_used() {
+        Some(p) => text_bar(p, 5),
+        None => "[.....]".into(),
+    }
+}
+
+fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
+    let width = windows.iter().map(|w| w.label.len()).max().unwrap_or(0);
+    windows
+        .iter()
+        .map(|w| {
+            let mut line = format!(
+                "{:<width$}  {}  {:>3}% used / {:>3}% left",
+                w.label,
+                text_bar(w.used_pct, 10),
+                w.used_i(),
+                w.left_i(),
+            );
+            if let Some(r) = &w.resets {
+                line.push_str(&format!(" · resets {r}"));
+            }
+            line
+        })
+        .collect()
+}
+
+/// Build the footer summary and the multi-line detail from the windows.
+fn snapshot_from_windows(
+    windows: Vec<UsageWindow>,
+    limit_kind: Option<String>,
+    extras: Vec<String>,
+    source: &str,
+) -> UsageSnapshot {
+    let mut parts = Vec::new();
+    if let Some(kind) = &limit_kind {
+        parts.push(format!("LIMIT · {kind}"));
+    }
+    for w in &windows {
+        parts.push(format!("{} {}% left", w.label, w.left_i()));
+    }
+    parts.extend(extras.iter().cloned());
+    if parts.is_empty() {
+        return UsageSnapshot::no_data(
+            "no data yet - chat once",
+            "Codex reports its limits after a turn; chat once to see them",
+        );
+    }
+    let mut lines = window_lines(&windows);
+    if let Some(kind) = &limit_kind {
+        lines.insert(0, format!("limit reached: {kind}"));
+    }
+    lines.extend(extras);
+    if !source.is_empty() {
+        lines.push(source.to_string());
+    }
+    let primary_pct = windows.first().map(|w| w.used_pct);
+    let weekly_pct = windows
+        .iter()
+        .find(|w| w.label.starts_with("7d"))
+        .or_else(|| windows.get(1))
+        .map(|w| w.used_pct);
+    UsageSnapshot {
+        summary: parts.join(" · "),
+        detail: lines.join("\n"),
+        primary_pct,
+        weekly_pct,
+        windows,
+        limit_hit: limit_kind.is_some(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,47 +215,54 @@ pub fn read_codex_usage(codex_home: &Path) -> UsageSnapshot {
     if let Some(snapshot) = read_session_rate_limits(codex_home) {
         return snapshot;
     }
-    UsageSnapshot {
-        summary: "limits unknown".into(),
-        detail: "chat once with Codex to refresh limits".into(),
-        primary_pct: None,
-        weekly_pct: None,
-    }
+    UsageSnapshot::no_data(
+        "no data yet - chat once",
+        "Codex only reports its limits after a turn, so there is nothing to read yet - chat once with Codex",
+    )
 }
 
+pub fn cursor_usage() -> UsageSnapshot {
+    UsageSnapshot::no_data(
+        "not shown by Cursor CLI",
+        "Cursor's CLI has no usage command, so Concordia cannot show it. See cursor.com/dashboard/usage",
+    )
+}
+
+/// Limits for one account without ever blocking. Claude needs the fetcher (see
+/// [`UsageFetcher::snapshot`]); here it only reports that nothing has been read yet.
 pub fn read_provider_usage(provider: crate::store::ProviderKind, home: &Path) -> UsageSnapshot {
     match provider {
         crate::store::ProviderKind::Codex => read_codex_usage(home),
-        crate::store::ProviderKind::Claude => UsageSnapshot {
-            summary: "limits unknown".into(),
-            detail: "Claude subscription remaining is not exposed via a read-only CLI".into(),
-            primary_pct: None,
-            weekly_pct: None,
-        },
-        crate::store::ProviderKind::Cursor => UsageSnapshot {
-            summary: "limits unknown".into(),
-            detail: "Cursor CLI has no official usage % command".into(),
-            primary_pct: None,
-            weekly_pct: None,
-        },
+        crate::store::ProviderKind::Claude => claude_waiting(),
+        crate::store::ProviderKind::Cursor => cursor_usage(),
     }
+}
+
+fn claude_waiting() -> UsageSnapshot {
+    UsageSnapshot::no_data(
+        "checking limits...",
+        "asking Claude for this account's limits (takes a few seconds)",
+    )
+}
+
+pub struct UsageRow {
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+    pub tone: UsageTone,
 }
 
 /// Current account first, then other ready accounts.
 pub fn usage_rows_for_accounts(
+    fetcher: &mut UsageFetcher,
     accounts: &[(String, crate::store::ProviderKind, std::path::PathBuf)],
     current_account: &str,
-) -> Vec<(String, String, String)> {
+) -> Vec<UsageRow> {
     let mut rows = Vec::new();
     let mut rest = Vec::new();
     for (id, provider, home) in accounts {
-        let snap = read_provider_usage(*provider, home);
-        let label = crate::accounts::display_account_name(*provider, id);
-        let row = (
-            id.clone(),
-            format!("{label}  {}", snap.summary),
-            snap.detail,
-        );
+        let snap = fetcher.snapshot(*provider, id, home);
+        let row = picker_row(id, *provider, &snap);
         if id == current_account {
             rows.push(row);
         } else {
@@ -94,13 +273,32 @@ pub fn usage_rows_for_accounts(
     rows
 }
 
+/// One picker row (`/use`, `/usage all`): name, icon, full used / left text.
+pub fn picker_row(
+    id: &str,
+    provider: crate::store::ProviderKind,
+    snap: &UsageSnapshot,
+) -> UsageRow {
+    let label = crate::accounts::display_account_name(provider, id);
+    UsageRow {
+        id: id.to_string(),
+        label: format!("{label}  {} {}", usage_icon(snap), snap.used_left_text()),
+        detail: if snap.windows.is_empty() {
+            snap.detail.clone()
+        } else {
+            String::new()
+        },
+        tone: usage_tone(snap),
+    }
+}
+
 pub fn usage_tone(snap: &UsageSnapshot) -> UsageTone {
-    let pct = snap.primary_pct.or(snap.weekly_pct).unwrap_or(0.0);
-    if snap.summary.contains("LIMIT") || pct >= 95.0 {
+    let pct = snap.max_used();
+    if snap.limit_hit || pct.is_some_and(|p| p >= 95.0) {
         UsageTone::Bad
-    } else if pct >= 80.0 {
+    } else if pct.is_some_and(|p| p >= 80.0) {
         UsageTone::Warn
-    } else if snap.primary_pct.is_some() || snap.weekly_pct.is_some() {
+    } else if pct.is_some() {
         UsageTone::Ok
     } else {
         UsageTone::Mute
@@ -113,6 +311,357 @@ pub enum UsageTone {
     Warn,
     Bad,
     Mute,
+}
+
+// ---- Claude: `claude -p "/usage"`, fetched off the UI thread and cached --------------------
+
+/// Parse the output of `claude -p "/usage"`. Tolerant: only `Current ...: N% used` lines count,
+/// everything else is ignored, and unrecognised text gives `None`.
+pub fn parse_claude_usage(text: &str) -> Option<UsageSnapshot> {
+    let mut windows = Vec::new();
+    for raw in text.lines() {
+        let clean = strip_ansi(raw);
+        let line = clean.trim();
+        let Some(rest) = line.strip_prefix("Current ") else {
+            continue;
+        };
+        let Some((name, body)) = rest.split_once(':') else {
+            continue;
+        };
+        let Some(pct_at) = body.find('%') else {
+            continue;
+        };
+        let digits: String = body[..pct_at]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let Ok(n) = digits.parse::<f64>() else {
+            continue;
+        };
+        let after = &body[pct_at + 1..];
+        let used_pct = if after.trim_start().starts_with("left") {
+            100.0 - n
+        } else {
+            n
+        };
+        let resets = after
+            .find("resets ")
+            .map(|i| strip_tz(after[i + "resets ".len()..].trim()))
+            .filter(|r| !r.is_empty());
+        windows.push(UsageWindow {
+            label: claude_label(name),
+            used_pct,
+            resets,
+        });
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    Some(snapshot_from_windows(
+        windows,
+        None,
+        Vec::new(),
+        "from claude /usage",
+    ))
+}
+
+fn claude_label(name: &str) -> String {
+    let name = name.trim();
+    let lower = name.to_ascii_lowercase();
+    if lower == "session" {
+        return "5h".into();
+    }
+    if lower.starts_with("week") {
+        let qual = name
+            .split_once('(')
+            .map(|(_, q)| q.trim_end_matches(')').trim().trim_end_matches(" only"))
+            .unwrap_or("");
+        return if qual.is_empty() || qual.eq_ignore_ascii_case("all models") {
+            "7d".into()
+        } else {
+            format!("7d {qual}")
+        };
+    }
+    name.to_string()
+}
+
+/// `Oct 15, 9:10pm (America/Phoenix)` -> `Oct 15, 9:10pm`.
+fn strip_tz(s: &str) -> String {
+    match s.rfind('(') {
+        Some(i) if s.ends_with(')') => s[..i].trim().to_string(),
+        _ => s.to_string(),
+    }
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for n in chars.by_ref() {
+                    if n.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Run `<bin> -p /usage` with `CLAUDE_CONFIG_DIR=<home>`: no window, stdin closed, and the whole
+/// process tree killed after `timeout`. The `.cmd` shim case is handled by `Command` itself; the
+/// arguments are fixed and shell-safe.
+pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<String, String> {
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new(bin);
+    cmd.args(["-p", "/usage"])
+        .env("CLAUDE_CONFIG_DIR", home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("could not start claude: {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("no stdout")?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() >= timeout => {
+                crate::provider::turn::kill_process_tree(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("timed out after {}s", timeout.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(40)),
+            Err(e) => return Err(format!("wait failed: {e}")),
+        }
+    }
+    reader.join().map_err(|_| "reader thread panicked".into())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedUsage {
+    fetched_at: u64,
+    windows: Vec<UsageWindow>,
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn cache_path(state_root: &Path, account: &str) -> PathBuf {
+    let safe: String = account
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    state_root.join("usage-cache").join(format!("{safe}.json"))
+}
+
+fn load_cache(state_root: &Path, account: &str) -> Option<CachedUsage> {
+    let raw = fs::read_to_string(cache_path(state_root, account)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn save_cache(state_root: &Path, account: &str, c: &CachedUsage) {
+    let path = cache_path(state_root, account);
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_string(c) {
+        let _ = fs::write(path, json);
+    }
+}
+
+/// Produces the raw `/usage` text for a Claude config dir. Swapped for a fake in tests.
+pub type UsageRunner = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
+
+fn default_runner() -> UsageRunner {
+    Arc::new(|home| {
+        let bin = crate::provider::claude::find_claude_bin();
+        run_claude_usage(&bin, home, FETCH_TIMEOUT)
+    })
+}
+
+struct Entry {
+    cached: Option<CachedUsage>,
+    pending: bool,
+    error: Option<String>,
+    last_attempt: u64,
+}
+
+struct Fetched {
+    account: String,
+    result: Result<CachedUsage, String>,
+}
+
+/// Per-account Claude limits: cached on disk, refreshed on a worker thread, never blocking.
+pub struct UsageFetcher {
+    state_root: PathBuf,
+    runner: UsageRunner,
+    tx: Sender<Fetched>,
+    rx: Receiver<Fetched>,
+    entries: HashMap<String, Entry>,
+}
+
+impl UsageFetcher {
+    pub fn new(state_root: PathBuf) -> Self {
+        Self::with_runner(state_root, default_runner())
+    }
+
+    pub fn with_runner(state_root: PathBuf, runner: UsageRunner) -> Self {
+        let (tx, rx) = channel();
+        UsageFetcher {
+            state_root,
+            runner,
+            tx,
+            rx,
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Limits for an account right now. Claude returns the cached reading (or a "checking"
+    /// placeholder) and starts a background refresh when the cache is missing or older than the TTL.
+    pub fn snapshot(
+        &mut self,
+        provider: crate::store::ProviderKind,
+        account: &str,
+        home: &Path,
+    ) -> UsageSnapshot {
+        match provider {
+            crate::store::ProviderKind::Codex => read_codex_usage(home),
+            crate::store::ProviderKind::Cursor => cursor_usage(),
+            crate::store::ProviderKind::Claude => self.claude_snapshot(account, home, false),
+        }
+    }
+
+    /// Like [`snapshot`](Self::snapshot) but refreshes Claude even if the cache is fresh (`/usage`).
+    pub fn snapshot_refresh(
+        &mut self,
+        provider: crate::store::ProviderKind,
+        account: &str,
+        home: &Path,
+    ) -> UsageSnapshot {
+        match provider {
+            crate::store::ProviderKind::Claude => self.claude_snapshot(account, home, true),
+            _ => self.snapshot(provider, account, home),
+        }
+    }
+
+    fn claude_snapshot(&mut self, account: &str, home: &Path, force: bool) -> UsageSnapshot {
+        let now = unix_now();
+        let root = self.state_root.clone();
+        let e = self
+            .entries
+            .entry(account.to_string())
+            .or_insert_with(|| Entry {
+                cached: load_cache(&root, account),
+                pending: false,
+                error: None,
+                last_attempt: 0,
+            });
+        let stale = e
+            .cached
+            .as_ref()
+            .is_none_or(|c| now.saturating_sub(c.fetched_at) >= USAGE_TTL_SECS);
+        let retry_ok = force || now.saturating_sub(e.last_attempt) >= USAGE_TTL_SECS;
+        let start = !e.pending && (force || (stale && retry_ok));
+        if start {
+            e.pending = true;
+            e.last_attempt = now;
+        }
+        let view = match (&e.cached, e.pending, &e.error) {
+            (Some(c), _, _) => Ok((c.clone(), now.saturating_sub(c.fetched_at))),
+            (None, true, _) | (None, false, None) => Err(None),
+            (None, false, Some(err)) => Err(Some(err.clone())),
+        };
+        if start {
+            self.spawn(account.to_string(), home.to_path_buf());
+        }
+        match view {
+            Ok((c, age)) => {
+                let age_note = if age < 60 {
+                    "checked just now".to_string()
+                } else {
+                    format!("checked {} ago", format_age_minutes(age / 60))
+                };
+                snapshot_from_windows(c.windows, None, Vec::new(), &age_note)
+            }
+            Err(None) => claude_waiting(),
+            Err(Some(err)) => UsageSnapshot::no_data(
+                "limits unavailable",
+                format!("could not read Claude limits ({err}); /usage tries again"),
+            ),
+        }
+    }
+
+    fn spawn(&self, account: String, home: PathBuf) {
+        let runner = Arc::clone(&self.runner);
+        let tx = self.tx.clone();
+        let root = self.state_root.clone();
+        std::thread::spawn(move || {
+            let result = runner(&home)
+                .and_then(|text| {
+                    parse_claude_usage(&text)
+                        .ok_or_else(|| "unrecognised /usage output".to_string())
+                })
+                .map(|snap| CachedUsage {
+                    fetched_at: unix_now(),
+                    windows: snap.windows,
+                });
+            if let Ok(c) = &result {
+                save_cache(&root, &account, c);
+            }
+            let _ = tx.send(Fetched { account, result });
+        });
+    }
+
+    /// Collect finished background fetches. True when any account's limits changed.
+    pub fn poll(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(f) = self.rx.try_recv() {
+            if let Some(e) = self.entries.get_mut(&f.account) {
+                e.pending = false;
+                match f.result {
+                    Ok(c) => {
+                        e.cached = Some(c);
+                        e.error = None;
+                    }
+                    Err(err) => e.error = Some(err),
+                }
+                changed = true;
+            }
+        }
+        changed
+    }
 }
 
 fn read_tmp_rate_limits(codex_home: &Path) -> Option<UsageSnapshot> {
@@ -266,74 +815,44 @@ fn has_percents(u: &CodexRateLimits) -> bool {
         || u.secondary.as_ref().and_then(|s| s.used_percent).is_some()
 }
 
-fn format_limits(u: &CodexRateLimits, detail: &str) -> UsageSnapshot {
-    let mut parts = Vec::new();
-    if let Some(kind) = &u.rate_limit_reached_type {
-        let kind = kind.trim_end_matches("_reached").replace('_', " ");
-        parts.push(format!("LIMIT · {kind}"));
-    }
-    let primary_pct = u.primary.as_ref().and_then(|p| p.used_percent);
-    let weekly_pct = u.secondary.as_ref().and_then(|s| s.used_percent);
-    if let Some(p) = &u.primary {
-        if let Some(pct) = p.used_percent {
-            let w = p
-                .window_minutes
-                .map(format_window)
-                .unwrap_or_else(|| "5h".into());
-            parts.push(format!("{w} {}%", pct.round() as i64));
-        }
-    }
-    if let Some(s) = &u.secondary {
-        if let Some(pct) = s.used_percent {
-            let w = s
-                .window_minutes
-                .map(format_window)
-                .unwrap_or_else(|| "7d".into());
-            parts.push(format!("{w} {}%", pct.round() as i64));
-        }
-    }
-    if let Some(reset) = u
-        .primary
-        .as_ref()
-        .and_then(|p| p.resets_at)
-        .or_else(|| u.secondary.as_ref().and_then(|s| s.resets_at))
-        .and_then(format_reset_unix)
-    {
-        if primary_pct.is_some() || u.rate_limit_reached_type.is_some() {
-            parts.push(reset);
-        }
-    }
-    if let Some(c) = &u.credits {
-        if c.unlimited == Some(true) {
-            parts.push("credits ∞".into());
-        } else if let Some(bal) = c.balance {
-            parts.push(format!("credits {bal}"));
-        } else if c.has_credits == Some(true) && parts.is_empty() {
-            parts.push("credits available".into());
-        }
-    }
-    if parts.is_empty() {
-        if let Some(plan) = &u.plan_type {
-            if plan != "unknown" {
-                parts.push(format!("plan {plan}"));
+fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
+    let mut windows = Vec::new();
+    for (w, fallback) in [(&u.primary, "5h"), (&u.secondary, "7d")] {
+        if let Some(w) = w {
+            if let Some(pct) = w.used_percent {
+                windows.push(UsageWindow {
+                    label: w
+                        .window_minutes
+                        .map(format_window)
+                        .unwrap_or_else(|| fallback.into()),
+                    used_pct: pct,
+                    resets: w.resets_at.and_then(format_reset_unix),
+                });
             }
         }
     }
-    if parts.is_empty() {
-        if let Some(id) = &u.limit_id {
-            parts.push(id.clone());
+    let limit_kind = u
+        .rate_limit_reached_type
+        .as_ref()
+        .map(|k| k.trim_end_matches("_reached").replace('_', " "));
+    let mut extras = Vec::new();
+    if let Some(c) = &u.credits {
+        if c.unlimited == Some(true) {
+            extras.push("credits unlimited".to_string());
+        } else if let Some(bal) = c.balance {
+            extras.push(format!("credits {bal}"));
+        } else if c.has_credits == Some(true) && windows.is_empty() {
+            extras.push("credits available".to_string());
         }
     }
-    UsageSnapshot {
-        summary: if parts.is_empty() {
-            "limits unknown".into()
-        } else {
-            parts.join(" · ")
-        },
-        detail: detail.into(),
-        primary_pct,
-        weekly_pct,
+    if windows.is_empty() && extras.is_empty() && limit_kind.is_none() {
+        if let Some(plan) = u.plan_type.as_ref().filter(|p| *p != "unknown") {
+            extras.push(format!("plan {plan}"));
+        } else if let Some(id) = &u.limit_id {
+            extras.push(id.clone());
+        }
     }
+    snapshot_from_windows(windows, limit_kind, extras, source)
 }
 
 fn format_window(minutes: u32) -> String {
@@ -371,14 +890,194 @@ fn format_reset_unix(sec: i64) -> Option<String> {
         .as_millis() as i64;
     let delta = ms - now;
     if delta <= 0 {
-        return Some("resets soon".into());
+        return Some("soon".into());
     }
     let mins = (delta as f64 / 60_000.0).round() as i64;
     if mins < 60 {
-        Some(format!("resets {mins}m"))
+        Some(format!("{mins}m"))
     } else if mins < 60 * 24 {
-        Some(format!("resets {}h", mins / 60))
+        Some(format!("{}h", mins / 60))
     } else {
-        Some(format!("resets {}d", mins / (60 * 24)))
+        Some(format!("{}d", mins / (60 * 24)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::ProviderKind;
+
+    const SAMPLE: &str = "You are currently using your subscription to power your Claude Code usage\n\nCurrent session: 7% used · resets Oct 15, 9:10pm (America/Phoenix)\nCurrent week (all models): 13% used · resets Oct 21, 9am (America/Phoenix)\n\nWhat's contributing to your limits usage?\nsomething else: 5% used\n";
+
+    #[test]
+    fn parses_the_claude_usage_sample() {
+        let s = parse_claude_usage(SAMPLE).expect("parsed");
+        assert_eq!(s.windows.len(), 2);
+        assert_eq!(s.windows[0].label, "5h");
+        assert_eq!(s.windows[0].used_pct, 7.0);
+        assert_eq!(s.windows[0].resets.as_deref(), Some("Oct 15, 9:10pm"));
+        assert_eq!(s.windows[1].label, "7d");
+        assert_eq!(s.windows[1].resets.as_deref(), Some("Oct 21, 9am"));
+        assert_eq!(s.summary, "5h 93% left · 7d 87% left");
+        assert!(s
+            .used_left_text()
+            .starts_with("5h 7% used / 93% left · 7d 13% used / 87% left · resets Oct 15"));
+        assert!(s.detail.contains("[#---------]"), "{}", s.detail);
+        assert_eq!(usage_tone(&s), UsageTone::Ok);
+    }
+
+    #[test]
+    fn parses_extra_model_weeks_and_tolerates_noise() {
+        let t = "\u{1b}[1mCurrent session: 96% used\u{1b}[0m\nCurrent week (Opus): 81% used · resets Oct 22, 1am (UTC)\nCurrent week (all models): 40% used\nCurrent thing without percent\n";
+        let s = parse_claude_usage(t).unwrap();
+        let labels: Vec<_> = s.windows.iter().map(|w| w.label.as_str()).collect();
+        assert_eq!(labels, ["5h", "7d Opus", "7d"]);
+        assert_eq!(s.windows[0].resets, None);
+        assert_eq!(usage_tone(&s), UsageTone::Bad);
+    }
+
+    #[test]
+    fn unrecognised_text_is_none() {
+        assert!(parse_claude_usage("").is_none());
+        assert!(parse_claude_usage("Error: not logged in").is_none());
+    }
+
+    #[test]
+    fn cursor_and_codex_no_data_wording() {
+        let c = cursor_usage();
+        assert_eq!(c.summary, "not shown by Cursor CLI");
+        assert!(c.detail.contains("cursor.com/dashboard/usage"));
+        assert_eq!(usage_tone(&c), UsageTone::Mute);
+        let dir = tempfile::tempdir().unwrap();
+        let x = read_codex_usage(dir.path());
+        assert!(x.summary.starts_with("no data yet"));
+        assert_eq!(usage_tone(&x), UsageTone::Mute);
+    }
+
+    #[test]
+    fn tone_thresholds_follow_used_percent() {
+        let mk = |p| {
+            snapshot_from_windows(
+                vec![UsageWindow {
+                    label: "5h".into(),
+                    used_pct: p,
+                    resets: None,
+                }],
+                None,
+                vec![],
+                "",
+            )
+        };
+        assert_eq!(usage_tone(&mk(79.0)), UsageTone::Ok);
+        assert_eq!(usage_tone(&mk(80.0)), UsageTone::Warn);
+        assert_eq!(usage_tone(&mk(95.0)), UsageTone::Bad);
+        assert_eq!(usage_icon(&mk(100.0)), "[#####]");
+    }
+
+    fn fake_runner(text: &'static str) -> UsageRunner {
+        Arc::new(move |_| Ok(text.to_string()))
+    }
+
+    fn wait_for(f: &mut UsageFetcher) {
+        for _ in 0..300 {
+            if f.poll() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("fetch never finished");
+    }
+
+    #[test]
+    fn claude_fetch_is_async_cached_and_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), fake_runner(SAMPLE));
+        let first = f.snapshot(ProviderKind::Claude, "claude-2", &home);
+        assert_eq!(first.summary, "checking limits...");
+        wait_for(&mut f);
+        let second = f.snapshot(ProviderKind::Claude, "claude-2", &home);
+        assert_eq!(second.summary, "5h 93% left · 7d 87% left");
+        assert!(root.path().join("usage-cache/claude-2.json").is_file());
+        // A new fetcher (restart) shows the cached value immediately and does not refetch.
+        let failing: UsageRunner = Arc::new(|_| Err("must not run".into()));
+        let mut g = UsageFetcher::with_runner(root.path().to_path_buf(), failing);
+        let cached = g.snapshot(ProviderKind::Claude, "claude-2", &home);
+        assert_eq!(cached.summary, "5h 93% left · 7d 87% left");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!g.poll());
+    }
+
+    #[test]
+    fn claude_fetch_failure_is_reported_not_retried_in_a_loop() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let runner: UsageRunner = Arc::new(|_| Err("boom".into()));
+        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), runner);
+        f.snapshot(ProviderKind::Claude, "claude", &home);
+        wait_for(&mut f);
+        let s = f.snapshot(ProviderKind::Claude, "claude", &home);
+        assert_eq!(s.summary, "limits unavailable");
+        assert!(s.detail.contains("boom"));
+        assert_eq!(usage_tone(&s), UsageTone::Mute);
+    }
+
+    #[test]
+    fn rows_put_current_account_first_with_used_and_left() {
+        let root = tempfile::tempdir().unwrap();
+        let mut f = UsageFetcher::new(root.path().to_path_buf());
+        let accounts = vec![
+            (
+                "cursor".to_string(),
+                ProviderKind::Cursor,
+                root.path().into(),
+            ),
+            ("codex".to_string(), ProviderKind::Codex, root.path().into()),
+        ];
+        let rows = usage_rows_for_accounts(&mut f, &accounts, "codex");
+        assert_eq!(rows[0].id, "codex");
+        assert!(rows[1].label.contains("not shown by Cursor CLI"));
+        assert_eq!(rows[1].tone, UsageTone::Mute);
+    }
+
+    /// Runs a fake `claude` script (never the real CLI) through the real launcher.
+    #[test]
+    fn real_runner_runs_a_fake_script_with_the_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let (script, body) = (
+            dir.path().join("fakeclaude.cmd"),
+            "@echo off\r\nif \"%CLAUDE_CONFIG_DIR%\"==\"\" exit /b 3\r\necho Current session: 7%% used - resets Oct 15, 9:10pm (America/Phoenix)\r\necho Current week (all models): 13%% used\r\n",
+        );
+        #[cfg(unix)]
+        let (script, body) = (
+            dir.path().join("fakeclaude.sh"),
+            "#!/bin/sh\n[ -n \"$CLAUDE_CONFIG_DIR\" ] || exit 3\necho 'Current session: 7% used - resets Oct 15, 9:10pm (America/Phoenix)'\necho 'Current week (all models): 13% used'\n",
+        );
+        std::fs::write(&script, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let out = run_claude_usage(
+            script.to_str().unwrap(),
+            dir.path(),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        let s = parse_claude_usage(&out).expect(&out);
+        assert_eq!(s.windows.len(), 2);
+    }
+
+    #[test]
+    fn real_runner_reports_a_missing_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = run_claude_usage(
+            "concordia-no-such-binary",
+            dir.path(),
+            Duration::from_secs(2),
+        );
+        assert!(e.is_err());
     }
 }

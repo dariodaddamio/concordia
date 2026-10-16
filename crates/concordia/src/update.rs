@@ -667,20 +667,22 @@ pub fn ensure_on_user_path(dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Leave TUI callers: spawn the new binary in this console and exit.
-pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<()> {
+/// Leave TUI callers: run the new binary in this console and wait for it.
+///
+/// Returns the new process's exit code. This process must stay alive until the child exits: if it
+/// returned the console to the shell early, the shell and the new Concordia would both read the
+/// keyboard and swallow each other's keystrokes.
+pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<i32> {
     persist_concordia_exe_env(new_exe);
-    let child = Command::new(new_exe)
+    let status = Command::new(new_exe)
         .current_dir(cwd)
         .env("CONCORDIA_EXE", new_exe)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .spawn()
+        .status()
         .with_context(|| format!("spawn {}", new_exe.display()))?;
-    // Detach: do not wait — this process exits so the new image owns the pane.
-    std::mem::forget(child);
-    Ok(())
+    Ok(status.code().unwrap_or(1))
 }
 
 fn run_cargo_build(
@@ -748,6 +750,16 @@ fn tail_lines(text: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn reexec_waits_for_the_child_and_returns_its_exit_code() {
+        // `where.exe` with no arguments fails with exit code 2. Returning at all proves we waited
+        // (an early return would hand the console to the shell while the child still reads keys).
+        let exe = which::which("where.exe").unwrap();
+        let code = reexec_into(&exe, &std::env::temp_dir()).unwrap();
+        assert_eq!(code, 2);
+    }
+
     use super::*;
 
     #[test]

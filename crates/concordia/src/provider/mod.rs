@@ -3,6 +3,7 @@ pub mod codex;
 pub mod cursor;
 pub mod launch;
 pub mod stream_cards;
+pub mod stream_json;
 pub mod turn;
 
 pub use stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};

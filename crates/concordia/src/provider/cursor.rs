@@ -33,7 +33,11 @@ pub fn find_agent_bin() -> String {
 }
 
 pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
-    let mut argv = vec!["--print".into(), "--output-format".into(), "text".into()];
+    let mut argv = vec![
+        "--print".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+    ];
     if let Some(model) = req.model.map(str::trim).filter(|m| !m.is_empty()) {
         argv.push("--model".into());
         argv.push(model.to_string());

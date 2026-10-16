@@ -221,13 +221,6 @@ Measured from this checkout, not estimated.
 | Runtime dependencies | 11 direct, 71 crates total (all permissive except one unmodified MPL-2.0 crate; see `NOTICE`) (`ratatui`, `crossterm`, `tokio`, `serde`, `serde_json`, `anyhow`, `thiserror`, `uuid`, `dirs`, `which`, `unicode-width`) |
 | Provider adapters | Codex, Claude, Cursor |
 
-## Upgrading from `orc`
-
-Concordia was called `orc` before 0.0.1 was tagged. Run `concordia install` once: it installs the
-new binary, removes the old `%LOCALAPPDATA%\orc\bin` from your PATH (the files stay until you
-delete them), and on first launch copies your old settings and registered accounts across. Open a
-new terminal afterwards; panes started before the install keep running the old build.
-
 ## Roadmap
 
 | Area | State |
