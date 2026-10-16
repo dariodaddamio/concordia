@@ -7,6 +7,7 @@ also bumps the build stamp shown by `concordia --version`.
 ## [Unreleased]
 
 ### Fixed
+- The bottom hint line adapts to the width: whole hints are dropped by priority and labels shortened (`Ctrl+C copy/stop`) instead of being cut mid-word, and the mode column never overlaps them.
 - Claude and Cursor turns now stream (`stream-json`) like Codex: tool cards and replies appear as they happen instead of all at once at the end.
 - The wait shows what the model is doing (waiting, thinking, running a tool, writing) with a per-phase colour, animation and timer; reasoning is shown live as dim lines and kept after the turn, never sent as context.
 - A failure reported as an event, a result and stderr is shown once, and `Reading additional input from stdin...` is hidden.
@@ -18,6 +19,8 @@ also bumps the build stamp shown by `concordia --version`.
   renders the real UI on a test backend into `docs/img/*.svg` (synthetic data, no provider run);
   `scripts/metrics.ps1` measures binary size, `--version` cold start and `draw_ui` frame time into
   `docs/metrics.md`. README restructured around them.
+- Shift+Tab cycles the permission mode plan, ask, workspace, full (colour-coded in the footer; moves the palette selection up while the palette is open). New `plan` mode maps to Claude `--permission-mode plan`, Codex `-s read-only` (no separate plan mode) and Cursor `--mode plan`. `/mode [plan|ask|auto|full]` shows or sets it.
+- Slash-command output is a dim block with a left bar and the command as its title, with `+`, `!`, `i`, `x` level icons; agent replies and their tool cards sit under a `Provider · account · model` label in the provider colour. Provider-coloured header badge and dimmer palette descriptions.
 - Usage display: limits say used and left everywhere (footer `5h 59% left`, `/use` and `/usage all` rows
   `5h 41% used / 59% left`). `/usage` shows only the current account with a bar per window and reset
   time; `/usage all` lists every account. Claude limits come from `claude -p "/usage"` on a background
