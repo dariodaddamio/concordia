@@ -6,6 +6,9 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Changed
+- Switching account or provider now carries a deterministic map of the thread (at most 1600 chars: what was asked, files touched, commands run, errors, the last reply, and a pointer to `concordia thread read`) instead of a 6000-char transcript dump. Delegated workers get the same map. Native resume is unchanged.
+
 ### Fixed
 - Limits are fresher and plainer: the `[####]` bars are gone; Claude and Cursor readings are re-checked after every turn and every 2 minutes, and show their age; a Codex window that has reset since the last chat shows as reset. The README now says plainly what Concordia is and is not, and lists the behaviours worth knowing.
 - `/usage` is now one titled block that reads the cache and rewrites itself in place when the background check finishes (it used to leave a stale "asking..." line). `/usage refresh` forces a new check. A Workflows section in the README explains switching accounts and continuing a chat.
@@ -17,6 +20,7 @@ also bumps the build stamp shown by `concordia --version`.
 - After `/update`, the old process now stays as the parent until the new one exits. Before, it handed the console back to the shell early, so the shell and Concordia both read the keyboard and the prompt box lost or scrambled keystrokes.
 
 ### Added
+- Thread log (opt-in, `CONCORDIA_THREADS=1` or store setting `thread_log`): conversations are recorded to `<state>/threads/<id>.jsonl`; `/threads` lists recent ones and `/threads delete <id>` removes one. `concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]` prints them read-only so a model with a shell can fetch the part it needs.
 - Reproducible screenshots and speed metrics: `cargo test -p concordia --lib screenshots -- --ignored`
   renders the real UI on a test backend into `docs/img/*.svg` (synthetic data, no provider run);
   `scripts/metrics.ps1` measures binary size, `--version` cold start and `draw_ui` frame time into

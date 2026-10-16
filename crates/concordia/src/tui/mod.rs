@@ -284,6 +284,9 @@ pub struct App {
     prior_provider: ProviderKind,
     prior_home: Option<String>,
     need_context_pack: bool,
+    /// Opt-in thread log for this conversation (see threads.rs); None when recording is off.
+    thread: Option<crate::threads::ThreadLog>,
+    thread_meta_done: bool,
     usage_summary: String,
     usage_tone: UsageTone,
     /// Width-1 ASCII bar drawn before the footer usage text.
@@ -583,7 +586,48 @@ impl App {
         });
     }
 
+    fn thread_id(&self) -> Option<&str> {
+        self.thread.as_ref().map(|t| t.id())
+    }
+
+    /// Append to the thread log when recording is on. Errors are ignored: logging is best effort.
+    fn log_event(&mut self, ev: crate::threads::ThreadEvent) {
+        if let Some(t) = &self.thread {
+            let _ = t.append(&ev);
+        }
+    }
+
+    fn log_who(&self, ev: crate::threads::ThreadEvent) -> crate::threads::ThreadEvent {
+        ev.who(self.provider.as_str(), &self.account, &self.model)
+    }
+
+    fn log_user(&mut self, text: &str) {
+        if let Some(t) = &self.thread {
+            if !self.thread_meta_done {
+                self.thread_meta_done = true;
+                let _ = t.write_meta(&crate::threads::ThreadMeta {
+                    id: t.id().to_string(),
+                    started: crate::threads::now_secs(),
+                    title: crate::threads::title_from_prompt(text),
+                    cwd: self.cwd.to_string_lossy().into_owned(),
+                    account: Some(self.account.clone()),
+                });
+            }
+        }
+        self.log_event(crate::threads::ThreadEvent::with_text("user", text));
+    }
+
+    fn log_switch(&mut self, from: ProviderKind) {
+        let ev = crate::threads::ThreadEvent::with_text(
+            "switch",
+            &format!("{} -> {}", from.as_str(), self.account),
+        );
+        let ev = self.log_who(ev);
+        self.log_event(ev);
+    }
+
     fn push_user(&mut self, text: String) {
+        self.log_user(&text);
         self.messages.push(ChatLine {
             role: MsgRole::User,
             text,
@@ -610,6 +654,8 @@ impl App {
     }
 
     fn push_assistant(&mut self, text: String) {
+        let ev = self.log_who(crate::threads::ThreadEvent::with_text("assistant", &text));
+        self.log_event(ev);
         let meta = Some(self.reply_meta());
         self.messages.push(ChatLine {
             role: MsgRole::Assistant,
@@ -620,6 +666,19 @@ impl App {
     }
 
     fn push_card(&mut self, card: StreamCard) {
+        if card.status != CardStatus::Running {
+            let status = if card.status == CardStatus::Error {
+                "error"
+            } else {
+                "done"
+            };
+            let ev = self.log_who(crate::threads::ThreadEvent::card(
+                &card.title,
+                card.detail.as_deref(),
+                status,
+            ));
+            self.log_event(ev);
+        }
         let text = format_card_line(&card);
         if let Some(existing) = self.messages.iter_mut().rev().find(|m| {
             m.role == MsgRole::Card
@@ -774,6 +833,47 @@ impl App {
         self.refresh_usage();
     }
 
+    /// `/threads` lists recent recorded threads; `/threads delete <id>` removes one.
+    fn threads_command(&mut self, arg: &str) -> Vec<String> {
+        use crate::threads;
+        if let Some(id) = arg.strip_prefix("delete").map(str::trim) {
+            if id.is_empty() {
+                return vec!["usage: /threads delete <id>".into()];
+            }
+            return match threads::resolve_prefix(&self.state_root, id) {
+                Ok(full) if Some(full.as_str()) == self.thread_id() => {
+                    vec!["that is the current conversation; /new first".into()]
+                }
+                Ok(full) => match threads::delete(&self.state_root, &full) {
+                    Ok(()) => vec![format!("deleted thread {full}")],
+                    Err(e) => vec![format!("delete failed: {e:#}")],
+                },
+                Err(e) => vec![e.to_string()],
+            };
+        }
+        let metas = threads::list(&self.state_root);
+        if metas.is_empty() {
+            return vec![if threads::enabled(&self.state_root) {
+                "no recorded threads yet".into()
+            } else {
+                "thread log is off (set CONCORDIA_THREADS=1 to record conversations)".into()
+            }];
+        }
+        metas
+            .iter()
+            .take(15)
+            .map(|m| {
+                format!(
+                    "{}  {:>4}  {}  {}",
+                    m.id.chars().take(8).collect::<String>(),
+                    threads::age_label(m.started),
+                    m.account.as_deref().unwrap_or("-"),
+                    m.title
+                )
+            })
+            .collect()
+    }
+
     fn pack_messages(&self) -> Vec<PackMessage> {
         self.messages
             .iter()
@@ -786,7 +886,19 @@ impl App {
                     role: PackRole::Assistant,
                     text: m.text.clone(),
                 }),
-                MsgRole::System | MsgRole::Command | MsgRole::Card | MsgRole::Thinking => None,
+                MsgRole::Card => m.card.as_ref().map(|c| PackMessage {
+                    role: PackRole::Card,
+                    text: crate::threads::encode_card(
+                        &c.title,
+                        c.detail.as_deref(),
+                        if c.status == CardStatus::Error {
+                            "error"
+                        } else {
+                            "done"
+                        },
+                    ),
+                }),
+                MsgRole::System | MsgRole::Command | MsgRole::Thinking => None,
             })
             .collect()
     }
@@ -1321,10 +1433,12 @@ impl App {
                         to_home: new_home.as_deref(),
                         session_id: Some(&session_id),
                         messages: &msgs,
+                        thread_id: self.thread_id(),
                         include_pack_if_needed: true,
                     });
                     self.native_session_id = decision.session_id.clone();
                     self.need_context_pack = decision.pack.is_some();
+                    self.log_switch(prev_prov);
                     self.session_chip = Some(label.clone());
                     if decision.native_resume {
                         self.messages.clear();
@@ -1419,6 +1533,7 @@ impl App {
                         to_home: new_home.as_deref(),
                         session_id: prev_session.as_deref(),
                         messages: &msgs,
+                        thread_id: self.thread_id(),
                         include_pack_if_needed: true,
                     });
                     self.native_session_id = decision.session_id.clone();
@@ -1426,6 +1541,7 @@ impl App {
                         self.session_chip = None;
                     }
                     self.need_context_pack = decision.pack.is_some();
+                    self.log_switch(prev_prov);
                     if let Some(pack) = &decision.pack {
                         self.push_system(format!("{} · ~{} tok", pack.labeled, pack.est_tokens));
                     } else if !decision.native_resume {
@@ -1483,11 +1599,13 @@ impl App {
                         to_home: new_home.as_deref(),
                         session_id: prev_session.as_deref(),
                         messages: &msgs,
+                        thread_id: self.thread_id(),
                         include_pack_if_needed: true,
                     });
                     self.native_session_id = decision.session_id.clone();
                     self.session_chip = None;
                     self.need_context_pack = decision.pack.is_some();
+                    self.log_switch(prev_prov);
                     if let Some(pack) = &decision.pack {
                         self.push_system(format!("{} · ~{} tok", pack.labeled, pack.est_tokens));
                     }
@@ -1501,6 +1619,13 @@ impl App {
     }
 
     fn handle_slash(&mut self, line: &str) -> bool {
+        if line.trim() == "/threads" || line.trim_start().starts_with("/threads ") {
+            self.push_command(line);
+            for l in self.threads_command(line.trim_start()["/threads".len()..].trim()) {
+                self.push_system(l);
+            }
+            return true;
+        }
         let Some((cmd, split_vertical)) = parse_slash(line) else {
             return false;
         };
@@ -1532,6 +1657,8 @@ impl App {
             self.native_session_id = None;
             self.session_chip = None;
             self.need_context_pack = false;
+            self.thread = crate::threads::start(&self.state_root);
+            self.thread_meta_done = false;
         }
         if !lines.is_empty() {
             self.push_command(line);
@@ -1703,6 +1830,8 @@ impl App {
             prior_provider: ProviderKind::Codex,
             prior_home: None,
             need_context_pack: false,
+            thread: crate::threads::start(&state_root_for_usage),
+            thread_meta_done: false,
             usage_summary: "limits unknown".into(),
             usage_tone: UsageTone::Mute,
             usage_fetcher: UsageFetcher::new(state_root_for_usage),
@@ -1873,6 +2002,7 @@ pub async fn run_chat_tui() -> Result<()> {
                 pack_msgs
             };
             let need_pack_hint = app.need_context_pack;
+            let thread_id = app.thread_id().map(str::to_string);
             let done_tx = done_tx.clone();
             let handle_tx = handle_tx.clone();
             let progress_tx = progress_tx.clone();
@@ -1899,6 +2029,7 @@ pub async fn run_chat_tui() -> Result<()> {
                     to_home: home_str.as_deref(),
                     session_id: session.as_deref(),
                     messages: &pack_msgs,
+                    thread_id: thread_id.as_deref(),
                     include_pack_if_needed: need_pack_hint,
                 });
                 let session_out = if decision.native_resume {

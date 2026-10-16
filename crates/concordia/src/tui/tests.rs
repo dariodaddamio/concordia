@@ -1771,3 +1771,41 @@ fn usage_is_one_block_that_updates_in_place_when_the_check_lands() {
     );
     assert_eq!(after.matches("limits").count(), 1, "one block:\n{after}");
 }
+
+#[test]
+fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread() {
+    let mut h = Harness::new(100, 24);
+    assert!(h.app.thread.is_none(), "off by default");
+    let root = h.app.state_root.clone();
+    h.app.thread = Some(crate::threads::ThreadLog::open(&root, "tid-one"));
+    h.app.push_user("fix the redirect".into());
+    h.app.push_card(StreamCard {
+        id: "1".into(),
+        title: "Edit".into(),
+        detail: Some("src/a.rs".into()),
+        status: CardStatus::Done,
+    });
+    h.app.push_assistant("done".into());
+    h.app.push_user("second".into());
+    let log = crate::threads::ThreadLog::open(&root, "tid-one");
+    let kinds: Vec<String> = log.read_all().unwrap().into_iter().map(|e| e.k).collect();
+    assert_eq!(kinds, ["user", "card", "assistant", "user"]);
+    assert_eq!(log.read_meta().unwrap().title, "fix the redirect");
+    let out = h.app.threads_command("");
+    assert!(out[0].contains("fix the redirect"), "{out:?}");
+    assert!(h
+        .app
+        .threads_command("delete tid")
+        .join(" ")
+        .contains("current"));
+    // The map built from memory sees the card.
+    let pack = crate::context::build_context_pack(
+        &h.app.pack_messages(),
+        ProviderKind::Codex,
+        ProviderKind::Claude,
+        1600,
+        None,
+    )
+    .unwrap();
+    assert!(pack.text.contains("files: src/a.rs"), "{}", pack.text);
+}

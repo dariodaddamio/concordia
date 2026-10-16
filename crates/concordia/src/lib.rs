@@ -13,6 +13,7 @@ pub mod provider;
 pub mod release;
 pub mod sessions;
 pub mod store;
+pub mod threads;
 pub mod tui;
 pub mod update;
 pub mod usage;

@@ -39,6 +39,8 @@ fn help_lists_the_surface_users_need() {
         "/copy",
         "/doctor",
         "concordia doctor",
+        "concordia thread list",
+        "/threads",
         "Connect:",
         "Mouse:",
     ] {

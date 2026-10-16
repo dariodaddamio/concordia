@@ -124,7 +124,7 @@ fn worker_context_is_bounded_and_never_carries_a_session() {
     let (prefix, note) = build_worker_context(ProviderKind::Claude, Some("C:\\a"), &w, &msgs);
     let prefix = prefix.unwrap();
     assert!(prefix.contains("NOT transferred"));
-    assert!(prefix.contains("message 39"), "newest message is kept");
+    assert!(prefix.contains("message 38"), "newest prompt is in the map");
     assert!(
         !prefix.contains("message 30 "),
         "only the last few are offered"

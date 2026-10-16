@@ -180,6 +180,7 @@ pub fn build_worker_context(
             to_home: worker_home.as_deref(),
             session_id: None,
             messages: &messages[start..],
+            thread_id: None,
             include_pack_if_needed: true,
         },
         PACK_CHARS,

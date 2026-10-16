@@ -29,12 +29,14 @@ Planner: `plan_continuity` in `crates/concordia/src/context.rs`.
 
 | Rule | Value |
 | --- | --- |
-| Budget | **6000** chars (a character budget, not a tokenizer) |
-| Selection | User + Assistant only; walk from end; stop before exceeding budget |
-| Skip | System / meta lines |
-| Token estimate | `ceil(chars / 4)` — not a real tokenizer |
+| Content | The thread **map** (`threads::build_map`), never a transcript: header, asked, now, files, ran, errors, last reply tail, `more:` pointer. Deterministic, no model |
+| Budget | **1600** chars (`threads::MAP_CHARS`); delegate workers use `min(3000, 1600)`. A character budget, not a tokenizer; never exceeded |
+| Drop order | `ran`, `files`, `errors`, then shorten `last reply`, then `asked`/`now` |
+| Source | The thread log when recording is on (`CONCORDIA_THREADS=1` or store setting `thread_log`); otherwise the in-memory transcript (user, assistant and tool cards), and the `more:` line says the full text is not stored |
+| Pointer | `more: concordia thread read <id> [--tail N \| --grep TEXT \| --range A-B]` (read-only) |
+| Token estimate | `ceil(chars / 4)` - not a real tokenizer |
 | Omit when | `native_resume == true` |
-| Label | States tools/approvals **not** transferred; includes char + est tok counts |
+| Label | The header line states tools/approvals **not** transferred; the TUI shows it with the est tok count |
 
 ## Verify
 
