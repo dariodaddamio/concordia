@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: OWNER.Concordia
+PackageVersion: REPLACE_VERSION
+PackageLocale: en-US
+Publisher: OWNER
+PackageName: Concordia
+PackageUrl: https://github.com/OWNER/concordia
+License: MIT
+LicenseUrl: https://github.com/OWNER/concordia/blob/main/LICENSE
+ShortDescription: Local provider orchestration TUI for the Codex, Claude Code and Cursor CLIs
+Tags:
+  - terminal
+  - tui
+  - ai-coding
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

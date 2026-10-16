@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1018" height="658" viewBox="0 0 1018 658" role="img" aria-label="concordia">
+<title>concordia</title>
+<defs><clipPath id="win"><rect width="1018" height="658" rx="12"/></clipPath></defs>
+<g clip-path="url(#win)">
+<rect width="1018" height="658" fill="#14161b"/>
+<rect width="1018" height="36" fill="#23262e"/>
+<circle cx="20" cy="18" r="6" fill="#ff5f57"/>
+<circle cx="40" cy="18" r="6" fill="#febc2e"/>
+<circle cx="60" cy="18" r="6" fill="#28c840"/>
+<text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia</text>
+<rect x="14" y="36" width="990" height="19" fill="#303030"/>
+<rect x="302" y="207" width="54" height="19" fill="#303030"/>
+<rect x="59" y="264" width="234" height="19" fill="#303030"/>
+<rect x="59" y="283" width="54" height="19" fill="#303030"/>
+<rect x="95" y="302" width="36" height="19" fill="#303030"/>
+<rect x="59" y="359" width="333" height="19" fill="#303030"/>
+<rect x="59" y="378" width="153" height="19" fill="#303030"/>
+<rect x="59" y="397" width="9" height="19" fill="#303030"/>
+<rect x="104" y="435" width="63" height="19" fill="#303030"/>
+<rect x="104" y="454" width="99" height="19" fill="#303030"/>
+<g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
+<text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">◆</text>
+<text x="41" y="50" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">concordia</text>
+<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-15w</text>
+<text x="257" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3</text>
+<text x="338" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
+<text x="698" y="50" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#666666">[###--] 5h 59% left · 7d 41% left</text>
+<text x="23" y="69" textLength="963" lengthAdjust="spacingAndGlyphs" fill="#666666">· Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts.</text>
+<text x="23" y="107" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
+<text x="41" y="107" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Add a /doctor check for duplicate accounts and show me the diff</text>
+<text x="41" y="126" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n duplicate src</text>
+<text x="41" y="145" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ edit  src/doctor.rs</text>
+<text x="41" y="164" textLength="306" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">│ ◉ shell  cargo test -p concordia</text>
+<text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f">●</text>
+<text x="41" y="183" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">What I changed</text>
+<text x="41" y="221" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">I added a</text>
+<text x="131" y="221" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">duplicate check</text>
+<text x="275" y="221" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to</text>
+<text x="302" y="221" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
+<text x="356" y="221" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">. It groups accounts by provider and email, so two slots signed in to</text>
+<text x="41" y="240" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the same login are reported once.</text>
+<text x="41" y="278" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
+<text x="59" y="278" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">accounts::duplicate_groups</text>
+<text x="302" y="278" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">finds the groups</text>
+<text x="41" y="297" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
+<text x="59" y="297" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
+<text x="122" y="297" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">prints a warning per group, naming both accounts and the fix</text>
+<text x="41" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
+<text x="59" y="316" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the</text>
+<text x="95" y="316" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use</text>
+<text x="140" y="316" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">picker marks each side with</text>
+<text x="392" y="316" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-style="italic">same login as ...</text>
+<text x="59" y="354" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">rust</text>
+<text x="59" y="373" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">for group in duplicate_groups(root) {</text>
+<text x="95" y="392" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">warn(&amp;group);</text>
+<text x="59" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">}</text>
+<text x="41" y="449" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">1.</text>
+<text x="68" y="449" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Run</text>
+<text x="104" y="449" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/doctor</text>
+<text x="176" y="449" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to see it</text>
+<text x="41" y="468" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">2.</text>
+<text x="68" y="468" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Use</text>
+<text x="104" y="468" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use remove</text>
+<text x="212" y="468" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to drop one</text>
+<text x="23" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
+<text x="41" y="525" textLength="162" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">looks good, thanks</text>
+<text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">╭</text>
+<text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
+<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
+<text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
+<text x="41" y="601" textLength="342" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">Message Concordia...  (/ for commands)</text>
+<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
+<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#585858">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="23" y="639" textLength="576" lengthAdjust="spacingAndGlyphs" fill="#666666">Enter send · / commands · drag to select · Ctrl+C copy or cancel</text>
+<text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#e5e510" font-weight="700">auth workspace</text>
+</g>
+</g>
+<rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>
+</svg>

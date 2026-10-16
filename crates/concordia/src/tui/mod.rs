@@ -64,8 +64,7 @@ const MAX_INPUT_ROWS: usize = 6;
 const PROMPT_W: usize = 2;
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const FLASH_FOR: Duration = Duration::from_secs(3);
-const FOOTER_HINT: &str =
-    "Enter send \u{b7} / commands \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
+const FOOTER_HINT: &str = "Enter send \u{b7} / commands \u{b7} Shift+Tab mode \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
 /// How often (in 200 ms ticks) to look for a finished login, and when to stop looking.
 /// A second idle Ctrl+C within this window exits.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
@@ -121,6 +120,8 @@ enum MsgRole {
     User,
     Assistant,
     System,
+    /// The echo of a slash command, titling the output block that follows it.
+    Command,
     Card,
     /// The model's reasoning for a finished turn: dimmed, never part of the context pack.
     Thinking,
@@ -185,6 +186,8 @@ struct ChatLine {
     role: MsgRole,
     text: String,
     card: Option<StreamCard>,
+    /// Who produced an agent reply (`Provider · account · model`), so each turn is labelled.
+    meta: Option<(ProviderKind, String)>,
 }
 
 type ConnectFn = Box<dyn Fn(&Path, ProviderKind) -> Result<AddResult>>;
@@ -542,6 +545,7 @@ impl App {
             role: MsgRole::System,
             text,
             card: None,
+            meta: None,
         });
     }
 
@@ -550,14 +554,34 @@ impl App {
             role: MsgRole::User,
             text,
             card: None,
+            meta: None,
+        });
+    }
+
+    fn reply_meta(&self) -> (ProviderKind, String) {
+        let mut label = format!("{} \u{b7} {}", provider_name(self.provider), self.account);
+        if !self.model.is_empty() && self.model != "?" {
+            label.push_str(&format!(" \u{b7} {}", self.model));
+        }
+        (self.provider, label)
+    }
+
+    fn push_command(&mut self, line: &str) {
+        self.messages.push(ChatLine {
+            role: MsgRole::Command,
+            text: line.trim().to_string(),
+            card: None,
+            meta: None,
         });
     }
 
     fn push_assistant(&mut self, text: String) {
+        let meta = Some(self.reply_meta());
         self.messages.push(ChatLine {
             role: MsgRole::Assistant,
             text,
             card: None,
+            meta,
         });
     }
 
@@ -571,10 +595,12 @@ impl App {
             existing.text = text;
             return;
         }
+        let meta = Some(self.reply_meta());
         self.messages.push(ChatLine {
             role: MsgRole::Card,
             text,
             card: Some(card),
+            meta,
         });
     }
 
@@ -666,10 +692,12 @@ impl App {
             };
         let thought = condense_thinking(&self.live_thinking);
         if !thought.is_empty() {
+            let meta = Some(self.reply_meta());
             self.messages.push(ChatLine {
                 role: MsgRole::Thinking,
                 text: thought,
                 card: None,
+                meta,
             });
         }
         if outcome.cancelled {
@@ -722,7 +750,7 @@ impl App {
                     role: PackRole::Assistant,
                     text: m.text.clone(),
                 }),
-                MsgRole::System | MsgRole::Card | MsgRole::Thinking => None,
+                MsgRole::System | MsgRole::Command | MsgRole::Card | MsgRole::Thinking => None,
             })
             .collect()
     }
@@ -837,6 +865,50 @@ impl App {
             sessions_to_picker_rows(&sessions, Some(&self.account), Some(&self.cwd))
         };
         self.show_picker(PickerKind::Resume, title, rows, true);
+    }
+
+    /// Persist a new permission mode.
+    fn set_mode(&mut self, mode: TrustMode) -> bool {
+        if let Err(e) = set_trust_mode(&self.state_root, mode) {
+            self.push_system(format!("mode save failed - {e}"));
+            return false;
+        }
+        self.trust = mode;
+        true
+    }
+
+    /// Shift+Tab: plan -> ask -> workspace (auto-edit) -> full -> plan.
+    fn cycle_mode(&mut self) {
+        let next = next_mode(self.trust);
+        if self.set_mode(next) {
+            let note = if self.busy { " (next turn)" } else { "" };
+            self.flash(format!("mode \u{2192} {}{note}", mode_label(next)));
+        }
+    }
+
+    fn run_mode_command(&mut self, arg: Option<&str>) {
+        match arg {
+            None => {
+                self.push_system(format!(
+                    "mode: {} - {}",
+                    mode_label(self.trust),
+                    mode_blurb(self.trust)
+                ));
+                self.push_system("set with /mode plan | ask | auto | full  (Shift+Tab cycles)");
+            }
+            Some(a) => match parse_mode(a) {
+                Some(mode) => {
+                    if self.set_mode(mode) {
+                        self.push_system(format!(
+                            "mode \u{2192} {} - {}",
+                            mode_label(mode),
+                            mode_blurb(mode)
+                        ));
+                    }
+                }
+                None => self.push_system(format!("unknown mode {a} - use plan, ask, auto or full")),
+            },
+        }
     }
 
     fn open_trust_picker(&mut self) {
@@ -1235,6 +1307,7 @@ impl App {
             PickerKind::Trust => {
                 if let Some(mode) = id.strip_prefix("trust:") {
                     let trust = match mode {
+                        "plan" => TrustMode::Plan,
                         "ask" => TrustMode::Ask,
                         "full" => TrustMode::Full,
                         _ => TrustMode::Workspace,
@@ -1245,6 +1318,7 @@ impl App {
                     }
                     self.trust = trust;
                     self.push_system(match trust {
+                        TrustMode::Plan => "trust → plan (read-only: analyse and propose)",
                         TrustMode::Full => "trust → full (skip all permissions — careful)",
                         TrustMode::Workspace => "trust → workspace (cwd write, no trust dialogs)",
                         TrustMode::Ask => "trust → ask (may hang headless)",
@@ -1397,6 +1471,11 @@ impl App {
             self.open_remove_picker(named.clone());
             return true;
         }
+        if let SlashCommand::Mode(arg) = &cmd {
+            self.push_command(line);
+            self.run_mode_command(arg.as_deref());
+            return true;
+        }
         if self.try_delegate_slash(&cmd) {
             return true;
         }
@@ -1416,6 +1495,9 @@ impl App {
             self.native_session_id = None;
             self.session_chip = None;
             self.need_context_pack = false;
+        }
+        if !lines.is_empty() {
+            self.push_command(line);
         }
         for l in lines {
             self.push_system(l);
@@ -1552,6 +1634,7 @@ impl App {
                 text: "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts."
                     .into(),
                 card: None,
+            meta: None,
             }],
             editor: Editor::default(),
             palette: Palette::default(),
@@ -1956,7 +2039,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         app.palette.clamp(entries.len());
         let chosen = entries[app.palette.selected];
         match key.code {
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::BackTab => {
                 app.palette.up(entries.len());
                 return false;
             }
@@ -2043,6 +2126,11 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         }
         KeyCode::Tab => {
             app.tab_complete_slash();
+            false
+        }
+        // Shift+Tab (palette closed): cycle the permission mode.
+        KeyCode::BackTab => {
+            app.cycle_mode();
             false
         }
         KeyCode::Backspace if ctrl => {
@@ -2358,7 +2446,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(e.help, Style::default().fg(Color::Gray)),
+                Span::styled(e.help, Style::default().fg(Color::Indexed(245))),
             ]))
         })
         .collect();
@@ -2424,8 +2512,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!(" {}", short_stamp()), bar.fg(Color::DarkGray)),
         Span::styled("   ", bar),
         Span::styled(
-            app.account_label(),
-            bar.fg(provider_color(app.provider))
+            format!(" {} ", app.account_label()),
+            Style::default()
+                .bg(provider_color(app.provider))
+                .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  {model}"), bar.fg(Color::Gray)),
@@ -2464,7 +2554,10 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         markdown: false,
     };
     let live_thought = tail_lines(&condense_thinking(&app.live_thinking), 3);
-    let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 2 + 3);
+    let cur_meta = app.reply_meta();
+    let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 3 + 4);
+    // Inside a slash-command output block (after its echo) plain lines get no icon.
+    let mut in_block = false;
     let count = app.messages.len();
     for (i, m) in app.messages.iter().enumerate() {
         let (gutter, gutter_style, style) = match m.role {
@@ -2480,11 +2573,38 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::Indexed(179)),
                 Style::default(),
             ),
-            MsgRole::System => (
-                "\u{b7} ",
-                Style::default().fg(Color::DarkGray),
-                Style::default().fg(Color::DarkGray),
+            // Command echo: the title of a dim, barred output block.
+            MsgRole::Command => (
+                "| ",
+                Style::default().fg(Color::Indexed(244)),
+                Style::default()
+                    .fg(Color::Indexed(252))
+                    .add_modifier(Modifier::BOLD),
             ),
+            // Command output and notices: neutral bar, small coloured level icon, dim text.
+            MsgRole::System => {
+                let lvl = level_of(&m.text);
+                let g = match (lvl, in_block) {
+                    (Level::Error, _) => "| x ",
+                    (Level::Warn, _) => "| ! ",
+                    (Level::Ok, _) => "| + ",
+                    (Level::Info, false) => "| i ",
+                    (Level::Info, true) => "|   ",
+                };
+                let col = match lvl {
+                    Level::Error => Color::Red,
+                    Level::Warn => Color::Yellow,
+                    Level::Ok => Color::Green,
+                    Level::Info if in_block => Color::Indexed(240),
+                    Level::Info => Color::Indexed(75),
+                };
+                let text_col = if lvl == Level::Error {
+                    Color::Red
+                } else {
+                    Color::Indexed(245)
+                };
+                (g, Style::default().fg(col), Style::default().fg(text_col))
+            }
             MsgRole::Thinking => (
                 "~ ",
                 Style::default().fg(Color::Magenta),
@@ -2503,8 +2623,20 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             ),
         };
         // Breathing room between turns, but tool cards stay grouped with what triggered them.
-        if m.role == MsgRole::User && i > 0 {
+        if matches!(m.role, MsgRole::User | MsgRole::Command) && i > 0 {
             blocks.push(spacer());
+        }
+        match m.role {
+            MsgRole::Command => in_block = true,
+            MsgRole::System => {}
+            _ => in_block = false,
+        }
+        // Label the start of each agent turn (its cards, thoughts and reply share one label).
+        if let Some((p, label)) = &m.meta {
+            let same = i > 0 && app.messages[i - 1].meta.as_ref().map(|x| &x.1) == Some(label);
+            if !same {
+                blocks.push(reply_header(*p, label));
+            }
         }
         blocks.push(TBlock {
             gutter,
@@ -2520,6 +2652,17 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         if m.role == MsgRole::Assistant && i + 1 < count && !next_is_card {
             blocks.push(spacer());
         }
+    }
+    let last_labelled = app
+        .messages
+        .last()
+        .and_then(|x| x.meta.as_ref())
+        .map(|x| &x.1);
+    if app.busy
+        && (!live_thought.is_empty() || !app.live_text.trim().is_empty())
+        && last_labelled != Some(&cur_meta.1)
+    {
+        blocks.push(reply_header(cur_meta.0, &cur_meta.1));
     }
     // Live reasoning while the turn runs: the last few lines, dimmed.
     if app.busy && !live_thought.is_empty() {
@@ -2580,13 +2723,22 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 Some(UsageTone::Mute) => Style::default().fg(Color::DarkGray),
                 None => Style::default(),
             };
-            ListItem::new(Line::from(vec![
-                Span::styled(r.label.clone(), label_style),
-                Span::styled(
-                    format!("  {}", r.detail),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]))
+            let (head, current) = match r.label.split_once(" \u{b7} current") {
+                Some((h, _)) => (h.to_string(), true),
+                None => (r.label.clone(), false),
+            };
+            let mut spans = vec![Span::styled(head, label_style)];
+            if current {
+                spans.push(Span::styled(
+                    " \u{b7} current",
+                    Style::default().fg(Color::Green),
+                ));
+            }
+            spans.extend([Span::styled(
+                format!("  {}", r.detail),
+                Style::default().fg(Color::DarkGray),
+            )]);
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let list = List::new(items)
@@ -2698,10 +2850,32 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(10), Constraint::Length(18)])
-        .split(area);
+    let w = area.width as usize;
+    let mode = app.trust;
+    let label = if mode == TrustMode::Full {
+        "full \u{26a0}"
+    } else {
+        mode_label(mode)
+    };
+    let color = mode_color(mode);
+    // The mode column is kept only while it leaves room for the first hint.
+    const MIN_LEFT: usize = 12;
+    let right = [format!("auth {label} "), format!("{label} ")]
+        .into_iter()
+        .find(|r| r.chars().count() + MIN_LEFT <= w)
+        .unwrap_or_default();
+    let rw = right.chars().count() as u16;
+    let cols = [
+        Rect {
+            width: area.width - rw,
+            ..area
+        },
+        Rect {
+            x: area.x + area.width - rw,
+            width: rw,
+            ..area
+        },
+    ];
     let flash = app
         .flash
         .as_ref()
@@ -2744,26 +2918,189 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::DarkGray),
         )
     };
-    f.render_widget(
-        Paragraph::new(format!(" {left}")).style(left_style),
-        cols[0],
-    );
-    let (label, color) = match app.trust {
-        TrustMode::Ask => ("ask", Color::Green),
-        TrustMode::Workspace => ("workspace", Color::Yellow),
-        // Approvals and sandboxing are bypassed: make that impossible to miss.
-        TrustMode::Full => ("full \u{26a0}", Color::Red),
+    let avail = (cols[0].width as usize).saturating_sub(2);
+    let shown = if left == FOOTER_HINT {
+        fit_hints(avail)
+    } else {
+        fit_segments(left, avail)
     };
     f.render_widget(
-        Paragraph::new(format!("auth {label} "))
-            .alignment(Alignment::Right)
-            .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
-        cols[1],
+        Paragraph::new(format!(" {shown}")).style(left_style),
+        cols[0],
     );
+    // Approvals and sandboxing are bypassed in full mode: its red glyph must stay visible.
+    if rw > 0 {
+        f.render_widget(
+            Paragraph::new(right)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            cols[1],
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests;
+
+fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
+    TBlock {
+        gutter: "",
+        gutter_style: Style::default(),
+        style: Style::default()
+            .fg(provider_color(p))
+            .add_modifier(Modifier::BOLD),
+        text: label,
+        markdown: false,
+    }
+}
+
+/// Next permission mode for Shift+Tab: plan -> ask -> workspace (auto-edit) -> full -> plan.
+fn next_mode(m: TrustMode) -> TrustMode {
+    match m {
+        TrustMode::Plan => TrustMode::Ask,
+        TrustMode::Ask => TrustMode::Workspace,
+        TrustMode::Workspace => TrustMode::Full,
+        TrustMode::Full => TrustMode::Plan,
+    }
+}
+
+fn mode_label(m: TrustMode) -> &'static str {
+    match m {
+        TrustMode::Plan => "plan",
+        TrustMode::Ask => "ask",
+        TrustMode::Workspace => "workspace",
+        TrustMode::Full => "full",
+    }
+}
+
+fn mode_blurb(m: TrustMode) -> &'static str {
+    match m {
+        TrustMode::Plan => "read-only, analyse and propose (advisory where a CLI has no plan flag)",
+        TrustMode::Ask => "approvals on, may hang headless",
+        TrustMode::Workspace => "auto-edit inside the workspace",
+        TrustMode::Full => "skips all permissions - careful",
+    }
+}
+
+fn mode_color(m: TrustMode) -> Color {
+    match m {
+        TrustMode::Plan => Color::Cyan,
+        TrustMode::Ask => Color::Yellow,
+        TrustMode::Workspace => Color::Green,
+        TrustMode::Full => Color::Red,
+    }
+}
+
+fn parse_mode(s: &str) -> Option<TrustMode> {
+    match s.trim().to_lowercase().as_str() {
+        "plan" => Some(TrustMode::Plan),
+        "ask" => Some(TrustMode::Ask),
+        "auto" | "auto-edit" | "autoedit" | "edit" | "workspace" => Some(TrustMode::Workspace),
+        "full" => Some(TrustMode::Full),
+        _ => None,
+    }
+}
+
+fn provider_name(p: ProviderKind) -> &'static str {
+    match p {
+        ProviderKind::Codex => "Codex",
+        ProviderKind::Claude => "Claude",
+        ProviderKind::Cursor => "Cursor",
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Level {
+    Info,
+    Ok,
+    Warn,
+    Error,
+}
+
+/// Best-effort severity of a system line, from how Concordia words its own messages.
+fn level_of(text: &str) -> Level {
+    let t = text.trim().to_lowercase();
+    if t.contains("failed")
+        || t.contains("exited with code")
+        || t.contains("could not")
+        || t.contains("unknown ")
+        || t.contains("error")
+        || t.contains("refus")
+    {
+        Level::Error
+    } else if t.starts_with("cancel")
+        || t.starts_with("no ")
+        || t.starts_with("(no")
+        || t.contains("deferred")
+        || t.contains("already")
+        || t.contains("careful")
+    {
+        Level::Warn
+    } else if t.starts_with("now using")
+        || t.starts_with("using ")
+        || t.starts_with("model \u{2192}")
+        || t.starts_with("mode \u{2192}")
+        || t.starts_with("trust \u{2192}")
+        || t.starts_with("copied")
+        || t.contains("up to date")
+    {
+        Level::Ok
+    } else {
+        Level::Info
+    }
+}
+
+/// Fit `text` (segments joined by " \u{b7} ") into `width` columns, dropping whole trailing
+/// segments rather than cutting one mid-word.
+fn fit_segments(text: &str, width: usize) -> String {
+    let segs: Vec<&str> = text.split(" \u{b7} ").collect();
+    for keep in (1..=segs.len()).rev() {
+        let s = segs[..keep].join(" \u{b7} ");
+        if s.chars().count() <= width {
+            return s;
+        }
+    }
+    // One segment alone is too long: cut at a word boundary and mark it.
+    if width < 2 {
+        return String::new();
+    }
+    let mut cut: String = segs[0].chars().take(width - 1).collect();
+    if let Some(sp) = cut.rfind(' ') {
+        cut.truncate(sp);
+    }
+    format!("{cut}\u{2026}")
+}
+
+/// Footer hints as (full label, short label), listed in display order.
+const HINTS: [(&str, &str); 5] = [
+    ("Enter send", "Enter send"),
+    ("/ commands", "/ cmds"),
+    ("Shift+Tab mode", "S-Tab mode"),
+    ("drag to select", "drag select"),
+    ("Ctrl+C copy or cancel", "Ctrl+C copy/stop"),
+];
+/// Priority per hint (0 is kept longest); indexes follow `HINTS`.
+const HINT_RANK: [usize; 5] = [0, 2, 3, 4, 1];
+
+/// The default hint line for `width` columns: whole hints only, full labels first, then short
+/// ones; lowest-priority hints are dropped first.
+fn fit_hints(width: usize) -> String {
+    for keep in (1..=HINTS.len()).rev() {
+        for short in [false, true] {
+            let s = HINTS
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| HINT_RANK[*i] < keep)
+                .map(|(_, h)| if short { h.1 } else { h.0 })
+                .collect::<Vec<_>>()
+                .join(" \u{b7} ");
+            if s.chars().count() <= width {
+                return s;
+            }
+        }
+    }
+    String::new()
+}
 
 /// Reasoning text as a few readable lines: blank lines and runs of spaces collapsed, long ones cut.
 fn condense_thinking(raw: &str) -> String {
@@ -2793,3 +3130,6 @@ fn is_cli_noise(line: &str) -> bool {
     l.starts_with("reading additional input from stdin")
         || l.starts_with("reading prompt from stdin")
 }
+
+#[cfg(test)]
+mod screenshots;

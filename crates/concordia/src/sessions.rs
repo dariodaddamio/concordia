@@ -589,6 +589,11 @@ pub fn trust_picker_rows(current: crate::store::TrustMode) -> Vec<PickerRow> {
     let cur = |m: TrustMode| if current == m { " · current" } else { "" };
     vec![
         PickerRow {
+            id: "trust:plan".into(),
+            label: format!("plan{}", cur(TrustMode::Plan)),
+            detail: "read-only: analyse and propose, no edits".into(),
+        },
+        PickerRow {
             id: "trust:ask".into(),
             label: format!("ask{}", cur(TrustMode::Ask)),
             detail: "fail closed — may hang on trust dialogs".into(),

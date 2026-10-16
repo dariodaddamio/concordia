@@ -10,6 +10,13 @@ publish = false
 name = "concordia"
 path = "src/main.rs"
 
+# `cargo binstall concordia` downloads the release zip (see .github/workflows/release.yml).
+# REPLACE-OWNER must be the GitHub owner before the first release.
+[package.metadata.binstall]
+pkg-url = "https://github.com/REPLACE-OWNER/concordia/releases/download/v{ version }/concordia-{ target }.zip"
+bin-dir = "concordia.exe"
+pkg-fmt = "zip"
+
 # Test support only: stands in for codex/claude/agent in integration tests. Never installed or
 # released (the install script and release workflow copy concordia.exe alone).
 [[bin]]
@@ -29,6 +36,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 uuid = { version = "1", features = ["v4"] }
 which = "7"
 unicode-width = "0.2"
+portable-pty = "0.9"
 
 [dev-dependencies]
 sha2 = "0.10"

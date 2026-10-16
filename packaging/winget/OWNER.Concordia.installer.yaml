@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# Portable zip with one nested exe. The zip holds concordia.exe at its root (see release.yml).
+# The portable alias makes `concordia` resolve on PATH once winget has linked it.
+PackageIdentifier: OWNER.Concordia
+PackageVersion: REPLACE_VERSION
+InstallerType: zip
+Scope: user
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: concordia.exe
+    PortableCommandAlias: concordia
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/OWNER/concordia/releases/download/vREPLACE_VERSION/concordia-x86_64-pc-windows-msvc.zip
+    InstallerSha256: REPLACE_SHA256
+ManifestType: installer
+ManifestVersion: 1.6.0

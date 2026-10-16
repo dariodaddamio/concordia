@@ -45,6 +45,10 @@ pub fn plan_claude_turn(req: &ClaudeTurnRequest<'_>) -> Result<ClaudePlan> {
         argv.push(model.to_string());
     }
     match req.trust {
+        TrustMode::Plan => {
+            argv.push("--permission-mode".into());
+            argv.push("plan".into());
+        }
         TrustMode::Ask => {
             argv.push("--permission-mode".into());
             argv.push("manual".into());

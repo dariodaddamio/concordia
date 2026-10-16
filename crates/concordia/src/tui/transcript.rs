@@ -383,6 +383,9 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
             };
             let lead = if first_row {
                 b.gutter.to_string()
+            } else if b.gutter.starts_with('|') {
+                // Command/system blocks keep their left bar on wrapped rows.
+                format!("|{}", " ".repeat(gw.saturating_sub(1)))
             } else {
                 " ".repeat(gw)
             };
