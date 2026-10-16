@@ -24,6 +24,8 @@ impl ProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrustMode {
+    /// Read-only planning: the provider analyses and proposes, it does not edit.
+    Plan,
     Ask,
     Workspace,
     Full,
@@ -32,6 +34,7 @@ pub enum TrustMode {
 impl TrustMode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Plan => "plan",
             Self::Ask => "ask",
             Self::Workspace => "workspace",
             Self::Full => "full",
@@ -195,7 +198,7 @@ pub fn store_path(root: &Path) -> PathBuf {
 
 fn sanitize_settings(settings: OrchestratorSettings) -> OrchestratorSettings {
     match settings.trust {
-        TrustMode::Ask | TrustMode::Workspace | TrustMode::Full => {}
+        TrustMode::Plan | TrustMode::Ask | TrustMode::Workspace | TrustMode::Full => {}
     }
     match settings.child_trust {
         ChildTrust::Ask | ChildTrust::Workspace | ChildTrust::Full | ChildTrust::Inherit => {}

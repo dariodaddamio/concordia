@@ -51,7 +51,8 @@ pub fn plan_turn_argv(req: &TurnRequest<'_>) -> TurnPlan {
         argv.push(model.to_string());
     }
     match req.trust {
-        TrustMode::Ask => {
+        // Codex has no separate planning mode; a read-only sandbox is the closest guarantee.
+        TrustMode::Plan | TrustMode::Ask => {
             argv.push("--skip-git-repo-check".into());
             argv.push("-s".into());
             argv.push("read-only".into());

@@ -46,6 +46,10 @@ pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
             argv.push("--sandbox".into());
             argv.push("disabled".into());
         }
+        TrustMode::Plan => {
+            argv.push("--mode".into());
+            argv.push("plan".into());
+        }
         TrustMode::Ask => {}
     }
     if let Some(sid) = req
