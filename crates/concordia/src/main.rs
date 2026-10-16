@@ -16,6 +16,7 @@ fn print_help() {
            concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
          \n\
          Slash: /use [add] /model /usage /resume /trust /config /new /split /update /version /copy /doctor /exit\n\
+         Delegate: /workers [add|remove] /delegate <account|auto> <task> /delegate stop|use|help (docs/delegation.md)\n\
          Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
          Connect: /use add [codex|claude|cursor] makes an isolated home and opens its login.\n\
          Mouse: click places the caret, drag selects, double/triple-click picks word/line,\n\

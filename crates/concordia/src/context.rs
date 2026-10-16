@@ -85,6 +85,11 @@ pub fn should_attempt_native_resume(
 
 /// Single planner used by TUI + tests — omit pack when native resume applies.
 pub fn plan_continuity(req: &ContinuityRequest<'_>) -> ContinuityDecision {
+    plan_continuity_capped(req, MAX_CONTEXT_CHARS)
+}
+
+/// Same planner with a caller-chosen (smaller) pack budget, e.g. for delegated workers.
+pub fn plan_continuity_capped(req: &ContinuityRequest<'_>, max_chars: usize) -> ContinuityDecision {
     let native = should_attempt_native_resume(
         req.from_provider,
         req.to_provider,
@@ -113,7 +118,7 @@ pub fn plan_continuity(req: &ContinuityRequest<'_>) -> ContinuityDecision {
             req.messages,
             req.from_provider,
             req.to_provider,
-            MAX_CONTEXT_CHARS,
+            max_chars.min(MAX_CONTEXT_CHARS),
         )
     } else {
         None

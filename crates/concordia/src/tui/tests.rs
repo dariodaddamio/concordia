@@ -881,7 +881,7 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         assert!(s.contains(needle), "palette missing {needle:?}:\n{s}");
     }
     assert!(
-        s.contains("commands · 17"),
+        s.contains(&format!("commands · {}", crate::commands::SLASH_COMMANDS.len())),
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);

@@ -86,6 +86,12 @@ pub struct OrchestratorSettings {
     pub trust: TrustMode,
     #[serde(default = "default_child_trust")]
     pub child_trust: ChildTrust,
+    /// Accounts that may run as delegated workers (max 3, never the orchestrator).
+    #[serde(default)]
+    pub workers: Vec<String>,
+    /// Opt-in: let an orchestrator reply propose a delegation (still needs a yes from the user).
+    #[serde(default)]
+    pub delegation_protocol: bool,
 }
 
 fn default_trust() -> TrustMode {
@@ -110,6 +116,8 @@ impl Default for OrchestratorSettings {
         Self {
             trust: TrustMode::Workspace,
             child_trust: ChildTrust::Inherit,
+            workers: Vec::new(),
+            delegation_protocol: false,
         }
     }
 }
@@ -321,6 +329,21 @@ pub fn set_trust_mode(root: &Path, trust: TrustMode) -> Result<OrchestratorSetti
     })
 }
 
+/// Replace the worker list (validation lives in `delegate`).
+pub fn set_workers(root: &Path, workers: Vec<String>) -> Result<()> {
+    modify_store(root, |store| {
+        store.settings.workers = workers;
+        Ok(())
+    })
+}
+
+pub fn set_delegation_protocol(root: &Path, on: bool) -> Result<()> {
+    modify_store(root, |store| {
+        store.settings.delegation_protocol = on;
+        Ok(())
+    })
+}
+
 pub fn get_use_selection(root: &Path) -> Option<UseSelection> {
     load_store(root).selection
 }
@@ -422,6 +445,27 @@ mod tests {
             label: id.into(),
             created_at: "0".into(),
         }
+    }
+
+    #[test]
+    fn workers_and_protocol_persist_and_default_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = get_settings(dir.path());
+        assert!(s.workers.is_empty() && !s.delegation_protocol);
+        set_workers(dir.path(), vec!["codex-2".into()]).unwrap();
+        set_delegation_protocol(dir.path(), true).unwrap();
+        set_trust_mode(dir.path(), TrustMode::Ask).unwrap();
+        let s = get_settings(dir.path());
+        assert_eq!(s.workers, ["codex-2"]);
+        assert!(s.delegation_protocol);
+        assert_eq!(s.trust, TrustMode::Ask);
+        // An older store without the new keys still loads.
+        fs::write(
+            store_path(dir.path()),
+            r#"{"version":1,"settings":{"trust":"ask","childTrust":"inherit"}}"#,
+        )
+        .unwrap();
+        assert!(get_settings(dir.path()).workers.is_empty());
     }
 
     #[test]

@@ -52,6 +52,7 @@ mod markdown;
 mod palette;
 mod text;
 mod transcript;
+mod workers;
 
 use editor::Editor;
 use palette::Palette;
@@ -304,6 +305,8 @@ pub struct App {
     connect: ConnectFn,
     /// Set when /update succeeds — main loop tears down TUI then re-execs.
     reexec_path: Option<PathBuf>,
+    /// Delegated workers: the jobs, the strip above the prompt, the viewer.
+    deleg: workers::Panel,
 }
 
 impl App {
@@ -649,6 +652,11 @@ impl App {
         } else {
             outcome.text.trim().to_string()
         };
+        let scan_text = if outcome.cancelled {
+            String::new()
+        } else {
+            text.clone()
+        };
         // A provider that failed to start, or exited non-zero, must say why. Its stderr is the
         // only place the reason (expired login, bad flag, missing CLI) ever appears.
         let failed = !outcome.cancelled
@@ -698,6 +706,7 @@ impl App {
         self.live_cards.clear();
         self.live_text.clear();
         self.live_thinking.clear();
+        self.scan_delegation(&scan_text);
         self.refresh_usage();
     }
 
@@ -1388,6 +1397,9 @@ impl App {
             self.open_remove_picker(named.clone());
             return true;
         }
+        if self.try_delegate_slash(&cmd) {
+            return true;
+        }
         let ctx = CommandContext {
             state_root: &self.state_root,
             cwd: &self.cwd,
@@ -1506,6 +1518,7 @@ impl App {
         self.clear_selections();
         self.view.follow_tail();
         if self.handle_slash(&line) {
+            self.flush_delegate_prompt(turn_tx);
             return;
         }
         self.push_user(line.clone());
@@ -1584,6 +1597,7 @@ impl App {
             pending_login: None,
             connect: Box::new(add_account),
             reexec_path: None,
+            deleg: workers::Panel::default(),
         }
     }
 }
@@ -1815,6 +1829,7 @@ pub async fn run_chat_tui() -> Result<()> {
             });
         }
 
+        app.poll_delegates();
         while let Ok(ev) = progress_rx.try_recv() {
             app.apply_progress(ev);
         }
@@ -1840,6 +1855,7 @@ pub async fn run_chat_tui() -> Result<()> {
     if let Some(h) = app.cancel_handle.take() {
         h.cancel();
     }
+    app.cancel_all_delegates();
     let reexec = app.reexec_path.take();
     let cwd = app.cwd.clone();
     let _ = std::panic::take_hook(); // drop our hook; default behavior resumes
@@ -1926,6 +1942,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         return false;
     }
 
+    if workers::handle_key(app, &key) {
+        return false;
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -2138,7 +2157,7 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
-    if app.picker.is_some() {
+    if app.picker.is_some() || workers::handle_mouse(app, &m) {
         return;
     }
     let (x, y) = (m.column, m.row);
@@ -2259,7 +2278,7 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         .saturating_sub(2 + PROMPT_W)
         .max(1);
     let input_rows = app.editor.layout(text_w).len().clamp(1, MAX_INPUT_ROWS);
-    let chunks = Layout::default()
+    let mut chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
@@ -2267,7 +2286,10 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
             Constraint::Length(input_rows as u16 + 2),
             Constraint::Length(1),
         ])
-        .split(f.area());
+        .split(f.area())
+        .to_vec();
+    // Worker rows sit between the transcript and the prompt (nothing when no worker exists).
+    let strip = workers::carve(&mut chunks[1], app);
 
     draw_header(f, chunks[0], app);
     draw_transcript(f, chunks[1], app);
@@ -2277,6 +2299,7 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
     }
     draw_palette(f, chunks[1], chunks[2], app);
     draw_footer(f, chunks[3], app);
+    workers::draw(f, strip, chunks[1], app);
     if app.no_color {
         // Keep bold/reverse/italic (they carry meaning); drop every colour.
         for cell in f.buffer_mut().content.iter_mut() {

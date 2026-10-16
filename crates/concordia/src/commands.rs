@@ -26,7 +26,53 @@ pub enum SlashCommand {
     Copy,
     Doctor,
     Exit,
+    /// `/workers`: list. Delegation commands run inside the TUI (`tui/workers.rs`).
+    Workers,
+    WorkersAdd(Option<String>),
+    WorkersRemove(Option<String>),
+    /// `/delegate <account|auto> <task...>` (the task may be empty: a usage error).
+    Delegate {
+        target: String,
+        task: String,
+    },
+    DelegateStop(Option<String>),
+    DelegateUse(Option<String>),
+    DelegateHelp,
+    /// `/delegate protocol [on|off]`.
+    DelegateProtocol(Option<bool>),
     Unknown(String),
+}
+
+/// Parse `/workers ...` and `/delegate ...` from the raw line, keeping the task text verbatim.
+fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
+    let rest = body.trim_start()[cmd.len()..].trim();
+    let mut it = rest.splitn(2, char::is_whitespace);
+    let first = it.next().unwrap_or("").trim();
+    let tail = it.next().unwrap_or("").trim();
+    let second = tail.split_whitespace().next().map(str::to_lowercase);
+    let lower = first.to_lowercase();
+    match cmd {
+        "workers" | "worker" => Some(match lower.as_str() {
+            "add" | "new" => SlashCommand::WorkersAdd(second),
+            "remove" | "rm" | "delete" => SlashCommand::WorkersRemove(second),
+            _ => SlashCommand::Workers,
+        }),
+        "delegate" | "delegates" => Some(match lower.as_str() {
+            "" | "help" | "?" => SlashCommand::DelegateHelp,
+            "stop" | "cancel" => SlashCommand::DelegateStop(second),
+            "use" | "send" => SlashCommand::DelegateUse(second),
+            "protocol" => SlashCommand::DelegateProtocol(match second.as_deref() {
+                Some("on" | "true" | "yes") => Some(true),
+                Some("off" | "false" | "no") => Some(false),
+                _ => None,
+            }),
+            _ => SlashCommand::Delegate {
+                target: lower,
+                task: tail.to_string(),
+            },
+        }),
+        _ => None,
+    }
 }
 
 pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
@@ -72,6 +118,9 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         "copy" | "cp" => Some((SlashCommand::Copy, false)),
         "doctor" | "diag" => Some((SlashCommand::Doctor, false)),
         "exit" | "quit" | "q" => Some((SlashCommand::Exit, false)),
+        "workers" | "worker" | "delegate" | "delegates" => {
+            parse_delegation(&cmd, body).map(|c| (c, false))
+        }
         other => Some((SlashCommand::Unknown(other.to_string()), false)),
     }
 }
@@ -102,6 +151,13 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/update check", "look for a newer version"),
     ("/version", "build and install info"),
     ("/copy", "copy the last reply"),
+    ("/workers", "list worker accounts (max 3)"),
+    ("/workers add", "allow an account to run delegated tasks"),
+    ("/workers remove", "stop using an account as a worker"),
+    ("/delegate", "run a task on a worker account"),
+    ("/delegate stop", "cancel a worker's task"),
+    ("/delegate use", "send a worker result to this chat"),
+    ("/delegate help", "how delegation works"),
     ("/doctor", "check your setup"),
     ("/exit", "quit"),
 ];
@@ -122,6 +178,7 @@ pub fn format_config_help() -> String {
         "Cursor  agent login   (extra accounts: an concordia-api-key file in the account home)".into(),
         String::new(),
         "in concordia  /use · /use add · /model · /usage · /resume · /trust · /update".into(),
+        "delegate     /workers · /delegate <account|auto> <task> · /delegate help".into(),
     ]
     .join("\n")
 }
@@ -231,6 +288,19 @@ pub fn dispatch_slash(
                 Err(e) => (CommandOutcome::Ok, vec![format!("split failed — {e}")]),
             }
         }
+        // Delegation needs the running TUI (workers, strip); `tui/workers.rs` handles these
+        // before dispatch. Reaching here means a caller without a UI.
+        SlashCommand::Workers
+        | SlashCommand::WorkersAdd(_)
+        | SlashCommand::WorkersRemove(_)
+        | SlashCommand::Delegate { .. }
+        | SlashCommand::DelegateStop(_)
+        | SlashCommand::DelegateUse(_)
+        | SlashCommand::DelegateHelp
+        | SlashCommand::DelegateProtocol(_) => (
+            CommandOutcome::Ok,
+            vec!["delegation commands run inside the Concordia TUI".into()],
+        ),
         SlashCommand::Unknown(name) => (
             CommandOutcome::Ok,
             vec![format!("unknown command: /{name} — try /config")],
@@ -339,6 +409,33 @@ mod update_tests {
         assert_eq!(
             parse_slash("/update CHECK").unwrap().0,
             SlashCommand::UpdateCheck
+        );
+    }
+
+    #[test]
+    fn workers_and_delegate_commands_parse() {
+        let c = |l: &str| parse_slash(l).unwrap().0;
+        assert_eq!(c("/workers"), SlashCommand::Workers);
+        assert_eq!(c("/workers add Codex-2"), SlashCommand::WorkersAdd(Some("codex-2".into())));
+        assert_eq!(c("/workers add"), SlashCommand::WorkersAdd(None));
+        assert_eq!(c("/workers rm codex-2"), SlashCommand::WorkersRemove(Some("codex-2".into())));
+        assert_eq!(c("/delegate"), SlashCommand::DelegateHelp);
+        assert_eq!(c("/delegate help"), SlashCommand::DelegateHelp);
+        assert_eq!(c("/delegate stop Claude"), SlashCommand::DelegateStop(Some("claude".into())));
+        assert_eq!(c("/delegate use"), SlashCommand::DelegateUse(None));
+        assert_eq!(c("/delegate protocol ON"), SlashCommand::DelegateProtocol(Some(true)));
+        assert_eq!(c("/delegate protocol"), SlashCommand::DelegateProtocol(None));
+        // The task keeps its case, spacing inside and punctuation.
+        assert_eq!(
+            c("/delegate Codex-2   Fix the BUG in  src/a.rs, please"),
+            SlashCommand::Delegate {
+                target: "codex-2".into(),
+                task: "Fix the BUG in  src/a.rs, please".into()
+            }
+        );
+        assert_eq!(
+            c("/delegate auto"),
+            SlashCommand::Delegate { target: "auto".into(), task: String::new() }
         );
     }
 
