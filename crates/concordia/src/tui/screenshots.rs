@@ -289,7 +289,6 @@ impl Shot {
         app.account = "codex-3".into();
         app.model = "gpt-5.1-codex".into();
         app.usage_summary = "5h 59% left \u{b7} 7d 41% left".into();
-        app.usage_icon = crate::usage::text_bar(59.0, 5);
         let term = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut s = Shot {
             app,

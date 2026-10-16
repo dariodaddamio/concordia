@@ -20,9 +20,7 @@ use crate::store::{
 use crate::update::{
     reexec_into, start_check, start_update, Job, JobKind, JobResult, UpdateOutcome,
 };
-use crate::usage::{
-    picker_row, usage_icon, usage_rows_for_accounts, usage_tone, UsageFetcher, UsageTone,
-};
+use crate::usage::{picker_row, usage_rows_for_accounts, usage_tone, UsageFetcher, UsageTone};
 use crate::version::short_stamp;
 use anyhow::Result;
 use crossterm::event::{
@@ -289,7 +287,6 @@ pub struct App {
     usage_summary: String,
     usage_tone: UsageTone,
     /// Width-1 ASCII bar drawn before the footer usage text.
-    usage_icon: String,
     /// Claude limits are fetched on a worker thread and cached; never block the UI on them.
     usage_fetcher: UsageFetcher,
     /// Index of the `/usage` result block, rewritten in place when a background check lands.
@@ -343,7 +340,6 @@ impl App {
         let Some(home) = home else {
             self.usage_summary = "no account yet".into();
             self.usage_tone = UsageTone::Mute;
-            self.usage_icon = usage_icon(&crate::usage::UsageSnapshot::no_data("", ""));
             return;
         };
         let snap = self
@@ -355,7 +351,6 @@ impl App {
     fn set_usage_footer(&mut self, snap: &crate::usage::UsageSnapshot) {
         self.usage_summary = snap.summary.clone();
         self.usage_tone = usage_tone(snap);
-        self.usage_icon = usage_icon(snap);
     }
 
     /// `/usage`: the current account's limits as one block. It reads the cache (a check starts in
@@ -774,6 +769,8 @@ impl App {
         self.live_text.clear();
         self.live_thinking.clear();
         self.scan_delegation(&scan_text);
+        // The turn used some of this account's limits: re-check them in the background.
+        self.usage_fetcher.invalidate(&self.account);
         self.refresh_usage();
     }
 
@@ -1708,7 +1705,6 @@ impl App {
             need_context_pack: false,
             usage_summary: "limits unknown".into(),
             usage_tone: UsageTone::Mute,
-            usage_icon: usage_icon(&crate::usage::UsageSnapshot::no_data("", "")),
             usage_fetcher: UsageFetcher::new(state_root_for_usage),
             usage_block: None,
             picker_tones: HashMap::new(),
@@ -2574,7 +2570,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         UsageTone::Bad => Color::Red,
         UsageTone::Mute => Color::DarkGray,
     };
-    let right = format!(" {} {} ", app.usage_icon, app.usage_summary);
+    let right = format!(" {} ", app.usage_summary);
     let used: usize = left.iter().map(|s| s.content.chars().count()).sum();
     let pad = (area.width as usize).saturating_sub(used + right.chars().count());
     left.push(Span::styled(" ".repeat(pad), bar));

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// How long a fetched Claude reading is trusted before it is refreshed in the background.
-pub const USAGE_TTL_SECS: u64 = 300;
+pub const USAGE_TTL_SECS: u64 = 120;
 /// A hung `claude -p "/usage"` is killed (with its process tree) after this long.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -106,30 +106,14 @@ impl UsageSnapshot {
     }
 }
 
-/// `[###-------]`: ASCII only, so every terminal draws it one cell per glyph.
-pub fn text_bar(used_pct: f64, cells: usize) -> String {
-    let filled =
-        (((used_pct.clamp(0.0, 100.0) / 100.0) * cells as f64).round() as usize).min(cells);
-    format!("[{}{}]", "#".repeat(filled), "-".repeat(cells - filled))
-}
-
-/// Short bar for the footer and picker rows; dots when there is nothing to show.
-pub fn usage_icon(snap: &UsageSnapshot) -> String {
-    match snap.max_used() {
-        Some(p) => text_bar(p, 5),
-        None => "[.....]".into(),
-    }
-}
-
 fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
     let width = windows.iter().map(|w| w.label.len()).max().unwrap_or(0);
     windows
         .iter()
         .map(|w| {
             let mut line = format!(
-                "{:<width$}  {}  {:>3}% used / {:>3}% left",
+                "{:<width$}  {:>3}% used / {:>3}% left",
                 w.label,
-                text_bar(w.used_pct, 10),
                 w.used_i(),
                 w.left_i(),
             );
@@ -291,7 +275,7 @@ pub fn picker_row(
     let label = crate::accounts::display_account_name(provider, id);
     UsageRow {
         id: id.to_string(),
-        label: format!("{label}  {} {}", usage_icon(snap), snap.used_left_text()),
+        label: format!("{label}  {}", snap.used_left_text()),
         detail: if snap.windows.is_empty() {
             snap.detail.clone()
         } else {
@@ -655,6 +639,8 @@ struct Entry {
     pending: bool,
     error: Option<String>,
     last_attempt: u64,
+    /// A turn used some of the limits since this was read: re-check soon.
+    dirty: bool,
 }
 
 struct Fetched {
@@ -741,15 +727,18 @@ impl UsageFetcher {
                 pending: false,
                 error: None,
                 last_attempt: 0,
+                dirty: false,
             });
         let stale = e
             .cached
             .as_ref()
             .is_none_or(|c| now.saturating_sub(c.fetched_at) >= USAGE_TTL_SECS);
-        let retry_ok = force || now.saturating_sub(e.last_attempt) >= USAGE_TTL_SECS;
+        let stale = stale || e.dirty;
+        let retry_ok = force || e.dirty || now.saturating_sub(e.last_attempt) >= USAGE_TTL_SECS;
         let start = !e.pending && (force || (stale && retry_ok));
         if start {
             e.pending = true;
+            e.dirty = false;
             e.last_attempt = now;
         }
         let view = match (&e.cached, e.pending, &e.error) {
@@ -767,12 +756,18 @@ impl UsageFetcher {
                 } else {
                     format!("checked {} ago", format_age_minutes(age / 60))
                 };
-                snapshot_from_windows(
+                let mut snap = snapshot_from_windows(
                     c.windows,
                     None,
                     Vec::new(),
                     &cursor_source(&c.note, &age_note),
-                )
+                );
+                // A reading that is a few minutes old says so right in the footer.
+                if age >= USAGE_TTL_SECS && !snap.windows.is_empty() {
+                    snap.summary
+                        .push_str(&format!(" \u{b7} {} old", format_age_minutes(age / 60)));
+                }
+                snap
             }
             Err(None) if cursor => cursor_waiting(),
             Err(None) => claude_waiting(),
@@ -782,6 +777,14 @@ impl UsageFetcher {
                 "limits unavailable",
                 format!("could not read Claude limits ({err}); /usage tries again"),
             ),
+        }
+    }
+
+    /// A turn just used some of this account's limits: the next read re-checks in the background
+    /// (the old numbers stay on screen, with their age, until the new ones land).
+    pub fn invalidate(&mut self, account: &str) {
+        if let Some(e) = self.entries.get_mut(account) {
+            e.dirty = true;
         }
     }
 
@@ -997,13 +1000,20 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
     for (w, fallback) in [(&u.primary, "5h"), (&u.secondary, "7d")] {
         if let Some(w) = w {
             if let Some(pct) = w.used_percent {
+                // The numbers are from the last chat. If the window has reset since, the old
+                // percentage no longer applies.
+                let reset_since = w.resets_at.is_some_and(|r| r > 0 && r <= unix_now() as i64);
                 windows.push(UsageWindow {
                     label: w
                         .window_minutes
                         .map(format_window)
                         .unwrap_or_else(|| fallback.into()),
-                    used_pct: pct,
-                    resets: w.resets_at.and_then(format_reset_unix),
+                    used_pct: if reset_since { 0.0 } else { pct },
+                    resets: if reset_since {
+                        Some("already reset (chat to refresh)".to_string())
+                    } else {
+                        w.resets_at.and_then(format_reset_unix)
+                    },
                 });
             }
         }
@@ -1099,7 +1109,6 @@ mod tests {
         assert!(s
             .used_left_text()
             .starts_with("5h 7% used / 93% left · 7d 13% used / 87% left · resets Oct 15"));
-        assert!(s.detail.contains("[#---------]"), "{}", s.detail);
         assert_eq!(usage_tone(&s), UsageTone::Ok);
     }
 
@@ -1148,7 +1157,6 @@ mod tests {
         assert_eq!(usage_tone(&mk(79.0)), UsageTone::Ok);
         assert_eq!(usage_tone(&mk(80.0)), UsageTone::Warn);
         assert_eq!(usage_tone(&mk(95.0)), UsageTone::Bad);
-        assert_eq!(usage_icon(&mk(100.0)), "[#####]");
     }
 
     fn fake_runner(text: &'static str) -> UsageRunner {
@@ -1345,5 +1353,93 @@ mod tests {
             Duration::from_secs(2),
         );
         assert!(e.is_err());
+    }
+
+    #[test]
+    fn no_bar_glyphs_appear_anywhere_in_the_text() {
+        let snap = parse_claude_usage(SAMPLE).unwrap();
+        let row = picker_row("claude-1", crate::store::ProviderKind::Claude, &snap);
+        for text in [&snap.summary, &snap.detail, &row.label] {
+            assert!(
+                !text.contains("[#") && !text.contains("[-") && !text.contains("[."),
+                "{text}"
+            );
+        }
+        assert!(
+            snap.detail.contains("used") && snap.detail.contains("left"),
+            "{}",
+            snap.detail
+        );
+    }
+
+    #[test]
+    fn a_codex_window_that_has_reset_since_the_last_chat_is_not_still_used() {
+        let past = unix_now() as i64 - 3600;
+        let future = unix_now() as i64 + 7200;
+        let limits = CodexRateLimits {
+            primary: Some(RateWindow {
+                used_percent: Some(88.0),
+                window_minutes: Some(300),
+                resets_at: Some(past),
+            }),
+            secondary: Some(RateWindow {
+                used_percent: Some(40.0),
+                window_minutes: Some(10080),
+                resets_at: Some(future),
+            }),
+            plan_type: None,
+            limit_id: None,
+            rate_limit_reached_type: None,
+            credits: None,
+        };
+        let snap = format_limits(&limits, "from last session");
+        assert_eq!(
+            snap.windows[0].used_pct, 0.0,
+            "reset window shows nothing used"
+        );
+        assert!(snap.windows[0]
+            .resets
+            .as_deref()
+            .unwrap()
+            .contains("already reset"));
+        assert_eq!(
+            snap.windows[1].used_pct, 40.0,
+            "a window still running keeps its reading"
+        );
+        assert_eq!(usage_tone(&snap), UsageTone::Ok);
+    }
+
+    #[test]
+    fn a_finished_turn_marks_the_reading_dirty_so_it_is_checked_again() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c2 = Arc::clone(&calls);
+        let runner: UsageRunner = Arc::new(move |_| {
+            c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(SAMPLE.to_string())
+        });
+        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), runner);
+        let home = root.path().join("home");
+        let p = crate::store::ProviderKind::Claude;
+        f.snapshot(p, "claude-1", &home);
+        wait_for(&mut f);
+        f.snapshot(p, "claude-1", &home);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "fresh reading is reused"
+        );
+        f.invalidate("claude-1");
+        let shown = f.snapshot(p, "claude-1", &home);
+        assert!(
+            !shown.windows.is_empty(),
+            "the old numbers stay up while re-checking"
+        );
+        wait_for(&mut f);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a turn triggers one re-check"
+        );
     }
 }

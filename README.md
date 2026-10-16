@@ -36,6 +36,18 @@ You pay for more than one AI coding tool. Each has its own CLI, its own login, i
 - **Never guess a session.** Resume is always bound to an explicit session id. Concordia will never run `resume --last` or pick "whichever pane is focused".
 - **Honest about state.** Every build carries a stamp so you can tell at a glance whether a pane is running stale code.
 
+## What Concordia is, and is not
+
+**It is** a thin Windows terminal app that runs the Codex, Claude Code and Cursor CLIs, unmodified, under your own logins, and adds the parts that live between them: several accounts, what is left of each one's limits, bounded context when you switch, visible delegation to other accounts, and a prompt box that behaves like a normal editor.
+
+**It is not**
+- **A model or an agent.** It has no model of its own, no agent loop and no tool runtime. Every answer, tool call and approval is the provider CLI's.
+- **A replacement for the CLIs' own setup.** Skills, rules, memory, MCP servers and hooks stay with each CLI and keep working, because Concordia only points the CLI at an account folder. Concordia never reads or imports them. One consequence: an account Concordia creates starts with an empty folder, so skills you installed in your own `.claude` or `.codex` are not there until you add them.
+- **A credential tool.** You sign in through each provider's own login window. Concordia never reads, stores or sends a token, key or cookie.
+- **An account rotator.** Moving to another account is always your choice. Concordia will not switch for you to get around a limit.
+- **Cross-platform yet.** Windows only for now.
+- **Hosted or tracking.** There is no server, account or telemetry. The binary has no HTTP client; the only network access Concordia starts itself is the release download behind `/update`. The provider CLIs make their own connections, as they always do.
+
 ## Features
 
 | | |
@@ -182,6 +194,18 @@ concordia
 | `Shift` / `Ctrl` + arrows, `Home`, `End` | Extend selection, move by word, jump to line edge |
 
 > **WezTerm note:** Concordia captures the mouse, so plain drags select inside Concordia. Hold `Shift` while dragging to use WezTerm's own selection instead. WezTerm intercepts `Ctrl+Shift+C`, so use `Ctrl+C`, right-click or `/copy`.
+
+## Behaviours worth knowing
+
+- **Continuing on the same account** resumes the session id Concordia recorded (`--resume <id>`). Nothing is added to your prompt.
+- **Switching account or provider** starts a new session on the other side, with bounded recent context in front of your next prompt. Tool state, approvals and the provider's own memory are not carried over, and the pack says so in its header.
+- **Limits come from three different places.** Codex's numbers come from its own session files, so they appear only after a chat and reflect the last one; a window that has reset since then shows as reset, not as still used. Claude's come from its own local `/usage`, which takes a few seconds. Cursor has no usage command, so Concordia reads Cursor's interactive usage screen in a hidden pseudo-console (in an empty temporary folder that Cursor is told to trust), about six seconds the first time. Claude and Cursor readings are cached, re-checked after every turn and whenever they are older than two minutes, and show their age once they are. When a provider gives nothing, the footer says why instead of showing a number.
+- **`/usage` never sends a prompt to a model.** It runs each CLI's own usage view.
+- **Streaming and thinking.** Claude and Cursor run in streaming mode, so tool and command cards appear as they happen. Reasoning is shown only if the provider emits it, as dim lines that stay in the transcript but are never sent as context.
+- **Plan mode** maps to each CLI's own flag. Codex has no separate plan mode, so Plan there is the same read-only sandbox as Ask.
+- **The models do not know they are inside Concordia** beyond the header on a switch pack. A short opt-in note, `@chat` references and a thread map they can look things up in are planned (see [architecture](docs/architecture.md)).
+- **Unsigned and unpublished.** The release binary is not code-signed yet, so Windows SmartScreen may warn. No release has been published, and the install scripts use a placeholder owner until one is.
+- **Not yet verified live:** the `/use add` login window, mouse selection inside WezTerm, and real multi-line turns through each provider. The automated tests use a fake provider by design, so they never spend your subscription.
 
 ## Safety and provider terms
 
