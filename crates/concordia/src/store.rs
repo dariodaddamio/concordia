@@ -93,8 +93,10 @@ pub struct OrchestratorSettings {
     #[serde(default)]
     pub workers: Vec<String>,
     /// Opt-in: let an orchestrator reply propose a delegation (still needs a yes from the user).
-    #[serde(default)]
-    pub delegation_protocol: bool,
+    /// `None` = never set by the user: `[delegation] protocol` in config.toml decides (see
+    /// [`delegation_protocol_on`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation_protocol: Option<bool>,
 }
 
 fn default_trust() -> TrustMode {
@@ -120,7 +122,7 @@ impl Default for OrchestratorSettings {
             trust: TrustMode::Workspace,
             child_trust: ChildTrust::Inherit,
             workers: Vec::new(),
-            delegation_protocol: false,
+            delegation_protocol: None,
         }
     }
 }
@@ -214,19 +216,41 @@ fn sanitize_settings(settings: OrchestratorSettings) -> OrchestratorSettings {
     settings
 }
 
+/// A store with nothing saved yet: the permission mode comes from `[mode] default` in config.toml.
+fn fresh_store(root: &Path) -> OrchestratorStore {
+    let mut store = OrchestratorStore::default();
+    store.settings.trust = crate::config::for_root(root).mode.default;
+    store
+}
+
 pub fn load_store(root: &Path) -> OrchestratorStore {
     let path = store_path(root);
     let Ok(raw) = fs::read_to_string(&path) else {
-        return OrchestratorStore::default();
+        return fresh_store(root);
     };
     let parsed: Result<OrchestratorStore, _> = serde_json::from_str(&raw);
     match parsed {
         Ok(mut store) if store.version == 1 => {
             store.settings = sanitize_settings(store.settings);
+            // A store written before a mode was ever saved: config default, not the legacy one.
+            let has_mode = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .is_some_and(|v| v.pointer("/settings/trust").is_some());
+            if !has_mode {
+                store.settings.trust = crate::config::for_root(root).mode.default;
+            }
             store
         }
-        _ => OrchestratorStore::default(),
+        _ => fresh_store(root),
     }
+}
+
+/// Whether the orchestrator may propose delegations: the user's saved choice, else the config
+/// default. A value saved in the store always wins.
+pub fn delegation_protocol_on(root: &Path) -> bool {
+    get_settings(root)
+        .delegation_protocol
+        .unwrap_or_else(|| crate::config::for_root(root).delegation.protocol)
 }
 
 /// Write the store atomically (temp file + rename) so a crash cannot leave half a file. An
@@ -342,7 +366,7 @@ pub fn set_workers(root: &Path, workers: Vec<String>) -> Result<()> {
 
 pub fn set_delegation_protocol(root: &Path, on: bool) -> Result<()> {
     modify_store(root, |store| {
-        store.settings.delegation_protocol = on;
+        store.settings.delegation_protocol = Some(on);
         Ok(())
     })
 }
@@ -454,13 +478,14 @@ mod tests {
     fn workers_and_protocol_persist_and_default_off() {
         let dir = tempfile::tempdir().unwrap();
         let s = get_settings(dir.path());
-        assert!(s.workers.is_empty() && !s.delegation_protocol);
+        assert!(s.workers.is_empty() && s.delegation_protocol.is_none());
+        assert!(!delegation_protocol_on(dir.path()));
         set_workers(dir.path(), vec!["codex-2".into()]).unwrap();
         set_delegation_protocol(dir.path(), true).unwrap();
         set_trust_mode(dir.path(), TrustMode::Ask).unwrap();
         let s = get_settings(dir.path());
         assert_eq!(s.workers, ["codex-2"]);
-        assert!(s.delegation_protocol);
+        assert_eq!(s.delegation_protocol, Some(true));
         assert_eq!(s.trust, TrustMode::Ask);
         // An older store without the new keys still loads.
         fs::write(

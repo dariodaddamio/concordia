@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod catalog;
 pub mod commands;
+pub mod config;
 pub mod connect;
 pub mod context;
 pub mod cursor_usage;
@@ -16,6 +17,7 @@ pub mod store;
 pub mod tui;
 pub mod update;
 pub mod usage;
+pub mod user_commands;
 pub mod version;
 
 #[cfg(test)]

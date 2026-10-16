@@ -312,6 +312,8 @@ pub struct App {
     reexec_path: Option<PathBuf>,
     /// Delegated workers: the jobs, the strip above the prompt, the viewer.
     deleg: workers::Panel,
+    /// `<state>/commands/*.md`, scanned at start (see `user_commands`).
+    user_cmds: Vec<crate::user_commands::UserCommand>,
 }
 
 impl App {
@@ -435,7 +437,7 @@ impl App {
         if self.palette.dismissed || self.picker.is_some() || self.hist_pos.is_some() {
             return Vec::new();
         }
-        palette::matching(&self.editor.text())
+        palette::matching_with(&self.editor.text(), &self.user_cmds)
     }
 
     /// Put the chosen command in the prompt.
@@ -1640,7 +1642,11 @@ impl App {
         self.editor.clear();
         self.clear_selections();
         self.view.follow_tail();
-        if self.handle_slash(&line) {
+        // A user command shows as typed and sends its rendered template as an ordinary turn.
+        let mut send = line.clone();
+        if let Some(prompt) = crate::user_commands::expand(&self.user_cmds, &line) {
+            send = prompt;
+        } else if self.handle_slash(&line) {
             self.flush_delegate_prompt(turn_tx);
             return;
         }
@@ -1650,7 +1656,7 @@ impl App {
         self.live_thinking.clear();
         self.busy = true;
         self.pulse_on = true;
-        let _ = turn_tx.send(line);
+        let _ = turn_tx.send(send);
     }
 
     fn request_cancel(&mut self) {
@@ -1667,6 +1673,7 @@ impl App {
 impl App {
     fn new(state_root: PathBuf, cwd: PathBuf) -> App {
         let state_root_for_usage = state_root.clone();
+        let state_root_for_cmds = state_root.clone();
         App {
             state_root,
             cwd,
@@ -1723,6 +1730,7 @@ impl App {
             connect: Box::new(add_account),
             reexec_path: None,
             deleg: workers::Panel::default(),
+            user_cmds: crate::user_commands::scan(&state_root_for_cmds).commands,
         }
     }
 }
@@ -1772,6 +1780,7 @@ pub async fn run_chat_tui() -> Result<()> {
             .unwrap_or_default()
     ));
     ensure_default_selection(&state_root)?;
+    crate::config::loaded(); // read config.toml once, at start
     let cwd = std::env::current_dir()?;
 
     let (turn_tx, mut turn_rx) = mpsc::unbounded_channel::<String>();
@@ -2458,7 +2467,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
         + 2;
     let help_col = entries
         .iter()
-        .map(|e| e.help.chars().count())
+        .map(|e| e.help.chars().count() + if e.custom { 8 } else { 0 })
         .max()
         .unwrap_or(12);
     let width =
@@ -2489,6 +2498,10 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(e.help, Style::default().fg(Color::Indexed(245))),
+                Span::styled(
+                    if e.custom { "  custom" } else { "" },
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]))
         })
         .collect();

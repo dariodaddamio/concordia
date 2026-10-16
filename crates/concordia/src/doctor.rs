@@ -66,6 +66,8 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
     out.push(check_state_dir(&env.state_root));
     out.push(check_store(&env.state_root));
     out.push(check_log(&env.state_root));
+    out.push(check_config(&env.state_root));
+    out.push(check_user_commands(&env.state_root));
     out.extend(check_providers(env));
     out.extend(check_accounts(&env.state_root));
     out.push(match (env.which)("wezterm") {
@@ -248,6 +250,58 @@ fn check_log(root: &Path) -> Check {
             format!("{} (nothing logged yet)", path.display()),
         ),
     }
+}
+
+/// `<state>/config.toml`: never a failure (a bad file falls back to defaults), but a warning row.
+fn check_config(root: &Path) -> Check {
+    let l = crate::config::Config::load(root);
+    if !l.exists {
+        return check(
+            Level::Ok,
+            "config",
+            format!("{} not present (defaults)", l.path.display()),
+        );
+    }
+    match l.warnings.first() {
+        None => check(
+            Level::Ok,
+            "config",
+            format!("{} (0 warnings)", l.path.display()),
+        ),
+        Some(first) => check(
+            Level::Warn,
+            "config",
+            format!(
+                "{} ({} warning(s)): {first}",
+                l.path.display(),
+                l.warnings.len()
+            ),
+        ),
+    }
+}
+
+/// `<state>/commands/*.md`: count, plus a warning for skipped files and built-in name clashes.
+fn check_user_commands(root: &Path) -> Check {
+    let s = crate::user_commands::scan(root);
+    let mut detail = format!("{} custom command(s)", s.commands.len());
+    let mut level = Level::Ok;
+    if !s.clashes.is_empty() {
+        level = Level::Warn;
+        detail.push_str(&format!(
+            "; {} clash(es) with built-in commands (built-in wins): {}",
+            s.clashes.len(),
+            s.clashes
+                .iter()
+                .map(|n| format!("/{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let Some(first) = s.warnings.first() {
+        level = Level::Warn;
+        detail.push_str(&format!("; {} skipped: {first}", s.warnings.len()));
+    }
+    check(level, "commands", detail)
 }
 
 fn check_store(root: &Path) -> Check {
@@ -625,6 +679,33 @@ mod tests {
         assert!(find(&checks, "account")
             .iter()
             .any(|c| c.detail.contains("logged in")));
+    }
+
+    #[test]
+    fn config_and_commands_rows_warn_but_never_fail() {
+        let fx = Fx::new();
+        let _cfg = crate::config::env_guard();
+        let pb = |_: ProviderKind| None;
+        let which = |_: &str| None;
+        let checks = run(&env(&fx, &pb, &which));
+        assert!(find(&checks, "config")[0].detail.contains("defaults"));
+        assert_eq!(find(&checks, "config")[0].level, Level::Ok);
+        assert!(find(&checks, "commands")[0].detail.starts_with("0 custom"));
+
+        fs::write(fx.state.path().join("config.toml"), "[mode\n").unwrap();
+        let cmds = fx.state.path().join("commands");
+        fs::create_dir_all(&cmds).unwrap();
+        fs::write(cmds.join("doctor.md"), "x").unwrap();
+        fs::write(cmds.join("ok.md"), "y").unwrap();
+        let before = summary(&checks).1;
+        let checks = run(&env(&fx, &pb, &which));
+        let c = find(&checks, "config")[0];
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.detail.contains("line 1") && c.detail.contains("1 warning"));
+        let k = find(&checks, "commands")[0];
+        assert_eq!(k.level, Level::Warn);
+        assert!(k.detail.contains("1 custom") && k.detail.contains("/doctor"));
+        assert_eq!(summary(&checks).1, before, "warnings must not add failures");
     }
 
     #[test]

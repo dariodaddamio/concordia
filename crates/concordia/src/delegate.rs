@@ -16,9 +16,7 @@ use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, S
 use crate::provider::turn::{
     run_provider_turn_with_progress, ProviderTurnRequest, RunningTurn, TurnOutcome, TurnProgress,
 };
-use crate::store::{
-    get_settings, modify_store, ChildTrust, OrchestratorSettings, ProviderKind, TrustMode,
-};
+use crate::store::{get_settings, modify_store, ChildTrust, ProviderKind, TrustMode};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -77,10 +75,9 @@ pub fn check_add_worker(
     if workers.iter().any(|w| normalize_account_id(w) == want) {
         return Err(format!("{want} is already a worker"));
     }
-    if workers.len() >= MAX_WORKERS {
-        return Err(format!(
-            "at most {MAX_WORKERS} workers - /workers remove one first"
-        ));
+    let cap = crate::config::for_root(state_root).delegation.max_workers;
+    if workers.len() >= cap {
+        return Err(format!("at most {cap} workers - /workers remove one first"));
     }
     if let Some(key) = identity_key(acct.provider, &home) {
         let others = std::iter::once(orch.clone()).chain(workers.iter().cloned());
@@ -856,10 +853,11 @@ pub fn workers_report(
     let settings = get_settings(state_root);
     let orch = normalize_account_id(orchestrator);
     let mut out = vec![format!(
-        "workers {}/{MAX_WORKERS} \u{b7} orchestrator {} \u{b7} protocol {}",
+        "workers {}/{} \u{b7} orchestrator {} \u{b7} protocol {}",
         settings.workers.len(),
+        crate::config::for_root(state_root).delegation.max_workers,
         orch,
-        if settings.delegation_protocol {
+        if crate::store::delegation_protocol_on(state_root) {
             "on"
         } else {
             "off"
@@ -994,7 +992,7 @@ pub fn protocol_snippet() -> String {
     .join("\n")
 }
 
-pub fn help_lines(settings: &OrchestratorSettings) -> Vec<String> {
+pub fn help_lines(protocol_on: bool) -> Vec<String> {
     let mut v = vec![
         "delegate - run a background turn on another logged-in account of yours".to_string(),
         "  /workers                      list workers (max 3), status, last result".into(),
@@ -1008,7 +1006,7 @@ pub fn help_lines(settings: &OrchestratorSettings) -> Vec<String> {
         "worker output is untrusted data: shown, never executed, never parsed for more delegation".into(),
         format!(
             "protocol is {}. To teach an orchestrator the block, paste this to it:",
-            if settings.delegation_protocol { "on" } else { "off (opt-in)" }
+            if protocol_on { "on" } else { "off (opt-in)" }
         ),
     ];
     v.extend(protocol_snippet().lines().map(|l| format!("  {l}")));

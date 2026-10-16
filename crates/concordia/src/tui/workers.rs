@@ -554,7 +554,7 @@ impl App {
     /// Only ever called with the orchestrator's own reply, never with a worker's output.
     pub(super) fn scan_delegation(&mut self, reply: &str) {
         let settings = get_settings(&self.state_root);
-        if !settings.delegation_protocol || reply.is_empty() {
+        if !crate::store::delegation_protocol_on(&self.state_root) || reply.is_empty() {
             return;
         }
         let orch = normalize_account_id(&self.account);
@@ -752,12 +752,12 @@ impl App {
             SlashCommand::DelegateStop(acct) => self.delegate_stop(acct.as_deref()),
             SlashCommand::DelegateUse(acct) => self.delegate_use(acct.as_deref()),
             SlashCommand::DelegateHelp => {
-                for l in help_lines(&get_settings(&root)) {
+                for l in help_lines(crate::store::delegation_protocol_on(&root)) {
                     self.push_system(l);
                 }
             }
             SlashCommand::DelegateProtocol(None) => {
-                let on = get_settings(&root).delegation_protocol;
+                let on = crate::store::delegation_protocol_on(&root);
                 self.push_system(format!(
                     "delegation protocol is {} - /delegate protocol on|off (see /delegate help)",
                     if on { "on" } else { "off" }

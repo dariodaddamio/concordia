@@ -201,6 +201,10 @@ concordia
 | `CONCORDIA_UPDATE_REPO` | `owner/name` of the GitHub repository `/update` downloads releases from |
 | `CONCORDIA_UPDATE_PRERELEASE` | `1` to include pre-releases (0.x installs include them automatically) |
 | `CONCORDIA_UPDATE_API` | Alternate API base (a mirror); plain `http` is accepted only for loopback |
+| `CONCORDIA_CONFIG` | Path of `config.toml` (default `<state>\config.toml`) |
+
+Optional defaults live in `config.toml`, and your own slash commands in `commands\*.md`, both under the
+state directory: see [docs/config.md](docs/config.md).
 
 ## How it works
 

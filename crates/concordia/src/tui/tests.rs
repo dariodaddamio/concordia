@@ -1771,3 +1771,53 @@ fn usage_is_one_block_that_updates_in_place_when_the_check_lands() {
     );
     assert_eq!(after.matches("limits").count(), 1, "one block:\n{after}");
 }
+
+#[test]
+fn a_user_command_shows_as_typed_and_submits_the_rendered_prompt() {
+    let mut h = Harness::new(80, 20);
+    let cmds = crate::user_commands::commands_dir(&h.app.state_root);
+    std::fs::create_dir_all(&cmds).unwrap();
+    std::fs::write(
+        cmds.join("review.md"),
+        "---
+description: review the diff
+---
+Review for bugs. Focus: $ARGS",
+    )
+    .unwrap();
+    std::fs::write(cmds.join("doctor.md"), "shadowed").unwrap();
+    h.app.user_cmds = crate::user_commands::scan(&h.app.state_root).commands;
+
+    h.type_str("/rev");
+    h.draw();
+    let shown: String = h
+        .term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(shown.contains("/review") && shown.contains("custom"));
+
+    h.app.editor.clear();
+    h.type_str("/review the parser");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    h.app.submit_input(&tx);
+    assert_eq!(rx.try_recv().unwrap(), "Review for bugs. Focus: the parser");
+    assert!(h.app.busy);
+    let last_user = h
+        .app
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MsgRole::User)
+        .unwrap();
+    assert_eq!(last_user.text, "/review the parser");
+
+    // A built-in name is never shadowed: /doctor stays the built-in and sends no turn.
+    h.type_str("/doctor");
+    h.app.busy = false;
+    h.app.submit_input(&tx);
+    assert!(rx.try_recv().is_err());
+}
