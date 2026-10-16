@@ -4,25 +4,46 @@
 //! should put in the prompt. Drawing and key handling live in `tui/mod.rs`.
 
 use crate::commands::SLASH_COMMANDS;
+use crate::user_commands::UserCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
     pub command: &'static str,
     pub help: &'static str,
+    /// A user command from `<state>/commands` (drawn with a dim "custom" marker).
+    pub custom: bool,
 }
 
 /// Commands whose full text starts with what the user has typed. Only a single-line prompt that
 /// begins with `/` gets suggestions; everything else is ordinary chat text.
+#[cfg(test)]
 pub fn matching(input: &str) -> Vec<Entry> {
+    matching_with(input, &[])
+}
+
+/// Like [`matching`], with the user's commands listed after the built-ins.
+pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
     if !input.starts_with('/') || input.contains('\n') {
         return Vec::new();
     }
     let typed = input.to_ascii_lowercase();
-    SLASH_COMMANDS
+    let builtin = SLASH_COMMANDS
         .iter()
         .filter(|(cmd, _)| cmd.starts_with(&typed))
-        .map(|&(command, help)| Entry { command, help })
-        .collect()
+        .map(|&(command, help)| Entry {
+            command,
+            help,
+            custom: false,
+        });
+    let custom = user
+        .iter()
+        .filter(|c| c.command.starts_with(&typed))
+        .map(|c| Entry {
+            command: c.command,
+            help: c.description,
+            custom: true,
+        });
+    builtin.chain(custom).collect()
 }
 
 #[derive(Debug, Default)]
@@ -97,6 +118,32 @@ mod tests {
             assert!(!help.trim().is_empty(), "{cmd} needs a description");
             assert!(seen.insert(*cmd), "duplicate {cmd}");
         }
+    }
+
+    #[test]
+    fn user_commands_are_listed_after_built_ins_and_marked_custom() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmds = crate::user_commands::commands_dir(dir.path());
+        std::fs::create_dir_all(&cmds).unwrap();
+        std::fs::write(
+            cmds.join("ship.md"),
+            "---
+description: ship it
+---
+go",
+        )
+        .unwrap();
+        let user = crate::user_commands::scan(dir.path()).commands;
+        let all = matching_with("/", &user);
+        assert_eq!(all.len(), SLASH_COMMANDS.len() + 1);
+        let last = all.last().unwrap();
+        assert_eq!(
+            (last.command, last.help, last.custom),
+            ("/ship", "ship it", true)
+        );
+        assert!(all[..all.len() - 1].iter().all(|e| !e.custom));
+        assert_eq!(matching_with("/sh", &user).len(), 1);
+        assert!(matching_with("/sh", &[]).is_empty());
     }
 
     #[test]

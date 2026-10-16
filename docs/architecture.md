@@ -92,7 +92,10 @@ It is read-only. A prefix of an id is enough if unambiguous.
 ## Config
 
 `<state>/config.toml`, written by the user, read-only to Concordia. Missing file or key = default.
-Unknown keys are reported by `concordia doctor`, not fatal. Concordia-owned state stays in
+Unknown keys are reported by `concordia doctor`, not fatal. Full reference: [config.md](config.md).
+Implemented in `config.rs`; wired by: `config::ui_token_line()`, `ui_tips()` (stage 1b),
+`threads_enabled()`, `threads_map_chars()` (stage 1a), `default_mode()` and `delegation_protocol()`/
+`max_workers()` (store/delegate, store value wins). A store value set by the user wins over config. Concordia-owned state stays in
 `store.json`; config only supplies defaults and switches.
 
 ```toml
@@ -125,7 +128,7 @@ Review the staged diff for bugs and missing tests. Focus: $ARGS
 
 Running `/<name> some text` sends the body with `$ARGS` replaced, as an ordinary prompt. Built-in
 commands win over user commands on a name clash (doctor reports the clash). No code runs: it is a
-prompt template.
+prompt template. Implemented in `user_commands.rs`; see [config.md](config.md).
 
 ## Token line and tips
 
