@@ -152,6 +152,75 @@ written to a user's own existing home.
 `delegate` (propose only; the UI asks the user). Registered only in homes Concordia created.
 Keep the tool list to five and the descriptions terse: every schema costs tokens each turn.
 
+## Prompt queue
+
+While a turn runs, the user can line up the next prompts.
+
+* **Tab** with a non-empty prompt, while a turn is running (or other prompts are already queued),
+  moves the prompt into the queue. When idle with an empty queue, Tab keeps completing slash
+  commands. A prompt that starts with `/` is never queued; it runs now.
+* The queue shows in a panel **above** the prompt box: `queued 1: <first 60 chars>`, newest last,
+  at most 5 rows then `+N more`. The panel and the draft are separate: editing the queue never
+  replaces what is being typed.
+* **Up** on the first prompt row with an empty draft and a non-empty queue focuses the panel (with
+  an empty queue, Up keeps walking history). In the panel: Up/Down select, **Enter** edits the
+  selected item in a small inline editor (Enter saves, Esc cancels), **Alt+Up/Alt+Down** move it,
+  **Delete** removes it, **Esc** returns to the prompt.
+* When the running turn finishes (not when it is cancelled or fails), the first queued prompt is
+  sent automatically through the normal submit path, so trust mode, the current account and
+  provider, continuity packs and logging all apply at send time. Switching account while
+  prompts are queued is allowed; the queue is provider-neutral text.
+* Esc during a turn cancels the turn and **pauses** the queue (shown as `queue paused - Enter
+  resumes`), so nothing fires unexpectedly after a cancel.
+* The queue is persisted to `<state>/queue.json` (atomic write, rewritten on every change) and
+  restored at launch with a notice; `/queue clear` empties it.
+
+## Undo, redo and drafts
+
+* `Ctrl+Z` undo, `Ctrl+Shift+Z` and `Ctrl+Y` redo, in the prompt editor. History is a stack of
+  (text, cursor) snapshots, coalesced so that a burst of typing is one step and every cut, paste,
+  delete-word and clear is its own step. Capped at 200 steps. Sending a prompt does not clear the
+  stack (undo after send restores the sent text into the box, so a mis-sent prompt is never lost).
+* The current draft is saved to `<state>/draft.json` (debounced, about one second after the last
+  change, and on exit and panic) and restored at launch with a notice. An empty draft deletes the
+  file. A failed or cancelled turn puts its prompt back in the box if the box is empty.
+* Sent prompts persist to `<state>/history.jsonl` (cap 500, newest last) so Up still works after a
+  restart. This stores prompts locally; `[ui] persist_history = false` turns it off (default on,
+  same trust boundary as the provider CLIs' own history).
+
+## Process stats
+
+Optional footer segment `mem 41 MB - cpu 1%` for Concordia, and `+ agents 380 MB - 6%` for the
+provider processes it started (their whole process trees). `[ui] stats = true` (default false).
+Sampled every 2 s on a background thread using Win32 (`GetProcessMemoryInfo`, `GetProcessTimes`,
+`CreateToolhelp32Snapshot`); the UI thread only reads the last sample. `concordia doctor` and
+`docs/metrics.md` also report idle memory.
+
+## Provider compatibility
+
+Concordia never pins or updates provider CLIs. It uses **feature detection, not version pinning**:
+
+* `concordia doctor` prints each provider's version (`--version`) next to a `TESTED` table in
+  `provider/compat.rs` (the version each parser and flag set was last verified against) and warns,
+  never fails, when the installed one is newer or older.
+* A capability probe runs `--help` once per provider (cached in the state dir by the CLI's
+  version string) and records which flags exist (`--output-format stream-json`,
+  `--permission-mode`, `--mode plan`, `--include-partial-messages`, ...). Turn planning degrades
+  when one is missing: stream-json falls back to plain text, plan mode falls back to ask. The
+  footer shows one dim notice the first time it happens ("claude: no stream-json, showing text").
+* Parsers already ignore unknown events and pass plain text through. Every provider format change
+  is added as a fixture line in `tests/fixtures/provider-lines/<provider>/` first; the parser
+  tests read that folder, so a new shape is one file.
+
+## Attachments (planned, after the queue lands)
+
+Pasting or dropping file paths, or pasting an image from the clipboard, adds an attachment chip
+above the prompt (name, size, dimensions) and passes the file to the provider the way that CLI
+accepts it (Codex `--image`, a path reference for Claude and Cursor). Files the agent creates
+(Write cards with a document or image path) show as artifact chips with open and reveal actions.
+Concordia renders nothing itself; previews open in the default viewer, with optional inline
+images in terminals that support them.
+
 ## Budgets (checked in CI)
 
 | Budget | Limit |
@@ -177,3 +246,7 @@ automatic summarisation, rotating accounts to get around a limit.
 | 2a | `@chat` completion and expansion | `tui/mod.rs`, `tui/palette.rs` (needs 1a) |
 | 2b | Awareness line, `concordia mcp` (needs 1a) | `mcp.rs`, `connect.rs` |
 | 2c | Budgets in CI, docs | `scripts/`, `.github/`, README |
+| 3a | Prompt queue, undo/redo, draft and history persistence | `tui/editor.rs`, `tui/queue.rs`, `tui/mod.rs` (input handling) |
+| 3b | Process stats, provider compatibility, coloured `/usage` block | `sysstats.rs`, `provider/compat.rs`, `doctor.rs`, `usage.rs`, `tui/transcript.rs` |
+| 3c | `@chat`, awareness line, `concordia mcp` | `mcp.rs`, `tui/palette.rs`, `connect.rs` |
+| 4 | Attachments and artifact chips | `attachments.rs`, paste handling |
