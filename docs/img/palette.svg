@@ -8,87 +8,87 @@
 <circle cx="40" cy="18" r="6" fill="#febc2e"/>
 <circle cx="60" cy="18" r="6" fill="#28c840"/>
 <text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia — slash palette</text>
-<rect x="14" y="36" width="990" height="19" fill="#303030"/>
-<rect x="302" y="207" width="54" height="19" fill="#303030"/>
-<rect x="59" y="264" width="234" height="19" fill="#303030"/>
-<rect x="59" y="283" width="54" height="19" fill="#303030"/>
-<rect x="95" y="302" width="36" height="19" fill="#303030"/>
-<rect x="32" y="359" width="450" height="19" fill="#444444"/>
+<rect x="14" y="36" width="243" height="19" fill="#303030"/>
+<rect x="257" y="36" width="81" height="19" fill="#87d787"/>
+<rect x="338" y="36" width="666" height="19" fill="#303030"/>
+<rect x="302" y="245" width="54" height="19" fill="#303030"/>
+<rect x="59" y="302" width="234" height="19" fill="#303030"/>
+<rect x="59" y="321" width="54" height="19" fill="#303030"/>
+<rect x="32" y="359" width="531" height="19" fill="#444444"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
 <text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">◆</text>
 <text x="41" y="50" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">concordia</text>
-<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-15w</text>
-<text x="257" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3</text>
-<text x="338" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
+<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-15x</text>
+<text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
+<text x="356" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
 <text x="698" y="50" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#666666">[###--] 5h 59% left · 7d 41% left</text>
-<text x="23" y="69" textLength="963" lengthAdjust="spacingAndGlyphs" fill="#666666">· Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts.</text>
-<text x="23" y="107" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
-<text x="41" y="107" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Add a /doctor check for duplicate accounts and show me the diff</text>
-<text x="41" y="126" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n duplicate src</text>
-<text x="41" y="145" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ edit  src/doctor.rs</text>
-<text x="41" y="164" textLength="306" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">│ ◉ shell  cargo test -p concordia</text>
-<text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f">●</text>
-<text x="41" y="183" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">What I changed</text>
-<text x="41" y="221" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">I added a</text>
-<text x="131" y="221" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">duplicate check</text>
-<text x="275" y="221" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to</text>
-<text x="302" y="221" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
-<text x="356" y="221" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">. It groups accounts by provider and email, so two slots signed in to</text>
-<text x="41" y="240" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the same login are reported once.</text>
-<text x="41" y="278" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="278" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">accounts::duplicate_groups</text>
-<text x="302" y="278" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">finds the groups</text>
-<text x="41" y="297" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="297" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
-<text x="122" y="297" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">prints a warning per group, naming both accounts and the fix</text>
+<text x="23" y="69" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#5fafff">| i</text>
+<text x="59" y="69" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
+<text x="23" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff">|</text>
+<text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">interrupts.</text>
+<text x="23" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
+<text x="41" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Add a /doctor check for duplicate accounts and show me the diff</text>
+<text x="23" y="145" textLength="279" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex · codex-3 · gpt-5.1-codex</text>
+<text x="41" y="164" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n duplicate src</text>
+<text x="41" y="183" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ edit  src/doctor.rs</text>
+<text x="41" y="202" textLength="306" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">│ ◉ shell  cargo test -p concordia</text>
+<text x="23" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f">●</text>
+<text x="41" y="221" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">What I changed</text>
+<text x="41" y="259" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">I added a</text>
+<text x="131" y="259" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">duplicate check</text>
+<text x="275" y="259" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to</text>
+<text x="302" y="259" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
+<text x="356" y="259" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">. It groups accounts by provider and email, so two slots signed in to</text>
+<text x="41" y="278" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the same login are reported once.</text>
 <text x="41" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="316" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the</text>
-<text x="95" y="316" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use</text>
-<text x="140" y="316" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">picker marks each side with</text>
-<text x="392" y="316" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-style="italic">same login as ...</text>
-<text x="23" y="354" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ commands · 17 ───────────────────────────────────╮</text>
+<text x="59" y="316" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">accounts::duplicate_groups</text>
+<text x="302" y="316" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">finds the groups</text>
+<text x="41" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
+<text x="59" y="335" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
+<text x="122" y="335" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">prints a warning per group, naming both accounts and the fix</text>
+<text x="23" y="354" textLength="549" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ commands · 25 ────────────────────────────────────────────╮</text>
 <text x="23" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="32" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">&gt;</text>
 <text x="50" y="373" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use</text>
-<text x="185" y="373" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5" font-weight="700">switch account or provider</text>
-<text x="482" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="203" y="373" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" font-weight="700">switch account or provider</text>
+<text x="563" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="50" y="392" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use add</text>
-<text x="185" y="392" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">connect a new account</text>
-<text x="482" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="203" y="392" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">connect a new account</text>
+<text x="563" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="50" y="411" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use remove</text>
-<text x="185" y="411" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">remove an account</text>
-<text x="482" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="203" y="411" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">remove an account</text>
+<text x="563" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="430" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/model</text>
-<text x="185" y="430" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">choose the model</text>
-<text x="482" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="430" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/mode</text>
+<text x="203" y="430" textLength="360" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">permission mode: plan, ask, auto or full</text>
+<text x="563" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="449" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage</text>
-<text x="185" y="449" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">limits for this account</text>
-<text x="482" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="449" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/model</text>
+<text x="203" y="449" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">choose the model</text>
+<text x="563" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="468" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage all</text>
-<text x="185" y="468" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">limits for every account</text>
-<text x="482" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="468" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage</text>
+<text x="203" y="468" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">limits for this account</text>
+<text x="563" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="487" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/resume</text>
-<text x="185" y="487" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">continue an earlier session</text>
-<text x="482" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="487" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage all</text>
+<text x="203" y="487" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">limits for every account</text>
+<text x="563" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="506" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/trust</text>
-<text x="185" y="506" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">approvals: ask, workspace or full</text>
-<text x="482" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="506" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/resume</text>
+<text x="203" y="506" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">continue an earlier session</text>
+<text x="563" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="525" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/config</text>
-<text x="185" y="525" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">how to connect providers</text>
-<text x="482" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="525" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/trust</text>
+<text x="203" y="525" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">approvals: ask, workspace or full</text>
+<text x="563" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="544" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/new</text>
-<text x="185" y="544" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">start a fresh conversation</text>
-<text x="482" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="563" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#666666">╰──────────────────────────────────────────────────╯</text>
+<text x="50" y="544" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/config</text>
+<text x="203" y="544" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">how to connect providers</text>
+<text x="563" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="23" y="563" textLength="549" lengthAdjust="spacingAndGlyphs" fill="#666666">╰───────────────────────────────────────────────────────────╯</text>
 <text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">╭</text>
 <text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
 <text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
@@ -98,7 +98,7 @@
 <text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
 <text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#585858">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
 <text x="23" y="639" textLength="432" lengthAdjust="spacingAndGlyphs" fill="#666666">↑↓ select · Tab complete · Enter run · Esc close</text>
-<text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#e5e510" font-weight="700">auth workspace</text>
+<text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">auth workspace</text>
 </g>
 </g>
 <rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>

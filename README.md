@@ -27,9 +27,10 @@ You pay for more than one AI coding tool. Each has its own CLI, its own login, i
 
 - **Use several of your own subscriptions in one terminal.** Codex, Claude and Cursor side by side: no hosted service, no API keys, no extra billing.
 - **Switch accounts in one command.** `/use` picks a provider and account; each account keeps an isolated home.
-- **See what is used and what is left.** `/usage` shows each account's limit windows as used and left, read from data the CLIs already write. It never spends a model token.
+- **See what is used and what is left.** `/usage` shows the current account's limit windows as used and left (`/usage all` for every account), taken from each CLI's own usage view. It never sends a prompt to a model.
 - **Share bounded context between providers.** Switch provider mid-task and Concordia hands the new one a bounded continuity pack instead of the whole history ([continuity](docs/continuity.md)).
-- **Delegate to worker accounts.** Handing a task from one account to another with an explicit session bind is out of scope for v0.1 (see the [roadmap](#roadmap)); today you switch accounts yourself.
+- **Delegate to worker accounts.** One account is the orchestrator you type into; up to three others run as visible workers on tasks you hand them (`/delegate`). Each worker gets its own session and a bounded slice of context, nothing runs unseen, and you can stop any of them ([delegation](docs/delegation.md)).
+- **See the wait.** The prompt border and title show what the model is doing (waiting, thinking, running a tool, writing) with its own colour, animation and timer; reasoning appears as dim lines ([waiting states](docs/tui-states.md)).
 - **Robust turns.** Provider output with invalid UTF-8 or multi-megabyte lines cannot truncate a reply; multi-line prompts go over stdin when the provider CLI sits behind a Windows `.cmd` shim; `Ctrl+C` kills the provider's whole process tree; a failing provider reports its exit code and stderr instead of an empty reply.
 - **Safe shared state.** State writes are atomic and serialized across panes, an unreadable `store.json` is backed up rather than overwritten, and `concordia --version` and `concordia doctor` never modify anything.
 - **Never guess a session.** Resume is always bound to an explicit session id. Concordia will never run `resume --last` or pick "whichever pane is focused".
@@ -46,7 +47,7 @@ You pay for more than one AI coding tool. Each has its own CLI, its own login, i
 | WezTerm launcher | `concordia wezterm` opens WezTerm running Concordia with split/tab keys (Ctrl+Shift+D/E/T); the config ships inside the binary |
 | Slash palette | Type `/` for a live list of commands with descriptions; arrows and Tab to pick |
 | Account connect | `/use add` creates an isolated home for a new account and opens the provider's own login; Concordia tells you when it connects |
-| Usage at a glance | `/usage` reads limits from on-disk session data. No model call, no token spend |
+| Usage at a glance | `/usage` shows used and left per limit window: Codex from its session data, Claude from its local `/usage`, Cursor from its usage screen. No prompt is ever sent to a model |
 | Explicit resume | `/resume` lists sessions and binds by id |
 | Continuity pack | Bounded context hand-off when you switch provider mid-task |
 | Trust modes | `ask`, `workspace`, `full`, shown live in the status line |
@@ -64,15 +65,15 @@ Rendered from the real UI code with synthetic data (no provider is run). Regener
 
 ## Speed
 
-Measured on 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz, Windows 11, 2026-10-15, build 2026-10-15w.
+Measured on 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz, Windows 11, 2026-10-15, build 2026-10-15x.
 
 | Metric | Value |
 | --- | --- |
-| Release binary size | 2372 KB |
-| Cold start, `concordia --version` (median of 30 runs) | 30.8 ms |
-| Cold start, `concordia --version` (p95 of 30 runs) | 39.9 ms |
-| `draw_ui` frame, busy transcript, 110x32 (mean of 500 frames) | 480 us |
-| `draw_ui` frame, busy transcript, 110x32 (p95 of 500 frames) | 1071 us |
+| Release binary size | 2838 KB |
+| Cold start, `concordia --version` (median of 30 runs) | 26.2 ms |
+| Cold start, `concordia --version` (p95 of 30 runs) | 35.7 ms |
+| `draw_ui` frame, busy transcript, 110x32 (mean of 500 frames) | 147 us |
+| `draw_ui` frame, busy transcript, 110x32 (p95 of 500 frames) | 274 us |
 
 Reproduce with `powershell -NoProfile -File scripts\metrics.ps1`; details in [docs/metrics.md](docs/metrics.md).
 
@@ -132,9 +133,12 @@ concordia
 | `/use remove [account]` | Remove an account: delete what Concordia created, or just hide one of your own (your own login folders are never deleted) |
 | `/use add [codex\|claude\|cursor]` | Connect a new account: isolated home under `%LOCALAPPDATA%\concordia\homes`, native login in a new window |
 | `/model` | Models from on-disk caches only |
-| `/usage` | Limits (Codex from cache; others shown as unknown if not exposed) |
+| `/usage`, `/usage all` | Limits for this account, or for every account (used and left per window) |
+| `/mode` | Show or set the mode: `plan`, `ask`, `auto` (workspace) or `full` (also `Shift+Tab`) |
+| `/workers`, `/workers add`, `/workers remove` | Choose which accounts can act as workers |
+| `/delegate <account\|auto> <task>` | Run one task on a worker account; `/delegate stop`, `/delegate use`, `/delegate help` |
 | `/resume`, `/chats` | Pick an explicit session id (never `--last`) |
-| `/trust` | `ask`, `workspace` or `full` |
+| `/trust` | `plan`, `ask`, `workspace` or `full` |
 | `/config` | Connection help, including manual login commands |
 | `/new` | Clear the session bind |
 | `/split` | Open another `concordia` in a WezTerm split |
@@ -152,6 +156,8 @@ concordia
 | `Enter` | Send turn |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | Newline without sending |
 | `Tab` | Complete slash command |
+| `Shift+Tab` | Cycle the mode: plan, ask, auto-edit, full (moves the selection up while the palette is open) |
+| `Alt+Up` / `Alt+Down` | Select a worker row; `Enter` opens its transcript, `Esc` closes it |
 | Click | Place the caret (prompt) |
 | Drag, double-click, triple-click | Select text / a word / a line (prompt or transcript) |
 | `Ctrl+C` | Copy the selection; with nothing selected, cancel the running turn; when idle, press twice to exit |
@@ -211,9 +217,9 @@ Measured from this checkout (`cargo test -p concordia --tests --locked`, `cargo 
 
 | Metric | Value |
 | --- | --- |
-| Rust source | 36 files under `crates/concordia/src`, ~15.7k lines |
-| Tests | 298 passing, 0 failing (unit, TUI end-to-end with simulated mouse/keys, a fake provider driving the real turn runner, continuity, control-plane) |
-| Release binary | 2372 KB |
+| Rust source | 41 files under `crates/concordia/src`, ~21.0k lines |
+| Tests | 342 passing, 0 failing (unit, TUI end-to-end with simulated mouse/keys, a fake provider driving the real turn runner, continuity, control-plane) |
+| Release binary | 2838 KB |
 | Dependencies | 11 direct, 76 crates in the normal dependency tree (all permissive except one unmodified MPL-2.0 crate; see `NOTICE`) |
 | Provider adapters | Codex, Claude, Cursor |
 
@@ -226,10 +232,11 @@ Measured from this checkout (`cargo test -p concordia --tests --locked`, `cargo 
 | Tab complete, paste, mouse selection, copy, scroll, caret editing | Implemented, awaiting live-pane verification |
 | `/use add`: create and connect an account from inside Concordia | Implemented, awaiting live login check |
 | Prompt history (up arrow), double-tap `Ctrl+C` exit | Done |
-| Claude / Cursor session-id bind after turns | Planned |
+| Claude / Cursor session-id bind after turns | Done |
+| Orchestrator and worker accounts (`/delegate`) | Implemented, awaiting live verification |
 | Exhaustion to another account with explicit session bind | Planned |
 | Linux / macOS | Not claimed |
-| Crew-style multi-agent delegation | Out of scope for v0.1 |
+| Autonomous multi-agent crews (no user approval) | Out of scope |
 
 What stands between this and a public release is tracked in [docs/release-blockers.md](docs/release-blockers.md).
 
@@ -258,7 +265,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [UI architec
 
 **Does it read my credentials?** No. Credentials stay in each provider's own home; Concordia never reads secret files.
 
-**Does `/usage` cost tokens?** No. It reads limits from session data already on disk.
+**Does `/usage` cost tokens?** No. It never sends a prompt to a model: Codex limits come from session data on disk, Claude answers its own `/usage` locally, and Cursor's usage screen is read from the CLI.
 
 **Why not `resume --last`?** It resumes whatever was most recent, which is often the wrong conversation. Concordia only resumes an id you chose.
 
