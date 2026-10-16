@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="Concordia: a conversation with tool cards and a markdown reply in the terminal" src="docs/img/hero.svg" width="900">
+</p>
+
 <h1 align="center">Concordia</h1>
 
 <p align="center">
@@ -6,73 +10,29 @@
 </p>
 
 <p align="center">
+  <a href="../../actions/workflows/ci.yml"><img alt="CI" src="../../actions/workflows/ci.yml/badge.svg"></a>
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="language" src="https://img.shields.io/badge/rust-2021-orange">
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20first-0078D6">
-  <img alt="binary" src="https://img.shields.io/badge/binary-~1.6%20MB-success">
-  <img alt="status" src="https://img.shields.io/badge/status-pre--release%20(MVP%20A)-yellow">
+  <img alt="status" src="https://img.shields.io/badge/status-pre--release-yellow">
 </p>
 
-> **Status: pre-release, private.** Codex chat works end to end for an already-logged-in home.
+> **Status: pre-release.** Codex chat works end to end for an already-logged-in home.
 > Account onboarding, Claude/Cursor parity and failover are in progress.
 > The honest, ranked gap list lives in [docs/e2e-status.md](docs/e2e-status.md).
 
----
-
-## Preview
-
-A real render of the interface (this text is produced by the project's own screen tests):
-
-```text
- ◆ concordia 2026-10-15s   Codex 3  gpt-5.1-codex                       5h 41% · 7d 59% · resets 3h
- · Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc
-   interrupts.
-
- ❯ Add a /doctor check for duplicate accounts and show me the diff
-   │ ✓ shell  rg -n duplicate src
-   │ ✓ edit  src/doctor.rs
-   │ ◉ shell  cargo test -p concordia
- ● What I changed
-
-   I added a duplicate check to doctor. It groups accounts by provider and email, so two slots
-   signed in to the same login are reported once.
-
-   • accounts::duplicate_groups finds the groups
-   • doctor prints a warning per group, naming both accounts and the fix
-   • the /use picker marks each side with same login as ...
-
-     rust
-     for group in duplicate_groups(root) {
-         warn(&group);
-     }
-
-   1. Run /doctor to see it
-   2. Use /use remove to drop one
-
-
- ❯ looks good, thanks
- · provider exited with code 1
-
-
-╭ message ─────────────────────────────────────────────────────────────────────────────────────────╮
-│❯ Message Concordia…  (/ for commands)                                                            │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
- Enter send · / commands · drag to select · Ctrl+C copy or cancel                    auth workspace
-```
-
 ## Why Concordia
 
-You pay for more than one AI coding tool. Each has its own CLI, its own login, its own session store and its own usage limit, and switching between them means losing your place.
+You pay for more than one AI coding tool. Each has its own CLI, its own login, its own session store and its own usage limit, and switching between them means losing your place. Concordia puts them in one terminal, as a thin layer over the CLIs you already have. It does not replace them, proxy them, or touch your credentials.
 
-`concordia` is a thin layer on top of the CLIs you already have. It does not replace them, proxy them, or touch your credentials.
-
-- **Bring your own subscription.** No hosted service, no API keys, no extra billing. Concordia spawns the provider CLI under *your* login.
-- **Switch accounts in one keystroke.** `/use` picks a provider and account; each account keeps an isolated home.
-- **Robust turns.** Provider output with invalid UTF-8 or multi-megabyte lines cannot truncate a reply or exhaust memory; multi-line and special-character prompts are delivered over stdin when the provider CLI sits behind a Windows `.cmd` shim (which would otherwise reject or rewrite them); `Ctrl+C` kills the provider's whole process tree, not just its shim; a failing provider reports its exit code and stderr instead of an empty reply.
-- **Safe shared state.** State writes are atomic, serialized across panes, and an unreadable `store.json` is backed up rather than overwritten; `concordia --version` and `concordia doctor` never modify anything.
-- **Your credentials stay yours.** New accounts get an isolated home that Concordia creates; Concordia never reads, copies or asks for a password or key, and never writes to your existing `.codex` / `.claude` homes. Login is the provider's own flow.
+- **Use several of your own subscriptions in one terminal.** Codex, Claude and Cursor side by side: no hosted service, no API keys, no extra billing.
+- **Switch accounts in one command.** `/use` picks a provider and account; each account keeps an isolated home.
+- **See what is used and what is left.** `/usage` shows each account's limit windows as used and left, read from data the CLIs already write. It never spends a model token.
+- **Share bounded context between providers.** Switch provider mid-task and Concordia hands the new one a bounded continuity pack instead of the whole history ([continuity](docs/continuity.md)).
+- **Delegate to worker accounts.** Handing a task from one account to another with an explicit session bind is out of scope for v0.1 (see the [roadmap](#roadmap)); today you switch accounts yourself.
+- **Robust turns.** Provider output with invalid UTF-8 or multi-megabyte lines cannot truncate a reply; multi-line prompts go over stdin when the provider CLI sits behind a Windows `.cmd` shim; `Ctrl+C` kills the provider's whole process tree; a failing provider reports its exit code and stderr instead of an empty reply.
+- **Safe shared state.** State writes are atomic and serialized across panes, an unreadable `store.json` is backed up rather than overwritten, and `concordia --version` and `concordia doctor` never modify anything.
 - **Never guess a session.** Resume is always bound to an explicit session id. Concordia will never run `resume --last` or pick "whichever pane is focused".
-- **Small and fast.** A single ~1.6 MB native binary, no Node, no Docker, no resident model.
 - **Honest about state.** Every build carries a stamp so you can tell at a glance whether a pane is running stale code.
 
 ## Features
@@ -93,13 +53,44 @@ You pay for more than one AI coding tool. Each has its own CLI, its own login, i
 | Self-update | `/update` rebuilds, swaps to an unlocked binary slot, and re-execs in the same pane |
 | Cancel | `Ctrl+C` terminates the tracked provider child process, nothing else |
 
+## Screenshots
+
+Rendered from the real UI code with synthetic data (no provider is run). Regenerate with the command under [Contributing](#contributing).
+
+| | |
+| --- | --- |
+| <img alt="Slash palette" src="docs/img/palette.svg"><br>Type `/` for a live command palette | <img alt="Usage picker" src="docs/img/usage.svg"><br>`/usage`: used and left per account |
+| <img alt="Waiting state" src="docs/img/waiting.svg"><br>A turn in progress: phase, live thinking, running tool card | <img alt="Conversation" src="docs/img/hero.svg"><br>Tool cards and a markdown reply |
+
+## Speed
+
+Measured on 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz, Windows 11, 2026-10-15, build 2026-10-15w.
+
+| Metric | Value |
+| --- | --- |
+| Release binary size | 2372 KB |
+| Cold start, `concordia --version` (median of 30 runs) | 30.8 ms |
+| Cold start, `concordia --version` (p95 of 30 runs) | 39.9 ms |
+| `draw_ui` frame, busy transcript, 110x32 (mean of 500 frames) | 480 us |
+| `draw_ui` frame, busy transcript, 110x32 (p95 of 500 frames) | 1071 us |
+
+Reproduce with `powershell -NoProfile -File scripts\metrics.ps1`; details in [docs/metrics.md](docs/metrics.md).
+
 ## Install
 
 **Requirements:** Windows 10/11, [Rust](https://rustup.rs) with MSVC Build Tools, and at least one provider CLI (`codex`, `claude` or `agent`) already logged in.
 
+Full guide: [docs/install.md](docs/install.md). The one-liner (placeholder until the first release):
+
 ```powershell
-git clone <this-repo> agent-orchestrator
-cd agent-orchestrator
+# irm <release-url>/install.ps1 | iex
+```
+
+From source today:
+
+```powershell
+git clone <this-repo> concordia
+cd concordia
 .\scripts\install-dev.ps1
 ```
 
@@ -107,8 +98,6 @@ The script builds a release binary, installs it to `%LOCALAPPDATA%\concordia\bin
 
 ```powershell
 concordia --version
-# concordia 0.0.1 (2026-10-15s)
-
 concordia doctor      # health check: install, provider CLIs + versions, accounts; exit 1 on a problem
 ```
 
@@ -135,7 +124,7 @@ concordia
 2. Type a prompt and press `Enter`. `Ctrl+C` cancels.
 3. Type `/usage` to see remaining limits, `/resume` to continue an earlier session.
 
-### Commands
+## Commands
 
 | Command | What it does |
 | --- | --- |
@@ -156,7 +145,7 @@ concordia
 | `/doctor` | Quick health check (install, state, provider CLIs, accounts) |
 | `/exit` | Quit |
 
-### Keys
+## Keyboard and mouse
 
 | Key / mouse | Action |
 | --- | --- |
@@ -175,6 +164,13 @@ concordia
 | `Shift` / `Ctrl` + arrows, `Home`, `End` | Extend selection, move by word, jump to line edge |
 
 > **WezTerm note:** Concordia captures the mouse, so plain drags select inside Concordia. Hold `Shift` while dragging to use WezTerm's own selection instead. WezTerm intercepts `Ctrl+Shift+C`, so use `Ctrl+C`, right-click or `/copy`.
+
+## Safety and provider terms
+
+- Concordia runs the **unmodified** provider CLIs under **your own logins**. It is not a proxy and does not pool or share accounts.
+- It never reads, copies, stores or asks for a password, key or token. New accounts get an isolated home that Concordia creates, and login is the provider's own flow. It never writes to your existing `.codex` / `.claude` homes.
+- It makes no network calls of its own, except when you run `/update`.
+- What the providers' terms say, and where the lines are: [docs/provider-terms.md](docs/provider-terms.md).
 
 ## Configuration
 
@@ -211,14 +207,14 @@ More detail: [continuity](docs/continuity.md), [UI architecture](docs/ui-archite
 
 ## Project stats
 
-Measured from this checkout, not estimated.
+Measured from this checkout (`cargo test -p concordia --tests --locked`, `cargo tree`), not estimated.
 
 | Metric | Value |
 | --- | --- |
-| Rust source | 37 files, ~12.5k lines |
-| Tests | 275 passing (unit, TUI end-to-end with simulated mouse/keys, a fake provider driving the real turn runner, continuity, control-plane) |
-| Release binary | ~1.9 MB |
-| Runtime dependencies | 11 direct, 71 crates total (all permissive except one unmodified MPL-2.0 crate; see `NOTICE`) (`ratatui`, `crossterm`, `tokio`, `serde`, `serde_json`, `anyhow`, `thiserror`, `uuid`, `dirs`, `which`, `unicode-width`) |
+| Rust source | 36 files under `crates/concordia/src`, ~15.7k lines |
+| Tests | 298 passing, 0 failing (unit, TUI end-to-end with simulated mouse/keys, a fake provider driving the real turn runner, continuity, control-plane) |
+| Release binary | 2372 KB |
+| Dependencies | 11 direct, 76 crates in the normal dependency tree (all permissive except one unmodified MPL-2.0 crate; see `NOTICE`) |
 | Provider adapters | Codex, Claude, Cursor |
 
 ## Roadmap
@@ -237,12 +233,14 @@ Measured from this checkout, not estimated.
 
 What stands between this and a public release is tracked in [docs/release-blockers.md](docs/release-blockers.md).
 
-## Development
+## Contributing
 
 ```powershell
 cargo test -p concordia --tests
 powershell -NoProfile -File .\scripts\smoke-e2e-everyday.ps1    # installs your build, then checks help, tests, usage read
 powershell -NoProfile -File .\scripts\verify-oss-gates.ps1
+cargo test -p concordia --lib screenshots -- --ignored            # regenerate docs/img/*.svg after a UI change
+powershell -NoProfile -File .\scripts\metrics.ps1                # regenerate docs/metrics.md
 ```
 
 Rules that keep this honest:
@@ -252,7 +250,7 @@ Rules that keep this honest:
 - Live provider tests spend real subscription usage and need an explicit budget.
 - Never overwrite a user's existing `.codex` / `.codex-2`; Concordia-owned homes live under Concordia's own state directory.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [UI architecture](docs/ui-architecture.md), [provider capabilities](docs/capabilities.md) and the [changelog](CHANGELOG.md).
 
 ## FAQ
 

@@ -2770,3 +2770,6 @@ fn is_cli_noise(line: &str) -> bool {
     l.starts_with("reading additional input from stdin")
         || l.starts_with("reading prompt from stdin")
 }
+
+#[cfg(test)]
+mod screenshots;

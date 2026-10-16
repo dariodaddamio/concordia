@@ -14,6 +14,10 @@ also bumps the build stamp shown by `concordia --version`.
 - After `/update`, the old process now stays as the parent until the new one exits. Before, it handed the console back to the shell early, so the shell and Concordia both read the keyboard and the prompt box lost or scrambled keystrokes.
 
 ### Added
+- Reproducible screenshots and speed metrics: `cargo test -p concordia --lib screenshots -- --ignored`
+  renders the real UI on a test backend into `docs/img/*.svg` (synthetic data, no provider run);
+  `scripts/metrics.ps1` measures binary size, `--version` cold start and `draw_ui` frame time into
+  `docs/metrics.md`. README restructured around them.
 - Usage display: limits say used and left everywhere (footer `5h 59% left`, `/use` and `/usage all` rows
   `5h 41% used / 59% left`). `/usage` shows only the current account with a bar per window and reset
   time; `/usage all` lists every account. Claude limits come from `claude -p "/usage"` on a background
