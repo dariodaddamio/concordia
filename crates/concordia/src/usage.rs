@@ -2,7 +2,9 @@
 //!
 //! Codex reports its limits in its own session files. Claude answers `claude -p "/usage"`
 //! locally (no model call) but takes seconds, so it is fetched on a background thread and cached
-//! (see [`UsageFetcher`]). Cursor's CLI has no usage command at all.
+//! (see [`UsageFetcher`]). Cursor's CLI has no usage command; its interactive `/usage` screen is
+//! read in a pseudo-console (see `cursor_usage`) the same way, and where that fails the account
+//! just says the limits are not shown.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -234,8 +236,15 @@ pub fn read_provider_usage(provider: crate::store::ProviderKind, home: &Path) ->
     match provider {
         crate::store::ProviderKind::Codex => read_codex_usage(home),
         crate::store::ProviderKind::Claude => claude_waiting(),
-        crate::store::ProviderKind::Cursor => cursor_usage(),
+        crate::store::ProviderKind::Cursor => cursor_waiting(),
     }
+}
+
+fn cursor_waiting() -> UsageSnapshot {
+    UsageSnapshot::no_data(
+        "checking limits...",
+        "asking Cursor for this account's limits (takes a few seconds)",
+    )
 }
 
 fn claude_waiting() -> UsageSnapshot {
@@ -369,6 +378,111 @@ pub fn parse_claude_usage(text: &str) -> Option<UsageSnapshot> {
     ))
 }
 
+/// Parse the screen text of Cursor's interactive `/usage`. Tolerant: ANSI is stripped, the plan
+/// and reset date come from `Usage • <Plan> ... Resets <date>`, and only the rows
+/// Included / Auto / API / On-Demand with `N% used` become windows. `Disabled` on-demand and the
+/// plan go into the note. Unrecognised text gives `None`.
+pub fn parse_cursor_usage(text: &str) -> Option<UsageSnapshot> {
+    let (windows, note) = parse_cursor_windows(text)?;
+    Some(snapshot_from_windows(
+        windows,
+        None,
+        Vec::new(),
+        &cursor_source(&note, "from agent /usage"),
+    ))
+}
+
+fn cursor_source(note: &str, tail: &str) -> String {
+    if note.is_empty() {
+        tail.to_string()
+    } else {
+        format!("{note} · {tail}")
+    }
+}
+
+fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
+    let mut plan: Option<String> = None;
+    let mut reset: Option<String> = None;
+    let mut on_demand_off = false;
+    let mut windows: Vec<UsageWindow> = Vec::new();
+    for raw in strip_ansi(text).lines() {
+        let line = raw.trim();
+        if let Some((head, rest)) = line.split_once('\u{2022}') {
+            if head.trim().eq_ignore_ascii_case("usage") && plan.is_none() {
+                let rest = rest.trim();
+                match rest.find("Resets") {
+                    Some(i) => {
+                        plan = Some(rest[..i].trim().to_string());
+                        reset = Some(rest[i + "Resets".len()..].trim().to_string())
+                            .filter(|r| !r.is_empty());
+                    }
+                    None => plan = Some(rest.to_string()),
+                }
+                continue;
+            }
+        }
+        let Some((label, rest)) = cursor_row(line) else {
+            continue;
+        };
+        let lower = rest.to_ascii_lowercase();
+        if let Some(i) = lower.find("% used") {
+            let digits: String = rest[..i]
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let Ok(used_pct) = digits.parse::<f64>() else {
+                continue;
+            };
+            // A redrawn screen repeats rows: the last reading wins.
+            windows.retain(|w| w.label != label);
+            windows.push(UsageWindow {
+                label: label.to_string(),
+                used_pct,
+                resets: None,
+            });
+        } else if label == "On-Demand" && lower.contains("disabled") {
+            on_demand_off = true;
+        }
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    if let Some(w) = windows.iter_mut().find(|w| w.label == "Included") {
+        w.resets = reset;
+    }
+    let mut note = Vec::new();
+    if let Some(p) = plan.filter(|p| !p.is_empty()) {
+        note.push(format!("Cursor {p}"));
+    }
+    if on_demand_off {
+        note.push("on-demand off".to_string());
+    }
+    Some((windows, note.join(", ")))
+}
+
+/// `(canonical label, text after it)` for a usage-table row.
+fn cursor_row(line: &str) -> Option<(&'static str, &str)> {
+    for (name, label) in [
+        ("included", "Included"),
+        ("auto", "Auto"),
+        ("api", "API"),
+        ("on-demand", "On-Demand"),
+        ("on demand", "On-Demand"),
+    ] {
+        if line.len() >= name.len() && line.is_char_boundary(name.len()) {
+            let (head, rest) = line.split_at(name.len());
+            if head.eq_ignore_ascii_case(name) && rest.starts_with(char::is_whitespace) {
+                return Some((label, rest));
+            }
+        }
+    }
+    None
+}
+
 fn claude_label(name: &str) -> String {
     let name = name.trim();
     let lower = name.to_ascii_lowercase();
@@ -401,17 +515,35 @@ fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('[') => {
                 chars.next();
                 for n in chars.by_ref() {
-                    if n.is_ascii_alphabetic() {
+                    if ('\u{40}'..='\u{7e}').contains(&n) {
                         break;
                     }
                 }
             }
-        } else {
-            out.push(c);
+            Some(']') => {
+                chars.next();
+                while let Some(n) = chars.next() {
+                    if n == '\u{7}' {
+                        break;
+                    }
+                    if n == '\u{1b}' {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
         }
     }
     out
@@ -463,6 +595,9 @@ pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<Str
 struct CachedUsage {
     fetched_at: u64,
     windows: Vec<UsageWindow>,
+    /// Plan and similar, shown after the windows (Cursor).
+    #[serde(default)]
+    note: String,
 }
 
 fn unix_now() -> u64 {
@@ -511,6 +646,10 @@ fn default_runner() -> UsageRunner {
     })
 }
 
+fn default_cursor_runner() -> UsageRunner {
+    Arc::new(crate::cursor_usage::fetch_cursor_usage_text)
+}
+
 struct Entry {
     cached: Option<CachedUsage>,
     pending: bool,
@@ -527,6 +666,7 @@ struct Fetched {
 pub struct UsageFetcher {
     state_root: PathBuf,
     runner: UsageRunner,
+    cursor_runner: UsageRunner,
     tx: Sender<Fetched>,
     rx: Receiver<Fetched>,
     entries: HashMap<String, Entry>,
@@ -542,10 +682,17 @@ impl UsageFetcher {
         UsageFetcher {
             state_root,
             runner,
+            cursor_runner: default_cursor_runner(),
             tx,
             rx,
             entries: HashMap::new(),
         }
+    }
+
+    /// Replace how Cursor's `/usage` text is obtained (tests).
+    pub fn with_cursor_runner(mut self, runner: UsageRunner) -> Self {
+        self.cursor_runner = runner;
+        self
     }
 
     /// Limits for an account right now. Claude returns the cached reading (or a "checking"
@@ -558,8 +705,7 @@ impl UsageFetcher {
     ) -> UsageSnapshot {
         match provider {
             crate::store::ProviderKind::Codex => read_codex_usage(home),
-            crate::store::ProviderKind::Cursor => cursor_usage(),
-            crate::store::ProviderKind::Claude => self.claude_snapshot(account, home, false),
+            p => self.fetched_snapshot(p, account, home, false),
         }
     }
 
@@ -571,12 +717,20 @@ impl UsageFetcher {
         home: &Path,
     ) -> UsageSnapshot {
         match provider {
-            crate::store::ProviderKind::Claude => self.claude_snapshot(account, home, true),
-            _ => self.snapshot(provider, account, home),
+            crate::store::ProviderKind::Codex => read_codex_usage(home),
+            p => self.fetched_snapshot(p, account, home, true),
         }
     }
 
-    fn claude_snapshot(&mut self, account: &str, home: &Path, force: bool) -> UsageSnapshot {
+    /// Claude and Cursor: cached reading plus a background refresh when stale.
+    fn fetched_snapshot(
+        &mut self,
+        provider: crate::store::ProviderKind,
+        account: &str,
+        home: &Path,
+        force: bool,
+    ) -> UsageSnapshot {
+        let cursor = provider == crate::store::ProviderKind::Cursor;
         let now = unix_now();
         let root = self.state_root.clone();
         let e = self
@@ -604,7 +758,7 @@ impl UsageFetcher {
             (None, false, Some(err)) => Err(Some(err.clone())),
         };
         if start {
-            self.spawn(account.to_string(), home.to_path_buf());
+            self.spawn(provider, account.to_string(), home.to_path_buf());
         }
         match view {
             Ok((c, age)) => {
@@ -613,9 +767,17 @@ impl UsageFetcher {
                 } else {
                     format!("checked {} ago", format_age_minutes(age / 60))
                 };
-                snapshot_from_windows(c.windows, None, Vec::new(), &age_note)
+                snapshot_from_windows(
+                    c.windows,
+                    None,
+                    Vec::new(),
+                    &cursor_source(&c.note, &age_note),
+                )
             }
+            Err(None) if cursor => cursor_waiting(),
             Err(None) => claude_waiting(),
+            // Cursor has no fallback command: any failure is the plain "not shown" message.
+            Err(Some(_)) if cursor => cursor_usage(),
             Err(Some(err)) => UsageSnapshot::no_data(
                 "limits unavailable",
                 format!("could not read Claude limits ({err}); /usage tries again"),
@@ -623,20 +785,35 @@ impl UsageFetcher {
         }
     }
 
-    fn spawn(&self, account: String, home: PathBuf) {
-        let runner = Arc::clone(&self.runner);
+    fn spawn(&self, provider: crate::store::ProviderKind, account: String, home: PathBuf) {
+        let cursor = provider == crate::store::ProviderKind::Cursor;
+        let runner = Arc::clone(if cursor {
+            &self.cursor_runner
+        } else {
+            &self.runner
+        });
         let tx = self.tx.clone();
         let root = self.state_root.clone();
         std::thread::spawn(move || {
-            let result = runner(&home)
-                .and_then(|text| {
-                    parse_claude_usage(&text)
-                        .ok_or_else(|| "unrecognised /usage output".to_string())
-                })
-                .map(|snap| CachedUsage {
+            let result = runner(&home).and_then(|text| {
+                let (windows, note) = if cursor {
+                    parse_cursor_windows(&text)
+                } else {
+                    parse_claude_usage(&text).map(|s| (s.windows, String::new()))
+                }
+                .ok_or_else(|| "unrecognised /usage output".to_string())?;
+                Ok(CachedUsage {
                     fetched_at: unix_now(),
-                    windows: snap.windows,
-                });
+                    windows,
+                    note,
+                })
+            });
+            if cursor {
+                if let Err(e) = &result {
+                    // Event only: never the screen text.
+                    crate::logging::info(&format!("cursor usage unavailable: {e}"));
+                }
+            }
             if let Ok(c) = &result {
                 save_cache(&root, &account, c);
             }
@@ -1025,7 +1202,8 @@ mod tests {
     #[test]
     fn rows_put_current_account_first_with_used_and_left() {
         let root = tempfile::tempdir().unwrap();
-        let mut f = UsageFetcher::new(root.path().to_path_buf());
+        let mut f = UsageFetcher::new(root.path().to_path_buf())
+            .with_cursor_runner(Arc::new(|_| Err("no agent in tests".into())));
         let accounts = vec![
             (
                 "cursor".to_string(),
@@ -1036,8 +1214,96 @@ mod tests {
         ];
         let rows = usage_rows_for_accounts(&mut f, &accounts, "codex");
         assert_eq!(rows[0].id, "codex");
-        assert!(rows[1].label.contains("not shown by Cursor CLI"));
+        // Still checking: never a stale or invented number.
+        assert!(rows[1].label.contains("checking limits"));
         assert_eq!(rows[1].tone, UsageTone::Mute);
+    }
+
+    const CURSOR_SAMPLE: &str = "\u{1b}[1mUsage \u{2022} Pro                                                                             Resets Nov 6\u{1b}[0m\n Monthly plan and on-demand usage\n\n Category        Current             Usage\n Included        27% used            \u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\n   Auto          21% used            \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\n   API           79% used            \u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\n On-Demand       Disabled            \u{2014}\u{2014}\u{2014}\u{2014}\n\n On-demand usage is off\n\n View in dashboard: cursor.com/dashboard?tab=usage\n";
+
+    #[test]
+    fn parses_the_cursor_usage_sample() {
+        let s = parse_cursor_usage(CURSOR_SAMPLE).expect("parsed");
+        let got: Vec<_> = s
+            .windows
+            .iter()
+            .map(|w| (w.label.as_str(), w.used_pct))
+            .collect();
+        assert_eq!(got, [("Included", 27.0), ("Auto", 21.0), ("API", 79.0)]);
+        assert_eq!(s.windows[0].resets.as_deref(), Some("Nov 6"));
+        assert_eq!(
+            s.summary,
+            "Included 73% left · Auto 79% left · API 21% left"
+        );
+        assert!(s.used_left_text().contains("Included 27% used / 73% left"));
+        assert!(s.used_left_text().ends_with("resets Nov 6"));
+        assert!(
+            s.detail.contains("Cursor Pro, on-demand off"),
+            "{}",
+            s.detail
+        );
+        assert_eq!(usage_tone(&s), UsageTone::Ok);
+    }
+
+    #[test]
+    fn cursor_parse_handles_on_demand_percent_redraws_and_garbage() {
+        let t = "Usage \u{2022} Ultra\n Included  90% used\n Included  96% used\n On-Demand  12% used\n";
+        let s = parse_cursor_usage(t).unwrap();
+        assert_eq!(s.windows.len(), 2);
+        assert_eq!(s.windows[0].used_pct, 96.0, "last redraw wins");
+        assert_eq!(s.windows[1].label, "On-Demand");
+        assert_eq!(usage_tone(&s), UsageTone::Bad);
+        for junk in [
+            "",
+            "hello",
+            "Usage \u{2022} Pro\n Included  lots",
+            "\u{1b}[31m\u{1b}]0;x\u{7}",
+        ] {
+            assert!(parse_cursor_usage(junk).is_none(), "{junk:?}");
+        }
+        // A row word inside prose is not a row.
+        assert!(parse_cursor_usage("Automatic 50% used").is_none());
+    }
+
+    #[test]
+    fn cursor_fetch_is_async_cached_and_failure_degrades() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let ok: UsageRunner = Arc::new(|_| Ok(CURSOR_SAMPLE.to_string()));
+        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), fake_runner(SAMPLE))
+            .with_cursor_runner(ok);
+        assert_eq!(
+            f.snapshot(ProviderKind::Cursor, "cursor", &home).summary,
+            "checking limits..."
+        );
+        wait_for(&mut f);
+        let s = f.snapshot(ProviderKind::Cursor, "cursor", &home);
+        assert!(s.summary.starts_with("Included 73% left"));
+        assert!(root.path().join("usage-cache/cursor.json").is_file());
+        // After a restart the cache answers; a failing runner is not even called.
+        let bad: UsageRunner = Arc::new(|_| Err("must not run".into()));
+        let mut g = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(bad);
+        assert!(g
+            .snapshot(ProviderKind::Cursor, "cursor", &home)
+            .summary
+            .starts_with("Included 73% left"));
+        // No cache + failure (timeout, login, layout): the old plain message.
+        let bad: UsageRunner = Arc::new(|_| Err("timed out after 15s".into()));
+        let mut h = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(bad);
+        h.snapshot(ProviderKind::Cursor, "cursor-new", &home);
+        wait_for(&mut h);
+        let s = h.snapshot(ProviderKind::Cursor, "cursor-new", &home);
+        assert_eq!(s.summary, "not shown by Cursor CLI");
+        // Unparseable text is a failure too.
+        let junk: UsageRunner = Arc::new(|_| Ok("garbage".into()));
+        let mut j = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(junk);
+        j.snapshot(ProviderKind::Cursor, "cursor-junk", &home);
+        wait_for(&mut j);
+        assert_eq!(
+            j.snapshot(ProviderKind::Cursor, "cursor-junk", &home)
+                .summary,
+            "not shown by Cursor CLI"
+        );
     }
 
     /// Runs a fake `claude` script (never the real CLI) through the real launcher.
