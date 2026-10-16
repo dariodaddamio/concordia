@@ -125,6 +125,18 @@ concordia
 2. Type a prompt and press `Enter`. `Ctrl+C` cancels.
 3. Type `/usage` to see remaining limits, `/resume` to continue an earlier session.
 
+## Workflows
+
+**You ran out of usage mid-task.** The footer shows used and left for the current account (`/usage` for the detail). Switch with `/use` and keep typing. Concordia starts a new session on the other account and puts a bounded pack of the recent conversation in front of your next prompt, headed `[concordia prior thread - bounded - N chars - tools/approvals NOT transferred]`. It is plain recent user and assistant text, capped at 6000 characters, with no summarising model and nothing copied that you did not see. The new model learns the thread from that header and text; it is not given your credentials, tool state or approvals. Switching stays manual, on purpose: Concordia never rotates accounts for you to get around a limit.
+
+**You continue the same conversation on the same account.** Nothing is injected. Concordia resumes the explicit session id it recorded (`--resume <id>`), never `--last`.
+
+**You want an earlier chat back.** `/resume` lists sessions and binds the one you pick by id.
+
+**You want help from another account.** `/workers add <account>`, then `/delegate <account> <task>`. The worker runs one visible turn with its own session and a bounded slice of context. Its result comes back as a labelled block, and `/delegate use` sends it to your main conversation when you choose ([delegation](docs/delegation.md)).
+
+**Do the models know they are inside Concordia?** Not in general today. They see the pack header after a switch, and delegated workers get a labelled task. A short opt-in "you are running inside Concordia" note, `@chat` references that expand to a bounded pack, and a `/handoff` command are on the [roadmap](#roadmap).
+
 ## Commands
 
 | Command | What it does |
@@ -234,6 +246,7 @@ Measured from this checkout (`cargo test -p concordia --tests --locked`, `cargo 
 | Prompt history (up arrow), double-tap `Ctrl+C` exit | Done |
 | Claude / Cursor session-id bind after turns | Done |
 | Orchestrator and worker accounts (`/delegate`) | Implemented, awaiting live verification |
+| Opt-in "inside Concordia" note, `@chat` references, `/handoff` | Planned |
 | Exhaustion to another account with explicit session bind | Planned |
 | Linux / macOS | Not claimed |
 | Autonomous multi-agent crews (no user approval) | Out of scope |

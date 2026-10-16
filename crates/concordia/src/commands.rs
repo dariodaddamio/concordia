@@ -14,6 +14,7 @@ pub enum SlashCommand {
     Usage,
     /// `/usage all`: limits for every ready account.
     UsageAll,
+    UsageRefresh,
     Resume,
     New,
     Config,
@@ -106,6 +107,9 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         )),
         "model" => Some((SlashCommand::Model, false)),
         "usage" if rest.eq_ignore_ascii_case("all") => Some((SlashCommand::UsageAll, false)),
+        "usage" if rest.eq_ignore_ascii_case("refresh") => {
+            Some((SlashCommand::UsageRefresh, false))
+        }
         "usage" => Some((SlashCommand::Usage, false)),
         "chats" | "resume" => Some((SlashCommand::Resume, false)),
         "new" => Some((SlashCommand::New, false)),
@@ -149,6 +153,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "choose the model"),
     ("/usage", "limits for this account"),
     ("/usage all", "limits for every account"),
+    ("/usage refresh", "check limits again now"),
     ("/resume", "continue an earlier session"),
     ("/trust", "approvals: ask, workspace or full"),
     ("/config", "how to connect providers"),
@@ -206,6 +211,7 @@ pub enum CommandOutcome {
     OpenModel,
     /// `/usage`: show the current account's limits in the transcript.
     ShowUsage,
+    ShowUsageRefresh,
     /// `/usage all`: picker with every ready account.
     OpenUsage,
     /// Copy the last assistant reply to the clipboard.
@@ -254,6 +260,7 @@ pub fn dispatch_slash(
         SlashCommand::Model => (CommandOutcome::OpenModel, Vec::new()),
         SlashCommand::Usage => (CommandOutcome::ShowUsage, Vec::new()),
         SlashCommand::UsageAll => (CommandOutcome::OpenUsage, Vec::new()),
+        SlashCommand::UsageRefresh => (CommandOutcome::ShowUsageRefresh, Vec::new()),
         SlashCommand::Copy => (CommandOutcome::CopyLastReply, Vec::new()),
         SlashCommand::Doctor => (
             CommandOutcome::Ok,

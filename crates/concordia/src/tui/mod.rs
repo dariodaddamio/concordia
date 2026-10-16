@@ -292,6 +292,8 @@ pub struct App {
     usage_icon: String,
     /// Claude limits are fetched on a worker thread and cached; never block the UI on them.
     usage_fetcher: UsageFetcher,
+    /// Index of the `/usage` result block, rewritten in place when a background check lands.
+    usage_block: Option<usize>,
     /// Tone of each `/use` or `/usage all` picker row, by row id.
     picker_tones: HashMap<String, UsageTone>,
     live_cards: Vec<StreamCard>,
@@ -356,21 +358,58 @@ impl App {
         self.usage_icon = usage_icon(snap);
     }
 
-    /// `/usage`: the current account's limits, one line per window; Claude is re-checked in the
-    /// background and the footer updates when it answers.
-    fn show_usage(&mut self) {
+    /// `/usage`: the current account's limits as one block. It reads the cache (a check starts in
+    /// the background when it is stale, and `/usage refresh` forces one) and is rewritten in place
+    /// when the answer arrives, so it never shows a stale "checking" line.
+    fn show_usage(&mut self, force: bool) {
         let Some(home) = self.home_path.clone() else {
             self.push_system("usage - no account selected; try /use");
             return;
         };
+        let snap = if force {
+            self.usage_fetcher
+                .snapshot_refresh(self.provider, &self.account, &home)
+        } else {
+            self.usage_fetcher
+                .snapshot(self.provider, &self.account, &home)
+        };
+        self.set_usage_footer(&snap);
+        self.push_command(if force { "/usage refresh" } else { "/usage" });
+        self.messages.push(ChatLine {
+            role: MsgRole::System,
+            text: self.usage_block_text(&snap),
+            card: None,
+            meta: None,
+        });
+        self.usage_block = Some(self.messages.len() - 1);
+    }
+
+    /// Header (account) plus one line per limit window, as a single message.
+    fn usage_block_text(&self, snap: &crate::usage::UsageSnapshot) -> String {
+        let body = snap.detail.trim();
+        format!("{} - limits\n{}", self.account_label(), body)
+    }
+
+    /// Rewrite the last `/usage` block with the newest reading (cache only, never blocks).
+    fn update_usage_block(&mut self) {
+        let Some(idx) = self.usage_block else {
+            return;
+        };
+        let Some(home) = self.home_path.clone() else {
+            return;
+        };
+        if self
+            .messages
+            .get(idx)
+            .is_none_or(|m| m.role != MsgRole::System)
+        {
+            self.usage_block = None;
+            return;
+        }
         let snap = self
             .usage_fetcher
-            .snapshot_refresh(self.provider, &self.account, &home);
-        self.set_usage_footer(&snap);
-        self.push_system(format!("limits - {}", self.account_label()));
-        for line in snap.detail.lines() {
-            self.push_system(format!("  {line}"));
-        }
+            .snapshot(self.provider, &self.account, &home);
+        self.messages[idx].text = self.usage_block_text(&snap);
     }
 
     fn account_label(&self) -> String {
@@ -766,6 +805,7 @@ impl App {
         self.poll_job();
         if self.usage_fetcher.poll() {
             self.refresh_usage();
+            self.update_usage_block();
         }
     }
 
@@ -1511,7 +1551,8 @@ impl App {
             CommandOutcome::OpenRemovePicker => self.open_remove_picker(None),
             CommandOutcome::AddAccount(p) => self.begin_add_account(p),
             CommandOutcome::OpenModel => self.open_model_picker(),
-            CommandOutcome::ShowUsage => self.show_usage(),
+            CommandOutcome::ShowUsage => self.show_usage(false),
+            CommandOutcome::ShowUsageRefresh => self.show_usage(true),
             CommandOutcome::OpenUsage => self.open_usage_picker(),
             CommandOutcome::CopyLastReply => match self.last_assistant_text() {
                 Some(t) => self.write_clipboard(&t),
@@ -1669,6 +1710,7 @@ impl App {
             usage_tone: UsageTone::Mute,
             usage_icon: usage_icon(&crate::usage::UsageSnapshot::no_data("", "")),
             usage_fetcher: UsageFetcher::new(state_root_for_usage),
+            usage_block: None,
             picker_tones: HashMap::new(),
             live_cards: Vec::new(),
             live_text: String::new(),

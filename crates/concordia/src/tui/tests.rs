@@ -1734,3 +1734,40 @@ fn tool_cards_stay_grouped_under_one_reply_label() {
         "no blank rows between label, cards and reply:\n{s}"
     );
 }
+
+#[test]
+fn usage_is_one_block_that_updates_in_place_when_the_check_lands() {
+    use crate::usage::UsageFetcher;
+    let iso = Isolated::new();
+    let _ = &iso;
+    let mut h = Harness::new(100, 30);
+    h.app.provider = ProviderKind::Claude;
+    h.app.account = "claude-1".into();
+    h.app.home_path = Some(std::env::temp_dir());
+    let sample = "Current session: 46% used \u{b7} resets Oct 15, 9:10pm (America/Phoenix)\nCurrent week (all models): 20% used \u{b7} resets Oct 21, 9am (America/Phoenix)\n";
+    let slow: crate::usage::UsageRunner = std::sync::Arc::new(move |_| {
+        std::thread::sleep(Duration::from_millis(200));
+        Ok(sample.to_string())
+    });
+    h.app.usage_fetcher = UsageFetcher::with_runner(h.app.state_root.clone(), slow);
+
+    h.type_str("/usage");
+    h.enter();
+    let before = h.app.messages.len();
+    let first = h.transcript_text();
+    assert!(first.contains("limits"), "{first}");
+    assert!(!first.contains("46% used"), "still checking:\n{first}");
+
+    assert!(h.wait_for(|h| h.transcript_text().contains("46% used")));
+    let after = h.transcript_text();
+    assert!(
+        after.contains("20% used") && after.contains("54% left"),
+        "{after}"
+    );
+    assert_eq!(
+        h.app.messages.len(),
+        before,
+        "rewritten in place, not appended"
+    );
+    assert_eq!(after.matches("limits").count(), 1, "one block:\n{after}");
+}
