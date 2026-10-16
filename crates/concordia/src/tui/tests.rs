@@ -168,6 +168,8 @@ fn drag_across_messages_keeps_line_breaks() {
     let mut h = Harness::new(60, 20);
     h.app.push_user("first line".into());
     h.app.push_assistant("second line".into());
+    // No reply label between the rows: this test is about line breaks.
+    h.app.messages.last_mut().unwrap().meta = None;
     h.draw();
     let a = h.row_of("first line");
     let (x0, y0) = h.t_cell(a, 6);
@@ -881,7 +883,7 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         assert!(s.contains(needle), "palette missing {needle:?}:\n{s}");
     }
     assert!(
-        s.contains("commands · 17"),
+        s.contains("commands · 18"),
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);
@@ -1530,5 +1532,202 @@ fn one_failure_reported_three_ways_is_shown_once_and_cli_noise_is_dropped() {
     assert!(
         text.contains("something new") && text.contains("exited with code 1"),
         "{text}"
+    );
+}
+
+fn footer_row(h: &Harness) -> String {
+    let s = h.screen();
+    s.lines().last().unwrap().to_string()
+}
+
+#[test]
+fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
+    let all: Vec<&str> = HINTS.iter().flat_map(|h| [h.0, h.1]).collect();
+    for w in [40u16, 60, 80, 100, 140] {
+        let h = Harness::new(w, 12);
+        let row = footer_row(&h);
+        let right = if row.ends_with("auth workspace") {
+            "auth workspace"
+        } else if row.ends_with("workspace") {
+            "workspace"
+        } else {
+            ""
+        };
+        assert!(!right.is_empty(), "w={w}: mode column missing: {row:?}");
+        let left = row[..row.len() - right.len()].to_string();
+        assert!(
+            left.ends_with(' '),
+            "w={w}: no gap before the mode column: {row:?}"
+        );
+        assert!(row.chars().count() <= w as usize, "w={w}: {row:?}");
+        for seg in left.trim().split(" \u{b7} ") {
+            assert!(
+                all.contains(&seg),
+                "w={w}: cut or unknown hint {seg:?} in {row:?}"
+            );
+        }
+        assert!(left.contains("Enter send"), "w={w}: {row:?}");
+    }
+    // Wide terminals keep everything; narrow ones shorten, then drop the lowest priorities.
+    assert!(footer_row(&Harness::new(140, 12)).contains("Ctrl+C copy or cancel"));
+    assert!(footer_row(&Harness::new(60, 12)).contains("Ctrl+C copy/stop"));
+    assert!(!footer_row(&Harness::new(40, 12)).contains("drag"));
+}
+
+#[test]
+fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
+    use ratatui::style::Color;
+    let mut h = Harness::new(100, 12);
+    assert_eq!(h.app.trust, TrustMode::Workspace);
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        seen.push(h.app.trust);
+        assert_eq!(get_settings(&h.app.state_root).trust, h.app.trust);
+    }
+    assert_eq!(
+        seen,
+        [
+            TrustMode::Full,
+            TrustMode::Plan,
+            TrustMode::Ask,
+            TrustMode::Workspace
+        ]
+    );
+    for (mode, want) in [
+        (TrustMode::Plan, Color::Cyan),
+        (TrustMode::Ask, Color::Yellow),
+        (TrustMode::Workspace, Color::Green),
+        (TrustMode::Full, Color::Red),
+    ] {
+        h.app.trust = mode;
+        h.draw();
+        let buf = h.term.backend().buffer();
+        let y = buf.area.height - 1;
+        let x = buf.area.width - 3;
+        assert_eq!(buf[(x, y)].fg, want, "{mode:?}");
+    }
+    assert!(h.screen().contains("full \u{26a0}"));
+}
+
+#[test]
+fn shift_tab_moves_the_palette_up_and_tab_still_completes() {
+    let mut h = Harness::new(100, 24);
+    h.type_str("/use");
+    let before = h.app.trust;
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(h.app.palette.selected, 1);
+    h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(h.app.palette.selected, 0);
+    assert_eq!(
+        h.app.trust, before,
+        "the mode must not change while the palette is open"
+    );
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(h.app.editor.text(), "/use");
+}
+
+#[test]
+fn mode_command_shows_and_sets_the_mode() {
+    let mut h = Harness::new(100, 24);
+    h.type_str("/mode");
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    let s = h.screen();
+    assert!(s.contains("mode: workspace"), "{s}");
+    h.type_str("/mode plan");
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.trust, TrustMode::Plan);
+    assert!(h.screen().contains("mode \u{2192} plan"));
+    h.type_str("/mode bogus");
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.trust, TrustMode::Plan);
+    assert!(h.screen().contains("unknown mode bogus"));
+    h.type_str("/mode auto");
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.trust, TrustMode::Workspace);
+}
+
+#[test]
+fn command_output_is_a_barred_block_and_agent_replies_carry_a_label() {
+    use ratatui::style::Color;
+    let mut h = Harness::new(100, 24);
+    h.app.account = "codex-3".into();
+    h.app.model = "gpt-5.1".into();
+    h.app.push_user("hello".into());
+    h.app.push_assistant("hi there".into());
+    h.app.push_command("/usage");
+    h.app.push_system("codex 3  5h 12% used");
+    h.app.push_system("model save failed - disk full");
+    h.app.push_system("now using Codex 3");
+    h.draw();
+    let s = h.screen();
+    assert!(s.contains("Codex \u{b7} codex-3 \u{b7} gpt-5.1"), "{s}");
+    assert!(s.contains("\u{25cf} hi there"), "{s}");
+    assert!(s.contains("| /usage"), "{s}");
+    assert!(s.contains("|   codex 3  5h 12% used"), "{s}");
+    assert!(s.contains("| x model save failed"), "{s}");
+    assert!(s.contains("| + now using Codex 3"), "{s}");
+
+    // Visually distinct: a command block's text is dim, the reply's is default; errors are red.
+    let buf = h.term.backend().buffer().clone();
+    let find = |needle: &str| -> (u16, u16) {
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(i) = row.find(needle) {
+                return (row[..i].chars().count() as u16, y);
+            }
+        }
+        panic!("{needle} not on screen");
+    };
+    let (x, y) = find("hi there");
+    assert_eq!(buf[(x, y)].fg, Color::Reset);
+    let (x, y) = find("codex 3  5h");
+    assert_eq!(buf[(x, y)].fg, Color::Indexed(245));
+    let (x, y) = find("model save failed");
+    assert_eq!(buf[(x, y)].fg, Color::Red);
+    let (x, y) = find("| /usage");
+    assert_eq!(buf[(x, y)].fg, Color::Indexed(244));
+    let (x, y) = find("Codex \u{b7} codex-3");
+    assert_eq!(buf[(x, y)].fg, provider_color(ProviderKind::Codex));
+
+    // NO_COLOR keeps the structure (bars, labels) with emphasis only.
+    h.app.no_color = true;
+    h.draw();
+    let s = h.screen();
+    assert!(
+        s.contains("| /usage") && s.contains("Codex \u{b7} codex-3"),
+        "{s}"
+    );
+}
+
+#[test]
+fn tool_cards_stay_grouped_under_one_reply_label() {
+    let mut h = Harness::new(100, 24);
+    h.app.push_user("do it".into());
+    for (id, title) in [("1", "Bash"), ("2", "Edit")] {
+        h.app.push_card(crate::provider::stream_cards::StreamCard {
+            id: id.into(),
+            title: title.into(),
+            detail: None,
+            status: CardStatus::Done,
+        });
+    }
+    h.app.push_assistant("done".into());
+    h.draw();
+    let s = h.screen();
+    let lines: Vec<&str> = s.lines().collect();
+    let labels = lines.iter().filter(|l| l.contains("Codex \u{b7}")).count();
+    assert_eq!(labels, 1, "{s}");
+    let label = lines
+        .iter()
+        .position(|l| l.contains("Codex \u{b7}"))
+        .unwrap();
+    let reply = lines
+        .iter()
+        .position(|l| l.contains("\u{25cf} done"))
+        .unwrap();
+    assert!(
+        lines[label + 1..reply].iter().all(|l| !l.trim().is_empty()),
+        "no blank rows between label, cards and reply:\n{s}"
     );
 }

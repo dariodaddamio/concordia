@@ -18,6 +18,8 @@ pub enum SlashCommand {
     New,
     Config,
     Trust,
+    /// `/mode [plan|ask|auto|full]`: show or set the permission mode.
+    Mode(Option<String>),
     Split,
     Update,
     /// `/update check`: report only.
@@ -63,6 +65,10 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         "new" => Some((SlashCommand::New, false)),
         "config" => Some((SlashCommand::Config, false)),
         "trust" => Some((SlashCommand::Trust, false)),
+        "mode" => Some((
+            SlashCommand::Mode(Some(rest.to_lowercase()).filter(|r| !r.is_empty())),
+            false,
+        )),
         "split" => Some((SlashCommand::Split, vertical)),
         "update" | "upgrade" | "rebuild" if rest.eq_ignore_ascii_case("check") => {
             Some((SlashCommand::UpdateCheck, false))
@@ -90,6 +96,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/use", "switch account or provider"),
     ("/use add", "connect a new account"),
     ("/use remove", "remove an account"),
+    ("/mode", "permission mode: plan, ask, auto or full"),
     ("/model", "choose the model"),
     ("/usage", "limits for this account"),
     ("/usage all", "limits for every account"),
@@ -173,6 +180,8 @@ pub fn dispatch_slash(
         ),
         SlashCommand::Resume => (CommandOutcome::OpenResume, Vec::new()),
         SlashCommand::Trust => (CommandOutcome::OpenTrust, Vec::new()),
+        // Handled by the TUI (it owns the live mode); nothing to do headless.
+        SlashCommand::Mode(_) => (CommandOutcome::Ok, Vec::new()),
         SlashCommand::Use => (CommandOutcome::OpenUse, Vec::new()),
         SlashCommand::UseAdd(None) => (CommandOutcome::OpenAddProvider, Vec::new()),
         SlashCommand::UseRemove(_) => (CommandOutcome::OpenRemovePicker, Vec::new()),
