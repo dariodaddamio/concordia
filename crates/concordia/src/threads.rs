@@ -14,14 +14,14 @@ pub const MAP_CHARS: usize = 1600;
 pub const READ_CHARS: usize = 6000;
 
 // ---------------------------------------------------------------------------------------------
-// Opt-in switch. STAGE 1C: replace the body of this function with the `[threads] enabled` key of
-// `<state>/config.toml` (keep the env var as an override if wanted). This is the only place.
+// Opt-in switch: the env var, the store setting, or `[threads] enabled` in `<state>/config.toml`.
 // ---------------------------------------------------------------------------------------------
 pub fn enabled(state_root: &Path) -> bool {
     if std::env::var("CONCORDIA_THREADS").is_ok_and(|v| v == "1") {
         return true;
     }
     crate::store::get_settings(state_root).thread_log
+        || crate::config::for_root(state_root).threads.enabled
 }
 
 /// A new thread log for a conversation, or None when recording is off.
@@ -30,7 +30,7 @@ pub fn start(state_root: &Path) -> Option<ThreadLog> {
 }
 
 pub fn map_chars_default() -> usize {
-    MAP_CHARS
+    crate::config::threads_map_chars()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

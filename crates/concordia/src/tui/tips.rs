@@ -43,9 +43,9 @@ pub fn launch_seed() -> u64 {
     t ^ (u64::from(std::process::id()) << 20)
 }
 
-// STAGE 1C: replace the env lookup below with the `ui.tips` value from config.toml.
+/// `ui.tips` in config.toml; `CONCORDIA_TIPS=0` turns it off regardless.
 pub fn ui_tips_enabled() -> bool {
-    std::env::var("CONCORDIA_TIPS").map_or(true, |v| v.trim() != "0")
+    std::env::var("CONCORDIA_TIPS").map_or(true, |v| v.trim() != "0") && crate::config::ui_tips()
 }
 
 #[cfg(test)]

@@ -4,9 +4,10 @@
 use crate::provider::stream_cards::TurnUsage;
 use std::time::Duration;
 
-// STAGE 1C: replace the env lookup below with the `ui.token_line` value from config.toml.
+/// `ui.token_line` in config.toml; `CONCORDIA_TOKEN_LINE=0` turns it off regardless.
 pub fn ui_token_line_enabled() -> bool {
     std::env::var("CONCORDIA_TOKEN_LINE").map_or(true, |v| v.trim() != "0")
+        && crate::config::ui_token_line()
 }
 
 /// 999, 1.2k, 12k, 123k, 1.2M.
