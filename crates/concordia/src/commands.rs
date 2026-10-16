@@ -416,15 +416,30 @@ mod update_tests {
     fn workers_and_delegate_commands_parse() {
         let c = |l: &str| parse_slash(l).unwrap().0;
         assert_eq!(c("/workers"), SlashCommand::Workers);
-        assert_eq!(c("/workers add Codex-2"), SlashCommand::WorkersAdd(Some("codex-2".into())));
+        assert_eq!(
+            c("/workers add Codex-2"),
+            SlashCommand::WorkersAdd(Some("codex-2".into()))
+        );
         assert_eq!(c("/workers add"), SlashCommand::WorkersAdd(None));
-        assert_eq!(c("/workers rm codex-2"), SlashCommand::WorkersRemove(Some("codex-2".into())));
+        assert_eq!(
+            c("/workers rm codex-2"),
+            SlashCommand::WorkersRemove(Some("codex-2".into()))
+        );
         assert_eq!(c("/delegate"), SlashCommand::DelegateHelp);
         assert_eq!(c("/delegate help"), SlashCommand::DelegateHelp);
-        assert_eq!(c("/delegate stop Claude"), SlashCommand::DelegateStop(Some("claude".into())));
+        assert_eq!(
+            c("/delegate stop Claude"),
+            SlashCommand::DelegateStop(Some("claude".into()))
+        );
         assert_eq!(c("/delegate use"), SlashCommand::DelegateUse(None));
-        assert_eq!(c("/delegate protocol ON"), SlashCommand::DelegateProtocol(Some(true)));
-        assert_eq!(c("/delegate protocol"), SlashCommand::DelegateProtocol(None));
+        assert_eq!(
+            c("/delegate protocol ON"),
+            SlashCommand::DelegateProtocol(Some(true))
+        );
+        assert_eq!(
+            c("/delegate protocol"),
+            SlashCommand::DelegateProtocol(None)
+        );
         // The task keeps its case, spacing inside and punctuation.
         assert_eq!(
             c("/delegate Codex-2   Fix the BUG in  src/a.rs, please"),
@@ -435,7 +450,10 @@ mod update_tests {
         );
         assert_eq!(
             c("/delegate auto"),
-            SlashCommand::Delegate { target: "auto".into(), task: String::new() }
+            SlashCommand::Delegate {
+                target: "auto".into(),
+                task: String::new()
+            }
         );
     }
 

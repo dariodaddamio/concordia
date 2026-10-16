@@ -17,7 +17,7 @@ use crate::provider::turn::{
     run_provider_turn_with_progress, ProviderTurnRequest, RunningTurn, TurnOutcome, TurnProgress,
 };
 use crate::store::{
-    get_settings, modify_store, ChildTrust, ProviderKind, TrustMode, OrchestratorSettings,
+    get_settings, modify_store, ChildTrust, OrchestratorSettings, ProviderKind, TrustMode,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -184,7 +184,8 @@ pub fn build_worker_context(
         },
         PACK_CHARS,
     );
-    let rule = "[concordia delegate: you are a worker. Do only the task below. Your reply goes back \
+    let rule =
+        "[concordia delegate: you are a worker. Do only the task below. Your reply goes back \
                 to the user, not to another agent; do not delegate further.]";
     match decision.pack {
         Some(p) => {
@@ -592,7 +593,11 @@ impl Delegates {
 
     /// Rows for the strip: active jobs (oldest first), then recently finished (newest first).
     pub fn visible(&self, now: Instant, recent: Duration) -> Vec<&Job> {
-        let mut active: Vec<&Job> = self.jobs.iter().filter(|j| !j.state.is_finished()).collect();
+        let mut active: Vec<&Job> = self
+            .jobs
+            .iter()
+            .filter(|j| !j.state.is_finished())
+            .collect();
         let mut done: Vec<&Job> = self
             .jobs
             .iter()
@@ -696,7 +701,10 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
             }
         }
         TurnProgress::Card(c) => {
-            j.snippet = format_card_line(&c).trim_start_matches('\u{2502}').trim().to_string();
+            j.snippet = format_card_line(&c)
+                .trim_start_matches('\u{2502}')
+                .trim()
+                .to_string();
             upsert_card(&mut j.cards, c);
             j.state = if j.cards.iter().any(|c| c.status == CardStatus::Running) {
                 WorkerState::Tool
@@ -785,7 +793,10 @@ pub fn result_block(j: &Job, orchestrator_label: &str) -> String {
         j.tool_cards(),
         if j.tool_cards() == 1 { "" } else { "s" }
     );
-    let mut out = vec![head, format!("task: {}", cap_chars(&one_line(&j.task), 160))];
+    let mut out = vec![
+        head,
+        format!("task: {}", cap_chars(&one_line(&j.task), 160)),
+    ];
     let text = j.final_text();
     match j.state {
         WorkerState::Done if !text.is_empty() => {
@@ -848,10 +859,16 @@ pub fn workers_report(
         "workers {}/{MAX_WORKERS} \u{b7} orchestrator {} \u{b7} protocol {}",
         settings.workers.len(),
         orch,
-        if settings.delegation_protocol { "on" } else { "off" }
+        if settings.delegation_protocol {
+            "on"
+        } else {
+            "off"
+        }
     )];
     if settings.workers.is_empty() {
-        out.push("  none yet - /workers add <account>, then /delegate <account|auto> <task>".into());
+        out.push(
+            "  none yet - /workers add <account>, then /delegate <account|auto> <task>".into(),
+        );
         return out;
     }
     for w in &settings.workers {
@@ -900,7 +917,9 @@ pub fn workers_report(
                 )
             })
             .unwrap_or_default();
-        out.push(format!("  {name} ({prov}) \u{b7} {id} \u{b7} {status}{last}"));
+        out.push(format!(
+            "  {name} ({prov}) \u{b7} {id} \u{b7} {status}{last}"
+        ));
     }
     out
 }

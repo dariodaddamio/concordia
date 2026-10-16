@@ -42,23 +42,40 @@ fn roles_validate_and_persist() {
     let d = setup();
     let r = d.path();
     // The orchestrator is never its own worker.
-    assert!(add_worker(r, "codex-o", "codex-o").unwrap_err().contains("orchestrator"));
+    assert!(add_worker(r, "codex-o", "codex-o")
+        .unwrap_err()
+        .contains("orchestrator"));
     // Unknown and logged-out accounts are refused.
-    assert!(add_worker(r, "codex-o", "nope").unwrap_err().contains("no account"));
+    assert!(add_worker(r, "codex-o", "nope")
+        .unwrap_err()
+        .contains("no account"));
     let home = r.join("home-codex-w4");
     std::fs::remove_file(home.join("auth.json")).unwrap();
-    assert!(add_worker(r, "codex-o", "codex-w4").unwrap_err().contains("not logged in"));
+    assert!(add_worker(r, "codex-o", "codex-w4")
+        .unwrap_err()
+        .contains("not logged in"));
     make_account(r, "codex-w4", ProviderKind::Codex, "WORKERDD4");
 
-    assert!(add_worker(r, "codex-o", "codex-w1").unwrap().contains("worker added"));
-    assert!(add_worker(r, "codex-o", "codex-w1").unwrap_err().contains("already"));
+    assert!(add_worker(r, "codex-o", "codex-w1")
+        .unwrap()
+        .contains("worker added"));
+    assert!(add_worker(r, "codex-o", "codex-w1")
+        .unwrap_err()
+        .contains("already"));
     add_worker(r, "codex-o", "codex-w2").unwrap();
     add_worker(r, "codex-o", "codex-w3").unwrap();
-    assert!(add_worker(r, "codex-o", "codex-w4").unwrap_err().contains("at most 3"));
-    assert_eq!(get_settings(r).workers, ["codex-w1", "codex-w2", "codex-w3"]);
+    assert!(add_worker(r, "codex-o", "codex-w4")
+        .unwrap_err()
+        .contains("at most 3"));
+    assert_eq!(
+        get_settings(r).workers,
+        ["codex-w1", "codex-w2", "codex-w3"]
+    );
 
     assert!(remove_worker(r, "codex-w2").unwrap().contains("removed"));
-    assert!(remove_worker(r, "codex-w2").unwrap_err().contains("not a worker"));
+    assert!(remove_worker(r, "codex-w2")
+        .unwrap_err()
+        .contains("not a worker"));
     assert_eq!(get_settings(r).workers, ["codex-w1", "codex-w3"]);
 }
 
@@ -73,7 +90,9 @@ fn the_same_login_is_refused_as_a_worker() {
     // ...and the same login as an existing worker.
     add_worker(r, "codex-o", "codex-w1").unwrap();
     make_account(r, "codex-dup2", ProviderKind::Codex, "WORKERAA1");
-    assert!(add_worker(r, "codex-o", "codex-dup2").unwrap_err().contains("same login"));
+    assert!(add_worker(r, "codex-o", "codex-dup2")
+        .unwrap_err()
+        .contains("same login"));
 }
 
 #[test]
@@ -94,7 +113,11 @@ fn worker_context_is_bounded_and_never_carries_a_session() {
     let w = get_account(d.path(), "codex-w1").unwrap();
     let msgs: Vec<PackMessage> = (0..40)
         .map(|i| PackMessage {
-            role: if i % 2 == 0 { PackRole::User } else { PackRole::Assistant },
+            role: if i % 2 == 0 {
+                PackRole::User
+            } else {
+                PackRole::Assistant
+            },
             text: format!("message {i} {}", "x".repeat(900)),
         })
         .collect();
@@ -102,8 +125,15 @@ fn worker_context_is_bounded_and_never_carries_a_session() {
     let prefix = prefix.unwrap();
     assert!(prefix.contains("NOT transferred"));
     assert!(prefix.contains("message 39"), "newest message is kept");
-    assert!(!prefix.contains("message 30 "), "only the last few are offered");
-    assert!(prefix.chars().count() < PACK_CHARS + 600, "{}", prefix.chars().count());
+    assert!(
+        !prefix.contains("message 30 "),
+        "only the last few are offered"
+    );
+    assert!(
+        prefix.chars().count() < PACK_CHARS + 600,
+        "{}",
+        prefix.chars().count()
+    );
     assert!(note.contains("msgs"));
     let (p2, n2) = build_worker_context(ProviderKind::Claude, None, &w, &[]);
     assert!(p2.unwrap().contains("you are a worker") && n2.contains("no prior"));
@@ -154,14 +184,20 @@ fn card(id: &str, status: CardStatus) -> StreamCard {
 fn progress_drives_the_state_machine() {
     let mut j = bare_job(1, "a", WorkerState::Starting);
     apply_progress(&mut j, TurnProgress::Session("sid".into()));
-    assert_eq!((j.state, j.session_id.as_deref()), (WorkerState::Thinking, Some("sid")));
+    assert_eq!(
+        (j.state, j.session_id.as_deref()),
+        (WorkerState::Thinking, Some("sid"))
+    );
     apply_progress(&mut j, TurnProgress::Card(card("c1", CardStatus::Running)));
     assert_eq!(j.state, WorkerState::Tool);
     assert!(j.snippet.contains("cargo test"));
     apply_progress(&mut j, TurnProgress::Card(card("c1", CardStatus::Done)));
     assert_eq!(j.state, WorkerState::Thinking);
     apply_progress(&mut j, TurnProgress::Text("hello\nworld".into()));
-    assert_eq!((j.state, j.snippet.as_str()), (WorkerState::Writing, "world"));
+    assert_eq!(
+        (j.state, j.snippet.as_str()),
+        (WorkerState::Writing, "world")
+    );
     let out = TurnOutcome {
         exit_code: Some(0),
         ..Default::default()
@@ -196,7 +232,10 @@ fn failure_and_cancel_outcomes() {
     };
     apply_outcome(&mut j, out, Instant::now());
     assert_eq!(j.state, WorkerState::Cancelled);
-    assert!(j.text.is_empty(), "the runner's placeholder is not a result");
+    assert!(
+        j.text.is_empty(),
+        "the runner's placeholder is not a result"
+    );
 }
 
 #[test]
@@ -214,7 +253,11 @@ fn one_turn_per_worker_with_a_bounded_queue_and_cancel() {
     };
     let q1 = d.submit(sub("one"), now).unwrap();
     let _q2 = d.submit(sub("two"), now).unwrap();
-    assert_eq!(d.get(q1).unwrap().state, WorkerState::Queued, "waits for the worker");
+    assert_eq!(
+        d.get(q1).unwrap().state,
+        WorkerState::Queued,
+        "waits for the worker"
+    );
     let e = d.submit(sub("three"), now).unwrap_err();
     assert!(e.contains("already has"), "{e}");
     // A different worker is independent.
@@ -241,7 +284,11 @@ fn visible_rows_are_active_first_then_recent_and_old_results_are_pruned() {
     let v = d.visible(now, Duration::from_secs(60));
     assert_eq!(v[0].id, 99);
     assert_eq!(v.len(), 1 + KEEP_FINISHED);
-    assert_eq!(d.visible(now + Duration::from_secs(600), Duration::from_secs(60)).len(), 1);
+    assert_eq!(
+        d.visible(now + Duration::from_secs(600), Duration::from_secs(60))
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -254,14 +301,19 @@ fn result_block_is_labelled_and_marks_the_output_untrusted() {
     assert!(b.contains("1 tool card") && b.contains("the answer is 42"));
     assert!(b.contains("untrusted") && b.contains("/delegate use"));
     let p = use_prompt(&j);
-    assert!(p.contains("UNTRUSTED") && p.contains("the answer is 42") && p.contains("[end of delegate result]"));
+    assert!(
+        p.contains("UNTRUSTED")
+            && p.contains("the answer is 42")
+            && p.contains("[end of delegate result]")
+    );
     j.text = "y".repeat(RESULT_SEND_CHARS * 2);
     assert!(use_prompt(&j).chars().count() < RESULT_SEND_CHARS + 600);
 }
 
 #[test]
 fn protocol_blocks_parse_strictly_and_cap_at_three() {
-    let reply = "Sure.\n```concordia-delegate\n{\"to\":\"Codex-W1\",\"task\":\"run the tests\"}\n```\n\
+    let reply =
+        "Sure.\n```concordia-delegate\n{\"to\":\"Codex-W1\",\"task\":\"run the tests\"}\n```\n\
         ```concordia-delegate\nnot json\n```\n\
         ```rust\nfn main(){}\n```\n\
         ```concordia-delegate\n{\"to\":\"\",\"task\":\"x\"}\n```\n\
@@ -270,11 +322,19 @@ fn protocol_blocks_parse_strictly_and_cap_at_three() {
         ```concordia-delegate\n{\"to\":\"d\",\"task\":\"four\"}\n```\n";
     let b = extract_delegate_blocks(reply);
     assert_eq!(b.len(), 3);
-    assert_eq!(b[0], DelegateBlock { to: "codex-w1".into(), task: "run the tests".into() });
+    assert_eq!(
+        b[0],
+        DelegateBlock {
+            to: "codex-w1".into(),
+            task: "run the tests".into()
+        }
+    );
     assert_eq!(b[2].to, "c");
     assert!(extract_delegate_blocks("no blocks here").is_empty());
     // An unterminated fence yields nothing.
-    assert!(extract_delegate_blocks("```concordia-delegate\n{\"to\":\"a\",\"task\":\"b\"}").is_empty());
+    assert!(
+        extract_delegate_blocks("```concordia-delegate\n{\"to\":\"a\",\"task\":\"b\"}").is_empty()
+    );
 }
 
 #[test]
@@ -290,7 +350,10 @@ fn workers_report_shows_status_and_last_result() {
     j.snippet = "all green".into();
     del.jobs.push(j);
     let lines = workers_report(r, "codex-o", &del, Instant::now());
-    assert!(lines[1].contains("last: done #4") && lines[1].contains("all green"), "{lines:?}");
+    assert!(
+        lines[1].contains("last: done #4") && lines[1].contains("all green"),
+        "{lines:?}"
+    );
     // The orchestrator switching onto a worker is called out.
     let lines = workers_report(r, "codex-w1", &del, Instant::now());
     assert!(lines[1].contains("orchestrator now"));

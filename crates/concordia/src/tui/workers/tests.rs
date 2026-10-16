@@ -107,7 +107,11 @@ impl H {
     fn submit(&mut self, line: &str) -> mpsc::UnboundedReceiver<String> {
         self.type_str(line);
         let (tx, rx) = mpsc::unbounded_channel();
-        handle_key(&mut self.app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        handle_key(
+            &mut self.app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &tx,
+        );
         self.draw();
         rx
     }
@@ -132,12 +136,24 @@ fn the_strip_is_hidden_without_workers_and_sits_above_the_prompt_otherwise() {
             "no strip without workers"
         );
         h.add("codex-w1", S::Thinking, "reading src/main.rs");
-        h.add("codex-w2", S::Tool, "shell cargo test --workspace --all-targets");
+        h.add(
+            "codex-w2",
+            S::Tool,
+            "shell cargo test --workspace --all-targets",
+        );
         h.draw();
         let rows = h.rows();
         let top = h.input_top() as usize;
-        assert!(rows[top - 1].contains("codex-w2") && rows[top - 1].contains("tool"), "w={w}: {:?}", rows[top - 1]);
-        assert!(rows[top - 2].contains("thinking") && rows[top - 2].contains("12s"), "w={w}: {:?}", rows[top - 2]);
+        assert!(
+            rows[top - 1].contains("codex-w2") && rows[top - 1].contains("tool"),
+            "w={w}: {:?}",
+            rows[top - 1]
+        );
+        assert!(
+            rows[top - 2].contains("thinking") && rows[top - 2].contains("12s"),
+            "w={w}: {:?}",
+            rows[top - 2]
+        );
         assert_eq!(h.app.areas.transcript.height, before - 2);
         for r in &rows {
             assert!(r.chars().count() <= w as usize);
@@ -146,7 +162,11 @@ fn the_strip_is_hidden_without_workers_and_sits_above_the_prompt_otherwise() {
         if w == 60 {
             assert!(rows[top - 1].contains('\u{2026}'), "{:?}", rows[top - 1]);
         } else {
-            assert!(rows[top - 1].contains("--all-targets") || w == 100, "{:?}", rows[top - 1]);
+            assert!(
+                rows[top - 1].contains("--all-targets") || w == 100,
+                "{:?}",
+                rows[top - 1]
+            );
         }
     }
 }
@@ -161,7 +181,11 @@ fn at_most_four_rows_then_plus_n_more() {
         h.draw();
         let top = h.input_top() as usize;
         let rows = h.rows();
-        assert!(rows[top - 1].contains("+3 more"), "w={w}: {:?}", rows[top - 1]);
+        assert!(
+            rows[top - 1].contains("+3 more"),
+            "w={w}: {:?}",
+            rows[top - 1]
+        );
         assert!(rows[top - 4].contains("thinking") && !rows[top - 5].contains("12s"));
         // A tiny terminal never squeezes the transcript below its minimum.
         let mut small = H::new(w, 9);
@@ -191,11 +215,7 @@ fn each_state_has_its_own_colour_and_spinner_animates() {
     // 5 rows -> 3 shown + "+2 more"; check the first three in order.
     let buf = h.term.backend().buffer().clone();
     let rows_y = (top - 4)..top;
-    let colors: Vec<Color> = rows_y
-        .clone()
-        .take(3)
-        .map(|y| buf[(2, y)].fg)
-        .collect();
+    let colors: Vec<Color> = rows_y.clone().take(3).map(|y| buf[(2, y)].fg).collect();
     assert_eq!(colors, [Color::Cyan, Color::Magenta, Color::Yellow]);
     let glyph = |h: &H, y: u16| h.term.backend().buffer()[(2, y)].symbol().to_string();
     let g0 = glyph(&h, top - 4);
@@ -211,11 +231,20 @@ fn each_state_has_its_own_colour_and_spinner_animates() {
     h.draw();
     let top = h.input_top();
     let b = h.term.backend().buffer().clone();
-    assert_eq!((b[(2, top - 4)].symbol(), b[(2, top - 4)].fg), ("\u{25cc}", Color::DarkGray));
+    assert_eq!(
+        (b[(2, top - 4)].symbol(), b[(2, top - 4)].fg),
+        ("\u{25cc}", Color::DarkGray)
+    );
     // Active first (queued), then finished newest first (cancelled, failed, done).
     assert_eq!(b[(2, top - 3)].symbol(), "-");
-    assert_eq!((b[(2, top - 2)].symbol(), b[(2, top - 2)].fg), ("\u{2717}", Color::Red));
-    assert_eq!((b[(2, top - 1)].symbol(), b[(2, top - 1)].fg), ("\u{2713}", Color::Green));
+    assert_eq!(
+        (b[(2, top - 2)].symbol(), b[(2, top - 2)].fg),
+        ("\u{2717}", Color::Red)
+    );
+    assert_eq!(
+        (b[(2, top - 1)].symbol(), b[(2, top - 1)].fg),
+        ("\u{2713}", Color::Green)
+    );
 }
 
 #[test]
@@ -231,7 +260,11 @@ fn no_color_keeps_emphasis_only() {
         assert_eq!((c.fg, c.bg), (Color::Reset, Color::Reset));
     }
     let y = h.input_top() - 1;
-    assert_eq!(buf[(0, y)].symbol(), "\u{25b8}", "the focus marker survives without colour");
+    assert_eq!(
+        buf[(0, y)].symbol(),
+        "\u{25b8}",
+        "the focus marker survives without colour"
+    );
     assert!(buf[(0, y)].modifier.contains(Modifier::BOLD));
 }
 
@@ -256,7 +289,10 @@ fn alt_arrows_and_clicks_select_enter_opens_the_viewer_esc_closes() {
     // Enter with an empty prompt opens the viewer; the transcript of the worker is shown.
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert!(h.app.deleg.viewer.is_some());
-    assert!(h.rows().iter().any(|r| r.contains("worker #1") && r.contains("writing")));
+    assert!(h
+        .rows()
+        .iter()
+        .any(|r| r.contains("worker #1") && r.contains("writing")));
     assert!(h.rows().iter().any(|r| r.contains("untrusted data")));
     // While it is open, typing does not reach the prompt.
     h.type_str("zzz");
@@ -382,9 +418,16 @@ fn use_sends_a_finished_result_only_on_request_and_only_when_idle() {
     assert!(h.app.deleg.outbox.is_none() && !h.app.busy);
     let mut rx = h.submit("/delegate use");
     let sent = rx.try_recv().expect("the user asked for it");
-    assert!(sent.contains("UNTRUSTED") && sent.contains("forty-two"), "{sent}");
+    assert!(
+        sent.contains("UNTRUSTED") && sent.contains("forty-two"),
+        "{sent}"
+    );
     assert!(h.app.busy);
-    assert!(h.app.messages.iter().any(|m| m.role == MsgRole::User && m.text == sent));
+    assert!(h
+        .app
+        .messages
+        .iter()
+        .any(|m| m.role == MsgRole::User && m.text == sent));
     // While the orchestrator is busy it is refused.
     let mut rx2 = h.submit("/delegate use");
     assert!(rx2.try_recv().is_err());
@@ -399,7 +442,8 @@ fn the_protocol_is_off_by_default_and_needs_an_explicit_y_when_on() {
     account(&root, "codex-o", "ORCHESTR1");
     account(&root, "codex-w1", "WORKERAA1");
     set_workers(&root, vec!["codex-w1".into()]).unwrap();
-    let reply = "ok\n```concordia-delegate\n{\"to\":\"codex-w1\",\"task\":\"run the tests\"}\n```\n";
+    let reply =
+        "ok\n```concordia-delegate\n{\"to\":\"codex-w1\",\"task\":\"run the tests\"}\n```\n";
 
     // Off: nothing happens.
     h.app.scan_delegation(reply);
@@ -412,7 +456,9 @@ fn the_protocol_is_off_by_default_and_needs_an_explicit_y_when_on() {
     assert!(h
         .rows()
         .iter()
-        .any(|r| r.contains("Orchestrator wants to delegate to") && r.contains("run the tests") && r.contains("[y/n]")));
+        .any(|r| r.contains("Orchestrator wants to delegate to")
+            && r.contains("run the tests")
+            && r.contains("[y/n]")));
     // Type-ahead inside the arming window goes to the prompt and answers nothing.
     h.type_str("y");
     assert_eq!(h.app.deleg.confirms.len(), 1);
@@ -423,7 +469,11 @@ fn the_protocol_is_off_by_default_and_needs_an_explicit_y_when_on() {
     h.type_str("hello");
     assert_eq!(h.app.deleg.confirms.len(), 1);
     h.key(KeyCode::Char('n'), KeyModifiers::NONE);
-    assert_eq!(h.app.deleg.confirms.len(), 1, "n in a non-empty prompt is just text");
+    assert_eq!(
+        h.app.deleg.confirms.len(),
+        1,
+        "n in a non-empty prompt is just text"
+    );
     assert!(h.app.deleg.d.jobs.is_empty());
     for _ in 0..10 {
         h.key(KeyCode::Backspace, KeyModifiers::NONE);
@@ -433,7 +483,8 @@ fn the_protocol_is_off_by_default_and_needs_an_explicit_y_when_on() {
     assert!(h.messages().contains("declined delegation"));
 
     // Unknown targets are ignored, never queued.
-    h.app.scan_delegation("```concordia-delegate\n{\"to\":\"stranger\",\"task\":\"x\"}\n```");
+    h.app
+        .scan_delegation("```concordia-delegate\n{\"to\":\"stranger\",\"task\":\"x\"}\n```");
     assert!(h.app.deleg.confirms.is_empty());
     assert!(h.messages().contains("ignored: not one of your workers"));
 

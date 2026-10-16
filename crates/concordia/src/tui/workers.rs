@@ -177,7 +177,11 @@ fn row_line(j: &Job, selected: bool, width: usize, tick: u64, now: Instant) -> L
     let room = width.saturating_sub(fixed + 3);
     let mut spans = vec![
         Span::styled(head, base.fg(color)),
-        Span::styled(badge, base.fg(provider_color(j.provider)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            badge,
+            base.fg(provider_color(j.provider))
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(mid, base.fg(color)),
     ];
     if !snippet.is_empty() && room >= 4 {
@@ -228,7 +232,10 @@ pub(super) fn draw(f: &mut Frame, strip: Rect, over: Rect, app: &mut App) {
         }
         if more_row {
             lines.push(Line::from(Span::styled(
-                format!("   +{} more \u{b7} Alt+\u{2191}\u{2193} to select", n - shown),
+                format!(
+                    "   +{} more \u{b7} Alt+\u{2191}\u{2193} to select",
+                    n - shown
+                ),
                 Style::default().fg(Color::DarkGray),
             )));
         }
@@ -261,7 +268,8 @@ fn draw_confirm(f: &mut Frame, over: Rect, app: &App, c: &Confirm) {
         " [y/n]".to_string()
     };
     let head = format!("Orchestrator wants to delegate to {label}: ");
-    let room = (area.width as usize).saturating_sub(2 + head.chars().count() + tail.chars().count());
+    let room =
+        (area.width as usize).saturating_sub(2 + head.chars().count() + tail.chars().count());
     let hint = if app.editor.text().is_empty() {
         ""
     } else {
@@ -434,11 +442,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     }
     if plain && key.code == KeyCode::Esc {
         if let Some(id) = app.deleg.selected {
-            let running = app
-                .deleg
-                .d
-                .get(id)
-                .is_some_and(|j| !j.state.is_finished());
+            let running = app.deleg.d.get(id).is_some_and(|j| !j.state.is_finished());
             if running {
                 app.deleg.d.cancel(id, Instant::now());
                 app.flash("cancelling worker (Esc); /delegate stop <account> also works");
@@ -601,7 +605,12 @@ impl App {
         }
     }
 
-    fn start_delegate(&mut self, target: &str, task: &str, origin: Origin) -> Result<String, String> {
+    fn start_delegate(
+        &mut self,
+        target: &str,
+        task: &str,
+        origin: Origin,
+    ) -> Result<String, String> {
         let settings = get_settings(&self.state_root);
         let orch = normalize_account_id(&self.account);
         let workers: Vec<String> = settings
@@ -641,18 +650,29 @@ impl App {
             }
             t
         };
-        let acct = get_account(&self.state_root, &account)
-            .ok_or_else(|| format!("account {account} no longer exists - /workers remove {account}"))?;
+        let acct = get_account(&self.state_root, &account).ok_or_else(|| {
+            format!("account {account} no longer exists - /workers remove {account}")
+        })?;
         let home = acct.home_path.clone();
-        if !home.as_ref().is_some_and(|h| is_logged_in(acct.provider, h)) {
-            return Err(format!("{account} is not logged in - /use add {}", acct.provider.as_str()));
+        if !home
+            .as_ref()
+            .is_some_and(|h| is_logged_in(acct.provider, h))
+        {
+            return Err(format!(
+                "{account} is not logged in - /use add {}",
+                acct.provider.as_str()
+            ));
         }
         let orch_home = self
             .home_path
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
-        let (prefix, note) =
-            build_worker_context(self.provider, orch_home.as_deref(), &acct, &self.pack_messages());
+        let (prefix, note) = build_worker_context(
+            self.provider,
+            orch_home.as_deref(),
+            &acct,
+            &self.pack_messages(),
+        );
         let trust = worker_trust(self.trust, settings.child_trust);
         let queued_behind = self.deleg.d.running_for(&account).map(|j| j.id);
         let id = self.deleg.d.submit(
@@ -774,7 +794,9 @@ impl App {
                     if active.len() == 1 {
                         usize::from(self.deleg.d.cancel(active[0], now))
                     } else {
-                        self.push_system("usage: /delegate stop <account> (or select a worker row first)");
+                        self.push_system(
+                            "usage: /delegate stop <account> (or select a worker row first)",
+                        );
                         return;
                     }
                 }
@@ -809,10 +831,16 @@ impl App {
             .or_else(|| jobs.iter().rev().find(pick));
         match chosen {
             Some(j) => {
-                crate::logging::info(&format!("delegate-use id={} chars={}", j.id, j.final_text().chars().count()));
+                crate::logging::info(&format!(
+                    "delegate-use id={} chars={}",
+                    j.id,
+                    j.final_text().chars().count()
+                ));
                 self.deleg.outbox = Some(use_prompt(j));
             }
-            None => self.push_system("no finished worker result to send - /workers shows the last ones"),
+            None => {
+                self.push_system("no finished worker result to send - /workers shows the last ones")
+            }
         }
     }
 }

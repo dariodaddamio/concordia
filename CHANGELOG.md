@@ -49,6 +49,12 @@ also bumps the build stamp shown by `concordia --version`.
   config is bundled in the binary).
 - A log file in the state folder (`concordia.log`, events only, rotates at 1 MB); a crash records its
   backtrace there. `NO_COLOR` is honored; `CONCORDIA_LOG=off` disables the log.
+- Delegation: `/workers [add|remove]` picks up to 3 worker accounts; `/delegate <account|auto> <task>` runs one
+  background turn on a worker (fresh session, bounded context, your trust mode, never full unless yours is);
+  a worker strip above the prompt shows each worker live (Alt+Up/Down or click to focus, Enter opens its
+  transcript, Esc cancels); finished results arrive as a labelled untrusted block and reach the orchestrator
+  only through `/delegate use`. Optional opt-in protocol (`/delegate protocol on`) lets the orchestrator
+  propose a delegation that still needs your `y`. See docs/delegation.md.
 
 ### Fixed
 - The prompt marker, palette and picker highlight use plain ASCII `>` and `...`, whose width is the same in every terminal font; ambiguous-width glyphs could shift the caret.
