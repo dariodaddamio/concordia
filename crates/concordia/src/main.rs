@@ -14,8 +14,10 @@ fn print_help() {
            concordia install   install this exe as the `concordia` on your PATH (new panes get it)\n\
            concordia wezterm open WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
            concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
+           concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
+                               read recorded threads (opt-in: CONCORDIA_THREADS=1); read-only\n\
          \n\
-         Slash: /use [add] /model /usage /resume /trust /config /new /split /update /version /copy /doctor /exit\n\
+         Slash: /use [add] /model /usage /resume /trust /config /new /threads /split /update /version /copy /doctor /exit\n\
          Delegate: /workers [add|remove] /delegate <account|auto> <task> /delegate stop|use|help (docs/delegation.md)\n\
          Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
          Connect: /use add [codex|claude|cursor] makes an isolated home and opens its login.\n\
@@ -86,6 +88,13 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        "thread" => match concordia::threads::run_cli(&default_store_root(), &args[1..]) {
+            Ok(out) => print!("{out}"),
+            Err((msg, code)) => {
+                eprintln!("{msg}");
+                std::process::exit(code);
+            }
+        },
         "--version" | "-V" | "version" => {
             println!("{}", version_line());
             // Read-only: reporting a version must never repoint the install at this exe.

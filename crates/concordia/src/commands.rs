@@ -158,6 +158,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/trust", "approvals: ask, workspace or full"),
     ("/config", "how to connect providers"),
     ("/new", "start a fresh conversation"),
+    ("/threads", "recent recorded threads (delete <id>)"),
     ("/split", "open another pane"),
     ("/update", "update Concordia and restart"),
     ("/update check", "look for a newer version"),

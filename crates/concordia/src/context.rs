@@ -2,10 +2,12 @@
 //!
 //! Contract (mock-first, from P0 docs + PLAN):
 //! - Same provider + same home + explicit session id → native resume, **no pack**.
-//! - Otherwise → new native session; optional bounded prior pack; never pass a
-//!   foreign session id into another home/provider.
+//! - Otherwise → new native session; the pack is the thread *map* (`threads::build_map`,
+//!   at most `MAP_CHARS`), never a transcript dump; never pass a foreign session id into
+//!   another home/provider.
 
 use crate::store::ProviderKind;
+use crate::threads;
 
 /// Character budget for the context pack (a char budget, not a tokenizer).
 pub const MAX_CONTEXT_CHARS: usize = 6000;
@@ -19,6 +21,8 @@ pub fn estimate_tokens(chars: usize) -> usize {
 pub enum PackRole {
     User,
     Assistant,
+    /// A tool/command card; `text` is `threads::encode_card(title, detail, status)`.
+    Card,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +63,8 @@ pub struct ContinuityRequest<'a> {
     pub to_home: Option<&'a str>,
     pub session_id: Option<&'a str>,
     pub messages: &'a [PackMessage],
+    /// Id of the stored thread log, when recording is on (the map's `more:` line points at it).
+    pub thread_id: Option<&'a str>,
     /// When false, decide switch policy only (no pack body) — e.g. account bind before next turn.
     pub include_pack_if_needed: bool,
 }
@@ -119,6 +125,7 @@ pub fn plan_continuity_capped(req: &ContinuityRequest<'_>, max_chars: usize) -> 
             req.from_provider,
             req.to_provider,
             max_chars.min(MAX_CONTEXT_CHARS),
+            req.thread_id,
         )
     } else {
         None
@@ -155,46 +162,36 @@ fn continuity_reason(req: &ContinuityRequest<'_>) -> &'static str {
     }
 }
 
-/// Select user/assistant messages from the end until `max_chars` (system skipped).
+/// The pack is the deterministic thread map (no transcript), at most
+/// `min(max_chars, MAP_CHARS)` characters. `thread_id` is Some when the log is stored.
 pub fn build_context_pack(
     messages: &[PackMessage],
     from: ProviderKind,
     to: ProviderKind,
     max_chars: usize,
+    thread_id: Option<&str>,
 ) -> Option<ContextPack> {
-    let mut parts: Vec<String> = Vec::new();
-    let mut used = 0usize;
-    let mut count = 0usize;
-    for m in messages.iter().rev() {
-        let role = match m.role {
-            PackRole::User => "User",
-            PackRole::Assistant => "Assistant",
-        };
-        let text = m.text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        let block = format!("{role}: {text}");
-        let add = block.len() + 1;
-        if used + add > max_chars {
-            break;
-        }
-        parts.push(block);
-        used += add;
-        count += 1;
-    }
-    if parts.is_empty() {
+    let count = messages
+        .iter()
+        .filter(|m| m.role != PackRole::Card && !m.text.trim().is_empty())
+        .count();
+    if count == 0 {
         return None;
     }
-    parts.reverse();
-    let labeled = format!(
-        "[concordia prior thread — bounded · {}→{} · {used} chars · ~{} tok · {count} msgs · tools/approvals NOT transferred]",
-        from.as_str(),
-        to.as_str(),
-        estimate_tokens(used),
+    let mut events = threads::events_from_messages(messages, from.as_str());
+    let mut sw = threads::ThreadEvent::new("switch");
+    sw.t = 0;
+    sw.provider = Some(to.as_str().to_string());
+    events.push(sw);
+    let budget = max_chars.min(threads::MAP_CHARS);
+    let text = threads::build_map_with(
+        &events,
+        thread_id.unwrap_or(""),
+        budget,
+        thread_id.is_some(),
+        Some("tools/approvals NOT transferred"),
     );
-    let body = parts.join("\n");
-    let text = format!("{labeled}\n{body}");
+    let labeled = text.lines().next().unwrap_or("").to_string();
     let pack_chars = text.chars().count();
     Some(ContextPack {
         text,
@@ -209,10 +206,9 @@ pub fn build_context_pack(
 
 /// Assert pack never exceeds budget (fixture gate).
 pub fn assert_pack_within_budget(pack: &ContextPack, max_chars: usize) -> Result<(), String> {
-    // Budget applies to selected message body + header; allow small header overhead.
-    if pack.pack_chars > max_chars + 200 {
+    if pack.pack_chars > max_chars {
         return Err(format!(
-            "pack {} chars exceeds budget {} (+200 header slack)",
+            "pack {} chars exceeds budget {} ",
             pack.pack_chars, max_chars
         ));
     }
@@ -264,6 +260,7 @@ mod tests {
             to_home: Some(r"C:\a\.codex"),
             session_id: Some("sess"),
             messages: &msgs,
+            thread_id: None,
             include_pack_if_needed: true,
         });
         assert!(d.native_resume);
@@ -291,13 +288,14 @@ mod tests {
             to_home: Some(r"C:\a\.codex-2"),
             session_id: Some("foreign-sess"),
             messages: &msgs,
+            thread_id: None,
             include_pack_if_needed: true,
         });
         assert!(!d.native_resume);
         assert!(d.session_id.is_none(), "must not leak foreign session id");
         assert!(d.pack.is_some());
         assert!(d.pack_chars > 0);
-        assert_pack_within_budget(d.pack.as_ref().unwrap(), MAX_CONTEXT_CHARS).unwrap();
+        assert_pack_within_budget(d.pack.as_ref().unwrap(), threads::MAP_CHARS).unwrap();
     }
 
     #[test]
@@ -313,9 +311,9 @@ mod tests {
                 text: "y".repeat(200),
             });
         }
-        let pack =
-            build_context_pack(&msgs, ProviderKind::Codex, ProviderKind::Claude, 500).unwrap();
-        assert!(pack.pack_chars <= 500 + 200);
+        let pack = build_context_pack(&msgs, ProviderKind::Codex, ProviderKind::Claude, 500, None)
+            .unwrap();
+        assert!(pack.pack_chars <= 500);
         assert!(!pack.text.contains("system:"));
     }
 
@@ -328,10 +326,74 @@ mod tests {
             to_home: Some(r"C:\a\.claude"),
             session_id: Some("sess"),
             messages: &[],
+            thread_id: None,
             include_pack_if_needed: true,
         });
         assert!(!d.native_resume);
         assert!(d.session_id.is_none());
         assert!(d.pack.is_none()); // empty history
+    }
+
+    fn long_history() -> Vec<PackMessage> {
+        let mut v = Vec::new();
+        for i in 0..40 {
+            v.push(PackMessage {
+                role: PackRole::User,
+                text: format!("question {i} {}", "x".repeat(300)),
+            });
+            v.push(PackMessage {
+                role: PackRole::Assistant,
+                text: format!("answer {i} {}", "y".repeat(900)),
+            });
+        }
+        v
+    }
+
+    #[test]
+    fn same_account_resume_omits_the_pack() {
+        let msgs = long_history();
+        let d = plan_continuity(&ContinuityRequest {
+            from_provider: ProviderKind::Claude,
+            to_provider: ProviderKind::Claude,
+            from_home: Some(r"C:\.claude"),
+            to_home: Some(r"C:\.claude"),
+            session_id: Some("sess"),
+            messages: &msgs,
+            thread_id: Some("tid"),
+            include_pack_if_needed: true,
+        });
+        assert!(d.native_resume && d.pack.is_none());
+    }
+
+    #[test]
+    fn a_switch_yields_a_map_under_budget_with_the_pointer() {
+        let msgs = long_history();
+        let d = plan_continuity(&ContinuityRequest {
+            from_provider: ProviderKind::Claude,
+            to_provider: ProviderKind::Codex,
+            from_home: Some(r"C:\.claude"),
+            to_home: Some(r"C:\.codex"),
+            session_id: Some("sess"),
+            messages: &msgs,
+            thread_id: Some("3f9a1111-2222-3333-4444-555555555555"),
+            include_pack_if_needed: true,
+        });
+        let p = d.pack.unwrap();
+        assert!(p.pack_chars <= threads::MAP_CHARS, "{}", p.pack_chars);
+        assert!(p
+            .text
+            .contains("concordia thread read 3f9a1111-2222-3333-4444-555555555555"));
+        assert!(p.labeled.contains("tools/approvals NOT transferred"));
+        assert!(!p.text.contains("question 3 "), "no transcript dump");
+    }
+
+    #[test]
+    fn log_off_still_yields_a_map_from_memory() {
+        let msgs = long_history();
+        let p = build_context_pack(&msgs, ProviderKind::Claude, ProviderKind::Codex, 6000, None)
+            .unwrap();
+        assert!(p.text.contains("not stored"));
+        assert!(p.text.contains("asked: question 0"));
+        assert!(p.pack_chars <= threads::MAP_CHARS);
     }
 }

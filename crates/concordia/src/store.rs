@@ -95,6 +95,9 @@ pub struct OrchestratorSettings {
     /// Opt-in: let an orchestrator reply propose a delegation (still needs a yes from the user).
     #[serde(default)]
     pub delegation_protocol: bool,
+    /// Opt-in: record conversations to `<state>/threads` (stores prompts). Read via `threads::enabled`.
+    #[serde(default)]
+    pub thread_log: bool,
 }
 
 fn default_trust() -> TrustMode {
@@ -121,6 +124,7 @@ impl Default for OrchestratorSettings {
             child_trust: ChildTrust::Inherit,
             workers: Vec::new(),
             delegation_protocol: false,
+            thread_log: false,
         }
     }
 }

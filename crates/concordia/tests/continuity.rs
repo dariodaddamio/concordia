@@ -21,6 +21,7 @@ fn foreign_session_id_never_in_cross_home_argv() {
             role: PackRole::User,
             text: "prior".into(),
         }],
+        thread_id: None,
         include_pack_if_needed: true,
     });
     assert!(!decision.native_resume);
@@ -59,6 +60,7 @@ fn native_resume_omits_pack_and_keeps_session_in_argv() {
             role: PackRole::User,
             text: "should not be packed".into(),
         }],
+        thread_id: None,
         include_pack_if_needed: true,
     });
     assert!(decision.native_resume);
@@ -102,6 +104,7 @@ fn oversized_history_pack_stays_in_budget() {
         to_home: Some(r"C:\a\.claude"),
         session_id: Some("any"),
         messages: &msgs,
+        thread_id: None,
         include_pack_if_needed: true,
     });
     let pack = decision
