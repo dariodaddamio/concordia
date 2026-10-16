@@ -42,13 +42,13 @@ impl UsageWindow {
         self.left_pct().round() as i64
     }
 
-    /// `5h 41% used / 59% left`
+    /// `5h 59% left (41% used)`
     fn used_left(&self) -> String {
         format!(
-            "{} {}% used / {}% left",
+            "{} {}% left ({}% used)",
             self.label,
-            self.used_i(),
-            self.left_i()
+            self.left_i(),
+            self.used_i()
         )
     }
 }
@@ -89,7 +89,7 @@ impl UsageSnapshot {
             parts.insert(0, "LIMIT HIT".into());
         }
         if let Some(r) = self.windows.iter().find_map(|w| w.resets.as_deref()) {
-            parts.push(format!("resets {r}"));
+            parts.push(reset_phrase(r));
         }
         parts.join(" · ")
     }
@@ -106,19 +106,41 @@ impl UsageSnapshot {
     }
 }
 
+/// How a reset reads in a sentence: `resets in 23h`, `resets Oct 21, 9am`, `resets soon`.
+pub fn reset_phrase(r: &str) -> String {
+    let r = r.trim();
+    if r.starts_with("already reset") {
+        return "reset since your last chat".to_string();
+    }
+    if r == "soon" {
+        return "resets soon".to_string();
+    }
+    let relative = r.len() > 1
+        && r.ends_with(['m', 'h', 'd'])
+        && r[..r.len() - 1].chars().all(|c| c.is_ascii_digit());
+    if relative {
+        format!("resets in {r}")
+    } else {
+        format!("resets {r}")
+    }
+}
+
 fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
     let width = windows.iter().map(|w| w.label.len()).max().unwrap_or(0);
     windows
         .iter()
         .map(|w| {
             let mut line = format!(
-                "{:<width$}  {:>3}% used / {:>3}% left",
+                "{:<width$}  {:>3}% left · {:>3}% used",
                 w.label,
-                w.used_i(),
                 w.left_i(),
+                w.used_i(),
             );
+            if w.left_i() == 0 {
+                line.push_str(" · limit reached");
+            }
             if let Some(r) = &w.resets {
-                line.push_str(&format!(" · resets {r}"));
+                line.push_str(&format!(" · {}", reset_phrase(r)));
             }
             line
         })
@@ -916,9 +938,9 @@ fn read_session_rate_limits(codex_home: &Path) -> Option<UsageSnapshot> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let detail = if age > 3600 {
-        format!("updated {} ago", format_age_minutes(age / 60))
+        format!("as of your last chat, {} ago", format_age_minutes(age / 60))
     } else {
-        "from last session".into()
+        "as of your last chat".into()
     };
     Some(format_limits(&limits, &detail))
 }
@@ -1108,7 +1130,7 @@ mod tests {
         assert_eq!(s.summary, "5h 93% left · 7d 87% left");
         assert!(s
             .used_left_text()
-            .starts_with("5h 7% used / 93% left · 7d 13% used / 87% left · resets Oct 15"));
+            .starts_with("5h 93% left (7% used) · 7d 87% left (13% used) · resets Oct 15"));
         assert_eq!(usage_tone(&s), UsageTone::Ok);
     }
 
@@ -1243,7 +1265,7 @@ mod tests {
             s.summary,
             "Included 73% left · Auto 79% left · API 21% left"
         );
-        assert!(s.used_left_text().contains("Included 27% used / 73% left"));
+        assert!(s.used_left_text().contains("Included 73% left (27% used)"));
         assert!(s.used_left_text().ends_with("resets Nov 6"));
         assert!(
             s.detail.contains("Cursor Pro, on-demand off"),
@@ -1392,7 +1414,7 @@ mod tests {
             rate_limit_reached_type: None,
             credits: None,
         };
-        let snap = format_limits(&limits, "from last session");
+        let snap = format_limits(&limits, "as of your last chat");
         assert_eq!(
             snap.windows[0].used_pct, 0.0,
             "reset window shows nothing used"
