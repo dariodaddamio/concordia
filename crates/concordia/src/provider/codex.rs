@@ -107,7 +107,7 @@ pub fn apply_stream_parts(parts: Vec<StreamPart>, out: &mut StreamOutcome) {
                 }
             }
             StreamPart::Card(card) => upsert_card(&mut out.cards, card),
-            StreamPart::Thinking(_) => {}
+            StreamPart::Thinking(_) | StreamPart::Usage(_) => {}
             // Shown once as a system line; never folded into the reply text.
             StreamPart::Error(msg) => out.errors.push(msg),
         }

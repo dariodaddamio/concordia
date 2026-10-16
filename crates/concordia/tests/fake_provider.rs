@@ -588,3 +588,45 @@ async fn cursor_falls_back_to_an_unbound_turn_when_create_chat_is_unusable() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_claude_result_line_with_usage_reaches_progress_but_never_the_reply() {
+    let mut env = Env::new();
+    env.set("CONCORDIA_CLAUDE_BIN", FAKE);
+    env.set("FAKE_PROVIDER_MODE", "stream");
+    let stream = env.path("claude-stream.jsonl");
+    std::fs::write(
+        &stream,
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"synthetic reply"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"synthetic reply","total_cost_usd":0.5,"usage":{"input_tokens":1200,"output_tokens":34,"cache_read_input_tokens":800}}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    env.set("FAKE_PROVIDER_STREAM", &stream);
+    let cwd = env.path("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let outcome = run_provider_turn_with_progress(
+        &req_for(ProviderKind::Claude, "hi", &cwd, None),
+        None,
+        Some(tx),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.text.trim(), "synthetic reply");
+    let mut usage = None;
+    while let Ok(ev) = rx.try_recv() {
+        if let TurnProgress::Usage(u) = ev {
+            usage = Some(u);
+        }
+    }
+    let u = usage.expect("usage progress event");
+    assert_eq!(
+        (u.input, u.output, u.cached),
+        (Some(1200), Some(34), Some(800))
+    );
+    assert_eq!(u.cost_usd, Some(0.5));
+}

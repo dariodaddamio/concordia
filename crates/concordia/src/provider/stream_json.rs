@@ -5,7 +5,7 @@
 //! ignored, and a line that is not JSON at all is passed through as plain text, so a CLI that
 //! rejects the flag or prints a notice still shows something.
 
-use super::stream_cards::{compact_detail, CardStatus, StreamCard, StreamPart};
+use super::stream_cards::{compact_detail, CardStatus, StreamCard, StreamPart, TurnUsage};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -181,6 +181,11 @@ impl StreamParser {
     }
 
     fn result(&mut self, ev: &Value, out: &mut Vec<StreamPart>) {
+        let mut usage = TurnUsage::from_json(ev.get("usage"), "cache_read_input_tokens");
+        usage.cost_usd = ev.get("total_cost_usd").and_then(Value::as_f64);
+        if !usage.is_empty() {
+            out.push(StreamPart::Usage(usage));
+        }
         let text = ev
             .get("result")
             .and_then(Value::as_str)
@@ -339,5 +344,60 @@ mod tests {
         assert!(matches!(&parts[0], StreamPart::Text(t) if t == "just a notice"));
         assert!(matches!(&parts[1], StreamPart::Text(t) if t == "[1,2]"));
         assert_eq!(parts.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    fn usage_of(parts: &[StreamPart]) -> Vec<TurnUsage> {
+        parts
+            .iter()
+            .filter_map(|p| match p {
+                StreamPart::Usage(u) => Some(u.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn claude_result_reports_usage_and_cost_without_becoming_text() {
+        let mut p = StreamParser::new(Flavor::Claude);
+        let parts = p.parse_line(
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"","total_cost_usd":0.0123,"usage":{"input_tokens":120,"output_tokens":45,"cache_read_input_tokens":900,"cache_creation_input_tokens":7}}"#,
+        );
+        assert_eq!(
+            usage_of(&parts),
+            vec![TurnUsage {
+                input: Some(120),
+                output: Some(45),
+                cached: Some(900),
+                cost_usd: Some(0.0123)
+            }]
+        );
+        assert!(!parts.iter().any(|p| matches!(p, StreamPart::Text(_))));
+    }
+
+    #[test]
+    fn missing_or_odd_usage_fields_are_tolerated() {
+        let mut p = StreamParser::new(Flavor::Claude);
+        let parts = p.parse_line(r#"{"type":"result","result":"ok","usage":{"output_tokens":3}}"#);
+        assert_eq!(
+            usage_of(&parts),
+            vec![TurnUsage {
+                output: Some(3),
+                ..Default::default()
+            }]
+        );
+        for line in [
+            r#"{"type":"result","result":"ok"}"#,
+            r#"{"type":"result","result":"ok","usage":"lots"}"#,
+            r#"{"type":"result","result":"ok","usage":{"input_tokens":"x"}}"#,
+        ] {
+            assert!(usage_of(&p.parse_line(line)).is_empty(), "{line}");
+        }
+        let mut c = StreamParser::new(Flavor::Cursor);
+        assert!(usage_of(&c.parse_line(r#"{"type":"result","result":"ok"}"#)).is_empty());
     }
 }

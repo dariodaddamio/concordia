@@ -1771,3 +1771,164 @@ fn usage_is_one_block_that_updates_in_place_when_the_check_lands() {
     );
     assert_eq!(after.matches("limits").count(), 1, "one block:\n{after}");
 }
+
+// ---- token line and tips ------------------------------------------------------------------
+
+use crate::provider::stream_cards::TurnUsage;
+
+fn finished_reply(h: &mut Harness, usage: Option<TurnUsage>) {
+    h.app.push_user("question".into());
+    h.app.busy = true;
+    h.app.turn_started = Some(Instant::now());
+    h.app
+        .apply_progress(TurnProgress::Text("The answer.".into()));
+    if let Some(u) = usage {
+        h.app.apply_progress(TurnProgress::Usage(u));
+    }
+    h.app.busy = false;
+    h.app.finalize_turn(TurnOutcome::default());
+    h.draw();
+}
+
+#[test]
+fn the_token_line_shows_reported_fields_and_the_turn_time() {
+    let mut h = Harness::new(100, 24);
+    finished_reply(
+        &mut h,
+        Some(TurnUsage {
+            input: Some(12_345),
+            output: Some(1400),
+            cached: Some(9800),
+            cost_usd: None,
+        }),
+    );
+    let s = h.screen();
+    assert!(s.contains("in 12.3k - out 1.4k - cached 9.8k - 0."), "{s}");
+    assert_eq!((h.app.session_input, h.app.session_output), (12_345, 1400));
+    assert!(h
+        .app
+        .messages
+        .last()
+        .is_some_and(|m| m.role == MsgRole::Meta));
+}
+
+#[test]
+fn the_token_line_with_nothing_reported_is_just_the_time() {
+    let mut h = Harness::new(100, 24);
+    finished_reply(&mut h, None);
+    let last = h.app.messages.last().unwrap();
+    assert!(last.role == MsgRole::Meta);
+    assert!(
+        last.text.ends_with('s') && !last.text.contains("in "),
+        "{}",
+        last.text
+    );
+    let mut h = Harness::new(100, 24);
+    finished_reply(
+        &mut h,
+        Some(TurnUsage {
+            output: Some(7),
+            ..Default::default()
+        }),
+    );
+    let t = &h.app.messages.last().unwrap().text;
+    assert!(t.starts_with("out 7 - "), "{t}");
+}
+
+#[test]
+fn the_token_line_is_not_context_and_not_copied() {
+    let mut h = Harness::new(100, 24);
+    finished_reply(
+        &mut h,
+        Some(TurnUsage {
+            input: Some(10),
+            ..Default::default()
+        }),
+    );
+    let pack = h.app.pack_messages();
+    assert_eq!(pack.len(), 2);
+    assert!(pack.iter().all(|m| !m.text.contains("in 10")));
+    assert_eq!(h.app.last_assistant_text().as_deref(), Some("The answer."));
+}
+
+#[test]
+fn the_token_line_is_dim_and_italic_and_survives_no_color() {
+    use ratatui::style::Modifier;
+    let mut h = Harness::new(100, 24);
+    h.app.no_color = true;
+    finished_reply(
+        &mut h,
+        Some(TurnUsage {
+            input: Some(10),
+            ..Default::default()
+        }),
+    );
+    let buf = h.term.backend().buffer().clone();
+    let (x, y) = (0..buf.area.height)
+        .flat_map(|y| (0..buf.area.width - 1).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            x + 4 < buf.area.width
+                && (0..4).map(|d| buf[(x + d, y)].symbol()).collect::<String>() == "in 1"
+        })
+        .expect("token line drawn");
+    let m = buf[(x, y)].modifier;
+    assert!(m.contains(Modifier::DIM) && m.contains(Modifier::ITALIC));
+}
+
+#[test]
+fn usage_is_never_reply_text() {
+    let mut h = Harness::new(100, 24);
+    h.app.busy = true;
+    h.app.apply_progress(TurnProgress::Usage(TurnUsage {
+        input: Some(5),
+        ..Default::default()
+    }));
+    assert!(h.app.live_text.is_empty());
+}
+
+#[test]
+fn a_tip_shows_on_the_fresh_empty_screen_and_follows_the_seed() {
+    let mut h = Harness::new(120, 24);
+    h.app.tip_seed = 42;
+    h.draw();
+    let tip = super::tips::tip_for(42);
+    assert!(
+        h.screen().contains(&format!("tip: {tip}")),
+        "{}",
+        h.screen()
+    );
+    h.app.tip_seed = 43;
+    h.draw();
+    let other = super::tips::tip_for(43);
+    assert!(h.screen().contains(&format!("tip: {other}")));
+}
+
+#[test]
+fn tips_hide_when_busy_or_typing_and_wait_20s_after_a_chat() {
+    let mut h = Harness::new(120, 24);
+    assert!(h.screen().contains("tip: "));
+    h.type_str("h");
+    assert!(!h.screen().contains("tip: "));
+    h.key(KeyCode::Backspace, KeyModifiers::NONE);
+    assert!(h.screen().contains("tip: "));
+    h.app.busy = true;
+    h.draw();
+    assert!(!h.screen().contains("tip: "));
+    h.app.busy = false;
+
+    // After a conversation has started the tip waits for 20 s of idle time.
+    h.app.push_user("hi".into());
+    h.draw();
+    assert!(!h.screen().contains("tip: "));
+    for _ in 0..super::tips::IDLE_TICKS - 1 {
+        h.app.on_tick();
+    }
+    h.draw();
+    assert!(!h.screen().contains("tip: "));
+    h.app.on_tick();
+    h.draw();
+    assert!(h.screen().contains("tip: "), "{}", h.screen());
+    h.type_str("x");
+    h.app.on_tick();
+    assert_eq!(h.app.idle_ticks, 0);
+}
