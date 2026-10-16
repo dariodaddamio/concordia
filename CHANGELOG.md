@@ -26,6 +26,11 @@ also bumps the build stamp shown by `concordia --version`.
   time; `/usage all` lists every account. Claude limits come from `claude -p "/usage"` on a background
   thread, cached 5 minutes under `usage-cache/`. Cursor says "not shown by Cursor CLI"; Codex with no
   data says "no data yet - chat once". Rows and footer are coloured by how much is used.
+- Cursor limits (Included, Auto, API, On-Demand, with plan and reset date): Cursor's CLI has no usage
+  command, so Concordia opens the interactive agent in a pseudo-console (`portable-pty`, MIT) in an
+  empty temp folder, types only `/usage` (never a prompt, no tokens spent), reads the table and kills
+  the process tree. Same background thread and 5-minute cache as Claude; on any failure or timeout
+  (15 s) the account says "not shown by Cursor CLI".
 - Native Rust TUI: streaming chat with tool and command cards, account picker, model picker,
   usage, explicit session resume, trust modes, WezTerm splits.
 - Mouse support: click to place the caret, drag / double-click / triple-click selection in the

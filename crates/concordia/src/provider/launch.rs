@@ -46,7 +46,7 @@ pub fn prompt_needs_stdin(prompt: &str, batch: bool) -> bool {
 }
 
 /// `cursor-agent.ps1` next to an `agent.cmd` shim, which is what the shim itself runs.
-fn cursor_ps1_beside(shim: &Path) -> Option<PathBuf> {
+pub(crate) fn cursor_ps1_beside(shim: &Path) -> Option<PathBuf> {
     let ps1 = shim.parent()?.join("cursor-agent.ps1");
     ps1.is_file().then_some(ps1)
 }

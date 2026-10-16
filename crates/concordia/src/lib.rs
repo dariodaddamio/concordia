@@ -3,6 +3,7 @@ pub mod catalog;
 pub mod commands;
 pub mod connect;
 pub mod context;
+pub mod cursor_usage;
 pub mod doctor;
 pub mod host;
 pub mod identity;
