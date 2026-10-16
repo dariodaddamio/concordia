@@ -49,6 +49,8 @@ mod editor;
 mod markdown;
 mod palette;
 mod text;
+mod tips;
+mod token_line;
 mod transcript;
 mod workers;
 
@@ -123,6 +125,8 @@ enum MsgRole {
     Card,
     /// The model's reasoning for a finished turn: dimmed, never part of the context pack.
     Thinking,
+    /// The token line under a reply: dim, never part of the context pack or /copy.
+    Meta,
 }
 
 /// What the running turn is doing right now, so the wait is never a blank spinner.
@@ -305,6 +309,15 @@ pub struct App {
     /// `NO_COLOR` is set: draw with the terminal's own colours only.
     no_color: bool,
     turn_started: Option<Instant>,
+    /// What the provider reported for the running turn (summed if it reports more than once).
+    turn_usage: crate::provider::stream_cards::TurnUsage,
+    /// Session totals (tokens and cost the providers reported).
+    session_input: u64,
+    session_output: u64,
+    session_cost: f64,
+    /// Ticks spent idle with an empty prompt; drives the mid-session tip.
+    idle_ticks: u64,
+    tip_seed: u64,
     pending_login: Option<PendingLogin>,
     /// Account-connect entry point; swapped in tests so no login window ever opens.
     connect: ConnectFn,
@@ -728,10 +741,43 @@ impl App {
             TurnProgress::Error(e) => {
                 self.push_system(e);
             }
+            TurnProgress::Usage(u) => {
+                fn add(a: &mut Option<u64>, b: Option<u64>) {
+                    if let Some(b) = b {
+                        *a = Some(a.unwrap_or(0) + b);
+                    }
+                }
+                let t = &mut self.turn_usage;
+                add(&mut t.input, u.input);
+                add(&mut t.output, u.output);
+                add(&mut t.cached, u.cached);
+                if let Some(c) = u.cost_usd {
+                    t.cost_usd = Some(t.cost_usd.unwrap_or(0.0) + c);
+                }
+            }
         }
     }
 
+    /// The tip to show dimmed under the transcript, if the moment is right.
+    fn visible_tip(&self) -> Option<&'static str> {
+        let quiet = !self.busy
+            && self.picker.is_none()
+            && self.job.is_none()
+            && self.pending_login.is_none()
+            && self.editor.chars().is_empty();
+        let fresh = self.messages.iter().all(|m| m.role == MsgRole::System);
+        if !quiet || !(fresh || self.idle_ticks >= tips::IDLE_TICKS) || !tips::ui_tips_enabled() {
+            return None;
+        }
+        Some(tips::tip_for(self.tip_seed))
+    }
+
     fn finalize_turn(&mut self, outcome: TurnOutcome) {
+        let elapsed = self.turn_started.map(|t| t.elapsed());
+        let usage = std::mem::take(&mut self.turn_usage);
+        self.session_input += usage.input.unwrap_or(0);
+        self.session_output += usage.output.unwrap_or(0);
+        self.session_cost += usage.cost_usd.unwrap_or(0.0);
         // Events only: never the prompt or the reply.
         crate::logging::info(&format!(
             "turn provider={} account={} exit={:?} cancelled={} ms={} stderr_lines={}",
@@ -797,6 +843,17 @@ impl App {
             self.push_system("cancelled");
         } else if !text.is_empty() {
             self.push_assistant(text);
+            if token_line::ui_token_line_enabled() {
+                let line = token_line::format_line(&usage, elapsed);
+                if !line.is_empty() {
+                    self.messages.push(ChatLine {
+                        role: MsgRole::Meta,
+                        text: line,
+                        card: None,
+                        meta: None,
+                    });
+                }
+            }
         } else if !had_cards && !failed {
             self.push_system("(no text in provider stream)");
         }
@@ -898,7 +955,7 @@ impl App {
                         },
                     ),
                 }),
-                MsgRole::System | MsgRole::Command | MsgRole::Thinking => None,
+                MsgRole::System | MsgRole::Command | MsgRole::Thinking | MsgRole::Meta => None,
             })
             .collect()
     }
@@ -909,6 +966,11 @@ impl App {
             self.pulse_on = self.tick_count.is_multiple_of(2);
         } else {
             self.pulse_on = false;
+        }
+        if self.busy || !self.editor.chars().is_empty() || self.picker.is_some() {
+            self.idle_ticks = 0;
+        } else {
+            self.idle_ticks = self.idle_ticks.saturating_add(1);
         }
         self.poll_pending_login();
         self.poll_job();
@@ -1844,6 +1906,12 @@ impl App {
             job: None,
             no_color: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             turn_started: None,
+            turn_usage: Default::default(),
+            session_input: 0,
+            session_output: 0,
+            session_cost: 0.0,
+            idle_ticks: 0,
+            tip_seed: tips::launch_seed(),
             pending_login: None,
             connect: Box::new(add_account),
             reexec_path: None,
@@ -2723,6 +2791,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         markdown: false,
     };
     let live_thought = tail_lines(&condense_thinking(&app.live_thinking), 3);
+    let tip_text = app.visible_tip().map(|t| format!("tip: {t}"));
     let cur_meta = app.reply_meta();
     let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 3 + 4);
     // Inside a slash-command output block (after its echo) plain lines get no icon.
@@ -2781,6 +2850,13 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                     .fg(Color::Indexed(244))
                     .add_modifier(Modifier::ITALIC),
             ),
+            MsgRole::Meta => (
+                "  ",
+                Style::default(),
+                Style::default()
+                    .fg(Color::Indexed(244))
+                    .add_modifier(Modifier::DIM | Modifier::ITALIC),
+            ),
             MsgRole::Card => (
                 "  ",
                 Style::default(),
@@ -2817,8 +2893,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         let next_is_card = app
             .messages
             .get(i + 1)
-            .is_some_and(|n| n.role == MsgRole::Card);
-        if m.role == MsgRole::Assistant && i + 1 < count && !next_is_card {
+            .is_some_and(|n| matches!(n.role, MsgRole::Card | MsgRole::Meta));
+        if matches!(m.role, MsgRole::Assistant | MsgRole::Meta) && i + 1 < count && !next_is_card {
             blocks.push(spacer());
         }
     }
@@ -2853,6 +2929,17 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             style: Style::default(),
             text: &app.live_text,
             markdown: true,
+        });
+    }
+    if let Some(tip) = &tip_text {
+        blocks.push(TBlock {
+            gutter: "  ",
+            gutter_style: Style::default(),
+            style: Style::default()
+                .fg(Color::Indexed(244))
+                .add_modifier(Modifier::DIM | Modifier::ITALIC),
+            text: tip,
+            markdown: false,
         });
     }
     app.view

@@ -717,6 +717,7 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
             j.snippet = e.clone();
             j.error = Some(e);
         }
+        TurnProgress::Usage(_) => {}
     }
 }
 

@@ -6,7 +6,7 @@ use crate::provider::codex::{
 };
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
 use crate::provider::launch::prepare;
-use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart};
+use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
 use crate::store::{ProviderKind, TrustMode};
 use anyhow::{Context, Result};
@@ -76,6 +76,8 @@ pub enum TurnProgress {
     Card(StreamCard),
     Error(String),
     Thinking(String),
+    /// Token counts the provider reported for the turn (never reply text).
+    Usage(TurnUsage),
 }
 
 pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
@@ -441,6 +443,7 @@ fn emit_progress(parts: &[StreamPart], on_progress: &Option<mpsc::UnboundedSende
             StreamPart::Card(c) => TurnProgress::Card(c.clone()),
             StreamPart::Error(e) => TurnProgress::Error(e.clone()),
             StreamPart::Thinking(t) => TurnProgress::Thinking(t.clone()),
+            StreamPart::Usage(u) => TurnProgress::Usage(u.clone()),
         };
         let _ = tx.send(ev);
     }

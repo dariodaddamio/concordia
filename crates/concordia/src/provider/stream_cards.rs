@@ -15,7 +15,38 @@ pub struct StreamCard {
     pub status: CardStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Token counts and cost a provider reported for one turn. Every field is optional: a provider
+/// reports what it reports (Cursor reports none) and nothing here is ever guessed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TurnUsage {
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+    pub cached: Option<u64>,
+    pub cost_usd: Option<f64>,
+}
+
+impl TurnUsage {
+    pub fn is_empty(&self) -> bool {
+        self.input.is_none()
+            && self.output.is_none()
+            && self.cached.is_none()
+            && self.cost_usd.is_none()
+    }
+
+    /// Read a usage object tolerantly: missing or mistyped fields are simply absent.
+    /// `cached_key` is the provider's name for cache-read tokens.
+    pub fn from_json(usage: Option<&serde_json::Value>, cached_key: &str) -> TurnUsage {
+        let num = |k: &str| usage.and_then(|u| u.get(k)).and_then(|v| v.as_u64());
+        TurnUsage {
+            input: num("input_tokens"),
+            output: num("output_tokens"),
+            cached: num(cached_key),
+            cost_usd: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum StreamPart {
     Text(String),
     Card(StreamCard),
@@ -23,6 +54,8 @@ pub enum StreamPart {
     Session(String),
     /// The model's reasoning, shown dimmed and never added to the reply or the context pack.
     Thinking(String),
+    /// Token counts for the turn; shown on the token line, never reply text.
+    Usage(TurnUsage),
 }
 
 pub fn parse_codex_stream_chunk(chunk: &str) -> Vec<StreamPart> {
@@ -51,6 +84,14 @@ pub fn classify_codex_event(ev: &serde_json::Value) -> Vec<StreamPart> {
         if let Some(msg) = ev.get("message").and_then(|x| x.as_str()) {
             return vec![StreamPart::Error(msg.to_string())];
         }
+    }
+    if typ == "turn.completed" {
+        let usage = TurnUsage::from_json(ev.get("usage"), "cached_input_tokens");
+        return if usage.is_empty() {
+            Vec::new()
+        } else {
+            vec![StreamPart::Usage(usage)]
+        };
     }
     if typ == "turn.failed" {
         if let Some(msg) = ev
@@ -431,5 +472,28 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].status, CardStatus::Done);
         assert_eq!(cards[0].detail.as_deref(), Some("npm"));
+    }
+
+    #[test]
+    fn codex_turn_completed_reports_usage_and_tolerates_gaps() {
+        let parts = parse_codex_stream_chunk(
+            r#"{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":1500,"output_tokens":80}}"#,
+        );
+        assert_eq!(
+            parts,
+            vec![StreamPart::Usage(TurnUsage {
+                input: Some(2000),
+                output: Some(80),
+                cached: Some(1500),
+                cost_usd: None
+            })]
+        );
+        let partial =
+            parse_codex_stream_chunk(r#"{"type":"turn.completed","usage":{"output_tokens":9}}"#);
+        assert!(
+            matches!(&partial[0], StreamPart::Usage(u) if u.output == Some(9) && u.input.is_none())
+        );
+        assert!(parse_codex_stream_chunk(r#"{"type":"turn.completed"}"#).is_empty());
+        assert!(parse_codex_stream_chunk(r#"{"type":"turn.completed","usage":[1]}"#).is_empty());
     }
 }
