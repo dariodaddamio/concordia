@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+# Multi-manifest template. Rendered by .github/workflows/release.yml; see packaging/README.md.
+# OWNER is the GitHub owner (rendered from the repository); REPLACE_VERSION is the crate version.
+PackageIdentifier: OWNER.Concordia
+PackageVersion: REPLACE_VERSION
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0
