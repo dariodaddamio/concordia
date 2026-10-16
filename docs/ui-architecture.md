@@ -26,3 +26,5 @@ structured event streams, rendered by Concordia.
 The transcript is a list of wrapped rows (hanging gutters, soft-wrap aware) cached per message, so
 a very long session redraws quickly. Selection, scrolling and hit-testing operate on those rows;
 copied text rejoins soft wraps. The prompt is a separate multi-line editor with its own layout.
+
+Turn state, its colours and animation, and the transcript separation rules are in [tui-states.md](tui-states.md).
