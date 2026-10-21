@@ -81,6 +81,13 @@ pub enum TurnProgress {
 }
 
 pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
+    let mut plan = plan_provider_turn_raw(req)?;
+    // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
+    crate::provider::compat::degrade_planned(&mut plan, req.trust);
+    Ok(plan)
+}
+
+fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
     let prompt = match req.context_prefix {
         Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{}", req.prompt),
         _ => req.prompt.to_string(),
@@ -227,6 +234,12 @@ pub async fn run_provider_turn_with_progress(
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
+    let mut session_guard = req
+        .native_session_id
+        .map(|id| {
+            super::session_guard::acquire(&crate::store::default_store_root(), req.home_path, id)
+        })
+        .transpose()?;
     let mut plan = plan_provider_turn(req)?;
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
     // it explicitly. If that does not work the turn runs unbound, exactly as before.
@@ -242,6 +255,8 @@ pub async fn run_provider_turn_with_progress(
             plan.new_session_id = Some(id);
         }
     }
+    let plain_output =
+        super::compat::caps_for(plan.provider).is_some_and(|caps| caps.known && !caps.stream_json);
     let launch = prepare(&plan)?;
     let handle = Arc::new(RunningTurn::new());
 
@@ -264,6 +279,8 @@ pub async fn run_provider_turn_with_progress(
         .spawn()
         .with_context(|| format!("spawn {}", launch.program))?;
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
+    // Counted in the footer stats (when on) until this turn ends.
+    let _stats_guard = crate::sysstats::register(child.id().unwrap_or(0));
     let stdout = child.stdout.take().context("stdout")?;
     let stderr = child.stderr.take().context("stderr")?;
     if let (Some(prompt), Some(mut stdin)) = (launch.stdin.clone(), child.stdin.take()) {
@@ -290,7 +307,11 @@ pub async fn run_provider_turn_with_progress(
         *slot = Some(child);
     }
     if let Some(tx) = on_started {
-        let _ = tx.send(handle.clone());
+        if tx.send(handle.clone()).is_err() {
+            // No caller can cancel or observe this child anymore. Stop it here so a
+            // receiver that disappeared during startup cannot leave a provider running.
+            handle.cancel();
+        }
     }
 
     let mut reader = BufReader::new(stdout);
@@ -325,14 +346,28 @@ pub async fn run_provider_turn_with_progress(
                     raw.push('\n');
                 }
                 {
-                    let parts = match json_parser.as_mut() {
-                        Some(p) => p.parse_line(&line),
-                        None => parse_codex_stream_chunk(&line),
+                    let parts = if plain_output {
+                        vec![StreamPart::Text(line.clone())]
+                    } else {
+                        match json_parser.as_mut() {
+                            Some(p) => p.parse_line(&line),
+                            None => parse_codex_stream_chunk(&line),
+                        }
                     };
                     emit_progress(&parts, &on_progress);
                     let mut chunk = codex::StreamOutcome::default();
                     apply_stream_parts(parts, &mut chunk);
                     if let Some(sid) = chunk.session_id {
+                        if session_guard.is_none() {
+                            // The CLI has already opened its own writer. Hold our guard for
+                            // the remainder of the turn so another pane cannot resume it.
+                            session_guard = super::session_guard::acquire(
+                                &crate::store::default_store_root(),
+                                req.home_path,
+                                &sid,
+                            )
+                            .ok();
+                        }
                         out.session_id = Some(sid);
                     }
                     if !chunk.text.is_empty() {

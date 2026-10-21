@@ -753,11 +753,39 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn reexec_waits_for_the_child_and_returns_its_exit_code() {
+        let _guard = crate::accounts::TEST_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let sandbox = tempfile::tempdir().unwrap();
+        struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    match value {
+                        Some(value) => env::set_var(key, value),
+                        None => env::remove_var(key),
+                    }
+                }
+            }
+        }
+        let _restore = Restore(
+            ["CONCORDIA_INSTALL_DIR", "CONCORDIA_EXE"]
+                .into_iter()
+                .map(|key| (key, env::var_os(key)))
+                .collect(),
+        );
+        // Re-exec persists its path. A test must never write the real pointer or User env.
+        env::set_var("CONCORDIA_INSTALL_DIR", sandbox.path());
         // `where.exe` with no arguments fails with exit code 2. Returning at all proves we waited
         // (an early return would hand the console to the shell while the child still reads keys).
         let exe = which::which("where.exe").unwrap();
         let code = reexec_into(&exe, &std::env::temp_dir()).unwrap();
         assert_eq!(code, 2);
+        assert_eq!(current_pointer_path().parent(), Some(sandbox.path()));
+        assert_eq!(
+            fs::read_to_string(current_pointer_path()).unwrap(),
+            exe.to_string_lossy()
+        );
     }
 
     use super::*;
@@ -949,7 +977,10 @@ mod tests {
             }
             JobResult::Check(Ok("stopped".into()))
         });
-        std::thread::sleep(Duration::from_millis(100));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while job.status().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(
             job.poll().is_none(),
             "still running; the caller was not blocked"

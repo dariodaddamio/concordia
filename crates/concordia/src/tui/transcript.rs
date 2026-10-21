@@ -9,18 +9,26 @@ use super::text::{col_to_index, word_bounds, wrap_ranges_hang};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+/// Inline style over part of one line of a block: `(line, start, end, style)`, chars within the line.
+pub type LineRun = (usize, usize, usize, Style);
+
 /// One logical chunk of transcript (a message, a card line, …) before wrapping.
 pub struct Block<'a> {
+    pub identity: Option<usize>,
     pub gutter: &'a str,
     pub gutter_style: Style,
     pub style: Style,
     pub text: &'a str,
     /// Render the text as markdown (assistant replies).
     pub markdown: bool,
+    /// Extra inline styles per line (plain blocks only), e.g. the coloured `/usage` block.
+    pub runs: &'a [LineRun],
 }
 
 #[derive(Clone)]
 pub struct Row {
+    pub identity: Option<usize>,
+    pub source_offset: usize,
     pub gutter: String,
     pub gutter_style: Style,
     pub text: Vec<char>,
@@ -29,6 +37,7 @@ pub struct Row {
     pub joins_prev: bool,
     /// Inline style runs `(start, end, style)` in chars of `text`, applied over `style`.
     pub runs: Vec<(usize, usize, Style)>,
+    pub links: Vec<(usize, usize, crate::file_links::Candidate)>,
 }
 
 impl Row {
@@ -47,30 +56,36 @@ pub struct Pos {
 /// reused instead of being wrapped again.
 #[derive(Clone, PartialEq, Eq)]
 struct BlockKey {
+    identity: Option<usize>,
     gutter: String,
     gutter_style: Style,
     style: Style,
     text: String,
     markdown: bool,
+    runs: Vec<LineRun>,
 }
 
 impl BlockKey {
     fn of(b: &Block) -> Self {
         BlockKey {
+            identity: b.identity,
             gutter: b.gutter.to_string(),
             gutter_style: b.gutter_style,
             style: b.style,
             text: b.text.to_string(),
             markdown: b.markdown,
+            runs: b.runs.to_vec(),
         }
     }
 
     fn matches(&self, b: &Block) -> bool {
-        self.markdown == b.markdown
+        self.identity == b.identity
+            && self.markdown == b.markdown
             && self.style == b.style
             && self.gutter_style == b.gutter_style
             && self.gutter == b.gutter
             && self.text == b.text
+            && self.runs == b.runs
     }
 }
 
@@ -87,6 +102,7 @@ pub struct TranscriptView {
     width: usize,
     height: usize,
     first: usize,
+    row_blocks: Vec<(Option<usize>, usize)>,
 }
 
 impl TranscriptView {
@@ -95,11 +111,16 @@ impl TranscriptView {
     /// are wrapped again (normally just the newest); earlier blocks reuse their cached rows.
     pub fn rebuild(&mut self, blocks: &[Block], width: usize, height: usize) {
         let prev_rows = self.rows.len();
+        let anchor = (self.scroll > 0)
+            .then(|| self.row_blocks.get(self.first).copied())
+            .flatten()
+            .filter(|x| x.0.is_some());
         let width_changed = width != self.width;
         if width_changed {
             self.sel = None;
             self.dragging = false;
             self.rows.clear();
+            self.row_blocks.clear();
             self.keys.clear();
         }
 
@@ -113,11 +134,16 @@ impl TranscriptView {
         if keep < self.keys.len() {
             let cut = self.keys[keep].1;
             self.rows.truncate(cut);
+            self.row_blocks.truncate(cut);
             self.keys.truncate(keep);
         }
         for b in &blocks[keep..] {
+            let start = self.rows.len();
             self.keys.push((BlockKey::of(b), self.rows.len()));
             wrap_block(b, width, &mut self.rows);
+            for row in &self.rows[start..] {
+                self.row_blocks.push((b.identity, row.source_offset));
+            }
         }
 
         if !width_changed && self.scroll > 0 && self.rows.len() > prev_rows {
@@ -127,6 +153,29 @@ impl TranscriptView {
         self.width = width;
         self.height = height;
         self.clamp_scroll();
+        if let Some(anchor) = anchor {
+            if let Some(row) = self
+                .row_blocks
+                .iter()
+                .position(|b| *b == anchor)
+                .or_else(|| {
+                    self.row_blocks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| b.0 == anchor.0)
+                        .min_by_key(|(_, b)| b.1.abs_diff(anchor.1))
+                        .map(|(i, _)| i)
+                })
+            {
+                self.scroll = self.rows.len().saturating_sub(row + height);
+                self.clamp_scroll();
+            }
+        }
+    }
+
+    pub fn identity_at(&self, rel_row: usize) -> Option<usize> {
+        let row = self.first.checked_add(rel_row)?;
+        self.rows.get(row)?.identity
     }
 
     fn clamp_scroll(&mut self) {
@@ -358,9 +407,15 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
     } else {
         b.text
             .lines()
-            .map(|l| markdown::MdLine {
+            .enumerate()
+            .map(|(i, l)| markdown::MdLine {
                 text: l.to_string(),
-                runs: Vec::new(),
+                runs: b
+                    .runs
+                    .iter()
+                    .filter(|r| r.0 == i)
+                    .map(|r| (r.1, r.2, r.3))
+                    .collect(),
                 indent: 0,
                 hang: 0,
                 base: Style::default(),
@@ -368,8 +423,19 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
             .collect()
     };
     let mut first_row = true;
+    let mut source_offset = 0usize;
     for ml in lines {
         let chars: Vec<char> = ml.text.chars().collect();
+        let links: Vec<_> = crate::file_links::candidates(&ml.text)
+            .into_iter()
+            .map(|candidate| {
+                (
+                    ml.text[..candidate.range.start].chars().count(),
+                    ml.text[..candidate.range.end].chars().count(),
+                    candidate,
+                )
+            })
+            .collect();
         let first_w = width.saturating_sub(gw + ml.indent).max(1);
         let rest_w = width.saturating_sub(gw + ml.indent + ml.hang).max(1);
         for (i, (s, e)) in wrap_ranges_hang(&chars, first_w, rest_w)
@@ -390,7 +456,7 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
                 " ".repeat(gw)
             };
             first_row = false;
-            let runs = ml
+            let mut runs: Vec<_> = ml
                 .runs
                 .iter()
                 .filter_map(|&(ra, rb, st)| {
@@ -398,15 +464,31 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
                     (lo < hi).then(|| (lo - s, hi - s, st))
                 })
                 .collect();
+            let row_links: Vec<_> = links
+                .iter()
+                .filter_map(|(a, z, candidate)| {
+                    let (lo, hi) = ((*a).max(s), (*z).min(e));
+                    (lo < hi).then(|| (lo - s, hi - s, candidate.clone()))
+                })
+                .collect();
+            runs.extend(
+                row_links
+                    .iter()
+                    .map(|(a, z, _)| (*a, *z, Style::default().add_modifier(Modifier::UNDERLINED))),
+            );
             rows.push(Row {
+                identity: b.identity,
+                source_offset: source_offset + s,
                 gutter: format!("{lead}{}", " ".repeat(pad)),
                 gutter_style: b.gutter_style,
                 text: chars[s..e].to_vec(),
                 style: b.style.patch(ml.base),
                 joins_prev: i > 0,
                 runs,
+                links: row_links,
             });
         }
+        source_offset += ml.text.chars().count() + 1;
     }
 }
 
@@ -416,11 +498,13 @@ mod tests {
 
     fn blk<'a>(gutter: &'a str, text: &'a str) -> Block<'a> {
         Block {
+            identity: None,
             gutter,
             gutter_style: Style::default(),
             style: Style::default(),
             text,
             markdown: false,
+            runs: &[],
         }
     }
 
@@ -544,6 +628,50 @@ mod tests {
         let t2 = format!("{t1}\nnew1\nnew2");
         v.rebuild(&[blk("", &t2)], 40, 10);
         assert_eq!(v.rows[v.visible().start].text, before);
+    }
+
+    #[test]
+    fn viewport_anchor_uses_stable_block_identity_and_row_offset() {
+        let a0 = (0..10)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let b = (0..30)
+            .map(|i| format!("b{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fn mk<'a>(a: &'a str, b: &'a str) -> [Block<'a>; 2] {
+            [
+                Block {
+                    identity: Some(11),
+                    text: a,
+                    ..blk("", a)
+                },
+                Block {
+                    identity: Some(22),
+                    text: b,
+                    ..blk("", b)
+                },
+            ]
+        }
+        let mut v = TranscriptView::default();
+        v.rebuild(&mk(&a0, &b), 40, 5);
+        v.scroll_up(15);
+        let prior = v.row_blocks[v.first];
+        assert_eq!(prior.0, Some(22));
+        let a1 = (0..15)
+            .map(|i| format!("expanded{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        v.rebuild(&mk(&a1, &b), 40, 5);
+        assert_eq!(v.row_blocks[v.first], prior);
+        v.rebuild(&mk(&a1, &b), 12, 5);
+        let resized = v.row_blocks[v.first];
+        assert_eq!(resized.0, Some(22));
+        assert!(
+            resized.1.abs_diff(prior.1) <= 12,
+            "resize should keep the same source location within one wrapped row"
+        );
     }
 
     #[test]
@@ -689,20 +817,24 @@ mod tests {
     fn a_style_change_alone_invalidates_the_cached_block() {
         let mut v = TranscriptView::default();
         let a = Block {
+            identity: None,
             gutter: "",
             gutter_style: Style::default(),
             style: Style::default(),
             text: "card",
             markdown: false,
+            runs: &[],
         };
         v.rebuild(&[a], 40, 10);
         let red = Style::default().fg(ratatui::style::Color::Red);
         let b = Block {
+            identity: None,
             gutter: "",
             gutter_style: Style::default(),
             style: red,
             text: "card",
             markdown: false,
+            runs: &[],
         };
         v.rebuild(&[b], 40, 10);
         assert_eq!(v.rows[0].style, red);
@@ -710,6 +842,7 @@ mod tests {
 
     fn md<'a>(gutter: &'a str, text: &'a str) -> Block<'a> {
         Block {
+            identity: None,
             markdown: true,
             ..blk(gutter, text)
         }
@@ -717,7 +850,14 @@ mod tests {
 
     #[test]
     fn markdown_shows_the_marker_once_hangs_bullets_and_styles_inline_code() {
-        let v = view(&[md("\u{25cf} ", "intro\n\n- a long bullet item that has to wrap onto another row\n\nuse `cargo test` now")], 24, 20);
+        let v = view(
+            &[md(
+                "\u{25cf} ",
+                "intro\n\n- a long bullet item that has to wrap onto another row\n\nuse `cargo test` now",
+            )],
+            24,
+            20,
+        );
         let g: Vec<&str> = v.rows.iter().map(|r| r.gutter.as_str()).collect();
         assert_eq!(g[0], "\u{25cf} ", "marker on the first row only");
         assert!(g[1..].iter().all(|x| !x.contains('\u{25cf}')));

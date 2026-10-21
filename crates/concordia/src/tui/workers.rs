@@ -59,6 +59,9 @@ struct Confirm {
     since: Instant,
 }
 
+/// Ticks (about 200 ms each) between looks at `<state>/proposals`: about 2 s.
+const PROPOSAL_POLL_TICKS: u64 = 10;
+
 const ARM_AFTER: Duration = Duration::from_millis(1500);
 
 fn phase_of(state: WorkerState) -> Option<Phase> {
@@ -553,12 +556,33 @@ impl App {
     /// Queue protocol proposals found in an orchestrator reply. Off unless the user opted in.
     /// Only ever called with the orchestrator's own reply, never with a worker's output.
     pub(super) fn scan_delegation(&mut self, reply: &str) {
-        let settings = get_settings(&self.state_root);
         if !crate::store::delegation_protocol_on(&self.state_root) || reply.is_empty() {
             return;
         }
+        self.queue_proposals(extract_delegate_blocks(reply));
+    }
+
+    /// Proposals recorded by `concordia mcp`'s `delegate` tool (files in `<state>/proposals`).
+    /// Checked about every 2 s, and only consumed while the delegation protocol is on. They go
+    /// through the same confirm prompt as protocol blocks: nothing runs without the user's y.
+    pub(super) fn poll_proposals(&mut self) {
+        if !self.tick_count.is_multiple_of(PROPOSAL_POLL_TICKS)
+            || !crate::mcp::has_proposals(&self.state_root)
+            || !crate::store::delegation_protocol_on(&self.state_root)
+        {
+            return;
+        }
+        let blocks: Vec<_> = crate::mcp::take_proposals(&self.state_root)
+            .into_iter()
+            .filter_map(|p| crate::delegate::block_from(&p.to, &p.task))
+            .collect();
+        self.queue_proposals(blocks);
+    }
+
+    fn queue_proposals(&mut self, blocks: Vec<crate::delegate::DelegateBlock>) {
+        let settings = get_settings(&self.state_root);
         let orch = normalize_account_id(&self.account);
-        for b in extract_delegate_blocks(reply) {
+        for b in blocks {
             let is_worker = settings
                 .workers
                 .iter()
@@ -706,7 +730,11 @@ impl App {
                 None => "running in the background".into(),
             },
             trust.as_str(),
-            if trust == TrustMode::Full { " (your current mode)" } else { "" },
+            if trust == TrustMode::Full {
+                " (your current mode)"
+            } else {
+                ""
+            },
         ))
     }
 

@@ -5,9 +5,47 @@ use crate::accounts::{display_account_name, list_all_accounts};
 use crate::store::ProviderKind;
 use serde_json::Value;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const MAX_DISCOVERY_ENTRIES: usize = 20_000;
+const MAX_DISCOVERED_FILES: usize = 5_000;
+const MAX_DISCOVERED_ACCOUNTS: usize = 32;
+const MAX_SUMMARY_BYTES: u64 = 64 * 1024;
+const MAX_SUMMARY_LINE_BYTES: usize = 32 * 1024;
+const MAX_SUMMARY_LINES: usize = 200;
+const MAX_SUMMARIZED_RECORDS: usize = 1000;
+
+struct Discovery {
+    files: Vec<(PathBuf, u128)>,
+    truncated: bool,
+    entries_scanned: usize,
+}
+
+fn bounded_text(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut out: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() && max_chars > 0 {
+        out.pop();
+        out.push('…');
+    }
+    out
+}
+
+fn read_summary_lines(file: File, max_lines: usize) -> Vec<Vec<u8>> {
+    let mut reader = BufReader::new(file.take(MAX_SUMMARY_BYTES));
+    let mut lines = Vec::new();
+    while lines.len() < max_lines {
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line.len() <= MAX_SUMMARY_LINE_BYTES => lines.push(line),
+            Ok(_) => continue,
+        }
+    }
+    lines
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
@@ -108,14 +146,26 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
-fn walk_jsonl(root: &Path, keep: &dyn Fn(&Path, &str) -> bool) -> Vec<(PathBuf, u128)> {
+fn walk_jsonl(
+    root: &Path,
+    keep: &dyn Fn(&Path, &str) -> bool,
+    file_limit: usize,
+    entry_limit: usize,
+) -> Discovery {
     let mut found = Vec::new();
     let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
+    let mut visited = 0;
+    let mut truncated = false;
+    'walk: while let Some(dir) = pending.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            visited += 1;
+            if visited > entry_limit || found.len() >= file_limit {
+                truncated = true;
+                break 'walk;
+            }
             let path = entry.path();
             let Ok(ft) = entry.file_type() else {
                 continue;
@@ -131,7 +181,11 @@ fn walk_jsonl(root: &Path, keep: &dyn Fn(&Path, &str) -> bool) -> Vec<(PathBuf, 
             }
         }
     }
-    found
+    Discovery {
+        files: found,
+        truncated,
+        entries_scanned: visited.min(entry_limit),
+    }
 }
 
 fn session_id_from_filename(path: &Path) -> String {
@@ -158,14 +212,13 @@ fn session_id_from_filename(path: &Path) -> String {
 
 fn extract_uuid(s: &str) -> Option<String> {
     // 8-4-4-4-12 hex
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i + 36 <= bytes.len() {
-        let slice = &s[i..i + 36];
+    for (i, _) in s.char_indices() {
+        let Some(slice) = s.get(i..i.saturating_add(36)) else {
+            continue;
+        };
         if is_uuid(slice) {
             return Some(slice.to_string());
         }
-        i += 1;
     }
     None
 }
@@ -192,38 +245,66 @@ fn is_uuid(s: &str) -> bool {
     true
 }
 
-fn discover_codex(home: &Path) -> Vec<(PathBuf, u128)> {
+fn discover_codex(home: &Path, file_limit: usize, entry_limit: usize) -> Discovery {
     let sessions = home.join("sessions");
     if !sessions.is_dir() {
-        return Vec::new();
+        return Discovery {
+            files: Vec::new(),
+            truncated: false,
+            entries_scanned: 0,
+        };
     }
-    walk_jsonl(&sessions, &|_, _| true)
+    walk_jsonl(&sessions, &|_, _| true, file_limit, entry_limit)
 }
 
-fn discover_claude(home: &Path) -> Vec<(PathBuf, u128)> {
+fn discover_claude(home: &Path, file_limit: usize, entry_limit: usize) -> Discovery {
     let projects = home.join("projects");
     if !projects.is_dir() {
-        return Vec::new();
+        return Discovery {
+            files: Vec::new(),
+            truncated: false,
+            entries_scanned: 0,
+        };
     }
-    walk_jsonl(&projects, &|path, name| {
-        if name.starts_with("agent-") {
-            return false;
-        }
-        let p = path.to_string_lossy();
-        !p.contains("subagents")
-    })
+    walk_jsonl(
+        &projects,
+        &|path, name| {
+            if name.starts_with("agent-") {
+                return false;
+            }
+            let p = path.to_string_lossy();
+            !p.contains("subagents")
+        },
+        file_limit,
+        entry_limit,
+    )
 }
 
-fn discover_cursor(home: &Path) -> Vec<(PathBuf, u128)> {
+fn discover_cursor(home: &Path, file_limit: usize, entry_limit: usize) -> Discovery {
     let chats = home.join("chats");
     if !chats.is_dir() {
-        return Vec::new();
+        return Discovery {
+            files: Vec::new(),
+            truncated: false,
+            entries_scanned: 0,
+        };
     }
     let mut found = Vec::new();
+    let mut visited = 0;
+    let mut truncated = false;
     let Ok(projects) = fs::read_dir(&chats) else {
-        return found;
+        return Discovery {
+            files: found,
+            truncated,
+            entries_scanned: visited,
+        };
     };
-    for project in projects.flatten() {
+    'projects: for project in projects.flatten() {
+        visited += 1;
+        if visited > entry_limit {
+            truncated = true;
+            break;
+        }
         let Ok(ft) = project.file_type() else {
             continue;
         };
@@ -234,6 +315,11 @@ fn discover_cursor(home: &Path) -> Vec<(PathBuf, u128)> {
             continue;
         };
         for chat in chat_ids.flatten() {
+            visited += 1;
+            if visited > entry_limit || found.len() >= file_limit {
+                truncated = true;
+                break 'projects;
+            }
             let dir = chat.path();
             let meta = dir.join("meta.json");
             if meta.is_file() {
@@ -241,7 +327,11 @@ fn discover_cursor(home: &Path) -> Vec<(PathBuf, u128)> {
             }
         }
     }
-    found
+    Discovery {
+        files: found,
+        truncated,
+        entries_scanned: visited.min(entry_limit),
+    }
 }
 
 fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<SessionSummary> {
@@ -249,14 +339,8 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
     let mut cwd: Option<String> = None;
     let mut preview: Option<String> = None;
     let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    let mut n = 0usize;
-    for line in reader.lines().map_while(Result::ok) {
-        n += 1;
-        if n > 80 && preview.is_some() {
-            break;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+    for line in read_summary_lines(file, 80) {
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -289,7 +373,7 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
                             .trim()
                             .to_string();
                         if !text.is_empty() {
-                            preview = Some(text);
+                            preview = Some(bounded_text(&text, 512));
                         }
                     }
                 }
@@ -311,14 +395,8 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
     let mut cwd = decode_claude_project_cwd(path);
     let mut preview: Option<String> = None;
     let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    let mut n = 0usize;
-    for line in reader.lines().map_while(Result::ok) {
-        n += 1;
-        if n > 120 && (preview.is_some() || n > 200) {
-            break;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+    for line in read_summary_lines(file, MAX_SUMMARY_LINES) {
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         if let Some(id) = v.get("sessionId").and_then(|x| x.as_str()) {
@@ -341,7 +419,7 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
         provider: ProviderKind::Claude,
         session_id,
         cwd,
-        preview,
+        preview: preview.map(|s| bounded_text(&s, 512)),
         modified_ms,
     })
 }
@@ -401,30 +479,34 @@ pub fn decode_claude_project_cwd(session_path: &Path) -> Option<String> {
     None
 }
 
+fn read_file_capped(path: &Path, max_bytes: u64) -> std::io::Result<String> {
+    let file = File::open(path)?;
+    let mut text = String::new();
+    file.take(max_bytes).read_to_string(&mut text)?;
+    Ok(text)
+}
+
 fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<SessionSummary> {
     let meta_path = dir.join("meta.json");
-    let raw = fs::read_to_string(&meta_path).ok()?;
+    let raw = read_file_capped(&meta_path, 32 * 1024).ok()?;
     let meta: Value = serde_json::from_str(&raw).ok()?;
     let session_id = dir
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let cwd = meta
-        .get("cwd")
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string());
+    let cwd = meta.get("cwd").and_then(|c| c.as_str()).map(str::to_string);
     let mut preview = meta
         .get("title")
         .and_then(|t| t.as_str())
-        .map(|s| s.to_string());
+        .map(|s| bounded_text(s, 512));
     let hist_path = dir.join("prompt_history.json");
     if preview.as_ref().map(|p| p.len() < 3).unwrap_or(true) && hist_path.is_file() {
-        if let Ok(hist) = fs::read_to_string(&hist_path) {
+        if let Ok(hist) = read_file_capped(&hist_path, 32 * 1024) {
             if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&hist) {
                 for item in &items {
                     if let Some(t) = item.as_str().map(str::trim) {
                         if !t.is_empty() && !t.starts_with('/') {
-                            preview = Some(t.to_string());
+                            preview = Some(bounded_text(t, 512));
                             break;
                         }
                     }
@@ -448,48 +530,162 @@ fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<Sess
     })
 }
 
-pub fn list_recent_sessions(state_root: &Path, limit: usize) -> Vec<SessionSummary> {
-    let limit = limit.clamp(1, 100);
-    let accounts = list_all_accounts(state_root);
-    let mut discovered: Vec<(String, ProviderKind, PathBuf, u128, &'static str)> = Vec::new();
-    for a in &accounts {
+/// Native transcript locations are discovered from registered account homes, never constructed
+/// from a caller-provided session path. Cursor records currently contain metadata only.
+pub struct NativeRecordScan {
+    pub records: Vec<(SessionSummary, PathBuf)>,
+    pub truncated: bool,
+}
+
+fn summarize_one(
+    account: &str,
+    provider: ProviderKind,
+    path: &Path,
+    ms: u128,
+) -> Option<(SessionSummary, PathBuf)> {
+    let summary = match provider {
+        ProviderKind::Codex => summarize_codex(account, path, ms),
+        ProviderKind::Claude => summarize_claude(account, path, ms),
+        ProviderKind::Cursor => summarize_cursor(account, path, ms),
+    }?;
+    Some((summary, path.to_path_buf()))
+}
+
+pub fn list_native_records_bounded(
+    state_root: &Path,
+    limit: usize,
+    account: Option<&str>,
+    provider: Option<ProviderKind>,
+) -> NativeRecordScan {
+    let limit = limit.clamp(1, 1000);
+    let accounts: Vec<_> = list_all_accounts(state_root)
+        .into_iter()
+        .filter(|a| account.is_none_or(|id| a.account == id))
+        .filter(|a| provider.is_none_or(|p| a.provider == p))
+        .collect();
+    let mut records = Vec::new();
+    let mut candidates: Vec<(String, ProviderKind, PathBuf, u128)> = Vec::new();
+    let mut entries_left = MAX_DISCOVERY_ENTRIES;
+    let mut files_left = MAX_DISCOVERED_FILES;
+    let mut truncated = accounts.len() > MAX_DISCOVERED_ACCOUNTS;
+    for a in accounts.iter().take(MAX_DISCOVERED_ACCOUNTS) {
+        if entries_left == 0 || files_left == 0 {
+            truncated = true;
+            break;
+        }
         let Some(home) = a.home_path.as_ref() else {
             continue;
         };
-        match a.provider {
-            ProviderKind::Codex => {
-                for (path, ms) in discover_codex(home) {
-                    discovered.push((a.account.clone(), a.provider, path, ms, "codex"));
-                }
-            }
-            ProviderKind::Claude => {
-                for (path, ms) in discover_claude(home) {
-                    discovered.push((a.account.clone(), a.provider, path, ms, "claude"));
-                }
-            }
-            ProviderKind::Cursor => {
-                for (path, ms) in discover_cursor(home) {
-                    discovered.push((a.account.clone(), a.provider, path, ms, "cursor"));
-                }
-            }
-        }
-    }
-    discovered.sort_by_key(|d| std::cmp::Reverse(d.3));
-    let mut out = Vec::new();
-    for (account, _provider, path, ms, kind) in discovered.into_iter().take(limit * 3) {
-        let summary = match kind {
-            "codex" => summarize_codex(&account, &path, ms),
-            "claude" => summarize_claude(&account, &path, ms),
-            _ => summarize_cursor(&account, &path, ms),
+        let file_limit = files_left.min(MAX_DISCOVERED_FILES);
+        let discovery = match a.provider {
+            ProviderKind::Codex => discover_codex(home, file_limit, entries_left),
+            ProviderKind::Claude => discover_claude(home, file_limit, entries_left),
+            ProviderKind::Cursor => discover_cursor(home, file_limit, entries_left),
         };
-        if let Some(s) = summary {
-            out.push(s);
-            if out.len() >= limit {
-                break;
+        let files_seen = discovery.files.len();
+        let cut = discovery.truncated;
+        let visited = discovery.entries_scanned;
+        entries_left = entries_left.saturating_sub(visited);
+        files_left = files_left.saturating_sub(files_seen);
+        truncated |= cut;
+        candidates.extend(
+            discovery
+                .files
+                .into_iter()
+                .map(|(path, ms)| (a.account.clone(), a.provider, path, ms)),
+        );
+    }
+    candidates.sort_by_key(|(_, _, _, ms)| std::cmp::Reverse(*ms));
+    for (index, (account, provider, path, ms)) in candidates.iter().enumerate() {
+        if records.len() >= limit {
+            break;
+        }
+        if index >= MAX_SUMMARIZED_RECORDS {
+            truncated = true;
+            break;
+        }
+        if let Some(record) = summarize_one(account, *provider, path, *ms) {
+            records.push(record);
+        }
+    }
+    NativeRecordScan { records, truncated }
+}
+
+pub fn list_native_records(state_root: &Path, limit: usize) -> Vec<(SessionSummary, PathBuf)> {
+    list_native_records_bounded(state_root, limit, None, None).records
+}
+
+/// Find one native session by exact id inside one registered account home. If the bounded scan
+/// cannot prove the result is unique/absent, return an explicit incomplete-scan error.
+pub fn find_native_record(
+    state_root: &Path,
+    account: &str,
+    provider: Option<ProviderKind>,
+    session_id: &str,
+) -> Result<Option<(SessionSummary, PathBuf)>, String> {
+    let accounts: Vec<_> = list_all_accounts(state_root)
+        .into_iter()
+        .filter(|a| a.account == account && provider.is_none_or(|p| a.provider == p))
+        .collect();
+    let [account_def] = accounts.as_slice() else {
+        if accounts.is_empty() {
+            return Ok(None);
+        }
+        return Err("account id is ambiguous; specify --provider".into());
+    };
+    let Some(home) = account_def.home_path.as_ref() else {
+        return Ok(None);
+    };
+    let discovery = match account_def.provider {
+        ProviderKind::Codex => discover_codex(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
+        ProviderKind::Claude => discover_claude(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
+        ProviderKind::Cursor => discover_cursor(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
+    };
+    if discovery.truncated {
+        return Err(
+            "native chat scan bound reached; could not verify this session is unique".into(),
+        );
+    }
+    let uuid_id = is_uuid(session_id);
+    let mut matches = Vec::new();
+    let mut summarized = 0;
+    for (path, ms) in discovery.files {
+        let filename_id = match account_def.provider {
+            ProviderKind::Codex | ProviderKind::Claude => session_id_from_filename(&path),
+            ProviderKind::Cursor => path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+        if uuid_id && filename_id != session_id {
+            continue;
+        }
+        summarized += 1;
+        if summarized > MAX_SUMMARIZED_RECORDS {
+            return Err(
+                "native chat scan bound reached; could not verify this session is unique".into(),
+            );
+        }
+        if let Some(record) = summarize_one(&account_def.account, account_def.provider, &path, ms) {
+            if record.0.session_id == session_id {
+                matches.push(record);
+                if matches.len() > 1 {
+                    break;
+                }
             }
         }
     }
-    out
+    if matches.len() > 1 {
+        return Err("session id is ambiguous in that account; specify --provider".into());
+    }
+    Ok(matches.pop())
+}
+
+pub fn list_recent_sessions(state_root: &Path, limit: usize) -> Vec<SessionSummary> {
+    list_native_records(state_root, limit.clamp(1, 100))
+        .into_iter()
+        .map(|(session, _)| session)
+        .collect()
 }
 
 pub fn count_sessions_here(sessions: &[SessionSummary], prefer_cwd: Option<&Path>) -> usize {
@@ -637,5 +833,40 @@ mod tests {
             decode_claude_project_cwd(&p).as_deref(),
             Some(r"C:\Users\alex\dev")
         );
+    }
+
+    #[test]
+    fn native_summary_fields_and_single_line_reads_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic-session.jsonl");
+        let meta = serde_json::json!({
+            "type":"session_meta",
+            "payload":{"id":"synthetic-session","cwd":"c".repeat(2000)}
+        });
+        let user = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"user","content":[{"text":"p".repeat(2000)}]}
+        });
+        std::fs::write(&path, format!("{meta}\n{user}\n")).unwrap();
+        let summary = summarize_codex("synthetic", &path, 1).unwrap();
+        assert_eq!(summary.preview.as_ref().unwrap().chars().count(), 512);
+        assert_eq!(summary.cwd.as_ref().unwrap().chars().count(), 2000);
+
+        std::fs::write(&path, format!("{}\n{meta}\n", "x".repeat(3 * 1024 * 1024))).unwrap();
+        let summary = summarize_codex("synthetic", &path, 1).unwrap();
+        assert!(
+            summary.preview.is_none(),
+            "metadata after the byte cap is not read"
+        );
+    }
+
+    #[test]
+    fn native_discovery_reports_its_file_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("one.jsonl"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("two.jsonl"), "{}\n").unwrap();
+        let found = walk_jsonl(dir.path(), &|_, _| true, 1, 100);
+        assert_eq!(found.files.len(), 1);
+        assert!(found.truncated);
     }
 }

@@ -20,18 +20,33 @@ pub struct Config {
     pub threads: Threads,
     pub mode: Mode,
     pub delegation: Delegation,
+    pub editor: EditorConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EditorConfig {
+    /// One executable, never a shell command. Empty selects an installed terminal editor.
+    pub program: String,
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ui {
     pub token_line: bool,
     pub tips: bool,
+    pub persist_history: bool,
+    /// Footer memory and CPU figures (`mem 41 MB - cpu 1%`); off by default.
+    pub stats: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Threads {
     pub enabled: bool,
     pub map_chars: usize,
+    /// Write the awareness block into homes Concordia created (default on).
+    pub awareness: bool,
+    /// Register `concordia mcp` in homes Concordia created (default off: schemas cost tokens).
+    pub mcp: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,10 +66,14 @@ impl Default for Config {
             ui: Ui {
                 token_line: true,
                 tips: true,
+                persist_history: true,
+                stats: false,
             },
             threads: Threads {
                 enabled: false,
                 map_chars: 1600,
+                awareness: true,
+                mcp: false,
             },
             mode: Mode {
                 default: TrustMode::Ask,
@@ -63,6 +82,7 @@ impl Default for Config {
                 protocol: false,
                 max_workers: MAX_WORKERS_CAP,
             },
+            editor: EditorConfig::default(),
         }
     }
 }
@@ -153,7 +173,10 @@ impl Config {
         let mut unknown = Vec::new();
         for (section, value) in &table {
             let Some(sub) = value.as_table() else {
-                if matches!(section.as_str(), "ui" | "threads" | "mode" | "delegation") {
+                if matches!(
+                    section.as_str(),
+                    "ui" | "threads" | "mode" | "delegation" | "editor"
+                ) {
                     warnings.push(format!("[{section}] must be a table; ignored"));
                 } else {
                     unknown.push(section.clone());
@@ -163,8 +186,20 @@ impl Config {
             for (key, v) in sub {
                 let full = format!("{section}.{key}");
                 match full.as_str() {
+                    "editor.program" => match v.as_str() {
+                        Some(program) if !program.trim().is_empty() => cfg.editor.program = program.into(),
+                        _ => warnings.push("editor.program must be a nonempty executable path".into()),
+                    },
+                    "editor.args" => match v.as_array() {
+                        Some(args) if args.iter().all(|arg| arg.is_str()) => cfg.editor.args = args.iter().filter_map(|arg| arg.as_str().map(str::to_owned)).collect(),
+                        _ => warnings.push("editor.args must be an array of argument strings".into()),
+                    },
                     "ui.token_line" => set_bool(v, &full, &mut cfg.ui.token_line, &mut warnings),
                     "ui.tips" => set_bool(v, &full, &mut cfg.ui.tips, &mut warnings),
+                    "ui.persist_history" => {
+                        set_bool(v, &full, &mut cfg.ui.persist_history, &mut warnings)
+                    }
+                    "ui.stats" => set_bool(v, &full, &mut cfg.ui.stats, &mut warnings),
                     "threads.enabled" => {
                         set_bool(v, &full, &mut cfg.threads.enabled, &mut warnings)
                     }
@@ -182,6 +217,10 @@ impl Config {
                         None => warnings
                             .push("threads.map_chars must be an integer; using 1600".to_string()),
                     },
+                    "threads.awareness" => {
+                        set_bool(v, &full, &mut cfg.threads.awareness, &mut warnings)
+                    }
+                    "threads.mcp" => set_bool(v, &full, &mut cfg.threads.mcp, &mut warnings),
                     "mode.default" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("plan") => cfg.mode.default = TrustMode::Plan,
                         Some("ask") => cfg.mode.default = TrustMode::Ask,
@@ -253,9 +292,19 @@ pub fn ui_tips() -> bool {
     get().ui.tips
 }
 
+/// Whether the footer shows process memory and CPU (`[ui] stats`).
+pub fn ui_stats() -> bool {
+    get().ui.stats
+}
+
 /// Whether conversations are recorded to `<state>/threads`. Wired by stage 1a.
 pub fn threads_enabled() -> bool {
     get().threads.enabled
+}
+
+/// Whether sent prompts are kept in `<state>/history.jsonl` across restarts.
+pub fn ui_persist_history() -> bool {
+    get().ui.persist_history
 }
 
 /// Size of the `[concordia map]` block in characters. Wired by stage 1a.
@@ -295,6 +344,18 @@ pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn terminal_editor_configuration_uses_one_program_and_argument_array() {
+        let (config, warnings) =
+            Config::parse("[editor]\nprogram='nvim'\nargs=['+{line}','--','{file}']\n");
+        assert!(warnings.is_empty());
+        assert_eq!(config.editor.program, "nvim");
+        assert_eq!(config.editor.args, ["+{line}", "--", "{file}"]);
+        let (bad, warnings) = Config::parse("[editor]\nargs=['valid',12]\nprogram=3\n");
+        assert_eq!(bad.editor, EditorConfig::default());
+        assert_eq!(warnings.len(), 2);
+    }
+
     fn w(text: &str) -> (Config, Vec<String>) {
         Config::parse(text)
     }
@@ -309,6 +370,17 @@ mod tests {
         assert_eq!(c.mode.default, TrustMode::Ask);
         assert!(!c.delegation.protocol);
         assert_eq!(c.delegation.max_workers, 3);
+    }
+
+    #[test]
+    fn awareness_defaults_on_and_mcp_defaults_off() {
+        let (c, warn) = w("");
+        assert!(warn.is_empty() && c.threads.awareness && !c.threads.mcp);
+        let (c, warn) = w("[threads]\nawareness = false\nmcp = true\n");
+        assert!(warn.is_empty(), "{warn:?}");
+        assert!(!c.threads.awareness && c.threads.mcp);
+        let (c, warn) = w("[threads]\nmcp = \"yes\"\n");
+        assert!(!c.threads.mcp && warn[0].contains("threads.mcp must be true or false"));
     }
 
     #[test]

@@ -12,18 +12,24 @@ fn print_help() {
            concordia --help    this message\n\
            concordia --version build stamp (confirm pane is not stale)\n\
            concordia install   install this exe as the `concordia` on your PATH (new panes get it)\n\
-           concordia wezterm open WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
+           concordia wezterm   launch WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
            concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
+           concordia chat list|read|search  bounded native CLI chats across your own accounts\n\
+           concordia preview FILE          read-only Markdown preview in this terminal\n\
            concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
                                read recorded threads (opt-in: CONCORDIA_THREADS=1); read-only\n\
+           concordia mcp       stdio MCP server: threads, thread_map, thread_read, usage, delegate (docs/mcp.md)\n\
          \n\
          Slash: /use [add] /model /usage /resume /trust /config /new /threads /split /update /version /copy /doctor /exit\n\
+         Files: /open PATH[:LINE[:COLUMN]] · /preview PATH · click an underlined file reference (Alt+click previews)\n\
          Delegate: /workers [add|remove] /delegate <account|auto> <task> /delegate stop|use|help (docs/delegation.md)\n\
          Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
          Connect: /use add [codex|claude|cursor] makes an isolated home and opens its login.\n\
          Mouse: click places the caret, drag selects, double/triple-click picks word/line,\n\
          wheel scrolls, right-click copies the selection or pastes.\n\
          Keys: Ctrl+A/X/V select-all/cut/paste · Shift+Enter or Ctrl+J newline · PgUp/PgDn scroll.\n\
+         Queue: Tab queues while busy · Ctrl+Up/Down focuses queue · Ctrl+R resumes paused queue.\n\
+         Edit: Ctrl+Z undo · Ctrl+Shift+Z/Ctrl+Y redo · Ctrl+E full activity detail · Ctrl+O expand all.\n\
          Never uses resume --last — bind an explicit session id via /resume.\n\
          \n\
          Active exe: {}\n\
@@ -42,7 +48,41 @@ async fn main() -> Result<()> {
         tui::run_chat_tui().await?;
         return Ok(());
     }
+    if args.len() > 1
+        && matches!(
+            args[0].as_str(),
+            "--host"
+                | "host"
+                | "--help"
+                | "-h"
+                | "help"
+                | "install"
+                | "wezterm"
+                | "doctor"
+                | "--doctor"
+                | "mcp"
+                | "--version"
+                | "-V"
+                | "version"
+        )
+    {
+        eprintln!("{} takes no arguments (try --help)", args[0]);
+        std::process::exit(2);
+    }
     match args[0].as_str() {
+        "chat" => match concordia::chat_cli::run(&default_store_root(), &args[1..]) {
+            Ok(output) => print!("{output}"),
+            Err((message, code)) => {
+                eprintln!("{message}");
+                std::process::exit(code);
+            }
+        },
+        "preview" => {
+            if args.len() != 2 {
+                anyhow::bail!("usage: concordia preview FILE");
+            }
+            tui::run_file_preview(std::path::Path::new(&args[1]))?;
+        }
         "--host" | "host" => {
             // Alias: same as bare concordia (TUI in current pane).
             tui::run_chat_tui().await?;
@@ -95,6 +135,16 @@ async fn main() -> Result<()> {
                 std::process::exit(code);
             }
         },
+        "mcp" => {
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            if let Err(e) =
+                concordia::mcp::serve(stdin.lock(), stdout.lock(), &default_store_root())
+            {
+                eprintln!("mcp: {e}");
+                std::process::exit(1);
+            }
+        }
         "--version" | "-V" | "version" => {
             println!("{}", version_line());
             // Read-only: reporting a version must never repoint the install at this exe.

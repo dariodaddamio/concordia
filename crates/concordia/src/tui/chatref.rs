@@ -1,0 +1,799 @@
+//! `@chat` references: `@` in the prompt completes to a recent thread, and on send each
+//! `@<id-or-prefix>` is replaced by that thread's map (docs/architecture.md, "Delivery").
+//!
+//! The pure pieces (finding the token being typed, filtering, expansion) are plain functions so
+//! they are tested without a terminal. The slash palette is untouched: this is a separate mode with
+//! its own state, drawn in the same spot and answering the same navigation keys.
+
+use super::*;
+use crate::threads::{self, ThreadMeta};
+
+/// At most this many references are expanded per prompt; the rest stay literal.
+pub const MAX_REFS: usize = 3;
+/// A thread list younger than this is reused instead of re-reading `<state>/threads`.
+const LIST_TTL: Duration = Duration::from_secs(5);
+const EMPTY_NOTICE: &str = "no recorded chats - enable [threads] in config.toml";
+
+// ---------------------------------------------------------------------------------------------
+// Pure logic
+// ---------------------------------------------------------------------------------------------
+
+/// Characters that may directly precede an `@` that starts a reference.
+fn opens_word(prev: Option<char>) -> bool {
+    prev.is_none_or(|c| c.is_whitespace() || matches!(c, '(' | '[' | '{' | '"' | '\''))
+}
+
+fn is_id_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+
+/// Thread ids are UUIDs: hex digits and dashes. Anything else after `@` is not a reference.
+fn looks_like_id(run: &str) -> bool {
+    let n = run.chars().count();
+    (4..=36).contains(&n) && run.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// The `@query` being typed at the end of the prompt: (byte offset of the `@`, text after it).
+/// None when the last word is not a reference start (`a@b.com`, `\@x`, no `@`, ...).
+pub fn active_query(text: &str) -> Option<(usize, String)> {
+    let word_start = text
+        .rfind(char::is_whitespace)
+        .map(|i| i + text[i..].chars().next().map_or(1, char::len_utf8))
+        .unwrap_or(0);
+    let word = &text[word_start..];
+    let at = word
+        .char_indices()
+        .find(|(_, c)| *c == '@')
+        .map(|(i, _)| i)
+        .filter(|i| *i == 0 || opens_word(word[..*i].chars().last()))?;
+    let start = word_start + at;
+    if text[..start].ends_with('\\') {
+        return None;
+    }
+    let q = &word[at + 1..];
+    if !q.chars().all(is_id_char) {
+        return None;
+    }
+    Some((start, q.to_string()))
+}
+
+/// Threads whose id starts with the query or whose title contains it, newest first.
+pub fn filter<'a>(all: &'a [ThreadMeta], query: &str) -> Vec<&'a ThreadMeta> {
+    let q = query.to_lowercase();
+    all.iter()
+        .filter(|m| {
+            q.is_empty()
+                || m.id.to_lowercase().starts_with(&q)
+                || m.title.to_lowercase().contains(&q)
+        })
+        .collect()
+}
+
+/// Shortest id prefix of at least 8 characters that no other thread shares.
+pub fn short_id(all: &[ThreadMeta], id: &str) -> String {
+    let chars: Vec<char> = id.chars().collect();
+    for n in 8..=chars.len() {
+        let p: String = chars[..n].iter().collect();
+        if all.iter().filter(|m| m.id.starts_with(&p)).count() <= 1 {
+            return p;
+        }
+    }
+    id.to_string()
+}
+
+/// The prompt with the `@query` at `start` replaced by `@<id> `.
+pub fn complete(text: &str, start: usize, short: &str) -> String {
+    format!("{}@{short} ", &text[..start])
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Expansion {
+    /// The prompt to send: references replaced by maps, `\@` unescaped.
+    pub sent: String,
+    /// (short id, map) per expanded reference, for the dimmed transcript block.
+    pub maps: Vec<(String, String)>,
+    /// Why a reference was left as typed.
+    pub notices: Vec<String>,
+}
+
+/// Replace every `@<id-or-unique-prefix>` in `text` by that thread's map (at most `map_chars`
+/// characters, with its `more:` pointer). Unknown or ambiguous ids stay literal with a notice.
+pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
+    if !text.contains('@') {
+        return Expansion {
+            sent: text.to_string(),
+            ..Default::default()
+        };
+    }
+    let mut ex = Expansion::default();
+    let mut listed: Option<Vec<ThreadMeta>> = None;
+    let mut done: Vec<String> = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // `\@` is a literal @ (the backslash is dropped).
+        if c == '\\' && chars.get(i + 1) == Some(&'@') {
+            out.push('@');
+            i += 2;
+            continue;
+        }
+        let prev = (i > 0).then(|| chars[i - 1]);
+        if c != '@' || !opens_word(prev) {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let end = (i + 1..chars.len())
+            .find(|&j| !is_id_char(chars[j]))
+            .unwrap_or(chars.len());
+        let run: String = chars[i + 1..end].iter().collect();
+        // `@abcd.example` reads as a domain, not a reference.
+        let domainish = chars.get(end) == Some(&'.')
+            && chars
+                .get(end + 1)
+                .is_some_and(|c| c.is_ascii_alphanumeric());
+        if !looks_like_id(&run) || domainish {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let token: String = chars[i..end].iter().collect();
+        let mut skip = 0;
+        let metas = listed.get_or_insert_with(|| threads::list(state_root));
+        let hits: Vec<&ThreadMeta> = {
+            let q = run.to_lowercase();
+            let exact: Vec<&ThreadMeta> = metas.iter().filter(|m| m.id == q).collect();
+            if exact.is_empty() {
+                metas.iter().filter(|m| m.id.starts_with(&q)).collect()
+            } else {
+                exact
+            }
+        };
+        let literal = |ex: &mut Expansion, why: String| {
+            ex.notices.push(format!("{token}: {why} - left as typed"));
+        };
+        match hits.as_slice() {
+            _ if metas.is_empty() => {
+                literal(&mut ex, EMPTY_NOTICE.to_string());
+                out.push_str(&token);
+            }
+            [] => {
+                literal(&mut ex, "no recorded chat has that id".to_string());
+                out.push_str(&token);
+            }
+            [m] => {
+                let id = m.id.clone();
+                if done.contains(&id) {
+                    // The same chat twice: the map is already in this prompt.
+                    out.push_str(&token);
+                } else if done.len() >= MAX_REFS {
+                    literal(&mut ex, format!("at most {MAX_REFS} chats per prompt"));
+                    out.push_str(&token);
+                } else {
+                    match threads::ThreadLog::open(state_root, &id).read_all() {
+                        Ok(events) => {
+                            let map = threads::build_map(&events, &id, map_chars, true);
+                            let kept = out.trim_end_matches([' ', '\t']).len();
+                            out.truncate(kept);
+                            if !out.is_empty() && !out.ends_with('\n') {
+                                out.push('\n');
+                            }
+                            out.push_str(&map);
+                            out.push('\n');
+                            ex.maps.push((short_id(metas, &id), map));
+                            done.push(id);
+                            // The map ends the line; spaces after the token are not kept.
+                            while chars.get(end + skip) == Some(&' ') {
+                                skip += 1;
+                            }
+                        }
+                        Err(_) => {
+                            literal(&mut ex, "that chat could not be read".to_string());
+                            out.push_str(&token);
+                        }
+                    }
+                }
+            }
+            many => {
+                literal(
+                    &mut ex,
+                    format!("matches {} chats, use more characters", many.len()),
+                );
+                out.push_str(&token);
+            }
+        }
+        i = end + skip;
+    }
+    ex.sent = out.trim_end().to_string();
+    ex
+}
+
+// ---------------------------------------------------------------------------------------------
+// Prompt-box state and the overlay
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct ChatRef {
+    list: Vec<ThreadMeta>,
+    loaded: Option<Instant>,
+    pub selected: usize,
+    last_query: Option<String>,
+    /// Prompt text at the moment Esc closed the list; it stays closed until the text changes.
+    dismissed_for: Option<String>,
+    empty_shown_once: bool,
+    showing_empty: bool,
+}
+
+/// What the overlay shows right now.
+enum View {
+    Hidden,
+    Empty,
+    Rows(Vec<usize>),
+}
+
+impl App {
+    fn chat_view(&mut self) -> View {
+        let text = self.editor.text();
+        let query = if self.palette.dismissed
+            || self.picker.is_some()
+            || self.hist_pos.is_some()
+            || !self.palette_entries().is_empty()
+            || self.chatref.dismissed_for.as_deref() == Some(text.as_str())
+        {
+            None
+        } else {
+            active_query(&text)
+        };
+        let Some((_, q)) = query else {
+            self.chatref.loaded = None;
+            self.chatref.showing_empty = false;
+            self.chatref.last_query = None;
+            return View::Hidden;
+        };
+        let stale = self.chatref.loaded.is_none_or(|t| t.elapsed() > LIST_TTL);
+        if stale {
+            self.chatref.list = threads::list(&self.state_root);
+            self.chatref.loaded = Some(Instant::now());
+        }
+        if self.chatref.list.is_empty() {
+            if !self.chatref.empty_shown_once || self.chatref.showing_empty {
+                self.chatref.empty_shown_once = true;
+                self.chatref.showing_empty = true;
+                return View::Empty;
+            }
+            return View::Hidden;
+        }
+        if self.chatref.last_query.as_deref() != Some(q.as_str()) {
+            self.chatref.selected = 0;
+            self.chatref.last_query = Some(q.clone());
+        }
+        let rows: Vec<usize> = self
+            .chatref
+            .list
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| filter(std::slice::from_ref(*m), &q).len() == 1)
+            .map(|(i, _)| i)
+            .collect();
+        if rows.is_empty() {
+            return View::Hidden;
+        }
+        self.chatref.selected = self.chatref.selected.min(rows.len() - 1);
+        View::Rows(rows)
+    }
+
+    /// Put the chosen thread's id in the prompt in place of the `@query`.
+    fn complete_chat_ref(&mut self, list_idx: usize) {
+        let text = self.editor.text();
+        let Some((start, _)) = active_query(&text) else {
+            return;
+        };
+        let Some(m) = self.chatref.list.get(list_idx) else {
+            return;
+        };
+        let short = short_id(&self.chatref.list, &m.id);
+        self.editor.set_text(&complete(&text, start, &short));
+    }
+
+    /// Show the maps that were sent with the prompt (dimmed, under the user's own line) and the
+    /// reasons any reference was left alone. Returns the text to send.
+    pub(super) fn show_chat_refs(&mut self, ex: Expansion) -> String {
+        for (short, map) in &ex.maps {
+            self.messages.push(ChatLine {
+                role: MsgRole::Meta,
+                text: format!("sent with your prompt (@{short}):\n{map}"),
+                card: None,
+                meta: None,
+            });
+        }
+        for n in &ex.notices {
+            self.push_system(n.clone());
+        }
+        ex.sent
+    }
+
+    /// Expand `@chat` references in an outgoing prompt.
+    pub(super) fn expand_chat_refs(&self, text: &str) -> Expansion {
+        expand(
+            &self.state_root,
+            text,
+            crate::config::for_root(&self.state_root).threads.map_chars,
+        )
+    }
+}
+
+/// Navigation keys while the list is open. True when the key was used.
+pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
+    if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::ALT) {
+        return false;
+    }
+    let View::Rows(rows) = app.chat_view() else {
+        return false;
+    };
+    let n = rows.len();
+    match key.code {
+        KeyCode::Up | KeyCode::BackTab => {
+            app.chatref.selected = (app.chatref.selected + n - 1) % n;
+            true
+        }
+        KeyCode::Down => {
+            app.chatref.selected = (app.chatref.selected + 1) % n;
+            true
+        }
+        KeyCode::Tab | KeyCode::Enter => {
+            app.complete_chat_ref(rows[app.chatref.selected]);
+            true
+        }
+        KeyCode::Esc => {
+            app.chatref.dismissed_for = Some(app.editor.text());
+            true
+        }
+        _ => false,
+    }
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!(
+            "{}...",
+            s.chars().take(max.saturating_sub(3)).collect::<String>()
+        )
+    }
+}
+
+/// The list, floating just above the prompt box like the slash palette.
+pub(super) fn draw(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
+    let view = app.chat_view();
+    let (items, title, selected): (Vec<ListItem>, String, Option<usize>) = match view {
+        View::Hidden => return,
+        View::Empty => (
+            vec![ListItem::new(Span::styled(
+                EMPTY_NOTICE,
+                Style::default().fg(Color::Indexed(245)),
+            ))],
+            " chats ".to_string(),
+            None,
+        ),
+        View::Rows(rows) => {
+            let width = (f.area().width.saturating_sub(4) as usize).clamp(30, 90);
+            let items = rows
+                .iter()
+                .map(|&i| {
+                    let m = &app.chatref.list[i];
+                    let id = short_id(&app.chatref.list, &m.id);
+                    let tail = format!(
+                        "  {}{}",
+                        threads::age_label(m.started),
+                        m.account
+                            .as_deref()
+                            .map(|a| format!(" {a}"))
+                            .unwrap_or_default()
+                    );
+                    let title = if m.title.is_empty() {
+                        "(untitled)"
+                    } else {
+                        &m.title
+                    };
+                    let room = width.saturating_sub(id.len() + tail.len() + 6).max(8);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!("@{id}  "),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(clip(title, room)),
+                        Span::styled(tail, Style::default().fg(Color::DarkGray)),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            let shown = items.len();
+            (
+                items,
+                format!(" chats \u{b7} {shown} \u{b7} Tab/Enter completes "),
+                Some(app.chatref.selected),
+            )
+        }
+    };
+    let shown = items.len().min(10);
+    let height = shown as u16 + 2;
+    let width = (f.area().width.saturating_sub(input.x + 2) as usize).clamp(20, 94) as u16;
+    let y = input.y.saturating_sub(height).max(above.y);
+    let rect = Rect {
+        x: input.x + 1,
+        y,
+        width: width.min(f.area().width.saturating_sub(input.x + 1)),
+        height: height.min(input.y.saturating_sub(above.y).max(3)),
+    };
+    f.render_widget(Clear, rect);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(title),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Indexed(238))
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut state = ListState::default();
+    state.select(selected);
+    f.render_stateful_widget(list, rect, &mut state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::threads::{ThreadEvent, ThreadLog};
+
+    fn meta(id: &str, title: &str, started: u64) -> ThreadMeta {
+        ThreadMeta {
+            id: id.into(),
+            started,
+            title: title.into(),
+            cwd: String::new(),
+            account: Some("claude-2".into()),
+        }
+    }
+
+    fn seed(root: &Path, id: &str, title: &str, reply: &str) {
+        let log = ThreadLog::open(root, id);
+        log.write_meta(&meta(id, title, threads::now_secs()))
+            .unwrap();
+        log.append(&ThreadEvent::with_text("user", title)).unwrap();
+        log.append(&ThreadEvent::with_text("assistant", reply))
+            .unwrap();
+    }
+
+    const A: &str = "3f9a1b2c-0000-4000-8000-000000000001";
+    const B: &str = "3f9a1b2c-0000-4000-8000-000000000002";
+    const C: &str = "c0ffee00-0000-4000-8000-000000000003";
+
+    #[test]
+    fn the_token_being_typed_is_found_only_at_a_word_start() {
+        assert_eq!(active_query("@"), Some((0, String::new())));
+        assert_eq!(active_query("see @3f9"), Some((4, "3f9".into())));
+        assert_eq!(active_query("(@3f9"), Some((1, "3f9".into())));
+        assert_eq!(active_query("a@b.com"), None);
+        assert_eq!(active_query("mail me at a@b"), None);
+        assert_eq!(active_query("\\@3f9"), None);
+        assert_eq!(
+            active_query("see @3f9 and"),
+            None,
+            "only the word at the caret"
+        );
+        assert_eq!(active_query("see @3f9.x"), None);
+        assert_eq!(active_query("no at sign"), None);
+        assert_eq!(active_query("line one\n@abc"), Some((9, "abc".into())));
+    }
+
+    #[test]
+    fn filtering_matches_id_prefix_or_title_and_ids_stay_unique() {
+        let all = vec![
+            meta(A, "fix the login redirect", 3),
+            meta(B, "other", 2),
+            meta(C, "Login page", 1),
+        ];
+        assert_eq!(filter(&all, "").len(), 3);
+        assert_eq!(filter(&all, "c0ff").len(), 1);
+        assert_eq!(filter(&all, "login").len(), 2);
+        assert_eq!(filter(&all, "LOGIN").len(), 2);
+        assert!(filter(&all, "zzz").is_empty());
+        assert_eq!(short_id(&all, C), "c0ffee00");
+        let s = short_id(&all, A);
+        assert!(s.len() > 8 && all.iter().filter(|m| m.id.starts_with(&s)).count() == 1);
+        assert_eq!(complete("see @3f", 4, "c0ffee00"), "see @c0ffee00 ");
+    }
+
+    #[test]
+    fn a_reference_becomes_the_threads_map_within_budget() {
+        let d = tempfile::tempdir().unwrap();
+        seed(
+            d.path(),
+            C,
+            "fix the login redirect",
+            &"long reply ".repeat(200),
+        );
+        let ex = expand(d.path(), "continue @c0ffee00 please", 600);
+        assert!(ex.notices.is_empty(), "{:?}", ex.notices);
+        assert_eq!(ex.maps.len(), 1);
+        let map = &ex.maps[0].1;
+        assert!(map.starts_with("[concordia map] thread c0ffee00-"));
+        assert!(map.chars().count() <= 600);
+        assert!(map.contains(&format!("more: concordia thread read {C}")));
+        assert!(ex.sent.starts_with("continue\n[concordia map]"));
+        assert!(ex.sent.ends_with("please"));
+        assert!(!ex.sent.contains("@c0ffee00"));
+        // A unique short prefix works the same way.
+        assert_eq!(expand(d.path(), "@c0ff", 1600).maps.len(), 1);
+    }
+
+    #[test]
+    fn unknown_and_ambiguous_ids_stay_literal_with_a_reason() {
+        let d = tempfile::tempdir().unwrap();
+        seed(d.path(), A, "one", "r");
+        seed(d.path(), B, "two", "r");
+        let ex = expand(d.path(), "see @3f9a and @deadbeef", 1600);
+        assert_eq!(ex.sent, "see @3f9a and @deadbeef");
+        assert!(ex.maps.is_empty());
+        assert_eq!(ex.notices.len(), 2);
+        assert!(
+            ex.notices[0].contains("matches 2 chats"),
+            "{:?}",
+            ex.notices
+        );
+        assert!(
+            ex.notices[1].contains("no recorded chat"),
+            "{:?}",
+            ex.notices
+        );
+        // An exact id wins over being a prefix of nothing else.
+        assert_eq!(expand(d.path(), &format!("@{A}"), 1600).maps.len(), 1);
+    }
+
+    #[test]
+    fn escapes_emails_and_plain_words_are_never_references() {
+        let d = tempfile::tempdir().unwrap();
+        seed(d.path(), C, "t", "r");
+        for text in [
+            "mail a@b.com now",
+            "ask @claude about @param",
+            "see @c0ffee00.example.com",
+        ] {
+            let ex = expand(d.path(), text, 1600);
+            assert_eq!(ex.sent, text);
+            assert!(
+                ex.maps.is_empty() && ex.notices.is_empty(),
+                "{text}: {:?}",
+                ex.notices
+            );
+        }
+        let ex = expand(d.path(), "literal \\@c0ffee00 here", 1600);
+        assert_eq!(ex.sent, "literal @c0ffee00 here");
+        assert!(ex.maps.is_empty() && ex.notices.is_empty());
+        assert_eq!(expand(d.path(), "no refs", 1600).sent, "no refs");
+    }
+
+    #[test]
+    fn at_most_three_references_and_repeats_expand_once() {
+        let d = tempfile::tempdir().unwrap();
+        let ids: Vec<String> = (1..=5)
+            .map(|n| format!("a{n}000000-0000-4000-8000-000000000000"))
+            .collect();
+        for (n, id) in ids.iter().enumerate() {
+            seed(d.path(), id, &format!("chat {n}"), "r");
+        }
+        let text = "@a1000000 @a2000000 @a3000000 @a4000000 @a1000000";
+        let ex = expand(d.path(), text, 1600);
+        assert_eq!(ex.maps.len(), 3);
+        assert_eq!(ex.notices.len(), 1);
+        assert!(ex.notices[0].contains("at most 3"));
+        assert!(ex.sent.contains("@a4000000"));
+        assert!(ex.sent.trim_end().ends_with("@a1000000"), "{}", ex.sent);
+    }
+
+    #[test]
+    fn with_no_threads_a_reference_says_how_to_enable_recording() {
+        let d = tempfile::tempdir().unwrap();
+        let ex = expand(d.path(), "hi @c0ffee00", 1600);
+        assert_eq!(ex.sent, "hi @c0ffee00");
+        assert!(ex.notices[0].contains("enable [threads] in config.toml"));
+    }
+
+    // ---- end to end through the real key handler, submit path and renderer ----
+
+    use ratatui::backend::TestBackend;
+
+    struct Rig {
+        app: App,
+        term: Terminal<TestBackend>,
+        rx: mpsc::UnboundedReceiver<String>,
+        tx: mpsc::UnboundedSender<String>,
+        dir: tempfile::TempDir,
+    }
+
+    impl Rig {
+        fn new() -> Rig {
+            let dir = tempfile::tempdir().unwrap();
+            let app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
+            let (tx, rx) = mpsc::unbounded_channel();
+            Rig {
+                app,
+                term: Terminal::new(TestBackend::new(100, 30)).unwrap(),
+                rx,
+                tx,
+                dir,
+            }
+        }
+
+        fn draw(&mut self) -> String {
+            let app = &mut self.app;
+            self.term.draw(|f| draw_ui(f, app)).unwrap();
+            let buf = self.term.backend().buffer().clone();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        fn key(&mut self, code: KeyCode) {
+            crate::tui::handle_key(
+                &mut self.app,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &self.tx,
+            );
+            self.draw();
+        }
+
+        fn type_str(&mut self, s: &str) {
+            for c in s.chars() {
+                self.key(KeyCode::Char(c));
+            }
+        }
+    }
+
+    #[test]
+    fn typing_at_lists_threads_and_completing_then_sending_expands_the_map() {
+        let mut r = Rig::new();
+        seed(
+            r.dir.path(),
+            C,
+            "fix the login redirect",
+            "The redirect keeps the query string now.",
+        );
+        seed(r.dir.path(), A, "refactor the parser", "done");
+        r.type_str("continue ");
+        assert!(
+            !r.draw().contains("Tab/Enter completes"),
+            "no list before an @"
+        );
+        r.type_str("@");
+        let screen = r.draw();
+        assert!(screen.contains("Tab/Enter completes"), "{screen}");
+        assert!(
+            screen.contains("fix the login redirect") && screen.contains("refactor the parser")
+        );
+        assert!(screen.contains("claude-2"));
+        // Narrow by id prefix, then complete with Tab.
+        r.type_str("c0f");
+        let screen = r.draw();
+        assert!(
+            screen.contains("fix the login redirect") && !screen.contains("refactor the parser")
+        );
+        r.key(KeyCode::Tab);
+        assert_eq!(r.app.editor.text(), "continue @c0ffee00 ");
+        assert!(
+            !r.draw().contains("Tab/Enter completes"),
+            "list closes after completing"
+        );
+        r.type_str("from there");
+        r.key(KeyCode::Enter);
+        let sent = r.rx.try_recv().expect("the prompt was sent");
+        assert!(
+            sent.starts_with("continue\n[concordia map] thread c0ffee00-"),
+            "{sent}"
+        );
+        assert!(sent.contains("keeps the query string") && sent.ends_with("from there"));
+        // The transcript keeps the user's own line and shows the map dimmed under it.
+        let user = r
+            .app
+            .messages
+            .iter()
+            .position(|m| m.role == MsgRole::User)
+            .unwrap();
+        assert_eq!(r.app.messages[user].text, "continue @c0ffee00 from there");
+        let meta = &r.app.messages[user + 1];
+        assert!(
+            meta.role == MsgRole::Meta
+                && meta.text.starts_with("sent with your prompt (@c0ffee00)")
+        );
+        assert!(meta.text.contains("[concordia map] thread c0ffee00-"));
+    }
+
+    #[test]
+    fn arrows_select_enter_completes_and_esc_closes_the_list() {
+        let mut r = Rig::new();
+        seed(r.dir.path(), C, "first chat", "r");
+        seed(r.dir.path(), A, "second chat", "r");
+        r.type_str("@");
+        r.key(KeyCode::Down);
+        assert_eq!(r.app.chatref.selected, 1);
+        r.key(KeyCode::Up);
+        assert_eq!(r.app.chatref.selected, 0);
+        r.key(KeyCode::Down);
+        r.key(KeyCode::Enter);
+        let t = r.app.editor.text();
+        assert!(t.starts_with('@') && t.ends_with(' ') && t.len() > 8, "{t}");
+        assert!(r.rx.try_recv().is_err(), "Enter completed, it did not send");
+        r.app.editor.clear();
+        r.type_str("@");
+        r.key(KeyCode::Esc);
+        assert!(!r.draw().contains("Tab/Enter completes"));
+        r.type_str("c");
+        assert!(
+            r.draw().contains("Tab/Enter completes"),
+            "typing reopens it"
+        );
+    }
+
+    #[test]
+    fn with_no_recorded_chats_the_list_says_how_to_enable_them_once() {
+        let mut r = Rig::new();
+        r.type_str("@");
+        assert!(r
+            .draw()
+            .contains("no recorded chats - enable [threads] in config.toml"));
+        r.type_str("a");
+        assert!(
+            r.draw().contains("no recorded chats"),
+            "stays while the token is open"
+        );
+        r.app.editor.clear();
+        r.key(KeyCode::Char('x'));
+        r.app.editor.clear();
+        r.type_str("@");
+        assert!(
+            !r.draw().contains("no recorded chats"),
+            "only once per session"
+        );
+    }
+
+    #[test]
+    fn email_addresses_and_the_slash_palette_do_not_open_the_list() {
+        let mut r = Rig::new();
+        seed(r.dir.path(), C, "a chat", "r");
+        r.type_str("write to a@");
+        assert!(!r.draw().contains("Tab/Enter completes"));
+        r.app.editor.clear();
+        r.type_str("/use");
+        let screen = r.draw();
+        assert!(screen.contains("commands") && !screen.contains("Tab/Enter completes"));
+    }
+
+    #[test]
+    fn an_unknown_reference_is_sent_as_typed_with_a_dim_notice() {
+        let mut r = Rig::new();
+        seed(r.dir.path(), C, "a chat", "r");
+        r.app.editor.set_text("see @deadbeef");
+        r.key(KeyCode::Enter);
+        assert_eq!(r.rx.try_recv().unwrap(), "see @deadbeef");
+        assert!(r
+            .app
+            .messages
+            .iter()
+            .any(|m| m.role == MsgRole::System && m.text.contains("@deadbeef: no recorded chat")));
+        assert!(r.app.messages.iter().all(|m| m.role != MsgRole::Meta));
+    }
+}

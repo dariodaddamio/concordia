@@ -4,6 +4,9 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 $failures = @()
+$stampSource = Get-Content (Join-Path $root "crates\concordia\src\version.rs") -Raw
+$expectedStamp = [regex]::Match($stampSource, 'BUILD_STAMP:\s*&str\s*=\s*"([^"]+)"').Groups[1].Value
+if (-not $expectedStamp) { throw "BUILD_STAMP missing from version.rs" }
 
 function Fail([string]$msg) { $script:failures += $msg; Write-Host "FAIL $msg" -ForegroundColor Red }
 function Ok([string]$msg) { Write-Host "OK   $msg" -ForegroundColor Green }
@@ -17,7 +20,7 @@ else {
     else {
         Ok "current -> $active"
         $ver = & $active --version 2>&1 | Out-String
-        if ($ver -notmatch '2026-10-15') { Fail "version stamp missing in: $ver" }
+        if ($ver -notmatch [regex]::Escape($expectedStamp)) { Fail "expected build $expectedStamp in: $ver" }
         else { Ok "version: $($ver.Trim().Split("`n")[0])" }
         $help = & $active --help 2>&1 | Out-String
         foreach ($needle in @('/update', '/version', '/usage', '/copy', '/use [add]', 'Connect:', 'concordia doctor', '/doctor')) {

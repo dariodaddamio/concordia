@@ -39,6 +39,7 @@ impl H {
     fn new(w: u16, h: u16) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
+        app.no_color = false;
         app.account = "codex-o".into();
         let term = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hn = H { app, term, dir };
@@ -499,4 +500,57 @@ fn the_protocol_is_off_by_default_and_needs_an_explicit_y_when_on() {
     h.app.scan_delegation(&many);
     assert_eq!(h.app.deleg.confirms.len(), 3);
     let _ = h.submit("/delegate protocol off");
+}
+
+#[test]
+fn mcp_proposals_reach_the_confirm_prompt_only_while_the_protocol_is_on() {
+    let mut h = H::new(100, 24);
+    let root = h.dir.path().to_path_buf();
+    account(&root, "codex-o", "ORCHESTR1");
+    account(&root, "codex-w1", "WORKERAA1");
+    set_workers(&root, vec!["codex-w1".into()]).unwrap();
+    let dir = crate::mcp::proposals_dir(&root);
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, to: &str| {
+        std::fs::write(
+            dir.join(name),
+            format!(r#"{{"to":"{to}","task":"run the tests","from_thread":"3f9a"}}"#),
+        )
+        .unwrap();
+    };
+    write("a.json", "codex-w1");
+
+    // Polled only on the 2 s beat, and left alone while the protocol is off.
+    h.app.tick_count = 10;
+    h.app.poll_proposals();
+    assert!(h.app.deleg.confirms.is_empty() && dir.join("a.json").exists());
+
+    let _ = h.submit("/delegate protocol on");
+    h.app.tick_count = 3;
+    h.app.poll_proposals();
+    assert!(
+        h.app.deleg.confirms.is_empty(),
+        "off the beat: no read at all"
+    );
+    h.app.tick_count = 10;
+    h.app.poll_proposals();
+    assert_eq!(h.app.deleg.confirms.len(), 1);
+    assert!(!dir.join("a.json").exists(), "a taken proposal is consumed");
+    assert_eq!(h.app.deleg.confirms[0].task, "run the tests");
+    h.draw();
+    assert!(h
+        .rows()
+        .iter()
+        .any(|r| r.contains("wants to delegate to") && r.contains("[y/n]")));
+    assert!(
+        h.app.deleg.d.jobs.is_empty(),
+        "nothing runs without the user's y"
+    );
+
+    // A target that is not one of the user's workers is dropped, never queued.
+    write("b.json", "stranger");
+    h.app.tick_count = 20;
+    h.app.poll_proposals();
+    assert_eq!(h.app.deleg.confirms.len(), 1);
+    assert!(h.messages().contains("ignored: not one of your workers"));
 }

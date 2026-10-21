@@ -4,6 +4,7 @@
 //! credential contents; account status uses the same existence/shape check as `/use`.
 
 use crate::accounts::{is_logged_in, list_all_accounts};
+use crate::provider::compat;
 use crate::provider::launch::is_batch_shim;
 use crate::store::{load_store, store_path, ProviderKind};
 use crate::version::version_line;
@@ -70,6 +71,16 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
     out.push(check_user_commands(&env.state_root));
     out.extend(check_providers(env));
     out.extend(check_accounts(&env.state_root));
+    out.push(check_memory());
+    for (warn, name, detail) in
+        crate::integration::doctor_rows(&env.state_root, &crate::update::resolve_active_exe())
+    {
+        out.push(check(
+            if warn { Level::Warn } else { Level::Ok },
+            name,
+            detail,
+        ));
+    }
     out.push(match (env.which)("wezterm") {
         Some(p) => check(
             Level::Ok,
@@ -354,9 +365,22 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
             )),
             Some(path) => {
                 found += 1;
+                let mut level = Level::Ok;
                 let version = match env.version_of {
                     Some(probe) => match probe(&path) {
-                        Ok(v) => format!(" · {v}"),
+                        Ok(v) => {
+                            // Newer, older or unknown is a warning, never a failure.
+                            let t = compat::assess(kind, &v);
+                            if t != compat::Tested::Same {
+                                level = Level::Warn;
+                            }
+                            let degraded = compat::caps_for(kind)
+                                .map(|c| compat::degradation_summary(kind, &c))
+                                .filter(|s| !s.is_empty())
+                                .map(|s| format!(" · {s}"))
+                                .unwrap_or_default();
+                            format!(" · {v} (tested: {}){degraded}", t.label())
+                        }
                         Err(e) => format!(" · version check failed: {e}"),
                     },
                     None => String::new(),
@@ -367,7 +391,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
                     ""
                 };
                 rows.push(check(
-                    Level::Ok,
+                    level,
                     name_static(name),
                     format!("{}{version}{shim}", path.display()),
                 ));
@@ -382,6 +406,18 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
         ));
     }
     rows
+}
+
+/// Idle memory of this process (working set), as a row.
+fn check_memory() -> Check {
+    match crate::sysstats::self_memory_bytes() {
+        Some(b) => check(
+            Level::Ok,
+            "memory",
+            format!("{} in use by this process", crate::sysstats::format_mem(b)),
+        ),
+        None => check(Level::Ok, "memory", "not available on this platform"),
+    }
 }
 
 fn name_static(n: &str) -> &'static str {
@@ -561,6 +597,24 @@ pub fn run_cli_report() -> (String, bool) {
         .into_iter()
         .map(|(p, h)| (p, h.join().unwrap_or_else(|_| Err("probe panicked".into()))))
         .collect();
+    // Capabilities (one `--help` per CLI version, cached) so the rows can say what degrades.
+    let detections: Vec<_> = [
+        ProviderKind::Codex,
+        ProviderKind::Claude,
+        ProviderKind::Cursor,
+    ]
+    .into_iter()
+    .filter_map(|k| resolve_provider_bin(k).map(|p| (k, p)))
+    .map(|(k, p)| {
+        let h = std::thread::spawn(move || compat::detect(k, &p, &compat::run_cli, None));
+        (k, h)
+    })
+    .collect();
+    for (k, h) in detections {
+        if let Ok(Some(c)) = h.join() {
+            compat::set_caps(k, c.caps);
+        }
+    }
     let version_of = |p: &Path| {
         results
             .iter()
@@ -808,6 +862,48 @@ mod tests {
         assert!(find(&run(&e), "codex")[0]
             .detail
             .contains("version check failed: timed out"));
+    }
+
+    #[test]
+    fn version_rows_say_tested_same_and_warn_when_it_differs() {
+        let fx = Fx::new();
+        let exe = fx.exe_file("claude.exe");
+        let pb = move |k: ProviderKind| (k == ProviderKind::Claude).then(|| exe.clone());
+        let which = |_: &str| None;
+        let same = |_: &Path| Ok("2.1.301 (Claude Code)".to_string());
+        let mut e = env(&fx, &pb, &which);
+        e.version_of = Some(&same);
+        let row = &find(&run(&e), "claude")[0].clone();
+        assert!(
+            row.detail.contains("2.1.301 (Claude Code) (tested: same)"),
+            "{}",
+            row.detail
+        );
+        assert_eq!(row.level, Level::Ok);
+
+        let newer = |_: &Path| Ok("9.0.0 (Claude Code)".to_string());
+        e.version_of = Some(&newer);
+        let row = &find(&run(&e), "claude")[0].clone();
+        assert!(row.detail.contains("(tested: newer)"), "{}", row.detail);
+        assert_eq!(row.level, Level::Warn);
+
+        let odd = |_: &Path| Ok("something odd".to_string());
+        e.version_of = Some(&odd);
+        let row = &find(&run(&e), "claude")[0].clone();
+        assert!(row.detail.contains("(tested: unknown)"));
+        assert_eq!(row.level, Level::Warn, "unknown versions warn, never fail");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_report_includes_idle_memory() {
+        let fx = Fx::new();
+        let pb = |_: ProviderKind| None;
+        let which = |_: &str| None;
+        let c = run(&env(&fx, &pb, &which));
+        let m = &find(&c, "memory")[0];
+        assert_eq!(m.level, Level::Ok);
+        assert!(m.detail.contains(" MB"), "{}", m.detail);
     }
 
     #[test]

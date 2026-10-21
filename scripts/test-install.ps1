@@ -54,7 +54,7 @@ Check (-not (Test-Path $dir1)) "dry run creates no install folder"
 $r = Invoke-Installer @('-DryRun', '-Repo', 'test-owner/concordia', '-ApiBase', 'http://127.0.0.1:9')
 Check ($r.Code -eq 0 -and $r.Out -match 'releases\?per_page=30') "dry run without -Version prints the feed and exits 0 without network"
 
-$r = Invoke-Installer @('-Repo', 'REPLACE-OWNER/concordia', '-ApiBase', 'http://127.0.0.1:9')
+$r = Invoke-Installer @('-Repo', 'dariodaddamio/concordia', '-ApiBase', 'http://127.0.0.1:9')
 Check ($r.Code -ne 0 -and $r.Out -match 'placeholder') "placeholder repo is refused for a real install"
 
 $r = Invoke-Installer @('-DryRun', '-Repo', 'test-owner/concordia', '-Version', '1.0; calc')

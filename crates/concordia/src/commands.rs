@@ -43,6 +43,9 @@ pub enum SlashCommand {
     DelegateHelp,
     /// `/delegate protocol [on|off]`.
     DelegateProtocol(Option<bool>),
+    /// A known command received an unsupported argument. Keeping this distinct prevents
+    /// misspelled destructive commands such as `/update typo` from running.
+    Invalid(String),
     Unknown(String),
 }
 
@@ -54,21 +57,33 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
     let tail = it.next().unwrap_or("").trim();
     let second = tail.split_whitespace().next().map(str::to_lowercase);
     let lower = first.to_lowercase();
+    let control = matches!(
+        lower.as_str(),
+        "help" | "?" | "stop" | "cancel" | "use" | "send" | "protocol"
+    );
+    if ((cmd == "workers" || cmd == "worker") || control) && tail.split_whitespace().count() > 1 {
+        return Some(SlashCommand::Invalid(cmd.into()));
+    }
+    if matches!(lower.as_str(), "help" | "?") && !tail.is_empty() {
+        return Some(SlashCommand::Invalid(cmd.into()));
+    }
     match cmd {
         "workers" | "worker" => Some(match lower.as_str() {
             "add" | "new" => SlashCommand::WorkersAdd(second),
             "remove" | "rm" | "delete" => SlashCommand::WorkersRemove(second),
-            _ => SlashCommand::Workers,
+            "" | "list" if tail.is_empty() => SlashCommand::Workers,
+            _ => SlashCommand::Invalid("workers".into()),
         }),
         "delegate" | "delegates" => Some(match lower.as_str() {
             "" | "help" | "?" => SlashCommand::DelegateHelp,
             "stop" | "cancel" => SlashCommand::DelegateStop(second),
             "use" | "send" => SlashCommand::DelegateUse(second),
-            "protocol" => SlashCommand::DelegateProtocol(match second.as_deref() {
-                Some("on" | "true" | "yes") => Some(true),
-                Some("off" | "false" | "no") => Some(false),
-                _ => None,
-            }),
+            "protocol" => match second.as_deref() {
+                Some("on" | "true" | "yes") => SlashCommand::DelegateProtocol(Some(true)),
+                Some("off" | "false" | "no") => SlashCommand::DelegateProtocol(Some(false)),
+                None => SlashCommand::DelegateProtocol(None),
+                _ => SlashCommand::Invalid("delegate protocol".into()),
+            },
             _ => SlashCommand::Delegate {
                 target: lower,
                 task: tail.to_string(),
@@ -88,6 +103,17 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     let cmd = parts.next().unwrap_or("").to_lowercase();
     let rest = parts.next().unwrap_or("");
     let vertical = rest.eq_ignore_ascii_case("v") || rest.eq_ignore_ascii_case("vertical");
+    let words = body.split_whitespace().count();
+    let max_words = match cmd.as_str() {
+        "model" | "chats" | "resume" | "new" | "config" | "trust" | "version" | "ver" | "about"
+        | "copy" | "cp" | "doctor" | "diag" | "exit" | "quit" | "q" => Some(1),
+        "mode" | "split" | "login" | "connect" => Some(2),
+        "use" => Some(3),
+        _ => None,
+    };
+    if max_words.is_some_and(|max| words > max) {
+        return Some((SlashCommand::Invalid(cmd), false));
+    }
     match cmd.as_str() {
         "" => None,
         "use" => match rest.to_lowercase().as_str() {
@@ -99,17 +125,21 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
                 SlashCommand::UseAdd(parts.next().map(str::to_lowercase)),
                 false,
             )),
-            _ => Some((SlashCommand::Use, false)),
+            "" | "list" if words <= 2 => Some((SlashCommand::Use, false)),
+            _ => Some((SlashCommand::Invalid("use".into()), false)),
         },
         "login" | "connect" => Some((
             SlashCommand::UseAdd(Some(rest.to_lowercase()).filter(|r| !r.is_empty())),
             false,
         )),
         "model" => Some((SlashCommand::Model, false)),
-        "usage" if rest.eq_ignore_ascii_case("all") => Some((SlashCommand::UsageAll, false)),
-        "usage" if rest.eq_ignore_ascii_case("refresh") => {
+        "usage" if rest.eq_ignore_ascii_case("all") && parts.next().is_none() => {
+            Some((SlashCommand::UsageAll, false))
+        }
+        "usage" if rest.eq_ignore_ascii_case("refresh") && parts.next().is_none() => {
             Some((SlashCommand::UsageRefresh, false))
         }
+        "usage" if !rest.is_empty() => Some((SlashCommand::Invalid("usage".into()), false)),
         "usage" => Some((SlashCommand::Usage, false)),
         "chats" | "resume" => Some((SlashCommand::Resume, false)),
         "new" => Some((SlashCommand::New, false)),
@@ -119,11 +149,22 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
             SlashCommand::Mode(Some(rest.to_lowercase()).filter(|r| !r.is_empty())),
             false,
         )),
-        "split" => Some((SlashCommand::Split, vertical)),
-        "update" | "upgrade" | "rebuild" if rest.eq_ignore_ascii_case("check") => {
+        "split"
+            if rest.is_empty()
+                || vertical
+                || rest.eq_ignore_ascii_case("h")
+                || rest.eq_ignore_ascii_case("horizontal") =>
+        {
+            Some((SlashCommand::Split, vertical))
+        }
+        "split" => Some((SlashCommand::Invalid("split".into()), false)),
+        "update" | "upgrade" | "rebuild"
+            if rest.eq_ignore_ascii_case("check") && parts.next().is_none() =>
+        {
             Some((SlashCommand::UpdateCheck, false))
         }
-        "update" | "upgrade" | "rebuild" => Some((SlashCommand::Update, false)),
+        "update" | "upgrade" | "rebuild" if rest.is_empty() => Some((SlashCommand::Update, false)),
+        "update" | "upgrade" | "rebuild" => Some((SlashCommand::Invalid("update".into()), false)),
         "version" | "ver" | "about" => Some((SlashCommand::Version, false)),
         "copy" | "cp" => Some((SlashCommand::Copy, false)),
         "doctor" | "diag" => Some((SlashCommand::Doctor, false)),
@@ -164,6 +205,24 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/update check", "look for a newer version"),
     ("/version", "build and install info"),
     ("/copy", "copy the last reply"),
+    ("/open", "open a file in a separate terminal editor"),
+    ("/preview", "preview a Markdown file in a separate terminal"),
+    ("/stats", "toggle process memory and CPU counters"),
+    (
+        "/recover",
+        "recover a saved draft and queue for this workspace",
+    ),
+    ("/recover legacy", "import older shared draft and queue"),
+    (
+        "/recover retry",
+        "retry saving this pane after a local storage error",
+    ),
+    ("/queue", "list queued prompts"),
+    (
+        "/queue resume",
+        "resume paused queued prompts; keep the draft",
+    ),
+    ("/queue clear", "empty the prompt queue"),
     ("/workers", "list worker accounts (max 3)"),
     ("/workers add", "allow an account to run delegated tasks"),
     ("/workers remove", "stop using an account as a worker"),
@@ -234,6 +293,10 @@ pub fn dispatch_slash(
 ) -> (CommandOutcome, Vec<String>) {
     match cmd {
         SlashCommand::Exit => (CommandOutcome::Exit, Vec::new()),
+        SlashCommand::Invalid(name) => (
+            CommandOutcome::Ok,
+            vec![format!("invalid arguments for /{name}; try /config")],
+        ),
         SlashCommand::Config => (CommandOutcome::Ok, vec![format_config_help()]),
         SlashCommand::New => (
             CommandOutcome::Ok,

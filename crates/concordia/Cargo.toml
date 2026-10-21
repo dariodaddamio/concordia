@@ -11,9 +11,8 @@ name = "concordia"
 path = "src/main.rs"
 
 # `cargo binstall concordia` downloads the release zip (see .github/workflows/release.yml).
-# REPLACE-OWNER must be the GitHub owner before the first release.
 [package.metadata.binstall]
-pkg-url = "https://github.com/REPLACE-OWNER/concordia/releases/download/v{ version }/concordia-{ target }.zip"
+pkg-url = "https://github.com/dariodaddamio/concordia/releases/download/v{ version }/concordia-{ target }.zip"
 bin-dir = "concordia.exe"
 pkg-fmt = "zip"
 

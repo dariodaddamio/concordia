@@ -3,6 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn find_wezterm() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("CONCORDIA_WEZTERM_BIN").filter(|p| !p.is_empty()) {
+        return Some(path.into());
+    }
     if let Ok(p) = which::which("wezterm") {
         return Some(p);
     }

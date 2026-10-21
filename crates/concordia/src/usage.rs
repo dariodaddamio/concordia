@@ -7,8 +7,10 @@
 //! just says the limits are not shown.
 
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs::{self, File};
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -30,6 +32,11 @@ pub struct UsageWindow {
 }
 
 impl UsageWindow {
+    fn expired(&self) -> bool {
+        self.resets
+            .as_deref()
+            .is_some_and(|r| r.starts_with("already reset"))
+    }
     pub fn left_pct(&self) -> f64 {
         (100.0 - self.used_pct).clamp(0.0, 100.0)
     }
@@ -44,6 +51,9 @@ impl UsageWindow {
 
     /// `5h 59% left (41% used)`
     fn used_left(&self) -> String {
+        if self.expired() {
+            return format!("{} reset · current usage unknown", self.label);
+        }
         format!(
             "{} {}% left ({}% used)",
             self.label,
@@ -97,6 +107,7 @@ impl UsageSnapshot {
     fn max_used(&self) -> Option<f64> {
         self.windows
             .iter()
+            .filter(|window| !window.expired())
             .map(|w| w.used_pct)
             .reduce(f64::max)
             .or_else(|| match (self.primary_pct, self.weekly_pct) {
@@ -130,6 +141,12 @@ fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
     windows
         .iter()
         .map(|w| {
+            if w.expired() {
+                return format!(
+                    "{}  reset since last report · current usage unknown",
+                    w.label
+                );
+            }
             let mut line = format!(
                 "{:<width$}  {:>3}% left · {:>3}% used",
                 w.label,
@@ -159,7 +176,11 @@ fn snapshot_from_windows(
         parts.push(format!("LIMIT · {kind}"));
     }
     for w in &windows {
-        parts.push(format!("{} {}% left", w.label, w.left_i()));
+        parts.push(if w.expired() {
+            format!("{} reset · usage unknown", w.label)
+        } else {
+            format!("{} {}% left", w.label, w.left_i())
+        });
     }
     parts.extend(extras.iter().cloned());
     if parts.is_empty() {
@@ -176,11 +197,12 @@ fn snapshot_from_windows(
     if !source.is_empty() {
         lines.push(source.to_string());
     }
-    let primary_pct = windows.first().map(|w| w.used_pct);
+    let primary_pct = windows.first().filter(|w| !w.expired()).map(|w| w.used_pct);
     let weekly_pct = windows
         .iter()
         .find(|w| w.label.starts_with("7d"))
         .or_else(|| windows.get(1))
+        .filter(|w| !w.expired())
         .map(|w| w.used_pct);
     UsageSnapshot {
         summary: parts.join(" · "),
@@ -597,6 +619,56 @@ pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<Str
     reader.join().map_err(|_| "reader thread panicked".into())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct UsageIdentity {
+    account: String,
+    provider: crate::store::ProviderKind,
+    home: String,
+}
+
+impl UsageIdentity {
+    fn new(provider: crate::store::ProviderKind, account: &str, home: &Path) -> Self {
+        let home = if home.is_absolute() {
+            home.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(home)
+        };
+        let mut normalized = home.to_string_lossy().replace('\\', "/");
+        if cfg!(windows) {
+            normalized.make_ascii_lowercase();
+        }
+        UsageIdentity {
+            account: account.to_string(),
+            provider,
+            home: normalized,
+        }
+    }
+
+    fn cache_path(&self, state_root: &Path) -> PathBuf {
+        let safe: String = self
+            .account
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let mut hasher = DefaultHasher::new();
+        self.home.hash(&mut hasher);
+        let home_id = format!("{:016x}", hasher.finish());
+        state_root.join("usage-cache").join(format!(
+            "{safe}-{}-{}.json",
+            self.provider.as_str(),
+            home_id
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedUsage {
     fetched_at: u64,
@@ -604,6 +676,9 @@ struct CachedUsage {
     /// Plan and similar, shown after the windows (Cursor).
     #[serde(default)]
     note: String,
+    /// Missing on legacy cache files; such readings are not bound to an account identity.
+    #[serde(default)]
+    identity: Option<UsageIdentity>,
 }
 
 fn unix_now() -> u64 {
@@ -613,27 +688,18 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-fn cache_path(state_root: &Path, account: &str) -> PathBuf {
-    let safe: String = account
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    state_root.join("usage-cache").join(format!("{safe}.json"))
+fn load_cache(state_root: &Path, identity: &UsageIdentity) -> Option<CachedUsage> {
+    let raw = fs::read_to_string(identity.cache_path(state_root)).ok()?;
+    let cached: CachedUsage = serde_json::from_str(&raw).ok()?;
+    (cached.identity.as_ref() == Some(identity) && cached.fetched_at <= unix_now())
+        .then_some(cached)
 }
 
-fn load_cache(state_root: &Path, account: &str) -> Option<CachedUsage> {
-    let raw = fs::read_to_string(cache_path(state_root, account)).ok()?;
-    serde_json::from_str(&raw).ok()
-}
-
-fn save_cache(state_root: &Path, account: &str, c: &CachedUsage) {
-    let path = cache_path(state_root, account);
+fn save_cache(state_root: &Path, c: &CachedUsage) {
+    let Some(identity) = c.identity.as_ref() else {
+        return;
+    };
+    let path = identity.cache_path(state_root);
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
@@ -657,6 +723,7 @@ fn default_cursor_runner() -> UsageRunner {
 }
 
 struct Entry {
+    identity: UsageIdentity,
     cached: Option<CachedUsage>,
     pending: bool,
     error: Option<String>,
@@ -666,7 +733,7 @@ struct Entry {
 }
 
 struct Fetched {
-    account: String,
+    identity: UsageIdentity,
     result: Result<CachedUsage, String>,
 }
 
@@ -677,7 +744,7 @@ pub struct UsageFetcher {
     cursor_runner: UsageRunner,
     tx: Sender<Fetched>,
     rx: Receiver<Fetched>,
-    entries: HashMap<String, Entry>,
+    entries: HashMap<UsageIdentity, Entry>,
 }
 
 impl UsageFetcher {
@@ -741,18 +808,24 @@ impl UsageFetcher {
         let cursor = provider == crate::store::ProviderKind::Cursor;
         let now = unix_now();
         let root = self.state_root.clone();
+        let identity = UsageIdentity::new(provider, account, home);
         let e = self
             .entries
-            .entry(account.to_string())
+            .entry(identity.clone())
             .or_insert_with(|| Entry {
-                cached: load_cache(&root, account),
+                identity: identity.clone(),
+                cached: load_cache(&root, &identity),
                 pending: false,
                 error: None,
                 last_attempt: 0,
                 dirty: false,
             });
-        let stale = e
+        let usable_cache = e
             .cached
+            .as_ref()
+            .filter(|c| c.identity.as_ref() == Some(&identity) && c.fetched_at <= now)
+            .cloned();
+        let stale = usable_cache
             .as_ref()
             .is_none_or(|c| now.saturating_sub(c.fetched_at) >= USAGE_TTL_SECS);
         let stale = stale || e.dirty;
@@ -763,13 +836,20 @@ impl UsageFetcher {
             e.dirty = false;
             e.last_attempt = now;
         }
-        let view = match (&e.cached, e.pending, &e.error) {
+        let view = match (usable_cache, e.pending, &e.error) {
             (Some(c), _, _) => Ok((c.clone(), now.saturating_sub(c.fetched_at))),
             (None, true, _) | (None, false, None) => Err(None),
             (None, false, Some(err)) => Err(Some(err.clone())),
         };
+        let cache_state = if e.pending {
+            Some("cached; refreshing")
+        } else if e.error.is_some() {
+            Some("cached; refresh failed")
+        } else {
+            None
+        };
         if start {
-            self.spawn(provider, account.to_string(), home.to_path_buf());
+            self.spawn(provider, identity.clone(), home.to_path_buf());
         }
         match view {
             Ok((c, age)) => {
@@ -789,6 +869,12 @@ impl UsageFetcher {
                     snap.summary
                         .push_str(&format!(" \u{b7} {} old", format_age_minutes(age / 60)));
                 }
+                if let Some(state) = cache_state {
+                    snap.summary.push_str(&format!(" · {state}"));
+                    snap.detail.push_str(&format!(
+                        "\n{state}; the displayed values are the last successful reading"
+                    ));
+                }
                 snap
             }
             Err(None) if cursor => cursor_waiting(),
@@ -805,12 +891,16 @@ impl UsageFetcher {
     /// A turn just used some of this account's limits: the next read re-checks in the background
     /// (the old numbers stay on screen, with their age, until the new ones land).
     pub fn invalidate(&mut self, account: &str) {
-        if let Some(e) = self.entries.get_mut(account) {
+        for e in self
+            .entries
+            .values_mut()
+            .filter(|e| e.identity.account == account)
+        {
             e.dirty = true;
         }
     }
 
-    fn spawn(&self, provider: crate::store::ProviderKind, account: String, home: PathBuf) {
+    fn spawn(&self, provider: crate::store::ProviderKind, identity: UsageIdentity, home: PathBuf) {
         let cursor = provider == crate::store::ProviderKind::Cursor;
         let runner = Arc::clone(if cursor {
             &self.cursor_runner
@@ -831,6 +921,7 @@ impl UsageFetcher {
                     fetched_at: unix_now(),
                     windows,
                     note,
+                    identity: Some(identity.clone()),
                 })
             });
             if cursor {
@@ -840,9 +931,9 @@ impl UsageFetcher {
                 }
             }
             if let Ok(c) = &result {
-                save_cache(&root, &account, c);
+                save_cache(&root, c);
             }
-            let _ = tx.send(Fetched { account, result });
+            let _ = tx.send(Fetched { identity, result });
         });
     }
 
@@ -850,7 +941,7 @@ impl UsageFetcher {
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(f) = self.rx.try_recv() {
-            if let Some(e) = self.entries.get_mut(&f.account) {
+            if let Some(e) = self.entries.get_mut(&f.identity) {
                 e.pending = false;
                 match f.result {
                     Ok(c) => {
@@ -1030,7 +1121,7 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
                         .window_minutes
                         .map(format_window)
                         .unwrap_or_else(|| fallback.into()),
-                    used_pct: if reset_since { 0.0 } else { pct },
+                    used_pct: pct,
                     resets: if reset_since {
                         Some("already reset (chat to refresh)".to_string())
                     } else {
@@ -1043,7 +1134,8 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
     let limit_kind = u
         .rate_limit_reached_type
         .as_ref()
-        .map(|k| k.trim_end_matches("_reached").replace('_', " "));
+        .map(|k| k.trim_end_matches("_reached").replace('_', " "))
+        .filter(|_| !windows.iter().any(UsageWindow::expired));
     let mut extras = Vec::new();
     if let Some(c) = &u.credits {
         if c.unlimited == Some(true) {
@@ -1088,6 +1180,9 @@ fn format_reset_unix(sec: i64) -> Option<String> {
     if sec <= 0 {
         return None;
     }
+    if let Some(local) = local_reset_time(sec) {
+        return Some(local);
+    }
     let ms = if sec > 1_000_000_000_000 {
         sec
     } else {
@@ -1109,6 +1204,108 @@ fn format_reset_unix(sec: i64) -> Option<String> {
     } else {
         Some(format!("{}d", mins / (60 * 24)))
     }
+}
+
+#[cfg(windows)]
+fn local_reset_time(seconds: i64) -> Option<String> {
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct LocalTime {
+        year: u16,
+        month: u16,
+        weekday: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        millis: u16,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn FileTimeToSystemTime(file: *const FileTime, time: *mut LocalTime) -> i32;
+        fn SystemTimeToTzSpecificLocalTime(
+            zone: *const std::ffi::c_void,
+            utc: *const LocalTime,
+            local: *mut LocalTime,
+        ) -> i32;
+    }
+    let seconds = if seconds > 1_000_000_000_000 {
+        seconds / 1000
+    } else {
+        seconds
+    };
+    let ticks = u64::try_from(seconds)
+        .ok()?
+        .checked_add(11_644_473_600)?
+        .checked_mul(10_000_000)?;
+    let file = FileTime {
+        low: ticks as u32,
+        high: (ticks >> 32) as u32,
+    };
+    let mut utc = LocalTime::default();
+    let mut local = LocalTime::default();
+    // Both structs use the documented Win32 SYSTEMTIME/FILETIME layouts. A null zone selects OS local time.
+    if unsafe { FileTimeToSystemTime(&file, &mut utc) } == 0
+        || unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) } == 0
+    {
+        return None;
+    }
+    Some(format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} local",
+        local.year, local.month, local.day, local.hour, local.minute
+    ))
+}
+
+#[cfg(not(windows))]
+fn local_reset_time(_seconds: i64) -> Option<String> {
+    None
+}
+
+/// Warn only about observed low capacity; reset/unknown values are never inferred available.
+pub fn low_limit_warning(
+    snapshot: &UsageSnapshot,
+    provider: crate::store::ProviderKind,
+) -> Option<String> {
+    let windows: Vec<_> = snapshot
+        .windows
+        .iter()
+        .filter(|w| {
+            (w.label == "5h" || w.label.starts_with("7d"))
+                && w.used_pct.is_finite()
+                && w.used_pct >= 80.0
+                && !w
+                    .resets
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with("already reset"))
+        })
+        .map(|w| {
+            format!(
+                "{} {:.0}% left · {}",
+                w.label,
+                w.left_pct(),
+                w.resets
+                    .as_deref()
+                    .map(reset_phrase)
+                    .unwrap_or_else(|| "reset unknown".into())
+            )
+        })
+        .collect();
+    if windows.is_empty() {
+        return None;
+    }
+    let freshness = if provider == crate::store::ProviderKind::Codex {
+        "last reported"
+    } else if snapshot.summary.contains("cached") || snapshot.summary.contains(" old") {
+        "cached"
+    } else {
+        "last checked"
+    };
+    Some(format!("{} · {freshness}", windows.join(" | ")))
 }
 
 #[cfg(test)]
@@ -1205,7 +1402,9 @@ mod tests {
         wait_for(&mut f);
         let second = f.snapshot(ProviderKind::Claude, "claude-2", &home);
         assert_eq!(second.summary, "5h 93% left · 7d 87% left");
-        assert!(root.path().join("usage-cache/claude-2.json").is_file());
+        assert!(UsageIdentity::new(ProviderKind::Claude, "claude-2", &home)
+            .cache_path(root.path())
+            .is_file());
         // A new fetcher (restart) shows the cached value immediately and does not refetch.
         let failing: UsageRunner = Arc::new(|_| Err("must not run".into()));
         let mut g = UsageFetcher::with_runner(root.path().to_path_buf(), failing);
@@ -1309,7 +1508,9 @@ mod tests {
         wait_for(&mut f);
         let s = f.snapshot(ProviderKind::Cursor, "cursor", &home);
         assert!(s.summary.starts_with("Included 73% left"));
-        assert!(root.path().join("usage-cache/cursor.json").is_file());
+        assert!(UsageIdentity::new(ProviderKind::Cursor, "cursor", &home)
+            .cache_path(root.path())
+            .is_file());
         // After a restart the cache answers; a failing runner is not even called.
         let bad: UsageRunner = Arc::new(|_| Err("must not run".into()));
         let mut g = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(bad);
@@ -1416,9 +1617,12 @@ mod tests {
         };
         let snap = format_limits(&limits, "as of your last chat");
         assert_eq!(
-            snap.windows[0].used_pct, 0.0,
-            "reset window shows nothing used"
+            snap.windows[0].used_pct, 88.0,
+            "historical reading is preserved internally without inventing new capacity"
         );
+        assert_eq!(snap.primary_pct, None);
+        assert!(snap.summary.contains("usage unknown"));
+        assert!(!snap.summary.contains("5h 100% left"));
         assert!(snap.windows[0]
             .resets
             .as_deref()
@@ -1462,6 +1666,155 @@ mod tests {
             calls.load(std::sync::atomic::Ordering::SeqCst),
             2,
             "a turn triggers one re-check"
+        );
+    }
+
+    #[test]
+    fn cache_identity_separates_homes_and_late_results_cannot_replace_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let home_a = root.path().join("home-a");
+        let home_b = root.path().join("home-b");
+        let identity_a = UsageIdentity::new(ProviderKind::Claude, "same-account", &home_a);
+        let identity_b = UsageIdentity::new(ProviderKind::Claude, "same-account", &home_b);
+        assert_ne!(
+            identity_a, identity_b,
+            "different normalized homes are distinct cache identities"
+        );
+        assert_ne!(identity_a.home, identity_b.home);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let runner: UsageRunner = Arc::new(move |home| {
+            if home.ends_with("home-a") {
+                started_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                Ok(SAMPLE.to_string())
+            } else {
+                Ok(SAMPLE.replace("7% used", "42% used"))
+            }
+        });
+        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), runner);
+        f.snapshot(ProviderKind::Claude, "same-account", &home_a);
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        f.snapshot(ProviderKind::Claude, "same-account", &home_b);
+        wait_for(&mut f); // Home B finishes while A remains deliberately blocked.
+        let selected = f.snapshot(ProviderKind::Claude, "same-account", &home_b);
+        assert!(
+            selected.summary.contains("5h 58% left"),
+            "{}",
+            selected.summary
+        );
+
+        release_tx.send(()).unwrap();
+        wait_for(&mut f);
+        let still_selected = f.snapshot(ProviderKind::Claude, "same-account", &home_b);
+        assert!(
+            still_selected.summary.contains("5h 58% left"),
+            "{}",
+            still_selected.summary
+        );
+        assert!(
+            UsageIdentity::new(ProviderKind::Claude, "same-account", &home_a)
+                .cache_path(root.path())
+                .is_file()
+        );
+        let cache_b = UsageIdentity::new(ProviderKind::Claude, "same-account", &home_b)
+            .cache_path(root.path());
+        assert!(cache_b.is_file());
+
+        // A restart reuses only the matching provider/account/home cache.
+        let must_not_run: UsageRunner =
+            Arc::new(|_| Err("fresh bound cache should be used".into()));
+        let mut restarted = UsageFetcher::with_runner(root.path().to_path_buf(), must_not_run)
+            .with_cursor_runner(Arc::new(|_| Ok(CURSOR_SAMPLE.to_string())));
+        let warm = restarted.snapshot(ProviderKind::Claude, "same-account", &home_b);
+        assert!(warm.summary.contains("5h 58% left"), "{}", warm.summary);
+        let provider_switch = restarted.snapshot(ProviderKind::Cursor, "same-account", &home_b);
+        assert_eq!(provider_switch.summary, "checking limits...");
+    }
+
+    #[test]
+    fn legacy_unbound_cache_is_not_reused_as_a_current_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("usage-cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(
+            cache_dir.join("claude-legacy.json"),
+            serde_json::json!({
+                "fetched_at": unix_now(),
+                "windows": [{"label":"5h","used_pct":1.0,"resets":null}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let home = root.path().join("account-home");
+        let identity = UsageIdentity::new(ProviderKind::Claude, "claude-legacy", &home);
+        fs::write(
+            identity.cache_path(root.path()),
+            serde_json::to_string(&CachedUsage {
+                fetched_at: unix_now().saturating_add(3600),
+                windows: vec![UsageWindow {
+                    label: "5h".into(),
+                    used_pct: 1.0,
+                    resets: None,
+                }],
+                note: String::new(),
+                identity: Some(identity),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = Arc::clone(&calls);
+        let runner: UsageRunner = Arc::new(move |_| {
+            calls2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(SAMPLE.to_string())
+        });
+        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), runner);
+        let initial = f.snapshot(ProviderKind::Claude, "claude-legacy", &home);
+        assert_eq!(initial.summary, "checking limits...");
+        wait_for(&mut f);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(f
+            .snapshot(ProviderKind::Claude, "claude-legacy", &home)
+            .summary
+            .contains("5h 93% left"));
+    }
+
+    #[test]
+    fn failed_forced_refresh_keeps_values_labeled_as_last_successful_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = Arc::clone(&calls);
+        let runner: UsageRunner = Arc::new(move |_| {
+            if calls2.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Ok(SAMPLE.to_string())
+            } else {
+                Err("synthetic refresh failure".into())
+            }
+        });
+        let home = root.path().join("home");
+        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), runner);
+        f.snapshot(ProviderKind::Claude, "claude-test", &home);
+        wait_for(&mut f);
+        let refresh = f.snapshot_refresh(ProviderKind::Claude, "claude-test", &home);
+        assert!(
+            refresh.summary.contains("cached; refreshing"),
+            "{}",
+            refresh.summary
+        );
+        wait_for(&mut f);
+        let after = f.snapshot(ProviderKind::Claude, "claude-test", &home);
+        assert!(after.summary.contains("5h 93% left"), "{}", after.summary);
+        assert!(
+            after.summary.contains("cached; refresh failed"),
+            "{}",
+            after.summary
+        );
+        assert!(
+            after.detail.contains("last successful reading"),
+            "{}",
+            after.detail
         );
     }
 }

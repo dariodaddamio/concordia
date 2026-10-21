@@ -158,16 +158,67 @@ fn classify_item_event(typ: &str, ev: &serde_json::Value) -> Vec<StreamPart> {
                     .map(|_| "shell".to_string())
             })
             .unwrap_or_else(|| item_type.replace('_', " "));
-        let detail_raw = item
-            .get("command")
-            .and_then(|x| x.as_str())
-            .or_else(|| item.get("input").and_then(|x| x.as_str()))
-            .or_else(|| item.get("arguments").and_then(|x| x.as_str()))
-            .or_else(|| item.get("path").and_then(|x| x.as_str()))
-            .or_else(|| item.get("text").and_then(|x| x.as_str()))
-            .unwrap_or("");
-        let detail = compact_detail(detail_raw, 72);
-        let status = card_status_from_type(typ);
+        let mut detail = [
+            "command",
+            "path",
+            "input",
+            "arguments",
+            "content",
+            "diff",
+            "changes",
+            "result",
+        ]
+        .into_iter()
+        .filter_map(|key| {
+            item.get(key)
+                .filter(|value| !value.is_null())
+                .map(|value| format!("{key}: {}", format_provider_value(value)))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+        if let Some(output) = item.get("aggregated_output").or_else(|| item.get("output")) {
+            let output = format_provider_value(output);
+            if !output.is_empty() {
+                detail.push_str("\nOutput: ");
+                detail.push_str(&output);
+            }
+        }
+        if let Some(server) = item.get("server").and_then(|v| v.as_str()) {
+            let tool = item.get("tool").and_then(|v| v.as_str());
+            detail = format!(
+                "MCP server: {server}{}\n{detail}",
+                tool.map(|t| format!("\nMCP tool: {t}")).unwrap_or_default()
+            );
+        }
+        if let Some(error) = item.get("error") {
+            let error = format_provider_value(error);
+            if !error.is_empty() {
+                detail.push_str("\nError: ");
+                detail.push_str(&error);
+            }
+        }
+        let status = if item
+            .get("exit_code")
+            .and_then(|v| v.as_i64())
+            .is_some_and(|code| code != 0)
+            || item.get("error").is_some_and(|error| !error.is_null())
+            || item
+                .get("status")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| matches!(s, "failed" | "error" | "cancelled"))
+        {
+            CardStatus::Error
+        } else {
+            card_status_from_type(typ)
+        };
+        let title = if let (Some(server), Some(tool)) = (
+            item.get("server").and_then(|v| v.as_str()),
+            item.get("tool").and_then(|v| v.as_str()),
+        ) {
+            format!("{server}/{tool}")
+        } else {
+            title
+        };
         let card = StreamCard {
             id,
             title: if title.is_empty() {
@@ -216,17 +267,13 @@ fn classify_payload(p: &serde_json::Value) -> Vec<StreamPart> {
             .and_then(|x| x.as_str())
             .unwrap_or(name.as_str())
             .to_string();
-        let raw = p
-            .get("arguments")
-            .and_then(|x| x.as_str())
-            .or_else(|| p.get("input").and_then(|x| x.as_str()))
-            .unwrap_or("");
+        let raw = p.get("arguments").or_else(|| p.get("input"));
         let status = match p.get("status").and_then(|x| x.as_str()) {
             Some("completed") => CardStatus::Done,
             Some("failed") => CardStatus::Error,
             _ => CardStatus::Running,
         };
-        let detail = compact_detail(&shellish_detail(raw, &name), 72);
+        let detail = raw.map(format_provider_value).unwrap_or_default();
         return vec![StreamPart::Card(StreamCard {
             id,
             title: name,
@@ -245,10 +292,23 @@ fn classify_payload(p: &serde_json::Value) -> Vec<StreamPart> {
             .and_then(|x| x.as_str())
             .unwrap_or("out")
             .to_string();
-        let out_text = content_to_text(p.get("output"))
-            .or_else(|| p.get("output").and_then(|x| x.as_str()).map(str::to_string))
+        let out_text = p
+            .get("output")
+            .map(format_provider_value)
             .unwrap_or_default();
-        let detail = compact_detail(&out_text, 72);
+        let detail = if let Some(error) = p.get("error").filter(|value| !value.is_null()) {
+            format!(
+                "Output: {out_text}\nError: {}",
+                format_provider_value(error)
+            )
+        } else {
+            out_text
+        };
+        let failed = p.get("is_error").and_then(|v| v.as_bool()) == Some(true)
+            || p.get("error").is_some_and(|value| !value.is_null())
+            || p.get("status")
+                .and_then(|v| v.as_str())
+                .is_some_and(|status| matches!(status, "failed" | "error" | "cancelled"));
         return vec![StreamPart::Card(StreamCard {
             id,
             title: "result".into(),
@@ -257,7 +317,11 @@ fn classify_payload(p: &serde_json::Value) -> Vec<StreamPart> {
             } else {
                 Some(detail)
             },
-            status: CardStatus::Done,
+            status: if failed {
+                CardStatus::Error
+            } else {
+                CardStatus::Done
+            },
         })];
     }
     Vec::new()
@@ -302,18 +366,12 @@ fn typ_is_errorish(typ: &str) -> bool {
     lower.contains("error") || lower.contains("fail")
 }
 
-fn shellish_detail(raw: &str, name: &str) -> String {
-    if raw.is_empty() {
-        return String::new();
+fn format_provider_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        _ => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
     }
-    if name == "shell_command" || name == "shell" {
-        if let Ok(j) = serde_json::from_str::<serde_json::Value>(raw) {
-            if let Some(cmd) = j.get("command").and_then(|x| x.as_str()) {
-                return cmd.to_string();
-            }
-        }
-    }
-    raw.to_string()
 }
 
 fn content_to_text(content: Option<&serde_json::Value>) -> Option<String> {
@@ -392,12 +450,26 @@ pub fn compact_detail(raw: &str, max: usize) -> String {
 
 pub fn upsert_card(cards: &mut Vec<StreamCard>, next: StreamCard) {
     if let Some(prev) = cards.iter_mut().find(|c| c.id == next.id) {
-        if !next.title.is_empty() {
+        let is_result_update = next.title == "result";
+        if !next.title.is_empty() && (!is_result_update || prev.title.is_empty()) {
             prev.title = next.title;
         }
         if let Some(d) = next.detail {
             if !d.is_empty() {
-                prev.detail = Some(d);
+                if is_result_update {
+                    match prev.detail.take() {
+                        Some(existing) if existing == d => prev.detail = Some(existing),
+                        Some(existing) if existing.ends_with(&format!("\nOutput: {d}")) => {
+                            prev.detail = Some(existing)
+                        }
+                        Some(input) if !input.is_empty() => {
+                            prev.detail = Some(format!("{input}\nOutput: {d}"))
+                        }
+                        _ => prev.detail = Some(d),
+                    }
+                } else {
+                    prev.detail = Some(d);
+                }
             }
         }
         prev.status = next.status;
@@ -413,7 +485,7 @@ pub fn format_card_line(card: &StreamCard) -> String {
         CardStatus::Done => "✓",
     };
     match &card.detail {
-        Some(d) if !d.is_empty() => format!("│ {mark} {}  {d}", card.title),
+        Some(d) if !d.is_empty() => format!("│ {mark} {}  {}", card.title, compact_detail(d, 72)),
         _ => format!("│ {mark} {}", card.title),
     }
 }
@@ -475,6 +547,65 @@ mod tests {
     }
 
     #[test]
+    fn output_update_keeps_the_call_title_and_arguments() {
+        let mut cards = Vec::new();
+        upsert_card(
+            &mut cards,
+            StreamCard {
+                id: "call-1".into(),
+                title: "shell_command".into(),
+                detail: Some("{\"command\":\"git status\"}".into()),
+                status: CardStatus::Running,
+            },
+        );
+        upsert_card(
+            &mut cards,
+            StreamCard {
+                id: "call-1".into(),
+                title: "result".into(),
+                detail: Some("working tree clean".into()),
+                status: CardStatus::Done,
+            },
+        );
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].title, "shell_command");
+        assert_eq!(cards[0].status, CardStatus::Done);
+        let detail = cards[0].detail.as_deref().unwrap();
+        assert!(detail.contains("git status") && detail.contains("working tree clean"));
+    }
+
+    #[test]
+    fn replaying_the_same_output_does_not_duplicate_it() {
+        let input = StreamCard {
+            id: "call-1".into(),
+            title: "shell_command".into(),
+            detail: Some("git status --short".into()),
+            status: CardStatus::Running,
+        };
+        let output = StreamCard {
+            id: "call-1".into(),
+            title: "result".into(),
+            detail: Some("working tree clean".into()),
+            status: CardStatus::Done,
+        };
+        let mut cards = Vec::new();
+        upsert_card(&mut cards, input);
+        upsert_card(&mut cards, output.clone());
+        let once = cards[0].detail.clone();
+        upsert_card(&mut cards, output);
+        assert_eq!(cards[0].detail, once);
+        assert_eq!(
+            cards[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .matches("Output:")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn codex_turn_completed_reports_usage_and_tolerates_gaps() {
         let parts = parse_codex_stream_chunk(
             r#"{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":1500,"output_tokens":80}}"#,
@@ -495,5 +626,84 @@ mod tests {
         );
         assert!(parse_codex_stream_chunk(r#"{"type":"turn.completed"}"#).is_empty());
         assert!(parse_codex_stream_chunk(r#"{"type":"turn.completed","usage":[1]}"#).is_empty());
+    }
+
+    #[test]
+    fn codex_keeps_command_output_and_mcp_data_with_call_status() {
+        let parts = parse_codex_stream_chunk(&[
+            r#"{"type":"item.started","item":{"type":"command_execution","id":"cmd-1","command":"git status --short","aggregated_output":"working…"}}"#,
+            r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"mcp-1","server":"docs","tool":"search","arguments":{"query":"雪"},"result":{"matches":[1]},"error":{"code":7,"message":"offline"}}}"#,
+        ].join("\n"));
+        let StreamPart::Card(command) = &parts[0] else {
+            panic!("{parts:?}")
+        };
+        assert_eq!(command.status, CardStatus::Running);
+        assert!(command
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("git status --short\nOutput: working…"));
+        let StreamPart::Card(mcp) = &parts[1] else {
+            panic!("{parts:?}")
+        };
+        assert_eq!(mcp.id, "mcp-1");
+        assert_eq!(mcp.title, "docs/search");
+        assert_eq!(mcp.status, CardStatus::Error);
+        let detail = mcp.detail.as_deref().unwrap();
+        assert!(detail.contains("MCP server: docs") && detail.contains("MCP tool: search"));
+        assert!(detail.contains("雪") && detail.contains("offline"));
+    }
+
+    #[test]
+    fn codex_file_changes_keep_provider_paths_and_diff_content() {
+        let parts = parse_codex_stream_chunk(
+            r#"{"type":"item.completed","item":{"type":"file_change","id":"edit-1","changes":[{"path":"src/雪.rs","kind":"update","old":"old line","new":"new line","diff":"@@ -1 +1 @@\n-old line\n+new line"}]}}"#,
+        );
+        let StreamPart::Card(card) = &parts[0] else {
+            panic!("{parts:?}")
+        };
+        let detail = card.detail.as_deref().unwrap();
+        for expected in ["src/雪.rs", "old line", "new line", "@@ -1 +1 @@"] {
+            assert!(detail.contains(expected), "missing {expected}: {detail}");
+        }
+    }
+
+    #[test]
+    fn codex_uses_exit_and_error_fields_without_treating_null_as_failure() {
+        let parts = parse_codex_stream_chunk(&[
+            r#"{"type":"item.completed","item":{"type":"command_execution","id":"zero","command":"true","exit_code":0,"error":null}}"#,
+            r#"{"type":"item.completed","item":{"type":"command_execution","id":"bad","command":"false","exit_code":1,"error":{"message":"failed"}}}"#,
+            "{malformed",
+        ]
+        .join("\n"));
+        let (StreamPart::Card(ok), StreamPart::Card(failed)) = (&parts[0], &parts[1]) else {
+            panic!("{parts:?}")
+        };
+        assert_eq!(ok.status, CardStatus::Done);
+        assert_eq!(failed.status, CardStatus::Error);
+        assert!(failed.detail.as_deref().unwrap().contains("failed"));
+        assert_eq!(parts.len(), 2, "malformed Codex JSON is ignored");
+    }
+
+    #[test]
+    fn codex_response_item_output_updates_the_matching_function_call() {
+        let parts = parse_codex_stream_chunk(&[
+            r#"{"type":"response_item","payload":{"type":"function_call","call_id":"fc-1","name":"shell_command","arguments":{"command":"git status --short","workdir":"C:/repo"}}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"fc-1","output":{"stdout":"clean","exit_code":0}}}"#,
+        ].join("\n"));
+        let mut cards = Vec::new();
+        for part in parts {
+            if let StreamPart::Card(card) = part {
+                upsert_card(&mut cards, card);
+            }
+        }
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].id, "fc-1");
+        assert_eq!(cards[0].title, "shell_command");
+        assert_eq!(cards[0].status, CardStatus::Done);
+        let detail = cards[0].detail.as_deref().unwrap();
+        for expected in ["git status --short", "C:/repo", "clean", "exit_code"] {
+            assert!(detail.contains(expected), "missing {expected}: {detail}");
+        }
     }
 }

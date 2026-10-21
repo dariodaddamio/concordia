@@ -1,3 +1,7 @@
 [workspace]
 members = ["crates/concordia"]
 resolver = "2"
+exclude = ["vendor/crossterm"]
+
+[patch.crates-io]
+crossterm = { path = "vendor/crossterm" }
