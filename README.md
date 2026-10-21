@@ -30,6 +30,9 @@ You pay for more than one AI coding tool. Each has its own CLI, its own login, i
 - **See what is used and what is left.** `/usage` shows the current account's limit windows as used and left (`/usage all` for every account), taken from each CLI's own usage view. It never sends a prompt to a model.
 - **Share bounded context between providers.** Switch provider mid-task and Concordia hands the new one a bounded continuity pack instead of the whole history ([continuity](docs/continuity.md)).
 - **Delegate to worker accounts.** One account is the orchestrator you type into; up to three others run as visible workers on tasks you hand them (`/delegate`). Each worker gets its own session and a bounded slice of context, nothing runs unseen, and you can stop any of them ([delegation](docs/delegation.md)).
+- **Expand activity.** Click a card's gutter to expand it, or use `Ctrl+E` for searchable detail and copy. `Ctrl+O` toggles all received tool activity and reasoning.
+- **Process counters.** `/stats` toggles RAM/CPU for Concordia and the provider process trees; `[ui] stats = true` enables it at startup.
+- **Provider updates.** Keep updating the official CLIs normally. Concordia checks version/help capabilities and falls back when optional flags disappear; it never updates provider CLIs itself.
 - **See the wait.** The prompt border and title show what the model is doing (waiting, thinking, running a tool, writing) with its own colour, animation and timer; reasoning appears as dim lines ([waiting states](docs/tui-states.md)).
 - **Robust turns.** Provider output with invalid UTF-8 or multi-megabyte lines cannot truncate a reply; multi-line prompts go over stdin when the provider CLI sits behind a Windows `.cmd` shim; `Ctrl+C` kills the provider's whole process tree; a failing provider reports its exit code and stderr instead of an empty reply.
 - **Safe shared state.** State writes are atomic and serialized across panes, an unreadable `store.json` is backed up rather than overwritten, and `concordia --version` and `concordia doctor` never modify anything.
@@ -145,6 +148,8 @@ concordia
 
 **You want an earlier chat back.** `/resume` lists sessions and binds the one you pick by id.
 
+**You think of the next prompt while a turn runs.** Press `Tab` to queue it; the queue shows above the prompt box and each item is sent when the turn before it finishes cleanly. `Ctrl+Up` focuses the queue while preserving your draft. Enter opens a multiline upper editor and saves it; Esc cancels the edit. `Ctrl+Down` returns to the draft after save/cancel; `Alt+Up/Down` reorders queued prompts. Cancelling, failure and restart pause the queue: `Ctrl+R` or `/queue resume` explicitly resumes it. Drafts and queues use separate recovery records for each pane and workspace; `/recover` chooses abandoned work. Sent history remains shared.
+
 **You want help from another account.** `/workers add <account>`, then `/delegate <account> <task>`. The worker runs one visible turn with its own session and a bounded slice of context. Its result comes back as a labelled block, and `/delegate use` sends it to your main conversation when you choose ([delegation](docs/delegation.md)).
 
 **Do the models know they are inside Concordia?** Not in general today. They see the pack header after a switch, and delegated workers get a labelled task. A short opt-in "you are running inside Concordia" note, `@chat` references that expand to a bounded pack, and a `/handoff` command are on the [roadmap](#roadmap).
@@ -179,16 +184,23 @@ concordia
 | --- | --- |
 | `Enter` | Send turn |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | Newline without sending |
-| `Tab` | Complete slash command |
+| `Tab` | Complete a slash command; while a turn runs (or prompts are queued), queue the typed prompt |
 | `Shift+Tab` | Cycle the mode: plan, ask, auto-edit, full (moves the selection up while the palette is open) |
-| `Alt+Up` / `Alt+Down` | Select a worker row; `Enter` opens its transcript, `Esc` closes it |
-| Click | Place the caret (prompt) |
+| `Alt+Up` / `Alt+Down` | Select a worker row; `Enter` opens its transcript, `Esc` closes it. In the queue panel, move the selected prompt up or down |
+| Click | Place the caret (prompt); release on an underlined file reference to open it in another terminal. Alt+click previews Markdown; dragging keeps selection |
 | Drag, double-click, triple-click | Select text / a word / a line (prompt or transcript) |
 | `Ctrl+C` | Copy the selection; with nothing selected, cancel the running turn; when idle, press twice to exit |
-| `Up` / `Down` | Walk previously sent prompts (on the first / last prompt row); history is in memory only |
+| `Up` / `Down` | Walk previously sent prompts (on the first / last prompt row); with an empty box and a non-empty queue, `Up` focuses the queue panel (`Enter` edits, `Delete` removes, `Esc` returns). History is kept in `<state>\history.jsonl` (`[ui] persist_history`) |
 | `Esc` | Clear a selection, or interrupt a running turn. It never quits |
 | `Ctrl+Shift+C`, `/copy` | Copy the last reply when nothing is selected |
 | `Ctrl+A` / `Ctrl+X` / `Ctrl+V` | Select all / cut / paste in the prompt |
+| `Ctrl+O` | Expand or collapse full received tool activity and reasoning |
+| `Ctrl+E` | Open searchable full activity detail; `Esc` closes and `Ctrl+C` copies |
+| `Ctrl+Up` / `Ctrl+Down` | Focus queued prompts / return to the draft after save or cancel |
+| `Ctrl+R` | Resume a paused queue while preserving the draft |
+| `/open PATH`, `/preview PATH` | Separate terminal editor / read-only Markdown preview; see [editor configuration](docs/config.md) |
+| `Ctrl+Z` | Undo in the prompt (also right after a send, which puts the sent text back) |
+| `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | Right-click | Copy the selection, or paste when there is none |
 | Wheel, `PgUp` / `PgDn` | Scroll the transcript (sending a message snaps back to the latest) |
 | `Shift` / `Ctrl` + arrows, `Home`, `End` | Extend selection, move by word, jump to line edge |

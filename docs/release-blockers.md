@@ -52,15 +52,42 @@ spend tokens except the last item, which needs your explicit budget.)
 - [x] A CI-built release artifact verified as a stranger would: checksum matches, runs, installs
 - [ ] One short real turn with a multi-line prompt (stdin path), under a budget you set
 
-### 5. Not built yet (product, not packaging)
+### 5. Product and release gaps
 
 - Account handoff on exhaustion (user-confirmed, explicit session bind), after item 3
-- Claude and Cursor session-id binding after turns
-- Approval prompts for headless runs (only `ask` / `workspace` / `full` trust modes exist)
-- A shipped WezTerm config (today `/split` needs a source checkout to find it)
+- Verify Claude/Cursor session binding against live supported CLI versions; synthetic stream session events are parsed and bound, but that does not establish full version parity
+- Native approval interaction parity for headless runs; `plan`, `ask`, `workspace` and `full` modes exist, but modes alone do not prove every native approval flow works
 - Image paste; picker mouse support
 - Signed releases (checksums protect against corruption, not a compromised release)
 - Linux and macOS (not claimed; CI is Windows-only)
+
+### 6. Current production-readiness audit
+
+See [production-plan.md](production-plan.md) and [command-audit.md](command-audit.md).
+The previous command audit was not exhaustive; tests do not prove zero defects. Public release
+remains blocked until known high-impact findings and required host/provider checks are resolved.
+
+- WezTerm config is embedded in the binary and extracted on demand; the earlier source-checkout
+  requirement is no longer an implementation blocker.
+- Native-chat CLI listing and explicit-account reads support the discovered Codex/Claude text
+  transcript formats. Cursor metadata can be listed, but native transcript reading is explicitly
+  unsupported. Search currently searches previews/IDs, not every message in every transcript.
+- File links and Markdown preview have synthetic/terminal checks; actual configured editor
+  launch, clipboard/selection behavior and keyboard behavior across supported Windows hosts
+  still need a human pass. WezTerm and an installed/configured terminal editor are required for
+  separate editor tabs/windows. The built-in preview is read-only UTF-8, capped at 2 MiB.
+- Expanded tool details retain provider-supplied data. A CLI event that omits a patch cannot
+  produce native-quality edited-line diffs; Concordia must say what is missing, not fabricate
+  before/after content from unrelated workspace changes. Complete native UI/MCP/edit parity
+  against currently supported provider versions remains unverified.
+- Invalid-argument, stale-cache, account-switch, busy/update, restart and corrupt-state coverage
+  still needs to be completed for the enumerated surface. The command matrix records gaps.
+- On Windows hosts exposing a paste as individual key events, paste inference still depends on
+  source-observed quiet intervals. A bounded input reader now preserves those intervals across
+  slow frames; extreme source scheduling/channel saturation remains a host stress-check gap.
+- Worker limits interrupted the initial pass; workers were retried successfully after the
+  requested 06:05 America/Phoenix time, when the user continued the active session. No unattended
+  task was scheduled; this chat has no exposed scheduling capability.
 
 ## Re-scan
 

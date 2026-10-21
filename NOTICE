@@ -13,3 +13,9 @@ One dependency is not permissively licensed: `option-ext` (pulled in by `dirs`) 
 file-level copyleft license. It is used unmodified as a library; its source is available at
 https://github.com/soc/option-ext. If it is ever vendored or modified, those files must remain
 under MPL-2.0 and be published.
+
+Crossterm 0.28.1 is vendored under vendor/crossterm (MIT; see its LICENSE).
+Concordia changes src/event/sys/windows/parse.rs to ignore key-release surrogate halves,
+so Windows emoji input reaches the editor. Patch rationale and removal criteria: vendor/crossterm/CONCORDIA-PATCH.md.
+It also exposes the shared ANSI parser to Concordia's Windows VT byte-stream input
+source, preserving framed pastes. The same patch document records scope and removal criteria.
