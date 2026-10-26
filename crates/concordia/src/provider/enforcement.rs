@@ -7,15 +7,21 @@
 //! current policy revision, so switching any of them closes the gate again. Without a matching
 //! receipt a write-capable turn drops to read-only planning and says why.
 //!
-//! The receipt is written by the Harness verifier, never by an agent. Runtime version binding is
-//! not part of this check yet.
+//! Receipts live in Concordia's own state directory, keyed by project, never inside the project,
+//! so an agent that can only write the project cannot forge one. The first time the gate sees a
+//! policy file it records that the project was locked, so deleting the file does not unlock it.
+//! A provider home inside the project is not isolated and never opens the gate. The receipt is
+//! written by the Harness verifier, never by an agent. Runtime version binding is not part of
+//! this check yet.
 
 use crate::store::{ProviderKind, TrustMode};
+use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 const POLICY_FILE: &str = "docs/quality/locked-code.json";
-const RECEIPT_DIR: &str = ".opifex/enforcement";
+const STORE_DIR: &str = "enforcement";
+const LOCKED_MARKER: &str = "locked";
 const PROVEN: &str = "denied-live-probe";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,13 +32,33 @@ pub enum Gate {
     ReadOnly(String),
 }
 
-/// SHA-256 of the policy file with line endings normalized, so a checkout setting cannot change it.
-pub fn policy_revision(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes).replace("\r\n", "\n");
-    Sha256::digest(text.as_bytes())
+fn sha_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// SHA-256 of the policy file with line endings normalized, so a checkout setting cannot change it.
+pub fn policy_revision(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes).replace("\r\n", "\n");
+    sha_hex(text.as_bytes())
+}
+
+/// A path as a comparable string: forward slashes, no trailing slash, lowercase on Windows.
+fn path_key(path: &Path) -> String {
+    let key = path.to_string_lossy().replace('\\', "/");
+    let key = key.trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        key.to_ascii_lowercase()
+    } else {
+        key
+    }
+}
+
+/// The directory name that holds this project's receipts and lock marker in the store.
+pub fn project_key(root: &Path) -> String {
+    sha_hex(path_key(root).as_bytes())
 }
 
 fn project_root(cwd: &Path) -> Option<PathBuf> {
@@ -41,28 +67,35 @@ fn project_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn home_key(home: Option<&Path>) -> Option<String> {
-    home.map(|h| {
-        let key = h.to_string_lossy().replace('\\', "/");
-        let key = key.trim_end_matches('/').to_string();
-        if cfg!(windows) {
-            key.to_ascii_lowercase()
-        } else {
-            key
-        }
-    })
+fn slot(store: &Path, root: &Path) -> PathBuf {
+    store.join(STORE_DIR).join(project_key(root))
+}
+
+/// Whether the project was seen locked before, from `cwd` or any parent.
+fn was_locked(store: &Path, cwd: &Path) -> bool {
+    cwd.ancestors()
+        .any(|dir| slot(store, dir).join(LOCKED_MARKER).is_file())
+}
+
+/// Best effort: a failed write only means a later deletion would not be remembered.
+fn remember_locked(slot: &Path, revision: &str) {
+    if std::fs::create_dir_all(slot).is_ok() {
+        let _ = std::fs::write(slot.join(LOCKED_MARKER), revision);
+    }
+}
+
+fn is_inside(path: &Path, root: &Path) -> bool {
+    let (path, root) = (path_key(path), path_key(root));
+    path == root || path.starts_with(&format!("{root}/"))
 }
 
 fn receipt_matches(
-    root: &Path,
+    slot: &Path,
     provider: ProviderKind,
     home: Option<&Path>,
     revision: &str,
 ) -> bool {
-    let path = root
-        .join(RECEIPT_DIR)
-        .join(format!("{}.json", provider.as_str()));
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = std::fs::read_to_string(slot.join(format!("{}.json", provider.as_str()))) else {
         return false;
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -71,27 +104,59 @@ fn receipt_matches(
     let recorded_home = value
         .get("home")
         .and_then(|h| h.as_str())
-        .map(|h| home_key(Some(Path::new(h))).unwrap_or_default());
+        .map(|h| path_key(Path::new(h)));
     value.get("provider").and_then(|v| v.as_str()) == Some(provider.as_str())
         && value.get("result").and_then(|v| v.as_str()) == Some(PROVEN)
         && value.get("policyRevision").and_then(|v| v.as_str()) == Some(revision)
-        && recorded_home == home_key(home)
+        && recorded_home == home.map(path_key)
+}
+
+/// Where receipts live: Concordia's state directory (a throwaway one under test).
+fn store_root() -> PathBuf {
+    #[cfg(not(test))]
+    {
+        crate::store::default_store_root()
+    }
+    #[cfg(test)]
+    {
+        static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| tempfile::tempdir().expect("test store"))
+            .path()
+            .to_path_buf()
+    }
 }
 
 /// Decide whether `provider` may do write-capable work from `cwd`. Any read failure closes it.
 pub fn gate(cwd: &Path, provider: ProviderKind, home: Option<&Path>) -> Gate {
+    gate_in(&store_root(), cwd, provider, home)
+}
+
+/// [`gate`] against an explicit state directory.
+pub fn gate_in(store: &Path, cwd: &Path, provider: ProviderKind, home: Option<&Path>) -> Gate {
+    let name = provider.as_str();
     let Some(root) = project_root(cwd) else {
+        if was_locked(store, cwd) {
+            return Gate::ReadOnly(format!(
+                "{name}: the locked-code policy file is missing, but this project was locked before, so this turn is read-only (plan). Restore docs/quality/locked-code.json."
+            ));
+        }
         return Gate::Open;
     };
     let revision = std::fs::read(root.join(POLICY_FILE))
         .map(|bytes| policy_revision(&bytes))
         .unwrap_or_default();
-    if !revision.is_empty() && receipt_matches(&root, provider, home, &revision) {
+    let slot = slot(store, &root);
+    remember_locked(&slot, &revision);
+    if home.is_some_and(|h| is_inside(h, &root)) {
+        return Gate::ReadOnly(format!(
+            "{name}: the provider home is inside the project, so it is not isolated and this turn is read-only (plan)."
+        ));
+    }
+    if !revision.is_empty() && receipt_matches(&slot, provider, home, &revision) {
         return Gate::Open;
     }
     Gate::ReadOnly(format!(
-        "{}: locked-code enforcement is not verified for this home and policy, so this turn is read-only (plan). Run the Harness enforcement check to allow edits.",
-        provider.as_str()
+        "{name}: locked-code enforcement is not verified for this home and policy, so this turn is read-only (plan). Run the Harness enforcement check to allow edits."
     ))
 }
 
@@ -102,13 +167,49 @@ pub fn effective_trust(
     home: Option<&Path>,
     requested: TrustMode,
 ) -> (TrustMode, Option<String>) {
+    effective_trust_in(&store_root(), cwd, provider, home, requested)
+}
+
+/// [`effective_trust`] against an explicit state directory.
+pub fn effective_trust_in(
+    store: &Path,
+    cwd: &Path,
+    provider: ProviderKind,
+    home: Option<&Path>,
+    requested: TrustMode,
+) -> (TrustMode, Option<String>) {
     if requested == TrustMode::Plan {
         return (TrustMode::Plan, None);
     }
-    match gate(cwd, provider, home) {
+    match gate_in(store, cwd, provider, home) {
         Gate::Open => (requested, None),
         Gate::ReadOnly(reason) => (TrustMode::Plan, Some(reason)),
     }
+}
+
+/// Whether a final command line carries the provider's read-only switch. Capability fallbacks
+/// can drop it, so this is checked after planning, not assumed from the requested trust.
+pub fn is_read_only_argv(provider: ProviderKind, argv: &[String]) -> bool {
+    let pair = |flag: &[&str], value: &str| {
+        argv.windows(2)
+            .any(|w| flag.contains(&w[0].as_str()) && w[1] == value)
+    };
+    match provider {
+        ProviderKind::Claude => pair(&["--permission-mode"], "plan"),
+        ProviderKind::Cursor => pair(&["--mode"], "plan"),
+        ProviderKind::Codex => pair(&["-s", "--sandbox"], "read-only"),
+    }
+}
+
+/// Refuse to start a turn the gate made read-only if the command line no longer is.
+pub fn ensure_read_only(provider: ProviderKind, argv: &[String]) -> Result<()> {
+    if is_read_only_argv(provider, argv) {
+        return Ok(());
+    }
+    bail!(
+        "{}: this CLI cannot run read-only here, so Concordia will not start a write-capable turn in a locked-code project. Update the CLI or verify enforcement first.",
+        provider.as_str()
+    )
 }
 
 #[cfg(test)]
@@ -125,37 +226,46 @@ mod tests {
         fs::write(dir.join("docs/quality/locked-code.json"), POLICY).unwrap();
     }
 
-    fn receipt(dir: &Path, provider: &str, home: Option<&str>, revision: &str, result: &str) {
-        fs::create_dir_all(dir.join(".opifex/enforcement")).unwrap();
+    /// Write a receipt where the verifier would: in Concordia's own store, outside the project.
+    fn receipt(
+        store: &Path,
+        root: &Path,
+        provider: &str,
+        home: Option<&str>,
+        revision: &str,
+        result: &str,
+    ) {
+        let dir = store.join("enforcement").join(project_key(root));
+        fs::create_dir_all(&dir).unwrap();
         let body = serde_json::json!({
             "provider": provider,
             "home": home,
             "policyRevision": revision,
             "result": result,
         });
-        fs::write(
-            dir.join(format!(".opifex/enforcement/{provider}.json")),
-            body.to_string(),
-        )
-        .unwrap();
+        fs::write(dir.join(format!("{provider}.json")), body.to_string()).unwrap();
     }
 
     fn revision() -> String {
         policy_revision(POLICY.as_bytes())
     }
 
+    fn dirs2() -> (tempfile::TempDir, tempfile::TempDir) {
+        (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap())
+    }
+
     #[test]
     fn a_project_without_locked_regions_is_never_gated() {
-        let dir = tempfile::tempdir().unwrap();
-        let gate = gate(dir.path(), ProviderKind::Claude, None);
-        assert_eq!(gate, Gate::Open);
+        let (store, dir) = dirs2();
+        let got = gate_in(store.path(), dir.path(), ProviderKind::Claude, None);
+        assert_eq!(got, Gate::Open);
     }
 
     #[test]
     fn a_locked_project_without_a_receipt_is_read_only_with_a_reason() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
-        match gate(dir.path(), ProviderKind::Claude, None) {
+        match gate_in(store.path(), dir.path(), ProviderKind::Claude, None) {
             Gate::ReadOnly(reason) => {
                 assert!(reason.contains("claude"), "{reason}");
                 assert!(reason.contains("not verified"), "{reason}");
@@ -166,40 +276,90 @@ mod tests {
 
     #[test]
     fn a_matching_receipt_opens_the_gate() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
-        receipt(dir.path(), "claude", None, &revision(), "denied-live-probe");
-        assert_eq!(gate(dir.path(), ProviderKind::Claude, None), Gate::Open);
+        receipt(
+            store.path(),
+            dir.path(),
+            "claude",
+            None,
+            &revision(),
+            "denied-live-probe",
+        );
+        assert_eq!(
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
+            Gate::Open
+        );
+    }
+
+    #[test]
+    fn a_receipt_written_inside_the_project_is_ignored() {
+        let (store, dir) = dirs2();
+        locked_project(dir.path());
+        let forged = dir.path().join(".opifex/enforcement");
+        fs::create_dir_all(&forged).unwrap();
+        let body = serde_json::json!({
+            "provider": "claude", "home": null,
+            "policyRevision": revision(), "result": "denied-live-probe",
+        });
+        fs::write(forged.join("claude.json"), body.to_string()).unwrap();
+        assert!(matches!(
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
+            Gate::ReadOnly(_)
+        ));
+    }
+
+    #[test]
+    fn deleting_the_policy_file_does_not_open_a_project_that_was_locked() {
+        let (store, dir) = dirs2();
+        locked_project(dir.path());
+        assert!(matches!(
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
+            Gate::ReadOnly(_)
+        ));
+        fs::remove_file(dir.path().join("docs/quality/locked-code.json")).unwrap();
+        match gate_in(store.path(), dir.path(), ProviderKind::Claude, None) {
+            Gate::ReadOnly(reason) => assert!(reason.contains("missing"), "{reason}"),
+            Gate::Open => panic!("removing the policy file must not unlock the project"),
+        }
     }
 
     #[test]
     fn the_gate_finds_the_project_from_a_nested_directory() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
         let nested = dir.path().join("crates/app/src");
         fs::create_dir_all(&nested).unwrap();
         assert!(matches!(
-            gate(&nested, ProviderKind::Codex, None),
+            gate_in(store.path(), &nested, ProviderKind::Codex, None),
             Gate::ReadOnly(_)
         ));
     }
 
     #[test]
     fn a_receipt_for_another_provider_does_not_carry_over() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
-        receipt(dir.path(), "claude", None, &revision(), "denied-live-probe");
+        receipt(
+            store.path(),
+            dir.path(),
+            "claude",
+            None,
+            &revision(),
+            "denied-live-probe",
+        );
         assert!(matches!(
-            gate(dir.path(), ProviderKind::Codex, None),
+            gate_in(store.path(), dir.path(), ProviderKind::Codex, None),
             Gate::ReadOnly(_)
         ));
     }
 
     #[test]
     fn a_receipt_for_another_home_does_not_carry_over() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
         receipt(
+            store.path(),
             dir.path(),
             "claude",
             Some("C:/Users/dario/.claude-a"),
@@ -208,52 +368,98 @@ mod tests {
         );
         let other = Path::new("C:/Users/dario/.claude-b");
         assert!(matches!(
-            gate(dir.path(), ProviderKind::Claude, Some(other)),
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, Some(other)),
             Gate::ReadOnly(_)
         ));
         let same = Path::new("C:\\Users\\dario\\.claude-a");
         assert_eq!(
-            gate(dir.path(), ProviderKind::Claude, Some(same)),
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, Some(same)),
             Gate::Open,
             "slash style must not matter"
         );
     }
 
     #[test]
-    fn a_stale_policy_revision_closes_the_gate_again() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_home_inside_the_project_is_not_isolated_even_with_a_receipt() {
+        let (store, dir) = dirs2();
         locked_project(dir.path());
-        receipt(dir.path(), "claude", None, &revision(), "denied-live-probe");
+        let home = dir.path().join(".claude-home");
+        receipt(
+            store.path(),
+            dir.path(),
+            "claude",
+            Some(&home.to_string_lossy()),
+            &revision(),
+            "denied-live-probe",
+        );
+        match gate_in(store.path(), dir.path(), ProviderKind::Claude, Some(&home)) {
+            Gate::ReadOnly(reason) => assert!(reason.contains("isolated"), "{reason}"),
+            Gate::Open => panic!("a home inside the project must not count as isolated"),
+        }
+        assert!(matches!(
+            gate_in(
+                store.path(),
+                dir.path(),
+                ProviderKind::Claude,
+                Some(dir.path())
+            ),
+            Gate::ReadOnly(_)
+        ));
+    }
+
+    #[test]
+    fn a_stale_policy_revision_closes_the_gate_again() {
+        let (store, dir) = dirs2();
+        locked_project(dir.path());
+        receipt(
+            store.path(),
+            dir.path(),
+            "claude",
+            None,
+            &revision(),
+            "denied-live-probe",
+        );
         fs::write(
             dir.path().join("docs/quality/locked-code.json"),
             "{\"controls\":[{\"path\":\"a\"}]}\n",
         )
         .unwrap();
         assert!(matches!(
-            gate(dir.path(), ProviderKind::Claude, None),
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
             Gate::ReadOnly(_)
         ));
     }
 
     #[test]
     fn a_receipt_that_did_not_prove_a_denial_is_not_verification() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
-        receipt(dir.path(), "claude", None, &revision(), "hooks-installed");
+        receipt(
+            store.path(),
+            dir.path(),
+            "claude",
+            None,
+            &revision(),
+            "hooks-installed",
+        );
         assert!(matches!(
-            gate(dir.path(), ProviderKind::Claude, None),
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
             Gate::ReadOnly(_)
         ));
     }
 
     #[test]
     fn a_corrupt_receipt_fails_closed() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
-        fs::create_dir_all(dir.path().join(".opifex/enforcement")).unwrap();
-        fs::write(dir.path().join(".opifex/enforcement/claude.json"), "{nope").unwrap();
+        let slot = store
+            .path()
+            .join("enforcement")
+            .join(project_key(dir.path()));
+        fs::create_dir_all(&slot).unwrap();
+        fs::write(slot.join("claude.json"), "{nope").unwrap();
         assert!(matches!(
-            gate(dir.path(), ProviderKind::Claude, None),
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
             Gate::ReadOnly(_)
         ));
     }
@@ -265,11 +471,11 @@ mod tests {
 
     #[test]
     fn write_capable_trust_drops_to_plan_with_a_notice() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
         for trust in [TrustMode::Ask, TrustMode::Workspace, TrustMode::Full] {
             let (effective, notice) =
-                effective_trust(dir.path(), ProviderKind::Claude, None, trust);
+                effective_trust_in(store.path(), dir.path(), ProviderKind::Claude, None, trust);
             assert_eq!(effective, TrustMode::Plan, "{trust:?}");
             assert!(notice.unwrap().contains("read-only"));
         }
@@ -277,12 +483,77 @@ mod tests {
 
     #[test]
     fn plan_trust_needs_no_notice_and_a_verified_project_keeps_its_trust() {
-        let dir = tempfile::tempdir().unwrap();
+        let (store, dir) = dirs2();
         locked_project(dir.path());
-        let (t, n) = effective_trust(dir.path(), ProviderKind::Claude, None, TrustMode::Plan);
+        let (t, n) = effective_trust_in(
+            store.path(),
+            dir.path(),
+            ProviderKind::Claude,
+            None,
+            TrustMode::Plan,
+        );
         assert_eq!((t, n), (TrustMode::Plan, None));
-        receipt(dir.path(), "claude", None, &revision(), "denied-live-probe");
-        let (t, n) = effective_trust(dir.path(), ProviderKind::Claude, None, TrustMode::Full);
+        receipt(
+            store.path(),
+            dir.path(),
+            "claude",
+            None,
+            &revision(),
+            "denied-live-probe",
+        );
+        let (t, n) = effective_trust_in(
+            store.path(),
+            dir.path(),
+            ProviderKind::Claude,
+            None,
+            TrustMode::Full,
+        );
         assert_eq!((t, n), (TrustMode::Full, None));
+    }
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn only_a_provable_read_only_command_line_passes() {
+        use ProviderKind::{Claude, Codex, Cursor};
+        assert!(is_read_only_argv(
+            Claude,
+            &argv(&["-p", "--permission-mode", "plan", "hi"])
+        ));
+        assert!(!is_read_only_argv(
+            Claude,
+            &argv(&["-p", "--permission-mode", "manual", "hi"])
+        ));
+        assert!(!is_read_only_argv(Claude, &argv(&["-p", "hi"])));
+        assert!(is_read_only_argv(Cursor, &argv(&["--mode", "plan", "hi"])));
+        assert!(!is_read_only_argv(
+            Cursor,
+            &argv(&["--output-format", "text", "hi"])
+        ));
+        assert!(is_read_only_argv(
+            Codex,
+            &argv(&["exec", "-s", "read-only", "hi"])
+        ));
+        assert!(is_read_only_argv(
+            Codex,
+            &argv(&["exec", "--sandbox", "read-only", "hi"])
+        ));
+        assert!(!is_read_only_argv(
+            Codex,
+            &argv(&["exec", "-s", "workspace-write", "hi"])
+        ));
+    }
+
+    #[test]
+    fn ensure_read_only_refuses_a_weaker_command_line_with_a_clear_error() {
+        let err = ensure_read_only(ProviderKind::Cursor, &argv(&["hi"])).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("cursor") && text.contains("read-only"),
+            "{text}"
+        );
+        assert!(ensure_read_only(ProviderKind::Cursor, &argv(&["--mode", "plan", "hi"])).is_ok());
     }
 }

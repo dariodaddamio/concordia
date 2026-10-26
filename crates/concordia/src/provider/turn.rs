@@ -93,7 +93,8 @@ pub fn enforcement_notice(req: &ProviderTurnRequest<'_>) -> Option<String> {
 pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
     // Locked-code projects without verified enforcement never get a write-capable turn. This runs
     // before any provider process (including Cursor's `create-chat`) starts.
-    let (trust, _) = enforcement::effective_trust(req.cwd, req.provider, req.home_path, req.trust);
+    let (trust, lowered) =
+        enforcement::effective_trust(req.cwd, req.provider, req.home_path, req.trust);
     let req = &ProviderTurnRequest {
         trust,
         ..req.clone()
@@ -101,6 +102,11 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
     let mut plan = plan_provider_turn_raw(req)?;
     // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
     crate::provider::compat::degrade_planned(&mut plan, req.trust);
+    // That fallback can drop the plan switch (Claude to manual, Cursor without --mode plan).
+    // A turn the gate made read-only must still be read-only, or it does not start.
+    if lowered.is_some() {
+        enforcement::ensure_read_only(plan.provider, &plan.argv)?;
+    }
     Ok(plan)
 }
 
@@ -698,5 +704,44 @@ mod gate_tests {
             ..req
         };
         assert_eq!(enforcement_notice(&req), None);
+    }
+
+    #[test]
+    fn a_locked_project_refuses_a_turn_whose_cli_cannot_run_read_only() {
+        use crate::provider::compat::{caps_for, set_caps, Caps};
+        let dir = tempfile::tempdir().unwrap();
+        locked(dir.path());
+        let before = caps_for(ProviderKind::Cursor);
+        // A Cursor CLI without plan mode: the compatibility fallback would drop `--mode plan`.
+        set_caps(
+            ProviderKind::Cursor,
+            Caps {
+                known: true,
+                plan_mode: false,
+                ..Caps::assume_all()
+            },
+        );
+        let req = ProviderTurnRequest {
+            provider: ProviderKind::Cursor,
+            prompt: "edit it",
+            cwd: dir.path(),
+            home_path: None,
+            model: None,
+            native_session_id: None,
+            trust: TrustMode::Full,
+            context_prefix: None,
+        };
+        let result = plan_provider_turn(&req);
+        set_caps(
+            ProviderKind::Cursor,
+            before.unwrap_or_else(Caps::assume_all),
+        );
+        let text = result
+            .expect_err("must refuse to plan a write-capable turn")
+            .to_string();
+        assert!(
+            text.contains("cursor") && text.contains("read-only"),
+            "{text}"
+        );
     }
 }
