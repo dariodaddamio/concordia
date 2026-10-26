@@ -43,7 +43,7 @@ schedule execution; only the scheduler's actual state establishes an unattended 
 
 ### Ready-to-use task brief
 
-Continue Concordia production readiness in the existing agent-orchestrator project. Read
+Continue Concordia production readiness in the Concordia repository. Read
 AGENTS.md, PLAN.md, docs/production-plan.md, docs/interaction-audit.md and the current Git status.
 Preserve all uncommitted work and existing agent results; inspect progress before duplicating work.
 Use gpt-6-luna at medium reasoning for scoped subagents, with disjoint ownership and no nested
