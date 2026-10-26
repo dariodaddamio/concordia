@@ -970,14 +970,19 @@ pub fn extract_delegate_blocks(reply: &str) -> Vec<DelegateBlock> {
 
 fn parse_block(json: &str) -> Option<DelegateBlock> {
     let v: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
-    let to = v.get("to")?.as_str()?.trim().to_string();
-    let task = v.get("task")?.as_str()?.trim().to_string();
+    block_from(v.get("to")?.as_str()?, v.get("task")?.as_str()?)
+}
+
+/// A normalised proposal from a worker id and a task (the fenced block and the MCP `delegate`
+/// proposal files share this). None when either is empty.
+pub fn block_from(to: &str, task: &str) -> Option<DelegateBlock> {
+    let (to, task) = (to.trim(), task.trim());
     if to.is_empty() || task.is_empty() {
         return None;
     }
     Some(DelegateBlock {
         to: normalize_account_id(&to.to_lowercase()),
-        task: cap_chars(&task, TASK_MAX_CHARS),
+        task: cap_chars(task, TASK_MAX_CHARS),
     })
 }
 

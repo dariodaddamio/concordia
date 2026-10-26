@@ -18,7 +18,8 @@ What blocks a public release: [docs/release-blockers.md](docs/release-blockers.m
 | Backends | Programmatic CLIs: `codex exec`, `claude -p`, `agent --print`. Never a scraped hidden TUI |
 | Accounts | Several per provider, each in an isolated home; sign-in is the provider's own flow |
 | Context across switches | One Concordia thread; on a switch, a bounded pack of Concordia's own recorded conversation goes to the next provider |
-| Multi-session | WezTerm panes and tabs; each pane runs its own Concordia |
+| Workspace | Installed build `2026-10-21d`: `/open` and `/preview` create internal read-only split panes, `/close` closes them, `/edit` launches an external editor. Editing/recovery stages: [workspace requirements](docs/workspace-panes.md) |
+| Multi-session | Separate conversations can still use WezTerm panes and tabs; internal file panes belong to one conversation workspace |
 | Install | One binary: `concordia install` puts it where `concordia` on PATH finds it; `/update` keeps it current |
 
 ## Principles (contracts)
@@ -60,21 +61,33 @@ write, never re-implemented.
 
 ## Roadmap
 
-1. **Verify live** (needs the user): `/use add` login window, mouse and selection in a real WezTerm
-   pane, a real multi-line turn through the stdin path.
-2. **Context sharing**: explicit, bounded, visible-size handoff between providers and accounts
-   (design in docs/provider-terms.md).
-3. **Account handoff on exhaustion**: user-confirmed, explicit session bind; blocked on reading the
-   providers' terms (see docs/provider-terms.md).
-4. **Claude and Cursor parity**: session-id binding after turns, parity of cards and usage.
-5. **Distribution**: name decision, signed releases, a shipped WezTerm config, first public tag.
+1. **Reconcile readiness**: retain recorded installed fake-provider verification and distinguish
+   outstanding human host checks and versioned real-provider checks. See [E2E status](docs/e2e-status.md).
+2. **Internal workspace**: bounded file preview panes, then explicit editing, recovery and cwd
+   search/replacement. Prove focus, mouse and command behavior before expanding; acceptance is in
+   [workspace requirements](docs/workspace-panes.md).
+3. **Reliable self-development**: complete a bounded Concordia change through the stable installed
+   app, including interruption and recovery. Build a candidate separately; a failed candidate must
+   not remove the working interface.
+4. **Thin delegation routing**: evolve existing explicit workers beyond first-idle selection using
+   Harness-owned eligibility and task policy, with visible reasons and bounded handoffs. No extra
+   inference for routing. Worktree lifecycle requires explicit ownership and preservation of unique
+   or active work; existing user work is never automatically cleaned.
+5. **Provider parity**: verify Claude/Cursor session binding, native approvals and cancellation
+   against supported CLI versions. Account exhaustion requires explicit session binding and no
+   uncertain replay; terms review remains a release prerequisite.
+6. **Distribution**: name checks, signed releases and first public tag after everyday reliability.
 
-Out of scope for v0.1: crew-style multi-agent delegation, hosted anything, Linux and macOS.
+Bounded context handoff and explicit delegation already exist; see [delegation](docs/delegation.md).
+Internal preview panes are implemented in source; editing/recovery, policy-based routing and
+managed worktree cleanup remain requirements. Hosted services, resident inference and Linux/macOS
+support remain outside current scope. Local installed build is `2026-10-21d`; earlier running
+windows retain their existing executable until reopened.
 
 ## Open decisions (the maintainer's)
 
 - GitHub organization and repository name (the product name, Concordia, is decided; a trademark check is still to do).
-- Whether and how automatic account handoff ships (terms review first).
+- Public-release terms review for automatic account handoff. Local opt-in handoff is configured under `[continuation]`; see [configuration](docs/config.md).
 - When to publish, and the repository destination.
 
 ## References

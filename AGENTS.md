@@ -40,3 +40,13 @@ Run meaningful checks for what you changed (`cargo test -p concordia --tests`, c
 
 No publishing, remote repository creation, account migrations, or release actions are authorized
 by this file alone.
+
+
+## Harness workflow bridge
+
+Before planning or implementation, read `.cursor/rules/workflow.mdc` for the
+shared workflow contract. Apply its package-conditional guidance using
+Concordia's `PLAN.md`, native Cargo checks, and project source documents.
+Do not add package-manager tooling, hooks, or global provider configuration.
+Concordia's provider, approval, recovery, and secret-handling rules remain
+authoritative.

@@ -21,10 +21,10 @@
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
 <text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">◆</text>
 <text x="41" y="50" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">concordia</text>
-<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-15x</text>
+<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-21d</text>
 <text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
 <text x="356" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
-<text x="698" y="50" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#666666">[###--] 5h 59% left · 7d 41% left</text>
+<text x="770" y="50" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#666666">5h 59% left · 7d 41% left</text>
 <text x="23" y="69" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#5fafff">| i</text>
 <text x="59" y="69" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
 <text x="23" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff">|</text>
@@ -32,8 +32,12 @@
 <text x="23" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
 <text x="41" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Add a /doctor check for duplicate accounts and show me the diff</text>
 <text x="23" y="145" textLength="279" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex · codex-3 · gpt-5.1-codex</text>
+<text x="23" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
 <text x="41" y="164" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n duplicate src</text>
-<text x="41" y="183" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ edit  src/doctor.rs</text>
+<text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
+<text x="41" y="183" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ edit</text>
+<text x="131" y="183" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#87af87" text-decoration="underline">src/doctor.rs</text>
+<text x="23" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
 <text x="41" y="202" textLength="306" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">│ ◉ shell  cargo test -p concordia</text>
 <text x="23" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f">●</text>
 <text x="41" y="221" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">What I changed</text>
@@ -60,16 +64,24 @@
 <text x="59" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">}</text>
 <text x="32" y="468" textLength="954" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">┌usage───────────────────────────────────────────────────────────────────────────────────────────────────┐</text>
 <text x="32" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="41" y="487" textLength="702" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt; Codex 3  [###--] 5h 41% used / 59% left · 7d 59% used / 41% left · resets 3h</text>
+<text x="41" y="487" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt; Codex 3  5h 59% left</text>
+<text x="248" y="487" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700" fill-opacity="0.6">(41% used)</text>
+<text x="347" y="487" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">· 7d 41% left</text>
+<text x="473" y="487" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700" fill-opacity="0.6">(59% used) · resets in 3h</text>
 <text x="977" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="59" y="506" textLength="693" lengthAdjust="spacingAndGlyphs" fill="#0dbc79">Claude 1  [###--] 5h 23% used / 77% left · 7d 64% used / 36% left · resets 4h</text>
+<text x="32" y="506" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│  Claude 1  5h</text>
+<text x="176" y="506" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">77% left</text>
+<text x="257" y="506" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(23% used)</text>
+<text x="356" y="506" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">· 7d</text>
+<text x="401" y="506" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">36% left</text>
+<text x="482" y="506" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(64% used) · resets in 4h</text>
 <text x="977" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="59" y="525" textLength="459" lengthAdjust="spacingAndGlyphs" fill="#e5e510">Claude 2  [#####] 5h 92% used / 8% left · resets 1h</text>
+<text x="32" y="525" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│  Claude 2  5h</text>
+<text x="176" y="525" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#e5e510" font-weight="700">8% left</text>
+<text x="248" y="525" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(92% used) · resets in 1h</text>
 <text x="977" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
 <text x="32" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="59" y="544" textLength="918" lengthAdjust="spacingAndGlyphs" fill="#666666">Cursor 1  [.....] not shown by Cursor CLI  Cursor's CLI has no usage command, so Concordia cannot show</text>
+<text x="59" y="544" textLength="918" lengthAdjust="spacingAndGlyphs" fill="#666666">Cursor 1  not shown by Cursor CLI  Cursor's CLI has no usage command, so Concordia cannot show it. See</text>
 <text x="977" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
 <text x="23" y="563" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
 <text x="32" y="563" textLength="954" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">└────────────────────────────────────────────────────────────────────────────────────────────────────────┘</text>

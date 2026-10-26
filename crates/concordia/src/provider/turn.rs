@@ -60,6 +60,8 @@ pub struct PlannedTurn {
 
 #[derive(Debug, Default, Clone)]
 pub struct TurnOutcome {
+    /// A terminal failure event, independent of the process exit code.
+    pub failed: bool,
     pub exit_code: Option<i32>,
     pub text: String,
     pub session_id: Option<String>,
@@ -81,6 +83,13 @@ pub enum TurnProgress {
 }
 
 pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
+    let mut plan = plan_provider_turn_raw(req)?;
+    // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
+    crate::provider::compat::degrade_planned(&mut plan, req.trust);
+    Ok(plan)
+}
+
+fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
     let prompt = match req.context_prefix {
         Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{}", req.prompt),
         _ => req.prompt.to_string(),
@@ -173,7 +182,9 @@ impl RunningTurn {
     /// started**. On Windows the CLI is usually a `.cmd` shim in front of node, so killing only
     /// the direct child would leave the real agent running (and spending tokens).
     pub fn cancel(&self) {
-        self.cancel_flag.store(true, Ordering::SeqCst);
+        if self.cancel_flag.swap(true, Ordering::SeqCst) {
+            return;
+        }
         self.wake.notify_one();
         let pid = self.pid.load(Ordering::SeqCst);
         if cfg!(windows) && pid != 0 {
@@ -227,6 +238,12 @@ pub async fn run_provider_turn_with_progress(
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
+    let mut session_guard = req
+        .native_session_id
+        .map(|id| {
+            super::session_guard::acquire(&crate::store::default_store_root(), req.home_path, id)
+        })
+        .transpose()?;
     let mut plan = plan_provider_turn(req)?;
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
     // it explicitly. If that does not work the turn runs unbound, exactly as before.
@@ -242,6 +259,8 @@ pub async fn run_provider_turn_with_progress(
             plan.new_session_id = Some(id);
         }
     }
+    let plain_output =
+        super::compat::caps_for(plan.provider).is_some_and(|caps| caps.known && !caps.stream_json);
     let launch = prepare(&plan)?;
     let handle = Arc::new(RunningTurn::new());
 
@@ -264,6 +283,8 @@ pub async fn run_provider_turn_with_progress(
         .spawn()
         .with_context(|| format!("spawn {}", launch.program))?;
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
+    // Counted in the footer stats (when on) until this turn ends.
+    let _stats_guard = crate::sysstats::register(child.id().unwrap_or(0));
     let stdout = child.stdout.take().context("stdout")?;
     let stderr = child.stderr.take().context("stderr")?;
     if let (Some(prompt), Some(mut stdin)) = (launch.stdin.clone(), child.stdin.take()) {
@@ -274,7 +295,7 @@ pub async fn run_provider_turn_with_progress(
         });
     }
     // Always drain stderr: an unread pipe blocks a chatty child, and it is where failures go.
-    let stderr_task = tokio::spawn(async move {
+    let mut stderr_task = tokio::spawn(async move {
         let mut tail: VecDeque<String> = VecDeque::new();
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(l)) = lines.next_line().await {
@@ -290,7 +311,11 @@ pub async fn run_provider_turn_with_progress(
         *slot = Some(child);
     }
     if let Some(tx) = on_started {
-        let _ = tx.send(handle.clone());
+        if tx.send(handle.clone()).is_err() {
+            // No caller can cancel or observe this child anymore. Stop it here so a
+            // receiver that disappeared during startup cannot leave a provider running.
+            handle.cancel();
+        }
     }
 
     let mut reader = BufReader::new(stdout);
@@ -320,19 +345,36 @@ pub async fn run_provider_turn_with_progress(
         };
         match next {
             Ok(Some(line)) => {
+                if let Some(failed) = terminal_failure(&line) {
+                    out.failed = failed;
+                }
                 if raw.len() < RAW_MAX {
                     raw.push_str(&line);
                     raw.push('\n');
                 }
                 {
-                    let parts = match json_parser.as_mut() {
-                        Some(p) => p.parse_line(&line),
-                        None => parse_codex_stream_chunk(&line),
+                    let parts = if plain_output {
+                        vec![StreamPart::Text(line.clone())]
+                    } else {
+                        match json_parser.as_mut() {
+                            Some(p) => p.parse_line(&line),
+                            None => parse_codex_stream_chunk(&line),
+                        }
                     };
                     emit_progress(&parts, &on_progress);
                     let mut chunk = codex::StreamOutcome::default();
                     apply_stream_parts(parts, &mut chunk);
                     if let Some(sid) = chunk.session_id {
+                        if session_guard.is_none() {
+                            // The CLI has already opened its own writer. Hold our guard for
+                            // the remainder of the turn so another pane cannot resume it.
+                            session_guard = super::session_guard::acquire(
+                                &crate::store::default_store_root(),
+                                req.home_path,
+                                &sid,
+                            )
+                            .ok();
+                        }
                         out.session_id = Some(sid);
                     }
                     if !chunk.text.is_empty() {
@@ -366,16 +408,21 @@ pub async fn run_provider_turn_with_progress(
             out.exit_code = status.code();
         }
     }
+    // Stop can race with stdout EOF while we are waiting for process exit. It is still a
+    // cancellation, even when the reader has already left its select loop.
+    out.cancelled |= handle.cancel_flag.load(Ordering::SeqCst);
     // A conversation's first turn names its session; keep it only if the turn really ran, so a
     // failed first turn never leaves an id that does not exist to be resumed next time.
     if out.session_id.is_none() && !out.cancelled && out.exit_code == Some(0) {
         out.session_id = plan.new_session_id.clone();
     }
-    out.stderr_tail = tokio::time::timeout(STDERR_JOIN_TIMEOUT, stderr_task)
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
+    out.stderr_tail = match tokio::time::timeout(STDERR_JOIN_TIMEOUT, &mut stderr_task).await {
+        Ok(result) => result.unwrap_or_default(),
+        Err(_) => {
+            stderr_task.abort();
+            String::new()
+        }
+    };
     if out.cancelled {
         if out.text.is_empty() {
             out.text = "cancelled".into();
@@ -389,6 +436,22 @@ pub async fn run_provider_turn_with_progress(
         }
     }
     Ok(out)
+}
+
+fn terminal_failure(line: &str) -> Option<bool> {
+    let event: serde_json::Value = serde_json::from_str(line).ok()?;
+    match event.get("type")?.as_str()? {
+        "turn.failed" => Some(true),
+        "turn.completed" => Some(false),
+        "result" => Some(
+            event.get("is_error").and_then(|v| v.as_bool()) == Some(true)
+                || event
+                    .get("subtype")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.starts_with("error")),
+        ),
+        _ => None,
+    }
 }
 
 /// Read one line into `buf` (cleared first), keeping at most `LINE_MAX` bytes and discarding the
@@ -491,6 +554,32 @@ pub async fn spawn_and_cancel_mock() -> Result<bool> {
 #[cfg(test)]
 mod reader_tests {
     use super::*;
+
+    #[test]
+    fn terminal_failures_are_distinct_from_recoverable_diagnostics() {
+        assert_eq!(
+            terminal_failure(r#"{"type":"turn.failed","error":{"message":"usage limit"}}"#),
+            Some(true)
+        );
+        assert_eq!(
+            terminal_failure(r#"{"type":"turn.completed"}"#),
+            Some(false)
+        );
+        assert_eq!(
+            terminal_failure(r#"{"type":"error","message":"reconnecting"}"#),
+            None
+        );
+        assert_eq!(
+            terminal_failure(
+                r#"{"type":"result","subtype":"error_during_execution","is_error":true}"#
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            terminal_failure(r#"{"type":"result","subtype":"success"}"#),
+            Some(false)
+        );
+    }
 
     async fn lines_of(input: &[u8]) -> Vec<String> {
         let mut r = BufReader::new(input);

@@ -4,6 +4,152 @@
 use super::*;
 use ratatui::backend::TestBackend;
 
+#[test]
+fn file_link_click_opens_exact_target_and_drag_keeps_selection() {
+    let mut h = Harness::new(90, 24);
+    std::fs::write(h._dir.path().join("hello world.md"), "# Preview").unwrap();
+    h.app.messages = vec![ChatLine {
+        role: MsgRole::Assistant,
+        text: "See [friendly label](<hello world.md:7:2>)".into(),
+        card: None,
+        meta: None,
+    }];
+    h.draw();
+    let row_index = h
+        .app
+        .view
+        .rows
+        .iter()
+        .position(|row| !row.links.is_empty())
+        .unwrap();
+    let row = &h.app.view.rows[row_index];
+    let (start, _, _) = row.links.first().unwrap();
+    let x = h.app.areas.transcript.x
+        + row.gutter.chars().count() as u16
+        + row.text[..*start]
+            .iter()
+            .map(|c| text::char_width(*c) as u16)
+            .sum::<u16>();
+    let y = h.app.areas.transcript.y + (row_index - h.app.view.visible().start) as u16;
+    h.down(x, y);
+    assert!(h.app.last_file_open.is_none());
+    h.up(x, y);
+    let file = h.app.last_file_open.take().unwrap();
+    assert_eq!(file.line, Some(7));
+    assert_eq!(file.column, Some(2));
+    assert!(file.path.ends_with("hello world.md"));
+    h.app.clicks = ClickTracker::default();
+    h.down(x, y);
+    h.drag(x + 3, y);
+    h.up(x + 3, y);
+    assert!(h.app.last_file_open.is_none());
+    assert!(h.app.view.selected_text().is_some());
+    h.app.clicks = ClickTracker::default();
+    h.down(x, y);
+    h.drag(x + 3, y);
+    h.drag(x, y);
+    h.up(x, y);
+    assert!(
+        h.app.last_file_open.is_none(),
+        "a drag returning to its origin is still a drag"
+    );
+}
+
+#[test]
+fn native_chat_cli_keeps_accounts_separate_and_binds_reads_explicitly() {
+    let iso = Isolated::new();
+    let state = tempfile::tempdir().unwrap();
+    for (folder, answer) in [
+        (".codex", "education answer"),
+        (".codex-2", "personal answer"),
+    ] {
+        let home = iso.base.path().join(folder);
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let events=serde_json::json!({"type":"session_meta","payload":{"id":"shared-session","cwd":"synthetic-workspace"}}).to_string()+"\n"+
+            &serde_json::json!({"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":answer}]}}).to_string()+"\n";
+        std::fs::write(home.join("sessions/chat.jsonl"), events).unwrap();
+    }
+    let args = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let listing = crate::chat_cli::run(state.path(), &args(&["list", "--json"])).unwrap();
+    let listed: serde_json::Value = serde_json::from_str(&listing).unwrap();
+    let accounts: Vec<_> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["account"].as_str().unwrap())
+        .collect();
+    assert!(
+        accounts.contains(&"codex") && accounts.contains(&"codex-2"),
+        "{listing}"
+    );
+    let read = crate::chat_cli::run(
+        state.path(),
+        &args(&["read", "shared-session", "--account", "codex-2"]),
+    )
+    .unwrap();
+    assert!(read.contains("personal answer"));
+    assert!(!read.contains("education answer"));
+    assert!(crate::chat_cli::run(state.path(), &args(&["read", "shared-session"])).is_err());
+}
+
+#[test]
+fn limit_warning_updates_with_account_snapshot_and_unknown_clears_it() {
+    let mut h = Harness::new(120, 30);
+    let mut snap = crate::usage::UsageSnapshot::no_data("cached; refreshing", "last report");
+    snap.windows.push(crate::usage::UsageWindow {
+        label: "5h".into(),
+        used_pct: 96.0,
+        resets: Some("2026-10-16 06:03 local".into()),
+    });
+    h.app.provider = ProviderKind::Codex;
+    h.app.set_usage_footer(&snap);
+    h.draw();
+    assert!(h.screen().contains("5h 4% left"));
+    assert!(h.screen().contains("06:03 local"));
+    assert!(h.screen().contains("last reported"));
+    h.app.provider = ProviderKind::Claude;
+    h.app.set_usage_footer(&snap);
+    assert!(h.app.usage_warning.as_deref().unwrap().contains("cached"));
+    h.app
+        .set_usage_footer(&crate::usage::UsageSnapshot::no_data(
+            "unknown",
+            "no report",
+        ));
+    h.draw();
+    assert!(h.app.usage_warning.is_none());
+    assert!(!h.screen().contains("5h 4% left"));
+}
+
+#[test]
+fn distinct_escape_presses_drained_together_close_each_focused_layer() {
+    let mut h = Harness::new(80, 24);
+    h.app.queue.items = vec!["queued original".into()];
+    h.app.queue.focused = true;
+    let mut edit = Editor::default();
+    edit.set_text("unsaved upper edit");
+    h.app.queue.edit = Some(edit);
+    h.app.activity.open(0);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut burst = input::BurstBuffer::default();
+    for _ in 0..2 {
+        dispatch_key_event(
+            &mut h.app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut burst,
+            &tx,
+            Instant::now(),
+        );
+    }
+    assert!(h.app.activity.detail.is_none());
+    assert!(h.app.queue.edit.is_none());
+    assert_eq!(h.app.queue.items, ["queued original"]);
+    assert!(!should_accept_key(&KeyEvent::new_with_kind(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+        KeyEventKind::Release
+    )));
+}
+
 struct Harness {
     app: App,
     term: Terminal<TestBackend>,
@@ -13,7 +159,8 @@ struct Harness {
 impl Harness {
     fn new(w: u16, h: u16) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
+        let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
+        app.no_color = false; // Fixtures choose color explicitly, independent of the caller's env.
         let term = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hn = Harness {
             app,
@@ -1356,14 +1503,18 @@ impl Harness {
 #[test]
 fn a_running_update_does_not_freeze_the_ui_and_shows_progress() {
     let mut h = Harness::new(100, 24);
-    h.app.job = Some(spawn_job(JobKind::Update, |ctl| {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    h.app.job = Some(spawn_job(JobKind::Update, move |ctl| {
         ctl.say("Compiling concordia v0.0.1");
+        ready_tx.send(()).unwrap();
         while !ctl.cancelled() {
             std::thread::sleep(Duration::from_millis(10));
         }
         JR::Update(Err(anyhow::anyhow!("cancelled")))
     }));
-    std::thread::sleep(Duration::from_millis(100));
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("fake update worker ready");
     h.draw();
     let s = h.screen();
     assert!(
@@ -1452,6 +1603,189 @@ fn a_second_update_cannot_start_while_one_is_running() {
 // ---- waiting states, thinking, repeated errors ----------------------------------------------------
 
 #[test]
+fn streamed_commentary_and_commands_keep_arrival_order_without_duplicate_final_reply() {
+    let mut h = Harness::new(110, 35);
+    h.app.push_user("check both".into());
+    h.app.busy = true;
+    h.app
+        .apply_progress(TurnProgress::Text("Checking the first file.".into()));
+    let card = |id: &str, command: &str, status| {
+        TurnProgress::Card(StreamCard {
+            id: id.into(),
+            title: "shell".into(),
+            detail: Some(command.into()),
+            status,
+        })
+    };
+    h.app
+        .apply_progress(card("first", "command: first-check", CardStatus::Running));
+    h.draw();
+    let visible = h.screen();
+    assert!(
+        visible.find("Checking the first file.").unwrap() < visible.find("first-check").unwrap()
+    );
+    h.app.apply_progress(card(
+        "first",
+        "command: first-check\nOutput: passed",
+        CardStatus::Done,
+    ));
+    h.app
+        .apply_progress(TurnProgress::Text("Checking the second file.".into()));
+    h.app
+        .apply_progress(card("second", "command: second-check", CardStatus::Running));
+    assert!(
+        h.app.busy,
+        "both command cards must exist before the turn finishes"
+    );
+    h.app.apply_progress(TurnProgress::Text("Finished.".into()));
+    h.app.on_turn_done(
+        TurnOutcome {
+            exit_code: Some(0),
+            text: "Checking the first file.\nChecking the second file.\nFinished.".into(),
+            ..Default::default()
+        },
+        &mpsc::unbounded_channel().0,
+    );
+    let sequence: Vec<_> = h
+        .app
+        .messages
+        .iter()
+        .filter(|m| matches!(m.role, MsgRole::Assistant | MsgRole::Card))
+        .map(|m| {
+            m.card
+                .as_ref()
+                .map(|c| c.id.as_str())
+                .unwrap_or(m.text.as_str())
+        })
+        .collect();
+    assert_eq!(
+        sequence,
+        [
+            "Checking the first file.",
+            "first",
+            "Checking the second file.",
+            "second",
+            "Finished."
+        ]
+    );
+}
+
+#[test]
+fn cancelling_preserves_partial_reply_and_draft_and_repeated_stop_is_idempotent() {
+    let mut h = Harness::new(100, 24);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    h.app.editor.set_text("original request");
+    h.app.submit_input(&tx);
+    rx.try_recv().unwrap();
+    h.app.editor.set_text("next unsent thought");
+    h.app.queue.items.push("queued work".into());
+    h.app
+        .apply_progress(TurnProgress::Text("Partial answer worth keeping.".into()));
+    h.app.request_cancel();
+    h.app.request_cancel();
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.text == "cancelling...")
+            .count(),
+        1
+    );
+    h.app.on_turn_done(
+        TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        },
+        &tx,
+    );
+    assert_eq!(h.app.editor.text(), "next unsent thought");
+    assert!(h.app.queue.paused);
+    assert!(rx.try_recv().is_err());
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.role == MsgRole::Assistant && m.text.contains("Partial answer"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn reply_committed_before_last_tool_is_not_duplicated_and_keeps_token_line() {
+    let mut h = Harness::new(100, 24);
+    h.app
+        .apply_progress(TurnProgress::Text("Commentary before the command.".into()));
+    h.app.apply_progress(TurnProgress::Card(StreamCard {
+        id: "last".into(),
+        title: "shell".into(),
+        detail: Some("command: check".into()),
+        status: CardStatus::Done,
+    }));
+    h.app.apply_progress(TurnProgress::Usage(
+        crate::provider::stream_cards::TurnUsage {
+            input: Some(123),
+            output: Some(45),
+            ..Default::default()
+        },
+    ));
+    h.app.finalize_turn(TurnOutcome {
+        exit_code: Some(0),
+        text: "Commentary before the command.".into(),
+        ..Default::default()
+    });
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.role == MsgRole::Assistant)
+            .count(),
+        1
+    );
+    if token_line::ui_token_line_enabled() {
+        assert!(h
+            .app
+            .messages
+            .iter()
+            .any(|m| m.role == MsgRole::Meta && m.text.contains("123")));
+    }
+}
+
+#[test]
+fn tool_result_keeps_the_command_and_full_output_in_the_visible_card() {
+    let mut h = Harness::new(100, 24);
+    h.app.push_user("run the check".into());
+    for (title, detail, status) in [
+        ("shell", "cargo test --locked", CardStatus::Running),
+        (
+            "result",
+            "all checks passed\nfull output retained",
+            CardStatus::Done,
+        ),
+    ] {
+        h.app.apply_progress(TurnProgress::Card(StreamCard {
+            id: "call-1".into(),
+            title: title.into(),
+            detail: Some(detail.into()),
+            status,
+        }));
+    }
+    let cards: Vec<_> = h
+        .app
+        .messages
+        .iter()
+        .filter_map(|m| m.card.as_ref())
+        .collect();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].title, "shell");
+    assert_eq!(
+        cards[0].detail.as_deref(),
+        Some("cargo test --locked\nOutput: all checks passed\nfull output retained")
+    );
+    assert_eq!(cards[0].status, CardStatus::Done);
+}
+
+#[test]
 fn the_wait_names_what_the_model_is_doing_and_the_colour_follows_it() {
     use ratatui::style::Color;
     let mut h = Harness::new(100, 24);
@@ -1505,7 +1839,7 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
         .iter()
         .find(|m| m.role == MsgRole::Thinking)
         .expect("a thinking line");
-    assert_eq!(thought.text, "first idea\nsecond idea");
+    assert_eq!(thought.text, "first   idea\n\n\nsecond idea\n");
     assert!(h
         .app
         .pack_messages()
@@ -1773,6 +2107,35 @@ fn usage_is_one_block_that_updates_in_place_when_the_check_lands() {
 }
 
 #[test]
+fn codex_usage_block_refreshes_after_a_turn_without_a_background_fetch() {
+    let mut h = Harness::new(100, 30);
+    let home = h._dir.path().join("synthetic-codex");
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    h.app.provider = ProviderKind::Codex;
+    h.app.account = "synthetic-codex".into();
+    h.app.home_path = Some(home.clone());
+    let path = home.join("sessions/usage.jsonl");
+    let reading = |used: u32| {
+        serde_json::json!({"payload": {"rate_limits": {
+            "primary": {"used_percent": used}, "credits": {"balance": "0"}
+        }}})
+        .to_string()
+    };
+    std::fs::write(&path, reading(10)).unwrap();
+    h.app.show_usage(false);
+    let index = h.app.usage_block.unwrap();
+    assert!(h.app.messages[index].text.contains("90% left"));
+    std::fs::write(&path, reading(97)).unwrap();
+    h.app.finalize_turn(TurnOutcome {
+        exit_code: Some(0),
+        ..Default::default()
+    });
+    assert_eq!(h.app.usage_block, Some(index));
+    assert!(h.app.messages[index].text.contains("3% left"));
+    assert!(h.app.usage_summary.contains("3% left"));
+}
+
+#[test]
 fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread() {
     let mut h = Harness::new(100, 24);
     assert!(h.app.thread.is_none(), "off by default");
@@ -2019,4 +2382,199 @@ Review for bugs. Focus: $ARGS",
     h.app.busy = false;
     h.app.submit_input(&tx);
     assert!(rx.try_recv().is_err());
+}
+
+fn find_cell(buf: &ratatui::buffer::Buffer, needle: &str) -> (u16, u16) {
+    (0..buf.area.height)
+        .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            let n = needle.chars().count() as u16;
+            x + n <= buf.area.width
+                && (0..n).map(|d| buf[(x + d, y)].symbol()).collect::<String>() == needle
+        })
+        .unwrap_or_else(|| panic!("{needle:?} not on screen"))
+}
+
+#[test]
+fn usage_block_colours_the_left_percentage_by_tone_and_survives_no_color() {
+    use ratatui::style::{Color, Modifier};
+    let text = "Codex 2 - limits\n5h   78% left · 22% used · resets in 3h\n7d   12% left · 88% used · resets in 2d\n7d Opus    2% left · 98% used · resets in 2d\nchecked just now";
+    let mut h = Harness::new(100, 24);
+    h.app.push_system(text.to_string());
+    h.draw();
+    let buf = h.term.backend().buffer().clone();
+    let (x, y) = find_cell(&buf, "78% left");
+    assert_eq!(buf[(x, y)].fg, Color::Green);
+    assert!(buf[(x, y)].modifier.contains(Modifier::BOLD));
+    let (x, y) = find_cell(&buf, "12% left");
+    assert_eq!(buf[(x, y)].fg, Color::Yellow);
+    let (x, y) = find_cell(&buf, " 2% left");
+    assert_eq!(buf[(x + 1, y)].fg, Color::Red);
+    let (x, y) = find_cell(&buf, "22% used");
+    assert!(buf[(x, y)].modifier.contains(Modifier::DIM));
+    assert_ne!(buf[(x, y)].fg, Color::Green);
+    let (x, y) = find_cell(&buf, "checked just now");
+    assert!(buf[(x, y)].modifier.contains(Modifier::ITALIC));
+    let (x, y) = find_cell(&buf, "Codex 2 - limits");
+    assert!(buf[(x, y)].modifier.contains(Modifier::BOLD));
+
+    h.app.no_color = true;
+    h.draw();
+    let buf = h.term.backend().buffer().clone();
+    let (x, y) = find_cell(&buf, "78% left");
+    assert_eq!(buf[(x, y)].fg, Color::Reset);
+    assert!(buf[(x, y)].modifier.contains(Modifier::BOLD));
+    let (x, y) = find_cell(&buf, "22% used");
+    assert!(buf[(x, y)].modifier.contains(Modifier::DIM));
+}
+
+#[test]
+fn a_wrapped_usage_line_keeps_its_runs() {
+    use ratatui::style::Color;
+    let text = "Claude - limits\n5h   78% left · 22% used · resets Oct 21, 9am and then some more words follow";
+    let mut h = Harness::new(40, 24);
+    h.app.push_system(text.to_string());
+    h.draw();
+    let buf = h.term.backend().buffer().clone();
+    let (x, y) = find_cell(&buf, "78% left");
+    assert_eq!(buf[(x, y)].fg, Color::Green);
+}
+
+fn sample_stats() -> crate::sysstats::Stats {
+    crate::sysstats::Stats {
+        self_mem: 41 << 20,
+        self_cpu: 1.0,
+        agents_mem: 380 << 20,
+        agents_cpu: 6.0,
+        agents_count: 2,
+        ready: true,
+    }
+}
+
+#[test]
+fn expand_activity_restores_full_tool_and_reasoning_text_without_touching_draft() {
+    let mut h = Harness::new(100, 24);
+    let detail = format!("command {} hidden-output", "x".repeat(100));
+    h.app.push_card(StreamCard {
+        id: "expand-tool".into(),
+        title: "shell".into(),
+        detail: Some(detail),
+        status: CardStatus::Done,
+    });
+    let thought = format!("early-reasoning {} late-reasoning", "y".repeat(700));
+    h.app
+        .apply_progress(TurnProgress::Thinking(thought.clone()));
+    h.app.finalize_turn(TurnOutcome {
+        exit_code: Some(0),
+        ..Default::default()
+    });
+    h.app.editor.set_text("keep my draft");
+    h.draw();
+    let rows = |h: &Harness| {
+        h.app
+            .view
+            .rows
+            .iter()
+            .flat_map(|r| r.text.iter())
+            .collect::<String>()
+    };
+    assert!(!rows(&h).contains("hidden-output"));
+    assert!(!rows(&h).contains("early-reasoning"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    assert!(rows(&h).contains("hidden-output"));
+    assert!(rows(&h).contains("early-reasoning"));
+    assert_eq!(h.app.editor.text(), "keep my draft");
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    assert!(!rows(&h).contains("hidden-output"));
+}
+
+#[test]
+fn codex_writer_conflict_restores_prompt_and_pauses_queue_without_replay() {
+    let mut h = Harness::new(100, 24);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    h.app.editor.set_text("retry after closing other pane");
+    h.app.submit_input(&tx);
+    rx.try_recv().unwrap();
+    h.app.queue.items.push("next prompt".into());
+    h.app.on_turn_done(
+        TurnOutcome {
+            exit_code: Some(1),
+            stderr_tail: "thread already has an active writer".into(),
+            ..Default::default()
+        },
+        &tx,
+    );
+    assert!(h.app.queue.paused);
+    assert_eq!(h.app.editor.text(), "retry after closing other pane");
+    assert!(rx.try_recv().is_err());
+    assert!(h
+        .app
+        .messages
+        .iter()
+        .any(|m| m.text.contains("another client or pane")));
+}
+
+#[test]
+fn reused_tool_ids_do_not_overwrite_cards_from_previous_turns() {
+    let mut h = Harness::new(100, 24);
+    let card = |detail: &str| StreamCard {
+        id: "tool-0".into(),
+        title: "shell".into(),
+        detail: Some(detail.into()),
+        status: CardStatus::Done,
+    };
+    h.app.push_user("first turn".into());
+    h.app.push_card(card("first command"));
+    h.app.push_user("second turn".into());
+    h.app.push_card(card("second command"));
+    h.app.push_card(card("second command updated"));
+    let details: Vec<_> = h
+        .app
+        .messages
+        .iter()
+        .filter_map(|m| m.card.as_ref())
+        .filter_map(|c| c.detail.as_deref())
+        .collect();
+    assert_eq!(details, ["first command", "second command updated"]);
+}
+
+#[test]
+fn footer_stats_reserve_room_while_preserving_send_hint() {
+    // Off by default: nothing extra.
+    let mut h = Harness::new(160, 12);
+    h.app.stats = None;
+    h.draw();
+    assert!(!footer_row(&h).contains("mem "));
+
+    h.app.stats = Some(crate::sysstats::StatsHandle::fixed(sample_stats()));
+    h.draw();
+    let row = footer_row(&h);
+    assert!(
+        row.contains("mem 41 MB - cpu 1%  + agents 380 MB - 6% (2)"),
+        "{row:?}"
+    );
+    assert!(row.contains("Enter send"), "{row:?}");
+
+    // Stats reserve space, reducing optional hints before hiding send or truncating.
+    for w in [100u16, 90, 80, 60, 40] {
+        let mut h = Harness::new(w, 12);
+        h.app.stats = Some(crate::sysstats::StatsHandle::fixed(sample_stats()));
+        h.draw();
+        let row = footer_row(&h);
+        assert!(row.chars().count() <= w as usize, "w={w}: {row:?}");
+        assert!(row.contains("Enter send"), "w={w}: {row:?}");
+        if w >= 60 {
+            assert!(row.contains("mem 41 MB"), "w={w}: {row:?}");
+        }
+    }
+}
+
+#[test]
+fn stats_command_toggles_the_sampler_for_the_session() {
+    let mut h = Harness::new(120, 12);
+    h.app.stats = None;
+    h.app.toggle_stats();
+    assert!(h.app.stats.is_some());
+    h.app.toggle_stats();
+    assert!(h.app.stats.is_none());
 }

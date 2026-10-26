@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Codex,
@@ -341,6 +341,11 @@ pub fn modify_store<T>(
     root: &Path,
     f: impl FnOnce(&mut OrchestratorStore) -> Result<T>,
 ) -> Result<T> {
+    // Do not let threads in this process race each other through the cross-process
+    // lock's deadline. A busy writer can otherwise repeatedly reacquire the file while
+    // another local writer times out, even though every individual update is brief.
+    static LOCAL_WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _local = LOCAL_WRITER.lock().unwrap_or_else(|e| e.into_inner());
     let _lock = lock_store(root)?;
     let mut store = load_store(root);
     let out = f(&mut store)?;

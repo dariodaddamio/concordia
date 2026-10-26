@@ -7,6 +7,17 @@ decide what happens with its result.
 
 Nothing here is automatic. Delegation is something you start, watch and can stop.
 
+Native provider subagents are also visible when the CLI reports them. `/agents` or `Ctrl+G`
+opens a browser of those reports and Concordia worker jobs; Enter opens details. Codex
+`collab_tool_call` items identify children, tasks, states and reported messages. Completion of
+the spawn tool does not mark the child complete. Claude Agent/Task tool cards are accessible
+through the same browser. This view displays provider-reported information; it does not create
+additional provider turns or introduce child controls unsupported by that provider.
+
+Native subagents do not require cross-account worker enrollment. `/workers add ACCOUNT`
+registers a separate account for explicit `/delegate` tasks. Registration and task execution
+remain separate actions.
+
 ## Commands
 
 | Command | What it does |

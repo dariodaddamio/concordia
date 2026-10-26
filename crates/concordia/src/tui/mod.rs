@@ -32,27 +32,49 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget};
 use ratatui::{Frame, Terminal};
 use std::collections::HashMap;
-use std::io::{self, stdout, Write};
+use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+mod activity;
+mod chatref;
 mod clipboard;
+mod compat_ui;
+mod continuation;
 mod editor;
+mod files;
+mod input;
+mod input_stream;
 mod markdown;
+mod native_agents;
 mod palette;
+mod persist;
+mod preview;
+mod queue;
+mod queue_controls;
+mod queue_focus;
+mod recovery;
+mod recovery_ui;
+mod session_ui;
+#[cfg(test)]
+mod session_ui_tests;
+mod stats_ui;
 mod text;
 mod tips;
 mod token_line;
 mod transcript;
+mod usage_style;
 mod workers;
+mod workspace;
 
 use editor::Editor;
 use palette::Palette;
@@ -68,7 +90,7 @@ const FOOTER_HINT: &str = "Enter send \u{b7} / commands \u{b7} Shift+Tab mode \u
 /// How often (in 200 ms ticks) to look for a finished login, and when to stop looking.
 /// A second idle Ctrl+C within this window exits.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
-const HISTORY_MAX: usize = 200;
+const HISTORY_MAX: usize = persist::HISTORY_CAP;
 const LOGIN_POLL_TICKS: u32 = 10;
 const LOGIN_GIVE_UP_TICKS: u32 = 3000;
 
@@ -205,6 +227,8 @@ struct PendingLogin {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PickerKind {
+    Agents,
+    Recovery,
     Resume,
     Trust,
     Use,
@@ -250,11 +274,17 @@ impl Picker {
 }
 
 pub struct App {
+    continuation: continuation::State,
     state_root: PathBuf,
     cwd: PathBuf,
     messages: Vec<ChatLine>,
     editor: Editor,
+    /// The visible prompt for the active turn; cancellation never inserts it into the editor.
+    submitted_prompt: Option<String>,
+    expanded_activity: bool,
+    activity: activity::Activity,
     palette: Palette,
+    chatref: chatref::ChatRef,
     /// Sent prompts, oldest first. In memory only: prompts may contain pasted secrets.
     history: Vec<String>,
     /// Index into `history` while browsing with the arrow keys.
@@ -268,11 +298,18 @@ pub struct App {
     view: TranscriptView,
     areas: Areas,
     drag: Drag,
+    file_jobs: Vec<mpsc::UnboundedReceiver<String>>,
+    workspace: workspace::Workspace,
+    file_click: Option<transcript::Pos>,
+    #[cfg(test)]
+    last_file_open: Option<crate::file_links::ResolvedFile>,
     clicks: ClickTracker,
     /// Transient footer message (e.g. "copied 120 chars").
     flash: Option<(String, Instant)>,
     busy: bool,
     pulse_on: bool,
+    /// Cancellation requested before the runner has provided its process handle.
+    cancel_requested: bool,
     tick_count: u64,
     should_quit: bool,
     provider: ProviderKind,
@@ -282,6 +319,8 @@ pub struct App {
     trust: TrustMode,
     native_session_id: Option<String>,
     session_chip: Option<String>,
+    session_ui: session_ui::State,
+    native_agents: native_agents::State,
     footer_left: String,
     picker: Option<Picker>,
     cancel_handle: Option<Arc<RunningTurn>>,
@@ -293,15 +332,21 @@ pub struct App {
     thread_meta_done: bool,
     usage_summary: String,
     usage_tone: UsageTone,
+    usage_warning: Option<String>,
     /// Width-1 ASCII bar drawn before the footer usage text.
     /// Claude limits are fetched on a worker thread and cached; never block the UI on them.
     usage_fetcher: UsageFetcher,
     /// Index of the `/usage` result block, rewritten in place when a background check lands.
     usage_block: Option<usize>,
+    /// Footer process stats while switched on (`[ui] stats` or `/stats`).
+    stats: Option<crate::sysstats::StatsHandle>,
+    /// Provider capability detection started at launch (see `provider::compat`).
+    compat_rx: Option<compat_ui::CompatRx>,
     /// Tone of each `/use` or `/usage all` picker row, by row id.
     picker_tones: HashMap<String, UsageTone>,
     live_cards: Vec<StreamCard>,
     live_text: String,
+    streamed_text_committed: bool,
     live_thinking: String,
     phase: Phase,
     /// A background `/update` or `/update check`; the UI stays live while it runs.
@@ -327,11 +372,27 @@ pub struct App {
     deleg: workers::Panel,
     /// `<state>/commands/*.md`, scanned at start (see `user_commands`).
     user_cmds: Vec<crate::user_commands::UserCommand>,
+    /// Prompts lined up behind the running turn (see queue.rs).
+    queue: queue::Queue,
+    /// The prompt of the turn in flight, offered for retry only if the turn fails.
+    last_sent: Option<String>,
+    /// What the draft/history persistence has written (see persist.rs).
+    keep: persist::Keep,
 }
 
 impl App {
     fn refresh_binding(&mut self) {
         if let Some(sel) = get_use_selection(&self.state_root) {
+            if self.account != sel.account
+                || self.provider != sel.provider
+                || self
+                    .home_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    != sel.home_path
+            {
+                self.session_ui.invalidate();
+            }
             self.provider = sel.provider;
             self.account = sel.account;
             self.home_path = sel.home_path.map(PathBuf::from);
@@ -358,6 +419,7 @@ impl App {
         let Some(home) = home else {
             self.usage_summary = "no account yet".into();
             self.usage_tone = UsageTone::Mute;
+            self.usage_warning = None;
             return;
         };
         let snap = self
@@ -369,6 +431,7 @@ impl App {
     fn set_usage_footer(&mut self, snap: &crate::usage::UsageSnapshot) {
         self.usage_summary = snap.summary.clone();
         self.usage_tone = usage_tone(snap);
+        self.usage_warning = crate::usage::low_limit_warning(snap, self.provider);
     }
 
     /// `/usage`: the current account's limits as one block. It reads the cache (a check starts in
@@ -430,7 +493,7 @@ impl App {
     }
 
     fn window_title(&self) -> String {
-        format!(
+        let base = format!(
             "concordia · {} · {} · {}",
             self.account_label(),
             if self.model.is_empty() {
@@ -439,7 +502,12 @@ impl App {
                 &self.model
             },
             short_stamp()
-        )
+        );
+        self.session_ui
+            .title
+            .as_ref()
+            .map(|title| format!("{title} · {base}"))
+            .unwrap_or(base)
     }
 
     /// Suggestions for the prompt as typed (empty when closed, dismissed, or not a slash prompt).
@@ -468,12 +536,7 @@ impl App {
 
     fn remember_prompt(&mut self, line: &str) {
         self.hist_pos = None;
-        if self.history.last().map(String::as_str) != Some(line) {
-            self.history.push(line.to_string());
-            if self.history.len() > HISTORY_MAX {
-                self.history.remove(0);
-            }
-        }
+        self.push_history(line);
     }
 
     fn history_prev(&mut self) {
@@ -504,6 +567,13 @@ impl App {
         }
     }
 
+    /// After Ctrl+Z / Ctrl+Y: the text changed under the palette and any history browsing.
+    fn after_undo(&mut self) {
+        self.palette.reset();
+        self.hist_pos = None;
+        self.view.clear_selection();
+    }
+
     fn flash(&mut self, msg: impl Into<String>) {
         self.flash = Some((msg.into(), Instant::now()));
     }
@@ -518,9 +588,36 @@ impl App {
 
     /// Insert pasted text into the prompt (replacing any selection).
     fn paste_text(&mut self, text: &str) {
+        self.paste_text_chunk(text, false);
+    }
+
+    fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        // Paste can arrive as one Event::Paste or as a buffered burst split into overflow
+        // chunks. Route every chunk here so a modal never edits the prompt or queue editor.
+        if self.activity.detail.is_some() {
+            self.activity.insert_query(text);
+            return;
+        }
+        if let Some(picker) = self.picker.as_mut() {
+            let clean: String = text
+                .chars()
+                .filter(|c| *c != '\r')
+                .flat_map(|c| if c == '\t' { vec![' '; 4] } else { vec![c] })
+                .collect();
+            picker.filter.push_str(&clean);
+            picker.select_clamp();
+            return;
+        }
+        if queue::paste(self, text, continues) {
+            return;
+        }
+        if self.workspace.focused.is_some() {
+            self.flash("read-only file pane; Esc returns to chat before pasting");
+            return;
+        }
         self.view.clear_selection();
         self.palette.reset();
-        self.editor.insert_str(text);
+        self.editor.insert_paste_chunk(text, continues);
     }
 
     /// Selected text in the transcript, else in the prompt.
@@ -546,6 +643,26 @@ impl App {
             .rev()
             .find(|m| m.role == MsgRole::Assistant && !m.text.trim().is_empty())
             .map(|m| m.text.clone())
+    }
+
+    fn navigate_activity_card(&mut self, older: bool) {
+        let current = self.activity.detail.unwrap_or(self.messages.len());
+        let next = if older {
+            (0..current).rev().find(|&i| {
+                self.messages
+                    .get(i)
+                    .is_some_and(|m| m.role == MsgRole::Card)
+            })
+        } else {
+            (current + 1..self.messages.len()).find(|&i| {
+                self.messages
+                    .get(i)
+                    .is_some_and(|m| m.role == MsgRole::Card)
+            })
+        };
+        if let Some(i) = next {
+            self.activity.open(i);
+        }
     }
 
     fn write_clipboard(&mut self, text: &str) {
@@ -623,7 +740,11 @@ impl App {
                 let _ = t.write_meta(&crate::threads::ThreadMeta {
                     id: t.id().to_string(),
                     started: crate::threads::now_secs(),
-                    title: crate::threads::title_from_prompt(text),
+                    title: self
+                        .session_ui
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| crate::threads::title_from_prompt(text)),
                     cwd: self.cwd.to_string_lossy().into_owned(),
                     account: Some(self.account.clone()),
                 });
@@ -695,12 +816,26 @@ impl App {
             self.log_event(ev);
         }
         let text = format_card_line(&card);
-        if let Some(existing) = self.messages.iter_mut().rev().find(|m| {
+        let turn_start = self
+            .messages
+            .iter()
+            .rposition(|m| m.role == MsgRole::User)
+            .unwrap_or(0);
+        let existing_index = (turn_start..self.messages.len()).rev().find(|&i| {
+            let m = &self.messages[i];
             m.role == MsgRole::Card
                 && m.card.as_ref().map(|c| c.id.as_str()) == Some(card.id.as_str())
-        }) {
+        });
+        if let Some(i) = existing_index {
+            let existing = &mut self.messages[i];
             existing.card = Some(card);
             existing.text = text;
+            self.native_agents
+                .record(existing.card.as_ref().unwrap(), i);
+            if self.activity.detail == Some(i) {
+                self.activity.invalidate_search();
+            }
+            self.refresh_agents_picker();
             return;
         }
         let meta = Some(self.reply_meta());
@@ -710,14 +845,20 @@ impl App {
             card: Some(card),
             meta,
         });
+        if let Some(card) = self.messages.last().and_then(|m| m.card.as_ref()) {
+            self.native_agents.record(card, self.messages.len() - 1);
+        }
+        self.refresh_agents_picker();
     }
 
     fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
             TurnProgress::Session(id) => {
                 self.native_session_id = Some(id);
+                self.persist_session_title();
             }
             TurnProgress::Thinking(t) => {
+                self.commit_live_text();
                 self.phase = Phase::Thinking;
                 self.live_thinking.push_str(&t);
                 if !t.ends_with('\n') {
@@ -725,6 +866,7 @@ impl App {
                 }
             }
             TurnProgress::Text(t) => {
+                self.commit_live_thinking();
                 self.phase = Phase::Writing;
                 self.live_text.push_str(&t);
                 if !t.ends_with('\n') {
@@ -732,15 +874,25 @@ impl App {
                 }
             }
             TurnProgress::Card(card) => {
+                self.commit_live_thinking();
+                self.commit_live_text();
                 self.phase = if card.status == CardStatus::Running {
                     Phase::Tool(card.title.clone())
                 } else {
                     Phase::Waiting
                 };
-                upsert_card(&mut self.live_cards, card.clone());
-                self.push_card(card);
+                let id = card.id.clone();
+                upsert_card(&mut self.live_cards, card);
+                if let Some(merged) = self.live_cards.iter().find(|c| c.id == id).cloned() {
+                    self.push_card(merged);
+                }
             }
             TurnProgress::Error(e) => {
+                if self.continuation.errors.len() < 12 {
+                    self.continuation
+                        .errors
+                        .push(e.chars().take(2000).collect());
+                }
                 self.push_system(e);
             }
             TurnProgress::Usage(u) => {
@@ -760,6 +912,27 @@ impl App {
         }
     }
 
+    fn commit_live_text(&mut self) {
+        let text = std::mem::take(&mut self.live_text);
+        if !text.trim().is_empty() {
+            self.push_assistant(text.trim().to_string());
+            self.streamed_text_committed = true;
+        }
+    }
+
+    fn commit_live_thinking(&mut self) {
+        let text = std::mem::take(&mut self.live_thinking);
+        if !text.is_empty() {
+            let meta = Some(self.reply_meta());
+            self.messages.push(ChatLine {
+                role: MsgRole::Thinking,
+                text,
+                card: None,
+                meta,
+            });
+        }
+    }
+
     /// The tip to show dimmed under the transcript, if the moment is right.
     fn visible_tip(&self) -> Option<&'static str> {
         let quiet = !self.busy
@@ -775,6 +948,7 @@ impl App {
     }
 
     fn finalize_turn(&mut self, outcome: TurnOutcome) {
+        self.submitted_prompt = None;
         let elapsed = self.turn_started.map(|t| t.elapsed());
         let usage = std::mem::take(&mut self.turn_usage);
         self.session_input += usage.input.unwrap_or(0);
@@ -795,11 +969,44 @@ impl App {
         ));
         if let Some(sid) = outcome.session_id {
             self.native_session_id = Some(sid);
+            self.persist_session_title();
         }
         let had_cards = !self.live_cards.is_empty() || !outcome.cards.is_empty();
+        let failed = !outcome.cancelled
+            && (outcome.failed
+                || match outcome.exit_code {
+                    Some(code) => code != 0,
+                    None => !outcome.stderr_tail.trim().is_empty(),
+                });
+        let finish_incomplete = |mut card: StreamCard| {
+            card.status = CardStatus::Error;
+            let reason = if outcome.cancelled {
+                "Interrupted: turn cancelled before the provider reported tool completion."
+                    .to_string()
+            } else if failed {
+                match outcome.exit_code {
+                    Some(code) => format!(
+                        "Provider failed with exit code {code} before reporting tool completion."
+                    ),
+                    None => "Provider failed before reporting tool completion.".to_string(),
+                }
+            } else {
+                "Incomplete: provider stream ended before reporting tool completion.".to_string()
+            };
+            card.detail = Some(match card.detail.take() {
+                Some(detail) if !detail.is_empty() => format!("{detail}\n{reason}"),
+                _ => reason,
+            });
+            card
+        };
         // Prefer streamed cards; fall back to outcome cards if nothing landed live.
         if self.live_cards.is_empty() {
             for card in outcome.cards {
+                let card = if card.status == CardStatus::Running {
+                    finish_incomplete(card)
+                } else {
+                    card
+                };
                 self.push_card(card);
             }
         } else {
@@ -810,28 +1017,27 @@ impl App {
                 .cloned()
                 .collect();
             for mut card in running {
-                card.status = CardStatus::Done;
+                card = finish_incomplete(card);
                 self.push_card(card);
             }
         }
         let text = if !self.live_text.trim().is_empty() {
             self.live_text.trim().to_string()
-        } else {
+        } else if !self.streamed_text_committed && !outcome.cancelled {
             outcome.text.trim().to_string()
+        } else {
+            String::new()
         };
         let scan_text = if outcome.cancelled {
             String::new()
+        } else if !outcome.text.is_empty() {
+            outcome.text.clone()
         } else {
             text.clone()
         };
         // A provider that failed to start, or exited non-zero, must say why. Its stderr is the
         // only place the reason (expired login, bad flag, missing CLI) ever appears.
-        let failed = !outcome.cancelled
-            && match outcome.exit_code {
-                Some(code) => code != 0,
-                None => !outcome.stderr_tail.trim().is_empty(),
-            };
-        let thought = condense_thinking(&self.live_thinking);
+        let thought = self.live_thinking.clone();
         if !thought.is_empty() {
             let meta = Some(self.reply_meta());
             self.messages.push(ChatLine {
@@ -841,26 +1047,32 @@ impl App {
                 meta,
             });
         }
-        if outcome.cancelled {
-            self.push_system("cancelled");
-        } else if !text.is_empty() {
+        let has_reply = !text.is_empty() || self.streamed_text_committed;
+        if !text.is_empty() {
             self.push_assistant(text);
-            if token_line::ui_token_line_enabled() {
-                let line = token_line::format_line(&usage, elapsed);
-                if !line.is_empty() {
-                    self.messages.push(ChatLine {
-                        role: MsgRole::Meta,
-                        text: line,
-                        card: None,
-                        meta: None,
-                    });
-                }
-            }
-        } else if !had_cards && !failed {
+        } else if !had_cards && !failed && !outcome.cancelled && !self.streamed_text_committed {
             self.push_system("(no text in provider stream)");
+        }
+        if has_reply && !outcome.cancelled && token_line::ui_token_line_enabled() {
+            let line = token_line::format_line(&usage, elapsed);
+            if !line.is_empty() {
+                self.messages.push(ChatLine {
+                    role: MsgRole::Meta,
+                    text: line,
+                    card: None,
+                    meta: None,
+                });
+            }
+        }
+        if outcome.cancelled {
+            self.push_system("cancelled - queued work paused; completed actions were not undone");
+        }
+        if failed && outcome.stderr_tail.contains("already has an active writer") {
+            self.push_system("this Codex session is open in another client or pane. Close its active turn, then retry the restored prompt; /new starts a separate conversation. Concordia will not replay it automatically.");
         }
         if failed {
             self.push_system(match outcome.exit_code {
+                Some(0) => "provider reported a turn failure".to_string(),
                 Some(code) => format!("provider exited with code {code}"),
                 None => "provider could not run".to_string(),
             });
@@ -885,11 +1097,14 @@ impl App {
         }
         self.live_cards.clear();
         self.live_text.clear();
+        self.streamed_text_committed = false;
         self.live_thinking.clear();
+        self.turn_finished(outcome.cancelled, failed);
         self.scan_delegation(&scan_text);
         // The turn used some of this account's limits: re-check them in the background.
         self.usage_fetcher.invalidate(&self.account);
         self.refresh_usage();
+        self.update_usage_block();
     }
 
     /// `/threads` lists recent recorded threads; `/threads delete <id>` removes one.
@@ -974,8 +1189,14 @@ impl App {
         } else {
             self.idle_ticks = self.idle_ticks.saturating_add(1);
         }
+        self.persist_tick();
+        self.poll_file_jobs();
+        self.poll_session_history();
+        self.workspace.poll();
         self.poll_pending_login();
         self.poll_job();
+        self.poll_compat();
+        self.poll_proposals();
         if self.usage_fetcher.poll() {
             self.refresh_usage();
             self.update_usage_block();
@@ -1113,9 +1334,14 @@ impl App {
                 Some(mode) => {
                     if self.set_mode(mode) {
                         self.push_system(format!(
-                            "mode \u{2192} {} - {}",
+                            "mode \u{2192} {} - {}{}",
                             mode_label(mode),
-                            mode_blurb(mode)
+                            mode_blurb(mode),
+                            if self.busy {
+                                " (next turn; the running turn keeps its original permissions)"
+                            } else {
+                                ""
+                            }
                         ));
                     }
                 }
@@ -1462,7 +1688,37 @@ impl App {
         let label = row.label.clone();
         let kind = picker.kind;
         self.dismiss_picker();
+        if self.busy
+            && matches!(
+                kind,
+                PickerKind::Resume | PickerKind::Use | PickerKind::Model | PickerKind::Usage
+            )
+        {
+            self.push_system("finish or cancel the current turn before switching conversation, provider or model");
+            return;
+        }
         match kind {
+            PickerKind::Agents => {
+                if let Some(index) = id
+                    .strip_prefix("native-agent:")
+                    .and_then(|i| i.parse::<usize>().ok())
+                {
+                    if self.messages.get(index).is_some_and(|m| m.card.is_some()) {
+                        self.activity.open(index);
+                    }
+                }
+                if let Some(id) = id
+                    .strip_prefix("worker-agent:")
+                    .and_then(|id| id.parse::<u32>().ok())
+                {
+                    self.inspect_worker(id);
+                }
+            }
+            PickerKind::Recovery => {
+                if let Some(id) = id.strip_prefix("recover:") {
+                    self.choose_recovery(id);
+                }
+            }
             PickerKind::Resume => {
                 if id == "none" {
                     return;
@@ -1475,48 +1731,7 @@ impl App {
                         self.push_system("resume failed — missing session id");
                         return;
                     }
-                    let prev_home = self
-                        .home_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let prev_prov = self.provider;
-                    if let Err(e) = select_account(&self.state_root, &account) {
-                        self.push_system(format!("resume account switch failed — {e}"));
-                        return;
-                    }
-                    self.refresh_binding();
-                    let new_home = self
-                        .home_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let msgs = self.pack_messages();
-                    let decision = plan_continuity(&ContinuityRequest {
-                        from_provider: prev_prov,
-                        to_provider: self.provider,
-                        from_home: prev_home.as_deref(),
-                        to_home: new_home.as_deref(),
-                        session_id: Some(&session_id),
-                        messages: &msgs,
-                        thread_id: self.thread_id(),
-                        include_pack_if_needed: true,
-                    });
-                    self.native_session_id = decision.session_id.clone();
-                    self.need_context_pack = decision.pack.is_some();
-                    self.log_switch(prev_prov);
-                    self.session_chip = Some(label.clone());
-                    if decision.native_resume {
-                        self.messages.clear();
-                        self.push_system(format!(
-                            "resumed · {} · {label} — next message continues that session (pack omitted)",
-                            self.account_label()
-                        ));
-                    } else if let Some(pack) = &decision.pack {
-                        self.push_system(format!("{} · ~{} tok", pack.labeled, pack.est_tokens));
-                    } else {
-                        self.push_system(decision.reason);
-                    }
-                    self.prior_provider = self.provider;
-                    self.prior_home = new_home;
+                    self.resume_session(&account, &session_id);
                 }
             }
             PickerKind::Trust => {
@@ -1538,6 +1753,9 @@ impl App {
                         TrustMode::Workspace => "trust → workspace (cwd write, no trust dialogs)",
                         TrustMode::Ask => "trust → ask (may hang headless)",
                     });
+                    if self.busy {
+                        self.push_system("permission change applies to the next turn; the running turn keeps its original permissions");
+                    }
                 }
             }
             PickerKind::Remove => {
@@ -1602,7 +1820,7 @@ impl App {
                     });
                     self.native_session_id = decision.session_id.clone();
                     if !decision.native_resume {
-                        self.session_chip = None;
+                        self.session_chip = self.session_ui.title.clone();
                     }
                     self.need_context_pack = decision.pack.is_some();
                     self.log_switch(prev_prov);
@@ -1667,7 +1885,7 @@ impl App {
                         include_pack_if_needed: true,
                     });
                     self.native_session_id = decision.session_id.clone();
-                    self.session_chip = None;
+                    self.session_chip = self.session_ui.title.clone();
                     self.need_context_pack = decision.pack.is_some();
                     self.log_switch(prev_prov);
                     if let Some(pack) = &decision.pack {
@@ -1683,6 +1901,74 @@ impl App {
     }
 
     fn handle_slash(&mut self, line: &str) -> bool {
+        if line.trim() == "/agents" {
+            self.open_agents_picker();
+            return true;
+        }
+        if matches!(line.trim(), "/open" | "/preview" | "/edit") {
+            self.push_system("usage: /open FILE or /preview FILE (internal read-only); /edit FILE (external editor)");
+            return true;
+        }
+        if let Some(reference) = line.trim().strip_prefix("/open ") {
+            self.file_command(reference, false);
+            return true;
+        }
+        if let Some(reference) = line.trim().strip_prefix("/preview ") {
+            self.file_command(reference, false);
+            return true;
+        }
+        if let Some(reference) = line.trim().strip_prefix("/edit ") {
+            self.file_command(reference, true);
+            return true;
+        }
+        if line.trim() == "/close" || line.trim().starts_with("/close ") {
+            let target = line
+                .trim()
+                .strip_prefix("/close")
+                .unwrap_or_default()
+                .trim();
+            let id = if target.is_empty() {
+                self.workspace.focused
+            } else {
+                target.parse::<u32>().ok()
+            };
+            match id {
+                Some(id) if self.workspace.close(id) => {
+                    self.flash(format!("closed file pane #{id}"))
+                }
+                _ => self.flash("usage: /close PANE_ID (or /close with a file pane focused)"),
+            }
+            return true;
+        }
+        if line.trim() == "/recover" {
+            self.open_recovery_picker();
+            return true;
+        }
+        if line.trim() == "/recover legacy" {
+            self.choose_recovery("legacy");
+            return true;
+        }
+        if line.trim() == "/recover retry" {
+            self.retry_recovery_now();
+            self.push_system(
+                self.recovery_warning()
+                    .unwrap_or("saved this pane locally")
+                    .to_owned(),
+            );
+            return true;
+        }
+        if let Some(arg) = queue::slash_arg(line) {
+            self.push_command(line);
+            let notices = if arg == "resume" {
+                queue_controls::resume(self)
+            } else {
+                self.queue_command(arg)
+            };
+            for l in notices {
+                self.push_system(l);
+            }
+            return true;
+        }
         if line.trim() == "/threads" || line.trim_start().starts_with("/threads ") {
             self.push_command(line);
             for l in self.threads_command(line.trim_start()["/threads".len()..].trim()) {
@@ -1693,6 +1979,19 @@ impl App {
         let Some((cmd, split_vertical)) = parse_slash(line) else {
             return false;
         };
+        if self.busy
+            && matches!(
+                &cmd,
+                SlashCommand::New
+                    | SlashCommand::Resume
+                    | SlashCommand::Use
+                    | SlashCommand::UseRemove(_)
+                    | SlashCommand::Model
+            )
+        {
+            self.push_system("finish or cancel the current turn before switching conversation, provider or model");
+            return true;
+        }
         if let SlashCommand::UseRemove(named) = &cmd {
             self.open_remove_picker(named.clone());
             return true;
@@ -1703,6 +2002,11 @@ impl App {
             return true;
         }
         if self.try_delegate_slash(&cmd) {
+            return true;
+        }
+        if matches!(&cmd, SlashCommand::Unknown(n) if n == "stats") {
+            self.push_command(line);
+            self.toggle_stats();
             return true;
         }
         let ctx = CommandContext {
@@ -1716,10 +2020,21 @@ impl App {
         let is_new = matches!(cmd, SlashCommand::New);
         let (outcome, lines) = dispatch_slash(cmd, &ctx);
         if is_new {
+            self.continuation.invalidate();
+            self.native_agents = native_agents::State::default();
+            self.session_ui.invalidate();
+            self.session_ui.title = None;
             self.messages.clear();
+            self.activity = activity::Activity::default();
+            self.expanded_activity = false;
+            self.view.follow_tail();
             self.clear_selections();
             self.native_session_id = None;
             self.session_chip = None;
+            self.usage_block = None;
+            self.session_input = 0;
+            self.session_output = 0;
+            self.session_cost = 0.0;
             self.need_context_pack = false;
             self.thread = crate::threads::start(&self.state_root);
             self.thread_meta_done = false;
@@ -1734,7 +2049,12 @@ impl App {
             CommandOutcome::Exit => self.should_quit = true,
             CommandOutcome::OpenResume => self.open_resume_picker(),
             CommandOutcome::OpenTrust => self.open_trust_picker(),
-            CommandOutcome::OpenUse => self.open_use_picker(),
+            CommandOutcome::OpenUse => {
+                for l in crate::integration::refresh_summary(&self.state_root) {
+                    self.push_system(l);
+                }
+                self.open_use_picker();
+            }
             CommandOutcome::OpenAddProvider => self.open_add_provider_picker(),
             CommandOutcome::OpenRemovePicker => self.open_remove_picker(None),
             CommandOutcome::AddAccount(p) => self.begin_add_account(p),
@@ -1816,9 +2136,22 @@ impl App {
     }
 
     fn submit_input(&mut self, turn_tx: &mpsc::UnboundedSender<String>) {
-        let line = self.editor.text().trim().to_string();
+        let original_prompt = self.editor.text();
+        let line = original_prompt.trim().to_string();
         if line.is_empty() {
             return;
+        }
+        let user_prompt = crate::user_commands::expand(&self.user_cmds, &line);
+        if self.session_ui.loading() && (!line.starts_with('/') || user_prompt.is_some()) {
+            self.flash("recent messages are loading; your draft is kept");
+            return;
+        }
+        if self.busy && (!line.starts_with('/') || user_prompt.is_some()) {
+            self.push_system("a turn is already running - wait for it to finish or cancel it");
+            return;
+        }
+        if !self.busy {
+            self.cancel_requested = false;
         }
         if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) && !line.starts_with('/') {
             self.push_system("an update is in progress - Esc cancels it, or wait for it to finish");
@@ -1827,6 +2160,38 @@ impl App {
         self.remember_prompt(&line);
         self.editor.clear();
         self.clear_selections();
+        self.persist_draft_now();
+        let was_busy = self.busy;
+        self.run_line(line, turn_tx);
+        if !was_busy && self.busy && self.submitted_prompt.is_some() {
+            self.submitted_prompt = Some(original_prompt);
+        }
+    }
+
+    /// Run a prompt that has left the box: a slash command, or a turn. Typed prompts and queued
+    /// ones both come through here, so trust mode, account and provider apply at send time.
+    fn run_line(&mut self, line: String, turn_tx: &mpsc::UnboundedSender<String>) {
+        if let Some(arg) = line
+            .strip_prefix("/continue")
+            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
+        {
+            self.continue_usage(arg.trim(), turn_tx);
+            return;
+        }
+        if let Some(arg) = line
+            .strip_prefix("/continuation")
+            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
+        {
+            self.continuation_command(arg.trim());
+            return;
+        }
+        if self.session_ui.loading() && !line.starts_with('/') {
+            self.flash("recent messages are loading; wait before sending");
+            if self.editor.text().is_empty() {
+                self.editor.set_text(&line);
+            }
+            return;
+        }
         self.view.follow_tail();
         // A user command shows as typed and sends its rendered template as an ordinary turn.
         let mut send = line.clone();
@@ -1836,7 +2201,13 @@ impl App {
             self.flush_delegate_prompt(turn_tx);
             return;
         }
+        self.submitted_prompt = Some(line.clone());
+        self.continuation.begin(&self.account, &line);
+        self.last_sent = Some(line.clone());
+        self.ensure_session_title(&line);
+        let refs = self.expand_chat_refs(&send);
         self.push_user(line.clone());
+        send = self.show_chat_refs(refs);
         self.turn_started = Some(Instant::now());
         self.phase = Phase::Waiting;
         self.live_thinking.clear();
@@ -1846,13 +2217,46 @@ impl App {
     }
 
     fn request_cancel(&mut self) {
+        if self.cancel_requested {
+            return;
+        }
+        self.cancel_requested |= self.submitted_prompt.is_some();
+        self.submitted_prompt = None;
+        self.pause_queue();
         if let Some(h) = &self.cancel_handle {
             h.cancel();
+            self.push_system("cancelling...");
+        } else if self.cancel_requested {
+            // Keep the active turn busy until dispatch observes this flag or a handle arrives.
             self.push_system("cancelling...");
         } else {
             self.busy = false;
             self.push_system("cancelled");
         }
+    }
+
+    /// Record the process handle and stop it immediately if cancellation raced with startup.
+    fn accept_cancel_handle(&mut self, handle: Arc<RunningTurn>) {
+        if self.cancel_requested {
+            handle.cancel();
+        }
+        self.cancel_handle = Some(handle);
+    }
+
+    /// Consume a queued turn without starting a provider after an early cancellation request.
+    fn discard_cancelled_pending_turn(&mut self) -> bool {
+        if !self.cancel_requested {
+            return false;
+        }
+        self.finalize_turn(TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        });
+        self.busy = false;
+        self.pulse_on = false;
+        self.cancel_handle = None;
+        self.cancel_requested = false;
+        true
     }
 }
 
@@ -1861,6 +2265,7 @@ impl App {
         let state_root_for_usage = state_root.clone();
         let state_root_for_cmds = state_root.clone();
         App {
+            continuation: continuation::State::new(&state_root),
             state_root,
             cwd,
             messages: vec![ChatLine {
@@ -1871,7 +2276,11 @@ impl App {
             meta: None,
             }],
             editor: Editor::default(),
+            submitted_prompt: None,
+            expanded_activity: false,
+            activity: activity::Activity::default(),
             palette: Palette::default(),
+            chatref: chatref::ChatRef::default(),
             history: Vec::new(),
             hist_pos: None,
             hist_draft: String::new(),
@@ -1880,10 +2289,16 @@ impl App {
             view: TranscriptView::default(),
             areas: Areas::default(),
             drag: Drag::None,
+            file_jobs: Vec::new(),
+            workspace: workspace::Workspace::default(),
+            file_click: None,
+            #[cfg(test)]
+            last_file_open: None,
             clicks: ClickTracker::default(),
             flash: None,
             busy: false,
             pulse_on: false,
+            cancel_requested: false,
             tick_count: 0,
             should_quit: false,
             provider: ProviderKind::Codex,
@@ -1893,6 +2308,8 @@ impl App {
             trust: TrustMode::Workspace,
             native_session_id: None,
             session_chip: None,
+            session_ui: session_ui::State::default(),
+            native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
             cancel_handle: None,
@@ -1903,11 +2320,15 @@ impl App {
             thread_meta_done: false,
             usage_summary: "limits unknown".into(),
             usage_tone: UsageTone::Mute,
+            usage_warning: None,
             usage_fetcher: UsageFetcher::new(state_root_for_usage),
             usage_block: None,
+            stats: crate::config::ui_stats().then(crate::sysstats::StatsHandle::start),
+            compat_rx: None,
             picker_tones: HashMap::new(),
             live_cards: Vec::new(),
             live_text: String::new(),
+            streamed_text_committed: false,
             live_thinking: String::new(),
             phase: Phase::Waiting,
             job: None,
@@ -1924,6 +2345,9 @@ impl App {
             reexec_path: None,
             deleg: workers::Panel::default(),
             user_cmds: crate::user_commands::scan(&state_root_for_cmds).commands,
+            queue: queue::Queue::default(),
+            last_sent: None,
+            keep: persist::Keep::new(&state_root_for_cmds),
         }
     }
 }
@@ -1962,6 +2386,10 @@ fn now_stamp() -> String {
     format!("{}.{:03}Z", dur.as_secs(), dur.subsec_millis())
 }
 
+pub fn run_file_preview(path: &Path) -> Result<()> {
+    preview::run(path)
+}
+
 pub async fn run_chat_tui() -> Result<()> {
     let state_root = default_store_root();
     crate::logging::init(&state_root);
@@ -1982,7 +2410,14 @@ pub async fn run_chat_tui() -> Result<()> {
     let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<TurnProgress>();
 
     let mut app = App::new(state_root.clone(), cwd.clone());
+    app.compat_rx = Some(crate::provider::compat::start_real_detection(
+        state_root.clone(),
+    ));
     app.refresh_binding();
+    app.restore_state();
+    if !app.recovery_choices().is_empty() {
+        app.open_recovery_picker();
+    }
     app.prior_provider = app.provider;
     app.prior_home = app
         .home_path
@@ -1990,6 +2425,7 @@ pub async fn run_chat_tui() -> Result<()> {
         .map(|p| p.to_string_lossy().into_owned());
 
     enable_raw_mode()?;
+    let terminal_restore = TerminalRestoreGuard::new();
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
     // Mouse capture replaces the terminal's own selection (concordia draws its own); bracketed paste
@@ -1997,8 +2433,18 @@ pub async fn run_chat_tui() -> Result<()> {
     let _ = execute!(stdout, EnableMouseCapture, EnableBracketedPaste);
     // A panic must not leave the terminal in raw/mouse-reporting mode.
     let default_hook = std::panic::take_hook();
+    let panic_restore = terminal_restore.0.clone();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
+        if panic_restore.load(std::sync::atomic::Ordering::Acquire) {
+            // Show the panic on the primary screen. The guard restores input modes after
+            // the VT reader has stopped and restored its own saved console settings.
+            let _ = execute!(
+                std::io::stdout(),
+                LeaveAlternateScreen,
+                crossterm::cursor::Show
+            );
+        }
+        persist::flush_on_panic();
         crate::logging::error(&format!(
             "panic: {info}\n{}",
             std::backtrace::Backtrace::force_capture()
@@ -2016,170 +2462,224 @@ pub async fn run_chat_tui() -> Result<()> {
     );
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let mut terminal_input = input_stream::InputStream::spawn()?;
 
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = Instant::now();
-    let mut last_key: Option<(KeyCode, Instant)> = None;
+    let mut key_burst = input::BurstBuffer::default();
 
-    loop {
-        terminal.draw(|f| draw_ui(f, &mut app))?;
-        write_osc_title(&app.window_title())?;
+    let mut previous_title = String::new();
+    let input_result = (|| -> Result<()> {
+        loop {
+            // Drain pending paste chunks before repainting the growing prompt.
+            if !key_burst.active() || !terminal_input.poll(Duration::ZERO)? {
+                terminal.draw(|f| draw_ui(f, &mut app))?;
+            }
+            let title = app.window_title();
+            if title != previous_title {
+                write_osc_title(&title)?;
+                previous_title = title;
+            }
 
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
-            // Drain a burst (mouse drags, pastes) before redrawing; bounded so a flood can't
-            // starve the turn/progress channels below.
-            let mut quit = false;
-            for _ in 0..256 {
-                match event::read()? {
-                    Event::Key(key) => {
-                        if should_accept_key(&key, &mut last_key)
-                            && handle_key(&mut app, key, &turn_tx)
-                        {
-                            quit = true;
-                            break;
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if terminal_input.poll(timeout)? {
+                // Drain a burst (mouse drags, pastes) before redrawing; bounded so a flood can't
+                // starve the turn/progress channels below.
+                let mut quit = false;
+                for _ in 0..256 {
+                    let (event, captured_at, quiet_before) = terminal_input.read()?;
+                    if quiet_before {
+                        if let Some(burst) = key_burst.take_quiet() {
+                            if dispatch_key_burst(&mut app, burst, &turn_tx) {
+                                quit = true;
+                                break;
+                            }
                         }
                     }
-                    Event::Mouse(m) => handle_mouse(&mut app, m),
-                    Event::Paste(s) => app.paste_text(&s),
-                    _ => {}
+                    let Some(event) = event else {
+                        if !terminal_input.poll(Duration::ZERO)? {
+                            break;
+                        }
+                        continue;
+                    };
+                    match event {
+                        Event::Key(key) => {
+                            if dispatch_key_event(
+                                &mut app,
+                                key,
+                                &mut key_burst,
+                                &turn_tx,
+                                captured_at,
+                            ) {
+                                quit = true;
+                                break;
+                            }
+                        }
+                        Event::Mouse(m) => {
+                            if let Some(burst) = key_burst.take_pending() {
+                                dispatch_key_burst(&mut app, burst, &turn_tx);
+                            }
+                            handle_mouse(&mut app, m)
+                        }
+                        Event::Paste(s) => {
+                            if let Some(burst) = key_burst.take_pending() {
+                                dispatch_key_burst(&mut app, burst, &turn_tx);
+                            }
+                            app.paste_text(&s)
+                        }
+                        _ => {}
+                    }
+                    if !terminal_input.poll(Duration::ZERO)? {
+                        break;
+                    }
                 }
-                if !event::poll(Duration::ZERO)? {
+                if quit {
                     break;
                 }
             }
-            if quit {
-                break;
+
+            while let Ok(h) = handle_rx.try_recv() {
+                app.accept_cancel_handle(h);
             }
-        }
 
-        while let Ok(h) = handle_rx.try_recv() {
-            app.cancel_handle = Some(h);
-        }
-
-        while let Ok(prompt) = turn_rx.try_recv() {
-            let state_root = app.state_root.clone();
-            let cwd = app.cwd.clone();
-            let provider = app.provider;
-            let account = app.account.clone();
-            let model = app.model.clone();
-            let trust = app.trust;
-            let session = app.native_session_id.clone();
-            let prior_prov = app.prior_provider;
-            let prior_home = app.prior_home.clone();
-            let pack_msgs = app.pack_messages();
-            // Drop the just-typed user message from pack (already in prompt).
-            let pack_msgs: Vec<_> = if pack_msgs
-                .last()
-                .map(|m| matches!(m.role, PackRole::User) && m.text == prompt)
-                .unwrap_or(false)
-            {
-                pack_msgs[..pack_msgs.len().saturating_sub(1)].to_vec()
-            } else {
-                pack_msgs
-            };
-            let need_pack_hint = app.need_context_pack;
-            let thread_id = app.thread_id().map(str::to_string);
-            let done_tx = done_tx.clone();
-            let handle_tx = handle_tx.clone();
-            let progress_tx = progress_tx.clone();
-            app.need_context_pack = false;
-            app.live_cards.clear();
-            app.live_text.clear();
-            app.live_thinking.clear();
-            app.phase = Phase::Waiting;
-            tokio::spawn(async move {
-                let home = get_account(&state_root, &account)
-                    .and_then(|a| a.home_path)
-                    .or_else(|| {
-                        get_use_selection(&state_root)
-                            .and_then(|s| s.home_path)
-                            .map(PathBuf::from)
-                    });
-                let home_str = home.as_ref().map(|p| p.to_string_lossy().into_owned());
-                // Pack only after an explicit switch (need_pack_hint). Planner clears
-                // session id on cross-home/provider; omits pack when native resume applies.
-                let decision = plan_continuity(&ContinuityRequest {
-                    from_provider: prior_prov,
-                    to_provider: provider,
-                    from_home: prior_home.as_deref().or(home_str.as_deref()),
-                    to_home: home_str.as_deref(),
-                    session_id: session.as_deref(),
-                    messages: &pack_msgs,
-                    thread_id: thread_id.as_deref(),
-                    include_pack_if_needed: need_pack_hint,
-                });
-                let session_out = if decision.native_resume {
-                    decision.session_id.clone().or(session.clone())
-                } else {
-                    // Never leak a foreign / cross-home session id.
-                    None
-                };
-                let prefix = if need_pack_hint {
-                    decision.pack.as_ref().map(|p| p.text.clone())
-                } else {
-                    None
-                };
-                let req = ProviderTurnRequest {
-                    provider,
-                    prompt: &prompt,
-                    cwd: &cwd,
-                    home_path: home.as_deref(),
-                    model: if model == "?" {
-                        None
-                    } else {
-                        Some(model.as_str())
-                    },
-                    native_session_id: session_out.as_deref(),
-                    trust,
-                    context_prefix: prefix.as_deref(),
-                };
-                // Validate plan even if spawn fails (argv safety).
-                if let Err(e) = plan_provider_turn(&req) {
-                    let _ = done_tx.send(TurnOutcome {
-                        stderr_tail: format!("{e:#}"),
-                        ..Default::default()
-                    });
-                    return;
+            // A finished turn can wait here for an inline queue edit to be committed.
+            app.queue_advance(&turn_tx);
+            while let Ok(prompt) = turn_rx.try_recv() {
+                if app.discard_cancelled_pending_turn() {
+                    continue;
                 }
-                match run_provider_turn_with_progress(&req, Some(handle_tx), Some(progress_tx))
-                    .await
+                let state_root = app.state_root.clone();
+                let cwd = app.cwd.clone();
+                let provider = app.provider;
+                let account = app.account.clone();
+                let model = app.model.clone();
+                let trust = app.trust;
+                let session = app.native_session_id.clone();
+                let prior_prov = app.prior_provider;
+                let prior_home = app.prior_home.clone();
+                let pack_msgs = app.pack_messages();
+                // Drop the just-typed user message from pack (already in prompt).
+                let pack_msgs: Vec<_> = if pack_msgs
+                    .last()
+                    .map(|m| matches!(m.role, PackRole::User) && m.text == prompt)
+                    .unwrap_or(false)
                 {
-                    Ok(outcome) => {
-                        let _ = done_tx.send(outcome);
-                    }
-                    Err(e) => {
+                    pack_msgs[..pack_msgs.len().saturating_sub(1)].to_vec()
+                } else {
+                    pack_msgs
+                };
+                let need_pack_hint = app.need_context_pack;
+                let thread_id = app.thread_id().map(str::to_string);
+                let done_tx = done_tx.clone();
+                let handle_tx = handle_tx.clone();
+                let progress_tx = progress_tx.clone();
+                app.need_context_pack = false;
+                app.live_cards.clear();
+                app.live_text.clear();
+                app.live_thinking.clear();
+                app.phase = Phase::Waiting;
+                tokio::spawn(async move {
+                    let home = get_account(&state_root, &account)
+                        .and_then(|a| a.home_path)
+                        .or_else(|| {
+                            get_use_selection(&state_root)
+                                .and_then(|s| s.home_path)
+                                .map(PathBuf::from)
+                        });
+                    let home_str = home.as_ref().map(|p| p.to_string_lossy().into_owned());
+                    // Pack only after an explicit switch (need_pack_hint). Planner clears
+                    // session id on cross-home/provider; omits pack when native resume applies.
+                    let decision = plan_continuity(&ContinuityRequest {
+                        from_provider: prior_prov,
+                        to_provider: provider,
+                        from_home: prior_home.as_deref().or(home_str.as_deref()),
+                        to_home: home_str.as_deref(),
+                        session_id: session.as_deref(),
+                        messages: &pack_msgs,
+                        thread_id: thread_id.as_deref(),
+                        include_pack_if_needed: need_pack_hint,
+                    });
+                    let session_out = if decision.native_resume {
+                        decision.session_id.clone().or(session.clone())
+                    } else {
+                        // Never leak a foreign / cross-home session id.
+                        None
+                    };
+                    let prefix = if need_pack_hint {
+                        decision.pack.as_ref().map(|p| p.text.clone())
+                    } else {
+                        None
+                    };
+                    let req = ProviderTurnRequest {
+                        provider,
+                        prompt: &prompt,
+                        cwd: &cwd,
+                        home_path: home.as_deref(),
+                        model: if model == "?" {
+                            None
+                        } else {
+                            Some(model.as_str())
+                        },
+                        native_session_id: session_out.as_deref(),
+                        trust,
+                        context_prefix: prefix.as_deref(),
+                    };
+                    // Validate plan even if spawn fails (argv safety).
+                    if let Err(e) = plan_provider_turn(&req) {
                         let _ = done_tx.send(TurnOutcome {
                             stderr_tail: format!("{e:#}"),
                             ..Default::default()
                         });
+                        return;
                     }
+                    match run_provider_turn_with_progress(&req, Some(handle_tx), Some(progress_tx))
+                        .await
+                    {
+                        Ok(outcome) => {
+                            let _ = done_tx.send(outcome);
+                        }
+                        Err(e) => {
+                            let _ = done_tx.send(TurnOutcome {
+                                stderr_tail: format!("{e:#}"),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                });
+            }
+
+            app.poll_delegates();
+            while let Ok(ev) = progress_rx.try_recv() {
+                app.apply_progress(ev);
+            }
+
+            while let Ok(outcome) = done_rx.try_recv() {
+                // Progress is sent before completion, but may arrive between the earlier
+                // drain and this receive. Finish it before finalizing or switching sessions.
+                while let Ok(ev) = progress_rx.try_recv() {
+                    app.apply_progress(ev);
                 }
-            });
-        }
+                app.cancel_requested = false;
+                app.on_turn_done(outcome, &turn_tx);
+            }
 
-        app.poll_delegates();
-        while let Ok(ev) = progress_rx.try_recv() {
-            app.apply_progress(ev);
-        }
+            if last_tick.elapsed() >= tick_rate {
+                app.on_tick();
+                last_tick = Instant::now();
+            }
 
-        while let Ok(outcome) = done_rx.try_recv() {
-            app.busy = false;
-            app.pulse_on = false;
-            app.cancel_handle = None;
-            app.finalize_turn(outcome);
+            if app.should_quit || app.reexec_path.is_some() {
+                break;
+            }
         }
+        Ok(())
+    })();
 
-        if last_tick.elapsed() >= tick_rate {
-            app.on_tick();
-            last_tick = Instant::now();
-        }
-
-        if app.should_quit || app.reexec_path.is_some() {
-            break;
-        }
+    app.persist_draft_now();
+    handle_rx.close();
+    while let Ok(handle) = handle_rx.try_recv() {
+        handle.cancel();
     }
-
     // Leaving mid-turn must not orphan the provider (it would keep running and spending).
     if let Some(h) = app.cancel_handle.take() {
         h.cancel();
@@ -2188,15 +2688,10 @@ pub async fn run_chat_tui() -> Result<()> {
     let reexec = app.reexec_path.take();
     let cwd = app.cwd.clone();
     let _ = std::panic::take_hook(); // drop our hook; default behavior resumes
-    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    let _ = execute!(
-        terminal.backend_mut(),
-        DisableBracketedPaste,
-        DisableMouseCapture
-    );
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    drop(terminal_input);
+    terminal_restore.restore();
     terminal.show_cursor()?;
+    input_result?;
     if let Some(path) = reexec {
         let code = reexec_into(&path, &cwd)?;
         std::process::exit(code);
@@ -2204,8 +2699,9 @@ pub async fn run_chat_tui() -> Result<()> {
     Ok(())
 }
 
-/// Drop Release events and Press+Release duplicates (Windows often reports both as Press).
-fn should_accept_key(key: &KeyEvent, last: &mut Option<(KeyCode, Instant)>) -> bool {
+/// Releases are identified by the backend. Never infer duplicates from processing time:
+/// queued, distinct presses can be drained together after a large paste or slow frame.
+fn should_accept_key(key: &KeyEvent) -> bool {
     if matches!(key.kind, KeyEventKind::Release) {
         return false;
     }
@@ -2213,17 +2709,56 @@ fn should_accept_key(key: &KeyEvent, last: &mut Option<(KeyCode, Instant)>) -> b
     if matches!(key.code, KeyCode::Char('\r') | KeyCode::Char('\n')) {
         return false;
     }
-    let now = Instant::now();
-    if let Some((code, at)) = *last {
-        if code == key.code && now.duration_since(at) < Duration::from_millis(40) {
-            // Duplicate Press/Release pair without distinct kinds.
-            if matches!(key.kind, KeyEventKind::Press) {
-                return false;
-            }
+    true
+}
+
+fn dispatch_key_burst(
+    app: &mut App,
+    burst: input::KeyBurst,
+    turn_tx: &mpsc::UnboundedSender<String>,
+) -> bool {
+    if burst.text {
+        app.paste_text_chunk(
+            burst.text_content.as_deref().unwrap_or_default(),
+            burst.continues_paste,
+        );
+        return false;
+    }
+    burst
+        .keys
+        .into_iter()
+        .any(|key| handle_key(app, key, turn_tx))
+}
+
+fn dispatch_key_event(
+    app: &mut App,
+    key: KeyEvent,
+    key_burst: &mut input::BurstBuffer,
+    turn_tx: &mpsc::UnboundedSender<String>,
+    now: Instant,
+) -> bool {
+    if matches!(key.kind, KeyEventKind::Release) {
+        return false;
+    }
+    let palette_action = matches!(key.code, KeyCode::Enter | KeyCode::Tab)
+        && !app.palette_entries().is_empty()
+        && !key_burst.active();
+    if input::BurstBuffer::is_candidate(&key) && app.picker.is_none() && !palette_action {
+        if let Some(burst) = key_burst.push(key, now) {
+            return dispatch_key_burst(app, burst, turn_tx);
+        }
+        return false;
+    }
+    if !should_accept_key(&key) {
+        return false;
+    }
+    if let Some(burst) = key_burst.take_pending() {
+        if dispatch_key_burst(app, burst, turn_tx) {
+            return true;
         }
     }
-    *last = Some((key.code, now));
-    true
+    key_burst.end_continuation();
+    handle_key(app, key, turn_tx)
 }
 
 fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<String>) -> bool {
@@ -2271,14 +2806,80 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         return false;
     }
 
-    if workers::handle_key(app, &key) {
-        return false;
-    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    if ctrl && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
+        app.open_agents_picker();
+        return false;
+    }
     let tw = app.areas.input_text_w.max(1);
 
+    if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('o' | 'O'))
+    {
+        app.expanded_activity = !app.expanded_activity;
+        app.flash(if app.expanded_activity {
+            "full activity - Ctrl+O collapses"
+        } else {
+            "compact activity - Ctrl+O expands"
+        });
+        return false;
+    }
+    if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('e' | 'E'))
+    {
+        if let Some(i) = app.messages.iter().rposition(|m| m.role == MsgRole::Card) {
+            app.activity.open(i);
+        } else {
+            app.flash("no activity yet");
+        }
+        return false;
+    }
+    if app.activity.detail.is_some() {
+        match app.activity.handle_key(key) {
+            activity::ModalAction::Close => {
+                app.activity.detail = None;
+                app.activity.query.clear();
+            }
+            activity::ModalAction::Copy => {
+                if let Some(i) = app.activity.detail {
+                    if let Some(text) = app
+                        .messages
+                        .get(i)
+                        .and_then(|m| m.card.as_ref())
+                        .map(|c| activity::full_output(&c.title, c.detail.as_deref()))
+                    {
+                        app.write_clipboard(&text);
+                    }
+                }
+            }
+            activity::ModalAction::PreviousCard => app.navigate_activity_card(true),
+            activity::ModalAction::NextCard => app.navigate_activity_card(false),
+            activity::ModalAction::Paste => app.paste_clipboard(),
+            // Modal owns every other key; editing, undo, queue actions and cancellation do not
+            // fall through to the prompt or turn handlers.
+            activity::ModalAction::Consumed => {}
+        }
+        return false;
+    }
+    if queue_controls::handle_key(app, &key)
+        || queue_focus::handle_key(app, &key)
+        || queue::handle_key(app, &key)
+    {
+        app.workspace.focused = None;
+        return false;
+    }
+    if workers::handle_key(app, &key) {
+        app.workspace.focused = None;
+        return false;
+    }
+    if workspace::handle_key(app, &key) {
+        return false;
+    }
+
+    // `@chat` completion list (own mode; the slash palette below is unchanged).
+    if chatref::handle_key(app, &key) {
+        return false;
+    }
     // Slash-command suggestions take the navigation keys while they are showing.
     let entries = app.palette_entries();
     if !entries.is_empty() && !ctrl && !alt {
@@ -2327,6 +2928,17 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         // its meaning: cancel the running turn, or quit when idle. Ctrl+Shift+C always copies
         // (falling back to the last reply) on hosts that deliver it to the app.
         KeyCode::Char(c) if ctrl && !alt && c.eq_ignore_ascii_case(&'c') => {
+            if let Some(i) = app.activity.detail {
+                if let Some(text) = app
+                    .messages
+                    .get(i)
+                    .and_then(|m| m.card.as_ref())
+                    .map(|c| activity::full_output(&c.title, c.detail.as_deref()))
+                {
+                    app.write_clipboard(&text);
+                }
+                return false;
+            }
             if shift {
                 app.copy(true);
                 false
@@ -2343,6 +2955,22 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                 app.flash("press Ctrl+C again to exit");
                 false
             }
+        }
+        // Ctrl+Z undo; Ctrl+Shift+Z and Ctrl+Y redo (hosts report Shift as the modifier or as an
+        // uppercase letter).
+        KeyCode::Char(c) if ctrl && !alt && c.eq_ignore_ascii_case(&'z') => {
+            if shift || c == 'Z' {
+                app.editor.redo();
+            } else {
+                app.editor.undo();
+            }
+            app.after_undo();
+            false
+        }
+        KeyCode::Char(c) if ctrl && !alt && c.eq_ignore_ascii_case(&'y') => {
+            app.editor.redo();
+            app.after_undo();
+            false
         }
         KeyCode::Char(c) if ctrl && !alt && c.eq_ignore_ascii_case(&'v') => {
             app.paste_clipboard();
@@ -2362,7 +2990,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
             app.editor.insert_char('\n');
             false
         }
-        KeyCode::Enter if alt || shift => {
+        KeyCode::Enter if ctrl || alt || shift => {
             app.editor.insert_char('\n');
             false
         }
@@ -2371,7 +2999,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
             false
         }
         KeyCode::Tab => {
-            app.tab_complete_slash();
+            if !queue::tab(app) {
+                app.tab_complete_slash();
+            }
             false
         }
         // Shift+Tab (palette closed): cycle the permission mode.
@@ -2430,7 +3060,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         // Up on the first prompt row (and Down on the last, while browsing) walks sent prompts.
         KeyCode::Up => {
             if !shift && app.editor.selection().is_none() && app.editor.cursor_pos(tw).0 == 0 {
-                app.history_prev();
+                if !queue::focus_on_up(app) {
+                    app.history_prev();
+                }
             } else {
                 app.editor.up(tw, shift);
             }
@@ -2491,13 +3123,35 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
-    if app.picker.is_some() || workers::handle_mouse(app, &m) {
+    if app.activity.detail.is_some() {
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                app.activity.detail_scroll = app.activity.detail_scroll.saturating_sub(3);
+                app.activity.follow_match = false;
+            }
+            MouseEventKind::ScrollDown => {
+                app.activity.detail_scroll = app.activity.detail_scroll.saturating_add(3);
+                app.activity.follow_match = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+    if app.picker.is_some() {
+        return;
+    }
+    if workers::handle_mouse(app, &m) || queue::handle_mouse(app, &m) {
+        app.workspace.focused = None;
+        return;
+    }
+    if workspace::handle_mouse(app, &m) {
         return;
     }
     let (x, y) = (m.column, m.row);
     let t = app.areas.transcript;
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            app.file_click = None;
             let clicks = app.clicks.register(x, y, Instant::now());
             let pal = app.areas.palette;
             if pal.height > 0 && contains(pal, x, y) {
@@ -2515,6 +3169,15 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 return;
             }
             if contains(t, x, y) {
+                if x.saturating_sub(t.x) < 2 {
+                    if let Some(i) = app.view.identity_at((y - t.y) as usize) {
+                        if app.messages.get(i).is_some_and(|m| m.role == MsgRole::Card) {
+                            app.activity.toggle(i);
+                            app.drag = Drag::None;
+                            return;
+                        }
+                    }
+                }
                 app.editor.clear_selection();
                 app.drag = Drag::Transcript;
                 let pos = app.view.pos_at((y - t.y) as isize, (x - t.x) as usize);
@@ -2523,7 +3186,10 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                         app.view.clear_selection();
                         app.drag = Drag::None;
                     }
-                    (Some(p), 1) => app.view.start_selection(p),
+                    (Some(p), 1) => {
+                        app.file_click = Some(p);
+                        app.view.start_selection(p);
+                    }
                     (Some(p), 2) => {
                         app.view.select_word(p);
                         app.drag = Drag::None;
@@ -2544,32 +3210,63 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 }
             }
         }
-        MouseEventKind::Drag(MouseButton::Left) => match app.drag {
-            Drag::Transcript => {
-                // Dragging past the top/bottom edge scrolls while extending the selection.
-                if y < t.y {
-                    app.view.scroll_up(1);
-                } else if y >= t.y + t.height {
-                    app.view.scroll_down(1);
+        MouseEventKind::Drag(MouseButton::Left) => {
+            app.file_click = None;
+            match app.drag {
+                Drag::Transcript => {
+                    // Dragging past the top/bottom edge scrolls while extending the selection.
+                    if y < t.y {
+                        app.view.scroll_up(1);
+                    } else if y >= t.y + t.height {
+                        app.view.scroll_down(1);
+                    }
+                    let rel_row = y as isize - t.y as isize;
+                    let rel_col = x.saturating_sub(t.x) as usize;
+                    let p = app
+                        .view
+                        .pos_at(rel_row, rel_col)
+                        .or_else(|| app.view.last_pos());
+                    if let Some(p) = p {
+                        app.view.extend_selection(p);
+                    }
                 }
-                let rel_row = y as isize - t.y as isize;
-                let rel_col = x.saturating_sub(t.x) as usize;
-                let p = app
-                    .view
-                    .pos_at(rel_row, rel_col)
-                    .or_else(|| app.view.last_pos());
-                if let Some(p) = p {
-                    app.view.extend_selection(p);
+                Drag::Input => {
+                    let idx = input_index_at(app, x, y);
+                    app.editor.move_to(idx, true);
                 }
+                Drag::None => {}
             }
-            Drag::Input => {
-                let idx = input_index_at(app, x, y);
-                app.editor.move_to(idx, true);
-            }
-            Drag::None => {}
-        },
+        }
         MouseEventKind::Up(MouseButton::Left) => {
+            let clicked = app.file_click.take();
             if app.drag == Drag::Transcript {
+                if let Some((anchor, head)) = app.view.sel.filter(|(a, b)| a == b) {
+                    let release = app
+                        .view
+                        .pos_at(y as isize - t.y as isize, x.saturating_sub(t.x) as usize);
+                    if clicked == Some(head) && contains(t, x, y) && release == Some(head) {
+                        if let Some(row) = app.view.rows.get(anchor.row) {
+                            let mut candidates: Vec<_> = row
+                                .links
+                                .iter()
+                                .filter(|(a, b, _)| *a <= head.col && head.col < *b)
+                                .map(|(_, _, c)| c.clone())
+                                .collect();
+                            candidates.sort_by_key(|c| std::cmp::Reverse(c.range.len()));
+                            let fallback = candidates.first().cloned();
+                            if let Some(candidate) = candidates
+                                .into_iter()
+                                .find(|c| crate::file_links::resolve(c, &app.cwd).is_ok())
+                                .or(fallback)
+                            {
+                                app.open_file_candidate(
+                                    candidate,
+                                    m.modifiers.contains(KeyModifiers::ALT),
+                                );
+                            }
+                        }
+                    }
+                }
                 app.view.finish_selection();
             }
             app.drag = Drag::None;
@@ -2589,26 +3286,48 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 }
 
 /// Best-effort terminal reset for the panic hook (normal exit restores through the backend).
+struct TerminalRestoreGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl TerminalRestoreGuard {
+    fn new() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+    }
+
+    fn restore(&self) {
+        if self.0.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            restore_terminal();
+        }
+    }
+}
+
+impl Drop for TerminalRestoreGuard {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
 fn restore_terminal() {
     let mut out = stdout();
     let _ = execute!(
         out,
+        PopKeyboardEnhancementFlags,
         DisableBracketedPaste,
         DisableMouseCapture,
-        LeaveAlternateScreen
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
     );
     let _ = disable_raw_mode();
 }
 
 fn write_osc_title(title: &str) -> io::Result<()> {
-    let mut out = stdout();
-    write!(out, "\x1b]0;{title}\x07")?;
-    out.flush()
+    let clean: String = title.chars().filter(|c| !c.is_control()).collect();
+    execute!(stdout(), crossterm::terminal::SetTitle(clean))
 }
 
 fn draw_ui(f: &mut Frame, app: &mut App) {
+    let chat_area = workspace::draw(f, app);
     // The prompt box grows with its content (up to MAX_INPUT_ROWS), so size it first.
-    let text_w = (f.area().width as usize)
+    let text_w = (chat_area.width as usize)
         .saturating_sub(2 + PROMPT_W)
         .max(1);
     let input_rows = app.editor.layout(text_w).len().clamp(1, MAX_INPUT_ROWS);
@@ -2620,18 +3339,51 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
             Constraint::Length(input_rows as u16 + 2),
             Constraint::Length(1),
         ])
-        .split(f.area())
+        .split(chat_area)
         .to_vec();
-    // Worker rows sit between the transcript and the prompt (nothing when no worker exists).
+    // The queue panel sits right above the prompt, the worker rows above it (each is nothing
+    // when empty).
+    let queue_area = queue::carve(&mut chunks[1], app);
     let strip = workers::carve(&mut chunks[1], app);
+
+    if let Some(warning) = &app.usage_warning {
+        let text = warning.replace(" | ", "\n");
+        let height = text
+            .lines()
+            .count()
+            .min(2)
+            .min(chunks[1].height.saturating_sub(3) as usize) as u16;
+        if height > 0 {
+            let area = Rect {
+                height,
+                ..chunks[1]
+            };
+            chunks[1].y += height;
+            chunks[1].height -= height;
+            f.render_widget(
+                Paragraph::new(text).alignment(Alignment::Right).style(
+                    Style::default()
+                        .fg(if app.usage_tone == UsageTone::Bad {
+                            Color::Red
+                        } else {
+                            Color::Yellow
+                        })
+                        .add_modifier(Modifier::BOLD),
+                ),
+                area,
+            );
+        }
+    }
 
     draw_header(f, chunks[0], app);
     draw_transcript(f, chunks[1], app);
     draw_input(f, chunks[2], app);
+    queue::draw(f, queue_area, app);
     if app.picker.is_some() {
         draw_picker(f, chunks[1], app);
     }
     draw_palette(f, chunks[1], chunks[2], app);
+    chatref::draw(f, chunks[1], chunks[2], app);
     draw_footer(f, chunks[3], app);
     workers::draw(f, strip, chunks[1], app);
     if app.no_color {
@@ -2770,6 +3522,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(format!("  {model}"), bar.fg(Color::Gray)),
     ];
+    if app.native_agents.count() > 0 {
+        left.push(Span::styled(
+            format!("  /agents {}", app.native_agents.count()),
+            bar.fg(Color::Cyan),
+        ));
+    }
     if let Some(chip) = app.session_chip.as_deref() {
         left.push(Span::styled(
             format!("  \u{25b8} {chip}"),
@@ -2797,21 +3555,60 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     app.areas.transcript = inner;
 
     let spacer = || TBlock {
+        identity: None,
         gutter: "",
         gutter_style: Style::default(),
         style: Style::default(),
         text: "\n",
         markdown: false,
+        runs: &[],
     };
-    let live_thought = tail_lines(&condense_thinking(&app.live_thinking), 3);
+    let live_thought = if app.expanded_activity {
+        app.live_thinking.clone()
+    } else {
+        tail_lines(&condense_thinking(&app.live_thinking), 3)
+    };
+    let displayed: Vec<Option<String>> = app
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(idx, m)| match m.role {
+            MsgRole::Card if app.expanded_activity || app.activity.expanded.contains(&idx) => m
+                .card
+                .as_ref()
+                .map(|c| format!("{}\n{}", c.title, c.detail.as_deref().unwrap_or("")))
+                .map(Some)
+                .unwrap_or(None),
+            MsgRole::Thinking if !app.expanded_activity => Some(format!(
+                "{} · Ctrl+O expands activity",
+                crate::provider::stream_cards::compact_detail(
+                    &tail_lines(&condense_thinking(&m.text), 1),
+                    100
+                )
+            )),
+            _ => None,
+        })
+        .collect();
     let tip_text = app.visible_tip().map(|t| format!("tip: {t}"));
     let cur_meta = app.reply_meta();
+    // Coloured runs for `/usage` blocks (empty for every other message).
+    let msg_runs: Vec<Vec<transcript::LineRun>> = app
+        .messages
+        .iter()
+        .map(|m| {
+            if m.role == MsgRole::System {
+                usage_style::runs(&m.text)
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
     let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 3 + 4);
     // Inside a slash-command output block (after its echo) plain lines get no icon.
     let mut in_block = false;
     let count = app.messages.len();
     for (i, m) in app.messages.iter().enumerate() {
-        let (gutter, gutter_style, style) = match m.role {
+        let (mut gutter, gutter_style, style) = match m.role {
             MsgRole::User => (
                 "> ",
                 Style::default()
@@ -2880,6 +3677,13 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 }),
             ),
         };
+        if m.role == MsgRole::Card {
+            gutter = if app.expanded_activity || app.activity.expanded.contains(&i) {
+                "▾ "
+            } else {
+                "▸ "
+            };
+        }
         // Breathing room between turns, but tool cards stay grouped with what triggered them.
         if matches!(m.role, MsgRole::User | MsgRole::Command) && i > 0 {
             blocks.push(spacer());
@@ -2897,11 +3701,13 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         blocks.push(TBlock {
+            identity: Some(i),
             gutter,
             gutter_style,
             style,
-            text: &m.text,
+            text: displayed[i].as_deref().unwrap_or(&m.text),
             markdown: m.role == MsgRole::Assistant,
+            runs: &msg_runs[i],
         });
         let next_is_card = app
             .messages
@@ -2925,6 +3731,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     // Live reasoning while the turn runs: the last few lines, dimmed.
     if app.busy && !live_thought.is_empty() {
         blocks.push(TBlock {
+            identity: None,
             gutter: "~ ",
             gutter_style: Style::default().fg(Color::Magenta),
             style: Style::default()
@@ -2932,20 +3739,24 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::ITALIC),
             text: &live_thought,
             markdown: false,
+            runs: &[],
         });
     }
     // Live assistant text while the turn is still running.
     if app.busy && !app.live_text.trim().is_empty() {
         blocks.push(TBlock {
+            identity: None,
             gutter: "\u{25cf} ",
             gutter_style: Style::default().fg(Color::Indexed(179)),
             style: Style::default(),
             text: &app.live_text,
             markdown: true,
+            runs: &[],
         });
     }
     if let Some(tip) = &tip_text {
         blocks.push(TBlock {
+            identity: None,
             gutter: "  ",
             gutter_style: Style::default(),
             style: Style::default()
@@ -2953,11 +3764,202 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::DIM | Modifier::ITALIC),
             text: tip,
             markdown: false,
+            runs: &[],
         });
     }
     app.view
         .rebuild(&blocks, inner.width as usize, inner.height as usize);
     f.render_widget(Paragraph::new(app.view.lines()).block(block), area);
+    if let Some(i) = app.activity.detail {
+        if let Some(card) = app.messages.get(i).and_then(|m| m.card.as_ref()) {
+            let title = card.title.as_str();
+            let body = card.detail.as_deref().unwrap_or("");
+            app.activity.search_parts(&[title, body]);
+            let popup = centered_rect(80, 75, area);
+            f.render_widget(Clear, popup);
+            let inner = Block::default().borders(Borders::ALL).inner(popup);
+            let avail_w = inner.width.max(1) as usize;
+            if app.activity.follow_match || app.activity.render_width != avail_w {
+                if let Some(found) = app.activity.selected() {
+                    app.activity.detail_scroll = detail_scroll_target_parts(
+                        &[title, body],
+                        found,
+                        avail_w,
+                        inner.height as usize,
+                    );
+                }
+                app.activity.follow_match = false;
+            }
+            if app.activity.render_dirty
+                || app.activity.render_width != avail_w
+                || app.activity.render_selected != app.activity.selected_match
+            {
+                let lines = detail_lines_parts(
+                    &[title, body],
+                    &app.activity.matches,
+                    app.activity.selected_match,
+                    avail_w,
+                );
+                app.activity.render_lines = lines
+                    .into_iter()
+                    .map(|line| {
+                        Line::from(
+                            line.spans
+                                .into_iter()
+                                .map(|span| Span::styled(span.content.into_owned(), span.style))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect();
+                app.activity.render_width = avail_w;
+                app.activity.render_selected = app.activity.selected_match;
+                app.activity.render_dirty = false;
+            }
+            let query = app.activity.query_with_cursor();
+            let block=Block::default().title(format!("Activity · Find: {query} · {} matches · Enter/Shift+Enter find · Alt+↑/↓ card · Ctrl+C copy · Esc close", app.activity.matches.len())).borders(Borders::ALL);
+            let inner = block.inner(popup);
+            f.render_widget(block, popup);
+            let max_scroll = app
+                .activity
+                .render_lines
+                .len()
+                .saturating_sub(inner.height as usize);
+            let scroll = (app.activity.detail_scroll as usize).min(max_scroll);
+            app.activity.detail_scroll = scroll.min(u16::MAX as usize) as u16;
+            f.render_widget(
+                DetailRows {
+                    lines: &app.activity.render_lines,
+                    scroll,
+                },
+                inner,
+            );
+        }
+    }
+}
+
+fn detail_scroll_target_parts(
+    parts: &[&str],
+    found: activity::Match,
+    width: usize,
+    height: usize,
+) -> u16 {
+    let width = width.max(1);
+    let mut visual = 0usize;
+    let mut target = None;
+    for (line_no, line) in parts.iter().flat_map(|p| p.lines()).enumerate() {
+        let chars: Vec<char> = line.chars().collect();
+        let ranges = text::wrap_ranges(&chars, width);
+        if line_no == found.line {
+            let row = ranges
+                .iter()
+                .position(|(a, b)| *a <= found.col && found.col < *b)
+                .unwrap_or_else(|| ranges.len().saturating_sub(1));
+            target = Some(visual + row);
+        }
+        visual += ranges.len();
+    }
+    let max_scroll = visual.saturating_sub(height);
+    let wanted = target
+        .unwrap_or(0)
+        .saturating_sub(height / 2)
+        .min(max_scroll);
+    wanted.min(u16::MAX as usize) as u16
+}
+
+fn detail_lines_parts<'a>(
+    parts: &[&'a str],
+    matches: &[activity::Match],
+    selected: usize,
+    width: usize,
+) -> Vec<Line<'a>> {
+    let mut output = Vec::new();
+    let mut match_cursor = 0;
+    for (line_no, line) in parts.iter().flat_map(|p| p.lines()).enumerate() {
+        let chars: Vec<char> = line.chars().collect();
+        let byte_offsets: Vec<usize> = line
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(line.len()))
+            .collect();
+        while match_cursor < matches.len() && matches[match_cursor].line < line_no {
+            match_cursor += 1;
+        }
+        let first = match_cursor;
+        while match_cursor < matches.len() && matches[match_cursor].line == line_no {
+            match_cursor += 1;
+        }
+        let line_matches = &matches[first..match_cursor];
+        for (row_start, row_end) in text::wrap_ranges(&chars, width.max(1)) {
+            let mut cuts = vec![row_start, row_end];
+            for m in line_matches {
+                let a = m.col.max(row_start);
+                let b = (m.col + m.len).min(row_end);
+                if a < b {
+                    cuts.extend([a, b]);
+                }
+            }
+            cuts.sort_unstable();
+            cuts.dedup();
+            let mut spans = Vec::new();
+            let mut mi = 0;
+            for pair in cuts.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                if a == b {
+                    continue;
+                }
+                while mi < line_matches.len() && line_matches[mi].col + line_matches[mi].len <= a {
+                    mi += 1;
+                }
+                let active = line_matches
+                    .get(mi)
+                    .filter(|m| m.col <= a && b <= m.col + m.len);
+                let style = active
+                    .map(|_| {
+                        if first + mi == selected {
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Black).bg(Color::Yellow)
+                        }
+                    })
+                    .unwrap_or_default();
+                spans.push(Span::styled(&line[byte_offsets[a]..byte_offsets[b]], style));
+            }
+            output.push(Line::from(spans));
+        }
+    }
+    output
+}
+
+struct DetailRows<'a> {
+    lines: &'a [Line<'static>],
+    scroll: usize,
+}
+impl Widget for DetailRows<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        for (row, line) in self
+            .lines
+            .iter()
+            .skip(self.scroll)
+            .take(area.height as usize)
+            .enumerate()
+        {
+            buf.set_line(area.x, area.y + row as u16, line, area.width);
+        }
+    }
+}
+
+fn centered_rect(width_pct: u16, height_pct: u16, area: Rect) -> Rect {
+    let w = (area.width * width_pct / 100).max(1).min(area.width);
+    let h = (area.height * height_pct / 100).max(1).min(area.height);
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
@@ -2996,7 +3998,10 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 Some((h, _)) => (h.to_string(), true),
                 None => (r.label.clone(), false),
             };
-            let mut spans = vec![Span::styled(head, label_style)];
+            let mut spans = match usage_style::picker_spans(&head) {
+                Some(s) => s,
+                None => vec![Span::styled(head, label_style)],
+            };
             if current {
                 spans.push(Span::styled(
                     " \u{b7} current",
@@ -3111,7 +4116,11 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 
     // Real terminal caret (blinks natively, works with IME); hidden while a picker is open.
-    if app.picker.is_none() {
+    if app.picker.is_none()
+        && app.activity.detail.is_none()
+        && !app.queue.focused
+        && app.workspace.focused.is_none()
+    {
         let x = inner.x + (PROMPT_W + cur_col).min(inner.width.saturating_sub(1) as usize) as u16;
         let y = inner.y + (cur_row - app.input_scroll) as u16;
         f.set_cursor_position(Position::new(x, y));
@@ -3152,7 +4161,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         .map(|(m, _)| m.as_str());
     let job_line;
     let scrolled = format!("\u{2191} {} rows up \u{b7} PgDn to follow", app.view.scroll);
-    let (left, left_style) = if let Some(m) = flash {
+    let (left, left_style) = if app.recovery_warning().is_some() {
+        (
+            "draft not saved locally · /recover retry",
+            Style::default().fg(Color::Red),
+        )
+    } else if let Some(m) = flash {
         (m, Style::default().fg(Color::Indexed(179)))
     } else if let Some(job) = &app.job {
         let what = match job.kind {
@@ -3178,7 +4192,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
     } else if app.busy {
         (
-            "thinking \u{b7} Ctrl+C cancel",
+            "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel",
             Style::default().fg(Color::DarkGray),
         )
     } else {
@@ -3187,7 +4201,15 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::DarkGray),
         )
     };
-    let avail = (cols[0].width as usize).saturating_sub(2);
+    let focus_hint = queue_focus::focus_hint(app).map(|hint| format!("{left} · {hint}"));
+    let left = focus_hint.as_deref().unwrap_or(left);
+    let stats_reserve = app
+        .stats
+        .as_ref()
+        .and_then(|h| stats_ui::fit_stats(&h.latest(), (cols[0].width as usize).saturating_sub(20)))
+        .map(|s| s.chars().count() + 3)
+        .unwrap_or(0);
+    let avail = (cols[0].width as usize).saturating_sub(2 + stats_reserve);
     let shown = if left == FOOTER_HINT {
         fit_hints(avail)
     } else {
@@ -3197,6 +4219,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(format!(" {shown}")).style(left_style),
         cols[0],
     );
+    stats_ui::draw_footer_stats(f, cols[0], 1 + shown.chars().count(), app);
     // Approvals and sandboxing are bypassed in full mode: its red glyph must stay visible.
     if rw > 0 {
         f.render_widget(
@@ -3209,10 +4232,26 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
 }
 
 #[cfg(test)]
+mod activity_tests;
+#[cfg(test)]
+mod performance;
+#[cfg(test)]
+mod queue_controls_tests;
+#[cfg(test)]
+mod queue_editor_tests;
+#[cfg(test)]
+mod queue_focus_tests;
+#[cfg(test)]
+mod queue_tests;
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cancel_tests;
 
 fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
     TBlock {
+        identity: None,
         gutter: "",
         gutter_style: Style::default(),
         style: Style::default()
@@ -3220,6 +4259,7 @@ fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
             .add_modifier(Modifier::BOLD),
         text: label,
         markdown: false,
+        runs: &[],
     }
 }
 

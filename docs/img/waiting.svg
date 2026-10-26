@@ -14,10 +14,10 @@
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
 <text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">◆</text>
 <text x="41" y="50" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">concordia</text>
-<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-15x</text>
+<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-21d</text>
 <text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
 <text x="356" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
-<text x="698" y="50" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#666666">[###--] 5h 59% left · 7d 41% left</text>
+<text x="770" y="50" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#666666">5h 59% left · 7d 41% left</text>
 <text x="23" y="69" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#5fafff">| i</text>
 <text x="59" y="69" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
 <text x="23" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff">|</text>
@@ -25,8 +25,12 @@
 <text x="23" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
 <text x="41" y="126" textLength="495" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Why does the nightly sync skip rows with a null region?</text>
 <text x="23" y="145" textLength="279" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex · codex-3 · gpt-5.1-codex</text>
+<text x="23" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
 <text x="41" y="164" textLength="288" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n region src/sync</text>
-<text x="41" y="183" textLength="252" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ read  src/sync/filter.rs</text>
+<text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
+<text x="41" y="183" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ read</text>
+<text x="131" y="183" textLength="162" lengthAdjust="spacingAndGlyphs" fill="#87af87" text-decoration="underline">src/sync/filter.rs</text>
+<text x="23" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
 <text x="41" y="202" textLength="306" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">│ ◉ shell  cargo test sync::filter</text>
 <text x="23" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">~</text>
 <text x="41" y="221" textLength="576" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">Checking how the region filter treats a null before it compares.</text>
@@ -40,7 +44,7 @@
 <text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
 <text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">│</text>
 <text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="23" y="639" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#666666">thinking · Ctrl+C cancel</text>
+<text x="23" y="639" textLength="369" lengthAdjust="spacingAndGlyphs" fill="#666666">Tab queue · Ctrl+O expand · Ctrl+C cancel</text>
 <text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">auth workspace</text>
 </g>
 </g>

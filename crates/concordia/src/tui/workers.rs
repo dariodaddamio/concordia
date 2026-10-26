@@ -59,6 +59,9 @@ struct Confirm {
     since: Instant,
 }
 
+/// Ticks (about 200 ms each) between looks at `<state>/proposals`: about 2 s.
+const PROPOSAL_POLL_TICKS: u64 = 10;
+
 const ARM_AFTER: Duration = Duration::from_millis(1500);
 
 fn phase_of(state: WorkerState) -> Option<Phase> {
@@ -406,13 +409,13 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         }
         return true;
     }
-    // y/n only answer while the prompt is empty, so typing a sentence never approves anything.
+    // Only chat focus may answer; read-only file typing must never approve or reject work.
     let armed = app
         .deleg
         .confirms
         .front()
         .is_some_and(|c| c.since.elapsed() >= ARM_AFTER);
-    if armed && app.editor.text().is_empty() && !ctrl && !alt {
+    if armed && app.workspace.focused.is_none() && app.editor.text().is_empty() && !ctrl && !alt {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 app.answer_confirm(true);
@@ -429,7 +432,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         app.select_worker(if key.code == KeyCode::Down { 1 } else { -1 });
         return true;
     }
-    let plain = key.modifiers.is_empty();
+    let plain = key.modifiers.is_empty() && app.workspace.focused.is_none();
     if plain && key.code == KeyCode::Enter && app.editor.text().is_empty() {
         if let Some(id) = app.deleg.selected {
             app.deleg.viewer = Some(Viewer {
@@ -480,6 +483,16 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 }
 
 impl App {
+    pub(super) fn inspect_worker(&mut self, id: u32) {
+        if self.deleg.d.get(id).is_some() {
+            self.deleg.viewer = Some(Viewer {
+                job: id,
+                scroll: 0,
+                max_scroll: 0,
+            });
+        }
+    }
+
     fn select_worker(&mut self, delta: i32) {
         let ids: Vec<u32> = self
             .deleg
@@ -530,6 +543,7 @@ impl App {
             self.push_system(block);
             self.flash(format!("worker {note}"));
         }
+        self.refresh_agents_picker();
     }
 
     pub(super) fn cancel_all_delegates(&mut self) {
@@ -541,6 +555,11 @@ impl App {
         let Some(p) = self.deleg.outbox.take() else {
             return;
         };
+        if self.session_ui.loading() {
+            self.flash("history is loading; use the worker result after it finishes");
+            return;
+        }
+        self.submitted_prompt = Some(p.clone());
         self.push_user(p.clone());
         self.turn_started = Some(Instant::now());
         self.phase = Phase::Waiting;
@@ -553,12 +572,33 @@ impl App {
     /// Queue protocol proposals found in an orchestrator reply. Off unless the user opted in.
     /// Only ever called with the orchestrator's own reply, never with a worker's output.
     pub(super) fn scan_delegation(&mut self, reply: &str) {
-        let settings = get_settings(&self.state_root);
         if !crate::store::delegation_protocol_on(&self.state_root) || reply.is_empty() {
             return;
         }
+        self.queue_proposals(extract_delegate_blocks(reply));
+    }
+
+    /// Proposals recorded by `concordia mcp`'s `delegate` tool (files in `<state>/proposals`).
+    /// Checked about every 2 s, and only consumed while the delegation protocol is on. They go
+    /// through the same confirm prompt as protocol blocks: nothing runs without the user's y.
+    pub(super) fn poll_proposals(&mut self) {
+        if !self.tick_count.is_multiple_of(PROPOSAL_POLL_TICKS)
+            || !crate::mcp::has_proposals(&self.state_root)
+            || !crate::store::delegation_protocol_on(&self.state_root)
+        {
+            return;
+        }
+        let blocks: Vec<_> = crate::mcp::take_proposals(&self.state_root)
+            .into_iter()
+            .filter_map(|p| crate::delegate::block_from(&p.to, &p.task))
+            .collect();
+        self.queue_proposals(blocks);
+    }
+
+    fn queue_proposals(&mut self, blocks: Vec<crate::delegate::DelegateBlock>) {
+        let settings = get_settings(&self.state_root);
         let orch = normalize_account_id(&self.account);
-        for b in extract_delegate_blocks(reply) {
+        for b in blocks {
             let is_worker = settings
                 .workers
                 .iter()
@@ -706,7 +746,11 @@ impl App {
                 None => "running in the background".into(),
             },
             trust.as_str(),
-            if trust == TrustMode::Full { " (your current mode)" } else { "" },
+            if trust == TrustMode::Full {
+                " (your current mode)"
+            } else {
+                ""
+            },
         ))
     }
 
@@ -812,6 +856,10 @@ impl App {
 
     /// User action: hand a finished result to the orchestrator as (labelled, bounded) context.
     fn delegate_use(&mut self, acct: Option<&str>) {
+        if self.session_ui.loading() {
+            self.push_system("history is loading; use the worker result after it finishes");
+            return;
+        }
         if self.busy {
             self.push_system("the orchestrator is busy - wait for it (or Esc), then /delegate use");
             return;

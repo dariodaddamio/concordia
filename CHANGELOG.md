@@ -1,10 +1,72 @@
 # Changelog
 
+### Changed (`2026-10-21d`)
+- Compact tool rows foreground the command instead of PowerShell launcher paths, retain complete expanded output, and show output line counts. Completed reasoning is collapsed to one preview line.
+- Terminal titles use the terminal API, including the Windows console path, and follow the generated session title.
+- Usage-limit continuation defaults to manual (`/continue ACCOUNT`), with opt-in automatic handoff through configured accounts. Attempts are bounded, native session ids stay account-local, drafts and queued work are preserved, and uncertain tool results stop automatic handoff.
+
 All notable changes to Concordia. The format follows [Keep a Changelog](https://keepachangelog.com/);
 Concordia has not had a tagged release yet, so everything is under Unreleased. Each user-visible change
 also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
+
+### Added (`2026-10-21c`)
+- Automatic session titles in the header, terminal title and resume picker, persisted separately from optional transcript logging and generated without model calls.
+- `/resume` restores bounded recent Codex/Claude messages as scrollback and binds the explicitly selected session across accounts. History loading preserves the draft and does not dispatch a provider turn. Unsupported Cursor history is reported explicitly.
+- `/agents` and Ctrl+G inspect native child-agent reports and Concordia worker jobs. Codex collaboration events show each child's reported task, status and result; Claude Agent/Task tool cards are also accessible.
+
+### Changed (`2026-10-21c`)
+- Cancelling leaves the prompt box unchanged; it no longer restores the submitted request. Sent history remains available for explicit recall. Failure retry behavior remains separate.
+
+### Fixed (`2026-10-21b`)
+- Commentary, reasoning and individual tool cards retain their arrival order while streaming; completed turns no longer collect all commentary below a block of commands.
+- Cancellation retains partial replies and unsent drafts, pauses queued work, suppresses duplicate stop requests and recognizes a stop requested while waiting for process exit.
+- Codex usage accepts text credit balances, selects the newest eligible session instead of the second-newest, compares session/cache freshness, tolerates partial UTF-8 at a bounded tail boundary and updates an existing `/usage` block after a turn.
+- Everyday smoke uses Cargo exit codes when output is captured by Windows PowerShell and cleans up its generated usage test on errors.
+
+### Development
+- Finished and compiled the lossless UTF-8 document/undo/save foundation from interrupted work. Internal panes remain read-only; editing controls and recovery are a later slice.
+
+### Documentation
+- Reconciled installed `2026-10-16e` readiness with recorded smoke and fake-provider terminal evidence, preserving outstanding live host/provider checks. Defined staged internal file-pane, editing/recovery and self-development acceptance in the canonical plan.
+
+### Fixed
+- Windows VT input preserves framed pastes across chunks with a Unicode console reader, keeping Tab/Enter actions separate, Ctrl+Z usable, emoji intact, and paste undo atomic. Bounded readers wait for startup readiness, join on shutdown and restore console settings; fallback key input retains CRLF and undo continuity across source gaps.
+- Input/render errors persist the draft and cancel provider work; a failed startup handle handoff cancels its provider instead of leaving it running.
+- Interrupted or incomplete tool calls retain their command/details and explain the missing completion instead of appearing successful. Explicit chat reads target the requested account beyond the newest-list window; metadata scans and output are bounded.
+- Invalid arguments no longer silently run updates or choose fallback slash/CLI actions. Permission changes made during a turn explain that they apply to the next turn.
+- Past Codex reset times show current usage as unknown, rather than inventing 100% remaining capacity; cached refreshes and failures are labeled.
+- Distinct rapid Escape/navigation presses are retained when terminal input is drained after a paste; backend release events are filtered by their event kind instead of a processing-time debounce.
+- Unsaved upper queue edits survive restart separately from the main draft and committed queue. Outside clicks cannot discard them; narrow and short panels clip editor hit targets and caret positions.
+- Recovery save failures stay visible and dirty, retry on bounded ticks, and support `/recover retry` after local storage is repaired. Importing legacy files preserves the current pane record.
+- Long and multiline paste stays inside activity search or picker filters while those views are open. Activity search reuses cached wrapped rows, and `Alt+Up/Down` navigates older/newer cards.
+- Pane and workspace recovery records use independent ownership locks, preventing concurrent panes from restoring or overwriting each other's active drafts. Multiple abandoned records require an explicit choice through `/recover`.
+- Queue resume is explicit (`Ctrl+R` or `/queue resume`); sending typed text leaves a paused queue paused.
+- Same-process state writers serialize before the cross-process lock deadline, preventing the concurrent-writer stress test's intermittent lock timeout. The re-exec unit test now isolates its install pointer and environment instead of changing the real installation.
+- Real Windows terminal journeys caught pasted LF arriving as Ctrl+Enter: it now inserts a newline, preserving blank lines and CRLF without sending separate prompts.
+- A queued prompt being edited waits for save/cancel before automatic dispatch. Chunked terminal pastes undo in one step.
+- Conversation, provider and model changes wait until a running turn finishes or is cancelled, preserving its session and output identity.
+- Running slash commands during a turn preserves its original cancellation recovery prompt; reused tool IDs update only the current turn's cards.
+- Cursor tool results retain their full received output. A narrowly patched, vendored Crossterm 0.28.1 preserves Windows emoji input.
+- Full tool input/output and reasoning are retained; Ctrl+O toggles compact or expanded activity, including while a turn runs.
+- Provider session locks prevent concurrent Concordia resumes; Codex active-writer errors explain recovery, restore the prompt and pause queued work without replaying it.
+- Paste bursts drain before repainting and terminal titles update only when changed.
+- Multiline pastes delivered as Windows key events stay in the prompt, including blank lines and trailing newlines; a separate Enter sends the complete prompt.
+- Cancelling a turn preserves an unsent draft and restores the submitted prompt when the input is empty, so it can be edited or retried.
+### Added
+- Internal read-only `/open` and `/preview` panes beside chat, with stable ids, repeated-open focus, mouse X and `/close`, F6/Esc focus, scrolling and divider resizing. Reads are asynchronous and capped at three panes, 2 MiB and 50,000 UTF-8 lines per file. `/edit` preserves external-editor launching; editing and layout recovery remain future work.
+- `concordia chat list|search|read` exposes bounded native CLI chat metadata/text across the user's own accounts; reads bind an explicit account and session, without switching or resuming. Cursor transcript reading remains unsupported.
+- Clickable file references in sent messages and responses, plus `/open` for a separate terminal editor and `/preview` (Alt+click) for a built-in read-only Markdown preview. Editor executable/argv are configurable; command text is never evaluated as a shell string.
+- Low 5h/7d usage warnings above chat, with reset time and reading freshness; Codex reset timestamps use the OS local date/time.
+- Expanded provider-reported MCP arguments/results, file changes/diffs and tool error states, plus bounded Claude partial tool-input streaming. Missing provider edit data is not fabricated.
+- An explicit release-mode typing/streaming stress benchmark with a 500-message transcript and a long draft.
+- Optional `/stats` footer with Concordia and provider process-tree RAM/CPU; provider version/help detection with cached capabilities, text fallback and restored `/usage` colors.
+- `@chat` thread references, awareness instructions in Concordia-created homes, and an opt-in MCP server with read-only tools and delegation proposals requiring confirmation.
+- Prompt queue: `Tab` queues while a turn runs; `Ctrl+Up` focuses the upper panel without replacing a draft. Enter opens/saves a multiline upper editor, Esc cancels, `Ctrl+Down` returns after save/cancel, `Alt+Up/Down` reorders, and Delete removes. Clean completion sends queued prompts in order; cancel/failure/restart pauses them until `Ctrl+R` or `/queue resume`. `/queue` lists and `/queue clear` clears committed items.
+- Undo and redo in the prompt (`Ctrl+Z`, `Ctrl+Shift+Z` / `Ctrl+Y`, 200 steps; undo right after a send brings the sent text back).
+- Draft and queue recovery use pane-owned records under `<state>\pane-recovery\<workspace-key>\`; `/recover` selects abandoned work or imports older shared files. Sent prompts use `<state>\history.jsonl` (last 500; `[ui] persist_history = false` turns it off). A failed or cancelled turn puts its prompt back in an empty box.
+- Individual activity expansion via gutter clicks, plus `Ctrl+E` full detail with Unicode search, highlighted matches, scrolling and full-card copy. Modal controls preserve the draft beneath.
 
 ### Changed
 - Switching account or provider now carries a deterministic map of the thread (at most 1600 chars: what was asked, files touched, commands run, errors, the last reply, and a pointer to `concordia thread read`) instead of a 6000-char transcript dump. Delegated workers get the same map. Native resume is unchanged.

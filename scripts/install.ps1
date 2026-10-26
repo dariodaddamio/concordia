@@ -1,9 +1,9 @@
 # Concordia one-line installer for Windows. No administrator rights needed.
 #
-#   irm https://github.com/REPLACE-OWNER/concordia/raw/main/scripts/install.ps1 | iex
+#   irm https://github.com/dariodaddamio/concordia/raw/main/scripts/install.ps1 | iex
 #
 # With options (script or scriptblock form):
-#   & ([scriptblock]::Create((irm https://github.com/REPLACE-OWNER/concordia/raw/main/scripts/install.ps1))) -Version 0.1.0
+#   & ([scriptblock]::Create((irm https://github.com/dariodaddamio/concordia/raw/main/scripts/install.ps1))) -Version 0.1.0
 #
 # What it does: reads the release feed, downloads the Windows zip and its .sha256, verifies the
 # SHA-256 with .NET (fails closed on any mismatch, nothing is installed), extracts to a temp folder
@@ -12,9 +12,8 @@
 #
 # Windows PowerShell 5.1 compatible: keep this file ASCII-only and avoid newer syntax.
 param(
-    # PLACEHOLDER: the GitHub owner/name that publishes concordia releases. Replace REPLACE-OWNER
-    # (here and in the one-liner above) before publishing this installer.
-    [string]$Repo = 'REPLACE-OWNER/concordia',
+    # The GitHub owner/name that publishes concordia releases.
+    [string]$Repo = 'dariodaddamio/concordia',
     # Install this version (0.1.0 or v0.1.0). Default: the newest published release.
     [string]$Version = '',
     # Install into this folder instead of %LOCALAPPDATA%\concordia\bin. The user PATH is then not

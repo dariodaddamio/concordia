@@ -27,7 +27,7 @@ contract the pieces are built against.
 | Pointer | How a model fetches more: `concordia thread read <id>` | printed inside every map |
 | Delivery | Map prepended on a switch or `@chat`; native resume otherwise | `context.rs` |
 | Config | User-edited `config.toml` and `commands/*.md` | `<state>/config.toml`, `<state>/commands/` |
-| MCP (later) | `concordia mcp`: the same data as tools | same binary |
+| MCP (opt-in) | `concordia mcp`: the same data as tools | same binary |
 
 `<state>` is `%LOCALAPPDATA%\concordia` (override: `CONCORDIA_STATE`).
 
@@ -146,7 +146,7 @@ inside Concordia. A `[concordia map]` block is a pointer to an earlier thread; r
 `concordia thread read <id>` for details." About 40 tokens, loaded and cached by the CLI. Never
 written to a user's own existing home.
 
-## MCP server (later)
+## MCP server (opt-in)
 
 `concordia mcp` (stdio) exposes `threads`, `thread_map`, `thread_read`, `usage` (read-only) and
 `delegate` (propose only; the UI asks the user). Registered only in homes Concordia created.
@@ -162,18 +162,35 @@ While a turn runs, the user can line up the next prompts.
 * The queue shows in a panel **above** the prompt box: `queued 1: <first 60 chars>`, newest last,
   at most 5 rows then `+N more`. The panel and the draft are separate: editing the queue never
   replaces what is being typed.
-* **Up** on the first prompt row with an empty draft and a non-empty queue focuses the panel (with
+* **Ctrl+Up** focuses the queue while preserving a nonempty draft, caret and selection;
+  **Ctrl+Down** returns after an upper edit is saved or cancelled. **Up** on the first prompt row
+  with an empty draft and a non-empty queue also focuses the panel (with
   an empty queue, Up keeps walking history). In the panel: Up/Down select, **Enter** edits the
-  selected item in a small inline editor (Enter saves, Esc cancels), **Alt+Up/Alt+Down** move it,
+  selected item in a multiline upper editor (Enter saves, Esc cancels, Ctrl+Enter or Ctrl+J inserts
+  a newline), **Alt+Up/Alt+Down** move it,
   **Delete** removes it, **Esc** returns to the prompt.
+* Automatic sending waits while a queued item is being edited, preserving unsaved text; it
+  continues after save/cancel. Conversation/provider/model switches wait for the active turn to
+  finish or be cancelled, so streamed output stays bound to its original identity.
 * When the running turn finishes (not when it is cancelled or fails), the first queued prompt is
   sent automatically through the normal submit path, so trust mode, the current account and
   provider, continuity packs and logging all apply at send time. Switching account while
   prompts are queued is allowed; the queue is provider-neutral text.
-* Esc during a turn cancels the turn and **pauses** the queue (shown as `queue paused - Enter
-  resumes`), so nothing fires unexpectedly after a cancel.
-* The queue is persisted to `<state>/queue.json` (atomic write, rewritten on every change) and
-  restored at launch with a notice; `/queue clear` empties it.
+* Esc during a turn cancels the turn and **pauses** the queue. **Ctrl+R** or `/queue resume`
+  explicitly resumes it while retaining the draft. Enter sends typed text without resuming a
+  paused queue. A failed turn and restart also pause queued work.
+* Draft, queue and pending upper edit use a pane-owned recovery record (atomic writes).
+  `/queue clear` empties the committed queue; active upper edits require save/cancel first.
+
+## Expandable activity
+
+`Ctrl+O` toggles compact previews and full received tool input/output and reasoning, including
+while a turn runs. Parsers retain text; only the compact rendering shortens it. Replies remain
+fully scrollable. Provider-side omissions and the runner's bounded output-line limit still apply.
+Click a card's gutter to expand it independently. `Ctrl+E` opens full activity detail with search,
+match navigation and `Ctrl+C` copy; `Alt+Up/Down` chooses the previous/next card, and `Esc` closes
+the detail view. Input belongs to that view while open,
+preserving the main draft and queued edit underneath.
 
 ## Undo, redo and drafts
 
@@ -181,9 +198,18 @@ While a turn runs, the user can line up the next prompts.
   (text, cursor) snapshots, coalesced so that a burst of typing is one step and every cut, paste,
   delete-word and clear is its own step. Capped at 200 steps. Sending a prompt does not clear the
   stack (undo after send restores the sent text into the box, so a mis-sent prompt is never lost).
-* The current draft is saved to `<state>/draft.json` (debounced, about one second after the last
-  change, and on exit and panic) and restored at launch with a notice. An empty draft deletes the
-  file. A failed or cancelled turn puts its prompt back in the box if the box is empty.
+* Each pane holds an OS lock on its own record under `<state>/pane-recovery/<workspace-key>/`.
+  Draft changes are debounced (about one second), with immediate save on exit. Active pane records
+  are never claimed by another pane. One abandoned record can be restored at startup; several
+  produce a chooser. `/recover` selects an abandoned record for the current workspace. Queued
+  work stays paused after recovery. A failed turn restores its submitted prompt when the box is
+  empty. Cancellation leaves the current prompt box unchanged; sent history supports explicit
+  recall. Legacy shared `draft.json` and `queue.json` require explicit import via
+  `/recover`; sent history remains shared.
+* Pending upper edits are saved separately from committed queue items; recovery restores the
+  editor and holds dispatch until explicit save/cancel. Save failures stay visible in the footer
+  and retry at bounded intervals. `/recover` explains the error; `/recover retry` retries after
+  local storage is repaired. Explicit legacy import preserves the current pane's saved record.
 * Sent prompts persist to `<state>/history.jsonl` (cap 500, newest last) so Up still works after a
   restart. This stores prompts locally; `[ui] persist_history = false` turns it off (default on,
   same trust boundary as the provider CLIs' own history).
@@ -230,6 +256,30 @@ images in terminals that support them.
 | `draw_ui` frame, busy transcript | 2 ms |
 | Map | 1600 chars |
 | Per-turn work on the UI thread | no file or process I/O |
+
+## Production-readiness additions (2026-10-16)
+
+Windows VT input uses a dedicated console reader plus the existing ANSI parser on the event
+thread. Both readers are joined, input mode is ready before the first frame, and saved console
+settings are restored at shutdown. Framed paste becomes one explicit paste event across read
+chunks; action keys outside its frame remain actions. Bounded channels carry events and observed
+quiet markers independently of drawing. Unsupported hosts fall back to the native key-record
+reader; only this fallback and unframed input require quiet-gap inference. An empty application
+channel alone never proves that a paste ended. Source scheduling and channel saturation remain
+limitations for input that lacks framing.
+
+`file_links` extracts bounded local references from rendered transcript text; explicit clicks
+resolve against the workspace and `file_open` builds argument-array WezTerm launch plans.
+External editors are configured through `[editor]`; `preview FILE` is a separate, read-only
+UTF-8 Markdown/text terminal viewer. Selection drags never launch files. No shell evaluates
+message text. `chat list|search|read` reads bounded native transcript files with explicit account
+and session identity; search is metadata-only and unsupported formats report that limitation.
+
+Usage fetches and caches bind account, provider and full normalized home. Old unbound/future
+cache entries are not trusted; late results retain their originating identity. Low-limit warnings
+above chat label freshness, and a reset does not imply confirmed available capacity. Tool cards
+merge results into the original command and retain provider-supplied arguments/output/diffs.
+See the production plan and individual audit documents for evidence and remaining gaps.
 
 ## Non-goals
 
