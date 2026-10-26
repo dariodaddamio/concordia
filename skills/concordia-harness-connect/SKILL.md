@@ -16,6 +16,7 @@ A **harness** is any tool the user wants wired into a provider's isolated home: 
 | `/harness status` | Lists each connection, account, project and whether it is verified. |
 | `/harness verify [name] [provider]` | Runs the manifest's `verify` command and records the outcome. |
 | `/harness disconnect <name>` | Forgets the connection and withdraws the receipts it wrote. It does not undo changes the harness made in a provider home; use the harness's own uninstall for that. |
+| `/harness tools` / `/harness tools <name>` | Lists declared tools, or runs one explicitly in the current provider context. |
 | `/harness skill` | Installs this skill into the current account's home (one folder, no credentials). |
 
 ## Write the manifest
@@ -34,6 +35,9 @@ Create `harness.json` next to your tool:
     },
     "codex": { "connect": ["./bin/my-harness", "connect", "{provider}", "{home}", "{project}"] }
   }
+  ,"tools": [
+    {"name": "knowledge", "description": "Query the knowledge base", "argv": ["./bin/my-harness", "knowledge", "{project}"]}
+  ]
 }
 ```
 
@@ -45,6 +49,8 @@ Rules Concordia enforces:
 - A program written with a path separator (`./bin/x`) is relative to the manifest folder; a bare name is looked up on PATH.
 - Unknown fields are errors, so typos do not pass silently.
 - Each command has 60 seconds and its output is capped.
+- Tools use the same argv, placeholder, timeout and no-shell rules. They are user-invoked commands,
+  not a model-owned runtime; use `harness/name` when two connected harnesses expose the same tool.
 
 ## Make `connect` do the right thing
 
@@ -73,3 +79,5 @@ Concordia accepts that only if the provider, home and policy revision match what
 2. Run `/harness connect <folder>`. Fix any error it prints.
 3. Run `/harness verify`. A project with `docs/quality/locked-code.json` stays read-only until this prints verified.
 4. Run `/harness status` to confirm.
+5. Run `/harness tools` to inspect declared tools, then `/harness tools knowledge` when you want to
+   invoke one. Keep tool commands local and never include credentials in argv or output.

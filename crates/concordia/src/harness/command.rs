@@ -4,7 +4,6 @@
 use super::connections::{self, Entry, Identity};
 use super::verify::{self, Verdict};
 use super::{expand, parse_manifest, resolve_program, Context, Manifest, RunOutcome};
-use crate::provider::enforcement;
 use crate::store::ProviderKind;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -61,6 +60,7 @@ pub fn help_lines() -> Vec<String> {
         "  /harness verify [name] [provider] [--all]                run its live probe; opens a locked project only on a real denial",
         "  /harness disconnect <name>                               forget it and withdraw the receipts it wrote",
         "  /harness skill                                           install the connect skill into this account's home",
+        "  /harness tools [name|harness/name]                      list or run a declared harness tool",
         "A harness is described by harness.json (see docs/harness.md). Commands run without a shell.",
     ]
     .iter()
@@ -205,7 +205,8 @@ pub fn connect_in(
         .skill
         .as_ref()
         .map(|s| s.to_string_lossy().into_owned());
-    let who = identity(manifest, &manifest_path.to_string_lossy(), sha, &skill);
+    let manifest_path_text = manifest_path.to_string_lossy().into_owned();
+    let who = identity(manifest, &manifest_path_text, sha, &skill);
     let mut entry = entry;
     if let Err(e) = connections::record(store, &who, entry.clone()) {
         entry.connect_note = format!("{}; {e}", entry.connect_note);
@@ -217,8 +218,8 @@ pub fn connect_in(
 pub fn verify_in(
     store: &Path,
     manifest: &Manifest,
-    _manifest_path: &Path,
-    _sha: &str,
+    manifest_path: &Path,
+    sha: &str,
     ctx: &Context<'_>,
     run: Run<'_>,
 ) -> Verdict {
@@ -228,14 +229,33 @@ pub fn verify_in(
         Verdict::Unverified(why) => ("unverified", why.clone()),
         Verdict::NothingToVerify(why) => ("not-run", why.clone()),
     };
+    let home_text = ctx.home.map(|h| h.to_string_lossy().into_owned());
+    let project_text = ctx.project.to_string_lossy().into_owned();
+    let has_entry = connections::load(store).ok().is_some_and(|all| {
+        all.iter().any(|c| {
+            c.name == manifest.name
+                && c.entries.iter().any(|e| {
+                    e.provider == ctx.provider.as_str()
+                        && e.home == home_text
+                        && e.project == project_text
+                })
+        })
+    });
+    if !has_entry {
+        let manifest_path_text = manifest_path.to_string_lossy().into_owned();
+        let skill = manifest
+            .skill
+            .as_ref()
+            .map(|s| s.to_string_lossy().into_owned());
+        let who = identity(manifest, &manifest_path_text, sha, &skill);
+        let _ = connections::record(store, &who, entry_for(ctx, true, "ok".into()));
+    }
     let _ = connections::set_verify(
         store,
         &manifest.name,
         ctx.provider.as_str(),
-        ctx.home
-            .map(|h| h.to_string_lossy().into_owned())
-            .as_deref(),
-        &ctx.project.to_string_lossy(),
+        home_text.as_deref(),
+        &project_text,
         state,
         &note,
         now(),
@@ -271,7 +291,8 @@ pub fn status_lines(store: &Path) -> Vec<String> {
                 _ => "not verified".to_string(),
             };
             lines.push(format!(
-                "  {}  {}  {}  {connect}  {verify}",
+                "  {}  {}  {}  {}  {connect}  {verify}",
+                c.name,
                 e.provider,
                 home_label(e.home.as_deref()),
                 e.project
@@ -505,6 +526,80 @@ fn skill_cmd(session: &Session<'_>) -> Vec<String> {
     }
 }
 
+fn tools_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<String> {
+    let connections = match connections::load(session.store) {
+        Ok(c) => c,
+        Err(e) => return vec![e],
+    };
+    if connections.is_empty() {
+        return vec!["no harness connected. /harness connect <folder> first".into()];
+    }
+    let mut rows: Vec<(String, super::Tool, Manifest)> = Vec::new();
+    let mut errors = Vec::new();
+    for connection in connections {
+        match reload(&connection.manifest_path, session.cwd, run) {
+            Ok(loaded) => rows.extend(
+                loaded
+                    .manifest
+                    .tools
+                    .iter()
+                    .cloned()
+                    .map(|tool| (connection.name.clone(), tool, loaded.manifest.clone())),
+            ),
+            Err(e) => errors.push(format!("{}: {e}", connection.name)),
+        }
+    }
+    let Some(requested) = args.first() else {
+        if rows.is_empty() {
+            errors.push("connected harnesses declare no tools".into());
+        }
+        return rows
+            .into_iter()
+            .map(|(h, t, _)| format!("{h}/{}  {}", t.name, t.description))
+            .chain(errors)
+            .collect();
+    };
+    let (wanted_harness, wanted_tool) = requested
+        .split_once('/')
+        .map_or((None, requested.as_str()), |(h, t)| (Some(h), t));
+    let Some((harness, tool, manifest)) = rows
+        .into_iter()
+        .find(|(h, t, _)| wanted_tool == t.name && wanted_harness.is_none_or(|w| w == h))
+    else {
+        return vec![format!("no declared harness tool `{requested}`")];
+    };
+    let ctx = Context {
+        provider: session.provider,
+        home: session.home,
+        project: session.cwd,
+    };
+    let mut argv = match expand(&tool.argv, &ctx) {
+        Ok(a) => a,
+        Err(e) => return vec![format!("{}: {e}", tool.name)],
+    };
+    argv[0] = resolve_program(&argv[0], &manifest.dir)
+        .to_string_lossy()
+        .into_owned();
+    let outcome = run(&argv);
+    if outcome.timed_out {
+        return vec![format!("tool {harness}/{} timed out", tool.name)];
+    }
+    let mut out = vec![format!(
+        "tool {harness}/{} exited {}",
+        tool.name,
+        outcome
+            .exit
+            .map_or("without a code".into(), |c| c.to_string())
+    )];
+    if !outcome.stdout.trim().is_empty() {
+        out.push(outcome.stdout.trim_end().into());
+    }
+    if !outcome.stderr.trim().is_empty() {
+        out.push(format!("stderr: {}", outcome.stderr.trim_end()));
+    }
+    out
+}
+
 /// Handle `/harness <arg>` and return the lines to show.
 pub fn dispatch(session: &Session<'_>, arg: &str, run: Run<'_>) -> Vec<String> {
     let args = split_args(arg);
@@ -518,6 +613,7 @@ pub fn dispatch(session: &Session<'_>, arg: &str, run: Run<'_>) -> Vec<String> {
         "verify" => verify_cmd(session, rest, run),
         "disconnect" | "remove" => disconnect_cmd(session, rest),
         "skill" => skill_cmd(session),
+        "tools" => tools_cmd(session, rest, run),
         other => vec![format!(
             "unknown /harness subcommand `{other}`. /harness help lists them"
         )],
@@ -558,7 +654,8 @@ mod tests {
             w.tool.path().join("harness.json"),
             r#"{"name":"mine","version":"1.0","providers":{
                 "claude":{"connect":["h","connect","{provider}","{home}"],"verify":["h","verify","{provider}","{home}","{project}"]},
-                "codex":{"connect":["h","connect","{provider}","{home}"]}}}"#,
+                "codex":{"connect":["h","connect","{provider}","{home}"]}},
+                "tools":[{"name":"brain","description":"query brain","argv":["h","brain","{project}"]}]}"#,
         )
         .unwrap();
         w
@@ -618,30 +715,70 @@ mod tests {
     }
 
     #[test]
+    fn tools_are_listed_and_run_with_expanded_context() {
+        let w = world();
+        let arg = format!("connect {}", w.tool.path().display());
+        dispatch(
+            &session(&w, ProviderKind::Claude),
+            &arg,
+            &|_: &[String]| ok(),
+        );
+        let listed = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "tools",
+            &|_: &[String]| ok(),
+        ));
+        assert!(
+            listed.contains("mine/brain") && listed.contains("query brain"),
+            "{listed}"
+        );
+        let seen = RefCell::new(Vec::new());
+        let output = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "tools brain",
+            &|argv| {
+                seen.borrow_mut().push(argv.to_vec());
+                RunOutcome {
+                    exit: Some(0),
+                    stdout: "answer".into(),
+                    ..RunOutcome::default()
+                }
+            },
+        ));
+        assert!(output.contains("answer"), "{output}");
+        assert_eq!(
+            seen.into_inner()[0],
+            ["h", "brain", &w.project.path().to_string_lossy()]
+        );
+    }
+
+    #[test]
     fn connect_runs_the_declared_command_for_this_account_and_records_it() {
         let w = world();
         let seen = RefCell::new(Vec::new());
-        let run = |argv: &[String]| {
-            seen.borrow_mut().push(argv.to_vec());
-            ok()
-        };
-        let arg = format!("connect {}", w.tool.path().display());
-        let out = text(&dispatch(&session(&w, ProviderKind::Claude), &arg, &run));
-        assert!(out.contains("connected") && out.contains("claude"), "{out}");
+        {
+            let run = |argv: &[String]| {
+                seen.borrow_mut().push(argv.to_vec());
+                ok()
+            };
+            let arg = format!("connect {}", w.tool.path().display());
+            let out = text(&dispatch(&session(&w, ProviderKind::Claude), &arg, &run));
+            assert!(out.contains("connected") && out.contains("claude"), "{out}");
+            let status = text(&dispatch(
+                &session(&w, ProviderKind::Claude),
+                "status",
+                &run,
+            ));
+            assert!(
+                status.contains("mine") && status.contains("not verified"),
+                "{status}"
+            );
+        }
         let seen = seen.into_inner();
         assert_eq!(seen.len(), 1);
         assert_eq!(
             &seen[0][1..],
             ["connect", "claude", &w.home.path().to_string_lossy()]
-        );
-        let status = text(&dispatch(
-            &session(&w, ProviderKind::Claude),
-            "status",
-            &run,
-        ));
-        assert!(
-            status.contains("mine") && status.contains("not verified"),
-            "{status}"
         );
     }
 

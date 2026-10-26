@@ -28,6 +28,13 @@ pub struct ProviderCommands {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tool {
+    pub name: String,
+    pub description: String,
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub name: String,
     pub version: Option<String>,
@@ -35,6 +42,7 @@ pub struct Manifest {
     pub dir: PathBuf,
     pub skill: Option<PathBuf>,
     pub providers: BTreeMap<String, ProviderCommands>,
+    pub tools: Vec<Tool>,
 }
 
 /// How a command ended. Output is truncated by the runner.
@@ -119,7 +127,11 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
     let root: Value =
         serde_json::from_str(text).map_err(|e| format!("manifest is not valid JSON: {e}"))?;
     let obj = root.as_object().ok_or("manifest must be a JSON object")?;
-    check_fields(obj, &["name", "version", "skill", "providers"], "manifest")?;
+    check_fields(
+        obj,
+        &["name", "version", "skill", "providers", "tools"],
+        "manifest",
+    )?;
     let name = obj
         .get("name")
         .and_then(Value::as_str)
@@ -180,12 +192,61 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
             .transpose()?;
         providers.insert(key.clone(), ProviderCommands { connect, verify });
     }
+    let tools = obj
+        .get("tools")
+        .map(|v| -> Result<Vec<Tool>, String> {
+            let list = v.as_array().ok_or("tools must be an array")?;
+            if list.len() > 64 {
+                return Err("tools may contain at most 64 entries".into());
+            }
+            list.iter()
+                .enumerate()
+                .map(|(i, value)| {
+                    let entry = value
+                        .as_object()
+                        .ok_or_else(|| format!("tools[{i}] must be an object"))?;
+                    check_fields(
+                        entry,
+                        &["name", "description", "argv"],
+                        &format!("tools[{i}]"),
+                    )?;
+                    let name = entry
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|n| valid_name(n))
+                        .ok_or_else(|| {
+                            format!("tools[{i}].name must be lowercase letters, digits and dashes")
+                        })?
+                        .to_string();
+                    let description = entry
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .filter(|d| !d.trim().is_empty() && d.len() <= 256)
+                        .ok_or_else(|| format!("tools[{i}].description must be a short string"))?
+                        .to_string();
+                    let argv = parse_argv(
+                        entry
+                            .get("argv")
+                            .ok_or_else(|| format!("tools[{i}].argv is required"))?,
+                        &format!("tools[{i}].argv"),
+                    )?;
+                    Ok(Tool {
+                        name,
+                        description,
+                        argv,
+                    })
+                })
+                .collect()
+        })
+        .transpose()?
+        .unwrap_or_default();
     Ok(Manifest {
         name,
         version,
         dir: dir.to_path_buf(),
         skill,
         providers,
+        tools,
     })
 }
 

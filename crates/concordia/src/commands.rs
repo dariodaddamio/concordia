@@ -43,6 +43,8 @@ pub enum SlashCommand {
     DelegateHelp,
     /// `/delegate protocol [on|off]`.
     DelegateProtocol(Option<bool>),
+    /// `/harness ...` is executed by the TUI because it needs the live account home.
+    Harness(String),
     /// A known command received an unsupported argument. Keeping this distinct prevents
     /// misspelled destructive commands such as `/update typo` from running.
     Invalid(String),
@@ -168,6 +170,10 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         "version" | "ver" | "about" => Some((SlashCommand::Version, false)),
         "copy" | "cp" => Some((SlashCommand::Copy, false)),
         "doctor" | "diag" => Some((SlashCommand::Doctor, false)),
+        "harness" => Some((
+            SlashCommand::Harness(body["harness".len()..].trim().to_string()),
+            false,
+        )),
         "exit" | "quit" | "q" => Some((SlashCommand::Exit, false)),
         "workers" | "worker" | "delegate" | "delegates" => {
             parse_delegation(&cmd, body).map(|c| (c, false))
@@ -244,6 +250,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/delegate use", "send a worker result to this chat"),
     ("/delegate help", "how delegation works"),
     ("/doctor", "check your setup"),
+    ("/harness", "connect, verify and run tools from any harness"),
     ("/exit", "quit"),
 ];
 
@@ -397,6 +404,10 @@ pub fn dispatch_slash(
         SlashCommand::Unknown(name) => (
             CommandOutcome::Ok,
             vec![format!("unknown command: /{name} — try /config")],
+        ),
+        SlashCommand::Harness(_) => (
+            CommandOutcome::Ok,
+            vec!["/harness runs inside the Concordia TUI".into()],
         ),
     }
 }

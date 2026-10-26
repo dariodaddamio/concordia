@@ -6,6 +6,15 @@ contract the pieces are built against.
 
 ## Principles
 
+## Harness adapters
+
+`/harness` is a user-invoked bridge for any local harness. A `harness.json` manifest declares
+provider-specific connect/verify argv and optional named tools; Concordia expands only
+`{provider}`, `{home}` and `{project}`, runs without a shell, and stores connection state under
+the Concordia state directory. Tools are listed or run explicitly and never become a model-owned
+runtime. A verify receipt is written only after a successful adapter denial report matching the
+current provider, isolated home and policy revision; provider turns cannot create receipts.
+
 1. **Pointers, not payloads.** When a model needs context from another thread, give it a small
    map and a way to fetch the part it needs. Never paste a transcript.
 2. **No summariser model.** Maps are built deterministically from recorded events. They cost no

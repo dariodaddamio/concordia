@@ -2005,6 +2005,28 @@ impl App {
         if self.try_delegate_slash(&cmd) {
             return true;
         }
+        if let SlashCommand::Harness(arg) = &cmd {
+            self.push_command(line);
+            let accounts = accounts_with_auth(&self.state_root)
+                .into_iter()
+                .map(|a| (a.provider, a.home_path))
+                .collect();
+            let session = crate::harness::command::Session {
+                store: &self.state_root,
+                cwd: &self.cwd,
+                provider: self.provider,
+                home: self.home_path.as_deref(),
+                accounts,
+            };
+            let cwd = self.cwd.clone();
+            let lines = crate::harness::command::dispatch(&session, arg, &|argv| {
+                crate::harness::run::run_command(argv, &cwd, crate::harness::run::DEFAULT_TIMEOUT)
+            });
+            for l in lines {
+                self.push_system(l);
+            }
+            return true;
+        }
         if matches!(&cmd, SlashCommand::Unknown(n) if n == "stats") {
             self.push_command(line);
             self.toggle_stats();
