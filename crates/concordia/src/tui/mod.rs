@@ -39,7 +39,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget};
 use ratatui::{Frame, Terminal};
 use std::collections::HashMap;
-use std::io::{self, stdout, Write};
+use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -49,11 +49,13 @@ mod activity;
 mod chatref;
 mod clipboard;
 mod compat_ui;
+mod continuation;
 mod editor;
 mod files;
 mod input;
 mod input_stream;
 mod markdown;
+mod native_agents;
 mod palette;
 mod persist;
 mod preview;
@@ -62,6 +64,9 @@ mod queue_controls;
 mod queue_focus;
 mod recovery;
 mod recovery_ui;
+mod session_ui;
+#[cfg(test)]
+mod session_ui_tests;
 mod stats_ui;
 mod text;
 mod tips;
@@ -69,6 +74,7 @@ mod token_line;
 mod transcript;
 mod usage_style;
 mod workers;
+mod workspace;
 
 use editor::Editor;
 use palette::Palette;
@@ -221,6 +227,7 @@ struct PendingLogin {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PickerKind {
+    Agents,
     Recovery,
     Resume,
     Trust,
@@ -267,12 +274,12 @@ impl Picker {
 }
 
 pub struct App {
+    continuation: continuation::State,
     state_root: PathBuf,
     cwd: PathBuf,
     messages: Vec<ChatLine>,
     editor: Editor,
-    /// The visible prompt for the active turn, restored if that turn is cancelled and the
-    /// user has not started typing a replacement draft.
+    /// The visible prompt for the active turn; cancellation never inserts it into the editor.
     submitted_prompt: Option<String>,
     expanded_activity: bool,
     activity: activity::Activity,
@@ -292,6 +299,7 @@ pub struct App {
     areas: Areas,
     drag: Drag,
     file_jobs: Vec<mpsc::UnboundedReceiver<String>>,
+    workspace: workspace::Workspace,
     file_click: Option<transcript::Pos>,
     #[cfg(test)]
     last_file_open: Option<crate::file_links::ResolvedFile>,
@@ -311,6 +319,8 @@ pub struct App {
     trust: TrustMode,
     native_session_id: Option<String>,
     session_chip: Option<String>,
+    session_ui: session_ui::State,
+    native_agents: native_agents::State,
     footer_left: String,
     picker: Option<Picker>,
     cancel_handle: Option<Arc<RunningTurn>>,
@@ -336,6 +346,7 @@ pub struct App {
     picker_tones: HashMap<String, UsageTone>,
     live_cards: Vec<StreamCard>,
     live_text: String,
+    streamed_text_committed: bool,
     live_thinking: String,
     phase: Phase,
     /// A background `/update` or `/update check`; the UI stays live while it runs.
@@ -363,7 +374,7 @@ pub struct App {
     user_cmds: Vec<crate::user_commands::UserCommand>,
     /// Prompts lined up behind the running turn (see queue.rs).
     queue: queue::Queue,
-    /// The prompt of the turn in flight, put back in the box if the turn fails or is cancelled.
+    /// The prompt of the turn in flight, offered for retry only if the turn fails.
     last_sent: Option<String>,
     /// What the draft/history persistence has written (see persist.rs).
     keep: persist::Keep,
@@ -372,6 +383,16 @@ pub struct App {
 impl App {
     fn refresh_binding(&mut self) {
         if let Some(sel) = get_use_selection(&self.state_root) {
+            if self.account != sel.account
+                || self.provider != sel.provider
+                || self
+                    .home_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    != sel.home_path
+            {
+                self.session_ui.invalidate();
+            }
             self.provider = sel.provider;
             self.account = sel.account;
             self.home_path = sel.home_path.map(PathBuf::from);
@@ -472,7 +493,7 @@ impl App {
     }
 
     fn window_title(&self) -> String {
-        format!(
+        let base = format!(
             "concordia · {} · {} · {}",
             self.account_label(),
             if self.model.is_empty() {
@@ -481,7 +502,12 @@ impl App {
                 &self.model
             },
             short_stamp()
-        )
+        );
+        self.session_ui
+            .title
+            .as_ref()
+            .map(|title| format!("{title} · {base}"))
+            .unwrap_or(base)
     }
 
     /// Suggestions for the prompt as typed (empty when closed, dismissed, or not a slash prompt).
@@ -583,6 +609,10 @@ impl App {
             return;
         }
         if queue::paste(self, text, continues) {
+            return;
+        }
+        if self.workspace.focused.is_some() {
+            self.flash("read-only file pane; Esc returns to chat before pasting");
             return;
         }
         self.view.clear_selection();
@@ -710,7 +740,11 @@ impl App {
                 let _ = t.write_meta(&crate::threads::ThreadMeta {
                     id: t.id().to_string(),
                     started: crate::threads::now_secs(),
-                    title: crate::threads::title_from_prompt(text),
+                    title: self
+                        .session_ui
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| crate::threads::title_from_prompt(text)),
                     cwd: self.cwd.to_string_lossy().into_owned(),
                     account: Some(self.account.clone()),
                 });
@@ -796,9 +830,12 @@ impl App {
             let existing = &mut self.messages[i];
             existing.card = Some(card);
             existing.text = text;
+            self.native_agents
+                .record(existing.card.as_ref().unwrap(), i);
             if self.activity.detail == Some(i) {
                 self.activity.invalidate_search();
             }
+            self.refresh_agents_picker();
             return;
         }
         let meta = Some(self.reply_meta());
@@ -808,14 +845,20 @@ impl App {
             card: Some(card),
             meta,
         });
+        if let Some(card) = self.messages.last().and_then(|m| m.card.as_ref()) {
+            self.native_agents.record(card, self.messages.len() - 1);
+        }
+        self.refresh_agents_picker();
     }
 
     fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
             TurnProgress::Session(id) => {
                 self.native_session_id = Some(id);
+                self.persist_session_title();
             }
             TurnProgress::Thinking(t) => {
+                self.commit_live_text();
                 self.phase = Phase::Thinking;
                 self.live_thinking.push_str(&t);
                 if !t.ends_with('\n') {
@@ -823,6 +866,7 @@ impl App {
                 }
             }
             TurnProgress::Text(t) => {
+                self.commit_live_thinking();
                 self.phase = Phase::Writing;
                 self.live_text.push_str(&t);
                 if !t.ends_with('\n') {
@@ -830,6 +874,8 @@ impl App {
                 }
             }
             TurnProgress::Card(card) => {
+                self.commit_live_thinking();
+                self.commit_live_text();
                 self.phase = if card.status == CardStatus::Running {
                     Phase::Tool(card.title.clone())
                 } else {
@@ -842,6 +888,11 @@ impl App {
                 }
             }
             TurnProgress::Error(e) => {
+                if self.continuation.errors.len() < 12 {
+                    self.continuation
+                        .errors
+                        .push(e.chars().take(2000).collect());
+                }
                 self.push_system(e);
             }
             TurnProgress::Usage(u) => {
@@ -861,6 +912,27 @@ impl App {
         }
     }
 
+    fn commit_live_text(&mut self) {
+        let text = std::mem::take(&mut self.live_text);
+        if !text.trim().is_empty() {
+            self.push_assistant(text.trim().to_string());
+            self.streamed_text_committed = true;
+        }
+    }
+
+    fn commit_live_thinking(&mut self) {
+        let text = std::mem::take(&mut self.live_thinking);
+        if !text.is_empty() {
+            let meta = Some(self.reply_meta());
+            self.messages.push(ChatLine {
+                role: MsgRole::Thinking,
+                text,
+                card: None,
+                meta,
+            });
+        }
+    }
+
     /// The tip to show dimmed under the transcript, if the moment is right.
     fn visible_tip(&self) -> Option<&'static str> {
         let quiet = !self.busy
@@ -876,11 +948,7 @@ impl App {
     }
 
     fn finalize_turn(&mut self, outcome: TurnOutcome) {
-        if outcome.cancelled {
-            self.restore_submitted_prompt();
-        } else {
-            self.submitted_prompt = None;
-        }
+        self.submitted_prompt = None;
         let elapsed = self.turn_started.map(|t| t.elapsed());
         let usage = std::mem::take(&mut self.turn_usage);
         self.session_input += usage.input.unwrap_or(0);
@@ -901,13 +969,15 @@ impl App {
         ));
         if let Some(sid) = outcome.session_id {
             self.native_session_id = Some(sid);
+            self.persist_session_title();
         }
         let had_cards = !self.live_cards.is_empty() || !outcome.cards.is_empty();
         let failed = !outcome.cancelled
-            && match outcome.exit_code {
-                Some(code) => code != 0,
-                None => !outcome.stderr_tail.trim().is_empty(),
-            };
+            && (outcome.failed
+                || match outcome.exit_code {
+                    Some(code) => code != 0,
+                    None => !outcome.stderr_tail.trim().is_empty(),
+                });
         let finish_incomplete = |mut card: StreamCard| {
             card.status = CardStatus::Error;
             let reason = if outcome.cancelled {
@@ -953,11 +1023,15 @@ impl App {
         }
         let text = if !self.live_text.trim().is_empty() {
             self.live_text.trim().to_string()
-        } else {
+        } else if !self.streamed_text_committed && !outcome.cancelled {
             outcome.text.trim().to_string()
+        } else {
+            String::new()
         };
         let scan_text = if outcome.cancelled {
             String::new()
+        } else if !outcome.text.is_empty() {
+            outcome.text.clone()
         } else {
             text.clone()
         };
@@ -973,29 +1047,32 @@ impl App {
                 meta,
             });
         }
-        if outcome.cancelled {
-            self.push_system("cancelled");
-        } else if !text.is_empty() {
+        let has_reply = !text.is_empty() || self.streamed_text_committed;
+        if !text.is_empty() {
             self.push_assistant(text);
-            if token_line::ui_token_line_enabled() {
-                let line = token_line::format_line(&usage, elapsed);
-                if !line.is_empty() {
-                    self.messages.push(ChatLine {
-                        role: MsgRole::Meta,
-                        text: line,
-                        card: None,
-                        meta: None,
-                    });
-                }
-            }
-        } else if !had_cards && !failed {
+        } else if !had_cards && !failed && !outcome.cancelled && !self.streamed_text_committed {
             self.push_system("(no text in provider stream)");
+        }
+        if has_reply && !outcome.cancelled && token_line::ui_token_line_enabled() {
+            let line = token_line::format_line(&usage, elapsed);
+            if !line.is_empty() {
+                self.messages.push(ChatLine {
+                    role: MsgRole::Meta,
+                    text: line,
+                    card: None,
+                    meta: None,
+                });
+            }
+        }
+        if outcome.cancelled {
+            self.push_system("cancelled - queued work paused; completed actions were not undone");
         }
         if failed && outcome.stderr_tail.contains("already has an active writer") {
             self.push_system("this Codex session is open in another client or pane. Close its active turn, then retry the restored prompt; /new starts a separate conversation. Concordia will not replay it automatically.");
         }
         if failed {
             self.push_system(match outcome.exit_code {
+                Some(0) => "provider reported a turn failure".to_string(),
                 Some(code) => format!("provider exited with code {code}"),
                 None => "provider could not run".to_string(),
             });
@@ -1020,12 +1097,14 @@ impl App {
         }
         self.live_cards.clear();
         self.live_text.clear();
+        self.streamed_text_committed = false;
         self.live_thinking.clear();
         self.turn_finished(outcome.cancelled, failed);
         self.scan_delegation(&scan_text);
         // The turn used some of this account's limits: re-check them in the background.
         self.usage_fetcher.invalidate(&self.account);
         self.refresh_usage();
+        self.update_usage_block();
     }
 
     /// `/threads` lists recent recorded threads; `/threads delete <id>` removes one.
@@ -1112,6 +1191,8 @@ impl App {
         }
         self.persist_tick();
         self.poll_file_jobs();
+        self.poll_session_history();
+        self.workspace.poll();
         self.poll_pending_login();
         self.poll_job();
         self.poll_compat();
@@ -1617,6 +1698,22 @@ impl App {
             return;
         }
         match kind {
+            PickerKind::Agents => {
+                if let Some(index) = id
+                    .strip_prefix("native-agent:")
+                    .and_then(|i| i.parse::<usize>().ok())
+                {
+                    if self.messages.get(index).is_some_and(|m| m.card.is_some()) {
+                        self.activity.open(index);
+                    }
+                }
+                if let Some(id) = id
+                    .strip_prefix("worker-agent:")
+                    .and_then(|id| id.parse::<u32>().ok())
+                {
+                    self.inspect_worker(id);
+                }
+            }
             PickerKind::Recovery => {
                 if let Some(id) = id.strip_prefix("recover:") {
                     self.choose_recovery(id);
@@ -1634,51 +1731,7 @@ impl App {
                         self.push_system("resume failed — missing session id");
                         return;
                     }
-                    let prev_home = self
-                        .home_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let prev_prov = self.provider;
-                    if let Err(e) = select_account(&self.state_root, &account) {
-                        self.push_system(format!("resume account switch failed — {e}"));
-                        return;
-                    }
-                    self.refresh_binding();
-                    let new_home = self
-                        .home_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let msgs = self.pack_messages();
-                    let decision = plan_continuity(&ContinuityRequest {
-                        from_provider: prev_prov,
-                        to_provider: self.provider,
-                        from_home: prev_home.as_deref(),
-                        to_home: new_home.as_deref(),
-                        session_id: Some(&session_id),
-                        messages: &msgs,
-                        thread_id: self.thread_id(),
-                        include_pack_if_needed: true,
-                    });
-                    self.native_session_id = decision.session_id.clone();
-                    self.need_context_pack = decision.pack.is_some();
-                    self.log_switch(prev_prov);
-                    self.session_chip = Some(label.clone());
-                    if decision.native_resume {
-                        self.messages.clear();
-                        self.activity = activity::Activity::default();
-                        self.expanded_activity = false;
-                        self.view.follow_tail();
-                        self.push_system(format!(
-                            "resumed · {} · {label} — next message continues that session (pack omitted)",
-                            self.account_label()
-                        ));
-                    } else if let Some(pack) = &decision.pack {
-                        self.push_system(format!("{} · ~{} tok", pack.labeled, pack.est_tokens));
-                    } else {
-                        self.push_system(decision.reason);
-                    }
-                    self.prior_provider = self.provider;
-                    self.prior_home = new_home;
+                    self.resume_session(&account, &session_id);
                 }
             }
             PickerKind::Trust => {
@@ -1767,7 +1820,7 @@ impl App {
                     });
                     self.native_session_id = decision.session_id.clone();
                     if !decision.native_resume {
-                        self.session_chip = None;
+                        self.session_chip = self.session_ui.title.clone();
                     }
                     self.need_context_pack = decision.pack.is_some();
                     self.log_switch(prev_prov);
@@ -1832,7 +1885,7 @@ impl App {
                         include_pack_if_needed: true,
                     });
                     self.native_session_id = decision.session_id.clone();
-                    self.session_chip = None;
+                    self.session_chip = self.session_ui.title.clone();
                     self.need_context_pack = decision.pack.is_some();
                     self.log_switch(prev_prov);
                     if let Some(pack) = &decision.pack {
@@ -1848,8 +1901,12 @@ impl App {
     }
 
     fn handle_slash(&mut self, line: &str) -> bool {
-        if matches!(line.trim(), "/open" | "/preview") {
-            self.push_system("usage: /open FILE or /preview FILE");
+        if line.trim() == "/agents" {
+            self.open_agents_picker();
+            return true;
+        }
+        if matches!(line.trim(), "/open" | "/preview" | "/edit") {
+            self.push_system("usage: /open FILE or /preview FILE (internal read-only); /edit FILE (external editor)");
             return true;
         }
         if let Some(reference) = line.trim().strip_prefix("/open ") {
@@ -1857,7 +1914,30 @@ impl App {
             return true;
         }
         if let Some(reference) = line.trim().strip_prefix("/preview ") {
+            self.file_command(reference, false);
+            return true;
+        }
+        if let Some(reference) = line.trim().strip_prefix("/edit ") {
             self.file_command(reference, true);
+            return true;
+        }
+        if line.trim() == "/close" || line.trim().starts_with("/close ") {
+            let target = line
+                .trim()
+                .strip_prefix("/close")
+                .unwrap_or_default()
+                .trim();
+            let id = if target.is_empty() {
+                self.workspace.focused
+            } else {
+                target.parse::<u32>().ok()
+            };
+            match id {
+                Some(id) if self.workspace.close(id) => {
+                    self.flash(format!("closed file pane #{id}"))
+                }
+                _ => self.flash("usage: /close PANE_ID (or /close with a file pane focused)"),
+            }
             return true;
         }
         if line.trim() == "/recover" {
@@ -1940,6 +2020,10 @@ impl App {
         let is_new = matches!(cmd, SlashCommand::New);
         let (outcome, lines) = dispatch_slash(cmd, &ctx);
         if is_new {
+            self.continuation.invalidate();
+            self.native_agents = native_agents::State::default();
+            self.session_ui.invalidate();
+            self.session_ui.title = None;
             self.messages.clear();
             self.activity = activity::Activity::default();
             self.expanded_activity = false;
@@ -1947,6 +2031,10 @@ impl App {
             self.clear_selections();
             self.native_session_id = None;
             self.session_chip = None;
+            self.usage_block = None;
+            self.session_input = 0;
+            self.session_output = 0;
+            self.session_cost = 0.0;
             self.need_context_pack = false;
             self.thread = crate::threads::start(&self.state_root);
             self.thread_meta_done = false;
@@ -2054,6 +2142,10 @@ impl App {
             return;
         }
         let user_prompt = crate::user_commands::expand(&self.user_cmds, &line);
+        if self.session_ui.loading() && (!line.starts_with('/') || user_prompt.is_some()) {
+            self.flash("recent messages are loading; your draft is kept");
+            return;
+        }
         if self.busy && (!line.starts_with('/') || user_prompt.is_some()) {
             self.push_system("a turn is already running - wait for it to finish or cancel it");
             return;
@@ -2079,6 +2171,27 @@ impl App {
     /// Run a prompt that has left the box: a slash command, or a turn. Typed prompts and queued
     /// ones both come through here, so trust mode, account and provider apply at send time.
     fn run_line(&mut self, line: String, turn_tx: &mpsc::UnboundedSender<String>) {
+        if let Some(arg) = line
+            .strip_prefix("/continue")
+            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
+        {
+            self.continue_usage(arg.trim(), turn_tx);
+            return;
+        }
+        if let Some(arg) = line
+            .strip_prefix("/continuation")
+            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
+        {
+            self.continuation_command(arg.trim());
+            return;
+        }
+        if self.session_ui.loading() && !line.starts_with('/') {
+            self.flash("recent messages are loading; wait before sending");
+            if self.editor.text().is_empty() {
+                self.editor.set_text(&line);
+            }
+            return;
+        }
         self.view.follow_tail();
         // A user command shows as typed and sends its rendered template as an ordinary turn.
         let mut send = line.clone();
@@ -2089,7 +2202,9 @@ impl App {
             return;
         }
         self.submitted_prompt = Some(line.clone());
+        self.continuation.begin(&self.account, &line);
         self.last_sent = Some(line.clone());
+        self.ensure_session_title(&line);
         let refs = self.expand_chat_refs(&send);
         self.push_user(line.clone());
         send = self.show_chat_refs(refs);
@@ -2102,8 +2217,11 @@ impl App {
     }
 
     fn request_cancel(&mut self) {
+        if self.cancel_requested {
+            return;
+        }
         self.cancel_requested |= self.submitted_prompt.is_some();
-        self.restore_submitted_prompt();
+        self.submitted_prompt = None;
         self.pause_queue();
         if let Some(h) = &self.cancel_handle {
             h.cancel();
@@ -2140,20 +2258,6 @@ impl App {
         self.cancel_requested = false;
         true
     }
-
-    fn restore_submitted_prompt(&mut self) {
-        if self.editor.chars().is_empty() {
-            if let Some(prompt) = self.submitted_prompt.take() {
-                self.editor.set_text(&prompt);
-                self.hist_pos = None;
-                self.hist_draft.clear();
-            }
-        } else {
-            // The current buffer is a newer draft. Drop the saved prompt so a late result
-            // cannot replace anything the user types after cancellation.
-            self.submitted_prompt = None;
-        }
-    }
 }
 
 impl App {
@@ -2161,6 +2265,7 @@ impl App {
         let state_root_for_usage = state_root.clone();
         let state_root_for_cmds = state_root.clone();
         App {
+            continuation: continuation::State::new(&state_root),
             state_root,
             cwd,
             messages: vec![ChatLine {
@@ -2185,6 +2290,7 @@ impl App {
             areas: Areas::default(),
             drag: Drag::None,
             file_jobs: Vec::new(),
+            workspace: workspace::Workspace::default(),
             file_click: None,
             #[cfg(test)]
             last_file_open: None,
@@ -2202,6 +2308,8 @@ impl App {
             trust: TrustMode::Workspace,
             native_session_id: None,
             session_chip: None,
+            session_ui: session_ui::State::default(),
+            native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
             cancel_handle: None,
@@ -2220,6 +2328,7 @@ impl App {
             picker_tones: HashMap::new(),
             live_cards: Vec::new(),
             live_text: String::new(),
+            streamed_text_committed: false,
             live_thinking: String::new(),
             phase: Phase::Waiting,
             job: None,
@@ -2545,6 +2654,11 @@ pub async fn run_chat_tui() -> Result<()> {
             }
 
             while let Ok(outcome) = done_rx.try_recv() {
+                // Progress is sent before completion, but may arrive between the earlier
+                // drain and this receive. Finish it before finalizing or switching sessions.
+                while let Ok(ev) = progress_rx.try_recv() {
+                    app.apply_progress(ev);
+                }
                 app.cancel_requested = false;
                 app.on_turn_done(outcome, &turn_tx);
             }
@@ -2695,6 +2809,10 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    if ctrl && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
+        app.open_agents_picker();
+        return false;
+    }
     let tw = app.areas.input_text_w.max(1);
 
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('o' | 'O'))
@@ -2747,9 +2865,14 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         || queue_focus::handle_key(app, &key)
         || queue::handle_key(app, &key)
     {
+        app.workspace.focused = None;
         return false;
     }
     if workers::handle_key(app, &key) {
+        app.workspace.focused = None;
+        return false;
+    }
+    if workspace::handle_key(app, &key) {
         return false;
     }
 
@@ -3014,7 +3137,14 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         }
         return;
     }
-    if app.picker.is_some() || workers::handle_mouse(app, &m) || queue::handle_mouse(app, &m) {
+    if app.picker.is_some() {
+        return;
+    }
+    if workers::handle_mouse(app, &m) || queue::handle_mouse(app, &m) {
+        app.workspace.focused = None;
+        return;
+    }
+    if workspace::handle_mouse(app, &m) {
         return;
     }
     let (x, y) = (m.column, m.row);
@@ -3190,14 +3320,14 @@ fn restore_terminal() {
 }
 
 fn write_osc_title(title: &str) -> io::Result<()> {
-    let mut out = stdout();
-    write!(out, "\x1b]0;{title}\x07")?;
-    out.flush()
+    let clean: String = title.chars().filter(|c| !c.is_control()).collect();
+    execute!(stdout(), crossterm::terminal::SetTitle(clean))
 }
 
 fn draw_ui(f: &mut Frame, app: &mut App) {
+    let chat_area = workspace::draw(f, app);
     // The prompt box grows with its content (up to MAX_INPUT_ROWS), so size it first.
-    let text_w = (f.area().width as usize)
+    let text_w = (chat_area.width as usize)
         .saturating_sub(2 + PROMPT_W)
         .max(1);
     let input_rows = app.editor.layout(text_w).len().clamp(1, MAX_INPUT_ROWS);
@@ -3209,7 +3339,7 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
             Constraint::Length(input_rows as u16 + 2),
             Constraint::Length(1),
         ])
-        .split(f.area())
+        .split(chat_area)
         .to_vec();
     // The queue panel sits right above the prompt, the worker rows above it (each is nothing
     // when empty).
@@ -3392,6 +3522,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(format!("  {model}"), bar.fg(Color::Gray)),
     ];
+    if app.native_agents.count() > 0 {
+        left.push(Span::styled(
+            format!("  /agents {}", app.native_agents.count()),
+            bar.fg(Color::Cyan),
+        ));
+    }
     if let Some(chip) = app.session_chip.as_deref() {
         left.push(Span::styled(
             format!("  \u{25b8} {chip}"),
@@ -3443,7 +3579,13 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .map(|c| format!("{}\n{}", c.title, c.detail.as_deref().unwrap_or("")))
                 .map(Some)
                 .unwrap_or(None),
-            MsgRole::Thinking if !app.expanded_activity => Some(condense_thinking(&m.text)),
+            MsgRole::Thinking if !app.expanded_activity => Some(format!(
+                "{} · Ctrl+O expands activity",
+                crate::provider::stream_cards::compact_detail(
+                    &tail_lines(&condense_thinking(&m.text), 1),
+                    100
+                )
+            )),
             _ => None,
         })
         .collect();
@@ -3974,7 +4116,11 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 
     // Real terminal caret (blinks natively, works with IME); hidden while a picker is open.
-    if app.picker.is_none() && app.activity.detail.is_none() && !app.queue.focused {
+    if app.picker.is_none()
+        && app.activity.detail.is_none()
+        && !app.queue.focused
+        && app.workspace.focused.is_none()
+    {
         let x = inner.x + (PROMPT_W + cur_col).min(inner.width.saturating_sub(1) as usize) as u16;
         let y = inner.y + (cur_row - app.input_scroll) as u16;
         f.set_cursor_position(Position::new(x, y));

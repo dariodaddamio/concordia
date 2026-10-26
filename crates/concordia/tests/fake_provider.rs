@@ -127,6 +127,47 @@ const NASTY: &str = "line one\nline two with \"double\" and 'single' quotes\n\
     unicode 日本語 émoji ✓\n  indented\ttab";
 
 #[tokio::test]
+async fn shell_start_arrives_while_provider_waits_for_completion_gate() {
+    use concordia::provider::stream_cards::CardStatus;
+    let mut env = Env::new();
+    env.use_codex(false);
+    env.set("FAKE_PROVIDER_MODE", "gated-stream");
+    env.set("FAKE_PROVIDER_STREAM", fixture("codex-stream.jsonl"));
+    let gate = env.path("release-stream");
+    env.set("FAKE_PROVIDER_GATE", &gate);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let cwd = env.path("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let request = req("stream before completion", &cwd, None);
+    let run = run_provider_turn_with_progress(&request, None, Some(tx));
+    tokio::pin!(run);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                result = &mut run => panic!("provider finished before gate release: {result:?}"),
+                event = rx.recv() => match event.expect("progress stream open") {
+                    TurnProgress::Card(card) if card.status == CardStatus::Running => break,
+                    _ => {}
+                }
+            }
+        }
+    })
+    .await
+    .expect("running shell event must arrive before completion");
+    assert!(!gate.exists());
+    std::fs::write(gate, "release").unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome.exit_code, Some(0));
+    assert!(outcome
+        .cards
+        .iter()
+        .any(|card| card.status == CardStatus::Done));
+}
+
+#[tokio::test]
 async fn streams_session_text_and_cards_through_the_real_runner() {
     let mut env = Env::new();
     env.use_codex(false);
@@ -355,10 +396,10 @@ async fn wait_for_file(path: &Path, secs: u64) -> String {
     panic!("timed out waiting for {}", path.display());
 }
 
-async fn cancel_scenario(via_cmd_shim: bool) {
+async fn cancel_scenario(via_cmd_shim: bool, mode: &str) {
     let mut env = Env::new();
     env.use_codex(via_cmd_shim);
-    env.set("FAKE_PROVIDER_MODE", "hang");
+    env.set("FAKE_PROVIDER_MODE", mode);
     let pid_file = env.path("pid.txt");
     env.set("FAKE_PROVIDER_PID", &pid_file);
     let cwd = env.path("work");
@@ -375,6 +416,9 @@ async fn cancel_scenario(via_cmd_shim: bool) {
         .expect("handle sent");
     let pid: u32 = wait_for_file(&pid_file, 15).await.trim().parse().unwrap();
     assert!(pid_alive(pid), "provider should be running before cancel");
+    if mode == "eof-hang" {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     handle.cancel();
     let outcome = tokio::time::timeout(Duration::from_secs(10), task)
@@ -397,12 +441,18 @@ async fn cancel_scenario(via_cmd_shim: bool) {
 
 #[tokio::test]
 async fn cancel_stops_a_direct_provider() {
-    cancel_scenario(false).await;
+    cancel_scenario(false, "hang").await;
 }
 
 #[tokio::test]
 async fn cancel_stops_the_provider_behind_a_cmd_shim_not_just_the_shim() {
-    cancel_scenario(true).await;
+    cancel_scenario(true, "hang").await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn cancel_after_stdout_eof_is_reported_as_cancellation() {
+    cancel_scenario(false, "eof-hang").await;
 }
 
 async fn stream_after_odd_output(mode: &'static str) -> concordia::provider::TurnOutcome {

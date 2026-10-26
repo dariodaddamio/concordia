@@ -2,7 +2,9 @@
 //! Every provider path, account home, workspace and state folder is isolated.
 #![cfg(windows)]
 
-use concordia::store::{save_store, OrchestratorStore, ProviderKind, UseSelection};
+use concordia::store::{
+    save_store, set_delegation_protocol, set_workers, OrchestratorStore, ProviderKind, UseSelection,
+};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde_json::Value;
 use std::io::{Read, Write};
@@ -15,6 +17,37 @@ const FAKE: &str = env!("CARGO_BIN_EXE_concordia-fake-provider");
 const COLS: usize = 120;
 const ROWS: usize = 40;
 static JOURNEY_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn usage_limit_automatically_continues_on_configured_provider_without_foreign_session() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    std::fs::write(dir.path().join("config.toml"), "[threads]\nenabled=true\n[ui]\ntips=false\n[continuation]\nmode='automatic'\naccounts=['claude']\n").unwrap();
+    let mut s = Session::launch(dir.path());
+    s.submit("Fix graph [quota]");
+    s.until("handoff reply completed", |s| {
+        s.journal()
+            .iter()
+            .any(|e| e["kind"] == "done" && e["provider"] == "claude")
+    });
+    let events = s.journal();
+    let starts: Vec<_> = events.iter().filter(|e| e["kind"] == "start").collect();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[0]["provider"], "codex");
+    assert_eq!(starts[1]["provider"], "claude");
+    let prompt = starts[1]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("[concordia map]"));
+    assert!(prompt.contains("Original request:\nFix graph [quota]"));
+    assert!(!starts[1]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|arg| arg == "quota-source-session" || arg == "--resume"));
+    assert!(starts[1]["home"].as_str().unwrap().ends_with(".claude"));
+    s.until("idle after continuation", |s| s.screen().contains("in 123"));
+    s.exit();
+}
 
 struct Session {
     child: Box<dyn Child + Send + Sync>,
@@ -496,29 +529,54 @@ fn queue_can_be_edited_reordered_and_automatically_sent_with_a_draft_in_progress
 #[test]
 fn cancellation_pauses_queued_work_and_restart_restores_both_queue_and_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    let mut s = Session::launch(dir.path());
-    s.submit("[wait] cancel this");
-    s.until("turn started", |s| s.prompts().len() == 1);
-    s.paste("queued followup");
-    s.queue_current_draft("queued followup");
-    s.paste("preserve this draft");
-    s.send("\x1b");
-    s.until("cancel and pause", |s| s.screen().contains("queue paused"));
-    s.until("draft preserved", |s| s.draft() == "preserve this draft");
-    assert_eq!(s.prompts().len(), 1);
-    drop(s); // abrupt exit, not /exit
-    let mut s = Session::launch(dir.path());
-    s.until("restored draft", |s| {
-        s.screen().contains("preserve this draft")
-    });
-    s.until("restored paused queue", |s| {
-        s.screen().contains("queue paused")
-    });
-    assert_eq!(s.queue(), ["queued followup"]);
-    assert_eq!(s.prompts().len(), 1);
-    s.exit();
+    for provider in [
+        ProviderKind::Codex,
+        ProviderKind::Claude,
+        ProviderKind::Cursor,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        setup(dir.path(), provider);
+        let mut s = Session::launch(dir.path());
+        s.submit("[wait] cancel this");
+        s.until("turn started", |s| s.prompts().len() == 1);
+        s.until("running command visible before provider completion", |s| {
+            s.screen().contains("synthetic-command")
+        });
+        assert!(
+            !dir.path().join("gate").exists(),
+            "the command must render while provider completion is gated"
+        );
+        assert!(
+            s.journal().iter().all(|event| event["kind"] != "done"),
+            "provider must still be running when its command is visible"
+        );
+        s.send("\x0f"); // Ctrl+O: inspect the running command, not only its compact row.
+        s.until("full running command visible before completion", |s| {
+            s.screen().contains("command-tail")
+        });
+        s.paste("queued followup");
+        s.queue_current_draft("queued followup");
+        s.paste("preserve this draft");
+        s.send("\x1b");
+        s.until("cancel and pause", |s| s.screen().contains("queue paused"));
+        s.until("draft preserved", |s| s.draft() == "preserve this draft");
+        assert_eq!(s.prompts().len(), 1);
+        drop(s); // abrupt exit, not /exit
+        let mut s = Session::launch(dir.path());
+        s.until("restored draft", |s| {
+            s.screen().contains("preserve this draft")
+        });
+        s.until("restored paused queue", |s| {
+            s.screen().contains("queue paused")
+        });
+        assert_eq!(s.queue(), ["queued followup"]);
+        assert_eq!(s.prompts().len(), 1);
+        assert!(
+            s.journal().iter().all(|event| event["kind"] != "done"),
+            "cancellation and restart must not complete or replay the gated turn"
+        );
+        s.exit();
+    }
 }
 
 #[test]
@@ -605,7 +663,7 @@ fn undo_redo_and_resize_preserve_a_long_draft() {
 }
 
 #[test]
-fn slash_commands_during_a_turn_do_not_replace_the_cancelled_prompt() {
+fn cancelling_after_slash_commands_does_not_restore_the_submitted_prompt() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
@@ -614,8 +672,8 @@ fn slash_commands_during_a_turn_do_not_replace_the_cancelled_prompt() {
     s.until("turn started", |s| s.prompts().len() == 1);
     s.submit("/stats");
     s.send("\x1b");
-    s.until("original prompt restored", |s| {
-        s.draft() == "[wait] original prompt"
+    s.until("cancellation completed with empty draft", |s| {
+        s.draft().is_empty() && s.screen().contains("cancelled")
     });
     assert_eq!(s.prompts(), ["[wait] original prompt"]);
     s.exit();
@@ -926,7 +984,7 @@ fn explicit_file_open_passes_exact_path_to_a_fake_terminal_and_preserves_draft()
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
-    s.submit("/open hello world.rs:7");
+    s.submit("/edit hello world.rs:7");
     s.until("file launcher called", |s| {
         s.root.join("file-launch.json").is_file()
     });
@@ -943,6 +1001,214 @@ fn explicit_file_open_passes_exact_path_to_a_fake_terminal_and_preserves_draft()
     s.until("chat remains usable", |s| {
         s.draft() == "draft after file launch"
     });
+    s.exit();
+}
+
+#[test]
+fn internal_file_panes_split_focus_close_and_never_dispatch_provider_work() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    std::fs::write(dir.path().join("workspace/first.txt"), "FIRST_PANE_CONTENT").unwrap();
+    std::fs::write(
+        dir.path().join("workspace/second.txt"),
+        "SECOND_PANE_CONTENT",
+    )
+    .unwrap();
+    let mut s = Session::launch(dir.path());
+    s.submit("/open first.txt");
+    s.until("internal first pane", |s| {
+        s.screen().contains("FIRST_PANE_CONTENT")
+    });
+    s.paste("do not send this from a preview");
+    s.send("\r");
+    s.send("\x1b"); // return to chat
+    s.submit("/open second.txt");
+    s.until("two internal panes", |s| {
+        let screen = s.screen();
+        screen.contains("FIRST_PANE_CONTENT") && screen.contains("SECOND_PANE_CONTENT")
+    });
+    s.send("\x1b");
+    s.submit("/close 1");
+    s.until("first pane closed", |s| {
+        let screen = s.screen();
+        !screen.contains("FIRST_PANE_CONTENT") && screen.contains("SECOND_PANE_CONTENT")
+    });
+    assert!(!s.root.join("file-launch.json").exists());
+    assert!(s.prompts().is_empty());
+    s.paste("draft after internal preview");
+    s.until("chat remains usable", |s| {
+        s.draft() == "draft after internal preview"
+    });
+    s.exit();
+}
+
+#[test]
+fn internal_preview_remains_responsive_during_gated_stream() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    std::fs::write(
+        dir.path().join("workspace/stream-preview.txt"),
+        "STREAM_PREVIEW_CONTENT",
+    )
+    .unwrap();
+    let mut s = Session::launch(dir.path());
+    s.submit("[wait] keep streaming");
+    s.until("running command visible before preview", |s| {
+        s.screen().contains("synthetic-command")
+    });
+    assert!(!dir.path().join("gate").exists());
+    assert!(s.journal().iter().all(|event| event["kind"] != "done"));
+
+    s.paste("/open stream-preview.txt");
+    s.until("open command ready", |s| {
+        s.draft() == "/open stream-preview.txt"
+    });
+    s.enter();
+    s.until("preview opens during stream", |s| {
+        s.screen().contains("STREAM_PREVIEW_CONTENT")
+    });
+    s.paste("preview input must not become a prompt");
+    s.send("\r");
+    s.send("\x1b");
+    assert!(s.draft().is_empty());
+    assert_eq!(s.prompts(), ["[wait] keep streaming"]);
+    assert!(s.journal().iter().all(|event| event["kind"] != "done"));
+
+    s.paste("draft while preview is open");
+    s.until("chat draft remains responsive during stream", |s| {
+        s.draft() == "draft while preview is open"
+    });
+    assert_eq!(s.prompts(), ["[wait] keep streaming"]);
+    assert!(s.journal().iter().all(|event| event["kind"] != "done"));
+    s.release();
+    s.until("gated stream completes", |s| {
+        s.screen().contains("FAKE REPLY: [wait] keep streaming")
+    });
+    assert_eq!(s.draft(), "draft while preview is open");
+    assert!(s.screen().contains("STREAM_PREVIEW_CONTENT"));
+    s.exit();
+}
+
+#[test]
+fn picker_cancel_does_not_answer_armed_approval_during_gated_stream() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    set_workers(dir.path(), vec!["claude".into()]).unwrap();
+    set_delegation_protocol(dir.path(), true).unwrap();
+
+    let mut s = Session::launch(dir.path());
+    s.submit("[wait] keep approval and picker separate");
+    s.until("provider stream is gated", |s| {
+        s.screen().contains("synthetic-command") && !s.journal().iter().any(|e| e["kind"] == "done")
+    });
+
+    // The MCP proposal file is the same state boundary used by the real MCP tool.  Creating it
+    // here keeps the journey provider-free while exercising the TUI's polling and confirmation
+    // path during the active provider turn.
+    std::fs::create_dir_all(dir.path().join("proposals")).unwrap();
+    std::fs::write(
+        dir.path().join("proposals/approval.json"),
+        r#"{"to":"claude","task":"review the gated synthetic change"}"#,
+    )
+    .unwrap();
+    s.until("delegation approval is visible", |s| {
+        s.screen().contains("delegation requested")
+    });
+    // workers::ARM_AFTER is 1500 ms; cross that boundary before opening the picker.
+    std::thread::sleep(Duration::from_millis(1800));
+
+    s.submit("/trust");
+    s.until("permissions picker is open during the gated turn", |s| {
+        s.screen().contains("permissions")
+    });
+    let prompts_before_picker = s.prompts();
+
+    // y is a valid armed approval key, but the picker owns it as a filter character.  Esc then
+    // closes only the picker; the armed confirmation remains pending for chat focus.
+    s.send("y");
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(s.screen().contains("permissions"));
+    s.send("\x1b");
+    s.until("permissions picker is dismissed", |s| {
+        !s.screen().contains("filter: y")
+    });
+    s.paste("draft survives picker cancellation");
+    s.until("chat draft returns after picker cancellation", |s| {
+        s.draft() == "draft survives picker cancellation"
+    });
+    assert_eq!(s.prompts(), prompts_before_picker);
+    assert!(s.screen().contains("delegation requested"));
+
+    s.release();
+    s.until("gated turn completes", |s| {
+        s.screen()
+            .contains("FAKE REPLY: [wait] keep approval and picker separate")
+    });
+    assert_eq!(s.draft(), "draft survives picker cancellation");
+    assert_eq!(
+        s.prompts(),
+        vec!["[wait] keep approval and picker separate"]
+    );
+    s.exit();
+}
+
+#[test]
+fn native_subagents_can_be_inspected_live_and_after_completion() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.submit("[wait] [agents] inspect children");
+    s.until("agent badge visible while provider waits", |s| {
+        s.screen().contains("/agents 1")
+    });
+    s.send("\x07");
+    s.until("agent browser", |s| s.screen().contains("Enter inspect"));
+    s.enter();
+    s.until("child task details", |s| {
+        s.screen().contains("Inspect the graph parser")
+    });
+    s.send("\x1b");
+    s.release();
+    s.until("main reply", |s| s.screen().contains("FAKE REPLY:"));
+    s.send("\x07");
+    s.enter();
+    s.until("reported child result retained", |s| {
+        s.screen().contains("GRAPH_REVIEW_FINISHED")
+    });
+    assert_eq!(s.prompts().len(), 1);
+    s.send("\x1b");
+    s.exit();
+}
+
+#[test]
+fn resuming_a_native_session_restores_recent_messages_without_dispatching_a_provider() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let sessions = dir.path().join("profile/.codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let mut lines = vec![
+        serde_json::json!({"type":"session_meta","payload":{"id":"restore-session"}}).to_string(),
+    ];
+    for i in 0..60 {
+        lines.push(serde_json::json!({"type":"response_item","payload":{"type":"message","role":if i%2==0 {"user"} else {"assistant"},"content":[{"type":"output_text","text":format!("RESTORED_HISTORY_{i}")}]}}).to_string());
+    }
+    std::fs::write(sessions.join("restore.jsonl"), lines.join("\n") + "\n").unwrap();
+    let mut s = Session::launch(dir.path());
+    s.submit("/resume");
+    s.enter();
+    s.until("last restored reply", |s| {
+        s.screen().contains("RESTORED_HISTORY_59")
+    });
+    s.send("\x1b[5~");
+    s.until("earlier messages after scroll", |s| {
+        !s.screen().contains("RESTORED_HISTORY_59") && s.screen().contains("RESTORED_HISTORY_")
+    });
+    assert!(s.prompts().is_empty());
     s.exit();
 }
 

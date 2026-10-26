@@ -437,6 +437,49 @@ fn use_sends_a_finished_result_only_on_request_and_only_when_idle() {
 }
 
 #[test]
+fn file_preview_cannot_answer_an_armed_delegation_confirmation() {
+    let mut h = H::new(100, 24);
+    let root = h.dir.path().to_path_buf();
+    account(&root, "codex-o", "ORCHESTR1");
+    account(&root, "codex-w1", "WORKERAA1");
+    set_workers(&root, vec!["codex-w1".into()]).unwrap();
+    let _ = h.submit("/delegate protocol on");
+    h.app.scan_delegation(
+        "```concordia-delegate\n{\"to\":\"codex-w1\",\"task\":\"synthetic task\"}\n```",
+    );
+    assert_eq!(h.app.deleg.confirms.len(), 1);
+    h.app.deleg.confirms[0].since = Instant::now() - Duration::from_secs(5);
+    std::fs::write(root.join("preview.txt"), "read-only content").unwrap();
+    assert!(h.app.handle_slash("/open preview.txt"));
+    h.draw();
+    assert!(h.app.workspace.focused.is_some());
+    assert!(h.app.editor.text().is_empty());
+    for code in [KeyCode::Char('y'), KeyCode::Char('n')] {
+        h.key(code, KeyModifiers::NONE);
+        assert_eq!(h.app.deleg.confirms.len(), 1);
+        assert!(
+            h.app.deleg.d.jobs.is_empty(),
+            "preview key started a worker"
+        );
+        assert!(h.app.workspace.focused.is_some());
+        assert!(h.app.editor.text().is_empty());
+    }
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.workspace.focused.is_none());
+    assert_eq!(
+        h.app.deleg.confirms.len(),
+        1,
+        "Esc must return to chat without rejecting"
+    );
+    assert!(h.app.deleg.d.jobs.is_empty());
+    h.key(KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(h.app.deleg.confirms.is_empty());
+    assert_eq!(h.app.deleg.d.jobs.len(), 1);
+    assert_eq!(h.app.deleg.d.jobs[0].origin, Origin::Protocol);
+    // No tokio runtime exists in this synthetic test, so acceptance cannot launch a provider.
+}
+
+#[test]
 fn the_protocol_is_off_by_default_and_needs_an_explicit_y_when_on() {
     let mut h = H::new(100, 24);
     let root = h.dir.path().to_path_buf();

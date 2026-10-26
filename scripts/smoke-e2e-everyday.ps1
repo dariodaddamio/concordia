@@ -11,6 +11,14 @@ if (-not $expectedStamp) { throw "BUILD_STAMP missing from version.rs" }
 function Fail([string]$msg) { $script:failures += $msg; Write-Host "FAIL $msg" -ForegroundColor Red }
 function Ok([string]$msg) { Write-Host "OK   $msg" -ForegroundColor Green }
 
+# Windows PowerShell can turn normal native stderr (Cargo's progress diagnostics) into
+# terminating errors when the caller captures the smoke output. Use the process exit code.
+function Invoke-Cargo([string[]]$CargoArgs) {
+    $ErrorActionPreference = "Continue"
+    & cargo @CargoArgs
+    $script:cargoExit = $LASTEXITCODE
+}
+
 $binDir = Join-Path $env:LOCALAPPDATA "concordia\bin"
 $currentFile = Join-Path $binDir "current"
 if (-not (Test-Path $currentFile)) { Fail "missing $currentFile - run scripts\install-dev.ps1" }
@@ -30,12 +38,13 @@ else {
     }
 }
 
-cargo test -p concordia --tests --quiet
-if ($LASTEXITCODE -ne 0) { Fail "cargo test -p concordia" } else { Ok "cargo test -p concordia" }
+Invoke-Cargo @('test', '-p', 'concordia', '--tests', '--quiet')
+if ($script:cargoExit -ne 0) { Fail "cargo test -p concordia" } else { Ok "cargo test -p concordia" }
 
 $exe = Join-Path $root "target\release\concordia.exe"
 if (-not (Test-Path $exe)) {
-    cargo build -p concordia --release --quiet
+    Invoke-Cargo @('build', '-p', 'concordia', '--release', '--quiet')
+    if ($script:cargoExit -ne 0) { Fail "cargo build -p concordia --release" }
 }
 # usage reader against real home if present (read-only)
 $codex = Join-Path $env:USERPROFILE ".codex"
@@ -51,9 +60,12 @@ fn smoke_live_usage() {
 "@
     $path = Join-Path $root "crates\concordia\tests\_smoke_usage.rs"
     Set-Content $path $tmpTest -Encoding utf8
-    cargo test -p concordia --test _smoke_usage -- --nocapture
-    $code = $LASTEXITCODE
-    Remove-Item -Force $path -EA SilentlyContinue
+    try {
+        Invoke-Cargo @('test', '-p', 'concordia', '--test', '_smoke_usage', '--', '--nocapture')
+        $code = $script:cargoExit
+    } finally {
+        Remove-Item -LiteralPath $path -Force -EA SilentlyContinue
+    }
     if ($code -ne 0) { Fail "live usage read" } else { Ok "live usage read" }
 } else {
     Ok "skip live usage (no ~/.codex/sessions)"

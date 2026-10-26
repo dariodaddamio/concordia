@@ -69,7 +69,7 @@ Additional TUI intercepts in `tui/mod.rs::handle_slash` do not pass through the 
 | `/queue`, `/queue resume`, `/queue clear`, queue controls | Lists, resumes or clears queued prompts. `queue_controls` and TUI tests cover busy/cancel/edit blocking and state changes. |
 | `/recover`, `/recover legacy`, `/recover retry` | Workspace draft/queue recovery, explicit legacy import, retry local persistence. Recovery TUI tests cover selected missing/corrupt/retry states. |
 | `/stats` | Toggles local process counters; special-cased after the parser returns unknown. TUI tests cover the toggle. |
-| `/open FILE`, `/preview FILE` | Separate terminal editor or built-in preview; argument arrays preserve paths, selection drag does not launch. Fake-host ConPTY journey checks exact launch arguments; real configured editor needs a human pass. |
+| `/open FILE`, `/preview FILE`, `/close ID`, `/edit FILE` | Source `2026-10-21a`: bounded internal read-only split panes, explicit close, and separate external editor via `/edit`. Synthetic input/render tests exercise focus, resize and close; real host/editor interaction still needs a human pass. |
 
 Palette entries are `commands.rs::SLASH_COMMANDS`; this list is not the complete parser surface:
 it omits aliases and, currently, `/doctor` palette/help consistency has changed over time. Custom

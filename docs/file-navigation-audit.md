@@ -1,5 +1,12 @@
 # File navigation audit
 
+Source follow-up `2026-10-21a`: `/open`, `/preview` and clicked links now use internal read-only
+file panes. `/edit` retains the separate-terminal editor described below. Internal panes read at
+most 2 MiB/50,000 UTF-8 lines off the UI thread, bind results to stable pane ids, and support
+mouse/keyboard focus, scroll, divider resize, X and `/close`. No internal editing or layout
+recovery is claimed. See [workspace requirements](workspace-panes.md) and the new workspace tests.
+The original parser/external-launch audit below remains applicable to those modules.
+
 File navigation is triggered by an explicit click or `/open` / `/preview` command. Parsing returns
 source byte ranges and candidate destinations; it does not read files or launch processes. Click
 coordinates are converted by the TUI to source character ranges, then a candidate is resolved

@@ -9,6 +9,199 @@ use std::{
 const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|claude|cursor] [--json] [--limit N]\n       concordia chat read SESSION --account ID [--provider codex|claude|cursor] [--tail N] [--grep TEXT] [--max-chars N]\n       concordia chat search TEXT [--account ID] [--provider codex|claude|cursor] [--json] [--limit N] (session IDs and previews/titles only)";
 const MAX_CHAT_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
+/// Recent native chat text for display only; never fed back to a provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryMessage {
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct History {
+    pub title: Option<String>,
+    pub messages: Vec<HistoryMessage>,
+    pub truncated: bool,
+}
+
+const HISTORY_MESSAGES: usize = 200;
+const HISTORY_TEXT_BYTES: usize = 1024 * 1024;
+const HISTORY_NATIVE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Read a bounded scrollback from an explicitly bound account and native session.
+/// File discovery and I/O belong on a worker thread, outside the render loop.
+pub fn read_history(
+    root: &Path,
+    account: &str,
+    provider: ProviderKind,
+    session_id: &str,
+) -> Result<History, String> {
+    if provider == ProviderKind::Cursor {
+        return Err(
+            "Cursor native transcript reading is not supported; only session metadata is available"
+                .into(),
+        );
+    }
+    let (session, path) = sessions::find_native_record(root, account, Some(provider), session_id)?
+        .ok_or_else(|| "session not found in that registered account and provider".to_string())?;
+    let mut history = read_history_file(&path, provider)?;
+    history.title = session.preview.map(|s| terminal_safe(&s));
+    Ok(history)
+}
+
+fn read_history_file(path: &Path, provider: ProviderKind) -> Result<History, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let size = file.metadata().map_err(|e| e.to_string())?.len();
+    let start = size.saturating_sub(HISTORY_NATIVE_BYTES);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(HISTORY_NATIVE_BYTES)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    // Discard the incomplete first JSON line, including any split UTF-8 character.
+    let begin = if start > 0 {
+        bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1)
+    } else {
+        0
+    };
+    let mut primary = HistoryBuffer::new(start > 0);
+    let mut fallback = HistoryBuffer::new(start > 0);
+    for line in bytes[begin..].split(|b| *b == b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
+        let payload = match provider {
+            ProviderKind::Codex => value.get("payload").unwrap_or(&value),
+            _ => value.get("message").unwrap_or(&value),
+        };
+        let role = payload.get("role").and_then(Value::as_str).unwrap_or(kind);
+        if matches!(role, "user" | "assistant") {
+            let content = payload.get("content");
+            let text = content
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| {
+                    content.and_then(Value::as_array).map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter_map(|b| {
+                                let kind = b.get("type").and_then(Value::as_str).unwrap_or("text");
+                                matches!(kind, "text" | "input_text" | "output_text")
+                                    .then(|| b.get("text").and_then(Value::as_str))
+                                    .flatten()
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                });
+            if let Some(text) = text {
+                primary.push(role, &text);
+            }
+        } else if kind == "event_msg" {
+            let kind = payload.get("type").and_then(Value::as_str).unwrap_or("");
+            if let Some(text) = payload.get("message").and_then(Value::as_str) {
+                match kind {
+                    "user_message" => fallback.push("user", text),
+                    "agent_message" => fallback.push("assistant", text),
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(if primary.messages.is_empty() {
+        fallback
+    } else {
+        primary
+    }
+    .finish())
+}
+
+struct HistoryBuffer {
+    messages: std::collections::VecDeque<HistoryMessage>,
+    bytes: usize,
+    truncated: bool,
+}
+
+impl HistoryBuffer {
+    fn new(truncated: bool) -> Self {
+        Self {
+            messages: std::collections::VecDeque::new(),
+            bytes: 0,
+            truncated,
+        }
+    }
+
+    fn push(&mut self, role: &str, text: &str) {
+        let text = if role == "user" {
+            visible_user_history(text)
+        } else {
+            text
+        };
+        let mut text = terminal_safe(text);
+        if text.trim().is_empty() {
+            return;
+        }
+        if text.len() > HISTORY_TEXT_BYTES {
+            let mut start = text.len() - HISTORY_TEXT_BYTES;
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            text = text[start..].to_owned();
+            self.truncated = true;
+        }
+        self.bytes += text.len();
+        self.messages.push_back(HistoryMessage {
+            role: role.into(),
+            text,
+        });
+        while self.messages.len() > HISTORY_MESSAGES || self.bytes > HISTORY_TEXT_BYTES {
+            if let Some(message) = self.messages.pop_front() {
+                self.bytes -= message.text.len();
+            }
+            self.truncated = true;
+        }
+    }
+
+    fn finish(self) -> History {
+        History {
+            title: None,
+            messages: self.messages.into_iter().collect(),
+            truncated: self.truncated,
+        }
+    }
+}
+
+fn visible_user_history(mut text: &str) -> &str {
+    // Native Codex rollouts include setup as user messages. Hide recognized setup
+    // blocks while keeping any actual question following a wrapper.
+    loop {
+        text = text.trim_start();
+        let wrapper = [
+            "environment_context",
+            "permissions instructions",
+            "skills_instructions",
+            "collaboration_mode",
+        ]
+        .into_iter()
+        .find(|tag| text.starts_with(&format!("<{tag}>")));
+        let Some(tag) = wrapper else { break };
+        let end = format!("</{tag}>");
+        let Some(index) = text.find(&end) else {
+            return "";
+        };
+        text = &text[index + end.len()..];
+    }
+    if text.starts_with("# AGENTS.md instructions") {
+        ""
+    } else {
+        text
+    }
+}
+
 fn bounded_field(value: &str, max_chars: usize) -> String {
     let safe = terminal_safe(value);
     let mut chars = safe.chars();
@@ -300,6 +493,110 @@ fn terminal_safe(text: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn structured_history_preserves_roles_unicode_and_excludes_setup_and_tool_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.jsonl");
+        let rows = [
+            json!({"type":"response_item","payload":{"role":"system","content":"hidden"}}),
+            json!({"type":"response_item","payload":{"role":"developer","content":"hidden"}}),
+            json!({"type":"response_item","payload":{"role":"user","content":"<environment_context>setup</environment_context>\nquestion 雪"}}),
+            json!({"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"answer 🙂\u{1b}\u{7}"},{"type":"tool_result","text":"hidden"}]}}),
+        ];
+        std::fs::write(
+            &path,
+            rows.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let history = read_history_file(&path, ProviderKind::Codex).unwrap();
+        assert_eq!(
+            history.messages,
+            vec![
+                HistoryMessage {
+                    role: "user".into(),
+                    text: "question 雪".into()
+                },
+                HistoryMessage {
+                    role: "assistant".into(),
+                    text: "answer 🙂".into()
+                },
+            ]
+        );
+        assert!(!history.truncated);
+        std::fs::write(
+            &path,
+            json!({"type":"assistant","message":{"content":[{"type":"text","text":"Claude 雪"}]}})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            read_history_file(&path, ProviderKind::Claude)
+                .unwrap()
+                .messages[0],
+            HistoryMessage {
+                role: "assistant".into(),
+                text: "Claude 雪".into()
+            }
+        );
+    }
+
+    #[test]
+    fn structured_history_returns_recent_messages_and_utf8_safe_text_tail() {
+        let mut history = HistoryBuffer::new(false);
+        for n in 0..HISTORY_MESSAGES + 3 {
+            history.push("user", &n.to_string());
+        }
+        let history = history.finish();
+        assert!(history.truncated);
+        assert_eq!(history.messages.len(), HISTORY_MESSAGES);
+        assert_eq!(history.messages[0].text, "3");
+        let mut history = HistoryBuffer::new(false);
+        history.push("user", "old");
+        history.push("assistant", &"雪".repeat(HISTORY_TEXT_BYTES / 3 + 2));
+        let history = history.finish();
+        assert!(history.truncated);
+        assert_eq!(history.messages.len(), 1);
+        assert!(history.messages[0].text.len() <= HISTORY_TEXT_BYTES);
+        assert!(history.messages[0].text.chars().all(|c| c == '雪'));
+    }
+
+    #[test]
+    fn native_byte_tail_discards_split_unicode_line_and_reports_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.jsonl");
+        let mut bytes = "雪"
+            .repeat(HISTORY_NATIVE_BYTES as usize / 3 + 1)
+            .into_bytes();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"recent 🙂"}})
+                .to_string()
+                .as_bytes(),
+        );
+        std::fs::write(&path, bytes).unwrap();
+        let history = read_history_file(&path, ProviderKind::Codex).unwrap();
+        assert!(history.truncated);
+        assert_eq!(
+            history.messages,
+            vec![HistoryMessage {
+                role: "assistant".into(),
+                text: "recent 🙂".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn structured_history_rejects_unsupported_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            read_history(dir.path(), "account", ProviderKind::Cursor, "session")
+                .unwrap_err()
+                .contains("not supported")
+        );
+    }
+    #[test]
     fn read_chat_text_handles_both_formats_and_never_emits_terminal_escapes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.jsonl");
@@ -388,5 +685,40 @@ mod tests {
         let read = run(state.path(), &args).unwrap();
         assert!(read.contains("old target answer"), "{read}");
         assert!(!read.contains("new-"), "{read}");
+        let history = read_history(
+            state.path(),
+            "audit-account",
+            ProviderKind::Codex,
+            target_id,
+        )
+        .unwrap();
+        assert_eq!(
+            history.messages,
+            vec![HistoryMessage {
+                role: "assistant".into(),
+                text: "old target answer".into()
+            }]
+        );
+        assert!(read_history(
+            state.path(),
+            "other-account",
+            ProviderKind::Codex,
+            target_id
+        )
+        .is_err());
+        assert!(read_history(
+            state.path(),
+            "audit-account",
+            ProviderKind::Claude,
+            target_id
+        )
+        .is_err());
+        assert!(read_history(
+            state.path(),
+            "audit-account",
+            ProviderKind::Codex,
+            "missing-id"
+        )
+        .is_err());
     }
 }

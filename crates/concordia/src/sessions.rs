@@ -372,7 +372,9 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
                             .join(" ")
                             .trim()
                             .to_string();
-                        if !text.is_empty() {
+                        if !text.starts_with("# AGENTS.md")
+                            && !crate::session_titles::title_from_prompt(&text).is_empty()
+                        {
                             preview = Some(bounded_text(&text, 512));
                         }
                     }
@@ -409,7 +411,10 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
             if v.get("isMeta").and_then(|m| m.as_bool()).unwrap_or(false) {
                 continue;
             }
-            if let Some(text) = claude_user_text(&v) {
+            if let Some(text) = claude_user_text(&v).filter(|text| {
+                !text.starts_with("# AGENTS.md")
+                    && !crate::session_titles::title_from_prompt(text).is_empty()
+            }) {
                 preview = Some(text);
             }
         }
@@ -564,7 +569,7 @@ pub fn list_native_records_bounded(
         .filter(|a| provider.is_none_or(|p| a.provider == p))
         .collect();
     let mut records = Vec::new();
-    let mut candidates: Vec<(String, ProviderKind, PathBuf, u128)> = Vec::new();
+    let mut candidates: Vec<(String, ProviderKind, PathBuf, PathBuf, u128)> = Vec::new();
     let mut entries_left = MAX_DISCOVERY_ENTRIES;
     let mut files_left = MAX_DISCOVERED_FILES;
     let mut truncated = accounts.len() > MAX_DISCOVERED_ACCOUNTS;
@@ -592,11 +597,11 @@ pub fn list_native_records_bounded(
             discovery
                 .files
                 .into_iter()
-                .map(|(path, ms)| (a.account.clone(), a.provider, path, ms)),
+                .map(|(path, ms)| (a.account.clone(), a.provider, home.clone(), path, ms)),
         );
     }
-    candidates.sort_by_key(|(_, _, _, ms)| std::cmp::Reverse(*ms));
-    for (index, (account, provider, path, ms)) in candidates.iter().enumerate() {
+    candidates.sort_by_key(|(_, _, _, _, ms)| std::cmp::Reverse(*ms));
+    for (index, (account, provider, home, path, ms)) in candidates.iter().enumerate() {
         if records.len() >= limit {
             break;
         }
@@ -604,7 +609,16 @@ pub fn list_native_records_bounded(
             truncated = true;
             break;
         }
-        if let Some(record) = summarize_one(account, *provider, path, *ms) {
+        if let Some(mut record) = summarize_one(account, *provider, path, *ms) {
+            if let Some(title) = crate::session_titles::get(
+                state_root,
+                *provider,
+                account,
+                home,
+                &record.0.session_id,
+            ) {
+                record.0.preview = Some(title);
+            }
             records.push(record);
         }
     }
@@ -666,8 +680,19 @@ pub fn find_native_record(
                 "native chat scan bound reached; could not verify this session is unique".into(),
             );
         }
-        if let Some(record) = summarize_one(&account_def.account, account_def.provider, &path, ms) {
+        if let Some(mut record) =
+            summarize_one(&account_def.account, account_def.provider, &path, ms)
+        {
             if record.0.session_id == session_id {
+                if let Some(title) = crate::session_titles::get(
+                    state_root,
+                    account_def.provider,
+                    account,
+                    home,
+                    session_id,
+                ) {
+                    record.0.preview = Some(title);
+                }
                 matches.push(record);
                 if matches.len() > 1 {
                     break;
@@ -868,5 +893,86 @@ mod tests {
         let found = walk_jsonl(dir.path(), &|_, _| true, 1, 100);
         assert_eq!(found.files.len(), 1);
         assert!(found.truncated);
+    }
+
+    #[test]
+    fn codex_summary_skips_injected_setup_before_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let lines: Vec<String> = [
+            "# AGENTS.md instructions\nRead project instructions",
+            "<environment_context>\nsetup only\n</environment_context>",
+            "Repair resumed history",
+        ]
+        .iter()
+        .map(|text| {
+            serde_json::json!({"type":"response_item","payload":{
+                "type":"message","role":"user","content":[{"text":text}]
+            }})
+            .to_string()
+        })
+        .collect();
+        fs::write(&path, lines.join("\n")).unwrap();
+        assert_eq!(
+            summarize_codex("synthetic", &path, 1)
+                .unwrap()
+                .preview
+                .as_deref(),
+            Some("Repair resumed history")
+        );
+    }
+
+    #[test]
+    fn saved_titles_overlay_listing_and_exact_lookup_without_native_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("synthetic-home");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let path = home.join("sessions/rollout-synthetic-session.jsonl");
+        let native = concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-session\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"Native request\"}]}}\n"
+        );
+        fs::write(&path, native).unwrap();
+        crate::store::upsert_stored_account(
+            dir.path(),
+            crate::store::StoredAccount {
+                id: "synthetic-title-account".into(),
+                provider: ProviderKind::Codex,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "Synthetic".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        crate::session_titles::set_if_absent(
+            dir.path(),
+            ProviderKind::Codex,
+            "synthetic-title-account",
+            &home,
+            "synthetic-session",
+            "Saved automatic title",
+        )
+        .unwrap();
+        let listing = list_native_records_bounded(
+            dir.path(),
+            10,
+            Some("synthetic-title-account"),
+            Some(ProviderKind::Codex),
+        );
+        assert_eq!(listing.records.len(), 1);
+        assert_eq!(
+            listing.records[0].0.preview.as_deref(),
+            Some("Saved automatic title")
+        );
+        let found = find_native_record(
+            dir.path(),
+            "synthetic-title-account",
+            Some(ProviderKind::Codex),
+            "synthetic-session",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.0.preview.as_deref(), Some("Saved automatic title"));
+        assert_eq!(fs::read_to_string(path).unwrap(), native);
     }
 }

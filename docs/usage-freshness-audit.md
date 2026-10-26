@@ -23,6 +23,12 @@ and are not loaded into the live fetcher; a fresh fetch is requested instead. Th
 in MCP as legacy data with an explicit unknown identity label.
 
 Codex remains read directly from provider-written home files and does not use this fetcher/cache.
+Build `2026-10-21b` accepts both numeric and text credit balances, so an auxiliary credit field
+cannot discard an otherwise valid limit reading. It selects the first eligible session in
+descending modification-time order (previously the second reading could win), compares it with
+the temporary-cache modification time, and tolerates a UTF-8 character cut at the bounded tail
+boundary. An existing TUI `/usage` block refreshes after a turn alongside the footer. These are
+local reads; `/usage refresh` does not obtain a new Codex server reading or run a model.
 The existing `UsageSnapshot`, `UsageWindow`, picker row and TUI consumers retain their fields.
 `invalidate(account)` marks all in-memory entries with that Concordia account id dirty, so a later
 read of each provider/home binding refreshes it.

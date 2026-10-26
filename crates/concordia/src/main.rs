@@ -20,8 +20,8 @@ fn print_help() {
                                read recorded threads (opt-in: CONCORDIA_THREADS=1); read-only\n\
            concordia mcp       stdio MCP server: threads, thread_map, thread_read, usage, delegate (docs/mcp.md)\n\
          \n\
-         Slash: /use [add] /model /usage /resume /trust /config /new /threads /split /update /version /copy /doctor /exit\n\
-         Files: /open PATH[:LINE[:COLUMN]] · /preview PATH · click an underlined file reference (Alt+click previews)\n\
+         Slash: /use [add] /model /usage /resume /agents /trust /config /new /threads /split /update /version /copy /doctor /exit\n\
+         Files: /open PATH[:LINE[:COLUMN]] · /preview PATH (internal read-only panes) · /close ID · /edit PATH (external editor)\n\
          Delegate: /workers [add|remove] /delegate <account|auto> <task> /delegate stop|use|help (docs/delegation.md)\n\
          Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
          Connect: /use add [codex|claude|cursor] makes an isolated home and opens its login.\n\

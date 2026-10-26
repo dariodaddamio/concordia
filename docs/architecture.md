@@ -202,8 +202,9 @@ preserving the main draft and queued edit underneath.
   Draft changes are debounced (about one second), with immediate save on exit. Active pane records
   are never claimed by another pane. One abandoned record can be restored at startup; several
   produce a chooser. `/recover` selects an abandoned record for the current workspace. Queued
-  work stays paused after recovery. A failed or cancelled turn restores its submitted prompt
-  when the box is empty. Legacy shared `draft.json` and `queue.json` require explicit import via
+  work stays paused after recovery. A failed turn restores its submitted prompt when the box is
+  empty. Cancellation leaves the current prompt box unchanged; sent history supports explicit
+  recall. Legacy shared `draft.json` and `queue.json` require explicit import via
   `/recover`; sent history remains shared.
 * Pending upper edits are saved separately from committed queue items; recovery restores the
   editor and holds dispatch until explicit save/cancel. Save failures stay visible in the footer

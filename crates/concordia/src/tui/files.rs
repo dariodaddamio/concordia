@@ -8,6 +8,24 @@ use std::ffi::OsString;
 
 impl App {
     pub(super) fn open_file_candidate(&mut self, candidate: file_links::Candidate, preview: bool) {
+        let _ = preview; // Both navigation routes initially use the internal read-only view.
+        let file = match file_links::resolve(&candidate, &self.cwd) {
+            Ok(file) => file,
+            Err(error) => {
+                self.flash(error);
+                return;
+            }
+        };
+        #[cfg(test)]
+        {
+            self.last_file_open = Some(file.clone());
+        }
+        if let Err(error) = self.workspace.open(file) {
+            self.flash(error);
+        }
+    }
+
+    fn launch_external_file_candidate(&mut self, candidate: file_links::Candidate) {
         let file = match file_links::resolve(&candidate, &self.cwd) {
             Ok(file) => file,
             Err(error) => {
@@ -18,7 +36,6 @@ impl App {
         #[cfg(test)]
         {
             self.last_file_open = Some(file);
-            let _ = preview;
         }
         #[cfg(not(test))]
         {
@@ -26,7 +43,7 @@ impl App {
                 self.flash("file launchers are still starting; try again shortly");
                 return;
             }
-            let plan = match file_plan(&file, &self.cwd, &self.state_root, preview) {
+            let plan = match file_plan(&file, &self.cwd, &self.state_root, false) {
                 Ok(plan) => plan,
                 Err(error) => {
                     self.flash(error);
@@ -35,11 +52,7 @@ impl App {
             };
             let (tx, rx) = mpsc::unbounded_channel();
             self.file_jobs.push(rx);
-            self.flash(if preview {
-                "opening text/Markdown preview in another terminal"
-            } else {
-                "opening file in another terminal"
-            });
+            self.flash("opening file in another terminal editor");
             tokio::spawn(async move {
                 let message = match file_open::spawn(plan).await {
                     Ok(child) => match child.wait_with_output().await {
@@ -60,7 +73,7 @@ impl App {
         }
     }
 
-    pub(super) fn file_command(&mut self, reference: &str, preview: bool) {
+    pub(super) fn file_command(&mut self, reference: &str, external: bool) {
         let reference = reference.trim().trim_matches(['"', '`']);
         let mut candidates = file_links::candidates(reference);
         if let Some(explicit) = file_links::explicit_reference(reference) {
@@ -72,7 +85,11 @@ impl App {
             .filter(|c| c.range.start == 0 || c.markdown)
             .find(|c| file_links::resolve(c, &self.cwd).is_ok())
         {
-            self.open_file_candidate(candidate, preview);
+            if external {
+                self.launch_external_file_candidate(candidate);
+            } else {
+                self.open_file_candidate(candidate, false);
+            }
         } else {
             self.push_system("file not found; use /open path/to/file or /preview path/to/file.md");
         }

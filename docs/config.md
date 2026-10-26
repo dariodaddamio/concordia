@@ -1,12 +1,66 @@
 # Configuration and custom commands
 
-## Terminal editor and Markdown preview
+## Usage-limit continuation
 
-Click an underlined file reference in a sent user message or assistant reply to open it in a
-separate WezTerm tab/window; a drag still selects text. Alt+click previews instead. Paths can
+`/continuation manual` pauses when usage runs out (the default). `/continue ACCOUNT` continues
+that interrupted request on an explicitly chosen account. `/continuation automatic` enables
+handoff for this launch through an ordered account allowlist. Persistent defaults:
+
+```toml
+[continuation]
+mode = "manual" # manual | automatic
+accounts = ["codex-2", "claude-1"] # choose ids shown by /use, in preferred order
+```
+
+Only a provider error explicitly reporting an exhausted usage limit triggers handoff; ordinary
+errors, cancellation and model prose do not. Each account is tried once, with at most three
+automatic handoffs per request. No configured target means pause. Unknown capacity is not
+treated as free capacity: a configured account may itself report a limit and exhaust its one
+attempt. A draft, open picker, background job, queued edit or uncertain tool completion blocks
+automatic continuation. Inspect uncertain results before explicitly using `/continue ACCOUNT`.
+
+Handoff keeps the conversation and title, starts a new native session in the selected account's
+home and sends the bounded conversation map with an instruction to reconcile completed actions.
+Native tool/approval state is not transferred. Queued prompts remain paused for explicit resume.
+There are no quota probes or summarizer calls. Runtime mode changes apply to this window;
+edit config.toml to choose the default for future launches.
+
+## Titles, resume and agent reports
+
+Session titles are generated deterministically from the first substantive request, without a
+model call. They are shown in the header, terminal title and resume picker, and saved under
+`<state>/.ao/session-titles/` independently of `[threads].enabled`. Each record is bound to the
+provider, account, normalized home and native session id; provider-owned files are not rewritten.
+
+`/resume` loads up to 200 recent Codex/Claude user/assistant messages within 1 MiB of visible
+text, reading at most an 8 MiB native tail. Loading runs off the input/render thread; the draft
+is retained and sending waits for completion. A truncated view is labeled; Cursor transcript
+reading is explicitly unavailable. Loaded scrollback is for display and is not replayed into
+the selected native session. Native tools and approvals are not restored from this text.
+
+`/agents` or Ctrl+G lists reported native child-agent activity and Concordia worker jobs. Enter
+opens the report; no model call is made by inspection. Native report detail depends on provider
+events. Cross-account worker configuration remains under `/workers` and `/delegate`.
+
+Cancellation leaves the prompt box unchanged. Use sent history to recall a submitted request
+explicitly; queued work stays paused until resumed.
+
+## Internal file panes and terminal editor
+
+Click an underlined file reference in a sent user message or assistant reply to open it in an
+internal read-only pane; a drag still selects transcript text. Alt+click also previews. Paths can
 include a line/column (`src/main.rs:12:3`) or Markdown line fragment (`#L12`). Markdown labels
-keep the explicit destination. `/open PATH` and `/preview PATH` are also available. Missing
-paths or launch failures are shown in Concordia. References never run as shell commands.
+keep the explicit destination. `/open PATH` and `/preview PATH` open up to three file panes beside
+chat; reopening a file focuses its existing pane. Click to focus, F6 cycles focus, Esc returns to
+chat, arrows/PageUp/PageDown/Home/End scroll, and Left/Right pan. The title shows a stable pane id.
+Click X, press Ctrl+W in a focused file, or use `/close ID` from chat. Drag the main divider or
+the bottom border between file panes to resize. Files are read asynchronously, limited to 2 MiB
+and 50,000 lines each, and must be UTF-8 text. File focus consumes typing/Enter and rejects paste;
+these panes do not edit files. Small terminals hide panes without losing their contents and restore
+them on enlargement; use `/close ID` if needed. Layout is not restored after restart yet.
+
+Use `/edit PATH` for a separate configured terminal editor. Missing paths, preview errors or
+launch failures are shown in Concordia. References never run as shell commands.
 
 Concordia finds an installed `nvim`, `hx` or `vim`, or uses your explicit executable and argv:
 
@@ -18,9 +72,11 @@ args = ["+{line}", "--", "{file}"]
 
 `{file}`, `{line}` and `{column}` expand within individual arguments; the executable is one
 path, not a shell command string. If `{file}` is absent the file is appended as one argument.
-`/preview` launches `concordia preview FILE`, a read-only Markdown/text viewer with scrolling,
+The standalone CLI `concordia preview FILE` remains a read-only Markdown/text viewer with scrolling,
 Home/End and q/Esc to close, requiring no extra preview package. Input is UTF-8 and capped at
-2 MiB. Separate terminals require WezTerm; `CONCORDIA_WEZTERM_BIN` can name its executable.
+2 MiB. `/edit` and separate terminals require WezTerm; internal file panes do not.
+`CONCORDIA_WEZTERM_BIN` can name its executable. See [workspace requirements](workspace-panes.md)
+for the editing/recovery and search/replacement stages.
 
 ## Native chat access from the CLI
 

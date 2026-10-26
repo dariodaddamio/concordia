@@ -604,13 +604,13 @@ impl App {
     }
 
     /// Called at the end of `finalize_turn`. A cancelled or failed turn pauses the queue and
-    /// puts its prompt back in the box when the box is empty; a clean one lets the next send.
+    /// leaves the draft alone on cancellation. Only failure offers its prompt for retry.
     pub(super) fn turn_finished(&mut self, cancelled: bool, failed: bool) {
         let sent = self.last_sent.take();
         if cancelled || failed {
             self.queue.advance = false;
             self.pause_queue();
-            if let Some(p) = sent {
+            if let Some(p) = sent.filter(|_| failed && !cancelled) {
                 if self.editor.text().trim().is_empty() {
                     self.editor.set_text(&p);
                     self.push_system("your prompt is back in the box");
@@ -631,7 +631,15 @@ impl App {
         self.busy = false;
         self.pulse_on = false;
         self.cancel_handle = None;
+        let automatic_target = self.prepare_usage_continuation(&outcome);
         self.finalize_turn(outcome);
+        if self.continuation.waiting() {
+            self.queue.advance = false;
+            self.pause_queue();
+        }
+        if let Some(target) = automatic_target {
+            self.continue_usage(&target, tx);
+        }
         self.queue_advance(tx);
     }
 
@@ -639,7 +647,7 @@ impl App {
     pub(super) fn queue_advance(&mut self, tx: &mpsc::UnboundedSender<String>) {
         // An inline editor owns the queue until its edit is saved or cancelled. Removing
         // even an earlier row here would change what `sel` refers to and lose unsaved work.
-        if self.queue.edit.is_some() {
+        if self.queue.edit.is_some() || self.session_ui.loading() {
             return;
         }
         if !std::mem::take(&mut self.queue.advance) {

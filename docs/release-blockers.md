@@ -75,7 +75,9 @@ remains blocked until known high-impact findings and required host/provider chec
 - File links and Markdown preview have synthetic/terminal checks; actual configured editor
   launch, clipboard/selection behavior and keyboard behavior across supported Windows hosts
   still need a human pass. WezTerm and an installed/configured terminal editor are required for
-  separate editor tabs/windows. The built-in preview is read-only UTF-8, capped at 2 MiB.
+  separate editor tabs/windows through `/edit`. Installed `2026-10-21b` includes internal read-only
+  `/open`/`/preview` panes with a 2 MiB/50,000-line cap, without an editor/WezTerm requirement.
+  Internal editing, layout recovery and human host verification remain open.
 - Expanded tool details retain provider-supplied data. A CLI event that omits a patch cannot
   produce native-quality edited-line diffs; Concordia must say what is missing, not fabricate
   before/after content from unrelated workspace changes. Complete native UI/MCP/edit parity

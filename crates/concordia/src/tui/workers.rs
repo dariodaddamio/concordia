@@ -409,13 +409,13 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         }
         return true;
     }
-    // y/n only answer while the prompt is empty, so typing a sentence never approves anything.
+    // Only chat focus may answer; read-only file typing must never approve or reject work.
     let armed = app
         .deleg
         .confirms
         .front()
         .is_some_and(|c| c.since.elapsed() >= ARM_AFTER);
-    if armed && app.editor.text().is_empty() && !ctrl && !alt {
+    if armed && app.workspace.focused.is_none() && app.editor.text().is_empty() && !ctrl && !alt {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 app.answer_confirm(true);
@@ -432,7 +432,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         app.select_worker(if key.code == KeyCode::Down { 1 } else { -1 });
         return true;
     }
-    let plain = key.modifiers.is_empty();
+    let plain = key.modifiers.is_empty() && app.workspace.focused.is_none();
     if plain && key.code == KeyCode::Enter && app.editor.text().is_empty() {
         if let Some(id) = app.deleg.selected {
             app.deleg.viewer = Some(Viewer {
@@ -483,6 +483,16 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 }
 
 impl App {
+    pub(super) fn inspect_worker(&mut self, id: u32) {
+        if self.deleg.d.get(id).is_some() {
+            self.deleg.viewer = Some(Viewer {
+                job: id,
+                scroll: 0,
+                max_scroll: 0,
+            });
+        }
+    }
+
     fn select_worker(&mut self, delta: i32) {
         let ids: Vec<u32> = self
             .deleg
@@ -533,6 +543,7 @@ impl App {
             self.push_system(block);
             self.flash(format!("worker {note}"));
         }
+        self.refresh_agents_picker();
     }
 
     pub(super) fn cancel_all_delegates(&mut self) {
@@ -544,6 +555,11 @@ impl App {
         let Some(p) = self.deleg.outbox.take() else {
             return;
         };
+        if self.session_ui.loading() {
+            self.flash("history is loading; use the worker result after it finishes");
+            return;
+        }
+        self.submitted_prompt = Some(p.clone());
         self.push_user(p.clone());
         self.turn_started = Some(Instant::now());
         self.phase = Phase::Waiting;
@@ -840,6 +856,10 @@ impl App {
 
     /// User action: hand a finished result to the orchestrator as (labelled, bounded) context.
     fn delegate_use(&mut self, acct: Option<&str>) {
+        if self.session_ui.loading() {
+            self.push_system("history is loading; use the worker result after it finishes");
+            return;
+        }
         if self.busy {
             self.push_system("the orchestrator is busy - wait for it (or Esc), then /delegate use");
             return;

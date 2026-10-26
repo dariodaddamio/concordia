@@ -146,7 +146,9 @@ concordia
 
 **You continue the same conversation on the same account.** Nothing is injected. Concordia resumes the explicit session id it recorded (`--resume <id>`), never `--last`.
 
-**You want an earlier chat back.** `/resume` lists sessions and binds the one you pick by id.
+**You want an earlier chat back.** `/resume` binds the selected account/session and restores recent Codex/Claude messages as scrollback. PageUp and the mouse wheel let you review them before sending anything. Cursor history availability is shown explicitly. Titles are generated from the first request and saved independently of optional thread logging.
+
+**You want to inspect subagents.** `/agents` or `Ctrl+G` opens reported native child-agent activity and Concordia worker jobs. Enter opens the task, state and reported result. Codex collaboration events and Claude Agent/Task cards are supported; available detail depends on what the provider emits.
 
 **You think of the next prompt while a turn runs.** Press `Tab` to queue it; the queue shows above the prompt box and each item is sent when the turn before it finishes cleanly. `Ctrl+Up` focuses the queue while preserving your draft. Enter opens a multiline upper editor and saves it; Esc cancels the edit. `Ctrl+Down` returns to the draft after save/cancel; `Alt+Up/Down` reorders queued prompts. Cancelling, failure and restart pause the queue: `Ctrl+R` or `/queue resume` explicitly resumes it. Drafts and queues use separate recovery records for each pane and workspace; `/recover` chooses abandoned work. Sent history remains shared.
 
@@ -167,6 +169,7 @@ concordia
 | `/workers`, `/workers add`, `/workers remove` | Choose which accounts can act as workers |
 | `/delegate <account\|auto> <task>` | Run one task on a worker account; `/delegate stop`, `/delegate use`, `/delegate help` |
 | `/resume`, `/chats` | Pick an explicit session id (never `--last`) |
+| `/agents`, `Ctrl+G` | Browse native subagent reports and worker jobs; Enter inspects one |
 | `/trust` | `plan`, `ask`, `workspace` or `full` |
 | `/config` | Connection help, including manual login commands |
 | `/new` | Clear the session bind |
@@ -198,7 +201,8 @@ concordia
 | `Ctrl+E` | Open searchable full activity detail; `Esc` closes and `Ctrl+C` copies |
 | `Ctrl+Up` / `Ctrl+Down` | Focus queued prompts / return to the draft after save or cancel |
 | `Ctrl+R` | Resume a paused queue while preserving the draft |
-| `/open PATH`, `/preview PATH` | Separate terminal editor / read-only Markdown preview; see [editor configuration](docs/config.md) |
+| `/open PATH`, `/preview PATH` | Internal read-only file panes; repeat to split; F6 changes focus and Esc returns to chat |
+| `/close ID`, `/edit PATH` | Close an internal pane / launch the configured external editor; see [workspace controls](docs/config.md) |
 | `Ctrl+Z` | Undo in the prompt (also right after a send, which puts the sent text back) |
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | Right-click | Copy the selection, or paste when there is none |

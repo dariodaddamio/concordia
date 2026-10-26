@@ -21,6 +21,14 @@ pub struct Config {
     pub mode: Mode,
     pub delegation: Delegation,
     pub editor: EditorConfig,
+    pub continuation: Continuation,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Continuation {
+    pub automatic: bool,
+    /// Explicit ordered allowlist; no account is selected implicitly.
+    pub accounts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,6 +91,7 @@ impl Default for Config {
                 max_workers: MAX_WORKERS_CAP,
             },
             editor: EditorConfig::default(),
+            continuation: Continuation::default(),
         }
     }
 }
@@ -175,7 +184,7 @@ impl Config {
             let Some(sub) = value.as_table() else {
                 if matches!(
                     section.as_str(),
-                    "ui" | "threads" | "mode" | "delegation" | "editor"
+                    "ui" | "threads" | "mode" | "delegation" | "editor" | "continuation"
                 ) {
                     warnings.push(format!("[{section}] must be a table; ignored"));
                 } else {
@@ -186,6 +195,17 @@ impl Config {
             for (key, v) in sub {
                 let full = format!("{section}.{key}");
                 match full.as_str() {
+                    "continuation.mode" => match v.as_str() {
+                        Some("automatic") => cfg.continuation.automatic = true,
+                        Some("manual") => cfg.continuation.automatic = false,
+                        _ => warnings.push("continuation.mode must be manual or automatic; using manual".into()),
+                    },
+                    "continuation.accounts" => match v.as_array() {
+                        Some(accounts) if accounts.iter().all(|a| a.as_str().is_some_and(|s| !s.trim().is_empty())) => {
+                            cfg.continuation.accounts = accounts.iter().filter_map(|a| a.as_str().map(str::to_owned)).collect();
+                        }
+                        _ => warnings.push("continuation.accounts must be an array of account ids".into()),
+                    },
                     "editor.program" => match v.as_str() {
                         Some(program) if !program.trim().is_empty() => cfg.editor.program = program.into(),
                         _ => warnings.push("editor.program must be a nonempty executable path".into()),
@@ -343,6 +363,20 @@ pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuation_is_manual_unless_explicitly_configured() {
+        assert!(!Config::default().continuation.automatic);
+        let (cfg, warnings) =
+            Config::parse("[continuation]\nmode='automatic'\naccounts=['backup','third']\n");
+        assert!(warnings.is_empty());
+        assert!(cfg.continuation.automatic);
+        assert_eq!(cfg.continuation.accounts, ["backup", "third"]);
+        let (cfg, warnings) = Config::parse("[continuation]\nmode='anything'\naccounts=[42]\n");
+        assert!(!cfg.continuation.automatic);
+        assert!(cfg.continuation.accounts.is_empty());
+        assert_eq!(warnings.len(), 2);
+    }
 
     #[test]
     fn terminal_editor_configuration_uses_one_program_and_argument_array() {

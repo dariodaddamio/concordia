@@ -485,8 +485,8 @@ fn cancelling_pauses_the_queue_and_ctrl_r_resumes_it() {
     assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
     assert_eq!(
         h.app.editor.text(),
-        "one",
-        "the cancelled prompt is back in the box"
+        "",
+        "cancellation leaves the prompt box empty"
     );
     h.app.editor.clear();
     h.key(KeyCode::Char('r'), KeyModifiers::CONTROL);
@@ -552,8 +552,9 @@ fn sending_a_prompt_while_paused_keeps_the_queue_paused() {
         cancelled: true,
         ..Default::default()
     });
+    h.app.editor.set_text("one"); // Retrying is explicit; cancellation leaves the draft empty.
     h.sent();
-    h.press(KeyCode::Enter); // the box holds "one" again: Enter sends it
+    h.press(KeyCode::Enter); // Enter sends the explicitly entered retry.
     assert_eq!(h.sent(), vec!["one"]);
     h.finish_ok();
     assert!(h.sent().is_empty());

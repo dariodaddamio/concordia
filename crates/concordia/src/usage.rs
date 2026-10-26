@@ -235,14 +235,31 @@ struct RateWindow {
 struct Credits {
     has_credits: Option<bool>,
     unlimited: Option<bool>,
+    #[serde(default, deserialize_with = "optional_number")]
     balance: Option<f64>,
 }
 
+fn optional_number<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok()))
+        .filter(|number| number.is_finite()))
+}
+
 pub fn read_codex_usage(codex_home: &Path) -> UsageSnapshot {
-    if let Some(snapshot) = read_tmp_rate_limits(codex_home) {
-        return snapshot;
-    }
-    if let Some(snapshot) = read_session_rate_limits(codex_home) {
+    let cached = read_tmp_rate_limits(codex_home);
+    let session = read_session_rate_limits(codex_home);
+    let latest = match (cached, session) {
+        (Some(cached), Some(session)) => Some(if cached.1 > session.1 {
+            cached
+        } else {
+            session
+        }),
+        (cached, session) => cached.or(session),
+    };
+    if let Some((snapshot, _)) = latest {
         return snapshot;
     }
     UsageSnapshot::no_data(
@@ -957,7 +974,7 @@ impl UsageFetcher {
     }
 }
 
-fn read_tmp_rate_limits(codex_home: &Path) -> Option<UsageSnapshot> {
+fn read_tmp_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemTime)> {
     let tmp = codex_home.join("tmp");
     if !tmp.is_dir() {
         return None;
@@ -976,14 +993,18 @@ fn read_tmp_rate_limits(codex_home: &Path) -> Option<UsageSnapshot> {
         };
         if let Some(limits) = parse_rate_limits_blob(&raw) {
             if has_percents(&limits) {
-                return Some(format_limits(&limits, "from CODEX_HOME/tmp cache"));
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                return Some((
+                    format_limits(&limits, "from CODEX_HOME/tmp cache"),
+                    modified,
+                ));
             }
         }
     }
     None
 }
 
-fn read_session_rate_limits(codex_home: &Path) -> Option<UsageSnapshot> {
+fn read_session_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemTime)> {
     let sessions = codex_home.join("sessions");
     if !sessions.is_dir() {
         return None;
@@ -1015,11 +1036,11 @@ fn read_session_rate_limits(codex_home: &Path) -> Option<UsageSnapshot> {
             continue;
         };
         let prefer = has_percents(&hit);
-        if best.is_none() {
-            best = Some((hit, mtime));
-        } else if prefer {
+        if prefer {
             best = Some((hit, mtime));
             break;
+        } else if best.is_none() {
+            best = Some((hit, mtime));
         }
     }
     let (limits, mtime) = best?;
@@ -1033,7 +1054,7 @@ fn read_session_rate_limits(codex_home: &Path) -> Option<UsageSnapshot> {
     } else {
         "as of your last chat".into()
     };
-    Some(format_limits(&limits, &detail))
+    Some((format_limits(&limits, &detail), mtime))
 }
 
 fn scan_file_for_rate_limits(path: &Path) -> Option<CodexRateLimits> {
@@ -1044,13 +1065,15 @@ fn scan_file_for_rate_limits(path: &Path) -> Option<CodexRateLimits> {
     if len > TAIL {
         file.seek(SeekFrom::Start(len - TAIL)).ok()?;
     }
-    let mut buf = String::new();
-    file.read_to_string(&mut buf).ok()?;
+    let mut bytes = Vec::new();
+    file.take(TAIL).read_to_end(&mut bytes).ok()?;
+    // A trailing read may start inside a multibyte character on the discarded first line.
+    let buf = String::from_utf8_lossy(&bytes);
     // Drop partial first line when we seeked mid-file.
     let text = if len > TAIL {
         buf.split_once('\n').map(|(_, rest)| rest).unwrap_or(&buf)
     } else {
-        buf.as_str()
+        buf.as_ref()
     };
     let mut last_any: Option<CodexRateLimits> = None;
     let mut last_pct: Option<CodexRateLimits> = None;
@@ -1314,6 +1337,101 @@ mod tests {
     use crate::store::ProviderKind;
 
     const SAMPLE: &str = "You are currently using your subscription to power your Claude Code usage\n\nCurrent session: 7% used · resets Oct 15, 9:10pm (America/Phoenix)\nCurrent week (all models): 13% used · resets Oct 21, 9am (America/Phoenix)\n\nWhat's contributing to your limits usage?\nsomething else: 5% used\n";
+
+    #[test]
+    fn codex_credit_strings_do_not_discard_usage_or_limit_events() {
+        for balance in [
+            serde_json::json!("0"),
+            serde_json::json!(0),
+            serde_json::json!(null),
+            serde_json::json!("unknown"),
+        ] {
+            let raw = serde_json::json!({"rate_limits": {
+                "primary": {"used_percent": 98.0, "window_minutes": 300},
+                "credits": {"balance": balance},
+                "rate_limit_reached_type": "workspace_member_usage_limit_reached"
+            }})
+            .to_string();
+            let limits =
+                parse_rate_limits_blob(&raw).expect("balance must not reject the entire reading");
+            let snap = format_limits(&limits, "synthetic");
+            assert_eq!(snap.primary_pct, Some(98.0));
+            assert!(snap.limit_hit);
+        }
+    }
+
+    #[test]
+    fn codex_uses_the_newest_session_with_percentages_not_the_second_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        for (name, used, age) in [("old.jsonl", 20, 200), ("new.jsonl", 99, 10)] {
+            let path = sessions.join(name);
+            std::fs::write(
+                &path,
+                serde_json::json!({"payload": {"rate_limits": {
+                    "primary": {"used_percent": used}, "credits": {"balance": "0"}
+                }}})
+                .to_string(),
+            )
+            .unwrap();
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_modified(SystemTime::now() - Duration::from_secs(age)),
+                )
+                .unwrap();
+        }
+        assert_eq!(read_codex_usage(dir.path()).primary_pct, Some(99.0));
+        let cache = dir.path().join("tmp");
+        std::fs::create_dir(&cache).unwrap();
+        let cache_file = cache.join("usage.json");
+        std::fs::write(&cache_file, r#"{"primary":{"used_percent":12}}"#).unwrap();
+        File::options()
+            .write(true)
+            .open(&cache_file)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(SystemTime::now() - Duration::from_secs(300)),
+            )
+            .unwrap();
+        assert_eq!(
+            read_codex_usage(dir.path()).primary_pct,
+            Some(99.0),
+            "old temporary cache cannot mask a newer session"
+        );
+        File::options()
+            .write(true)
+            .open(&cache_file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()))
+            .unwrap();
+        assert_eq!(
+            read_codex_usage(dir.path()).primary_pct,
+            Some(12.0),
+            "newer cache is still usable"
+        );
+    }
+
+    #[test]
+    fn codex_tail_starting_inside_unicode_still_reads_complete_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let event =
+            serde_json::json!({"payload": {"rate_limits": {"primary": {"used_percent": 87}}}})
+                .to_string();
+        let suffix = format!("\n{event}\n");
+        let padding = 512 * 1024 - suffix.len() - 2;
+        let raw = format!("prefix雪{}{}", "x".repeat(padding), suffix);
+        std::fs::write(&path, raw).unwrap();
+        let limits =
+            scan_file_for_rate_limits(&path).expect("partial first UTF-8 character is discarded");
+        assert_eq!(limits.primary.unwrap().used_percent, Some(87.0));
+    }
 
     #[test]
     fn parses_the_claude_usage_sample() {

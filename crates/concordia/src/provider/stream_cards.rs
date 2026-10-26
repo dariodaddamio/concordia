@@ -119,6 +119,9 @@ pub fn classify_codex_event(ev: &serde_json::Value) -> Vec<StreamPart> {
 fn classify_item_event(typ: &str, ev: &serde_json::Value) -> Vec<StreamPart> {
     let item = ev.get("item").filter(|i| i.is_object()).unwrap_or(ev);
     let item_type = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    if item_type == "collab_tool_call" {
+        return classify_collab_tool_call(item);
+    }
     let id = item
         .get("id")
         .or_else(|| item.get("call_id"))
@@ -246,6 +249,74 @@ fn classify_item_event(typ: &str, ev: &serde_json::Value) -> Vec<StreamPart> {
         return vec![StreamPart::Error(msg)];
     }
     Vec::new()
+}
+
+/// Codex exec's documented CollabToolCall reports tool and child lifetimes separately.
+/// Completing spawn_agent/wait does not by itself mean that a child has completed.
+fn classify_collab_tool_call(item: &serde_json::Value) -> Vec<StreamPart> {
+    let states = item.get("agents_states").and_then(|v| v.as_object());
+    let mut ids: Vec<&str> = item
+        .get("receiver_thread_ids")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if let Some(states) = states {
+        ids.extend(
+            states
+                .keys()
+                .map(String::as_str)
+                .filter(|id| !id.is_empty()),
+        );
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter()
+        .map(|id| {
+            let state = states.and_then(|s| s.get(id));
+            let status = state
+                .and_then(|s| s.get("status"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let mut detail = Vec::new();
+            if let Some(prompt) = item.get("prompt").and_then(|v| v.as_str()) {
+                if !prompt.is_empty() {
+                    // JSON quoting keeps a multiline task on one logical detail line, so
+                    // later state-only updates can preserve the complete original task.
+                    detail.push(format!(
+                        "Task: {}",
+                        serde_json::to_string(prompt).unwrap_or_default()
+                    ));
+                }
+            }
+            if let Some(sender) = item.get("sender_thread_id").and_then(|v| v.as_str()) {
+                detail.push(format!("Sender: {sender}"));
+            }
+            detail.push(format!("Child: {id}"));
+            if let Some(tool) = item.get("tool").and_then(|v| v.as_str()) {
+                detail.push(format!("Tool: {tool}"));
+            }
+            detail.push(format!("State: {status}"));
+            if let Some(message) = state
+                .and_then(|s| s.get("message"))
+                .and_then(|v| v.as_str())
+            {
+                detail.push(format!("Message: {message}"));
+            }
+            StreamPart::Card(StreamCard {
+                id: format!("native-agent:{id}"),
+                title: format!("agent {}", id.chars().take(12).collect::<String>()),
+                detail: Some(detail.join("\n")),
+                status: match status {
+                    "completed" | "shutdown" => CardStatus::Done,
+                    "errored" | "interrupted" | "not_found" => CardStatus::Error,
+                    _ => CardStatus::Running,
+                },
+            })
+        })
+        .collect()
 }
 
 fn classify_payload(p: &serde_json::Value) -> Vec<StreamPart> {
@@ -467,6 +538,15 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, next: StreamCard) {
                         }
                         _ => prev.detail = Some(d),
                     }
+                } else if prev.id.starts_with("native-agent:") && !d.starts_with("Task: ") {
+                    let task = prev
+                        .detail
+                        .as_deref()
+                        .and_then(|old| old.lines().find(|line| line.starts_with("Task: ")));
+                    prev.detail = Some(match task {
+                        Some(task) => format!("{task}\n{d}"),
+                        None => d,
+                    });
                 } else {
                     prev.detail = Some(d);
                 }
@@ -485,14 +565,184 @@ pub fn format_card_line(card: &StreamCard) -> String {
         CardStatus::Done => "✓",
     };
     match &card.detail {
-        Some(d) if !d.is_empty() => format!("│ {mark} {}  {}", card.title, compact_detail(d, 72)),
+        Some(d) if !d.is_empty() => format!("│ {mark} {}  {}", card.title, card_preview(d)),
         _ => format!("│ {mark} {}", card.title),
+    }
+}
+
+/// Compact presentation only: the original arguments and output remain on the card.
+fn card_preview(detail: &str) -> String {
+    let first = detail
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let raw = first.strip_prefix("command: ").unwrap_or(first);
+    let mut command = raw.to_owned();
+    // Some providers deliver tool arguments as a JSON string rather than an object.
+    let input = detail
+        .split_once("\nOutput: ")
+        .map_or(detail, |(input, _)| input);
+    let arguments = input
+        .strip_prefix("arguments: ")
+        .or_else(|| input.strip_prefix("input: "))
+        .unwrap_or(input);
+    if arguments.trim_start().starts_with(['{', '"']) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) {
+            let value = match value.as_str() {
+                Some(s) => serde_json::from_str(s).unwrap_or(value.clone()),
+                None => value,
+            };
+            if let Some(cmd) = value
+                .get("cmd")
+                .or_else(|| value.get("command"))
+                .and_then(|v| v.as_str())
+            {
+                command = cmd.into();
+            }
+        }
+    }
+    let lower = command.to_ascii_lowercase();
+    // Hide a recognized launcher only; this never changes the executed command.
+    if lower.contains("powershell") || lower.contains("pwsh") {
+        if let Some(index) = lower.find(" -command ").or_else(|| lower.find(" -c ")) {
+            let rest = &command[index..];
+            let content = rest
+                .trim_start()
+                .split_once(' ')
+                .map(|(_, c)| c.trim())
+                .unwrap_or(rest);
+            command = content
+                .strip_prefix('"')
+                .and_then(|c| c.strip_suffix('"'))
+                .unwrap_or(content)
+                .to_owned();
+        }
+    }
+    let output_lines = detail
+        .split_once("\nOutput: ")
+        .map(|(_, output)| output.lines().count());
+    let summary = compact_detail(&command, 96);
+    match output_lines {
+        Some(1) => format!("{summary} · 1 output line"),
+        Some(n) if n > 0 => format!("{summary} · {n} output lines"),
+        _ => summary,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_shell_rows_show_the_command_and_preserve_full_output() {
+        let detail = "command: \"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command \"cargo test -p demo\"\nOutput: first\nsecond";
+        let card = StreamCard {
+            id: "run".into(),
+            title: "shell".into(),
+            detail: Some(detail.into()),
+            status: CardStatus::Done,
+        };
+        let row = format_card_line(&card);
+        assert!(row.contains("cargo test -p demo"));
+        assert!(row.contains("2 output lines"));
+        assert!(!row.contains("WindowsPowerShell"));
+        assert_eq!(card.detail.as_deref(), Some(detail));
+        assert_eq!(
+            card_preview("arguments: {\"cmd\":\"rg --files\"}"),
+            "rg --files"
+        );
+        assert_eq!(
+            card_preview("{\"command\":\"git status\"}\nOutput: clean"),
+            "git status · 1 output line"
+        );
+    }
+
+    // Synthetic fixtures following codex-rs/exec/src/exec_events.rs CollabToolCall.
+    fn collab_cards(item: serde_json::Value) -> Vec<StreamCard> {
+        classify_codex_event(&serde_json::json!({"type":"item.completed", "item":item}))
+            .into_iter()
+            .filter_map(|part| match part {
+                StreamPart::Card(card) => Some(card),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn native_agent_spawn_wait_updates_preserve_multiline_task_and_child_status() {
+        let mut cards = collab_cards(serde_json::json!({
+            "type":"collab_tool_call", "id":"spawn-1", "tool":"spawn_agent",
+            "sender_thread_id":"parent", "receiver_thread_ids":["child-a"],
+            "prompt":"Review parser\nReturn evidence", "status":"completed", "agents_states":{}
+        }));
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].id, "native-agent:child-a");
+        assert_eq!(cards[0].status, CardStatus::Running);
+        for card in collab_cards(serde_json::json!({
+            "type":"collab_tool_call", "id":"wait-2", "tool":"wait",
+            "sender_thread_id":"parent", "receiver_thread_ids":["child-a"],
+            "status":"completed",
+            "agents_states":{"child-a":{"status":"completed","message":"Parser verified"}}
+        })) {
+            upsert_card(&mut cards, card);
+        }
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].status, CardStatus::Done);
+        let detail = cards[0].detail.as_deref().unwrap();
+        assert!(detail.contains("Review parser\\nReturn evidence"));
+        assert!(detail.contains("Sender: parent"));
+        assert!(detail.contains("Child: child-a"));
+        assert!(detail.contains("State: completed"));
+        assert!(detail.contains("Parser verified"));
+        assert!(!detail.contains("State: unknown"));
+    }
+
+    #[test]
+    fn native_agent_multiple_receivers_unknown_states_and_failures_remain_distinct() {
+        let cards = collab_cards(serde_json::json!({
+            "type":"collab_tool_call", "tool":"wait", "status":"completed",
+            "receiver_thread_ids":["a","a","b","c","d"],
+            "agents_states":{
+                "a":{"status":"running"}, "b":{"status":"future_state"},
+                "c":{"status":"errored","message":"Worker failed"},
+                "e":{"status":"interrupted"}, "f":{"status":"not_found"},
+                "g":{"status":"shutdown"}, "h":{"status":"pending_init"}
+            }
+        }));
+        assert_eq!(cards.len(), 8);
+        let status = |id: &str| {
+            cards
+                .iter()
+                .find(|c| c.id == format!("native-agent:{id}"))
+                .unwrap()
+                .status
+        };
+        for id in ["a", "b", "d", "h"] {
+            assert_eq!(status(id), CardStatus::Running);
+        }
+        for id in ["c", "e", "f"] {
+            assert_eq!(status(id), CardStatus::Error);
+        }
+        assert_eq!(status("g"), CardStatus::Done);
+        assert!(cards
+            .iter()
+            .find(|c| c.id == "native-agent:c")
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Worker failed"));
+    }
+
+    #[test]
+    fn native_agent_without_child_identity_does_not_fabricate_an_agent() {
+        assert!(collab_cards(serde_json::json!({
+            "type":"collab_tool_call", "tool":"spawn_agent", "status":"failed",
+            "receiver_thread_ids":[], "agents_states":{}
+        }))
+        .is_empty());
+    }
 
     #[test]
     fn parses_agent_text_and_tool_cards() {

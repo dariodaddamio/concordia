@@ -26,7 +26,7 @@ fn cancelled_turn_preserves_a_new_draft() {
 }
 
 #[test]
-fn cancelled_turn_restores_submitted_prompt_when_editor_is_empty() {
+fn cancelled_turn_leaves_empty_editor_empty() {
     let (mut app, _dir) = app();
     let (tx, mut rx) = mpsc::unbounded_channel();
     app.editor.set_text("retry this prompt");
@@ -38,7 +38,7 @@ fn cancelled_turn_restores_submitted_prompt_when_editor_is_empty() {
         ..Default::default()
     });
 
-    assert_eq!(app.editor.text(), "retry this prompt");
+    assert_eq!(app.editor.text(), "");
     assert!(
         rx.try_recv().is_err(),
         "restored prompt must not be resubmitted"
@@ -46,7 +46,7 @@ fn cancelled_turn_restores_submitted_prompt_when_editor_is_empty() {
 }
 
 #[test]
-fn cancel_restores_exact_prompt_immediately_and_late_result_keeps_new_draft() {
+fn cancel_leaves_editor_empty_and_late_result_keeps_new_draft() {
     for (code, modifiers) in [
         (KeyCode::Esc, KeyModifiers::NONE),
         (KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -59,7 +59,7 @@ fn cancel_restores_exact_prompt_immediately_and_late_result_keeps_new_draft() {
 
         app.busy = true;
         handle_key(&mut app, KeyEvent::new(code, modifiers), &tx);
-        assert_eq!(app.editor.text(), "  retry with spacing  ");
+        assert_eq!(app.editor.text(), "");
 
         app.editor.set_text("replacement draft");
         app.finalize_turn(TurnOutcome {
@@ -72,7 +72,7 @@ fn cancel_restores_exact_prompt_immediately_and_late_result_keeps_new_draft() {
 }
 
 #[test]
-fn cancel_before_dispatch_discards_pending_turn_and_restores_prompt() {
+fn cancel_before_dispatch_discards_pending_turn_without_restoring_prompt() {
     let (mut app, _dir) = app();
     let (tx, mut rx) = mpsc::unbounded_channel();
     app.editor.set_text("cancel before startup");
@@ -90,11 +90,11 @@ fn cancel_before_dispatch_discards_pending_turn_and_restores_prompt() {
         app.cancel_requested,
         "a second cancel must not revoke the first"
     );
-    assert_eq!(app.editor.text(), "cancel before startup");
+    assert_eq!(app.editor.text(), "");
     assert!(app.discard_cancelled_pending_turn());
 
     assert!(!app.busy);
-    assert_eq!(app.editor.text(), "cancel before startup");
+    assert_eq!(app.editor.text(), "");
     assert!(!app.discard_cancelled_pending_turn());
 }
 
@@ -143,7 +143,7 @@ fn a_slash_command_during_a_turn_does_not_replace_its_recovery_prompt() {
     app.editor.set_text("/queue");
     app.submit_input(&tx);
     app.request_cancel();
-    assert_eq!(app.editor.text(), "  original prompt  ");
+    assert_eq!(app.editor.text(), "");
     assert!(rx.try_recv().is_err());
 }
 

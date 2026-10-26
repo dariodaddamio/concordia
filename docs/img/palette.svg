@@ -14,11 +14,11 @@
 <rect x="302" y="245" width="54" height="19" fill="#303030"/>
 <rect x="59" y="302" width="234" height="19" fill="#303030"/>
 <rect x="59" y="321" width="54" height="19" fill="#303030"/>
-<rect x="32" y="359" width="621" height="19" fill="#444444"/>
+<rect x="32" y="359" width="720" height="19" fill="#444444"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
 <text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">◆</text>
 <text x="41" y="50" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">concordia</text>
-<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-16e</text>
+<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-21d</text>
 <text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
 <text x="356" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
 <text x="770" y="50" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#666666">5h 59% left · 7d 41% left</text>
@@ -50,49 +50,49 @@
 <text x="41" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
 <text x="59" y="335" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
 <text x="122" y="335" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">prints a warning per group, naming both accounts and the fix</text>
-<text x="23" y="354" textLength="639" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ commands · 36 ──────────────────────────────────────────────────────╮</text>
+<text x="23" y="354" textLength="738" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ commands · 43 ─────────────────────────────────────────────────────────────────╮</text>
 <text x="23" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="32" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">&gt;</text>
 <text x="50" y="373" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use</text>
-<text x="203" y="373" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" font-weight="700">switch account or provider</text>
-<text x="653" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="275" y="373" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" font-weight="700">switch account or provider</text>
+<text x="752" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="50" y="392" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use add</text>
-<text x="203" y="392" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">connect a new account</text>
-<text x="653" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="275" y="392" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">connect a new account</text>
+<text x="752" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="50" y="411" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use remove</text>
-<text x="203" y="411" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">remove an account</text>
-<text x="653" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="275" y="411" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">remove an account</text>
+<text x="752" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="50" y="430" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/mode</text>
-<text x="203" y="430" textLength="360" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">permission mode: plan, ask, auto or full</text>
-<text x="653" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="275" y="430" textLength="360" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">permission mode: plan, ask, auto or full</text>
+<text x="752" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="449" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/model</text>
-<text x="203" y="449" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">choose the model</text>
-<text x="653" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="449" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/continuation</text>
+<text x="275" y="449" textLength="306" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">usage handoff: manual or automatic</text>
+<text x="752" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="468" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage</text>
-<text x="203" y="468" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">limits for this account</text>
-<text x="653" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="468" textLength="180" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/continuation manual</text>
+<text x="275" y="468" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">pause at a usage limit</text>
+<text x="752" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="487" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage all</text>
-<text x="203" y="487" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">limits for every account</text>
-<text x="653" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="487" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/continuation automatic</text>
+<text x="275" y="487" textLength="477" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">continue through configured accounts at a usage limit</text>
+<text x="752" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="506" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage refresh</text>
-<text x="203" y="506" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">check limits again now</text>
-<text x="653" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="506" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/continue</text>
+<text x="275" y="506" textLength="459" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">continue a usage-limited request: /continue ACCOUNT</text>
+<text x="752" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="525" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/resume</text>
-<text x="203" y="525" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">continue an earlier session</text>
-<text x="653" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="525" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/model</text>
+<text x="275" y="525" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">choose the model</text>
+<text x="752" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="544" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/trust</text>
-<text x="203" y="544" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">approvals: ask, workspace or full</text>
-<text x="653" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="563" textLength="639" lengthAdjust="spacingAndGlyphs" fill="#666666">╰─────────────────────────────────────────────────────────────────────╯</text>
+<text x="50" y="544" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage</text>
+<text x="275" y="544" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">limits for this account</text>
+<text x="752" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="23" y="563" textLength="738" lengthAdjust="spacingAndGlyphs" fill="#666666">╰────────────────────────────────────────────────────────────────────────────────╯</text>
 <text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">╭</text>
 <text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
 <text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>

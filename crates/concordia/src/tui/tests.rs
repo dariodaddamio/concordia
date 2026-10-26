@@ -1503,14 +1503,18 @@ impl Harness {
 #[test]
 fn a_running_update_does_not_freeze_the_ui_and_shows_progress() {
     let mut h = Harness::new(100, 24);
-    h.app.job = Some(spawn_job(JobKind::Update, |ctl| {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    h.app.job = Some(spawn_job(JobKind::Update, move |ctl| {
         ctl.say("Compiling concordia v0.0.1");
+        ready_tx.send(()).unwrap();
         while !ctl.cancelled() {
             std::thread::sleep(Duration::from_millis(10));
         }
         JR::Update(Err(anyhow::anyhow!("cancelled")))
     }));
-    std::thread::sleep(Duration::from_millis(100));
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("fake update worker ready");
     h.draw();
     let s = h.screen();
     assert!(
@@ -1597,6 +1601,155 @@ fn a_second_update_cannot_start_while_one_is_running() {
 }
 
 // ---- waiting states, thinking, repeated errors ----------------------------------------------------
+
+#[test]
+fn streamed_commentary_and_commands_keep_arrival_order_without_duplicate_final_reply() {
+    let mut h = Harness::new(110, 35);
+    h.app.push_user("check both".into());
+    h.app.busy = true;
+    h.app
+        .apply_progress(TurnProgress::Text("Checking the first file.".into()));
+    let card = |id: &str, command: &str, status| {
+        TurnProgress::Card(StreamCard {
+            id: id.into(),
+            title: "shell".into(),
+            detail: Some(command.into()),
+            status,
+        })
+    };
+    h.app
+        .apply_progress(card("first", "command: first-check", CardStatus::Running));
+    h.draw();
+    let visible = h.screen();
+    assert!(
+        visible.find("Checking the first file.").unwrap() < visible.find("first-check").unwrap()
+    );
+    h.app.apply_progress(card(
+        "first",
+        "command: first-check\nOutput: passed",
+        CardStatus::Done,
+    ));
+    h.app
+        .apply_progress(TurnProgress::Text("Checking the second file.".into()));
+    h.app
+        .apply_progress(card("second", "command: second-check", CardStatus::Running));
+    assert!(
+        h.app.busy,
+        "both command cards must exist before the turn finishes"
+    );
+    h.app.apply_progress(TurnProgress::Text("Finished.".into()));
+    h.app.on_turn_done(
+        TurnOutcome {
+            exit_code: Some(0),
+            text: "Checking the first file.\nChecking the second file.\nFinished.".into(),
+            ..Default::default()
+        },
+        &mpsc::unbounded_channel().0,
+    );
+    let sequence: Vec<_> = h
+        .app
+        .messages
+        .iter()
+        .filter(|m| matches!(m.role, MsgRole::Assistant | MsgRole::Card))
+        .map(|m| {
+            m.card
+                .as_ref()
+                .map(|c| c.id.as_str())
+                .unwrap_or(m.text.as_str())
+        })
+        .collect();
+    assert_eq!(
+        sequence,
+        [
+            "Checking the first file.",
+            "first",
+            "Checking the second file.",
+            "second",
+            "Finished."
+        ]
+    );
+}
+
+#[test]
+fn cancelling_preserves_partial_reply_and_draft_and_repeated_stop_is_idempotent() {
+    let mut h = Harness::new(100, 24);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    h.app.editor.set_text("original request");
+    h.app.submit_input(&tx);
+    rx.try_recv().unwrap();
+    h.app.editor.set_text("next unsent thought");
+    h.app.queue.items.push("queued work".into());
+    h.app
+        .apply_progress(TurnProgress::Text("Partial answer worth keeping.".into()));
+    h.app.request_cancel();
+    h.app.request_cancel();
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.text == "cancelling...")
+            .count(),
+        1
+    );
+    h.app.on_turn_done(
+        TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        },
+        &tx,
+    );
+    assert_eq!(h.app.editor.text(), "next unsent thought");
+    assert!(h.app.queue.paused);
+    assert!(rx.try_recv().is_err());
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.role == MsgRole::Assistant && m.text.contains("Partial answer"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn reply_committed_before_last_tool_is_not_duplicated_and_keeps_token_line() {
+    let mut h = Harness::new(100, 24);
+    h.app
+        .apply_progress(TurnProgress::Text("Commentary before the command.".into()));
+    h.app.apply_progress(TurnProgress::Card(StreamCard {
+        id: "last".into(),
+        title: "shell".into(),
+        detail: Some("command: check".into()),
+        status: CardStatus::Done,
+    }));
+    h.app.apply_progress(TurnProgress::Usage(
+        crate::provider::stream_cards::TurnUsage {
+            input: Some(123),
+            output: Some(45),
+            ..Default::default()
+        },
+    ));
+    h.app.finalize_turn(TurnOutcome {
+        exit_code: Some(0),
+        text: "Commentary before the command.".into(),
+        ..Default::default()
+    });
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.role == MsgRole::Assistant)
+            .count(),
+        1
+    );
+    if token_line::ui_token_line_enabled() {
+        assert!(h
+            .app
+            .messages
+            .iter()
+            .any(|m| m.role == MsgRole::Meta && m.text.contains("123")));
+    }
+}
 
 #[test]
 fn tool_result_keeps_the_command_and_full_output_in_the_visible_card() {
@@ -1951,6 +2104,35 @@ fn usage_is_one_block_that_updates_in_place_when_the_check_lands() {
         "rewritten in place, not appended"
     );
     assert_eq!(after.matches("limits").count(), 1, "one block:\n{after}");
+}
+
+#[test]
+fn codex_usage_block_refreshes_after_a_turn_without_a_background_fetch() {
+    let mut h = Harness::new(100, 30);
+    let home = h._dir.path().join("synthetic-codex");
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    h.app.provider = ProviderKind::Codex;
+    h.app.account = "synthetic-codex".into();
+    h.app.home_path = Some(home.clone());
+    let path = home.join("sessions/usage.jsonl");
+    let reading = |used: u32| {
+        serde_json::json!({"payload": {"rate_limits": {
+            "primary": {"used_percent": used}, "credits": {"balance": "0"}
+        }}})
+        .to_string()
+    };
+    std::fs::write(&path, reading(10)).unwrap();
+    h.app.show_usage(false);
+    let index = h.app.usage_block.unwrap();
+    assert!(h.app.messages[index].text.contains("90% left"));
+    std::fs::write(&path, reading(97)).unwrap();
+    h.app.finalize_turn(TurnOutcome {
+        exit_code: Some(0),
+        ..Default::default()
+    });
+    assert_eq!(h.app.usage_block, Some(index));
+    assert!(h.app.messages[index].text.contains("3% left"));
+    assert!(h.app.usage_summary.contains("3% left"));
 }
 
 #[test]

@@ -86,16 +86,47 @@ fn main() {
     let mode = std::env::var("FAKE_PROVIDER_MODE").unwrap_or_else(|_| "stream".into());
     let mut stdout = std::io::stdout();
     match mode.as_str() {
-        "stream" => {
+        "stream" | "gated-stream" => {
             if let Ok(path) = std::env::var("FAKE_PROVIDER_STREAM") {
                 let body = std::fs::read_to_string(path).unwrap_or_default();
                 for line in body.lines() {
                     let _ = writeln!(stdout, "{line}");
                     let _ = stdout.flush();
+                    if mode == "gated-stream" && line.contains("item.started") {
+                        let gate = std::env::var("FAKE_PROVIDER_GATE").expect("fake stream gate");
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(15);
+                        while !std::path::Path::new(&gate).exists() {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "fake stream gate timed out"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
                 }
             }
         }
-        "hang" => {
+        "hang" | "eof-hang" => {
+            #[cfg(windows)]
+            if mode == "eof-hang" {
+                use std::ffi::c_void;
+                #[link(name = "kernel32")]
+                extern "system" {
+                    fn GetStdHandle(kind: u32) -> *mut c_void;
+                    fn CloseHandle(handle: *mut c_void) -> i32;
+                }
+                // SAFETY: this fake intentionally closes its own stdout so the runner sees
+                // EOF while the process remains alive. No further output uses that handle.
+                unsafe {
+                    CloseHandle(GetStdHandle(-11_i32 as u32));
+                }
+                if let Ok(path) = std::env::var("FAKE_PROVIDER_PID") {
+                    let _ = std::fs::write(path, std::process::id().to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_secs(120));
+                return;
+            }
             if let Ok(path) = std::env::var("FAKE_PROVIDER_PID") {
                 let _ = std::fs::write(path, std::process::id().to_string());
             }
@@ -179,7 +210,7 @@ fn interaction(args: &[String]) {
                 let _ = writeln!(
                     file,
                     "{}",
-                    json!({"kind":kind,"provider":provider,"prompt":prompt})
+                    json!({"kind":kind,"provider":provider,"prompt":prompt,"args":args,"home":std::env::var(if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" }).ok()})
                 );
             }
         }
@@ -189,6 +220,12 @@ fn interaction(args: &[String]) {
         let _ = std::io::stdout().flush();
     };
     journal("start");
+    if prompt.contains("[quota]") && provider == "codex" {
+        emit(json!({"type":"thread.started","thread_id":"quota-source-session"}));
+        emit(json!({"type":"turn.failed","error":{"message":"You've hit your usage limit"}}));
+        journal("limited");
+        std::process::exit(1);
+    }
     let thought = format!(
         "reasoning-start {} reasoning-end",
         "checking the requested changes. ".repeat(30)
@@ -223,6 +260,11 @@ fn interaction(args: &[String]) {
             );
         }
     }
+    if provider == "codex" && prompt.contains("[agents]") {
+        emit(
+            json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"spawn-child","tool":"spawn_agent","sender_thread_id":"parent","receiver_thread_ids":["child-reviewer"],"prompt":"Inspect the graph parser","agents_states":{"child-reviewer":{"status":"running","message":null}},"status":"completed"}}),
+        );
+    }
     if prompt.contains("[wait]") {
         let gate =
             std::path::PathBuf::from(std::env::var("FAKE_PROVIDER_GATE").expect("fake gate"));
@@ -237,6 +279,11 @@ fn interaction(args: &[String]) {
         std::process::exit(3);
     }
     let reply = format!("FAKE REPLY: {prompt}");
+    if provider == "codex" && prompt.contains("[agents]") {
+        emit(
+            json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"wait-child","tool":"wait","sender_thread_id":"parent","receiver_thread_ids":["child-reviewer"],"agents_states":{"child-reviewer":{"status":"completed","message":"GRAPH_REVIEW_FINISHED"}},"status":"completed"}}),
+        );
+    }
     match provider {
         "codex" => {
             emit(
