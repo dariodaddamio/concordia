@@ -5,6 +5,7 @@ use crate::provider::codex::{
     self, apply_stream_parts, extract_stream_chunk, plan_turn_argv, TurnRequest as CodexReq,
 };
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
+use crate::provider::enforcement;
 use crate::provider::launch::prepare;
 use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
@@ -80,9 +81,23 @@ pub enum TurnProgress {
     Thinking(String),
     /// Token counts the provider reported for the turn (never reply text).
     Usage(TurnUsage),
+    /// Concordia's own explanation of how it changed the turn (for example, read-only enforcement).
+    Notice(String),
+}
+
+/// Why this turn will run read-only instead of with the trust it asked for, if it will.
+pub fn enforcement_notice(req: &ProviderTurnRequest<'_>) -> Option<String> {
+    enforcement::effective_trust(req.cwd, req.provider, req.home_path, req.trust).1
 }
 
 pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
+    // Locked-code projects without verified enforcement never get a write-capable turn. This runs
+    // before any provider process (including Cursor's `create-chat`) starts.
+    let (trust, _) = enforcement::effective_trust(req.cwd, req.provider, req.home_path, req.trust);
+    let req = &ProviderTurnRequest {
+        trust,
+        ..req.clone()
+    };
     let mut plan = plan_provider_turn_raw(req)?;
     // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
     crate::provider::compat::degrade_planned(&mut plan, req.trust);
@@ -245,6 +260,9 @@ pub async fn run_provider_turn_with_progress(
         })
         .transpose()?;
     let mut plan = plan_provider_turn(req)?;
+    if let (Some(tx), Some(notice)) = (&on_progress, enforcement_notice(req)) {
+        let _ = tx.send(TurnProgress::Notice(notice));
+    }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
     // it explicitly. If that does not work the turn runs unbound, exactly as before.
     if plan.provider == ProviderKind::Cursor
@@ -616,5 +634,69 @@ mod reader_tests {
         assert!(got[0].ends_with("...[line truncated]"));
         assert!(got[0].len() <= LINE_MAX + 32, "memory must stay bounded");
         assert_eq!(got[1], "next");
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    fn claude_argv(cwd: &Path, trust: TrustMode) -> Vec<String> {
+        let req = ProviderTurnRequest {
+            provider: ProviderKind::Claude,
+            prompt: "edit it",
+            cwd,
+            home_path: None,
+            model: None,
+            native_session_id: None,
+            trust,
+            context_prefix: None,
+        };
+        plan_provider_turn(&req).unwrap().argv
+    }
+
+    fn locked(dir: &Path) {
+        std::fs::create_dir_all(dir.join("docs/quality")).unwrap();
+        std::fs::write(dir.join("docs/quality/locked-code.json"), "{}\n").unwrap();
+    }
+
+    #[test]
+    fn an_unverified_locked_project_plans_a_full_trust_turn_as_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        locked(dir.path());
+        let argv = claude_argv(dir.path(), TrustMode::Full);
+        assert!(argv.windows(2).any(|w| w == ["--permission-mode", "plan"]));
+        assert!(!argv.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn a_project_without_locks_keeps_the_requested_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = claude_argv(dir.path(), TrustMode::Full);
+        assert!(argv.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn the_notice_is_available_before_the_turn_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        locked(dir.path());
+        let req = ProviderTurnRequest {
+            provider: ProviderKind::Cursor,
+            prompt: "x",
+            cwd: dir.path(),
+            home_path: None,
+            model: None,
+            native_session_id: None,
+            trust: TrustMode::Workspace,
+            context_prefix: None,
+        };
+        let notice = enforcement_notice(&req).expect("a lowered turn must explain itself");
+        assert!(notice.contains("cursor") && notice.contains("read-only"));
+        let plain = tempfile::tempdir().unwrap();
+        let req = ProviderTurnRequest {
+            cwd: plain.path(),
+            ..req
+        };
+        assert_eq!(enforcement_notice(&req), None);
     }
 }

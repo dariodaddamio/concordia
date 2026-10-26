@@ -35,9 +35,9 @@ toml = { version = "0.9", default-features = false, features = ["parse", "serde"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 which = "7"
+sha2 = "0.10"
 unicode-width = "0.2"
 portable-pty = "0.9"
 
 [dev-dependencies]
-sha2 = "0.10"
 tempfile = "3"

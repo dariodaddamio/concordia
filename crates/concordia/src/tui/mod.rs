@@ -887,6 +887,7 @@ impl App {
                     self.push_card(merged);
                 }
             }
+            TurnProgress::Notice(n) => self.push_system(n),
             TurnProgress::Error(e) => {
                 if self.continuation.errors.len() < 12 {
                     self.continuation
