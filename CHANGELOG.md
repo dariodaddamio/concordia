@@ -12,7 +12,7 @@ also bumps the build stamp shown by `concordia --version`.
 ## [Unreleased]
 
 ### Added (next build)
-- Locked-code launch gate. In a project that carries `docs/quality/locked-code.json`, a turn that asks for write-capable trust (ask, workspace or full) runs read-only (plan) with a visible notice unless `.opifex/enforcement/<provider>.json` proves a live probe saw the denial for that provider, isolated home and policy revision. The check runs before any provider process, including Cursor's `create-chat`. Projects without locked regions are unchanged.
+- Locked-code launch gate. In a project that carries `docs/quality/locked-code.json`, a turn that asks for write-capable trust (ask, workspace or full) runs read-only (plan) with a visible notice unless `.opifex/enforcement/<provider>.json` proves a live probe saw the denial for that provider, isolated home and policy revision. The check runs before any provider process, including Cursor's `create-chat`. Receipts live in Concordia's state directory, not in the project, a project that was locked stays locked if its policy file is deleted, a provider home inside the project never counts as isolated, and a turn is refused if a capability fallback would drop its read-only switch. Projects without locked regions are unchanged.
 
 ### Added (`2026-10-21c`)
 - Automatic session titles in the header, terminal title and resume picker, persisted separately from optional transcript logging and generated without model calls.
