@@ -23,6 +23,12 @@ name = "concordia-fake-provider"
 path = "tests/support/fake_provider.rs"
 test = false
 
+# Test support only: stands in for a user's harness adapter in integration tests. Never installed.
+[[bin]]
+name = "concordia-fake-harness"
+path = "tests/support/fake_harness.rs"
+test = false
+
 [dependencies]
 anyhow = "1"
 crossterm = "0.28"

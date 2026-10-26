@@ -19,7 +19,7 @@ use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-const POLICY_FILE: &str = "docs/quality/locked-code.json";
+pub(crate) const POLICY_FILE: &str = "docs/quality/locked-code.json";
 const STORE_DIR: &str = "enforcement";
 const LOCKED_MARKER: &str = "locked";
 const PROVEN: &str = "denied-live-probe";
@@ -46,7 +46,7 @@ pub fn policy_revision(bytes: &[u8]) -> String {
 }
 
 /// A path as a comparable string: forward slashes, no trailing slash, lowercase on Windows.
-fn path_key(path: &Path) -> String {
+pub(crate) fn path_key(path: &Path) -> String {
     let key = path.to_string_lossy().replace('\\', "/");
     let key = key.trim_end_matches('/').to_string();
     if cfg!(windows) {
@@ -61,13 +61,13 @@ pub fn project_key(root: &Path) -> String {
     sha_hex(path_key(root).as_bytes())
 }
 
-fn project_root(cwd: &Path) -> Option<PathBuf> {
+pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
         .find(|dir| dir.join(POLICY_FILE).is_file())
         .map(Path::to_path_buf)
 }
 
-fn slot(store: &Path, root: &Path) -> PathBuf {
+pub(crate) fn slot(store: &Path, root: &Path) -> PathBuf {
     store.join(STORE_DIR).join(project_key(root))
 }
 
@@ -84,7 +84,7 @@ fn remember_locked(slot: &Path, revision: &str) {
     }
 }
 
-fn is_inside(path: &Path, root: &Path) -> bool {
+pub(crate) fn is_inside(path: &Path, root: &Path) -> bool {
     let (path, root) = (path_key(path), path_key(root));
     path == root || path.starts_with(&format!("{root}/"))
 }
