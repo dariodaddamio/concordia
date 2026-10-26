@@ -11,6 +11,9 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Added (next build)
+- Locked-code launch gate. In a project that carries `docs/quality/locked-code.json`, a turn that asks for write-capable trust (ask, workspace or full) runs read-only (plan) with a visible notice unless `.opifex/enforcement/<provider>.json` proves a live probe saw the denial for that provider, isolated home and policy revision. The check runs before any provider process, including Cursor's `create-chat`. Projects without locked regions are unchanged.
+
 ### Added (`2026-10-21c`)
 - Automatic session titles in the header, terminal title and resume picker, persisted separately from optional transcript logging and generated without model calls.
 - `/resume` restores bounded recent Codex/Claude messages as scrollback and binds the explicitly selected session across accounts. History loading preserves the draft and does not dispatch a provider turn. Unsupported Cursor history is reported explicitly.

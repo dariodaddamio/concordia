@@ -2,6 +2,7 @@ pub mod claude;
 pub mod codex;
 pub mod compat;
 pub mod cursor;
+pub mod enforcement;
 pub mod launch;
 mod session_guard;
 pub mod stream_cards;
