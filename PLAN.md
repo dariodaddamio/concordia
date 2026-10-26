@@ -78,6 +78,11 @@ write, never re-implemented.
    uncertain replay; terms review remains a release prerequisite.
 6. **Distribution**: name checks, signed releases and first public tag after everyday reliability.
 
+Locked-code launch gate: implemented (`provider::enforcement`, see [architecture](docs/architecture.md)).
+A write-capable turn in a project with `docs/quality/locked-code.json` runs read-only unless a verified
+receipt matches its provider, isolated home and policy revision. Still open: the Harness verifier that
+writes the receipt from a live denial probe, and runtime-version binding.
+
 Bounded context handoff and explicit delegation already exist; see [delegation](docs/delegation.md).
 Internal preview panes are implemented in source; editing/recovery, policy-based routing and
 managed worktree cleanup remain requirements. Hosted services, resident inference and Linux/macOS
