@@ -57,7 +57,32 @@ fn write_receipt(path: &Path, body: &Value) -> std::io::Result<()> {
     }
     let temporary = path.with_extension("json.tmp");
     fs::write(&temporary, serde_json::to_vec_pretty(body)?)?;
-    fs::rename(&temporary, path)
+    replace_file(&temporary, path)
+}
+
+fn replace_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let from: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+        let to: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+        }
+        if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0x1) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(temporary, destination)
+    }
 }
 
 /// Run the adapter's verify command and write a receipt under `store` only for a real denial.
@@ -75,6 +100,9 @@ pub fn verify_in(
         );
     };
     let slot = enforcement::slot(store, &root);
+    if enforcement::has_reparse_component(store, &slot) {
+        return Verdict::Unverified("the enforcement state path contains a symlink or junction; refusing to write a receipt".into());
+    }
     let receipt = slot.join(format!("{provider}.json"));
     let unverified = |why: String| {
         let _ = fs::remove_file(&receipt);
@@ -104,6 +132,13 @@ pub fn verify_in(
     argv[0] = resolve_program(&argv[0], &manifest.dir)
         .to_string_lossy()
         .into_owned();
+    let policy_path = root.join(enforcement::POLICY_FILE);
+    let before = fs::read(&policy_path)
+        .map(|bytes| enforcement::policy_revision(&bytes))
+        .unwrap_or_default();
+    if before.is_empty() {
+        return unverified("the locked-code policy could not be read".into());
+    }
     let outcome = run(&argv);
     if outcome.timed_out {
         return unverified("the verify command timed out".into());
@@ -128,7 +163,7 @@ pub fn verify_in(
             .unwrap_or("no reason given");
         return unverified(format!("{} reported `{result}`: {reason}", manifest.name));
     }
-    let current = fs::read(root.join(enforcement::POLICY_FILE))
+    let current = fs::read(&policy_path)
         .map(|bytes| enforcement::policy_revision(&bytes))
         .unwrap_or_default();
     let reported_home = report
@@ -136,8 +171,8 @@ pub fn verify_in(
         .and_then(Value::as_str)
         .map(|h| enforcement::path_key(Path::new(h)));
     let matches = report.get("provider").and_then(Value::as_str) == Some(provider)
-        && report.get("policyRevision").and_then(Value::as_str) == Some(current.as_str())
-        && !current.is_empty()
+        && report.get("policyRevision").and_then(Value::as_str) == Some(before.as_str())
+        && !before.is_empty()
         && reported_home == ctx.home.map(enforcement::path_key);
     if !matches {
         return unverified(
@@ -145,10 +180,13 @@ pub fn verify_in(
                 .into(),
         );
     }
+    if current != before {
+        return unverified("the locked-code policy changed while the adapter was running".into());
+    }
     let body = serde_json::json!({
         "provider": provider,
         "home": ctx.home.map(|h| h.to_string_lossy().into_owned()),
-        "policyRevision": current,
+        "policyRevision": before,
         "result": PROVEN,
         "harness": manifest.name,
         "harnessVersion": manifest.version,
@@ -156,7 +194,7 @@ pub fn verify_in(
     });
     match write_receipt(&receipt, &body) {
         Ok(()) => Verdict::Verified,
-        Err(e) => unverified(format!("could not write the receipt: {e}")),
+        Err(e) => Verdict::Unverified(format!("could not write the receipt: {e}")),
     }
 }
 
@@ -395,5 +433,52 @@ mod tests {
         };
         let (verdict, _) = run_verify(&f, &manifest(true), bad);
         assert_unverified(&f, verdict, "probe could not run");
+    }
+
+    #[test]
+    fn a_policy_changed_by_the_adapter_is_unverified_without_a_receipt() {
+        let f = fixture();
+        let original = revision();
+        let ctx = Context {
+            provider: ProviderKind::Claude,
+            home: Some(f.home.path()),
+            project: f.project.path(),
+        };
+        let verdict = verify_in(f.store.path(), &manifest(true), &ctx, &|_: &[String]| {
+            fs::write(
+                f.project.path().join("docs/quality/locked-code.json"),
+                "changed\n",
+            )
+            .unwrap();
+            denial("claude", f.home.path(), &original)
+        });
+        assert!(matches!(verdict, Verdict::Unverified(why) if why.contains("changed")));
+        assert!(matches!(gate(&f), Gate::ReadOnly(_)));
+    }
+
+    #[test]
+    fn verifying_twice_replaces_the_receipt_and_a_write_failure_keeps_the_old_one() {
+        let f = fixture();
+        let m = manifest(true);
+        let ctx = Context {
+            provider: ProviderKind::Claude,
+            home: Some(f.home.path()),
+            project: f.project.path(),
+        };
+        let good = || denial("claude", f.home.path(), &revision());
+        assert_eq!(
+            verify_in(f.store.path(), &m, &ctx, &|_| good()),
+            Verdict::Verified
+        );
+        assert_eq!(
+            verify_in(f.store.path(), &m, &ctx, &|_| good()),
+            Verdict::Verified
+        );
+        let receipt = enforcement::slot(f.store.path(), f.project.path()).join("claude.json");
+        let old = fs::read_to_string(&receipt).unwrap();
+        fs::create_dir(receipt.with_extension("json.tmp")).unwrap();
+        let verdict = verify_in(f.store.path(), &m, &ctx, &|_| good());
+        assert!(matches!(verdict, Verdict::Unverified(why) if why.contains("write")));
+        assert_eq!(fs::read_to_string(receipt).unwrap(), old);
     }
 }

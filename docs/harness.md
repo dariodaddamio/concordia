@@ -10,7 +10,8 @@ Concordia can connect any user-owned harness to its isolated Codex, Claude, or C
   "providers": {
     "claude": {
       "connect": ["./bin/harness", "connect", "{provider}", "{home}", "{project}"],
-      "verify": ["./bin/harness", "verify", "{provider}", "{home}", "{project}"]
+      "verify": ["./bin/harness", "verify", "{provider}", "{home}", "{project}"],
+      "env": ["HARNESS_ENDPOINT"]
     }
   },
   "tools": [
@@ -21,7 +22,9 @@ Concordia can connect any user-owned harness to its isolated Codex, Claude, or C
 
 Run `/harness connect <folder|harness.json|program>`, `/harness status`, `/harness verify [provider]`,
 `/harness tools`, `/harness tools knowledge`, or `/harness disconnect <name>`. Programs receive argv
-directly, with no shell, a 60-second timeout, and bounded output. Relative programs resolve next to
+directly, with no shell, a 60-second timeout, bounded output, and a minimal environment. PATH and
+standard platform directory/locale variables are passed; `env` optionally names additional variables
+to pass through for that provider's commands. Relative programs resolve next to
 the manifest. A bare program is asked for JSON with `concordia-manifest`.
 
 `verify` must exit zero and print a final JSON object with `result: "denied-live-probe"`, the exact

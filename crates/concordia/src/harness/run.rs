@@ -7,6 +7,19 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+thread_local! {
+    static EXTRA_ENV: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn with_extra_env<T>(names: &[String], f: impl FnOnce() -> T) -> T {
+    EXTRA_ENV.with(|slot| {
+        let old = slot.replace(names.to_vec());
+        let result = f();
+        slot.replace(old);
+        result
+    })
+}
+
 /// How long an adapter command may run before it is killed.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_OUTPUT: usize = 64 * 1024;
@@ -43,10 +56,35 @@ pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome
     command
         .args(args)
         .current_dir(cwd)
+        .env_clear()
         .env("CONCORDIA_HARNESS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for name in [
+        "PATH",
+        "SystemRoot",
+        "SYSTEMROOT",
+        "ComSpec",
+        "TEMP",
+        "TMP",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "LANG",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    EXTRA_ENV.with(|slot| {
+        for name in slot.borrow().iter() {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    });
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -61,6 +99,8 @@ pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome
             }
         }
     };
+    #[cfg(windows)]
+    let job = WindowsJob::assign(&child);
     let out = child.stdout.take().map(drain);
     let err = child.stderr.take().map(drain);
     let deadline = Instant::now() + timeout;
@@ -68,6 +108,22 @@ pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome
         match child.try_wait() {
             Ok(Some(status)) => break (status.code(), false),
             Ok(None) if Instant::now() >= deadline => {
+                #[cfg(windows)]
+                {
+                    if let Some(job) = &job {
+                        job.terminate();
+                    } else {
+                        let _ = std::process::Command::new("taskkill.exe")
+                            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                            .status();
+                    }
+                }
+                #[cfg(unix)]
+                {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-TERM", &format!("-{}", child.id())])
+                        .status();
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 break (None, true);
@@ -85,5 +141,61 @@ pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome
         stdout: collect(out),
         stderr: collect(err),
         timed_out,
+    }
+}
+
+#[cfg(windows)]
+struct WindowsJob(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn assign(child: &std::process::Child) -> Option<Self> {
+        use std::os::windows::io::AsRawHandle;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CreateJobObjectW(
+                a: *mut std::ffi::c_void,
+                name: *const u16,
+            ) -> *mut std::ffi::c_void;
+            fn AssignProcessToJobObject(
+                job: *mut std::ffi::c_void,
+                process: *mut std::ffi::c_void,
+            ) -> i32;
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+        let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+        if job.is_null() || unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
+            if !job.is_null() {
+                unsafe {
+                    CloseHandle(job);
+                }
+            }
+            None
+        } else {
+            Some(Self(job))
+        }
+    }
+
+    fn terminate(&self) {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn TerminateJobObject(job: *mut std::ffi::c_void, code: u32) -> i32;
+        }
+        unsafe {
+            let _ = TerminateJobObject(self.0, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
     }
 }

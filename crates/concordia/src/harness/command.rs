@@ -18,6 +18,10 @@ const COMMAND_PREFIX: &str = "command:";
 
 type Run<'a> = &'a dyn Fn(&[String]) -> RunOutcome;
 
+fn run_adapter(run: Run<'_>, env: &[String], argv: &[String]) -> RunOutcome {
+    super::run::with_extra_env(env, || run(argv))
+}
+
 /// Where the command runs: the current pane's account and project.
 pub struct Session<'a> {
     pub store: &'a Path,
@@ -187,7 +191,7 @@ pub fn connect_in(
             argv[0] = resolve_program(&argv[0], &manifest.dir)
                 .to_string_lossy()
                 .into_owned();
-            run(&argv)
+            run_adapter(run, &manifest.providers[provider].env, &argv)
         });
     let entry = match outcome {
         Err(why) => entry_for(ctx, false, why),
@@ -223,7 +227,11 @@ pub fn verify_in(
     ctx: &Context<'_>,
     run: Run<'_>,
 ) -> Verdict {
-    let verdict = verify::verify_in(store, manifest, ctx, run);
+    let env = manifest
+        .providers
+        .get(ctx.provider.as_str())
+        .map_or(&[][..], |commands| commands.env.as_slice());
+    let verdict = verify::verify_in(store, manifest, ctx, &|argv| run_adapter(run, env, argv));
     let (state, note) = match &verdict {
         Verdict::Verified => ("verified", String::new()),
         Verdict::Unverified(why) => ("unverified", why.clone()),
@@ -273,6 +281,13 @@ pub fn status_lines(store: &Path) -> Vec<String> {
     }
     let mut lines = Vec::new();
     for c in all {
+        let manifest_current = if c.manifest_path.starts_with(COMMAND_PREFIX) {
+            true
+        } else {
+            fs::read_to_string(&c.manifest_path)
+                .ok()
+                .is_some_and(|text| sha_hex(&text) == c.manifest_sha256)
+        };
         lines.push(format!(
             "{} {}  ({})",
             c.name,
@@ -285,9 +300,54 @@ pub fn status_lines(store: &Path) -> Vec<String> {
             } else {
                 format!("connect failed: {}", e.connect_note)
             };
-            let verify = match e.verify.as_str() {
-                "verified" => "verified".to_string(),
-                "unverified" => format!("unverified: {}", e.verify_note),
+            let live = manifest_current
+                && e.home.as_deref().is_none_or(|h| Path::new(h).is_dir())
+                && Path::new(&e.project)
+                    .join(crate::provider::enforcement::POLICY_FILE)
+                    .is_file()
+                && match e.provider.as_str() {
+                    "codex" => {
+                        crate::provider::enforcement::gate_in(
+                            store,
+                            Path::new(&e.project),
+                            ProviderKind::Codex,
+                            e.home.as_deref().map(Path::new),
+                        ) == crate::provider::enforcement::Gate::Open
+                    }
+                    "claude" => {
+                        crate::provider::enforcement::gate_in(
+                            store,
+                            Path::new(&e.project),
+                            ProviderKind::Claude,
+                            e.home.as_deref().map(Path::new),
+                        ) == crate::provider::enforcement::Gate::Open
+                    }
+                    "cursor" => {
+                        crate::provider::enforcement::gate_in(
+                            store,
+                            Path::new(&e.project),
+                            ProviderKind::Cursor,
+                            e.home.as_deref().map(Path::new),
+                        ) == crate::provider::enforcement::Gate::Open
+                    }
+                    _ => false,
+                };
+            let receipt =
+                crate::provider::enforcement::project_root(Path::new(&e.project)).map(|root| {
+                    crate::provider::enforcement::slot(store, &root)
+                        .join(format!("{}.json", e.provider))
+                });
+            let verify = match (e.verify.as_str(), live) {
+                ("verified", true) => "verified".to_string(),
+                ("verified", false) => {
+                    if receipt.as_ref().is_some_and(|path| path.is_file()) {
+                        "unverified: receipt is stale (the policy, manifest, or binding changed)"
+                            .to_string()
+                    } else {
+                        "unverified: receipt is missing".to_string()
+                    }
+                }
+                ("unverified", _) => format!("unverified: {}", e.verify_note),
                 _ => "not verified".to_string(),
             };
             lines.push(format!(
@@ -398,6 +458,12 @@ fn verify_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<Strin
         Ok(l) => l,
         Err(e) => return vec![e],
     };
+    if loaded.sha != chosen.manifest_sha256 {
+        return vec![format!(
+            "{}: unverified; the manifest changed since connect; reconnect before verifying",
+            chosen.name
+        )];
+    }
     let mut targets = targets(session, all);
     if let Some(p) = provider_filter {
         targets.retain(|(tp, _)| *tp == p);
@@ -580,7 +646,11 @@ fn tools_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<String
     argv[0] = resolve_program(&argv[0], &manifest.dir)
         .to_string_lossy()
         .into_owned();
-    let outcome = run(&argv);
+    let env = manifest
+        .providers
+        .get(session.provider.as_str())
+        .map_or(&[][..], |commands| commands.env.as_slice());
+    let outcome = run_adapter(run, env, &argv);
     if outcome.timed_out {
         return vec![format!("tool {harness}/{} timed out", tool.name)];
     }
@@ -914,6 +984,128 @@ mod tests {
             status.contains("verified") && !status.contains("not verified"),
             "{status}"
         );
+    }
+
+    #[test]
+    fn a_changed_manifest_is_refused_without_replacing_the_receipt_and_disconnect_withdraws_it() {
+        let w = world();
+        connect_claude(&w);
+        let proof = denial(&w);
+        let verified = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "verify",
+            &|_: &[String]| proof.clone(),
+        ));
+        assert!(verified.contains("verified"), "{verified}");
+        let root = enforcement::project_root(w.project.path()).unwrap();
+        let receipt = enforcement::slot(w.store.path(), &root).join("claude.json");
+        let before = fs::read(&receipt).unwrap();
+
+        let manifest_path = w.tool.path().join("harness.json");
+        let original = fs::read_to_string(&manifest_path).unwrap();
+        fs::write(&manifest_path, format!("{original}\n")).unwrap();
+        let refused = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "verify",
+            &|_: &[String]| proof.clone(),
+        ));
+        assert!(
+            refused.contains("unverified") && refused.contains("reconnect"),
+            "{refused}"
+        );
+        assert_eq!(fs::read(&receipt).unwrap(), before);
+
+        let disconnected = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "disconnect mine",
+            &|_: &[String]| ok(),
+        ));
+        assert!(
+            disconnected.contains("withdrew 1 receipt"),
+            "{disconnected}"
+        );
+        assert!(!receipt.exists());
+    }
+
+    #[test]
+    fn status_reports_missing_receipts_and_stale_policy_receipts_as_unverified() {
+        let w = world();
+        connect_claude(&w);
+        let proof = denial(&w);
+        let verified = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "verify",
+            &|_: &[String]| proof.clone(),
+        ));
+        assert!(verified.contains("verified"), "{verified}");
+        let root = enforcement::project_root(w.project.path()).unwrap();
+        let receipt = enforcement::slot(w.store.path(), &root).join("claude.json");
+
+        fs::remove_file(&receipt).unwrap();
+        let missing = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "status",
+            &|_: &[String]| ok(),
+        ));
+        assert!(
+            missing.contains("unverified: receipt is missing"),
+            "{missing}"
+        );
+        assert!(!missing.contains("  verified"), "{missing}");
+
+        let verified_again = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "verify",
+            &|_: &[String]| proof.clone(),
+        ));
+        assert!(verified_again.contains("verified"), "{verified_again}");
+        fs::write(
+            w.project.path().join("docs/quality/locked-code.json"),
+            "{\"controls\":[\"changed\"]}\n",
+        )
+        .unwrap();
+        let stale = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "status",
+            &|_: &[String]| ok(),
+        ));
+        assert!(stale.contains("unverified: receipt is stale"), "{stale}");
+        assert!(!stale.contains("  verified"), "{stale}");
+    }
+
+    #[test]
+    fn verify_refuses_reparse_point_state_without_writing_inside_or_outside_it() {
+        let w = world();
+        connect_claude(&w);
+        let root = enforcement::project_root(w.project.path()).unwrap();
+        let slot = enforcement::slot(w.store.path(), &root);
+        fs::create_dir_all(slot.parent().unwrap()).unwrap();
+        fs::create_dir_all(&slot).unwrap();
+        assert!(!enforcement::has_reparse_component(w.store.path(), &slot));
+
+        let outside = tempfile::tempdir().unwrap();
+        let link_target = outside.path().join("redirected");
+        fs::create_dir(&link_target).unwrap();
+        fs::remove_dir(&slot).unwrap();
+        if let Err(error) = std::os::windows::fs::symlink_dir(&link_target, &slot) {
+            println!(
+                "skipping reparse-point write test: could not create directory symlink: {error}"
+            );
+            return;
+        }
+        assert!(enforcement::has_reparse_component(w.store.path(), &slot));
+
+        let out = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "verify",
+            &|_: &[String]| denial(&w),
+        ));
+        assert!(
+            out.contains("unverified") && out.contains("symlink or junction"),
+            "{out}"
+        );
+        assert!(!link_target.join("claude.json").exists());
+        assert!(!link_target.join("locked").exists());
     }
 
     #[test]

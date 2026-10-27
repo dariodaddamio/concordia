@@ -11,6 +11,9 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed
+- Harness adapters now run with an allowlisted environment and whole-process timeout cleanup; verification binds policy and manifest revisions, protects existing receipts, and status rechecks live state.
+
 ### Added (next build)
 - Generic `/harness` connect, verify, status, tool listing/execution and disconnect flows for user-owned adapters.
 - Locked-code launch gate. In a project that carries `docs/quality/locked-code.json`, a turn that asks for write-capable trust (ask, workspace or full) runs read-only (plan) with a visible notice unless `.opifex/enforcement/<provider>.json` proves a live probe saw the denial for that provider, isolated home and policy revision. The check runs before any provider process, including Cursor's `create-chat`. Receipts live in Concordia's state directory, not in the project, a project that was locked stays locked if its policy file is deleted, a provider home inside the project never counts as isolated, and a turn is refused if a capability fallback would drop its read-only switch. Projects without locked regions are unchanged.

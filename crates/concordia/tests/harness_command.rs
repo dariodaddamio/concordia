@@ -5,6 +5,7 @@ use concordia::harness::run::run_command;
 use concordia::harness::{command, parse_manifest, Context};
 use concordia::provider::enforcement::{self, Gate};
 use concordia::store::ProviderKind;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,50 @@ fn a_hanging_command_is_killed_at_the_timeout() {
         start.elapsed() < Duration::from_secs(10),
         "the timeout must be enforced"
     );
+}
+
+#[test]
+fn a_timed_out_adapter_does_not_leave_a_running_descendant() {
+    let marker = tempfile::NamedTempFile::new().unwrap();
+    let path = marker.path().to_path_buf();
+    std::fs::remove_file(&path).unwrap();
+    let out = run_command(
+        &argv(&["tree-hang", &path.to_string_lossy()]),
+        Path::new("."),
+        Duration::from_millis(300),
+    );
+    assert!(out.timed_out);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(
+        std::fs::read_to_string(path).ok().as_deref() != Some("survived"),
+        "descendant survived"
+    );
+}
+
+#[test]
+fn adapter_environment_is_allowlisted_and_manifest_env_is_forwarded() {
+    std::env::set_var("ANTHROPIC_API_KEY", "secret-test-value");
+    std::env::set_var("HARNESS_TEST_EXTRA", "extra-test-value");
+    let out = run_command(
+        &argv(&[
+            "env-check",
+            "ANTHROPIC_API_KEY",
+            "HARNESS_TEST_EXTRA",
+            "PATH",
+        ]),
+        Path::new("."),
+        Duration::from_secs(5),
+    );
+    assert!(!out.stdout.contains("secret-test-value"));
+    assert!(out.stdout.lines().any(|l| l.starts_with("PATH=")));
+    let manifest = parse_manifest(
+        r#"{"name":"x","providers":{"claude":{"connect":["h"],"env":["HARNESS_TEST_EXTRA"]}}}"#,
+        Path::new("."),
+    )
+    .unwrap();
+    assert_eq!(manifest.providers["claude"].env, ["HARNESS_TEST_EXTRA"]);
+    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::remove_var("HARNESS_TEST_EXTRA");
 }
 
 #[test]
@@ -76,20 +121,19 @@ fn connect_runs_the_adapter_and_records_the_result() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let manifest = parse_manifest(&manifest_text(), Path::new(".")).unwrap();
+    let manifest_path = project.path().join("harness.json");
+    std::fs::write(&manifest_path, manifest_text()).unwrap();
+    let sha = Sha256::digest(manifest_text().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     let ctx = Context {
         provider: ProviderKind::Claude,
         home: Some(home.path()),
         project: project.path(),
     };
     let run = |a: &[String]| run_command(a, Path::new("."), Duration::from_secs(20));
-    let entry = command::connect_in(
-        store.path(),
-        &manifest,
-        Path::new("harness.json"),
-        "abc",
-        &ctx,
-        &run,
-    );
+    let entry = command::connect_in(store.path(), &manifest, &manifest_path, &sha, &ctx, &run);
     assert!(entry.connect_ok, "{}", entry.connect_note);
     let written = std::fs::read_to_string(home.path().join("harness-connected")).unwrap();
     assert!(written.starts_with("claude|"), "{written}");
@@ -114,6 +158,12 @@ fn verify_end_to_end_opens_the_gate_only_for_a_real_matching_report() {
     )
     .unwrap();
     let manifest = parse_manifest(&manifest_text(), Path::new(".")).unwrap();
+    let manifest_path = project.path().join("harness.json");
+    std::fs::write(&manifest_path, manifest_text()).unwrap();
+    let sha = Sha256::digest(manifest_text().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     let ctx = Context {
         provider: ProviderKind::Claude,
         home: Some(home.path()),
@@ -129,14 +179,7 @@ fn verify_end_to_end_opens_the_gate_only_for_a_real_matching_report() {
     };
     let run = |a: &[String]| run_command(a, Path::new("."), Duration::from_secs(20));
     assert!(matches!(gate(), Gate::ReadOnly(_)));
-    let verdict = command::verify_in(
-        store.path(),
-        &manifest,
-        Path::new("harness.json"),
-        "abc",
-        &ctx,
-        &run,
-    );
+    let verdict = command::verify_in(store.path(), &manifest, &manifest_path, &sha, &ctx, &run);
     assert_eq!(verdict, concordia::harness::verify::Verdict::Verified);
     assert_eq!(gate(), Gate::Open);
     assert!(command::status_lines(store.path())

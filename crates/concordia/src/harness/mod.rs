@@ -25,6 +25,8 @@ pub struct ProviderCommands {
     pub connect: Vec<String>,
     /// Proves, with a real attempt, that the harness blocks what it claims to block. Optional.
     pub verify: Option<Vec<String>>,
+    /// Environment variable names explicitly allowed through to adapter commands.
+    pub env: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,7 +181,11 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
         let entry = value
             .as_object()
             .ok_or_else(|| format!("providers.{key} must be an object"))?;
-        check_fields(entry, &["connect", "verify"], &format!("providers.{key}"))?;
+        check_fields(
+            entry,
+            &["connect", "verify", "env"],
+            &format!("providers.{key}"),
+        )?;
         let connect = parse_argv(
             entry
                 .get("connect")
@@ -190,7 +196,35 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
             .get("verify")
             .map(|v| parse_argv(v, &format!("providers.{key}.verify")))
             .transpose()?;
-        providers.insert(key.clone(), ProviderCommands { connect, verify });
+        let env = entry
+            .get("env")
+            .map(|v| {
+                v.as_array()
+                    .ok_or_else(|| format!("providers.{key}.env must be an array of names"))?
+                    .iter()
+                    .map(|v| {
+                        let name = v.as_str().ok_or_else(|| {
+                            format!("providers.{key}.env must contain only strings")
+                        })?;
+                        if name.is_empty()
+                            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        {
+                            return Err(format!("providers.{key}.env contains an invalid name"));
+                        }
+                        Ok(name.to_string())
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        providers.insert(
+            key.clone(),
+            ProviderCommands {
+                connect,
+                verify,
+                env,
+            },
+        );
     }
     let tools = obj
         .get("tools")

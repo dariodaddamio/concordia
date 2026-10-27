@@ -8,7 +8,8 @@
 //!   `unsupported` (not a denial).
 //! - `manifest`: print `FAKE_HARNESS_MANIFEST`.
 //! - `echo-args`: print each argument on its own line.
-//! - `hang`: sleep for a minute. `flood`: print about 300 KB.
+//! - `hang`: sleep for a minute. `tree-hang <marker>` spawns a sleeping child.
+//! - `env-check`: print selected environment values. `flood`: print about 300 KB.
 
 use sha2::{Digest, Sha256};
 
@@ -60,6 +61,26 @@ fn main() {
             }
         }
         "hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
+        "tree-hang" => {
+            let marker = arg(1);
+            let exe = std::env::current_exe().unwrap();
+            let mut child = std::process::Command::new(exe)
+                .args(["tree-child", &marker])
+                .spawn()
+                .unwrap();
+            let _ = child.wait();
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+        "tree-child" => {
+            std::fs::write(arg(1), "alive").unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::fs::write(arg(1), "survived").unwrap();
+        }
+        "env-check" => {
+            for name in &args[1..] {
+                println!("{name}={}", std::env::var(name).unwrap_or_default());
+            }
+        }
         "flood" => {
             let line = "x".repeat(99);
             for _ in 0..3000 {

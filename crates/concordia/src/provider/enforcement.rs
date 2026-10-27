@@ -71,6 +71,36 @@ pub(crate) fn slot(store: &Path, root: &Path) -> PathBuf {
     store.join(STORE_DIR).join(project_key(root))
 }
 
+/// Refuse state writes through symlinks/junctions, including an existing slot itself.
+pub fn has_reparse_component(base: &Path, target: &Path) -> bool {
+    let Ok(relative) = target.strip_prefix(base) else {
+        return true;
+    };
+    let mut current = base.to_path_buf();
+    if std::fs::symlink_metadata(&current).is_ok_and(|m| is_reparse(&m)) {
+        return true;
+    }
+    for component in relative.components() {
+        current.push(component);
+        if std::fs::symlink_metadata(&current).is_ok_and(|m| is_reparse(&m)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 /// Whether the project was seen locked before, from `cwd` or any parent.
 fn was_locked(store: &Path, cwd: &Path) -> bool {
     cwd.ancestors()
@@ -79,6 +109,12 @@ fn was_locked(store: &Path, cwd: &Path) -> bool {
 
 /// Best effort: a failed write only means a later deletion would not be remembered.
 fn remember_locked(slot: &Path, revision: &str) {
+    let Some(state_dir) = slot.parent() else {
+        return;
+    };
+    if has_reparse_component(state_dir, slot) {
+        return;
+    }
     if std::fs::create_dir_all(slot).is_ok() {
         let _ = std::fs::write(slot.join(LOCKED_MARKER), revision);
     }
