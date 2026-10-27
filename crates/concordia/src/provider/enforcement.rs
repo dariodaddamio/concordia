@@ -332,7 +332,7 @@ mod tests {
     fn a_receipt_written_inside_the_project_is_ignored() {
         let (store, dir) = dirs2();
         locked_project(dir.path());
-        let forged = dir.path().join(".opifex/enforcement");
+        let forged = dir.path().join(".harness/enforcement");
         fs::create_dir_all(&forged).unwrap();
         let body = serde_json::json!({
             "provider": "claude", "home": null,

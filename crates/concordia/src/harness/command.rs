@@ -725,7 +725,7 @@ mod tests {
             r#"{"name":"mine","version":"1.0","providers":{
                 "claude":{"connect":["h","connect","{provider}","{home}"],"verify":["h","verify","{provider}","{home}","{project}"]},
                 "codex":{"connect":["h","connect","{provider}","{home}"]}},
-                "tools":[{"name":"brain","description":"query brain","argv":["h","brain","{project}"]}]}"#,
+                "tools":[{"name":"notes","description":"query notes","argv":["h","notes","{project}"]}]}"#,
         )
         .unwrap();
         w
@@ -799,13 +799,13 @@ mod tests {
             &|_: &[String]| ok(),
         ));
         assert!(
-            listed.contains("mine/brain") && listed.contains("query brain"),
+            listed.contains("mine/notes") && listed.contains("query notes"),
             "{listed}"
         );
         let seen = RefCell::new(Vec::new());
         let output = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "tools brain",
+            "tools notes",
             &|argv| {
                 seen.borrow_mut().push(argv.to_vec());
                 RunOutcome {
@@ -818,7 +818,7 @@ mod tests {
         assert!(output.contains("answer"), "{output}");
         assert_eq!(
             seen.into_inner()[0],
-            ["h", "brain", &w.project.path().to_string_lossy()]
+            ["h", "notes", &w.project.path().to_string_lossy()]
         );
     }
 
