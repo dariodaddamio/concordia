@@ -80,8 +80,9 @@ write, never re-implemented.
 
 Locked-code launch gate: implemented (`provider::enforcement`, see [architecture](docs/architecture.md)).
 A write-capable turn in a project with `docs/quality/locked-code.json` runs read-only unless a verified
-receipt matches its provider, isolated home and policy revision. Still open: the Harness verifier that
-writes the receipt from a live denial probe, and runtime-version binding.
+receipt matches its provider, isolated home, policy revision and connected Harness identity. The
+verifier writes that identity from the live manifest; file-backed manifests are re-hashed before a
+protected launch, so a changed manifest closes the gate until verification runs again.
 
 Bounded context handoff and explicit delegation already exist; see [delegation](docs/delegation.md).
 Internal preview panes are implemented in source; editing/recovery, policy-based routing and

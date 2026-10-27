@@ -89,6 +89,8 @@ fn replace_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
 pub fn verify_in(
     store: &Path,
     manifest: &Manifest,
+    manifest_path: &Path,
+    manifest_sha256: &str,
     ctx: &Context<'_>,
     run: &dyn Fn(&[String]) -> RunOutcome,
 ) -> Verdict {
@@ -190,6 +192,8 @@ pub fn verify_in(
         "result": PROVEN,
         "harness": manifest.name,
         "harnessVersion": manifest.version,
+        "harnessManifestPath": manifest_path.to_string_lossy(),
+        "harnessManifestSha256": manifest_sha256,
         "verifiedAt": now(),
     });
     match write_receipt(&receipt, &body) {
@@ -201,7 +205,7 @@ pub fn verify_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::{parse_manifest, Context, Manifest, RunOutcome};
+    use crate::harness::{connections, parse_manifest, Context, Manifest, RunOutcome};
     use crate::provider::enforcement::{self, Gate};
     use crate::store::ProviderKind;
     use std::cell::RefCell;
@@ -267,15 +271,47 @@ mod tests {
 
     fn run_verify(f: &Fixture, m: &Manifest, out: RunOutcome) -> (Verdict, Vec<Vec<String>>) {
         let seen = RefCell::new(Vec::new());
+        let manifest_path = f.project.path().join("harness.json");
+        fs::write(&manifest_path, "{}").unwrap();
+        let manifest_path_text = manifest_path.to_string_lossy().into_owned();
+        let manifest_sha = enforcement::policy_revision(b"{}");
+        connections::record(
+            f.store.path(),
+            &connections::Identity {
+                name: &m.name,
+                version: m.version.as_deref(),
+                manifest_path: &manifest_path_text,
+                manifest_sha256: &manifest_sha,
+                skill: None,
+            },
+            connections::Entry {
+                provider: "claude".into(),
+                home: Some(f.home.path().to_string_lossy().into_owned()),
+                project: f.project.path().to_string_lossy().into_owned(),
+                connect_ok: true,
+                connect_note: "ok".into(),
+                verify: "not-run".into(),
+                verify_note: String::new(),
+                at: 0,
+            },
+        )
+        .unwrap();
         let ctx = Context {
             provider: ProviderKind::Claude,
             home: Some(f.home.path()),
             project: f.project.path(),
         };
-        let verdict = verify_in(f.store.path(), m, &ctx, &|argv: &[String]| {
-            seen.borrow_mut().push(argv.to_vec());
-            out.clone()
-        });
+        let verdict = verify_in(
+            f.store.path(),
+            m,
+            &manifest_path,
+            &manifest_sha,
+            &ctx,
+            &|argv: &[String]| {
+                seen.borrow_mut().push(argv.to_vec());
+                out.clone()
+            },
+        );
         (verdict, seen.into_inner())
     }
 
@@ -410,9 +446,14 @@ mod tests {
             project: f.project.path(),
         };
         let out = denial("claude", &inside, &revision());
-        let verdict = verify_in(f.store.path(), &manifest(true), &ctx, &|_: &[String]| {
-            out.clone()
-        });
+        let verdict = verify_in(
+            f.store.path(),
+            &manifest(true),
+            Path::new("/opt/h1/harness.json"),
+            "fixture-manifest",
+            &ctx,
+            &|_: &[String]| out.clone(),
+        );
         match verdict {
             Verdict::Unverified(why) => assert!(why.contains("isolated"), "{why}"),
             other => panic!("{other:?}"),
@@ -444,14 +485,21 @@ mod tests {
             home: Some(f.home.path()),
             project: f.project.path(),
         };
-        let verdict = verify_in(f.store.path(), &manifest(true), &ctx, &|_: &[String]| {
-            fs::write(
-                f.project.path().join("docs/quality/locked-code.json"),
-                "changed\n",
-            )
-            .unwrap();
-            denial("claude", f.home.path(), &original)
-        });
+        let verdict = verify_in(
+            f.store.path(),
+            &manifest(true),
+            Path::new("command:h1"),
+            "fixture-manifest",
+            &ctx,
+            &|_: &[String]| {
+                fs::write(
+                    f.project.path().join("docs/quality/locked-code.json"),
+                    "changed\n",
+                )
+                .unwrap();
+                denial("claude", f.home.path(), &original)
+            },
+        );
         assert!(matches!(verdict, Verdict::Unverified(why) if why.contains("changed")));
         assert!(matches!(gate(&f), Gate::ReadOnly(_)));
     }
@@ -467,17 +515,38 @@ mod tests {
         };
         let good = || denial("claude", f.home.path(), &revision());
         assert_eq!(
-            verify_in(f.store.path(), &m, &ctx, &|_| good()),
+            verify_in(
+                f.store.path(),
+                &m,
+                Path::new("/opt/h1/harness.json"),
+                "fixture-manifest",
+                &ctx,
+                &|_| good(),
+            ),
             Verdict::Verified
         );
         assert_eq!(
-            verify_in(f.store.path(), &m, &ctx, &|_| good()),
+            verify_in(
+                f.store.path(),
+                &m,
+                Path::new("/opt/h1/harness.json"),
+                "fixture-manifest",
+                &ctx,
+                &|_| good(),
+            ),
             Verdict::Verified
         );
         let receipt = enforcement::slot(f.store.path(), f.project.path()).join("claude.json");
         let old = fs::read_to_string(&receipt).unwrap();
         fs::create_dir(receipt.with_extension("json.tmp")).unwrap();
-        let verdict = verify_in(f.store.path(), &m, &ctx, &|_| good());
+        let verdict = verify_in(
+            f.store.path(),
+            &m,
+            Path::new("/opt/h1/harness.json"),
+            "fixture-manifest",
+            &ctx,
+            &|_| good(),
+        );
         assert!(matches!(verdict, Verdict::Unverified(why) if why.contains("write")));
         assert_eq!(fs::read_to_string(receipt).unwrap(), old);
     }

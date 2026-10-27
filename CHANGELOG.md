@@ -13,6 +13,7 @@ also bumps the build stamp shown by `concordia --version`.
 
 ### Fixed
 - Harness adapters now run with an allowlisted environment and whole-process timeout cleanup; verification binds policy and manifest revisions, protects existing receipts, and status rechecks live state.
+- Enforcement receipts now bind to the connected harness name, version, manifest path and manifest hash; file manifests are re-hashed before a protected launch so stale receipts close the gate.
 
 ### Added (next build)
 - Generic `/harness` connect, verify, status, tool listing/execution and disconnect flows for user-owned adapters.
