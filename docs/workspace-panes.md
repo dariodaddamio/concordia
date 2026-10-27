@@ -15,7 +15,7 @@ claim completed draft/layout recovery. Read-only panes continue to be the user-f
 Concordia should provide a graphical workspace inside the terminal: chat and files share one
 screen, with mouse operations and slash commands controlling the same pane state. Harness owns
 shared workflow and routing policy; Concordia implements the workspace and execution mechanisms.
-Opifex owns applicable UI principles. Neither provider sessions nor authentication are replaced.
+The project's design system owns applicable UI principles. Neither provider sessions nor authentication are replaced.
 
 ## User-visible contract
 

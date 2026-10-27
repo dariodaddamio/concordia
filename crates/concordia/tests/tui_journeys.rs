@@ -19,6 +19,7 @@ const ROWS: usize = 40;
 static JOURNEY_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn usage_limit_automatically_continues_on_configured_provider_without_foreign_session() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -458,6 +459,7 @@ fn render(bytes: &[u8]) -> String {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn multiline_paste_and_expand_work_through_the_real_terminal_for_each_provider() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for provider in [
@@ -491,6 +493,7 @@ fn multiline_paste_and_expand_work_through_the_real_terminal_for_each_provider()
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn queue_can_be_edited_reordered_and_automatically_sent_with_a_draft_in_progress() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -527,6 +530,7 @@ fn queue_can_be_edited_reordered_and_automatically_sent_with_a_draft_in_progress
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn cancellation_pauses_queued_work_and_restart_restores_both_queue_and_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for provider in [
@@ -580,6 +584,7 @@ fn cancellation_pauses_queued_work_and_restart_restores_both_queue_and_draft() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn completing_a_turn_while_a_queued_item_is_being_edited_does_not_send_stale_text() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -609,6 +614,7 @@ fn completing_a_turn_while_a_queued_item_is_being_edited_does_not_send_stale_tex
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn unbracketed_crlf_paste_keeps_blank_lines_and_trailing_newline_until_send() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -628,6 +634,7 @@ fn unbracketed_crlf_paste_keeps_blank_lines_and_trailing_newline_until_send() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn undo_redo_and_resize_preserve_a_long_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -663,6 +670,7 @@ fn undo_redo_and_resize_preserve_a_long_draft() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn cancelling_after_slash_commands_does_not_restore_the_submitted_prompt() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -680,6 +688,7 @@ fn cancelling_after_slash_commands_does_not_restore_the_submitted_prompt() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn provider_failure_pauses_queue_and_preserves_a_newer_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -701,6 +710,7 @@ fn provider_failure_pauses_queue_and_preserves_a_newer_draft() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn two_panes_keep_live_drafts_and_recovery_files_separate() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -729,6 +739,7 @@ fn two_panes_keep_live_drafts_and_recovery_files_separate() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn ctrl_up_edits_multiline_queue_without_replacing_a_nonempty_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -767,6 +778,7 @@ fn ctrl_up_edits_multiline_queue_without_replacing_a_nonempty_draft() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn framed_pastes_and_tab_stay_separate_in_a_single_terminal_write() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -784,6 +796,7 @@ fn framed_pastes_and_tab_stay_separate_in_a_single_terminal_write() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn explicit_queue_resume_preserves_the_recovered_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -812,6 +825,7 @@ fn explicit_queue_resume_preserves_the_recovered_draft() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn abandoned_drafts_offer_a_choice_and_other_workspaces_are_isolated() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -849,6 +863,7 @@ fn abandoned_drafts_offer_a_choice_and_other_workspaces_are_isolated() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn activity_detail_search_and_navigation_leave_the_draft_untouched() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -876,6 +891,7 @@ fn activity_detail_search_and_navigation_leave_the_draft_untouched() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn crash_restores_the_unsaved_upper_editor_separately_and_holds_dispatch() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -925,6 +941,7 @@ fn crash_restores_the_unsaved_upper_editor_separately_and_holds_dispatch() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn modal_crlf_and_overflow_paste_cannot_modify_a_draft_or_upper_edit() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -969,6 +986,7 @@ fn modal_crlf_and_overflow_paste_cannot_modify_a_draft_or_upper_edit() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn explicit_file_open_passes_exact_path_to_a_fake_terminal_and_preserves_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -1005,6 +1023,7 @@ fn explicit_file_open_passes_exact_path_to_a_fake_terminal_and_preserves_draft()
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn internal_file_panes_split_focus_close_and_never_dispatch_provider_work() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -1044,6 +1063,7 @@ fn internal_file_panes_split_focus_close_and_never_dispatch_provider_work() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn internal_preview_remains_responsive_during_gated_stream() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -1092,6 +1112,7 @@ fn internal_preview_remains_responsive_during_gated_stream() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn picker_cancel_does_not_answer_armed_approval_during_gated_stream() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -1156,6 +1177,7 @@ fn picker_cancel_does_not_answer_armed_approval_during_gated_stream() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn native_subagents_can_be_inspected_live_and_after_completion() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -1185,6 +1207,7 @@ fn native_subagents_can_be_inspected_live_and_after_completion() {
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn resuming_a_native_session_restores_recent_messages_without_dispatching_a_provider() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -1213,6 +1236,7 @@ fn resuming_a_native_session_restores_recent_messages_without_dispatching_a_prov
 }
 
 #[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn markdown_preview_opens_at_start_scrolls_and_exits_without_provider_work() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();

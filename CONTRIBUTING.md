@@ -4,7 +4,10 @@
 
 1. Install Rust (the toolchain is pinned by `rust-toolchain.toml`) and the Visual Studio Build
    Tools C++ workload.
-2. `cargo test -p concordia --tests`
+2. `cargo test -p concordia --tests` for the fast loop. It skips the 24 slow PTY journeys in
+   `tui_journeys.rs`. Run them before you merge with
+   `cargo test -p concordia --test tui_journeys -- --ignored`; CI and releases run them as a
+   separate step.
 3. `cargo clippy -p concordia --all-targets -- -D warnings` and `cargo fmt --all --check`
 4. `powershell -NoProfile -File .\scripts\smoke-e2e-everyday.ps1` (installs your build; see below)
 5. `powershell -NoProfile -File .\scripts\verify-oss-gates.ps1`

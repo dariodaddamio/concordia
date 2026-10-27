@@ -40,6 +40,9 @@ jobs:
       - name: Test
         run: cargo test -p concordia --tests --locked --no-fail-fast
 
+      - name: Test (slow PTY journeys)
+        run: cargo test -p concordia --test tui_journeys --locked --no-fail-fast -- --ignored
+
       - name: Build release
         run: cargo build -p concordia --release --locked
 
