@@ -19,7 +19,7 @@ use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-const POLICY_FILE: &str = "docs/quality/locked-code.json";
+pub(crate) const POLICY_FILE: &str = "docs/quality/locked-code.json";
 const STORE_DIR: &str = "enforcement";
 const LOCKED_MARKER: &str = "locked";
 const PROVEN: &str = "denied-live-probe";
@@ -46,7 +46,7 @@ pub fn policy_revision(bytes: &[u8]) -> String {
 }
 
 /// A path as a comparable string: forward slashes, no trailing slash, lowercase on Windows.
-fn path_key(path: &Path) -> String {
+pub(crate) fn path_key(path: &Path) -> String {
     let key = path.to_string_lossy().replace('\\', "/");
     let key = key.trim_end_matches('/').to_string();
     if cfg!(windows) {
@@ -61,14 +61,44 @@ pub fn project_key(root: &Path) -> String {
     sha_hex(path_key(root).as_bytes())
 }
 
-fn project_root(cwd: &Path) -> Option<PathBuf> {
+pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
         .find(|dir| dir.join(POLICY_FILE).is_file())
         .map(Path::to_path_buf)
 }
 
-fn slot(store: &Path, root: &Path) -> PathBuf {
+pub(crate) fn slot(store: &Path, root: &Path) -> PathBuf {
     store.join(STORE_DIR).join(project_key(root))
+}
+
+/// Refuse state writes through symlinks/junctions, including an existing slot itself.
+pub fn has_reparse_component(base: &Path, target: &Path) -> bool {
+    let Ok(relative) = target.strip_prefix(base) else {
+        return true;
+    };
+    let mut current = base.to_path_buf();
+    if std::fs::symlink_metadata(&current).is_ok_and(|m| is_reparse(&m)) {
+        return true;
+    }
+    for component in relative.components() {
+        current.push(component);
+        if std::fs::symlink_metadata(&current).is_ok_and(|m| is_reparse(&m)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
 }
 
 /// Whether the project was seen locked before, from `cwd` or any parent.
@@ -79,12 +109,18 @@ fn was_locked(store: &Path, cwd: &Path) -> bool {
 
 /// Best effort: a failed write only means a later deletion would not be remembered.
 fn remember_locked(slot: &Path, revision: &str) {
+    let Some(state_dir) = slot.parent() else {
+        return;
+    };
+    if has_reparse_component(state_dir, slot) {
+        return;
+    }
     if std::fs::create_dir_all(slot).is_ok() {
         let _ = std::fs::write(slot.join(LOCKED_MARKER), revision);
     }
 }
 
-fn is_inside(path: &Path, root: &Path) -> bool {
+pub(crate) fn is_inside(path: &Path, root: &Path) -> bool {
     let (path, root) = (path_key(path), path_key(root));
     path == root || path.starts_with(&format!("{root}/"))
 }

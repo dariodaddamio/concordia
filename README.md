@@ -158,6 +158,10 @@ concordia
 
 ## Commands
 
+Harness adapters are available through `/harness help`: connect any user-owned manifest, verify a
+real denial for locked-code policy, inspect declared tools with `/harness tools`, or run one by
+name. Commands execute as argv without a shell and provider homes remain isolated.
+
 | Command | What it does |
 | --- | --- |
 | `/use` | Account picker (ends with `+ add account`) |
