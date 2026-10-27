@@ -42,7 +42,7 @@ jobs:
 
       # Unit, TUI end-to-end, CLI, and fake-provider tests. No provider CLI or network needed.
       - name: Test
-        run: cargo test -p concordia --tests --locked --no-fail-fast
+        run: cargo test -p concordia --tests --locked --no-fail-fast -- --include-ignored
 
       - name: Build release
         run: cargo build -p concordia --release --locked

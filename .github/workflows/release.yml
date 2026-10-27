@@ -38,7 +38,7 @@ jobs:
       - name: Clippy
         run: cargo clippy -p concordia --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test -p concordia --tests --locked --no-fail-fast
+        run: cargo test -p concordia --tests --locked --no-fail-fast -- --include-ignored
 
       - name: Build release
         run: cargo build -p concordia --release --locked
