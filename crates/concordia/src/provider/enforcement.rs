@@ -11,8 +11,8 @@
 //! so an agent that can only write the project cannot forge one. The first time the gate sees a
 //! policy file it records that the project was locked, so deleting the file does not unlock it.
 //! A provider home inside the project is not isolated and never opens the gate. The receipt is
-//! written by the Harness verifier, never by an agent. Runtime version binding is not part of
-//! this check yet.
+//! written by the Harness verifier, never by an agent. Receipts are also bound to the connected
+//! harness manifest identity, including a current hash for file manifests.
 
 use crate::store::{ProviderKind, TrustMode};
 use anyhow::{bail, Result};
@@ -126,6 +126,8 @@ pub(crate) fn is_inside(path: &Path, root: &Path) -> bool {
 }
 
 fn receipt_matches(
+    store: &Path,
+    root: &Path,
     slot: &Path,
     provider: ProviderKind,
     home: Option<&Path>,
@@ -141,10 +143,62 @@ fn receipt_matches(
         .get("home")
         .and_then(|h| h.as_str())
         .map(|h| path_key(Path::new(h)));
+    let harness = value.get("harness").and_then(|v| v.as_str());
+    let manifest_path = value.get("harnessManifestPath").and_then(|v| v.as_str());
+    let manifest_sha = value.get("harnessManifestSha256").and_then(|v| v.as_str());
+    let harness_version = match value.get("harnessVersion") {
+        Some(value) if value.is_null() => Some(None),
+        Some(value) => value.as_str().map(Some),
+        None => None,
+    };
     value.get("provider").and_then(|v| v.as_str()) == Some(provider.as_str())
         && value.get("result").and_then(|v| v.as_str()) == Some(PROVEN)
         && value.get("policyRevision").and_then(|v| v.as_str()) == Some(revision)
         && recorded_home == home.map(path_key)
+        && harness.is_some_and(|name| {
+            manifest_path.is_some_and(|path| {
+                manifest_sha.is_some_and(|sha| {
+                    harness_version.is_some_and(|version| {
+                        crate::harness::connections::identity_matches(
+                            store,
+                            &crate::harness::connections::ReceiptTarget {
+                                provider: provider.as_str(),
+                                project: root,
+                                home,
+                            },
+                            &crate::harness::connections::ReceiptIdentity {
+                                name,
+                                version,
+                                manifest_path: path,
+                                manifest_sha256: sha,
+                            },
+                            &|program| refresh_command_identity(program, root),
+                        )
+                    })
+                })
+            })
+        })
+}
+
+fn refresh_command_identity(
+    program: &str,
+    cwd: &Path,
+) -> Option<crate::harness::connections::RefreshedIdentity> {
+    let outcome = crate::harness::run::run_command(
+        &[program.to_string(), "concordia-manifest".into()],
+        cwd,
+        crate::harness::run::DEFAULT_TIMEOUT,
+    );
+    if outcome.timed_out || outcome.exit != Some(0) {
+        return None;
+    }
+    let manifest = crate::harness::parse_manifest(&outcome.stdout, cwd).ok()?;
+    let sha = sha_hex(outcome.stdout.as_bytes());
+    Some(crate::harness::connections::RefreshedIdentity {
+        name: manifest.name,
+        version: manifest.version,
+        manifest_sha256: sha,
+    })
 }
 
 /// Where receipts live: Concordia's state directory (a throwaway one under test).
@@ -188,7 +242,7 @@ pub fn gate_in(store: &Path, cwd: &Path, provider: ProviderKind, home: Option<&P
             "{name}: the provider home is inside the project, so it is not isolated and this turn is read-only (plan)."
         ));
     }
-    if !revision.is_empty() && receipt_matches(&slot, provider, home, &revision) {
+    if !revision.is_empty() && receipt_matches(store, &root, &slot, provider, home, &revision) {
         return Gate::Open;
     }
     Gate::ReadOnly(format!(
@@ -251,6 +305,7 @@ pub fn ensure_read_only(provider: ProviderKind, argv: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::connections;
     use crate::store::{ProviderKind, TrustMode};
     use std::fs;
     use std::path::Path;
@@ -273,13 +328,42 @@ mod tests {
     ) {
         let dir = store.join("enforcement").join(project_key(root));
         fs::create_dir_all(&dir).unwrap();
+        let manifest_path = root.join("harness.json");
+        fs::write(&manifest_path, "{}").unwrap();
+        let manifest_path_text = manifest_path.to_string_lossy().into_owned();
+        let manifest_sha256 = sha_hex(b"{}");
         let body = serde_json::json!({
             "provider": provider,
             "home": home,
             "policyRevision": revision,
             "result": result,
+            "harness": "h1",
+            "harnessVersion": "1.0",
+            "harnessManifestPath": manifest_path_text,
+            "harnessManifestSha256": manifest_sha256,
         });
         fs::write(dir.join(format!("{provider}.json")), body.to_string()).unwrap();
+        connections::record(
+            store,
+            &connections::Identity {
+                name: "h1",
+                version: Some("1.0"),
+                manifest_path: &manifest_path_text,
+                manifest_sha256: &manifest_sha256,
+                skill: None,
+            },
+            connections::Entry {
+                provider: provider.into(),
+                home: home.map(str::to_string),
+                project: root.to_string_lossy().into_owned(),
+                connect_ok: true,
+                connect_note: "ok".into(),
+                verify: "verified".into(),
+                verify_note: String::new(),
+                at: 0,
+            },
+        )
+        .unwrap();
     }
 
     fn revision() -> String {
@@ -326,6 +410,51 @@ mod tests {
             gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
             Gate::Open
         );
+    }
+
+    #[test]
+    fn a_changed_connected_harness_identity_closes_the_gate() {
+        let (store, dir) = dirs2();
+        locked_project(dir.path());
+        receipt(
+            store.path(),
+            dir.path(),
+            "claude",
+            None,
+            &revision(),
+            "denied-live-probe",
+        );
+        assert_eq!(
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
+            Gate::Open
+        );
+        let manifest_path = dir.path().join("harness.json");
+        let manifest_path_text = manifest_path.to_string_lossy().into_owned();
+        connections::record(
+            store.path(),
+            &connections::Identity {
+                name: "h1",
+                version: Some("2.0"),
+                manifest_path: &manifest_path_text,
+                manifest_sha256: "new-manifest",
+                skill: None,
+            },
+            connections::Entry {
+                provider: "claude".into(),
+                home: None,
+                project: dir.path().to_string_lossy().into_owned(),
+                connect_ok: true,
+                connect_note: "ok".into(),
+                verify: "verified".into(),
+                verify_note: String::new(),
+                at: 1,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            gate_in(store.path(), dir.path(), ProviderKind::Claude, None),
+            Gate::ReadOnly(_)
+        ));
     }
 
     #[test]

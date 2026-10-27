@@ -255,8 +255,9 @@ working directory upward). Installed hook files and capability flags do not coun
 
 The gate opens only for a receipt in Concordia's state directory, at
 `enforcement/<project key>/<provider>.json`, with `result: "denied-live-probe"` whose provider,
-isolated home and policy revision (SHA-256 of the policy file with normalized line endings) match
-the turn. Receipts are never read from inside the project, so an agent that can only write the
+isolated home, policy revision (SHA-256 of the policy file with normalized line endings), and
+connected harness identity match the turn. File-backed harness manifests are re-hashed before the
+gate opens. Receipts are never read from inside the project, so an agent that can only write the
 project cannot forge one. The first time the gate sees a policy file it records that the project
 was locked, so deleting the file does not unlock it. A provider home inside the project is not
 isolated and never opens the gate. Any mismatch, missing file or read error closes it.
@@ -265,8 +266,8 @@ A closed gate lowers ask, workspace and full trust to plan and the turn shows a
 `TurnProgress::Notice` explaining why. Plan turns are unchanged. Capability fallbacks can drop the
 plan switch, so after planning the command line must still be provably read-only (Claude
 `--permission-mode plan`, Cursor `--mode plan`, Codex `-s read-only`); if it is not, the turn is
-refused instead of started. The Harness verifier writes the receipt; agents never do. The verifier
-and runtime-version binding are not implemented here.
+refused instead of started. The Harness verifier writes the receipt; agents never do. A changed
+connection or file-backed manifest closes the gate until verification runs again.
 
 ## Attachments (planned, after the queue lands)
 

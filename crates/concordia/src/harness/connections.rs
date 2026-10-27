@@ -1,6 +1,7 @@
 //! What the user has connected, kept in Concordia's state directory (never in a project).
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +42,31 @@ pub struct Identity<'a> {
     pub skill: Option<&'a str>,
 }
 
+/// The connected provider target whose receipt is being checked.
+pub struct ReceiptTarget<'a> {
+    pub provider: &'a str,
+    pub project: &'a Path,
+    pub home: Option<&'a Path>,
+}
+
+/// The identity returned by a command-backed manifest refresh.
+pub struct RefreshedIdentity {
+    pub name: String,
+    pub version: Option<String>,
+    pub manifest_sha256: String,
+}
+
+/// Native callback used to refresh a command-backed adapter manifest.
+pub type RefreshCommand<'a> = dyn Fn(&str) -> Option<RefreshedIdentity> + 'a;
+
+/// Identity recorded in a protected receipt.
+pub struct ReceiptIdentity<'a> {
+    pub name: &'a str,
+    pub version: Option<&'a str>,
+    pub manifest_path: &'a str,
+    pub manifest_sha256: &'a str,
+}
+
 #[derive(Serialize, Deserialize)]
 struct File {
     version: u32,
@@ -49,6 +75,67 @@ struct File {
 
 fn file(store: &Path) -> PathBuf {
     store.join("harness").join("connections.json")
+}
+
+/// Whether a receipt's recorded adapter identity is still the connected identity.
+///
+/// File manifests are re-hashed at the point of use; a stored version alone is not
+/// sufficient because an adapter can change without updating its version string.
+pub fn identity_matches(
+    store: &Path,
+    target: &ReceiptTarget<'_>,
+    receipt: &ReceiptIdentity<'_>,
+    refresh_command: &RefreshCommand<'_>,
+) -> bool {
+    let Ok(all) = load(store) else {
+        return false;
+    };
+    let Some(connection) = all.iter().find(|c| c.name == receipt.name) else {
+        return false;
+    };
+    let project_key = path_key(target.project);
+    let home_key = target.home.map(path_key);
+    if connection.version.as_deref() != receipt.version
+        || connection.manifest_path != receipt.manifest_path
+        || connection.manifest_sha256 != receipt.manifest_sha256
+        || !connection.entries.iter().any(|entry| {
+            entry.connect_ok
+                && entry.provider == target.provider
+                && path_key(Path::new(&entry.project)) == project_key
+                && entry.home.as_deref().map(Path::new).map(path_key) == home_key
+        })
+    {
+        return false;
+    }
+    if receipt.manifest_path.starts_with("command:") {
+        let Some(program) = receipt.manifest_path.strip_prefix("command:") else {
+            return false;
+        };
+        return refresh_command(program).is_some_and(|current| {
+            current.name == receipt.name
+                && current.version.as_deref() == receipt.version
+                && current.manifest_sha256 == receipt.manifest_sha256
+        });
+    }
+    let Ok(text) = fs::read_to_string(receipt.manifest_path) else {
+        return false;
+    };
+    let digest = Sha256::digest(text.as_bytes());
+    let current = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    current == receipt.manifest_sha256
+}
+
+fn path_key(path: &Path) -> String {
+    let key = path.to_string_lossy().replace('\\', "/");
+    let key = key.trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        key.to_ascii_lowercase()
+    } else {
+        key
+    }
 }
 
 /// Every connection. Missing file: none. A damaged file is an error, so it is never overwritten.
@@ -262,6 +349,46 @@ mod tests {
         assert!(load(store.path()).unwrap_err().contains("unreadable"));
         assert!(record(store.path(), &identity(), entry("claude", None, true)).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{broken");
+    }
+
+    #[test]
+    fn a_command_identity_is_refreshed_instead_of_trusting_a_stale_connection() {
+        let store = tempfile::tempdir().unwrap();
+        record(
+            store.path(),
+            &Identity {
+                name: "h1",
+                version: Some("1.0"),
+                manifest_path: "command:adapter",
+                manifest_sha256: "abc",
+                skill: None,
+            },
+            entry("claude", Some("/h/1"), true),
+        )
+        .unwrap();
+        let current = |program: &str| {
+            assert_eq!(program, "adapter");
+            Some(RefreshedIdentity {
+                name: "h1".into(),
+                version: Some("1.0".into()),
+                manifest_sha256: "new-hash".into(),
+            })
+        };
+        assert!(!identity_matches(
+            store.path(),
+            &ReceiptTarget {
+                provider: "claude",
+                project: Path::new("/work/app"),
+                home: Some(Path::new("/h/1")),
+            },
+            &ReceiptIdentity {
+                name: "h1",
+                version: Some("1.0"),
+                manifest_path: "command:adapter",
+                manifest_sha256: "abc",
+            },
+            &current,
+        ));
     }
 
     #[test]

@@ -231,7 +231,9 @@ pub fn verify_in(
         .providers
         .get(ctx.provider.as_str())
         .map_or(&[][..], |commands| commands.env.as_slice());
-    let verdict = verify::verify_in(store, manifest, ctx, &|argv| run_adapter(run, env, argv));
+    let verdict = verify::verify_in(store, manifest, manifest_path, sha, ctx, &|argv| {
+        run_adapter(run, env, argv)
+    });
     let (state, note) = match &verdict {
         Verdict::Verified => ("verified", String::new()),
         Verdict::Unverified(why) => ("unverified", why.clone()),
