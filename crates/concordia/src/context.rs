@@ -142,6 +142,9 @@ pub fn plan_continuity_capped(req: &ContinuityRequest<'_>, max_chars: usize) -> 
     }
 }
 
+/// The reason for an ordinary new chat; it is not worth a notice.
+pub const NEW_SESSION: &str = "New session.";
+
 fn continuity_reason(req: &ContinuityRequest<'_>) -> &'static str {
     if req
         .session_id
@@ -149,16 +152,16 @@ fn continuity_reason(req: &ContinuityRequest<'_>) -> &'static str {
         .filter(|s| !s.is_empty())
         .is_none()
     {
-        return "no explicit session id — new session; optional bounded pack";
+        return NEW_SESSION;
     }
     if req.from_provider != req.to_provider {
-        return "cross-provider — new session; tool/approval state not transferred";
+        return "New session: you switched provider, so tool and approval state does not carry over.";
     }
     match (req.from_home, req.to_home) {
         (Some(a), Some(b)) if normalize_home(a) != normalize_home(b) => {
-            "cross-home same provider — transcript store not shared (unproven); new session + pack"
+            "New session: this account cannot read the other account's history, so only the chat map carries over."
         }
-        _ => "cannot prove same home — new session; optional bounded pack",
+        _ => "New session: Concordia could not confirm this is the same account.",
     }
 }
 
@@ -332,6 +335,57 @@ mod tests {
         assert!(!d.native_resume);
         assert!(d.session_id.is_none());
         assert!(d.pack.is_none()); // empty history
+    }
+
+    #[test]
+    fn continuity_reasons_are_user_facing() {
+        let request = |from_provider, to_provider, from_home, to_home, session_id| {
+            plan_continuity(&ContinuityRequest {
+                from_provider,
+                to_provider,
+                from_home,
+                to_home,
+                session_id,
+                messages: &[],
+                thread_id: None,
+                include_pack_if_needed: false,
+            })
+            .reason
+        };
+        assert_eq!(
+            request(ProviderKind::Codex, ProviderKind::Codex, None, None, None),
+            "New session."
+        );
+        assert_eq!(
+            request(
+                ProviderKind::Codex,
+                ProviderKind::Claude,
+                Some("codex"),
+                Some("claude"),
+                Some("session")
+            ),
+            "New session: you switched provider, so tool and approval state does not carry over."
+        );
+        assert_eq!(
+            request(
+                ProviderKind::Codex,
+                ProviderKind::Codex,
+                Some("one"),
+                Some("two"),
+                Some("session")
+            ),
+            "New session: this account cannot read the other account's history, so only the chat map carries over."
+        );
+        assert_eq!(
+            request(
+                ProviderKind::Codex,
+                ProviderKind::Codex,
+                None,
+                Some("two"),
+                Some("session")
+            ),
+            "New session: Concordia could not confirm this is the same account."
+        );
     }
 
     fn long_history() -> Vec<PackMessage> {

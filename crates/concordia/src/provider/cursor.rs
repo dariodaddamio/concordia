@@ -37,6 +37,8 @@ pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
         "--print".into(),
         "--output-format".into(),
         "stream-json".into(),
+        // Reply text arrives as it is written instead of in one piece at the end.
+        "--stream-partial-output".into(),
     ];
     if let Some(model) = req.model.map(str::trim).filter(|m| !m.is_empty()) {
         argv.push("--model".into());

@@ -865,6 +865,11 @@ impl App {
                     self.live_thinking.push('\n');
                 }
             }
+            TurnProgress::ThinkingDelta(t) => {
+                self.commit_live_text();
+                self.phase = Phase::Thinking;
+                self.live_thinking.push_str(&t);
+            }
             TurnProgress::Text(t) => {
                 self.commit_live_thinking();
                 self.phase = Phase::Writing;
@@ -872,6 +877,11 @@ impl App {
                 if !t.ends_with('\n') {
                     self.live_text.push('\n');
                 }
+            }
+            TurnProgress::TextDelta(t) => {
+                self.commit_live_thinking();
+                self.phase = Phase::Writing;
+                self.live_text.push_str(&t);
             }
             TurnProgress::Card(card) => {
                 self.commit_live_thinking();
@@ -1827,7 +1837,9 @@ impl App {
                     self.log_switch(prev_prov);
                     if let Some(pack) = &decision.pack {
                         self.push_system(format!("{} · ~{} tok", pack.labeled, pack.est_tokens));
-                    } else if !decision.native_resume {
+                    } else if !decision.native_resume
+                        && decision.reason != crate::context::NEW_SESSION
+                    {
                         self.push_system(decision.reason);
                     }
                     let home = self.home_path.as_ref();
@@ -3947,7 +3959,16 @@ fn detail_lines_parts<'a>(
                             Style::default().fg(Color::Black).bg(Color::Yellow)
                         }
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| {
+                        if parts
+                            .iter()
+                            .any(|part| part.lines().any(|line| line.starts_with("@@")))
+                        {
+                            transcript::diff_line_style(line)
+                        } else {
+                            Style::default()
+                        }
+                    });
                 spans.push(Span::styled(&line[byte_offsets[a]..byte_offsets[b]], style));
             }
             output.push(Line::from(spans));

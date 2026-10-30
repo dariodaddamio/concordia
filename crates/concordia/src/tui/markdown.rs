@@ -43,6 +43,7 @@ fn plain(text: String) -> MdLine {
 pub fn render(text: &str) -> Vec<MdLine> {
     let mut out = Vec::new();
     let mut in_code = false;
+    let mut prose_blank = false;
     for raw in text.lines() {
         let line = raw.trim_end_matches('\r');
         let trimmed = line.trim_start();
@@ -58,6 +59,7 @@ pub fn render(text: &str) -> Vec<MdLine> {
                 }
             }
             in_code = !in_code;
+            prose_blank = false;
             continue;
         }
         if in_code {
@@ -68,6 +70,14 @@ pub fn render(text: &str) -> Vec<MdLine> {
             });
             continue;
         }
+        if line.trim().is_empty() {
+            if !prose_blank {
+                out.push(render_prose(""));
+                prose_blank = true;
+            }
+            continue;
+        }
+        prose_blank = false;
         out.push(render_prose(line));
     }
     out

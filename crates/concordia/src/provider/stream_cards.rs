@@ -49,11 +49,15 @@ impl TurnUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamPart {
     Text(String),
+    /// A fragment of reply text that continues the previous one, with no break in between.
+    TextDelta(String),
     Card(StreamCard),
     Error(String),
     Session(String),
     /// The model's reasoning, shown dimmed and never added to the reply or the context pack.
     Thinking(String),
+    /// A fragment of reasoning that continues the previous one; a lone newline ends the block.
+    ThinkingDelta(String),
     /// Token counts for the turn; shown on the token line, never reply text.
     Usage(TurnUsage),
 }
@@ -572,6 +576,17 @@ pub fn format_card_line(card: &StreamCard) -> String {
 
 /// Compact presentation only: the original arguments and output remain on the card.
 fn card_preview(detail: &str) -> String {
+    if detail.lines().any(|line| line.starts_with("@@")) {
+        let added = detail
+            .lines()
+            .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+            .count();
+        let removed = detail
+            .lines()
+            .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+            .count();
+        return format!("+{added} -{removed}");
+    }
     let first = detail
         .lines()
         .find(|line| !line.trim().is_empty())
