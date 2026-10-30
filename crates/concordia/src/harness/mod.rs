@@ -5,6 +5,7 @@
 //! a particular harness exists. Commands run without a shell, so placeholders and arguments are
 //! never interpreted as shell syntax.
 
+pub mod adapter;
 pub mod command;
 pub mod connections;
 pub mod run;

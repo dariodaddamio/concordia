@@ -124,6 +124,16 @@ fn load_manifest(target: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, Strin
             manifest,
         });
     }
+    // Harness has a Concordia-owned adapter contract. Other programs retain the generic
+    // external `concordia-manifest` integration.
+    if super::adapter::is_harness_program(target) {
+        let (manifest, text) = super::adapter::build(target, cwd, run)?;
+        return Ok(Loaded {
+            sha: sha_hex(&text),
+            path: format!("{COMMAND_PREFIX}{target}"),
+            manifest,
+        });
+    }
     // A bare program name: ask the program for its manifest.
     let outcome = run(&[target.to_string(), "concordia-manifest".to_string()]);
     if outcome.timed_out || outcome.exit != Some(0) {
