@@ -687,6 +687,14 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
                 j.snippet = l;
             }
         }
+        TurnProgress::ThinkingDelta(t) => {
+            j.state = WorkerState::Thinking;
+            j.thinking.push_str(&t);
+        }
+        TurnProgress::TextDelta(t) => {
+            j.state = WorkerState::Writing;
+            j.text.push_str(&t);
+        }
         TurnProgress::Text(t) => {
             j.state = WorkerState::Writing;
             j.text.push_str(&t);

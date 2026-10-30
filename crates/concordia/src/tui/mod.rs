@@ -865,6 +865,11 @@ impl App {
                     self.live_thinking.push('\n');
                 }
             }
+            TurnProgress::ThinkingDelta(t) => {
+                self.commit_live_text();
+                self.phase = Phase::Thinking;
+                self.live_thinking.push_str(&t);
+            }
             TurnProgress::Text(t) => {
                 self.commit_live_thinking();
                 self.phase = Phase::Writing;
@@ -872,6 +877,11 @@ impl App {
                 if !t.ends_with('\n') {
                     self.live_text.push('\n');
                 }
+            }
+            TurnProgress::TextDelta(t) => {
+                self.commit_live_thinking();
+                self.phase = Phase::Writing;
+                self.live_text.push_str(&t);
             }
             TurnProgress::Card(card) => {
                 self.commit_live_thinking();

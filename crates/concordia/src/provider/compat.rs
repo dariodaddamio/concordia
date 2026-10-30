@@ -479,6 +479,10 @@ pub fn degrade_argv(
         }
         _ => {}
     }
+    // Partial output only exists with stream-json; without it the reply arrives whole (no notice).
+    if provider == ProviderKind::Cursor && !(caps.partial_messages && caps.stream_json) {
+        argv.retain(|a| a != "--stream-partial-output");
+    }
     if let Some(prompt) = prompt {
         argv.push(prompt);
     }

@@ -8,6 +8,7 @@
 use super::stream_cards::{CardStatus, StreamCard, StreamPart, TurnUsage};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
@@ -21,6 +22,12 @@ pub struct StreamParser {
     tools: HashMap<String, (String, Option<String>)>,
     partial_tools: HashMap<u64, (String, String, bool)>,
     saw_text: bool,
+    /// Cursor is mid-way through a run of stamped text (see `parse_line`).
+    streaming_text: bool,
+    /// The last run of stamped text, to recognise Cursor's unstamped repeat of it.
+    segment: String,
+    /// Tool paths inside this folder are shown relative to it.
+    cwd: Option<PathBuf>,
 }
 
 impl StreamParser {
@@ -30,7 +37,15 @@ impl StreamParser {
             tools: HashMap::new(),
             partial_tools: HashMap::new(),
             saw_text: false,
+            streaming_text: false,
+            segment: String::new(),
+            cwd: None,
         }
+    }
+
+    pub fn with_cwd(mut self, cwd: &Path) -> Self {
+        self.cwd = Some(cwd.to_path_buf());
+        self
     }
 
     pub fn parse_line(&mut self, line: &str) -> Vec<StreamPart> {
@@ -46,22 +61,55 @@ impl StreamParser {
         }
         let typ = ev.get("type").and_then(Value::as_str).unwrap_or("");
         let mut out = Vec::new();
+        if typ != "assistant" {
+            self.end_segment(&mut out);
+        }
         if let Some(id) = ev.get("session_id").and_then(Value::as_str) {
             if !id.is_empty() && matches!(typ, "system" | "result") {
                 out.push(StreamPart::Session(id.to_string()));
             }
         }
         match typ {
+            // Cursor stamps text with `timestamp_ms` as it is written: fragments with
+            // `--stream-partial-output`, whole messages without it. A run of stamped text is one
+            // segment; the unstamped message that may follow repeats it and is dropped if so.
+            "assistant" if self.flavor == Flavor::Cursor && ev.get("timestamp_ms").is_some() => {
+                for t in Self::block_texts(&ev) {
+                    if !self.streaming_text {
+                        self.streaming_text = true;
+                        self.segment.clear();
+                    }
+                    self.saw_text = true;
+                    self.segment.push_str(&t);
+                    out.push(StreamPart::TextDelta(t));
+                }
+            }
+            "assistant" if self.flavor == Flavor::Cursor => {
+                self.end_segment(&mut out);
+                let repeat = Self::block_texts(&ev).concat();
+                if repeat.trim() != self.segment.trim() {
+                    self.content_blocks(&ev, &mut out);
+                }
+                self.segment.clear();
+            }
             "assistant" => self.content_blocks(&ev, &mut out),
             "user" => self.tool_results(&ev, &mut out),
             "stream_event" if self.flavor == Flavor::Claude => {
                 self.claude_stream_event(&ev, &mut out)
             }
-            "thinking" => {
-                if let Some(t) = ev.get("text").and_then(Value::as_str) {
-                    out.push(StreamPart::Thinking(t.to_string()));
+            "thinking" => match ev.get("subtype").and_then(Value::as_str) {
+                Some("delta") => {
+                    if let Some(t) = ev.get("text").and_then(Value::as_str) {
+                        out.push(StreamPart::ThinkingDelta(t.to_string()));
+                    }
                 }
-            }
+                Some("completed") => out.push(StreamPart::ThinkingDelta("\n".into())),
+                _ => {
+                    if let Some(t) = ev.get("text").and_then(Value::as_str) {
+                        out.push(StreamPart::Thinking(t.to_string()));
+                    }
+                }
+            },
             "tool_call" if self.flavor == Flavor::Cursor => self.cursor_tool_call(&ev, &mut out),
             "result" => self.result(&ev, &mut out),
             _ => {}
@@ -151,6 +199,26 @@ impl StreamParser {
             }
             _ => {}
         }
+    }
+
+    /// Close a run of stamped Cursor text so the next text starts on its own line.
+    fn end_segment(&mut self, out: &mut Vec<StreamPart>) {
+        if std::mem::take(&mut self.streaming_text) {
+            out.push(StreamPart::TextDelta("\n".into()));
+        }
+    }
+
+    /// The text blocks of an `assistant` event, whitespace included (a delta may be just a space).
+    fn block_texts(ev: &Value) -> Vec<String> {
+        ev.pointer("/message/content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 
     fn content_blocks(&mut self, ev: &Value, out: &mut Vec<StreamPart>) {
@@ -246,7 +314,8 @@ impl StreamParser {
         let Some(call) = ev.get("tool_call").and_then(Value::as_object) else {
             return;
         };
-        let Some((kind, body)) = call.iter().next() else {
+        // The call sits beside bookkeeping fields (`startedAtMs`, `toolCallId`, ...).
+        let Some((kind, body)) = call.iter().find(|(k, _)| k.ends_with("ToolCall")) else {
             return;
         };
         let title = kind
@@ -261,12 +330,15 @@ impl StreamParser {
         let mut detail = body
             .get("args")
             .and_then(tool_input_detail)
+            .map(|d| self.relative(&d))
             .or_else(|| self.tools.get(&id).and_then(|(_, d)| d.clone()));
         self.tools
             .insert(id.clone(), (title.clone(), detail.clone()));
         let done = ev.get("subtype").and_then(Value::as_str) == Some("completed");
         if done {
-            if let Some(result) = body.get("result") {
+            if let Some(summary) = self.cursor_result_summary(kind, body) {
+                detail = Some(summary);
+            } else if let Some(result) = body.get("result") {
                 let output = result
                     .pointer("/success/output")
                     .and_then(Value::as_str)
@@ -298,6 +370,50 @@ impl StreamParser {
                 CardStatus::Running
             },
         }));
+    }
+
+    /// What a finished edit, read or glob shows instead of its raw result: the diff, the line
+    /// count, or the matched files. `None` keeps the generic output for other tools.
+    fn cursor_result_summary(&self, kind: &str, body: &Value) -> Option<String> {
+        let success = body.pointer("/result/success")?;
+        let arg = |key: &str| {
+            body.pointer(&format!("/args/{key}"))
+                .and_then(Value::as_str)
+        };
+        match kind {
+            "editToolCall" => success
+                .get("diffString")
+                .and_then(Value::as_str)
+                .map(|diff| self.relative(diff)),
+            "readToolCall" => {
+                let lines = success.get("totalLines").and_then(Value::as_u64)?;
+                Some(format!("{} · {lines} lines", self.relative(arg("path")?)))
+            }
+            "globToolCall" => {
+                let files: Vec<String> = success
+                    .get("files")
+                    .and_then(Value::as_array)?
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|f| self.relative(f))
+                    .collect();
+                Some(format!("{}\n{}", arg("globPattern")?, files.join("\n")))
+            }
+            _ => None,
+        }
+    }
+
+    /// `text` with this session's folder removed from the front of any path inside it.
+    fn relative(&self, text: &str) -> String {
+        let Some(cwd) = self.cwd.as_ref().and_then(|c| c.to_str()) else {
+            return text.to_string();
+        };
+        let cwd = cwd.trim_end_matches(['\\', '/']);
+        if cwd.is_empty() {
+            return text.to_string();
+        }
+        text.replace(&format!("{cwd}\\"), "")
+            .replace(&format!("{}/", cwd.replace('\\', "/")), "")
     }
 
     fn result(&mut self, ev: &Value, out: &mut Vec<StreamPart>) {
@@ -629,5 +745,90 @@ mod usage_tests {
         }
         let mut c = StreamParser::new(Flavor::Cursor);
         assert!(usage_of(&c.parse_line(r#"{"type":"result","result":"ok"}"#)).is_empty());
+    }
+
+    /// A recorded Cursor turn, parsed as a turn in `C:\work\calc` would be.
+    fn cursor_fixture(text: &str) -> Vec<StreamPart> {
+        let mut p = StreamParser::new(Flavor::Cursor).with_cwd(Path::new(r"C:\work\calc"));
+        text.lines().flat_map(|l| p.parse_line(l)).collect()
+    }
+
+    /// The last state of each card, in the order the cards first appeared.
+    fn final_cards(parts: &[StreamPart]) -> Vec<StreamCard> {
+        let mut cards: Vec<StreamCard> = Vec::new();
+        for part in parts {
+            if let StreamPart::Card(card) = part {
+                match cards.iter_mut().find(|c| c.id == card.id) {
+                    Some(seen) => *seen = card.clone(),
+                    None => cards.push(card.clone()),
+                }
+            }
+        }
+        cards
+    }
+
+    #[test]
+    fn recorded_cursor_read_turn_names_tools_and_joins_thinking() {
+        let parts = cursor_fixture(include_str!("fixtures/cursor-read-turn.jsonl"));
+        let cards = final_cards(&parts);
+        let titles: Vec<&str> = cards.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, ["glob", "getmcptools", "read"]);
+        assert!(cards.iter().all(|c| c.status == CardStatus::Done));
+        assert_eq!(cards[2].detail.as_deref(), Some("calc.py · 7 lines"));
+        assert!(cards[0]
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.starts_with("**/calc.py\n")));
+
+        let first_card = parts
+            .iter()
+            .position(|p| matches!(p, StreamPart::Card(_)))
+            .unwrap();
+        assert!(parts[..first_card].iter().any(
+            |p| matches!(p, StreamPart::TextDelta(t) if t.starts_with("I'll read `calc.py`"))
+        ));
+        let mut outcome = crate::provider::codex::StreamOutcome::default();
+        crate::provider::codex::apply_stream_parts(parts.clone(), &mut outcome);
+        let lines: Vec<&str> = outcome.text.lines().collect();
+        assert_eq!(lines.len(), 2, "{:?}", outcome.text);
+        assert!(lines[0].starts_with("I'll read `calc.py`"));
+        assert!(lines[1].starts_with("`calc.py` defines"));
+
+        let thinking: String = parts
+            .iter()
+            .filter_map(|p| match p {
+                StreamPart::ThinkingDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            thinking.lines().next(),
+            Some("I need to explain what calc.py does in one sentence.")
+        );
+    }
+
+    #[test]
+    fn recorded_cursor_edit_turn_streams_the_reply_once_and_carries_the_diff() {
+        let parts = cursor_fixture(include_str!("fixtures/cursor-edit-turn.jsonl"));
+        let mut outcome = crate::provider::codex::StreamOutcome::default();
+        crate::provider::codex::apply_stream_parts(parts.clone(), &mut outcome);
+        assert_eq!(
+            outcome
+                .text
+                .matches("`divide` now raises `ValueError`")
+                .count(),
+            1,
+            "{:?}",
+            outcome.text
+        );
+        assert!(parts
+            .iter()
+            .any(|p| matches!(p, StreamPart::TextDelta(t) if t == "divide")));
+
+        let cards = final_cards(&parts);
+        let edit = cards.iter().find(|c| c.title == "edit").unwrap();
+        let diff = edit.detail.as_deref().unwrap();
+        assert!(diff.lines().any(|l| l == "+    if b == 0:"), "{diff}");
+        assert!(diff.starts_with("--- a/calc.py\n"), "{diff}");
     }
 }

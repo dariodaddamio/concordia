@@ -76,9 +76,11 @@ pub struct TurnOutcome {
 pub enum TurnProgress {
     Session(String),
     Text(String),
+    TextDelta(String),
     Card(StreamCard),
     Error(String),
     Thinking(String),
+    ThinkingDelta(String),
     /// Token counts the provider reported for the turn (never reply text).
     Usage(TurnUsage),
     /// Concordia's own explanation of how it changed the turn (for example, read-only enforcement).
@@ -351,7 +353,7 @@ pub async fn run_provider_turn_with_progress(
         ProviderKind::Cursor => Some(Flavor::Cursor),
         ProviderKind::Codex => None,
     };
-    let mut json_parser = flavor.map(StreamParser::new);
+    let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));
     loop {
         if handle.cancel_flag.load(Ordering::SeqCst) {
             out.cancelled = true;
@@ -527,9 +529,11 @@ fn emit_progress(parts: &[StreamPart], on_progress: &Option<mpsc::UnboundedSende
         let ev = match part {
             StreamPart::Session(id) => TurnProgress::Session(id.clone()),
             StreamPart::Text(t) => TurnProgress::Text(t.clone()),
+            StreamPart::TextDelta(t) => TurnProgress::TextDelta(t.clone()),
             StreamPart::Card(c) => TurnProgress::Card(c.clone()),
             StreamPart::Error(e) => TurnProgress::Error(e.clone()),
             StreamPart::Thinking(t) => TurnProgress::Thinking(t.clone()),
+            StreamPart::ThinkingDelta(t) => TurnProgress::ThinkingDelta(t.clone()),
             StreamPart::Usage(u) => TurnProgress::Usage(u.clone()),
         };
         let _ = tx.send(ev);

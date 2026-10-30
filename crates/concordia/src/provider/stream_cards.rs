@@ -49,11 +49,15 @@ impl TurnUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamPart {
     Text(String),
+    /// A fragment of reply text that continues the previous one, with no break in between.
+    TextDelta(String),
     Card(StreamCard),
     Error(String),
     Session(String),
     /// The model's reasoning, shown dimmed and never added to the reply or the context pack.
     Thinking(String),
+    /// A fragment of reasoning that continues the previous one; a lone newline ends the block.
+    ThinkingDelta(String),
     /// Token counts for the turn; shown on the token line, never reply text.
     Usage(TurnUsage),
 }
