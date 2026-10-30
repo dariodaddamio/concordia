@@ -12,7 +12,7 @@ A **harness** is any tool the user wants wired into a provider's isolated home: 
 | Command | Result |
 | --- | --- |
 | `/harness connect <folder or harness.json>` | Runs the manifest's `connect` command for the current account and project. Add `--all` to do it for every account. |
-| `/harness connect <program>` | Runs `<program> concordia-manifest` and reads the manifest from its output. |
+| `/harness connect <program>` | Reads a Harness program through `version --json` and its optional `tools --json` registry; other programs use `<program> concordia-manifest`. |
 | `/harness status` | Lists each connection, account, project and whether it is verified. |
 | `/harness verify [name] [provider]` | Runs the manifest's `verify` command and records the outcome. |
 | `/harness disconnect <name>` | Forgets the connection and withdraws the receipts it wrote. It does not undo changes the harness made in a provider home; use the harness's own uninstall for that. |
