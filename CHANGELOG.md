@@ -19,6 +19,9 @@ also bumps the build stamp shown by `concordia --version`.
 - Usage resets read the same for every provider (`resets in 3h 20m`, `resets Nov 6, 9am`) and are measured against the current time, so a reading taken before a reset shows `reset since last read` instead of its old percentage.
 - Session notices are plain sentences, and the normal start of a chat shows none.
 
+### Changed
+- Concordia now owns its built-in Harness adapter: it validates `harness version --json`, discovers registered tools, and uses the same deterministic manifest for connection and receipt refresh.
+
 ### Fixed
 - Harness adapters now run with an allowlisted environment and whole-process timeout cleanup; verification binds policy and manifest revisions, protects existing receipts, and status rechecks live state.
 - Enforcement receipts now bind to the connected harness name, version, manifest path and manifest hash; file manifests are re-hashed before a protected launch so stale receipts close the gate.

@@ -184,6 +184,18 @@ fn refresh_command_identity(
     program: &str,
     cwd: &Path,
 ) -> Option<crate::harness::connections::RefreshedIdentity> {
+    if crate::harness::adapter::is_harness_program(program) {
+        let (manifest, text) = crate::harness::adapter::build(program, cwd, &|argv| {
+            crate::harness::run::run_command(argv, cwd, crate::harness::run::DEFAULT_TIMEOUT)
+        })
+        .ok()?;
+        let sha = sha_hex(text.as_bytes());
+        return Some(crate::harness::connections::RefreshedIdentity {
+            name: manifest.name,
+            version: manifest.version,
+            manifest_sha256: sha,
+        });
+    }
     let outcome = crate::harness::run::run_command(
         &[program.to_string(), "concordia-manifest".into()],
         cwd,
