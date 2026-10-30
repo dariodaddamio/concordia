@@ -11,6 +11,12 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed (`2026-10-30b`)
+- Cursor text written just before a tool call no longer appears twice: Cursor sends it in fragments and then whole, and the whole copy is now recognised.
+
+### Changed (`2026-10-30b`)
+- The command list has 12 commands, each opening one screen: `/use`, `/model`, `/mode`, `/usage`, `/new`, `/resume`, `/delegate`, `/harness`, `/open`, `/copy`, `/doctor`, `/update`. `/trust` became `/mode`; `/threads` became `/resume`; `/usage all` and `/usage refresh` became `/usage` (with `r` to refresh); `/version` and `/config` became `/doctor`; usage handoff is a row in `/use`, and a paused request offers an account picker. Typing a removed command names its replacement. `/workers`, `/queue`, `/edit`, `/close`, `/split`, `/stats` and `/recover` still work but are no longer listed.
+
 ### Fixed (`2026-10-30a`)
 - Cursor tool cards show the tool's name (glob, read, edit) instead of `completedatms`, which current Cursor CLIs caused by adding bookkeeping fields beside the tool.
 - Cursor replies stream as they are written (`--stream-partial-output`, when the installed CLI lists it), and reasoning and reply fragments join into one paragraph instead of one line per fragment. The full copy Cursor sends after streamed text is not shown twice.

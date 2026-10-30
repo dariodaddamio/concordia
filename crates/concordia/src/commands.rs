@@ -107,9 +107,11 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     let vertical = rest.eq_ignore_ascii_case("v") || rest.eq_ignore_ascii_case("vertical");
     let words = body.split_whitespace().count();
     let max_words = match cmd.as_str() {
-        "model" | "chats" | "resume" | "new" | "config" | "trust" | "version" | "ver" | "about"
-        | "copy" | "cp" | "doctor" | "diag" | "exit" | "quit" | "q" => Some(1),
-        "mode" | "split" | "login" | "connect" => Some(2),
+        "model" | "chats" | "resume" | "new" | "config" | "version" | "ver" | "about" | "copy"
+        | "cp" | "doctor" | "diag" | "exit" | "quit" | "q" | "agents" | "stats" | "close" => {
+            Some(1)
+        }
+        "mode" | "trust" | "split" | "login" | "connect" => Some(2),
         "use" => Some(3),
         _ => None,
     };
@@ -135,11 +137,11 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
             false,
         )),
         "model" => Some((SlashCommand::Model, false)),
-        "usage" if rest.eq_ignore_ascii_case("all") && parts.next().is_none() => {
-            Some((SlashCommand::UsageAll, false))
-        }
-        "usage" if rest.eq_ignore_ascii_case("refresh") && parts.next().is_none() => {
-            Some((SlashCommand::UsageRefresh, false))
+        "usage"
+            if (rest.eq_ignore_ascii_case("all") || rest.eq_ignore_ascii_case("refresh"))
+                && parts.next().is_none() =>
+        {
+            Some((SlashCommand::Usage, false))
         }
         "usage" if !rest.is_empty() => Some((SlashCommand::Invalid("usage".into()), false)),
         "usage" => Some((SlashCommand::Usage, false)),
@@ -193,65 +195,18 @@ pub fn parse_provider(s: &str) -> Option<ProviderKind> {
 
 /// Every slash command with a one-line description, in the order the palette shows them.
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/use", "switch account or provider"),
-    ("/use add", "connect a new account"),
-    ("/use remove", "remove an account"),
-    ("/mode", "permission mode: plan, ask, auto or full"),
-    ("/continuation", "usage handoff: manual or automatic"),
-    ("/continuation manual", "pause at a usage limit"),
-    (
-        "/continuation automatic",
-        "continue through configured accounts at a usage limit",
-    ),
-    (
-        "/continue",
-        "continue a usage-limited request: /continue ACCOUNT",
-    ),
+    ("/use", "switch, add or remove accounts"),
     ("/model", "choose the model"),
-    ("/usage", "limits for this account"),
-    ("/usage all", "limits for every account"),
-    ("/usage refresh", "check limits again now"),
-    ("/resume", "continue an earlier session"),
-    ("/agents", "inspect native subagents (Ctrl+G)"),
-    ("/trust", "approvals: ask, workspace or full"),
-    ("/config", "how to connect providers"),
-    ("/new", "start a fresh conversation"),
-    ("/threads", "recent recorded threads (delete <id>)"),
-    ("/split", "open another pane"),
-    ("/update", "update Concordia and restart"),
-    ("/update check", "look for a newer version"),
-    ("/version", "build and install info"),
+    ("/mode", "how much the agent may do without asking"),
+    ("/usage", "limits for every account"),
+    ("/new", "start a fresh chat"),
+    ("/resume", "continue an earlier chat"),
+    ("/delegate", "run tasks on worker accounts"),
+    ("/harness", "connect and run harness tools"),
+    ("/open", "open a file in a side pane"),
     ("/copy", "copy the last reply"),
-    ("/open", "open an internal read-only file pane"),
-    ("/preview", "preview text in an internal file pane"),
-    ("/close", "close a file pane by id"),
-    ("/edit", "open a file in a separate terminal editor"),
-    ("/stats", "toggle process memory and CPU counters"),
-    (
-        "/recover",
-        "recover a saved draft and queue for this workspace",
-    ),
-    ("/recover legacy", "import older shared draft and queue"),
-    (
-        "/recover retry",
-        "retry saving this pane after a local storage error",
-    ),
-    ("/queue", "list queued prompts"),
-    (
-        "/queue resume",
-        "resume paused queued prompts; keep the draft",
-    ),
-    ("/queue clear", "empty the prompt queue"),
-    ("/workers", "list worker accounts (max 3)"),
-    ("/workers add", "allow an account to run delegated tasks"),
-    ("/workers remove", "stop using an account as a worker"),
-    ("/delegate", "run a task on a worker account"),
-    ("/delegate stop", "cancel a worker's task"),
-    ("/delegate use", "send a worker result to this chat"),
-    ("/delegate help", "how delegation works"),
     ("/doctor", "check your setup"),
-    ("/harness", "connect, verify and run tools from any harness"),
-    ("/exit", "quit"),
+    ("/update", "update Concordia"),
 ];
 
 pub fn format_config_help() -> String {
@@ -269,8 +224,7 @@ pub fn format_config_help() -> String {
         "Claude  claude login   (optional CLAUDE_CONFIG_DIR)".into(),
         "Cursor  agent login   (extra accounts: an concordia-api-key file in the account home)".into(),
         String::new(),
-        "in concordia  /use · /use add · /model · /usage · /resume · /trust · /update".into(),
-        "delegate     /workers · /delegate <account|auto> <task> · /delegate help".into(),
+        "in concordia  /use · /model · /mode · /usage · /new · /resume · /delegate · /harness · /open · /copy · /doctor · /update".into(),
     ]
     .join("\n")
 }
@@ -315,7 +269,7 @@ pub fn dispatch_slash(
         SlashCommand::Exit => (CommandOutcome::Exit, Vec::new()),
         SlashCommand::Invalid(name) => (
             CommandOutcome::Ok,
-            vec![format!("invalid arguments for /{name}; try /config")],
+            vec![format!("invalid arguments for /{name}; type / to see the commands")],
         ),
         SlashCommand::Config => (CommandOutcome::Ok, vec![format_config_help()]),
         SlashCommand::New => (
@@ -342,7 +296,7 @@ pub fn dispatch_slash(
             ),
         },
         SlashCommand::Model => (CommandOutcome::OpenModel, Vec::new()),
-        SlashCommand::Usage => (CommandOutcome::ShowUsage, Vec::new()),
+        SlashCommand::Usage => (CommandOutcome::OpenUsage, Vec::new()),
         SlashCommand::UsageAll => (CommandOutcome::OpenUsage, Vec::new()),
         SlashCommand::UsageRefresh => (CommandOutcome::ShowUsageRefresh, Vec::new()),
         SlashCommand::Copy => (CommandOutcome::CopyLastReply, Vec::new()),
@@ -403,7 +357,7 @@ pub fn dispatch_slash(
         ),
         SlashCommand::Unknown(name) => (
             CommandOutcome::Ok,
-            vec![format!("unknown command: /{name} — try /config")],
+            vec![format!("unknown command: /{name}; type / to see the commands")],
         ),
         SlashCommand::Harness(_) => (
             CommandOutcome::Ok,
@@ -473,8 +427,8 @@ mod usage_tests {
     #[test]
     fn usage_is_current_account_and_usage_all_lists_everyone() {
         assert_eq!(parse_slash("/usage").unwrap().0, SlashCommand::Usage);
-        assert_eq!(parse_slash("/usage all").unwrap().0, SlashCommand::UsageAll);
-        assert_eq!(parse_slash("/usage ALL").unwrap().0, SlashCommand::UsageAll);
+        assert_eq!(parse_slash("/usage all").unwrap().0, SlashCommand::Usage);
+        assert_eq!(parse_slash("/usage ALL").unwrap().0, SlashCommand::Usage);
         let dir = std::env::temp_dir();
         let ctx = CommandContext {
             state_root: &dir,
@@ -486,15 +440,10 @@ mod usage_tests {
         };
         assert_eq!(
             dispatch_slash(SlashCommand::Usage, &ctx).0,
-            CommandOutcome::ShowUsage
-        );
-        assert_eq!(
-            dispatch_slash(SlashCommand::UsageAll, &ctx).0,
             CommandOutcome::OpenUsage
         );
         let help = |c: &str| SLASH_COMMANDS.iter().find(|(n, _)| *n == c).unwrap().1;
-        assert_eq!(help("/usage"), "limits for this account");
-        assert_eq!(help("/usage all"), "limits for every account");
+        assert_eq!(help("/usage"), "limits for every account");
     }
 }
 

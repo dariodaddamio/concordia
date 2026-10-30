@@ -37,35 +37,29 @@ read tools read already-recorded state and do not start provider work.
 
 ## TUI slash surface
 
-`commands.rs::parse_slash` handles the following. Aliases are included because they are accepted
-by the parser even when they are absent from the palette.
+`commands.rs::SLASH_COMMANDS` exposes exactly these twelve screens/actions. Former subcommands
+remain accepted only as migration routes and print where their behavior moved.
 
 | Command | Accepted forms / aliases | Actual route |
 | --- | --- | --- |
-| Account picker | `/use`; `/use list` also currently resolves to picker | TUI picker, with provider/account identity refreshed on selection. |
-| Add account | `/use add [codex|claude|cursor]`, aliases `new`, `connect`; `/login [provider]`, `/connect [provider]` | Provider picker or isolated account login flow. A named unknown provider reports an error. |
-| Remove account | `/use remove|rm|delete|forget [account]` | TUI removal/unregister confirmation picker. |
-| Model | `/model` | TUI model picker. |
-| Usage | `/usage`, `/usage all`, `/usage refresh` | Current-account display, all-ready-account picker, or explicit refresh. MCP `usage` is cached-only. |
-| Resume | `/resume`, `/chats` | TUI native-session picker. Recovery binds the selected explicit session; no `resume --last` path found in this command route. |
-| New | `/new` | Clears current conversation view and starts a new Concordia thread. |
-| Trust | `/trust` | TUI trust picker. |
-| Mode | `/mode [plan|ask|auto|full]` | TUI-owned display/set path. Extra words are rejected; invalid mode handling lives in TUI. Busy changes explicitly apply to the next turn. |
-| Split | `/split [v|vertical|h|horizontal]` | WezTerm pane split. With no argument it is horizontal. Invalid words now report invalid arguments. |
-| Update | `/update`, aliases `/upgrade`, `/rebuild`; `/update check` and aliases | Starts update/restart job or report-only check. Invalid arguments now cannot fall through to update. |
-| Version | `/version`, `/ver`, `/about` | Reports build, current executable and active executable. |
-| Copy | `/copy`, `/cp` | Copies last assistant reply if available. |
-| Doctor | `/doctor`, `/diag` | Fast diagnostics in transcript. |
-| Exit | `/exit`, `/quit`, `/q` | Quits TUI. |
-| Workers | `/workers`, `/worker`; `/workers add|new ACCOUNT`; `/workers remove|rm|delete ACCOUNT` | TUI worker list/configuration. Missing account opens picker. Unknown worker subcommands are rejected. |
-| Delegate | `/delegate`, `/delegate help|?`; `/delegate stop|cancel [ACCOUNT]`; `/delegate use|send [ACCOUNT]`; `/delegate protocol [on|off|true|false|yes|no]`; `/delegate ACCOUNT TASK...` | TUI-owned worker dispatch/cancel/result handoff and protocol toggle. Empty task is parsed, then refused by TUI validation. Invalid protocol values and extra control arguments are rejected. |
-| Unknown slash | Any other leading slash command | User-visible unknown-command message. |
+| `/use` | Switch, add or remove accounts; the usage-handoff toggle and continuation picker live here. |
+| `/model` | Model picker. |
+| `/mode` | Permission mode picker/setter, including former trust arguments. |
+| `/usage` | All-account usage screen; `r` refreshes. |
+| `/new` | Starts a fresh chat. |
+| `/resume` | Explicit session picker; Delete confirms thread removal. |
+| `/delegate` | Worker screen/actions; task text remains a shortcut. |
+| `/harness` | Harness connect and tool dispatch. |
+| `/open` | File side pane; Esc or X closes it. |
+| `/copy` | Copies the last assistant reply. |
+| `/doctor` | Setup, version and configuration diagnostics. |
+| `/update` | Update check and confirmation/install flow. |
 
 Additional TUI intercepts in `tui/mod.rs::handle_slash` do not pass through the parser:
 
 | Command family | Behavior and evidence |
 | --- | --- |
-| `/threads [list|delete ID]` | Recorded-thread browser/delete path. TUI tests cover listing/deleting and busy refusal. |
+| Removed command routes | `/trust`, `/continuation`, `/continue`, `/threads`, `/preview`, `/config`, `/version`, `/agents`, `/usage all`, `/usage refresh`, `/update check` and `/exit` print one line naming their replacement and route to it. `/workers`, `/queue`, `/edit`, `/close`, `/split`, `/stats` and `/recover` are unlisted but still work, until the screens that replace them exist. |
 | `/queue`, `/queue resume`, `/queue clear`, queue controls | Lists, resumes or clears queued prompts. `queue_controls` and TUI tests cover busy/cancel/edit blocking and state changes. |
 | `/recover`, `/recover legacy`, `/recover retry` | Workspace draft/queue recovery, explicit legacy import, retry local persistence. Recovery TUI tests cover selected missing/corrupt/retry states. |
 | `/stats` | Toggles local process counters; special-cased after the parser returns unknown. TUI tests cover the toggle. |

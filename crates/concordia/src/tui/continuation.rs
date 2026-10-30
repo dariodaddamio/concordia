@@ -50,6 +50,15 @@ impl State {
     pub fn waiting(&self) -> bool {
         self.pending.is_some()
     }
+
+    pub(super) fn automatic(&self) -> bool {
+        self.automatic
+    }
+
+    pub(super) fn toggle_automatic(&mut self) -> bool {
+        self.automatic = !self.automatic;
+        self.automatic
+    }
 }
 
 fn usage_exhausted(text: &str) -> bool {
@@ -112,9 +121,14 @@ impl App {
                 .iter()
                 .chain(&outcome.cards)
                 .any(|card| card.status != CardStatus::Done);
-        self.push_system("usage limit reached; /continue ACCOUNT carries this conversation to another account. Queued prompts stay paused.");
+        self.push_system(
+            "usage limit reached; choose another account to continue. Queued prompts stay paused.",
+        );
+        if !self.continuation.automatic {
+            self.open_continuation_picker();
+        }
         if self.continuation.blocked {
-            self.push_system("automatic continuation stopped: provider or tool completion is uncertain. Inspect its output before /continue ACCOUNT.");
+            self.push_system("automatic continuation stopped: provider or tool completion is uncertain. Inspect its output before continuing.");
             return None;
         }
         if !self.continuation.automatic

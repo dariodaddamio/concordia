@@ -2,7 +2,7 @@
 
 Status: first read-only preview slice implemented in source build `2026-10-21a` and included in
 locally installed build `2026-10-21b`.
-`/open` and `/preview` use internal panes; `/edit` preserves the external-editor route. The
+`/open` uses internal panes; `/edit PATH` (unlisted) preserves the external-editor route. The
 editing/recovery and search/replacement stages below remain requirements. Keep the stable
 installed binary usable while developing this feature. No live providers are required here.
 
@@ -25,10 +25,9 @@ The project's design system owns applicable UI principles. Neither provider sess
 | Another `/open` | Add another split when space and limits permit. Give every pane a visible stable id. Reopening an existing file focuses its pane rather than creating conflicting buffers |
 | Click pane | Focus it, with a visible indicator. Keys target the focused surface; file navigation must never submit a chat prompt |
 | Click top-right X | Close that file pane; use the same close operation as the command |
-| `/close <pane-id>` | Close the identified file pane. Bare `/close` closes the focused file pane; if chat is focused, show usage. Invalid ids change nothing |
 | Drag divider | Resize adjacent panes within minimum dimensions, retaining content, selection and focus |
 | Small terminal or pane limit | Keep chat usable; explain a refused additional split. Never create invisible panes with live hit targets. Tabs may be added later |
-| `/preview FILE` | Open an internal read-only pane; clearly label read-only state. Standalone CLI preview can remain available |
+| `/open FILE` | Open an internal read-only pane; clearly label read-only state. Standalone CLI preview can remain available |
 | Edit/save/close | Later slice: show dirty state, save explicitly, protect unsaved edits on close and detect external changes before overwriting |
 | Search/replace | Later slice: search the cwd with visible scope/ignore rules. Preview replacement diffs and apply selected changes explicitly |
 

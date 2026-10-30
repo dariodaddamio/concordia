@@ -161,9 +161,9 @@ fn queue_json(root: &Path) -> Option<String> {
 fn tab_queues_only_while_busy_or_when_the_queue_is_not_empty() {
     let mut h = H::new(80, 24);
     // idle, empty queue: Tab still completes slash commands and never queues
-    h.type_str("/vers");
+    h.type_str("/up");
     h.press(KeyCode::Tab);
-    assert_eq!(h.app.editor.text(), "/version");
+    assert_eq!(h.app.editor.text(), "/update");
     assert!(h.app.queue.items.is_empty());
     h.app.editor.clear();
     // idle, plain text, empty queue: nothing to queue behind
@@ -179,10 +179,10 @@ fn tab_queues_only_while_busy_or_when_the_queue_is_not_empty() {
     assert_eq!(h.items(), vec!["second"]);
     assert_eq!(h.app.editor.text(), "", "the prompt box is free again");
     // a slash prompt is never queued: Tab completes it
-    h.type_str("/vers");
+    h.type_str("/up");
     h.press(KeyCode::Tab);
     assert_eq!(h.items(), vec!["second"]);
-    assert_eq!(h.app.editor.text(), "/version");
+    assert_eq!(h.app.editor.text(), "/update");
     h.app.editor.clear();
     // with a non-empty queue, Tab queues even when idle
     h.app.busy = false;
@@ -603,10 +603,10 @@ fn queue_commands_are_in_the_palette() {
         .iter()
         .map(|c| c.0)
         .collect();
-    assert!(cmds.contains(&"/queue") && cmds.contains(&"/queue clear"));
+    assert!(!cmds.iter().any(|c| c.starts_with("/queue")));
     let mut h = H::new(100, 24);
     h.type_str("/que");
-    assert!(h.row_with("/queue clear").is_some());
+    assert!(h.row_with("/queue").is_none());
 }
 
 #[test]
@@ -687,12 +687,12 @@ fn ctrl_z_right_after_a_send_brings_the_sent_text_back() {
 #[test]
 fn undo_does_not_leave_a_slash_palette_stuck() {
     let mut h = H::new(80, 24);
-    h.type_str("/ver");
+    h.type_str("/up");
     h.press(KeyCode::Esc); // dismiss
     h.key(KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "");
-    h.type_str("/ver");
-    assert!(h.row_with("/version").is_some());
+    h.type_str("/up");
+    assert!(h.row_with("/update").is_some());
 }
 
 // ---- draft and history persistence -------------------------------------------------------

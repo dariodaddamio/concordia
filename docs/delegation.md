@@ -7,14 +7,14 @@ decide what happens with its result.
 
 Nothing here is automatic. Delegation is something you start, watch and can stop.
 
-Native provider subagents are also visible when the CLI reports them. `/agents` or `Ctrl+G`
+Native provider subagents are also visible when the CLI reports them. `Ctrl+G`
 opens a browser of those reports and Concordia worker jobs; Enter opens details. Codex
 `collab_tool_call` items identify children, tasks, states and reported messages. Completion of
 the spawn tool does not mark the child complete. Claude Agent/Task tool cards are accessible
 through the same browser. This view displays provider-reported information; it does not create
 additional provider turns or introduce child controls unsupported by that provider.
 
-Native subagents do not require cross-account worker enrollment. `/workers add ACCOUNT`
+Native subagents do not require cross-account worker enrollment. Worker account actions are inside `/delegate`.
 registers a separate account for explicit `/delegate` tasks. Registration and task execution
 remain separate actions.
 
@@ -22,14 +22,8 @@ remain separate actions.
 
 | Command | What it does |
 | --- | --- |
-| `/workers` | Lists workers: provider, status (idle, running, logged out), last result. |
-| `/workers add <account>` | Allows an account to be a worker. |
-| `/workers remove <account>` | Takes it out (refused while it is running a task). |
-| `/delegate <account\|auto> <task>` | Starts one worker turn. `auto` picks the first idle worker. |
-| `/delegate stop [account]` | Cancels a running task and drops its queue. Also `Esc` on a focused row. |
-| `/delegate use [account]` | Sends a finished result to the orchestrator as labelled context. |
-| `/delegate protocol on\|off` | Opt in to orchestrator-proposed delegation (below). |
-| `/delegate help` | Explains all of this and prints the snippet that teaches the block format. |
+| `/delegate` | Lists workers and provides add, remove, stop, result handoff, protocol and help choices. |
+| `/delegate <account\|auto> <task>` | Starts one worker turn as a shortcut. `auto` picks the first idle worker. |
 
 An account can be a worker when it exists, is logged in, is not the orchestrator, is not the same
 login as the orchestrator or another worker (checked by the same identity used for duplicate

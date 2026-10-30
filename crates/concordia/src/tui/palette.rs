@@ -43,7 +43,12 @@ pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
             help: c.description,
             custom: true,
         });
-    builtin.chain(custom).collect()
+    let mut entries: Vec<_> = builtin.chain(custom).collect();
+    if let Some(index) = entries.iter().position(|entry| entry.command == input) {
+        let exact = entries.remove(index);
+        entries.insert(0, exact);
+    }
+    entries
 }
 
 #[derive(Debug, Default)]
@@ -92,14 +97,20 @@ mod tests {
     fn a_bare_slash_lists_every_command() {
         let all = cmds("/");
         assert_eq!(all.len(), SLASH_COMMANDS.len());
-        assert!(all.contains(&"/doctor") && all.contains(&"/use add") && all.contains(&"/exit"));
+        assert_eq!(
+            all,
+            SLASH_COMMANDS
+                .iter()
+                .map(|(command, _)| *command)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn typing_narrows_by_prefix_case_insensitively() {
-        assert_eq!(cmds("/up"), ["/update", "/update check"]);
-        assert_eq!(cmds("/UP"), ["/update", "/update check"]);
-        assert_eq!(cmds("/use a"), ["/use add"]);
+        assert_eq!(cmds("/up"), ["/update"]);
+        assert_eq!(cmds("/UP"), ["/update"]);
+        assert_eq!(cmds("/use a"), Vec::<&str>::new());
         assert_eq!(cmds("/zzz"), Vec::<&str>::new());
     }
 
