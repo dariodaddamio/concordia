@@ -1404,6 +1404,80 @@ fn assistant_markdown_renders_without_its_markers_and_user_text_is_left_alone() 
 }
 
 #[test]
+fn assistant_paragraphs_have_one_blank_row_and_code_blanks_are_preserved() {
+    let mut h = Harness::new(100, 30);
+    h.app
+        .push_assistant("para one\n\n\npara two\n\n```\ncode one\n\n\ncode two\n```".into());
+    h.draw();
+    let rows: Vec<String> = h
+        .app
+        .view
+        .rows
+        .iter()
+        .map(|row| row.text.iter().collect())
+        .collect();
+    let first = rows.iter().position(|row| row == "para one").unwrap();
+    assert_eq!(rows[first + 1], "");
+    assert_eq!(rows[first + 2], "para two");
+    let code = rows.iter().position(|row| row == "code one").unwrap();
+    assert_eq!(rows[code + 1], "");
+    assert_eq!(rows[code + 2], "");
+    assert_eq!(rows[code + 3], "code two");
+}
+
+#[test]
+fn unified_diff_cards_show_counts_and_review_colours() {
+    use ratatui::style::{Color, Modifier};
+
+    let mut h = Harness::new(100, 24);
+    h.app.push_card(StreamCard {
+        id: "edit".into(),
+        title: "edit".into(),
+        detail: Some(
+            "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1,2 @@\n-old\n+new\n+extra".into(),
+        ),
+        status: CardStatus::Done,
+    });
+    h.draw();
+    assert!(h.screen().contains("+2 -1"));
+
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.draw();
+    let row_texts: Vec<String> = h
+        .app
+        .view
+        .rows
+        .iter()
+        .map(|row| row.text.iter().collect())
+        .collect();
+    let added = h
+        .app
+        .view
+        .rows
+        .iter()
+        .find(|row| row.text.iter().collect::<String>().ends_with("+new"))
+        .unwrap_or_else(|| panic!("rows: {row_texts:?}"));
+    assert_eq!(added.style.fg, Some(Color::Green));
+    let removed = h
+        .app
+        .view
+        .rows
+        .iter()
+        .find(|row| row.text.iter().collect::<String>() == "-old")
+        .unwrap();
+    assert_eq!(removed.style.fg, Some(Color::Red));
+    let header = h
+        .app
+        .view
+        .rows
+        .iter()
+        .find(|row| row.text.iter().collect::<String>() == "@@ -1 +1,2 @@")
+        .unwrap();
+    assert_eq!(header.style.fg, Some(Color::DarkGray));
+    assert!(header.style.add_modifier.contains(Modifier::DIM));
+}
+
+#[test]
 fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     let mut h = Harness::new(100, 24);
     h.app.push_user("first".into());

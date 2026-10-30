@@ -576,6 +576,17 @@ pub fn format_card_line(card: &StreamCard) -> String {
 
 /// Compact presentation only: the original arguments and output remain on the card.
 fn card_preview(detail: &str) -> String {
+    if detail.lines().any(|line| line.starts_with("@@")) {
+        let added = detail
+            .lines()
+            .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+            .count();
+        let removed = detail
+            .lines()
+            .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+            .count();
+        return format!("+{added} -{removed}");
+    }
     let first = detail
         .lines()
         .find(|line| !line.trim().is_empty())
