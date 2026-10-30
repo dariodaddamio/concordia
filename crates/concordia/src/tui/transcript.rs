@@ -9,6 +9,24 @@ use super::text::{col_to_index, word_bounds, wrap_ranges_hang};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+pub(super) fn diff_line_style(line: &str) -> Style {
+    if line.starts_with("@@") || line.starts_with("---") || line.starts_with("+++") {
+        Style::default()
+            .fg(ratatui::style::Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    } else if line.starts_with('+') {
+        Style::default().fg(ratatui::style::Color::Green)
+    } else if line.starts_with('-') {
+        Style::default().fg(ratatui::style::Color::Red)
+    } else {
+        Style::default()
+    }
+}
+
+fn is_diff(text: &str) -> bool {
+    text.lines().any(|line| line.starts_with("@@"))
+}
+
 /// Inline style over part of one line of a block: `(line, start, end, style)`, chars within the line.
 pub type LineRun = (usize, usize, usize, Style);
 
@@ -402,6 +420,7 @@ fn row_spans(r: &Row, selection: Option<(usize, usize)>) -> Vec<Span<'static>> {
 /// every other row gets blank space of the same width, plus any indent the line asks for.
 fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
     let gw = b.gutter.chars().count();
+    let diff = !b.markdown && is_diff(b.text);
     let lines: Vec<markdown::MdLine> = if b.markdown {
         markdown::render(b.text)
     } else {
@@ -418,7 +437,11 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
                     .collect(),
                 indent: 0,
                 hang: 0,
-                base: Style::default(),
+                base: if diff {
+                    diff_line_style(l)
+                } else {
+                    Style::default()
+                },
             })
             .collect()
     };
