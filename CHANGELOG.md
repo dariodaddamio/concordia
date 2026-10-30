@@ -11,6 +11,14 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed (`2026-10-30a`)
+- Cursor tool cards show the tool's name (glob, read, edit) instead of `completedatms`, which current Cursor CLIs caused by adding bookkeeping fields beside the tool.
+- Cursor replies stream as they are written (`--stream-partial-output`, when the installed CLI lists it), and reasoning and reply fragments join into one paragraph instead of one line per fragment. The full copy Cursor sends after streamed text is not shown twice.
+- Finished Cursor edits show their unified diff; reads show the path and line count; globs show the matched files. Paths inside the session folder are shown relative to it.
+- Diff details collapse to a `+N -M` summary and expand with added lines green, removed lines red and headers dimmed.
+- Usage resets read the same for every provider (`resets in 3h 20m`, `resets Nov 6, 9am`) and are measured against the current time, so a reading taken before a reset shows `reset since last read` instead of its old percentage.
+- Session notices are plain sentences, and the normal start of a chat shows none.
+
 ### Fixed
 - Harness adapters now run with an allowlisted environment and whole-process timeout cleanup; verification binds policy and manifest revisions, protects existing receipts, and status rechecks live state.
 - Enforcement receipts now bind to the connected harness name, version, manifest path and manifest hash; file manifests are re-hashed before a protected launch so stale receipts close the gate.
