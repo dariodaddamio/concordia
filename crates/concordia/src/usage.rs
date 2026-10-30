@@ -32,10 +32,18 @@ pub struct UsageWindow {
 }
 
 impl UsageWindow {
+    /// The reading predates the window's reset, so its percentage no longer applies.
     fn expired(&self) -> bool {
-        self.resets
-            .as_deref()
-            .is_some_and(|r| r.starts_with("already reset"))
+        self.expired_at(local_now())
+    }
+
+    fn expired_at(&self, now: Option<WallTime>) -> bool {
+        self.resets.as_deref().is_some_and(|r| {
+            r.starts_with("already reset")
+                || now
+                    .zip(parse_wall(r, now))
+                    .is_some_and(|(now, then)| minutes_until(now, then) <= 0)
+        })
     }
     pub fn left_pct(&self) -> f64 {
         (100.0 - self.used_pct).clamp(0.0, 100.0)
@@ -52,7 +60,7 @@ impl UsageWindow {
     /// `5h 59% left (41% used)`
     fn used_left(&self) -> String {
         if self.expired() {
-            return format!("{} reset · current usage unknown", self.label);
+            return format!("{} reset since last read", self.label);
         }
         format!(
             "{} {}% left ({}% used)",
@@ -98,7 +106,13 @@ impl UsageSnapshot {
         if self.limit_hit {
             parts.insert(0, "LIMIT HIT".into());
         }
-        if let Some(r) = self.windows.iter().find_map(|w| w.resets.as_deref()) {
+        // An expired window already says so; the phrase is for the next reset still ahead.
+        if let Some(r) = self
+            .windows
+            .iter()
+            .filter(|w| !w.expired())
+            .find_map(|w| w.resets.as_deref())
+        {
             parts.push(reset_phrase(r));
         }
         parts.join(" · ")
@@ -117,11 +131,26 @@ impl UsageSnapshot {
     }
 }
 
-/// How a reset reads in a sentence: `resets in 23h`, `resets Oct 21, 9am`, `resets soon`.
+/// How a reset reads in a sentence: `resets in 3h 20m`, `resets Nov 6, 9am`, `reset since last
+/// read`. Wall-clock resets are measured against the local time now.
 pub fn reset_phrase(r: &str) -> String {
+    reset_phrase_at(r, local_now())
+}
+
+fn reset_phrase_at(r: &str, now: Option<WallTime>) -> String {
     let r = r.trim();
     if r.starts_with("already reset") {
-        return "reset since your last chat".to_string();
+        return "reset since last read".to_string();
+    }
+    if let Some((now, then)) = now.zip(parse_wall(r, now)) {
+        let minutes = minutes_until(now, then);
+        return match minutes {
+            ..=0 => "reset since last read".to_string(),
+            1..=59 => format!("resets in {minutes}m"),
+            60..=1439 if minutes % 60 == 0 => format!("resets in {}h", minutes / 60),
+            60..=1439 => format!("resets in {}h {}m", minutes / 60, minutes % 60),
+            _ => format!("resets {}", format_wall(then)),
+        };
     }
     if r == "soon" {
         return "resets soon".to_string();
@@ -136,16 +165,165 @@ pub fn reset_phrase(r: &str) -> String {
     }
 }
 
+/// A moment on the local wall clock, as providers print resets (`Oct 29, 4:19am`). No year: a
+/// reset is never months away, so the nearest year is the right one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WallTime {
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// `Oct 29, 4:19am`, `Oct 29 4am`, `Oct 29`, or a bare `4:19am` (today, which needs `now`).
+fn parse_wall(text: &str, now: Option<WallTime>) -> Option<WallTime> {
+    let text = text.trim().trim_end_matches(" local");
+    let (date, time) = match text.split_once(',') {
+        Some((date, time)) => (Some(date.trim()), Some(time.trim())),
+        None if text.chars().next()?.is_ascii_digit() => (None, Some(text)),
+        None => match text.rsplit_once(' ') {
+            Some((date, time)) if time.ends_with(['m', 'M']) => (Some(date), Some(time)),
+            _ => (Some(text), None),
+        },
+    };
+    let (month, day) = match date {
+        Some(date) => {
+            let (month, day) = date.split_once(' ')?;
+            let month = MONTHS
+                .iter()
+                .position(|m| month.get(..3).is_some_and(|p| p.eq_ignore_ascii_case(m)))?;
+            (month as u32 + 1, day.trim().parse().ok()?)
+        }
+        None => now.map(|n| (n.month, n.day))?,
+    };
+    let (hour, minute) = match time {
+        Some(time) => parse_clock(time)?,
+        None => (0, 0),
+    };
+    ((1..=31).contains(&day)).then_some(WallTime {
+        month,
+        day,
+        hour,
+        minute,
+    })
+}
+
+/// `4:19am` or `9pm` as 24-hour `(hour, minute)`.
+fn parse_clock(time: &str) -> Option<(u32, u32)> {
+    let lower = time.trim().to_ascii_lowercase();
+    let (clock, pm) = match (lower.strip_suffix("am"), lower.strip_suffix("pm")) {
+        (Some(c), _) => (c, false),
+        (_, Some(c)) => (c, true),
+        _ => return None,
+    };
+    let (hour, minute) = match clock.trim().split_once(':') {
+        Some((h, m)) => (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?),
+        None => (clock.trim().parse::<u32>().ok()?, 0),
+    };
+    if !(1..=12).contains(&hour) || minute > 59 {
+        return None;
+    }
+    Some((hour % 12 + if pm { 12 } else { 0 }, minute))
+}
+
+/// `Nov 6, 9am` or `Oct 29, 4:19pm`.
+fn format_wall(w: WallTime) -> String {
+    let (hour, suffix) = match w.hour {
+        0 => (12, "am"),
+        1..=11 => (w.hour, "am"),
+        12 => (12, "pm"),
+        _ => (w.hour - 12, "pm"),
+    };
+    let month = MONTHS[(w.month.clamp(1, 12) - 1) as usize];
+    if w.minute == 0 {
+        format!("{month} {}, {hour}{suffix}", w.day)
+    } else {
+        format!("{month} {}, {hour}:{:02}{suffix}", w.day, w.minute)
+    }
+}
+
+/// Signed minutes from `now` to `then`, taking whichever year puts them closest.
+fn minutes_until(now: WallTime, then: WallTime) -> i64 {
+    const DAYS_BEFORE: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    const YEAR: i64 = 365 * 24 * 60;
+    let of_year = |w: WallTime| {
+        (DAYS_BEFORE[(w.month.clamp(1, 12) - 1) as usize] + i64::from(w.day) - 1) * 24 * 60
+            + i64::from(w.hour) * 60
+            + i64::from(w.minute)
+    };
+    let delta = of_year(then) - of_year(now);
+    if delta > YEAR / 2 {
+        delta - YEAR
+    } else if delta < -YEAR / 2 {
+        delta + YEAR
+    } else {
+        delta
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The clock tests run against; unset means no wall-clock ageing, as before.
+    static TEST_NOW: std::cell::Cell<Option<WallTime>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn local_now() -> Option<WallTime> {
+    TEST_NOW.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn local_now() -> Option<WallTime> {
+    system_now()
+}
+
+#[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
+fn system_now() -> Option<WallTime> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        weekday: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        millis: u16,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLocalTime(time: *mut SystemTime);
+    }
+    let mut t = SystemTime::default();
+    // Fills the documented Win32 SYSTEMTIME layout; it cannot fail.
+    unsafe { GetLocalTime(&mut t) };
+    Some(WallTime {
+        month: t.month.into(),
+        day: t.day.into(),
+        hour: t.hour.into(),
+        minute: t.minute.into(),
+    })
+}
+
+#[cfg(not(windows))]
+#[cfg_attr(test, allow(dead_code))]
+fn system_now() -> Option<WallTime> {
+    None
+}
+
 fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
     let width = windows.iter().map(|w| w.label.len()).max().unwrap_or(0);
     windows
         .iter()
         .map(|w| {
             if w.expired() {
-                return format!(
-                    "{}  reset since last report · current usage unknown",
-                    w.label
-                );
+                return format!("{}  reset since last read · current usage unknown", w.label);
             }
             let mut line = format!(
                 "{:<width$}  {:>3}% left · {:>3}% used",
@@ -1278,10 +1456,13 @@ fn local_reset_time(seconds: i64) -> Option<String> {
     {
         return None;
     }
-    Some(format!(
-        "{:04}-{:02}-{:02} {:02}:{:02} local",
-        local.year, local.month, local.day, local.hour, local.minute
-    ))
+    // The same wall-clock form Claude prints, so every provider's reset reads and ages alike.
+    Some(format_wall(WallTime {
+        month: local.month.into(),
+        day: local.day.into(),
+        hour: local.hour.into(),
+        minute: local.minute.into(),
+    }))
 }
 
 #[cfg(not(windows))]
@@ -1335,6 +1516,68 @@ pub fn low_limit_warning(
 mod tests {
     use super::*;
     use crate::store::ProviderKind;
+
+    fn wall(month: u32, day: u32, hour: u32, minute: u32) -> WallTime {
+        WallTime {
+            month,
+            day,
+            hour,
+            minute,
+        }
+    }
+
+    #[test]
+    fn resets_read_the_same_for_every_provider_and_age_with_the_clock() {
+        let now = Some(wall(10, 30, 13, 0));
+        for (reset, phrase) in [
+            ("Oct 30, 4:20pm", "resets in 3h 20m"),
+            ("Oct 30, 4pm", "resets in 3h"),
+            ("Oct 30, 1:45pm", "resets in 45m"),
+            ("1:45pm", "resets in 45m"),
+            ("Nov 6, 9am", "resets Nov 6, 9am"),
+            ("Oct 29, 4:19am", "reset since last read"),
+            ("4:19am", "reset since last read"),
+            ("already reset (chat to refresh)", "reset since last read"),
+        ] {
+            assert_eq!(reset_phrase_at(reset, now), phrase, "{reset}");
+        }
+        // Near the new year the nearest year decides.
+        assert_eq!(
+            reset_phrase_at("Jan 1, 1am", Some(wall(12, 31, 23, 0))),
+            "resets in 2h"
+        );
+        // Codex's timestamps are written in the same form as Claude's text.
+        assert_eq!(format_wall(wall(10, 30, 17, 17)), "Oct 30, 5:17pm");
+        assert_eq!(format_wall(wall(11, 6, 0, 0)), "Nov 6, 12am");
+    }
+
+    #[test]
+    fn a_window_past_its_reset_shows_no_percentage() {
+        TEST_NOW.with(|n| n.set(Some(wall(10, 30, 13, 0))));
+        let snapshot = snapshot_from_windows(
+            vec![
+                UsageWindow {
+                    label: "5h".into(),
+                    used_pct: 64.0,
+                    resets: Some("Oct 29, 4:19am".into()),
+                },
+                UsageWindow {
+                    label: "7d".into(),
+                    used_pct: 21.0,
+                    resets: Some("Nov 6, 9am".into()),
+                },
+            ],
+            None,
+            Vec::new(),
+            "test",
+        );
+        let text = snapshot.used_left_text();
+        TEST_NOW.with(|n| n.set(None));
+        assert_eq!(
+            text,
+            "5h reset since last read · 7d 79% left (21% used) · resets Nov 6, 9am"
+        );
+    }
 
     const SAMPLE: &str = "You are currently using your subscription to power your Claude Code usage\n\nCurrent session: 7% used · resets Oct 15, 9:10pm (America/Phoenix)\nCurrent week (all models): 13% used · resets Oct 21, 9am (America/Phoenix)\n\nWhat's contributing to your limits usage?\nsomething else: 5% used\n";
 
