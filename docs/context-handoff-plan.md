@@ -328,6 +328,34 @@ is shown as unknown.
 
 Open: how long the log is kept, and whether outside-Concordia chats are counted by default.
 
+## Delegation by intent (owner, 2026-10-31)
+
+The person should not have to type `/delegate`: saying "create subagents", or anything like it,
+is enough. Concordia does not interpret the request itself (no model of its own); it offers
+delegation as a tool through its MCP server, so the provider agent that already understands
+the request calls `delegate` with the task and, if it wants, the worker account. Workers stay
+explicit and visible in the interface, and the person can stop them. Depends on registering
+the MCP server in every account home (order of work, step 4).
+
+## Pain points, for the owner's own setup (owner, 2026-10-31)
+
+Concordia sees every prompt across providers, so it can notice friction: a correction ("no",
+"I said", "stop"), a cancelled turn, a retried prompt, a provider error, a slow turn. With a
+setting that is off by default (the open-source build ships it off), it appends each signal to
+a local log with the chat it came from. Two things follow:
+
+- "Fix the pain points" works as a prompt: the agent reads the log through Concordia's tools
+  and the linked chats, and proposes changes.
+- "See how you did this in that chat; do it this way instead" works: the agent reads that
+  chat through the same tools. Turning such a correction into a lasting rule is the
+  harness's job (its recurring-correction programme); Concordia supplies the evidence.
+
+## Concordia builds Concordia (owner, 2026-10-31)
+
+From batch B on, changes to Concordia are made by prompting Concordia in its own repository,
+with its agents doing the work and every change reviewed and tested before a pull request.
+Friction met along the way goes into the pain-point log.
+
 ## Order of work
 
 1. Everyday chat works for real (done in `2026-10-30a`), then the 12-command cut (done in
@@ -335,7 +363,8 @@ Open: how long the log is kept, and whether outside-Concordia chats are counted 
 2. Landing page: chats by project, Harness to-dos, goals (done in `2026-10-31a`).
 3. Token statistics, logged per turn, shown on the landing page and behind `/usage` (done in
    `2026-10-31b`; worker turns and chats run outside Concordia are not counted yet).
-4. Thread log on by default, and the MCP server registered in created homes.
+4. Thread log on by default, and the MCP server registered in created homes, with
+   `delegate` and goals as tools; then the pain-point log.
 5. The opt-in "inside Concordia" note, with timestamps on prompts.
 6. Context-size reading per provider, then the compaction controls.
 7. The handoff, then grouping by content, shown on the landing page.

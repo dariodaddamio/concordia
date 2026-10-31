@@ -3027,3 +3027,46 @@ fn while_updating_the_message_box_says_sending_waits_for_the_restart() {
     assert_eq!(h.app.editor.text(), "hello", "the draft is kept");
     h.app.job.as_ref().unwrap().cancel();
 }
+
+fn fake_update_job() -> crate::update::Job {
+    spawn_job(JobKind::Update, |ctl| {
+        ctl.say("Compiling concordia");
+        while !ctl.cancelled() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        JR::Update(Err(anyhow::anyhow!("cancelled")))
+    })
+}
+
+#[test]
+fn the_update_screen_turns_into_progress_and_esc_cancels_the_update() {
+    let mut h = Harness::new(100, 24);
+    update_screen(&mut h, update_preview(true, 0));
+    h.app.job = Some(fake_update_job());
+    std::thread::sleep(Duration::from_millis(50));
+    h.app.update_progress();
+    h.draw();
+    let screen = h.screen();
+    assert!(screen.contains("Updating Concordia"), "{screen}");
+    assert!(screen.contains("Compiling concordia"), "{screen}");
+    assert!(screen.contains("Esc cancels the update"), "{screen}");
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert!(h
+        .app
+        .job
+        .as_ref()
+        .is_some_and(crate::update::Job::is_cancelled));
+}
+
+#[test]
+fn closing_another_picker_leaves_a_running_update_alone() {
+    let mut h = Harness::new(100, 24);
+    h.app.job = Some(fake_update_job());
+    h.app
+        .show_picker(PickerKind::Usage, "usage".into(), Vec::new(), false);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert!(!h.app.job.as_ref().unwrap().is_cancelled());
+    h.app.job.as_ref().unwrap().cancel();
+}

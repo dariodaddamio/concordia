@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Enter as a key press and release in the console's win32-input-mode encoding (virtual key 13,
+/// scan code 28). Cursor's screen ignores a bare carriage return in its slash menu, so `/usage`
+/// never ran and every fetch timed out; a real key event runs it.
+const ENTER_KEY: &[u8] = b"\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_";
+
 /// Whole fetch budget: start, ready, `/usage`, table.
 pub const PTY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Output quiet this long (or this long after first output) means the prompt is waiting for input.
@@ -217,12 +222,8 @@ fn drive(
             if !sent && ready {
                 let _ = writer.write_all(b"/usage");
                 let _ = writer.flush();
-                // Tab completes the highlighted slash-menu entry; Enter alone was ignored by the menu.
-                std::thread::sleep(Duration::from_millis(300));
-                let _ = writer.write_all(b"\t");
-                let _ = writer.flush();
                 std::thread::sleep(Duration::from_millis(500));
-                let _ = writer.write_all(b"\r");
+                let _ = writer.write_all(ENTER_KEY);
                 let _ = writer.flush();
                 sent = true;
                 enters = 1;
@@ -230,7 +231,7 @@ fn drive(
             } else if sent && enters < 3 && sent_at.elapsed() >= Duration::from_secs(4) {
                 // Enter was lost (the screen loads usage over the network first, so give it time).
                 // With the command already run, Enter on an empty prompt does nothing.
-                let _ = writer.write_all(b"\r");
+                let _ = writer.write_all(ENTER_KEY);
                 let _ = writer.flush();
                 enters += 1;
                 sent_at = Instant::now();
