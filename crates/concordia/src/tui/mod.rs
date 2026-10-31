@@ -225,7 +225,7 @@ struct PendingLogin {
     ticks: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PickerKind {
     Agents,
     Recovery,
@@ -237,6 +237,8 @@ enum PickerKind {
     RemoveConfirm,
     Model,
     Usage,
+    Continuation,
+    ResumeDeleteConfirm,
 }
 
 struct Picker {
@@ -275,6 +277,7 @@ impl Picker {
 
 pub struct App {
     continuation: continuation::State,
+    continuation_target: Option<String>,
     state_root: PathBuf,
     cwd: PathBuf,
     messages: Vec<ChatLine>,
@@ -1312,6 +1315,41 @@ impl App {
         self.show_picker(PickerKind::Resume, title, rows, true);
     }
 
+    fn prepare_resume_delete(&mut self) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let Some(idx) = picker.state.selected() else {
+            return;
+        };
+        let filtered = picker.filtered();
+        let Some(row) = filtered.get(idx) else { return };
+        let Some(session) = row.id.strip_prefix("resume:") else {
+            return;
+        };
+        let session = session.to_string();
+        let Some((account, id)) = session.split_once(':') else {
+            return;
+        };
+        self.show_picker(
+            PickerKind::ResumeDeleteConfirm,
+            format!("delete chat {id}?"),
+            vec![
+                PickerRow {
+                    id: format!("resume-delete:{id}"),
+                    label: "Delete this chat".into(),
+                    detail: format!("{account} · this cannot be undone"),
+                },
+                PickerRow {
+                    id: "resume-delete-cancel".into(),
+                    label: "Cancel".into(),
+                    detail: String::new(),
+                },
+            ],
+            false,
+        );
+    }
+
     /// Persist a new permission mode.
     fn set_mode(&mut self, mode: TrustMode) -> bool {
         if let Err(e) = set_trust_mode(&self.state_root, mode) {
@@ -1415,7 +1453,38 @@ impl App {
                 detail: "take an account out of Concordia".into(),
             });
         }
+        rows.push(PickerRow {
+            id: "use-continuation".into(),
+            label: "usage limit handoff".into(),
+            detail: if self.continuation.automatic() {
+                "continue on another account automatically (Enter toggles to pause)".into()
+            } else {
+                "pause at a usage limit (Enter toggles to continue)".into()
+            },
+        });
         self.show_picker(PickerKind::Use, "accounts".into(), rows, true);
+    }
+
+    fn open_continuation_picker(&mut self) {
+        let rows = accounts_with_auth(&self.state_root)
+            .into_iter()
+            .filter(|a| a.account != self.account && a.home_path.is_some())
+            .map(|a| PickerRow {
+                id: format!("continue:{}", a.account),
+                label: display_account_name(a.provider, &a.account),
+                detail: "continue the paused request on this account".into(),
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            self.push_system("usage limit reached; /use add another account to continue");
+        } else {
+            self.show_picker(
+                PickerKind::Continuation,
+                "continue on which account?".into(),
+                rows,
+                true,
+            );
+        }
     }
 
     /// Pick an account to remove (or jump straight to its confirmation when one is named).
@@ -1675,7 +1744,11 @@ impl App {
         self.footer_left = if filterable {
             "↑↓ Enter · type to filter · Esc".into()
         } else {
-            "↑↓ Enter · Esc".into()
+            if kind == PickerKind::Usage {
+                "↑↓ Enter · r refresh · Esc".into()
+            } else {
+                "↑↓ Enter · Esc".into()
+            }
         };
     }
 
@@ -1684,7 +1757,7 @@ impl App {
         self.footer_left = FOOTER_HINT.into();
     }
 
-    fn apply_picker_selection(&mut self) {
+    fn apply_picker_selection(&mut self, turn_tx: Option<&mpsc::UnboundedSender<String>>) {
         let Some(picker) = self.picker.as_ref() else {
             return;
         };
@@ -1802,6 +1875,15 @@ impl App {
                     self.open_remove_picker(None);
                     return;
                 }
+                if id == "use-continuation" {
+                    let automatic = self.continuation.toggle_automatic();
+                    self.push_system(if automatic {
+                        "usage handoff → automatic"
+                    } else {
+                        "usage handoff → pause"
+                    });
+                    return;
+                }
                 if let Some(account) = id.strip_prefix("use:") {
                     let prev_home = self
                         .home_path
@@ -1909,17 +1991,90 @@ impl App {
                     self.push_system(format!("using {} · {}", self.account_label(), self.model));
                 }
             }
+            PickerKind::Continuation => {
+                if let Some(account) = id.strip_prefix("continue:") {
+                    if let Some(tx) = turn_tx {
+                        self.continue_usage(account, tx);
+                    } else {
+                        self.continuation_target = Some(account.to_string());
+                    }
+                }
+            }
+            PickerKind::ResumeDeleteConfirm => {
+                if let Some(id) = id.strip_prefix("resume-delete:") {
+                    match crate::threads::resolve_prefix(&self.state_root, id) {
+                        Ok(full) => match crate::threads::delete(&self.state_root, &full) {
+                            Ok(()) => self.push_system(format!("deleted thread {full}")),
+                            Err(e) => self.push_system(format!("delete failed: {e:#}")),
+                        },
+                        Err(e) => self.push_system(e.to_string()),
+                    }
+                }
+            }
         }
         let _ = label;
     }
 
     fn handle_slash(&mut self, line: &str) -> bool {
-        if line.trim() == "/agents" {
+        let trimmed = line.trim();
+        if trimmed == "/trust" || trimmed.starts_with("/trust ") {
+            self.push_command(line);
+            self.push_system("/trust is now /mode");
+            self.run_mode_command(
+                trimmed
+                    .strip_prefix("/trust")
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
+            );
+            return true;
+        }
+        if trimmed == "/threads" || trimmed.starts_with("/threads ") {
+            self.push_command(line);
+            self.push_system("/threads is now /resume");
+            self.open_resume_picker();
+            return true;
+        }
+        if trimmed == "/agents" {
+            self.push_command(line);
+            self.push_system("/agents is now Ctrl+G");
             self.open_agents_picker();
             return true;
         }
+        if trimmed == "/config" || trimmed == "/version" || trimmed == "/ver" || trimmed == "/about"
+        {
+            self.push_command(line);
+            self.push_system(format!("{} is now /doctor", trimmed));
+            for report_line in crate::doctor::run_fast_report().lines() {
+                self.push_system(report_line.to_owned());
+            }
+            return true;
+        }
+        if trimmed == "/preview" || trimmed.starts_with("/preview ") {
+            self.push_command(line);
+            self.push_system("/preview is now /open");
+            if let Some(reference) = trimmed.strip_prefix("/preview ") {
+                self.file_command(reference, false);
+            }
+            return true;
+        }
+        if trimmed == "/usage all" || trimmed == "/usage refresh" {
+            self.push_system(format!(
+                "{} is now /usage (use r inside the screen to refresh)",
+                trimmed
+            ));
+        }
+        if trimmed == "/update check" {
+            self.push_system("/update check is now /update");
+        }
+        // /workers, /queue, /edit, /close, /split, /stats and /recover keep working unlisted
+        // until the screens that replace them exist.
+        if trimmed == "/exit" || trimmed == "/quit" || trimmed == "/q" {
+            self.push_command(line);
+            self.push_system("/exit is now Ctrl+C twice");
+            return true;
+        }
         if matches!(line.trim(), "/open" | "/preview" | "/edit") {
-            self.push_system("usage: /open FILE or /preview FILE (internal read-only); /edit FILE (external editor)");
+            self.push_system("usage: /open FILE");
             return true;
         }
         if let Some(reference) = line.trim().strip_prefix("/open ") {
@@ -2210,6 +2365,14 @@ impl App {
             .strip_prefix("/continue")
             .filter(|arg| arg.is_empty() || arg.starts_with(' '))
         {
+            self.push_system("/continue is now the account choice in /use");
+            if self
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.kind == PickerKind::Continuation)
+            {
+                self.dismiss_picker();
+            }
             self.continue_usage(arg.trim(), turn_tx);
             return;
         }
@@ -2217,6 +2380,7 @@ impl App {
             .strip_prefix("/continuation")
             .filter(|arg| arg.is_empty() || arg.starts_with(' '))
         {
+            self.push_system("/continuation is now the usage handoff row in /use");
             self.continuation_command(arg.trim());
             return;
         }
@@ -2301,6 +2465,7 @@ impl App {
         let state_root_for_cmds = state_root.clone();
         App {
             continuation: continuation::State::new(&state_root),
+            continuation_target: None,
             state_root,
             cwd,
             messages: vec![ChatLine {
@@ -2806,7 +2971,14 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     if let Some(picker) = app.picker.as_mut() {
         match key.code {
             KeyCode::Esc => app.dismiss_picker(),
-            KeyCode::Enter => app.apply_picker_selection(),
+            KeyCode::Enter => app.apply_picker_selection(Some(turn_tx)),
+            KeyCode::Delete if picker.kind == PickerKind::Resume => app.prepare_resume_delete(),
+            KeyCode::Char('r') if picker.kind == PickerKind::Usage => {
+                for account in crate::accounts::accounts_with_auth(&app.state_root) {
+                    app.usage_fetcher.invalidate(&account.account);
+                }
+                app.open_usage_picker();
+            }
             KeyCode::Up => {
                 let n = picker.filtered().len();
                 if n > 0 {

@@ -31,7 +31,7 @@ You pay for more than one AI coding tool. Each has its own CLI, its own login, i
 - **Share bounded context between providers.** Switch provider mid-task and Concordia hands the new one a bounded continuity pack instead of the whole history ([continuity](docs/continuity.md)).
 - **Delegate to worker accounts.** One account is the orchestrator you type into; up to three others run as visible workers on tasks you hand them (`/delegate`). Each worker gets its own session and a bounded slice of context, nothing runs unseen, and you can stop any of them ([delegation](docs/delegation.md)).
 - **Expand activity.** Click a card's gutter to expand it, or use `Ctrl+E` for searchable detail and copy. `Ctrl+O` toggles all received tool activity and reasoning.
-- **Process counters.** `/stats` toggles RAM/CPU for Concordia and the provider process trees; `[ui] stats = true` enables it at startup.
+- **Process counters.** Setup diagnostics include Concordia and provider process health; `[ui] stats = true` enables counters at startup.
 - **Provider updates.** Keep updating the official CLIs normally. Concordia checks version/help capabilities and falls back when optional flags disappear; it never updates provider CLIs itself.
 - **See the wait.** The prompt border and title show what the model is doing (waiting, thinking, running a tool, writing) with its own colour, animation and timer; reasoning appears as dim lines ([waiting states](docs/tui-states.md)).
 - **Robust turns.** Provider output with invalid UTF-8 or multi-megabyte lines cannot truncate a reply; multi-line prompts go over stdin when the provider CLI sits behind a Windows `.cmd` shim; `Ctrl+C` kills the provider's whole process tree; a failing provider reports its exit code and stderr instead of an empty reply.
@@ -148,11 +148,11 @@ concordia
 
 **You want an earlier chat back.** `/resume` binds the selected account/session and restores recent Codex/Claude messages as scrollback. PageUp and the mouse wheel let you review them before sending anything. Cursor history availability is shown explicitly. Titles are generated from the first request and saved independently of optional thread logging.
 
-**You want to inspect subagents.** `/agents` or `Ctrl+G` opens reported native child-agent activity and Concordia worker jobs. Enter opens the task, state and reported result. Codex collaboration events and Claude Agent/Task cards are supported; available detail depends on what the provider emits.
+**You want to inspect subagents.** `Ctrl+G` opens reported native child-agent activity and Concordia worker jobs. Enter opens the task, state and reported result. Codex collaboration events and Claude Agent/Task cards are supported; available detail depends on what the provider emits.
 
-**You think of the next prompt while a turn runs.** Press `Tab` to queue it; the queue shows above the prompt box and each item is sent when the turn before it finishes cleanly. `Ctrl+Up` focuses the queue while preserving your draft. Enter opens a multiline upper editor and saves it; Esc cancels the edit. `Ctrl+Down` returns to the draft after save/cancel; `Alt+Up/Down` reorders queued prompts. Cancelling, failure and restart pause the queue: `Ctrl+R` or `/queue resume` explicitly resumes it. Drafts and queues use separate recovery records for each pane and workspace; `/recover` chooses abandoned work. Sent history remains shared.
+**You think of the next prompt while a turn runs.** Press `Tab` to queue it; the queue shows above the prompt box and each item is sent when the turn before it finishes cleanly. `Ctrl+Up` focuses the queue while preserving your draft. Enter opens a multiline upper editor and saves it; Esc cancels the edit. `Ctrl+Down` returns to the draft after save/cancel; `Alt+Up/Down` reorders queued prompts. Cancelling, failure and restart pause the queue: `Ctrl+R` resumes it. Drafts and queues use separate recovery records for each pane and workspace. Sent history remains shared.
 
-**You want help from another account.** `/workers add <account>`, then `/delegate <account> <task>`. The worker runs one visible turn with its own session and a bounded slice of context. Its result comes back as a labelled block, and `/delegate use` sends it to your main conversation when you choose ([delegation](docs/delegation.md)).
+**You want help from another account.** Open `/delegate` to add a worker, then use `/delegate <account> <task>` as a shortcut. The worker runs one visible turn with its own session and a bounded slice of context. Its result comes back as a labelled block and can be sent to your main conversation from that screen ([delegation](docs/delegation.md)).
 
 **Do the models know they are inside Concordia?** Not in general today. They see the pack header after a switch, and delegated workers get a labelled task. A short opt-in "you are running inside Concordia" note, `@chat` references that expand to a bounded pack, and a `/handoff` command are on the [roadmap](#roadmap).
 
@@ -164,26 +164,18 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 
 | Command | What it does |
 | --- | --- |
-| `/use` | Account picker (ends with `+ add account`) |
-| `/use remove [account]` | Remove an account: delete what Concordia created, or just hide one of your own (your own login folders are never deleted) |
-| `/use add [codex\|claude\|cursor]` | Connect a new account: isolated home under `%LOCALAPPDATA%\concordia\homes`, native login in a new window |
-| `/model` | Models from on-disk caches only |
-| `/usage`, `/usage all` | Limits for this account, or for every account (used and left per window) |
-| `/mode` | Show or set the mode: `plan`, `ask`, `auto` (workspace) or `full` (also `Shift+Tab`) |
-| `/workers`, `/workers add`, `/workers remove` | Choose which accounts can act as workers |
-| `/delegate <account\|auto> <task>` | Run one task on a worker account; `/delegate stop`, `/delegate use`, `/delegate help` |
-| `/resume`, `/chats` | Pick an explicit session id (never `--last`) |
-| `/agents`, `Ctrl+G` | Browse native subagent reports and worker jobs; Enter inspects one |
-| `/trust` | `plan`, `ask`, `workspace` or `full` |
-| `/config` | Connection help, including manual login commands |
-| `/new` | Clear the session bind |
-| `/split` | Open another `concordia` in a WezTerm split |
-| `/update` | Update (rebuild from source, or download the newest release), then re-exec this pane |
-| `/update check` | Report whether an update is available, without installing |
-| `/version` | Build stamp and paths |
-| `/copy` | Copy the last assistant reply |
-| `/doctor` | Quick health check (install, state, provider CLIs, accounts) |
-| `/exit` | Quit |
+| `/use` | Switch, add or remove accounts |
+| `/model` | Choose the model |
+| `/mode` | How much the agent may do without asking |
+| `/usage` | Limits for every account (`r` refreshes) |
+| `/new` | Start a fresh chat |
+| `/resume` | Continue an earlier chat (`Delete` confirms removal) |
+| `/delegate` | Run tasks on worker accounts; management choices are inside the screen |
+| `/harness` | Connect and run harness tools |
+| `/open` | Open a file in a side pane; Esc or X closes it |
+| `/copy` | Copy the last reply |
+| `/doctor` | Check your setup, version and configuration |
+| `/update` | Check for and, after confirmation, install an update |
 
 ## Keyboard and mouse
 
@@ -205,8 +197,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `Ctrl+E` | Open searchable full activity detail; `Esc` closes and `Ctrl+C` copies |
 | `Ctrl+Up` / `Ctrl+Down` | Focus queued prompts / return to the draft after save or cancel |
 | `Ctrl+R` | Resume a paused queue while preserving the draft |
-| `/open PATH`, `/preview PATH` | Internal read-only file panes; repeat to split; F6 changes focus and Esc returns to chat |
-| `/close ID`, `/edit PATH` | Close an internal pane / launch the configured external editor; see [workspace controls](docs/config.md) |
+| `/open PATH` | Internal read-only file pane; repeat to split; F6 changes focus and Esc/X closes it |
 | `Ctrl+Z` | Undo in the prompt (also right after a send, which puts the sent text back) |
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | Right-click | Copy the selection, or paste when there is none |

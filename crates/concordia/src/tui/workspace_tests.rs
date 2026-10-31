@@ -78,11 +78,11 @@ fn opens_rendered_panes_and_closes_exact_ids_without_changing_draft() {
     assert!(h.app.areas.input.right() < h.app.workspace.panes[0].area.x);
     let second = h.open("second.txt", "second file contents");
     assert_ne!(first, second);
-    assert!(h.app.handle_slash(&format!("/close {first}")));
+    assert!(h.app.workspace.close(first));
     h.draw();
     assert_eq!(h.app.workspace.panes.len(), 1);
     assert_eq!(h.app.workspace.panes[0].id, second);
-    assert!(h.app.handle_slash("/close invalid"));
+    assert!(!h.app.workspace.close(999));
     assert_eq!(h.app.workspace.panes.len(), 1);
     let rect = h.app.workspace.panes[0].area;
     h.mouse(

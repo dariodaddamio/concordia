@@ -627,13 +627,8 @@ fn use_picker_always_offers_add_account() {
     h.enter();
     let picker = h.app.picker.as_ref().expect("picker open");
     assert!(picker.kind == PickerKind::Use);
-    assert_eq!(picker.rows.last().unwrap().id, "use-add");
-    assert!(picker
-        .rows
-        .last()
-        .unwrap()
-        .detail
-        .contains("no logged-in accounts yet"));
+    assert!(picker.rows.iter().any(|row| row.id == "use-add"));
+    assert!(picker.rows.iter().any(|row| row.id == "use-continuation"));
 }
 
 #[test]
@@ -1022,8 +1017,8 @@ fn typing_a_slash_previews_every_command_with_its_description() {
     let s = h.screen();
     for needle in [
         "commands",
-        "/use add",
-        "connect a new account",
+        "/use",
+        "switch, add or remove accounts",
         "/model",
         "choose the model",
     ] {
@@ -1040,7 +1035,10 @@ fn typing_a_slash_previews_every_command_with_its_description() {
     // The rest are one wrap away: Up jumps to the last command and scrolls it into view.
     h.key_up();
     let s = h.screen();
-    assert!(s.contains("/exit") && s.contains("check your setup"), "{s}");
+    assert!(
+        s.contains("/update") && s.contains("update Concordia"),
+        "{s}"
+    );
 }
 
 #[test]
@@ -1049,7 +1047,7 @@ fn the_palette_narrows_as_you_type_and_disappears_for_normal_text() {
     h.type_str("/up");
     let s = h.screen();
     assert!(
-        s.contains("/update check") && s.contains("look for a newer version"),
+        s.contains("/update") && s.contains("update Concordia"),
         "{s}"
     );
     assert!(
@@ -1075,9 +1073,9 @@ fn arrows_move_the_selection_and_tab_completes_it() {
     h.type_str("/up");
     assert_eq!(h.app.palette.selected, 0);
     h.key_down();
-    assert_eq!(h.app.palette.selected, 1);
+    assert_eq!(h.app.palette.selected, 0);
     h.key(KeyCode::Tab, KeyModifiers::NONE);
-    assert_eq!(h.app.editor.text(), "/update check");
+    assert_eq!(h.app.editor.text(), "/update");
     // Moving the selection never touches the prompt text or the history.
     let mut h = Harness::new(90, 28);
     h.type_str("/");
@@ -1092,19 +1090,14 @@ const SLASH_COMMANDS_LEN: usize = crate::commands::SLASH_COMMANDS.len();
 fn enter_completes_a_partial_command_and_runs_it_once_complete() {
     let mut h = Harness::new(90, 28);
     let before = h.app.messages.len();
-    h.type_str("/ver");
+    h.type_str("/mo");
     h.enter();
-    assert_eq!(
-        h.app.editor.text(),
-        "/version",
-        "first Enter only completes"
-    );
+    assert_eq!(h.app.editor.text(), "/model", "first Enter only completes");
     assert_eq!(h.app.messages.len(), before, "nothing ran yet");
     h.enter();
-    assert!(
-        h.transcript_text().contains("concordia 0.0.1"),
-        "{}",
-        h.transcript_text()
+    assert_eq!(
+        h.app.picker.as_ref().map(|p| p.kind),
+        Some(PickerKind::Model)
     );
     assert_eq!(h.app.editor.text(), "");
 }
@@ -1112,13 +1105,13 @@ fn enter_completes_a_partial_command_and_runs_it_once_complete() {
 #[test]
 fn esc_closes_the_palette_until_the_text_changes() {
     let mut h = Harness::new(90, 28);
-    h.type_str("/");
+    h.type_str("/up");
     h.key(KeyCode::Esc, KeyModifiers::NONE);
-    assert!(!h.screen().contains("check your setup"));
-    assert_eq!(h.app.editor.text(), "/", "Esc must not clear the prompt");
+    assert!(!h.screen().contains("update Concordia"));
+    assert_eq!(h.app.editor.text(), "/up", "Esc must not clear the prompt");
     assert!(!h.app.should_quit);
     h.type_str("d");
-    assert!(h.screen().contains("check your setup"), "typing reopens it");
+    assert!(h.screen().contains("update Concordia"), "typing reopens it");
 }
 
 #[test]
@@ -1126,10 +1119,10 @@ fn clicking_a_suggestion_completes_it() {
     let mut h = Harness::new(90, 28);
     h.type_str("/use");
     let pal = h.app.areas.palette;
-    assert!(pal.height >= 4, "palette should list /use and /use add");
-    // First list row is one below the border; the second entry is /use add.
+    assert!(pal.height >= 3, "palette should list /use");
+    // The consolidated palette has one /use row.
     h.click(pal.x + 4, pal.y + 2);
-    assert_eq!(h.app.editor.text(), "/use add");
+    assert_eq!(h.app.editor.text(), "/use");
 }
 
 #[test]
@@ -2027,7 +2020,7 @@ fn shift_tab_moves_the_palette_up_and_tab_still_completes() {
     h.type_str("/use");
     let before = h.app.trust;
     h.key(KeyCode::Down, KeyModifiers::NONE);
-    assert_eq!(h.app.palette.selected, 1);
+    assert_eq!(h.app.palette.selected, 0);
     h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(h.app.palette.selected, 0);
     assert_eq!(
@@ -2161,23 +2154,10 @@ fn usage_is_one_block_that_updates_in_place_when_the_check_lands() {
 
     h.type_str("/usage");
     h.enter();
-    let before = h.app.messages.len();
-    let first = h.transcript_text();
-    assert!(first.contains("limits"), "{first}");
-    assert!(!first.contains("46% used"), "still checking:\n{first}");
-
-    assert!(h.wait_for(|h| h.transcript_text().contains("46% used")));
-    let after = h.transcript_text();
-    assert!(
-        after.contains("20% used") && after.contains("54% left"),
-        "{after}"
-    );
     assert_eq!(
-        h.app.messages.len(),
-        before,
-        "rewritten in place, not appended"
+        h.app.picker.as_ref().map(|p| p.kind),
+        Some(PickerKind::Usage)
     );
-    assert_eq!(after.matches("limits").count(), 1, "one block:\n{after}");
 }
 
 #[test]

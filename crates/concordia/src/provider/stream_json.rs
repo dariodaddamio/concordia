@@ -72,8 +72,13 @@ impl StreamParser {
         match typ {
             // Cursor stamps text with `timestamp_ms` as it is written: fragments with
             // `--stream-partial-output`, whole messages without it. A run of stamped text is one
-            // segment; the unstamped message that may follow repeats it and is dropped if so.
+            // segment; the whole copy that may follow repeats it and is dropped if so. Before a
+            // tool call that copy is stamped too, so it is recognised by matching the segment.
             "assistant" if self.flavor == Flavor::Cursor && ev.get("timestamp_ms").is_some() => {
+                let whole = Self::block_texts(&ev).concat();
+                if self.streaming_text && whole.len() > 1 && whole.trim() == self.segment.trim() {
+                    return out;
+                }
                 for t in Self::block_texts(&ev) {
                     if !self.streaming_text {
                         self.streaming_text = true;
@@ -805,6 +810,24 @@ mod usage_tests {
             thinking.lines().next(),
             Some("I need to explain what calc.py does in one sentence.")
         );
+    }
+
+    #[test]
+    fn a_stamped_whole_copy_before_a_tool_is_not_shown_twice() {
+        // Shape seen live on 2026-10-30: streamed fragments, then the same text whole and
+        // stamped, then a tool call.
+        let parts = cursor_fixture(concat!(
+            r#"{"type":"assistant","timestamp_ms":1,"message":{"content":[{"type":"text","text":"Checking the"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp_ms":2,"message":{"content":[{"type":"text","text":" project."}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp_ms":3,"message":{"content":[{"type":"text","text":"Checking the project."}]}}"#,
+            "\n",
+            r#"{"type":"tool_call","subtype":"started","call_id":"g1","tool_call":{"globToolCall":{"args":{"globPattern":"*"}}}}"#,
+        ));
+        let mut outcome = crate::provider::codex::StreamOutcome::default();
+        crate::provider::codex::apply_stream_parts(parts, &mut outcome);
+        assert_eq!(outcome.text, "Checking the project.\n");
     }
 
     #[test]

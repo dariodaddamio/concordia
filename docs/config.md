@@ -2,9 +2,8 @@
 
 ## Usage-limit continuation
 
-`/continuation manual` pauses when usage runs out (the default). `/continue ACCOUNT` continues
-that interrupted request on an explicitly chosen account. `/continuation automatic` enables
-handoff for this launch through an ordered account allowlist. Persistent defaults:
+The usage handoff row in `/use` pauses or automatically continues when usage runs out. A paused
+request offers an account picker. Persistent defaults:
 
 ```toml
 [continuation]
@@ -17,7 +16,7 @@ errors, cancellation and model prose do not. Each account is tried once, with at
 automatic handoffs per request. No configured target means pause. Unknown capacity is not
 treated as free capacity: a configured account may itself report a limit and exhaust its one
 attempt. A draft, open picker, background job, queued edit or uncertain tool completion blocks
-automatic continuation. Inspect uncertain results before explicitly using `/continue ACCOUNT`.
+automatic continuation. Inspect uncertain results before continuing.
 
 Handoff keeps the conversation and title, starts a new native session in the selected account's
 home and sends the bounded conversation map with an instruction to reconcile completed actions.
@@ -38,9 +37,9 @@ is retained and sending waits for completion. A truncated view is labeled; Curso
 reading is explicitly unavailable. Loaded scrollback is for display and is not replayed into
 the selected native session. Native tools and approvals are not restored from this text.
 
-`/agents` or Ctrl+G lists reported native child-agent activity and Concordia worker jobs. Enter
+Ctrl+G lists reported native child-agent activity and Concordia worker jobs. Enter
 opens the report; no model call is made by inspection. Native report detail depends on provider
-events. Cross-account worker configuration remains under `/workers` and `/delegate`.
+events. Cross-account worker configuration remains under `/workers` (unlisted) and `/delegate`.
 
 Cancellation leaves the prompt box unchanged. Use sent history to recall a submitted request
 explicitly; queued work stays paused until resumed.
@@ -50,16 +49,16 @@ explicitly; queued work stays paused until resumed.
 Click an underlined file reference in a sent user message or assistant reply to open it in an
 internal read-only pane; a drag still selects transcript text. Alt+click also previews. Paths can
 include a line/column (`src/main.rs:12:3`) or Markdown line fragment (`#L12`). Markdown labels
-keep the explicit destination. `/open PATH` and `/preview PATH` open up to three file panes beside
+keep the explicit destination. `/open PATH` opens up to three file panes beside
 chat; reopening a file focuses its existing pane. Click to focus, F6 cycles focus, Esc returns to
 chat, arrows/PageUp/PageDown/Home/End scroll, and Left/Right pan. The title shows a stable pane id.
-Click X, press Ctrl+W in a focused file, or use `/close ID` from chat. Drag the main divider or
+Click X or press Ctrl+W in a focused file. Drag the main divider or
 the bottom border between file panes to resize. Files are read asynchronously, limited to 2 MiB
 and 50,000 lines each, and must be UTF-8 text. File focus consumes typing/Enter and rejects paste;
 these panes do not edit files. Small terminals hide panes without losing their contents and restore
-them on enlargement; use `/close ID` if needed. Layout is not restored after restart yet.
+them on enlargement. Layout is not restored after restart yet.
 
-Use `/edit PATH` for a separate configured terminal editor. Missing paths, preview errors or
+`/edit PATH` (unlisted) opens a separate configured terminal editor. Missing paths, preview errors or
 launch failures are shown in Concordia. References never run as shell commands.
 
 Concordia finds an installed `nvim`, `hx` or `vim`, or uses your explicit executable and argv:
@@ -144,9 +143,9 @@ Config supplies defaults only. `store.json` holds what you did inside Concordia,
 there wins:
 
 - Permission mode: `[mode] default` applies only until a mode has been saved (first launch). After
-  that `/mode`, `/trust` and Shift+Tab own it.
+  that `/mode` and Shift+Tab own it.
 - Delegation protocol: `/delegate protocol on|off` writes the store; until you use it, the config value applies.
-- `max_workers` is a cap on `/workers add`; it is not stored.
+- `max_workers` is a cap on worker enrollment inside `/delegate`; it is not stored.
 
 Read the effective values with the `config` and `commands` rows of `concordia doctor`.
 

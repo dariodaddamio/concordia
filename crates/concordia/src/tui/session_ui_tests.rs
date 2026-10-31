@@ -164,7 +164,7 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
     assert!(app.picker.as_ref().unwrap().rows[0]
         .label
         .contains("failed/interrupted"));
-    app.apply_picker_selection();
+    app.apply_picker_selection(None);
     assert_eq!(app.activity.detail, Some(1));
     assert!(rx.try_recv().is_err());
     assert!(app.handle_slash("/new"));
