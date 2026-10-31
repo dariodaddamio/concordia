@@ -271,8 +271,8 @@ belongs to the search and is not built.
 
 ## Landing page (built in `2026-10-31a`)
 
-Opening Concordia, or starting a chat with `/new`, shows a landing page. Typing anything or
-pressing Esc goes straight to the chat input, so it never stands in the way.
+Opening Concordia, or starting a chat with `/new`, shows a landing page. Typing hides it until the
+message box is empty again, and Esc goes straight to the chat input, so it never stands in the way.
 
     ┌ chats ──────────────────────────────┐┌ goals ──────────────────────────┐
     │> ▾ concordia (2)              today││  ○ ship the 1.0                │

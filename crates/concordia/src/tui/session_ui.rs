@@ -116,6 +116,7 @@ impl App {
         self.prior_provider = provider;
         self.prior_home = Some(home.to_string_lossy().into_owned());
         self.messages.clear();
+        self.repaint = true;
         self.native_agents = native_agents::State::default();
         self.activity = activity::Activity::default();
         self.expanded_activity = false;
@@ -172,6 +173,7 @@ impl App {
                 .take()
                 .and_then(|index| index.checked_sub(1));
             self.messages.clear();
+            self.repaint = true;
             self.view = TranscriptView::default();
             match result {
                 Ok(history) => {

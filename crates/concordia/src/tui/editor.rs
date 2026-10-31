@@ -64,7 +64,6 @@ impl Editor {
         &self.text
     }
 
-    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
     }

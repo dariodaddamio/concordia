@@ -184,7 +184,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `Enter` | Send turn |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | Newline without sending |
 | `Tab` | Complete a slash command; while a turn runs (or prompts are queued), queue the typed prompt |
-| `Shift+Tab` | Cycle the mode: plan, ask, auto-edit, full (moves the selection up while the palette is open) |
+| `Shift+Tab` | Cycle the permissions: plan, ask, workspace, full (moves the selection up while the palette is open) |
 | `Alt+Up` / `Alt+Down` | Select a worker row; `Enter` opens its transcript, `Esc` closes it. In the queue panel, move the selected prompt up or down |
 | Click | Place the caret (prompt); release on an underlined file reference to open it in another terminal. Alt+click previews Markdown; dragging keeps selection |
 | Drag, double-click, triple-click | Select text / a word / a line (prompt or transcript) |
@@ -202,7 +202,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `Ctrl+Z` | Undo in the prompt (also right after a send, which puts the sent text back) |
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | Right-click | Copy the selection, or paste when there is none |
-| Wheel, `PgUp` / `PgDn` | Scroll the transcript (sending a message snaps back to the latest) |
+| Wheel, `PgUp` / `PgDn` | Scroll the transcript (sending a message snaps back to the latest); the wheel over the message box scrolls the draft |
 | `Shift` / `Ctrl` + arrows, `Home`, `End` | Extend selection, move by word, jump to line edge |
 
 > **WezTerm note:** Concordia captures the mouse, so plain drags select inside Concordia. Hold `Shift` while dragging to use WezTerm's own selection instead. WezTerm intercepts `Ctrl+Shift+C`, so use `Ctrl+C`, right-click or `/copy`.
@@ -213,8 +213,9 @@ Concordia opens on a landing page when this machine has recorded chats. The left
 chats grouped by the folder they ran in, with this folder first. Enter resumes a chat, or expands a
 folder; a double-click does the same. The right pane holds your goals: `Tab` to it, `a` adds one,
 and Enter marks one done. When a Harness is connected (`/harness connect harness`), the pane also
-lists each project's open work from its plan ledger. Typing anything starts a message, and `Esc`
-goes straight to the chat. `/new` opens the page again.
+lists each project's open work from its plan ledger. Typing starts a message and hides the page
+until the message box is empty again, and `Esc` goes straight to the chat. `/new` opens the page
+again.
 
 
 - **Continuing on the same account** resumes the session id Concordia recorded (`--resume <id>`). Nothing is added to your prompt.

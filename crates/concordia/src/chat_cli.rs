@@ -175,9 +175,9 @@ impl HistoryBuffer {
     }
 }
 
-fn visible_user_history(mut text: &str) -> &str {
-    // Native Codex rollouts include setup as user messages. Hide recognized setup
-    // blocks while keeping any actual question following a wrapper.
+pub(crate) fn visible_user_history(mut text: &str) -> &str {
+    // Native Codex and Claude transcripts store setup and background-task notices as user
+    // messages. Hide recognized wrappers while keeping any actual question that follows one.
     loop {
         text = text.trim_start();
         let wrapper = [
@@ -185,6 +185,9 @@ fn visible_user_history(mut text: &str) -> &str {
             "permissions instructions",
             "skills_instructions",
             "collaboration_mode",
+            "task-notification",
+            "system-reminder",
+            "local-command-caveat",
         ]
         .into_iter()
         .find(|tag| text.starts_with(&format!("<{tag}>")));
@@ -458,7 +461,14 @@ fn read_messages(path: &Path, provider: ProviderKind) -> Result<(Vec<String>, bo
                             .join("\n")
                     })
                 });
-            if let Some(text) = text.filter(|s| !s.is_empty()) {
+            let text = text.map(|t| {
+                if role == "user" {
+                    visible_user_history(&t).to_owned()
+                } else {
+                    t
+                }
+            });
+            if let Some(text) = text.filter(|s| !s.trim().is_empty()) {
                 messages.push(format!("{role}: {}", terminal_safe(&text)));
             }
         } else if kind == "event_msg" {
@@ -634,6 +644,15 @@ mod tests {
         assert_eq!(
             read_messages(&path, ProviderKind::Claude).unwrap().0,
             ["assistant: Claude answer"]
+        );
+    }
+    #[test]
+    fn claude_background_notices_are_not_shown_as_user_messages() {
+        let notice = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>";
+        assert_eq!(visible_user_history(notice), "");
+        assert_eq!(
+            visible_user_history("<system-reminder>x</system-reminder>\nreal question"),
+            "real question"
         );
     }
     #[test]

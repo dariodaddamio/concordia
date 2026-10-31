@@ -482,6 +482,36 @@ fn wheel_and_page_keys_scroll_transcript() {
 }
 
 #[test]
+fn wheel_over_the_prompt_scrolls_the_draft_not_the_transcript() {
+    let mut h = Harness::new(60, 16);
+    for i in 0..40 {
+        h.app.push_assistant(format!("line {i}"));
+    }
+    let draft: Vec<String> = (0..12).map(|i| format!("draft {i}")).collect();
+    h.app.editor.set_text(&draft.join("\n"));
+    h.draw();
+    let end = h.app.editor.cursor();
+    let input = h.app.areas.input;
+    h.mouse(MouseEventKind::ScrollUp, input.x + 3, input.y + 1);
+    assert_eq!(h.app.view.scroll, 0, "the transcript stays put");
+    assert!(h.app.editor.cursor() < end, "the caret moved up the draft");
+    h.mouse(MouseEventKind::ScrollDown, input.x + 3, input.y + 1);
+    assert_eq!(h.app.editor.cursor(), end);
+}
+
+#[test]
+fn a_selection_shows_how_to_copy_it() {
+    let mut h = Harness::new(80, 14);
+    h.type_str("copy me");
+    h.app.editor.select_all();
+    h.draw();
+    assert!(footer_row(&h).contains("right-click or Ctrl+C to copy"));
+    h.app.editor.clear_selection();
+    h.draw();
+    assert!(!footer_row(&h).contains("right-click"));
+}
+
+#[test]
 fn dragging_below_transcript_scrolls_toward_newer_output() {
     let mut h = Harness::new(60, 14);
     for i in 0..40 {
@@ -1488,12 +1518,12 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     assert!(lines[reply + 1].trim().is_empty(), "{s}");
     // The input box is rounded, and trust is stated in the footer (full is flagged).
     assert!(
-        s.contains('\u{256d}') && s.contains("auth workspace"),
+        s.contains('\u{256d}') && s.contains("permissions: workspace"),
         "{s}"
     );
     h.app.trust = crate::store::TrustMode::Full;
     h.draw();
-    assert!(h.screen().contains("auth full \u{26a0}"));
+    assert!(h.screen().contains("permissions: full \u{26a0}"));
 }
 
 #[test]
@@ -2060,8 +2090,8 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     for w in [40u16, 60, 80, 100, 140] {
         let h = Harness::new(w, 12);
         let row = footer_row(&h);
-        let right = if row.ends_with("auth workspace") {
-            "auth workspace"
+        let right = if row.ends_with("permissions: workspace") {
+            "permissions: workspace"
         } else if row.ends_with("workspace") {
             "workspace"
         } else {
@@ -2084,7 +2114,7 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     }
     // Wide terminals keep everything; narrow ones shorten, then drop the lowest priorities.
     assert!(footer_row(&Harness::new(140, 12)).contains("Ctrl+C copy or cancel"));
-    assert!(footer_row(&Harness::new(60, 12)).contains("Ctrl+C copy/stop"));
+    assert!(footer_row(&Harness::new(50, 12)).contains("Ctrl+C copy/stop"));
     assert!(!footer_row(&Harness::new(40, 12)).contains("drag"));
 }
 
@@ -2839,12 +2869,17 @@ fn enter_on_a_folder_expands_it_and_the_selection_stops_at_the_last_row() {
 }
 
 #[test]
-fn typing_closes_the_landing_page_and_keeps_the_key() {
+fn typing_hides_the_landing_page_until_the_draft_is_cleared() {
     let mut h = landing_harness();
     h.type_str("hi");
-    assert!(h.app.landing.is_none());
+    assert!(!landing::visible(&h.app));
     assert_eq!(h.app.editor.text(), "hi");
     assert!(h.screen().contains("Enter send"), "{}", h.screen());
+    assert!(!h.screen().contains(" chats "));
+    h.key(KeyCode::Backspace, KeyModifiers::NONE);
+    h.key(KeyCode::Backspace, KeyModifiers::NONE);
+    assert!(h.screen().contains(" chats "), "{}", h.screen());
+    assert!(h.screen().contains("Enter open chat"), "{}", h.screen());
 
     let mut h = landing_harness();
     h.key(KeyCode::Esc, KeyModifiers::NONE);

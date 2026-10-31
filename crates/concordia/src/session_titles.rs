@@ -47,6 +47,7 @@ pub fn title_from_prompt(prompt: &str) -> String {
         .collect();
     for tag in [
         "environment_context",
+        "task-notification",
         "system-reminder",
         "system",
         "developer",

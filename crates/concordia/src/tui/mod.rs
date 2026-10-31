@@ -88,7 +88,7 @@ const MAX_INPUT_ROWS: usize = 6;
 const PROMPT_W: usize = 2;
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const FLASH_FOR: Duration = Duration::from_secs(3);
-const FOOTER_HINT: &str = "Enter send \u{b7} / commands \u{b7} Shift+Tab mode \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
+const FOOTER_HINT: &str = "Enter send \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
 /// How often (in 200 ms ticks) to look for a finished login, and when to stop looking.
 /// A second idle Ctrl+C within this window exits.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
@@ -332,6 +332,8 @@ pub struct App {
     footer_left: String,
     picker: Option<Picker>,
     landing: Option<landing::Landing>,
+    /// Repaint every cell on the next frame: the screen may hold text Concordia did not draw.
+    repaint: bool,
     update_preview: Option<UpdatePreview>,
     /// Wrapped rows of the `/update` screen and how many fit, as last drawn.
     update_rows: usize,
@@ -640,8 +642,9 @@ impl App {
             .or_else(|| self.editor.selected_text())
     }
 
+    /// Checked on every frame by the footer, so it never builds the selected text.
     fn has_selection(&self) -> bool {
-        self.selected_text().is_some()
+        self.view.sel.is_some_and(|(a, b)| a != b) || self.editor.selection().is_some()
     }
 
     fn clear_selections(&mut self) {
@@ -2334,6 +2337,7 @@ impl App {
             self.session_ui.invalidate();
             self.session_ui.title = None;
             self.messages.clear();
+            self.repaint = true;
             self.activity = activity::Activity::default();
             self.expanded_activity = false;
             self.view.follow_tail();
@@ -2649,6 +2653,7 @@ impl App {
             footer_left: FOOTER_HINT.into(),
             picker: None,
             landing: None,
+            repaint: false,
             update_preview: None,
             update_rows: 0,
             update_view: 0,
@@ -2772,6 +2777,8 @@ pub async fn run_chat_tui() -> Result<()> {
     // Mouse capture replaces the terminal's own selection (concordia draws its own); bracketed paste
     // delivers pasted newlines as text instead of Enter presses. Both are best-effort.
     let _ = execute!(stdout, EnableMouseCapture, EnableBracketedPaste);
+    // Focus reports let a returning tab repaint everything (see `App::repaint`).
+    let _ = execute!(stdout, crossterm::event::EnableFocusChange);
     // A panic must not leave the terminal in raw/mouse-reporting mode.
     let default_hook = std::panic::take_hook();
     let panic_restore = terminal_restore.0.clone();
@@ -2814,6 +2821,10 @@ pub async fn run_chat_tui() -> Result<()> {
         loop {
             // Drain pending paste chunks before repainting the growing prompt.
             if !key_burst.active() || !terminal_input.poll(Duration::ZERO)? {
+                if std::mem::take(&mut app.repaint) {
+                    // Forget what was drawn, so every cell is written again.
+                    terminal.clear()?;
+                }
                 terminal.draw(|f| draw_ui(f, &mut app))?;
             }
             let title = app.window_title();
@@ -2868,6 +2879,8 @@ pub async fn run_chat_tui() -> Result<()> {
                             }
                             app.paste_text(&s)
                         }
+                        // Another tab, a resize or another program may have drawn over us.
+                        Event::FocusGained | Event::Resize(..) => app.repaint = true,
                         _ => {}
                     }
                     if !terminal_input.poll(Duration::ZERO)? {
@@ -3104,6 +3117,12 @@ fn dispatch_key_event(
 }
 
 fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<String>) -> bool {
+    // `CONCORDIA_LOG_KEYS=1` logs each key as the terminal delivered it, to diagnose terminals
+    // that encode keys differently (for example Ctrl+Backspace).
+    static LOG_KEYS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *LOG_KEYS.get_or_init(|| std::env::var("CONCORDIA_LOG_KEYS").is_ok_and(|v| v == "1")) {
+        crate::logging::info(&format!("key {key:?}"));
+    }
     // Prefer Press; allow Repeat for held Backspace only.
     match key.kind {
         KeyEventKind::Release => return false,
@@ -3691,6 +3710,19 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 app.paste_clipboard();
             }
         }
+        // The wheel over the prompt walks the caret, and the box scrolls to follow it.
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            if contains(app.areas.input, x, y) =>
+        {
+            let width = app.areas.input_text_w.max(1);
+            for _ in 0..3 {
+                if m.kind == MouseEventKind::ScrollUp {
+                    app.editor.up(width, false);
+                } else {
+                    app.editor.down(width, false);
+                }
+            }
+        }
         MouseEventKind::ScrollUp => app.view.scroll_up(3),
         MouseEventKind::ScrollDown => app.view.scroll_down(3),
         _ => {}
@@ -3723,6 +3755,7 @@ fn restore_terminal() {
     let _ = execute!(
         out,
         PopKeyboardEnhancementFlags,
+        crossterm::event::DisableFocusChange,
         DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen,
@@ -4668,10 +4701,16 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let color = mode_color(mode);
     // The mode column is kept only while it leaves room for the first hint.
     const MIN_LEFT: usize = 12;
-    let right = [format!("auth {label} "), format!("{label} ")]
-        .into_iter()
-        .find(|r| r.chars().count() + MIN_LEFT <= w)
-        .unwrap_or_default();
+    // The "permissions:" prefix only on wide terminals, where it costs no hint.
+    const WIDE: usize = 100;
+    let right = [
+        (WIDE, format!("permissions: {label} ")),
+        (0, format!("{label} ")),
+    ]
+    .into_iter()
+    .find(|(min_w, r)| w >= *min_w && r.chars().count() + MIN_LEFT <= w)
+    .map(|(_, r)| r)
+    .unwrap_or_default();
     let rw = right.chars().count() as u16;
     let cols = [
         Rect {
@@ -4718,6 +4757,11 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",
             Style::default().fg(Color::DarkGray),
         )
+    } else if app.has_selection() {
+        (
+            "right-click or Ctrl+C to copy \u{b7} click to clear",
+            Style::default().fg(Color::Indexed(179)),
+        )
     } else if app.view.scroll > 0 {
         (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
     } else if app.busy {
@@ -4725,6 +4769,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel",
             Style::default().fg(Color::DarkGray),
         )
+    } else if let Some(page) = app.landing.as_ref().filter(|_| landing::visible(app)) {
+        (page.hint(), Style::default().fg(Color::DarkGray))
     } else {
         (
             app.footer_left.as_str(),
@@ -4914,7 +4960,7 @@ fn fit_segments(text: &str, width: usize) -> String {
 const HINTS: [(&str, &str); 5] = [
     ("Enter send", "Enter send"),
     ("/ commands", "/ cmds"),
-    ("Shift+Tab mode", "S-Tab mode"),
+    ("Shift+Tab permissions", "Shift+Tab perms"),
     ("drag to select", "drag select"),
     ("Ctrl+C copy or cancel", "Ctrl+C copy/stop"),
 ];

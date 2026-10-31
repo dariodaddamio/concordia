@@ -82,8 +82,8 @@
 <text x="41" y="601" textLength="342" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">Message Concordia...  (/ for commands)</text>
 <text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
 <text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#585858">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="23" y="639" textLength="729" lengthAdjust="spacingAndGlyphs" fill="#666666">Enter send · / commands · Shift+Tab mode · drag to select · Ctrl+C copy or cancel</text>
-<text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">auth workspace</text>
+<text x="23" y="639" textLength="729" lengthAdjust="spacingAndGlyphs" fill="#666666">Enter send · / commands · Shift+Tab permissions · drag to select · Ctrl+C copy or cancel</text>
+<text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">permissions: workspace</text>
 </g>
 </g>
 <rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>

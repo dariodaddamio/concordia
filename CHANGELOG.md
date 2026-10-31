@@ -11,6 +11,18 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Changed (`2026-10-31f`)
+- The footer names what Shift+Tab changes: `Shift+Tab permissions`, and on wide terminals the right column reads `permissions: workspace` instead of `auth workspace`.
+- While text is selected, the footer says `right-click or Ctrl+C to copy`.
+- The mouse wheel over the message box scrolls a long draft instead of the transcript.
+- `CONCORDIA_LOG_KEYS=1` writes each key event Concordia receives to its log, to diagnose how a terminal sends a key.
+- Typing hides the landing page only while the message box has text; clearing the draft brings it back. Before, any key closed it until the next `/new`, so running `/update` lost it.
+
+### Fixed (`2026-10-31f`)
+- Ctrl+Backspace deletes a word in Windows Terminal. The terminal sends it as BS (0x08), which Concordia read as a plain Backspace.
+- Leftover text no longer stays on screen after switching terminal tabs, resizing, or leaving a chat: Concordia redraws the whole screen when the terminal regains focus or changes size, and when the transcript is replaced.
+- Claude's background-task notices (`<task-notification>`) and system reminders no longer show as user messages in resumed chats, `concordia chat read`, chat titles or the chat list.
+
 ### Added (`2026-10-31e`)
 - Every prompt Concordia sends to a provider, from a chat or a worker, opens with the local date and time, for example `[Fri Oct 30 2026, 2:05pm local]`. When the prompt mentions today, yesterday, this morning, last night, last week, N days ago, or a weekday (`on Monday`, `last Monday`), a line after it gives the date, for example `"yesterday" = Thu Oct 29 2026`. `on Monday` names both the past and the coming Monday. Concordia works these out itself, without a model. The lines are not shown in the transcript, and resumed chats, chat titles and the chat list leave them out.
 

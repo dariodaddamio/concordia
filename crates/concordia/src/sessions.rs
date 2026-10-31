@@ -370,7 +370,9 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
                             .filter_map(|c| c.get("text").and_then(|t| t.as_str()))
                             .collect::<Vec<_>>()
                             .join(" ");
-                        let text = crate::prompt_time::strip_header(&joined).trim().to_string();
+                        let text = crate::chat_cli::visible_user_history(&joined)
+                            .trim()
+                            .to_string();
                         if !text.starts_with("# AGENTS.md")
                             && !crate::session_titles::title_from_prompt(&text).is_empty()
                         {
@@ -411,7 +413,7 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
                 continue;
             }
             if let Some(text) = claude_user_text(&v)
-                .map(|text| crate::prompt_time::strip_header(&text).to_string())
+                .map(|text| crate::chat_cli::visible_user_history(&text).to_string())
                 .filter(|text| {
                     !text.starts_with("# AGENTS.md")
                         && !crate::session_titles::title_from_prompt(text).is_empty()

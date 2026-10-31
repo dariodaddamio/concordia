@@ -2,7 +2,7 @@
 //! project's open work as its Harness ledger reports it. It replaces the empty transcript until
 //! the person types, resumes a chat or presses Esc.
 
-use super::{App, MsgRole, FOOTER_HINT};
+use super::{App, MsgRole};
 use crate::sessions::{format_relative_time, list_recent_sessions, SessionSummary};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -221,7 +221,7 @@ impl Landing {
         self.work_rx.is_some()
     }
 
-    fn hint(&self) -> &'static str {
+    pub(super) fn hint(&self) -> &'static str {
         match (&self.mode, self.pane) {
             (Mode::AddGoal(_), _) => "Enter save · Esc cancel",
             (Mode::ConfirmDone, _) => "Enter mark done · Esc keep",
@@ -299,20 +299,19 @@ pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: O
         last_click: None,
         tokens_24h: super::tokens::last_day_total(&app.state_root),
     };
-    app.footer_left = landing.hint().into();
     app.landing = Some(landing);
 }
 
 pub(super) fn close(app: &mut App) {
-    if app.landing.take().is_some() {
-        app.footer_left = FOOTER_HINT.into();
-    }
+    app.landing = None;
 }
 
-/// On screen: opened, nothing said in this chat yet, and no picker over it.
+/// On screen: opened, nothing said in this chat yet, an empty prompt and no picker over it.
+/// Typing a draft hides the page and clearing the draft brings it back.
 pub(super) fn visible(app: &App) -> bool {
     app.landing.is_some()
         && app.picker.is_none()
+        && app.editor.is_empty()
         && !app
             .messages
             .iter()
@@ -366,7 +365,6 @@ fn activate_chat(app: &mut App) {
 fn set_pane(app: &mut App, pane: Pane) {
     if let Some(landing) = app.landing.as_mut() {
         landing.pane = pane;
-        app.footer_left = landing.hint().into();
     }
 }
 
@@ -408,12 +406,6 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 }
                 _ => return false,
             }
-            let hint = app
-                .landing
-                .as_ref()
-                .map(Landing::hint)
-                .unwrap_or(FOOTER_HINT);
-            app.footer_left = hint.into();
             return true;
         }
         Mode::ConfirmDone => {
@@ -433,12 +425,6 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 KeyCode::Esc => landing.mode = Mode::Browse,
                 _ => return true,
             }
-            let hint = app
-                .landing
-                .as_ref()
-                .map(Landing::hint)
-                .unwrap_or(FOOTER_HINT);
-            app.footer_left = hint.into();
             return true;
         }
         Mode::Browse => {}
@@ -468,15 +454,12 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Enter, Pane::Goals) if goals > 0 => {
             landing.mode = Mode::ConfirmDone;
-            app.footer_left = landing.hint().into();
         }
         (KeyCode::Char('a'), Pane::Goals) if plain => {
             landing.mode = Mode::AddGoal(String::new());
-            app.footer_left = landing.hint().into();
         }
         (KeyCode::Char(_), _) if plain => {
-            // Typing starts a message: the page steps aside and the key reaches the input.
-            close(app);
+            // Typing starts a message: the key reaches the input and the page steps aside.
             return false;
         }
         _ => return false,

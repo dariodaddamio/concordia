@@ -378,10 +378,12 @@ impl VtParser {
 
 fn normalize_event(event: Event) -> Event {
     match event {
+        // Windows Terminal sends DEL (0x7f) for Backspace and BS (0x08, Ctrl+H) for Ctrl+Backspace,
+        // so BS is Ctrl+Backspace: delete the previous word.
         Event::Key(key)
             if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL =>
         {
-            Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL))
         }
         // ConPTY encodes LF in its VT byte stream. Preserve the same text meaning as the
         // Crossterm INPUT_RECORD backend, where pasted LF arrives as Ctrl+Enter.
@@ -445,14 +447,28 @@ mod tests {
     }
 
     #[test]
-    fn backspace_control_byte_matches_console_backspace() {
+    fn bs_is_ctrl_backspace_and_del_is_backspace() {
         assert_eq!(
             parse(b"\x08"),
+            [Event::Key(KeyEvent::new(
+                KeyCode::Backspace,
+                KeyModifiers::CONTROL
+            ))]
+        );
+        assert_eq!(
+            parse(b"\x7f"),
             [Event::Key(KeyEvent::new(
                 KeyCode::Backspace,
                 KeyModifiers::NONE
             ))]
         );
+    }
+
+    #[test]
+    fn focus_reports_arrive_as_focus_events() {
+        // The terminal sends these after `EnableFocusChange`; a gained focus repaints the screen.
+        assert_eq!(parse(b"\x1b[I"), [Event::FocusGained]);
+        assert_eq!(parse(b"\x1b[O"), [Event::FocusLost]);
     }
 
     #[test]
