@@ -844,6 +844,7 @@ mod planning_tests {
             native_session_id: None,
             trust: TrustMode::Plan,
             context_prefix: None,
+            local_time: None,
         };
         let mut plan = plan_provider_turn(&req).unwrap();
         assert!(plan

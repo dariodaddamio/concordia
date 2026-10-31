@@ -28,6 +28,7 @@ async fn closed_started_receiver_cancels_the_provider() {
         native_session_id: None,
         trust: TrustMode::Workspace,
         context_prefix: None,
+        local_time: None,
     };
     let outcome = tokio::time::timeout(Duration::from_secs(10), run_provider_turn(&req, Some(tx)))
         .await

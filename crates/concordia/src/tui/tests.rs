@@ -1738,6 +1738,27 @@ fn the_update_screen_scrolls_to_its_last_line() {
 }
 
 #[test]
+fn the_footer_names_enter_only_when_an_update_can_be_installed() {
+    for (install, footer) in [
+        (true, "Enter installs · ↑↓ scroll · Esc close"),
+        (false, "↑↓ scroll · Esc close"),
+    ] {
+        let mut h = Harness::new(100, 24);
+        h.app
+            .show_picker(PickerKind::Update, "update".into(), Vec::new(), false);
+        h.app.job = Some(spawn_job(JobKind::Check, move |_| {
+            JR::Check(Ok(update_preview(install, 40)))
+        }));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while h.app.update_preview.is_none() && Instant::now() < deadline {
+            h.app.poll_job();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(h.app.footer_left, footer);
+    }
+}
+
+#[test]
 fn a_second_update_cannot_start_while_one_is_running() {
     let mut h = Harness::new(100, 24);
     h.app.job = Some(spawn_job(JobKind::Check, |ctl| {

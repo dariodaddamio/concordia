@@ -11,6 +11,12 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Added (`2026-10-31e`)
+- Every prompt Concordia sends to a provider, from a chat or a worker, opens with the local date and time, for example `[Fri Oct 30 2026, 2:05pm local]`. When the prompt mentions today, yesterday, this morning, last night, last week, N days ago, or a weekday (`on Monday`, `last Monday`), a line after it gives the date, for example `"yesterday" = Thu Oct 29 2026`. `on Monday` names both the past and the coming Monday. Concordia works these out itself, without a model. The lines are not shown in the transcript, and resumed chats, chat titles and the chat list leave them out.
+
+### Changed (`2026-10-31e`)
+- The `/update` screen says what Enter does at the top, under the build numbers: Enter installs, Concordia builds or downloads the update and restarts on it by itself, and Esc closes without updating. Before, that line came after the list of changes, so a long list pushed it out of view. The footer reads `Enter installs` whenever there is something to install.
+
 ### Fixed (`2026-10-31d`)
 - Cursor usage refreshes again. Concordia types `/usage` into Cursor's own screen, and Cursor ignores a bare carriage return there, so every fetch timed out and the header kept showing an old reading. It now sends a real Enter key event.
 - Claude tool cards name what they act on (`Read calc.py`) instead of showing `{`: the preview read the whole detail as JSON, but Claude's detail is the input followed by the tool's output. Paths inside the session folder are shown relative to it, as Cursor's already were.

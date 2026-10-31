@@ -198,7 +198,8 @@ fn visible_user_history(mut text: &str) -> &str {
     if text.starts_with("# AGENTS.md instructions") {
         ""
     } else {
-        text
+        // The time header Concordia put on the prompt was never part of what the user typed.
+        crate::prompt_time::strip_header(text)
     }
 }
 
@@ -492,6 +493,25 @@ fn terminal_safe(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_resumed_transcript_hides_the_time_header_on_user_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.jsonl");
+        let sent =
+            "[Fri Oct 30 2026, 2:05pm local]\n\"yesterday\" = Thu Oct 29 2026\nWhat changed yesterday?";
+        std::fs::write(
+            &path,
+            json!({"type":"user","message":{"role":"user","content":sent}}).to_string(),
+        )
+        .unwrap();
+        let history = read_history_file(&path, ProviderKind::Claude).unwrap();
+        assert_eq!(history.messages[0].text, "What changed yesterday?");
+        assert_eq!(
+            crate::session_titles::title_from_prompt(sent),
+            "What changed yesterday?"
+        );
+    }
+
     #[test]
     fn structured_history_preserves_roles_unicode_and_excludes_setup_and_tool_blocks() {
         let dir = tempfile::tempdir().unwrap();

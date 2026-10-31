@@ -265,6 +265,10 @@ or "last week" into a date range itself, so the search covers that day's chats a
 around it. Open question: the cost in tokens per prompt, and whether it leaves the cached
 prefix intact, to be measured in the experiment above.
 
+The prompt side is built in `2026-10-31e` (`prompt_time.rs`): a stamp line, then one line per
+relative time, before the context pack and the prompt. The fuzzy ranking of chats by time
+belongs to the search and is not built.
+
 ## Landing page (built in `2026-10-31a`)
 
 Opening Concordia, or starting a chat with `/new`, shows a landing page. Typing anything or

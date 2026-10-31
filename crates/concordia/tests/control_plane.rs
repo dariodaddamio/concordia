@@ -218,6 +218,7 @@ fn unified_planner_never_emits_last() {
             native_session_id: Some("id-1"),
             trust: TrustMode::Workspace,
             context_prefix: None,
+            local_time: None,
         })
         .unwrap();
         assert!(!plan.argv.iter().any(|a| a == "--last" || a == "--continue"));

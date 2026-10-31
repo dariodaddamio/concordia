@@ -43,6 +43,9 @@ pub struct ProviderTurnRequest<'a> {
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
     pub context_prefix: Option<&'a str>,
+    /// When set, the prompt opens with this time and the relative times it mentions resolved
+    /// (`prompt_time::header`). Every user and worker turn sets it; `None` sends the text as is.
+    pub local_time: Option<crate::prompt_time::LocalTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,10 +116,14 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
 }
 
 fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
-    let prompt = match req.context_prefix {
+    let mut prompt = match req.context_prefix {
         Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{}", req.prompt),
         _ => req.prompt.to_string(),
     };
+    if let Some(now) = &req.local_time {
+        // Relative times are read from what the user wrote, not from the context pack.
+        prompt = format!("{}\n{prompt}", crate::prompt_time::header(req.prompt, now));
+    }
     match req.provider {
         ProviderKind::Codex => {
             let plan = plan_turn_argv(&CodexReq {
@@ -651,6 +658,45 @@ mod reader_tests {
 mod gate_tests {
     use super::*;
 
+    #[test]
+    fn a_stamped_prompt_opens_with_the_time_then_the_pack_then_the_prompt() {
+        let cwd = std::env::temp_dir();
+        let now = crate::prompt_time::LocalTime {
+            year: 2026,
+            month: 10,
+            day: 30,
+            hour: 14,
+            minute: 5,
+            zone: "local",
+        };
+        let req = ProviderTurnRequest {
+            provider: ProviderKind::Codex,
+            prompt: "what broke yesterday?",
+            cwd: &cwd,
+            home_path: None,
+            model: None,
+            native_session_id: None,
+            trust: TrustMode::Workspace,
+            context_prefix: Some("<concordia_context>last week</concordia_context>"),
+            local_time: Some(now),
+        };
+        let plan = plan_provider_turn(&req).unwrap();
+        // "last week" in the pack is not the user's words, so it is not resolved.
+        assert_eq!(
+            plan.prompt,
+            "[Fri Oct 30 2026, 2:05pm local]\n\"yesterday\" = Thu Oct 29 2026\n\
+             <concordia_context>last week</concordia_context>\nwhat broke yesterday?"
+        );
+        assert_eq!(plan.argv.last(), Some(&plan.prompt));
+        let plain = plan_provider_turn(&ProviderTurnRequest {
+            local_time: None,
+            context_prefix: None,
+            ..req
+        })
+        .unwrap();
+        assert_eq!(plain.prompt, "what broke yesterday?");
+    }
+
     fn claude_argv(cwd: &Path, trust: TrustMode) -> Vec<String> {
         let req = ProviderTurnRequest {
             provider: ProviderKind::Claude,
@@ -661,6 +707,7 @@ mod gate_tests {
             native_session_id: None,
             trust,
             context_prefix: None,
+            local_time: None,
         };
         plan_provider_turn(&req).unwrap().argv
     }
@@ -699,6 +746,7 @@ mod gate_tests {
             native_session_id: None,
             trust: TrustMode::Workspace,
             context_prefix: None,
+            local_time: None,
         };
         let notice = enforcement_notice(&req).expect("a lowered turn must explain itself");
         assert!(notice.contains("cursor") && notice.contains("read-only"));
@@ -734,6 +782,7 @@ mod gate_tests {
             native_session_id: None,
             trust: TrustMode::Full,
             context_prefix: None,
+            local_time: None,
         };
         let result = plan_provider_turn(&req);
         set_caps(

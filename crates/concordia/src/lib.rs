@@ -17,6 +17,7 @@ pub mod identity;
 pub mod integration;
 pub mod logging;
 pub mod mcp;
+pub mod prompt_time;
 pub mod provider;
 pub mod release;
 pub mod session_titles;

@@ -41,7 +41,10 @@ pub fn title_from_prompt(prompt: &str) -> String {
         return String::new();
     }
     // Bound work even when a pasted prompt is enormous.
-    let mut text: String = prompt.chars().take(64 * 1024).collect();
+    let mut text: String = crate::prompt_time::strip_header(prompt)
+        .chars()
+        .take(64 * 1024)
+        .collect();
     for tag in [
         "environment_context",
         "system-reminder",

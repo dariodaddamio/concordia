@@ -2449,8 +2449,13 @@ impl App {
                 self.push_system(format!("update failed - {e:#}"));
             }
             JobResult::Check(Ok(preview)) => {
+                self.footer_left = if preview.install_available {
+                    "Enter installs · ↑↓ scroll · Esc close"
+                } else {
+                    "↑↓ scroll · Esc close"
+                }
+                .into();
                 self.update_preview = Some(preview);
-                self.footer_left = "↑↓ scroll · Esc close".into();
             }
             JobResult::Check(Err(e)) => self.push_system(format!("update check failed - {e:#}")),
         }
@@ -2959,6 +2964,7 @@ pub async fn run_chat_tui() -> Result<()> {
                         native_session_id: session_out.as_deref(),
                         trust,
                         context_prefix: prefix.as_deref(),
+                        local_time: Some(crate::prompt_time::now()),
                     };
                     // Validate plan even if spawn fails (argv safety).
                     if let Err(e) = plan_provider_turn(&req) {

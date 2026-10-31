@@ -114,6 +114,7 @@ fn req<'a>(prompt: &'a str, cwd: &'a Path, home: Option<&'a Path>) -> ProviderTu
         native_session_id: None,
         trust: TrustMode::Workspace,
         context_prefix: None,
+        local_time: None,
     }
 }
 
@@ -514,6 +515,7 @@ fn req_for<'a>(
         native_session_id: session,
         trust: TrustMode::Workspace,
         context_prefix: None,
+        local_time: None,
     }
 }
 
