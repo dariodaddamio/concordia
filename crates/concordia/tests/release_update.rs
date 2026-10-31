@@ -83,6 +83,9 @@ fn release_for(tag: &str, base: &str) -> Release {
         version: concordia::release::Version::parse(tag).unwrap(),
         asset_url: format!("{base}/dl/{tag}/{ASSET_NAME}"),
         sums_url: format!("{base}/dl/{tag}/{SUMS_NAME}"),
+        notes: String::new(),
+        published_at: String::new(),
+        html_url: String::new(),
     }
 }
 
@@ -518,8 +521,14 @@ fn update_without_a_checkout_or_a_feed_says_exactly_what_to_configure() {
         format!("{err:#}").contains("CONCORDIA_UPDATE_REPO=owner/name"),
         "{err:#}"
     );
-    let err = check_for_update(dir.path()).unwrap_err();
-    assert!(format!("{err:#}").contains("no release feed"), "{err:#}");
+    // The /update screen shows the same instruction and offers nothing to install.
+    let preview = check_for_update(dir.path()).unwrap();
+    assert!(!preview.install_available);
+    assert!(
+        preview.plain_lines()[0].contains("CONCORDIA_UPDATE_REPO=owner/name"),
+        "{:?}",
+        preview.plain_lines()
+    );
 }
 
 #[test]
@@ -528,7 +537,12 @@ fn inside_a_source_checkout_check_describes_the_rebuild_and_never_touches_the_ne
     // No feed configured and no server: if this tried the network it would fail.
     std::env::remove_var("CONCORDIA_UPDATE_REPO");
     let msg = check_for_update(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
-    assert!(msg.contains("rebuilds from the source checkout"), "{msg}");
+    assert!(
+        msg.lines
+            .iter()
+            .any(|line| line.plain().contains("source checkout")),
+        "{msg:?}"
+    );
 }
 
 #[test]
@@ -539,8 +553,12 @@ fn check_reports_an_available_update_without_installing_it() {
     let server = feed_server(tags);
     let _feed = FeedEnv::point_at(server.port);
     let msg = check_for_update(outside_checkout().path()).unwrap();
-    assert!(msg.starts_with("update available:"), "{msg}");
-    assert!(msg.contains(&tag[1..]), "{msg}");
+    assert!(
+        msg.lines
+            .iter()
+            .any(|line| line.plain().contains(&tag[1..])),
+        "{msg:?}"
+    );
     sb.assert_nothing_installed();
 }
 
@@ -556,9 +574,11 @@ fn update_when_already_newest_changes_nothing() {
         UpdateOutcome::UpToDate(msg) => assert!(msg.contains("already up to date"), "{msg}"),
         UpdateOutcome::Installed(r) => panic!("installed {r:?} when already current"),
     }
-    assert!(check_for_update(outside_checkout().path())
-        .unwrap()
-        .starts_with("up to date:"));
+    assert!(
+        !check_for_update(outside_checkout().path())
+            .unwrap()
+            .install_available
+    );
     sb.assert_nothing_installed();
 }
 

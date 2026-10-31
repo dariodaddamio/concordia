@@ -123,6 +123,17 @@ jobs:
           }
           Get-ChildItem $out | ForEach-Object { Write-Host $_.Name }
 
+      - name: Prepare changelog release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $changelog = Get-Content CHANGELOG.md -Raw
+          $pattern = '(?ms)^## \[' + [regex]::Escape($version) + '\]\s*\r?\n(?<body>.*?)(?=^## |\z)'
+          $match = [regex]::Match($changelog, $pattern)
+          if (-not $match.Success) { throw "release $version must have a changelog entry under ## [$version]" }
+          Set-Content -Path release-notes.md -Value $match.Groups['body'].Value.Trim() -Encoding utf8
+
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -135,6 +146,7 @@ jobs:
             THIRD-PARTY-LICENSES.txt
             LICENSE
             ${{ runner.temp }}/dist-packaging/*
+          body_path: release-notes.md
           # 0.x and any -suffix tag are pre-releases.
           prerelease: ${{ startsWith(github.ref_name, 'v0.') || contains(github.ref_name, '-') }}
           generate_release_notes: true

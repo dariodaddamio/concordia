@@ -130,7 +130,71 @@ pub enum JobKind {
 
 pub enum JobResult {
     Update(Result<UpdateOutcome>),
-    Check(Result<String>),
+    Check(Result<UpdatePreview>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangelogSection {
+    pub kind: String,
+    pub stamp: String,
+    pub bullets: Vec<String>,
+}
+
+/// One line of the `/update` screen; the screen styles and wraps each kind its own way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewLine {
+    /// `Installed  0.0.1 · build 2026-10-30a`: a dim label and its value.
+    Field(&'static str, String),
+    /// `What's new`, `You're on the newest build (...)`.
+    Title(String),
+    /// A changelog group: `Fixed`, `Changed`.
+    Kind(String),
+    Bullet(String),
+    Text(String),
+    Blank,
+    /// The keys that act on this screen.
+    Hint(String),
+}
+
+impl PreviewLine {
+    /// The line as plain text, as the screen draws it before wrapping.
+    pub fn plain(&self) -> String {
+        match self {
+            PreviewLine::Field(label, value) => format!("{label:<10} {value}"),
+            PreviewLine::Title(t) | PreviewLine::Text(t) | PreviewLine::Hint(t) => t.clone(),
+            PreviewLine::Kind(k) => format!(" {k}"),
+            PreviewLine::Bullet(b) => format!(" · {b}"),
+            PreviewLine::Blank => String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdatePreview {
+    pub lines: Vec<PreviewLine>,
+    pub install_available: bool,
+    pub changelog: Option<PathBuf>,
+    pub release_url: Option<String>,
+}
+
+impl UpdatePreview {
+    fn message(text: &str) -> Self {
+        UpdatePreview {
+            lines: vec![
+                PreviewLine::Text(text.into()),
+                PreviewLine::Blank,
+                PreviewLine::Hint("Esc close".into()),
+            ],
+            install_available: false,
+            changelog: None,
+            release_url: None,
+        }
+    }
+
+    /// Every line as plain text (tests and the transcript fallback).
+    pub fn plain_lines(&self) -> Vec<String> {
+        self.lines.iter().map(PreviewLine::plain).collect()
+    }
 }
 
 pub struct Job {
@@ -184,8 +248,8 @@ pub fn start_update(cwd: PathBuf) -> Job {
 }
 
 pub fn start_check(cwd: PathBuf) -> Job {
-    spawn_job(JobKind::Check, move |_| {
-        JobResult::Check(check_for_update(&cwd))
+    spawn_job(JobKind::Check, move |ctl| {
+        JobResult::Check(check_for_update_ctl(&cwd, ctl))
     })
 }
 
@@ -349,28 +413,253 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
     }
 }
 
-/// `/update check`: say what `/update` would do, without installing anything.
-pub fn check_for_update(cwd: &Path) -> Result<String> {
-    if let Some(root) = source_root(cwd) {
-        return Ok(format!(
-            "/update rebuilds from the source checkout at {}",
-            root.display()
+fn git_text(root: &Path, args: &[&str], ctl: &JobControl) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root).args(args);
+    let (ok, _, output) = run_child_with_cancel(cmd, ctl)?;
+    if !ok {
+        bail!("git {} failed", args.join(" "));
+    }
+    Ok(output.trim().to_string())
+}
+
+fn source_version(root: &Path) -> Result<(String, String)> {
+    let cargo = fs::read_to_string(root.join("crates/concordia/Cargo.toml"))?;
+    let version = cargo
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("version = \"")?
+                .split_once('"')
+                .map(|x| x.0.to_string())
+        })
+        .context("source Cargo.toml has no package version")?;
+    let source = fs::read_to_string(root.join("crates/concordia/src/version.rs"))?;
+    let stamp = source
+        .lines()
+        .find_map(|line| {
+            line.split_once("BUILD_STAMP: &str = \"")?
+                .1
+                .split_once('"')
+                .map(|x| x.0.to_string())
+        })
+        .context("source version.rs has no BUILD_STAMP")?;
+    Ok((version, stamp))
+}
+
+pub fn changelog_sections(text: &str) -> Vec<ChangelogSection> {
+    let mut out = Vec::new();
+    let mut current: Option<ChangelogSection> = None;
+    let mut bullet: Option<usize> = None;
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(rest) = line.strip_prefix("### ") {
+            out.extend(current.take());
+            bullet = None;
+            // Only sections stamped with a build (`### Fixed (`2026-10-30a`)`) shipped in one.
+            let Some((kind, raw)) = rest.split_once("(`") else {
+                continue;
+            };
+            let Some(stamp) = raw.strip_suffix("`)") else {
+                continue;
+            };
+            current = Some(ChangelogSection {
+                kind: kind.trim().to_string(),
+                stamp: stamp.to_string(),
+                bullets: Vec::new(),
+            });
+        } else if line.starts_with("## ") {
+            out.extend(current.take());
+            bullet = None;
+        } else if let Some(text) = line.strip_prefix("- ") {
+            if let Some(section) = current.as_mut() {
+                section.bullets.push(crate::release::plain_markdown(text));
+                bullet = Some(section.bullets.len() - 1);
+            }
+        } else if line.starts_with("  ") && !line.trim().is_empty() {
+            if let (Some(section), Some(index)) = (current.as_mut(), bullet) {
+                section.bullets[index].push(' ');
+                section.bullets[index].push_str(&crate::release::plain_markdown(line.trim()));
+            }
+        }
+    }
+    out.extend(current);
+    out
+}
+
+/// The sections that `pick` keeps, as kind headings each followed by their bullets once.
+fn grouped(sections: &[ChangelogSection], pick: impl Fn(&str) -> bool) -> Vec<PreviewLine> {
+    let mut lines = Vec::new();
+    for kind in ["Added", "Changed", "Fixed", "Removed", "Security"] {
+        let mut bullets: Vec<&String> = Vec::new();
+        for section in sections.iter().filter(|s| s.kind == kind && pick(&s.stamp)) {
+            for b in &section.bullets {
+                if !bullets.contains(&b) {
+                    bullets.push(b);
+                }
+            }
+        }
+        if !bullets.is_empty() {
+            lines.push(PreviewLine::Kind(kind.into()));
+            lines.extend(bullets.into_iter().map(|b| PreviewLine::Bullet(b.clone())));
+        }
+    }
+    lines
+}
+
+fn source_preview(root: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
+    source_preview_for(
+        root,
+        crate::version::VERSION,
+        crate::version::BUILD_STAMP,
+        ctl,
+    )
+}
+
+fn source_preview_for(
+    root: &Path,
+    installed_version: &str,
+    installed: &str,
+    ctl: &JobControl,
+) -> Result<UpdatePreview> {
+    let (version, stamp) = source_version(root)?;
+    let branch = git_text(root, &["rev-parse", "--abbrev-ref", "HEAD"], ctl)?;
+    let status = git_text(root, &["status", "--porcelain"], ctl)?;
+    let state = match status.lines().count() {
+        0 => "clean".to_string(),
+        1 => "1 uncommitted file".to_string(),
+        n => format!("{n} uncommitted files"),
+    };
+    let changelog = root.join("CHANGELOG.md");
+    let sections = fs::read_to_string(&changelog)
+        .map(|s| changelog_sections(&s))
+        .unwrap_or_default();
+    let from = PreviewLine::Field("From", format!("source checkout · {branch} · {state}"));
+    let mut lines = Vec::new();
+    // A checkout behind the running build is shown but never installed by a keypress.
+    let older = stamp.as_str() < installed;
+    let install_available = stamp.as_str() > installed;
+    if install_available || older {
+        let note = if older {
+            " · older than this build"
+        } else {
+            ""
+        };
+        lines.push(PreviewLine::Field(
+            "Installed",
+            format!("{installed_version} · build {installed}"),
         ));
+        lines.push(PreviewLine::Field(
+            "Available",
+            format!("{version} · build {stamp}{note}"),
+        ));
+        lines.push(from.clone());
+        lines.push(PreviewLine::Blank);
+    }
+    if older {
+        lines.push(PreviewLine::Text(
+            "The checkout is behind this build. Pull or switch branch, then run /update again."
+                .into(),
+        ));
+        lines.push(PreviewLine::Blank);
+    } else if install_available {
+        let news = grouped(&sections, |s| s > installed && s <= stamp.as_str());
+        if !news.is_empty() {
+            lines.push(PreviewLine::Title("What's new".into()));
+            lines.extend(news);
+            lines.push(PreviewLine::Blank);
+        }
+        lines.push(PreviewLine::Hint(
+            "Enter build and restart (about a minute)".into(),
+        ));
+    } else {
+        lines.push(PreviewLine::Title(format!(
+            "You're on the newest build ({installed})."
+        )));
+        lines.push(from);
+        lines.push(PreviewLine::Blank);
+        let current = grouped(&sections, |s| s == installed);
+        if !current.is_empty() {
+            lines.push(PreviewLine::Title("What's in this build".into()));
+            lines.extend(current);
+            lines.push(PreviewLine::Blank);
+        }
+    }
+    lines.push(PreviewLine::Hint("c full changelog · Esc close".into()));
+    Ok(UpdatePreview {
+        lines,
+        install_available,
+        changelog: Some(changelog),
+        release_url: None,
+    })
+}
+
+/// `/update`: what an update would install, without installing anything.
+pub fn check_for_update(cwd: &Path) -> Result<UpdatePreview> {
+    check_for_update_ctl(cwd, &JobControl::default())
+}
+
+fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
+    if let Some(root) = source_root(cwd) {
+        return source_preview(&root, ctl);
     }
     let current = crate::version::VERSION;
-    let cfg = crate::release::config_from_env(current).context(
-        "no source checkout here and no release feed configured (set CONCORDIA_UPDATE_REPO=owner/name)",
-    )?;
+    let Some(cfg) = crate::release::config_from_env(current) else {
+        return Ok(UpdatePreview::message(
+            "no source checkout here and no release feed configured (set CONCORDIA_UPDATE_REPO=owner/name)",
+        ));
+    };
+    let from = PreviewLine::Field(
+        "From",
+        format!("github.com/{} · checksum verified before install", cfg.repo),
+    );
     Ok(
         match crate::release::check(&cfg, current, &crate::release::PowerShellFetcher)? {
-            crate::release::Check::UpToDate { current, latest } => {
-                format!("up to date: running {current}, newest release {latest}")
-            }
+            crate::release::Check::UpToDate { current, .. } => UpdatePreview {
+                lines: vec![
+                    PreviewLine::Title(format!("You're on the newest release ({current}).")),
+                    from,
+                    PreviewLine::Blank,
+                    PreviewLine::Hint("Esc close".into()),
+                ],
+                install_available: false,
+                changelog: None,
+                release_url: None,
+            },
             crate::release::Check::Available(rel) => {
-                format!(
-                    "update available: {} -> {} (run /update)",
-                    current, rel.version
-                )
+                let mut lines = vec![
+                    PreviewLine::Field("Installed", current.to_string()),
+                    PreviewLine::Field(
+                        "Available",
+                        format!(
+                            "{} · released {}",
+                            rel.version,
+                            crate::release::published_date(&rel.published_at)
+                        ),
+                    ),
+                    from,
+                    PreviewLine::Blank,
+                ];
+                let notes = crate::release::clean_notes(&rel.notes);
+                if !notes.is_empty() {
+                    lines.push(PreviewLine::Title("What's new".into()));
+                    for line in notes.lines() {
+                        lines.push(match line.trim_start().strip_prefix(['-', '*']) {
+                            Some(b) => PreviewLine::Bullet(b.trim().to_string()),
+                            None if line.trim().is_empty() => PreviewLine::Blank,
+                            None => PreviewLine::Text(line.trim().to_string()),
+                        });
+                    }
+                    lines.push(PreviewLine::Blank);
+                }
+                lines.push(PreviewLine::Hint("Enter download and restart".into()));
+                lines.push(PreviewLine::Hint("o open release page · Esc close".into()));
+                UpdatePreview {
+                    lines,
+                    install_available: true,
+                    changelog: None,
+                    release_url: Some(rel.html_url),
+                }
             }
         },
     )
@@ -975,7 +1264,12 @@ mod tests {
             while !ctl.cancelled() {
                 std::thread::sleep(Duration::from_millis(10));
             }
-            JobResult::Check(Ok("stopped".into()))
+            JobResult::Check(Ok(UpdatePreview {
+                lines: vec![PreviewLine::Text("stopped".into())],
+                install_available: false,
+                changelog: None,
+                release_url: None,
+            }))
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while job.status().is_empty() && Instant::now() < deadline {
@@ -996,7 +1290,161 @@ mod tests {
             assert!(start.elapsed() < Duration::from_secs(5));
             std::thread::sleep(Duration::from_millis(10));
         };
-        assert!(matches!(result, JobResult::Check(Ok(m)) if m == "stopped"));
+        assert!(matches!(result, JobResult::Check(Ok(m)) if m.plain_lines() == ["stopped"]));
         assert!(job.poll().is_none(), "exactly one result");
+    }
+
+    #[test]
+    fn changelog_sections_group_only_stamped_builds_and_join_continuations() {
+        let sections = changelog_sections("### Fixed (`2026-10-31a`)\n- first `code`\n  continued\n### Added\n- ignored\n### Changed (`2026-10-30b`)\n- second\n");
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].bullets, ["first code continued"]);
+        assert_eq!(sections[1].stamp, "2026-10-30b");
+        assert!(!sections.iter().any(|s| s.kind == "Added"));
+    }
+
+    #[test]
+    fn source_checkout_identity_is_read_from_text_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let crate_dir = dir.path().join("crates/concordia/src");
+        fs::create_dir_all(&crate_dir).unwrap();
+        fs::write(
+            dir.path().join("crates/concordia/Cargo.toml"),
+            "[package]\nversion = \"1.2.3\"\n",
+        )
+        .unwrap();
+        fs::write(
+            crate_dir.join("version.rs"),
+            "pub const BUILD_STAMP: &str = \"2026-11-06a\";\n",
+        )
+        .unwrap();
+        assert_eq!(
+            source_version(dir.path()).unwrap(),
+            ("1.2.3".into(), "2026-11-06a".into())
+        );
+    }
+
+    /// A git checkout at build `stamp` with a changelog spanning two builds.
+    fn checkout_at_build(stamp: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("crates/concordia/src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            dir.path().join("crates/concordia/Cargo.toml"),
+            "[package]\nversion = \"0.0.1\"\n",
+        )
+        .unwrap();
+        fs::write(
+            src.join("version.rs"),
+            format!("pub const BUILD_STAMP: &str = \"{stamp}\";\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("CHANGELOG.md"),
+            "## [Unreleased]\n\n### Fixed (`2026-10-30b`)\n- Text before a tool shows once.\n\n\
+             ### Changed (`2026-10-30b`)\n- The list has 12 `commands`,\n  each opening one screen.\n\n\
+             ### Added (next build)\n- Not built yet.\n\n### Fixed (`2026-10-30a`)\n- Cursor tool names.\n",
+        )
+        .unwrap();
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "c",
+        ]);
+        dir
+    }
+
+    #[test]
+    fn a_newer_checkout_lists_only_the_builds_after_the_installed_one() {
+        let dir = checkout_at_build("2026-10-30b");
+        let preview =
+            source_preview_for(dir.path(), "0.0.1", "2026-10-30a", &JobControl::default()).unwrap();
+        assert!(preview.install_available);
+        assert_eq!(
+            preview.plain_lines(),
+            [
+                "Installed  0.0.1 · build 2026-10-30a",
+                "Available  0.0.1 · build 2026-10-30b",
+                "From       source checkout · main · clean",
+                "",
+                "What's new",
+                " Changed",
+                " · The list has 12 commands, each opening one screen.",
+                " Fixed",
+                " · Text before a tool shows once.",
+                "",
+                "Enter build and restart (about a minute)",
+                "c full changelog · Esc close",
+            ]
+        );
+
+        fs::write(dir.path().join("scratch.txt"), "x").unwrap();
+        let dirty =
+            source_preview_for(dir.path(), "0.0.1", "2026-10-30a", &JobControl::default()).unwrap();
+        assert_eq!(
+            dirty.plain_lines()[2],
+            "From       source checkout · main · 1 uncommitted file"
+        );
+    }
+
+    #[test]
+    fn the_installed_build_shows_what_is_in_it_and_offers_no_install() {
+        let dir = checkout_at_build("2026-10-30a");
+        let preview =
+            source_preview_for(dir.path(), "0.0.1", "2026-10-30a", &JobControl::default()).unwrap();
+        assert!(!preview.install_available);
+        assert_eq!(
+            preview.plain_lines(),
+            [
+                "You're on the newest build (2026-10-30a).",
+                "From       source checkout · main · clean",
+                "",
+                "What's in this build",
+                " Fixed",
+                " · Cursor tool names.",
+                "",
+                "c full changelog · Esc close",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_older_checkout_says_so() {
+        let dir = checkout_at_build("2026-10-30a");
+        let preview =
+            source_preview_for(dir.path(), "0.0.1", "2026-10-30b", &JobControl::default()).unwrap();
+        assert!(
+            !preview.install_available,
+            "a downgrade is never one keypress away"
+        );
+        assert_eq!(
+            preview.plain_lines(),
+            [
+                "Installed  0.0.1 · build 2026-10-30b",
+                "Available  0.0.1 · build 2026-10-30a · older than this build",
+                "From       source checkout · main · clean",
+                "",
+                "The checkout is behind this build. Pull or switch branch, then run /update again.",
+                "",
+                "c full changelog · Esc close",
+            ]
+        );
     }
 }

@@ -190,6 +190,9 @@ pub struct Release {
     pub version: Version,
     pub asset_url: String,
     pub sums_url: String,
+    pub notes: String,
+    pub published_at: String,
+    pub html_url: String,
 }
 
 /// The newest non-draft release that has both the exe and the checksum file attached. A release
@@ -234,10 +237,78 @@ pub fn find_release(json: &str, include_prerelease: bool) -> Result<Option<Relea
                 version,
                 asset_url,
                 sums_url,
+                notes: r.get("body").and_then(Value::as_str).unwrap_or("").into(),
+                published_at: r
+                    .get("published_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .into(),
+                html_url: r
+                    .get("html_url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .into(),
             });
         }
     }
     Ok(best)
+}
+
+/// One line of Markdown as plain text: bold and code markers dropped, `[text](url)` as `text`.
+pub fn plain_markdown(line: &str) -> String {
+    let line = line.replace("**", "").replace('`', "");
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line.as_str();
+    while let Some(open) = rest.find('[') {
+        let link = rest[open + 1..].find("](").and_then(|mid| {
+            let mid = open + 1 + mid;
+            rest[mid + 2..]
+                .find(')')
+                .map(|close| (mid, mid + 2 + close))
+        });
+        let Some((mid, close)) = link else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..mid]);
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    out.trim_end().to_string()
+}
+
+/// GitHub Markdown release notes as the compact plain text the `/update` screen shows.
+pub fn clean_notes(notes: &str) -> String {
+    notes
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("**Full Changelog**:"))
+        .map(|line| plain_markdown(line.trim_start().trim_start_matches('#').trim_start()))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+pub fn published_date(value: &str) -> String {
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let mut parts = value.split('-');
+    let year = parts.next().unwrap_or("");
+    let month = parts
+        .next()
+        .and_then(|m| m.parse::<usize>().ok())
+        .and_then(|m| months.get(m.saturating_sub(1)))
+        .copied();
+    let day = parts
+        .next()
+        .and_then(|d| d.get(..2))
+        .unwrap_or("")
+        .trim_start_matches('0');
+    match (year, month) {
+        (y, Some(m)) if !y.is_empty() && !day.is_empty() => format!("{m} {day}, {y}"),
+        _ => value.to_string(),
+    }
 }
 
 /// The hash for `name` in a `sha256sum`-style file (`<hex>  <name>` or `<hex> *<name>`).
@@ -584,6 +655,23 @@ mod tests {
         assert!(find_release("{\"message\":\"Not Found\"}", true).is_err());
         assert!(find_release("<html>rate limited</html>", true).is_err());
         assert!(find_release("[{\"tag_name\":5}]", true).unwrap().is_none());
+    }
+
+    #[test]
+    fn release_metadata_and_notes_are_preserved_and_cleaned() {
+        let json = serde_json::json!([{
+            "tag_name": "v0.2.0", "draft": false, "prerelease": false,
+            "body": "## Fix\n- **Cursor** text and [details](https://example.test)\n**Full Changelog**: https://example.test/compare",
+            "published_at": "2026-11-06T12:00:00Z", "html_url": "https://github.com/o/n/releases/tag/v0.2.0",
+            "assets": [{"name": ASSET_NAME, "browser_download_url": "https://x/exe"}, {"name": SUMS_NAME, "browser_download_url": "https://x/sums"}]
+        }]).to_string();
+        let release = find_release(&json, false).unwrap().unwrap();
+        assert_eq!(release.published_at, "2026-11-06T12:00:00Z");
+        assert_eq!(
+            clean_notes(&release.notes),
+            "Fix\n- Cursor text and details"
+        );
+        assert_eq!(published_date(&release.published_at), "Nov 6, 2026");
     }
 
     #[test]

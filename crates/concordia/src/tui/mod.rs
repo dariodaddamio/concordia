@@ -18,7 +18,7 @@ use crate::store::{
     set_use_selection, ProviderKind, TrustMode, UseSelection,
 };
 use crate::update::{
-    reexec_into, start_check, start_update, Job, JobKind, JobResult, UpdateOutcome,
+    reexec_into, start_check, start_update, Job, JobKind, JobResult, UpdateOutcome, UpdatePreview,
 };
 use crate::usage::{picker_row, usage_rows_for_accounts, usage_tone, UsageFetcher, UsageTone};
 use crate::version::short_stamp;
@@ -239,6 +239,7 @@ enum PickerKind {
     Usage,
     Continuation,
     ResumeDeleteConfirm,
+    Update,
 }
 
 struct Picker {
@@ -326,6 +327,10 @@ pub struct App {
     native_agents: native_agents::State,
     footer_left: String,
     picker: Option<Picker>,
+    update_preview: Option<UpdatePreview>,
+    /// Wrapped rows of the `/update` screen and how many fit, as last drawn.
+    update_rows: usize,
+    update_view: usize,
     cancel_handle: Option<Arc<RunningTurn>>,
     prior_provider: ProviderKind,
     prior_home: Option<String>,
@@ -1753,8 +1758,58 @@ impl App {
     }
 
     fn dismiss_picker(&mut self) {
+        if self
+            .job
+            .as_ref()
+            .is_some_and(|job| job.kind == JobKind::Check)
+        {
+            if let Some(job) = &self.job {
+                job.cancel();
+            }
+        }
         self.picker = None;
+        self.update_preview = None;
         self.footer_left = FOOTER_HINT.into();
+    }
+
+    fn open_update_changelog(&mut self) {
+        if let Some(path) = self
+            .update_preview
+            .as_ref()
+            .and_then(|p| p.changelog.clone())
+        {
+            self.open_file_candidate(
+                crate::file_links::Candidate {
+                    display: path.to_string_lossy().into_owned(),
+                    range: 0..0,
+                    target: path.to_string_lossy().into_owned(),
+                    line: None,
+                    column: None,
+                    markdown: false,
+                },
+                false,
+            );
+        }
+    }
+
+    fn open_update_release(&mut self) {
+        let Some(url) = self
+            .update_preview
+            .as_ref()
+            .and_then(|p| p.release_url.clone())
+        else {
+            return;
+        };
+        if !url.starts_with("https://") {
+            self.flash("refusing non-https release URL");
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
+        }
+        #[cfg(test)]
+        self.flash("release page opened");
     }
 
     fn apply_picker_selection(&mut self, turn_tx: Option<&mpsc::UnboundedSender<String>>) {
@@ -2011,6 +2066,7 @@ impl App {
                     }
                 }
             }
+            PickerKind::Update => {}
         }
         let _ = label;
     }
@@ -2256,8 +2312,7 @@ impl App {
                 Some(t) => self.write_clipboard(&t),
                 None => self.flash("nothing to copy yet"),
             },
-            CommandOutcome::UpdateCheck => self.start_job(JobKind::Check),
-            CommandOutcome::Update => self.start_job(JobKind::Update),
+            CommandOutcome::UpdateCheck | CommandOutcome::Update => self.open_update_preview(),
             CommandOutcome::Ok => {}
         }
         true
@@ -2277,6 +2332,12 @@ impl App {
             JobKind::Update => start_update(self.cwd.clone()),
             JobKind::Check => start_check(self.cwd.clone()),
         });
+    }
+
+    fn open_update_preview(&mut self) {
+        self.update_preview = None;
+        self.show_picker(PickerKind::Update, "update".into(), Vec::new(), false);
+        self.start_job(JobKind::Check);
     }
 
     /// Deliver a finished background job (called on every tick).
@@ -2320,7 +2381,10 @@ impl App {
                 crate::logging::error(&format!("update-failed {e:#}"));
                 self.push_system(format!("update failed - {e:#}"));
             }
-            JobResult::Check(Ok(msg)) => self.push_system(msg),
+            JobResult::Check(Ok(preview)) => {
+                self.update_preview = Some(preview);
+                self.footer_left = "↑↓ scroll · Esc close".into();
+            }
             JobResult::Check(Err(e)) => self.push_system(format!("update check failed - {e:#}")),
         }
     }
@@ -2512,6 +2576,9 @@ impl App {
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            update_preview: None,
+            update_rows: 0,
+            update_view: 0,
             cancel_handle: None,
             prior_provider: ProviderKind::Codex,
             prior_home: None,
@@ -2969,6 +3036,45 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         _ => {}
     }
     if let Some(picker) = app.picker.as_mut() {
+        if picker.kind == PickerKind::Update {
+            let visible = app.update_view.max(1);
+            let last = app.update_rows.saturating_sub(visible);
+            match key.code {
+                KeyCode::Esc => app.dismiss_picker(),
+                KeyCode::Enter
+                    if app
+                        .update_preview
+                        .as_ref()
+                        .is_some_and(|p| p.install_available) =>
+                {
+                    app.dismiss_picker();
+                    app.start_job(JobKind::Update);
+                }
+                KeyCode::Char('c') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.open_update_changelog()
+                }
+                KeyCode::Char('o') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.open_update_release()
+                }
+                KeyCode::Up => picker
+                    .state
+                    .select(Some(picker.state.selected().unwrap_or(0).saturating_sub(1))),
+                KeyCode::Down => picker
+                    .state
+                    .select(Some((picker.state.selected().unwrap_or(0) + 1).min(last))),
+                KeyCode::PageUp => picker.state.select(Some(
+                    picker.state.selected().unwrap_or(0).saturating_sub(visible),
+                )),
+                KeyCode::PageDown => picker.state.select(Some(
+                    (picker.state.selected().unwrap_or(0) + visible).min(last),
+                )),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.dismiss_picker()
+                }
+                _ => {}
+            }
+            return false;
+        }
         match key.code {
             KeyCode::Esc => app.dismiss_picker(),
             KeyCode::Enter => app.apply_picker_selection(Some(turn_tx)),
@@ -3345,6 +3451,18 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         return;
     }
     if app.picker.is_some() {
+        let max = app.update_rows.saturating_sub(app.update_view.max(1));
+        if let Some(picker) = app.picker.as_mut().filter(|p| p.kind == PickerKind::Update) {
+            match m.kind {
+                MouseEventKind::ScrollUp => picker
+                    .state
+                    .select(Some(picker.state.selected().unwrap_or(0).saturating_sub(3))),
+                MouseEventKind::ScrollDown => picker
+                    .state
+                    .select(Some((picker.state.selected().unwrap_or(0) + 3).min(max))),
+                _ => {}
+            }
+        }
         return;
     }
     if workers::handle_mouse(app, &m) || queue::handle_mouse(app, &m) {
@@ -4178,10 +4296,88 @@ fn centered_rect(width_pct: u16, height_pct: u16, area: Rect) -> Rect {
     }
 }
 
+/// One `/update` line as styled rows `width` wide; bullets wrap under their text.
+fn update_rows(line: &crate::update::PreviewLine, width: usize) -> Vec<Line<'static>> {
+    use crate::update::PreviewLine as P;
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let (lead, lead_style, text, style) = match line {
+        P::Field(label, value) => (
+            format!("{label:<10} "),
+            dim,
+            value.clone(),
+            Style::default(),
+        ),
+        P::Title(t) => (String::new(), bold, t.clone(), bold),
+        P::Kind(k) => (" ".to_string(), bold, k.clone(), bold),
+        P::Bullet(b) => (" · ".to_string(), dim, b.clone(), Style::default()),
+        P::Text(t) => (String::new(), dim, t.clone(), Style::default()),
+        P::Hint(h) => (String::new(), dim, h.clone(), dim),
+        P::Blank => return vec![Line::default()],
+    };
+    let indent = lead.chars().count();
+    let chars: Vec<char> = text.chars().collect();
+    let room = width.saturating_sub(indent).max(1);
+    text::wrap_ranges_hang(&chars, room, room)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (s, e))| {
+            let head = if i == 0 {
+                Span::styled(lead.clone(), lead_style)
+            } else {
+                Span::raw(" ".repeat(indent))
+            };
+            let body: String = chars[s..e].iter().collect();
+            Line::from(vec![head, Span::styled(body.trim_end().to_string(), style)])
+        })
+        .collect()
+}
+
 fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(picker) = app.picker.as_mut() else {
         return;
     };
+    if picker.kind == PickerKind::Update {
+        let width = area.width.saturating_sub(4).min(100);
+        let inner = width.saturating_sub(4) as usize;
+        let loading = [crate::update::PreviewLine::Text(
+            "checking for updates…".into(),
+        )];
+        let lines = app
+            .update_preview
+            .as_ref()
+            .map(|p| p.lines.as_slice())
+            .unwrap_or(&loading);
+        let rows: Vec<Line> = lines
+            .iter()
+            .flat_map(|line| update_rows(line, inner.max(10)))
+            .collect();
+        // As tall as its content, up to 24 rows or the space there is.
+        let height = (rows.len() as u16 + 2).min(area.height.min(24)).max(3);
+        let popup = Rect {
+            x: area.x + 2,
+            y: area.y,
+            width,
+            height,
+        };
+        f.render_widget(Clear, popup);
+        let view = popup.height.saturating_sub(2) as usize;
+        // Scrolling reads these, so it always matches what was last drawn.
+        app.update_rows = rows.len();
+        app.update_view = view;
+        let offset = picker
+            .state
+            .selected()
+            .unwrap_or(0)
+            .min(rows.len().saturating_sub(view));
+        let visible: Vec<Line> = rows.into_iter().skip(offset).take(view).collect();
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" update ")
+            .padding(ratatui::widgets::Padding::horizontal(1));
+        f.render_widget(Paragraph::new(visible).block(block), popup);
+        return;
+    }
     let height = (picker.filtered().len().min(10) as u16)
         .saturating_add(2)
         .max(5);

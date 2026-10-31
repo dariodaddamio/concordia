@@ -1652,6 +1652,92 @@ fn a_finished_update_restarts_into_the_new_build_and_a_failed_one_explains() {
     assert!(!h.app.should_quit && h.app.reexec_path.is_none());
 }
 
+/// The `/update` screen with `preview` loaded, as a finished check leaves it.
+fn update_screen(h: &mut Harness, preview: crate::update::UpdatePreview) {
+    h.app
+        .show_picker(PickerKind::Update, "update".into(), Vec::new(), false);
+    h.app.update_preview = Some(preview);
+    h.draw();
+}
+
+fn update_preview(install: bool, bullets: usize) -> crate::update::UpdatePreview {
+    use crate::update::PreviewLine as P;
+    let mut lines = vec![
+        P::Field("Installed", "0.0.1 · build 2026-10-30a".into()),
+        P::Field("Available", "0.0.1 · build 2026-10-30b".into()),
+        P::Blank,
+        P::Title("What's new".into()),
+        P::Kind("Changed".into()),
+        P::Bullet(
+            "The command list has 12 commands, each opening one screen, and removed commands name their replacement.".into(),
+        ),
+    ];
+    lines.extend((0..bullets).map(|i| P::Bullet(format!("change number {i}"))));
+    lines.push(P::Hint("c full changelog · Esc close".into()));
+    crate::update::UpdatePreview {
+        lines,
+        install_available: install,
+        changelog: None,
+        release_url: None,
+    }
+}
+
+#[test]
+fn the_update_screen_wraps_bullets_under_their_text() {
+    let mut h = Harness::new(70, 30);
+    update_screen(&mut h, update_preview(true, 0));
+    let screen = h.screen();
+    assert!(
+        screen.contains("Installed  0.0.1 · build 2026-10-30a"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains(" · The command list has 12 commands"),
+        "{screen}"
+    );
+    // The wrapped half of the bullet starts under the bullet's text, not under the dot.
+    let wrapped = screen
+        .lines()
+        .find(|l| l.contains("removed commands") || l.contains("replacement."))
+        .unwrap_or_else(|| panic!("{screen}"));
+    assert!(wrapped.contains("│    "), "{wrapped}");
+}
+
+#[test]
+fn enter_installs_only_when_the_screen_offers_an_update() {
+    let mut h = Harness::new(80, 30);
+    update_screen(&mut h, update_preview(false, 0));
+    h.enter();
+    assert!(
+        h.app.picker.is_some(),
+        "nothing to install keeps the screen open"
+    );
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none() && h.app.update_preview.is_none());
+
+    // A busy chat defers the update with a notice, which proves Enter asked for it.
+    let mut h = Harness::new(80, 30);
+    update_screen(&mut h, update_preview(true, 0));
+    h.app.busy = true;
+    h.enter();
+    assert!(h.app.picker.is_none());
+    assert!(h.screen().contains("update deferred"), "{}", h.screen());
+}
+
+#[test]
+fn the_update_screen_scrolls_to_its_last_line() {
+    let mut h = Harness::new(80, 16);
+    update_screen(&mut h, update_preview(true, 30));
+    assert!(!h.screen().contains("c full changelog"));
+    for _ in 0..5 {
+        h.key(KeyCode::PageDown, KeyModifiers::NONE);
+        h.draw();
+    }
+    let screen = h.screen();
+    assert!(screen.contains("c full changelog · Esc close"), "{screen}");
+    assert!(screen.contains("change number 29"), "{screen}");
+}
+
 #[test]
 fn a_second_update_cannot_start_while_one_is_running() {
     let mut h = Harness::new(100, 24);
@@ -1659,7 +1745,12 @@ fn a_second_update_cannot_start_while_one_is_running() {
         while !ctl.cancelled() {
             std::thread::sleep(Duration::from_millis(10));
         }
-        JR::Check(Ok("done".into()))
+        JR::Check(Ok(crate::update::UpdatePreview {
+            lines: vec![crate::update::PreviewLine::Text("done".into())],
+            install_available: false,
+            changelog: None,
+            release_url: None,
+        }))
     }));
     h.type_str("/update");
     h.enter();

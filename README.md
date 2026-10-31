@@ -66,7 +66,7 @@ You pay for more than one AI coding tool. Each has its own CLI, its own login, i
 | Explicit resume | `/resume` lists sessions and binds by id |
 | Continuity pack | Bounded context hand-off when you switch provider mid-task |
 | Trust modes | `ask`, `workspace`, `full`, shown live in the status line |
-| Self-update | `/update` rebuilds, swaps to an unlocked binary slot, and re-execs in the same pane |
+| Self-update | `/update` previews the source/release changes; Enter builds or downloads, then re-execs in the same pane |
 | Cancel | `Ctrl+C` terminates the tracked provider child process, nothing else |
 
 ## Screenshots
@@ -125,8 +125,8 @@ Prebuilt downloads (`concordia-x86_64-pc-windows-msvc.exe`, `SHA256SUMS`, `THIRD
 
 `/update` adapts to how you installed Concordia:
 
-- **From source:** inside the checkout it rebuilds, installs into a free slot, and restarts the pane on the new build.
-- **From a release download:** it fetches the newest release of the configured repository (`CONCORDIA_UPDATE_REPO=owner/name`), verifies the checksum, confirms the new binary runs and reports the expected version, and only then switches over. If any check fails, nothing is installed. `/update check` shows what would happen without changing anything.
+- **From source:** it shows the installed build, the checkout's build, its branch and whether it has uncommitted files, and the changelog entries in between. Enter rebuilds, installs into a free slot and restarts the pane on the new build; `c` opens the full changelog.
+- **From a release download:** it shows the newest release and its notes from the configured repository (`CONCORDIA_UPDATE_REPO=owner/name`). Enter fetches it, verifies the checksum, confirms the new binary runs and reports the expected version, and only then switches over. If any check fails, nothing is installed. `/update check` opens the same preview without changing anything. Esc closes it; `o` opens the release page.
 
 Concordia only contacts the network when you run `/update`.
 
@@ -175,7 +175,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `/open` | Open a file in a side pane; Esc or X closes it |
 | `/copy` | Copy the last reply |
 | `/doctor` | Check your setup, version and configuration |
-| `/update` | Check for and, after confirmation, install an update |
+| `/update` | Preview an update; Enter builds/downloads an available update |
 
 ## Keyboard and mouse
 
