@@ -2723,3 +2723,228 @@ fn stats_command_toggles_the_sampler_for_the_session() {
     h.app.toggle_stats();
     assert!(h.app.stats.is_none());
 }
+
+fn landing_session(
+    account: &str,
+    cwd: &std::path::Path,
+    id: &str,
+    ms: u128,
+) -> crate::sessions::SessionSummary {
+    crate::sessions::SessionSummary {
+        account: account.into(),
+        provider: ProviderKind::Codex,
+        session_id: id.into(),
+        cwd: Some(cwd.to_string_lossy().into_owned()),
+        preview: Some(format!("chat {id}")),
+        modified_ms: ms,
+    }
+}
+
+/// A landing page over two chats in this folder and one in a sibling `lock` folder.
+fn landing_harness() -> Harness {
+    let mut h = Harness::new(100, 24);
+    let here = h.app.cwd.clone();
+    let lock = here.parent().unwrap().join("lock");
+    let sessions = vec![
+        landing_session("acct-x", &here, "first", 3),
+        landing_session("acct-x", &here, "second", 2),
+        landing_session("acct-x", &lock, "third", 1),
+    ];
+    landing::open_with(&mut h.app, sessions, None);
+    h.draw();
+    h
+}
+
+#[test]
+fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
+    let h = landing_harness();
+    let screen = h.screen();
+    let folder = h
+        .app
+        .cwd
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let here = screen
+        .find(&format!("▾ {folder} (2)"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    let lock = screen
+        .find("▸ lock (1)")
+        .unwrap_or_else(|| panic!("{screen}"));
+    assert!(here < lock, "{screen}");
+    assert!(screen.contains("chat first") && screen.contains("chat second"));
+    assert!(
+        !screen.contains("chat third"),
+        "collapsed groups hide their chats"
+    );
+    assert!(screen.contains(" goals "));
+    assert!(
+        screen.contains("Enter open chat · Tab goals · Esc chat"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn enter_on_a_chat_resumes_exactly_that_chat() {
+    let mut h = landing_harness();
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.enter();
+    assert!(h.app.landing.is_none());
+    // The fake account is not registered, so the resume path reports it by name.
+    assert!(
+        h.screen()
+            .contains("resume failed: account is no longer registered"),
+        "{}",
+        h.screen()
+    );
+}
+
+#[test]
+fn enter_on_a_folder_expands_it_and_the_selection_stops_at_the_last_row() {
+    let mut h = landing_harness();
+    for _ in 0..3 {
+        h.key(KeyCode::Down, KeyModifiers::NONE);
+    }
+    h.enter();
+    assert!(h.screen().contains("▾ lock (1)") && h.screen().contains("chat third"));
+    for _ in 0..10 {
+        h.key(KeyCode::Down, KeyModifiers::NONE);
+    }
+    h.enter();
+    assert!(
+        h.screen().contains("resume failed"),
+        "the last row is the lock chat"
+    );
+}
+
+#[test]
+fn typing_closes_the_landing_page_and_keeps_the_key() {
+    let mut h = landing_harness();
+    h.type_str("hi");
+    assert!(h.app.landing.is_none());
+    assert_eq!(h.app.editor.text(), "hi");
+    assert!(h.screen().contains("Enter send"), "{}", h.screen());
+
+    let mut h = landing_harness();
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.landing.is_none());
+    assert!(!h.screen().contains(" chats "));
+}
+
+#[test]
+fn a_double_click_opens_a_chat_and_a_single_click_selects_it() {
+    let mut h = landing_harness();
+    let screen = h.screen();
+    let y = screen
+        .lines()
+        .position(|l| l.contains("chat second"))
+        .unwrap() as u16;
+    h.click(10, y);
+    assert!(h.app.landing.is_some());
+    assert!(h.screen().lines().nth(y as usize).unwrap().contains("> "));
+    h.click(10, y);
+    assert!(h.app.landing.is_none(), "second click opens it");
+    assert!(h.screen().contains("resume failed"));
+}
+
+#[test]
+fn goals_are_added_kept_and_marked_done() {
+    let mut h = landing_harness();
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert!(h.screen().contains("a add goal"));
+    h.type_str("aship it");
+    h.enter();
+    assert!(h.screen().contains("○ ship it"), "{}", h.screen());
+    let saved = landing::load_goals(&h.app.state_root);
+    assert_eq!(saved.len(), 1);
+    assert!(!saved[0].done);
+
+    h.enter();
+    assert!(h.screen().contains("Mark done? Enter yes · Esc no"));
+    h.enter();
+    assert!(!h.screen().contains("ship it"));
+    assert!(landing::load_goals(&h.app.state_root)[0].done);
+}
+
+/// A project folder with a ledger, and a fake harness that prints `output`.
+fn landing_with_work(output: &str) -> Harness {
+    let mut h = Harness::new(110, 24);
+    let here = h.app.cwd.clone();
+    std::fs::create_dir_all(here.join("docs/plans")).unwrap();
+    std::fs::write(here.join("docs/plans/active.md"), "# Active plan\n").unwrap();
+    let script = h.app.state_root.join("fake-harness.cmd");
+    std::fs::write(&script, format!("@echo off\r\necho {output}\r\n")).unwrap();
+    let program = script.to_string_lossy().into_owned();
+    landing::open_with(
+        &mut h.app,
+        vec![landing_session("acct-x", &here, "first", 1)],
+        Some(program),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h
+        .app
+        .landing
+        .as_ref()
+        .is_some_and(landing::Landing::work_pending)
+        && std::time::Instant::now() < deadline
+    {
+        landing::poll(&mut h.app);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.draw();
+    h
+}
+
+#[cfg(windows)]
+#[test]
+fn open_work_comes_from_the_connected_harness() {
+    let h = landing_with_work(
+        r#"{"plans":[{"plan":"p","slice":"Ship the landing page","owner":"o","status":"open","next":"n"}],"rows":[{"section":"backlog","id":"B2","item":"Parked polish","status":"queued"}]}"#,
+    );
+    let screen = h.screen();
+    let folder = h
+        .app
+        .cwd
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(screen.contains("open to-dos"), "{screen}");
+    assert!(screen.contains(&format!("{folder} · 2")), "{screen}");
+    assert!(screen.contains("○ Ship the landing page") && screen.contains("○ Parked polish"));
+}
+
+#[cfg(windows)]
+#[test]
+fn an_old_harness_says_so_and_no_harness_shows_no_to_dos() {
+    let h = landing_with_work("PASS plan:open: 0 open row(s)");
+    assert!(
+        h.screen()
+            .contains("Harness here is too old to list open work"),
+        "{}",
+        h.screen()
+    );
+    let h = landing_harness();
+    assert!(!h.screen().contains("open to-dos"));
+}
+
+#[test]
+fn there_is_no_landing_page_without_chats() {
+    let mut h = Harness::new(100, 24);
+    landing::open_with(&mut h.app, Vec::new(), None);
+    assert!(h.app.landing.is_none());
+    h.draw();
+    assert!(!h.screen().contains(" chats "));
+}
+
+#[test]
+fn ctrl_w_deletes_the_previous_word_in_the_prompt() {
+    let mut h = Harness::new(80, 20);
+    h.type_str("hello there world");
+    h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+    assert_eq!(h.app.editor.text(), "hello there ");
+    h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+    assert_eq!(h.app.editor.text(), "hello ");
+}

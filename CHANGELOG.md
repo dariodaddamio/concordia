@@ -11,6 +11,10 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Added (`2026-10-31a`)
+- A landing page opens with Concordia and with `/new` when chats have been recorded: recent chats grouped by project (a git worktree's chats join its repository, and Concordia's own usage-probe sessions are left out), the current project first and expanded; Enter or a double-click resumes a chat or expands a project. A goals pane keeps your goals (`Tab`, then `a` adds, Enter marks done) and, with a Harness connected, each project's open work from `harness run plan:open --json`. Typing anything starts a message and Esc goes to the chat.
+- `Ctrl+W` deletes the previous word in the prompt, as in shells; it still closes a focused file pane.
+
 ### Changed (`2026-10-30c`)
 - `/update` shows what an update contains before installing it: the installed and available build, where it comes from (the source checkout with its branch and uncommitted files, or the GitHub release with its date), and the changelog entries in between or the release notes. Only Enter installs; `c` opens the full changelog and `o` the release page. A checkout behind the running build is shown but not offered for install.
 - Published releases carry the matching `CHANGELOG.md` section as their notes, and a release without a changelog entry fails.

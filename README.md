@@ -168,7 +168,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `/model` | Choose the model |
 | `/mode` | How much the agent may do without asking |
 | `/usage` | Limits for every account (`r` refreshes) |
-| `/new` | Start a fresh chat |
+| `/new` | Start a fresh chat, opening on the landing page |
 | `/resume` | Continue an earlier chat (`Delete` confirms removal) |
 | `/delegate` | Run tasks on worker accounts; management choices are inside the screen |
 | `/harness` | Connect and run harness tools |
@@ -198,6 +198,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `Ctrl+Up` / `Ctrl+Down` | Focus queued prompts / return to the draft after save or cancel |
 | `Ctrl+R` | Resume a paused queue while preserving the draft |
 | `/open PATH` | Internal read-only file pane; repeat to split; F6 changes focus and Esc/X closes it |
+| `Ctrl+W`, `Ctrl+Backspace` | Delete the previous word in the prompt (`Ctrl+W` closes a focused file pane) |
 | `Ctrl+Z` | Undo in the prompt (also right after a send, which puts the sent text back) |
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | Right-click | Copy the selection, or paste when there is none |
@@ -207,6 +208,14 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 > **WezTerm note:** Concordia captures the mouse, so plain drags select inside Concordia. Hold `Shift` while dragging to use WezTerm's own selection instead. WezTerm intercepts `Ctrl+Shift+C`, so use `Ctrl+C`, right-click or `/copy`.
 
 ## Behaviours worth knowing
+
+Concordia opens on a landing page when this machine has recorded chats. The left pane lists recent
+chats grouped by the folder they ran in, with this folder first. Enter resumes a chat, or expands a
+folder; a double-click does the same. The right pane holds your goals: `Tab` to it, `a` adds one,
+and Enter marks one done. When a Harness is connected (`/harness connect harness`), the pane also
+lists each project's open work from its plan ledger. Typing anything starts a message, and `Esc`
+goes straight to the chat. `/new` opens the page again.
+
 
 - **Continuing on the same account** resumes the session id Concordia recorded (`--resume <id>`). Nothing is added to your prompt.
 - **Switching account or provider** starts a new session on the other side, with bounded recent context in front of your next prompt. Tool state, approvals and the provider's own memory are not carried over, and the pack says so in its header.
