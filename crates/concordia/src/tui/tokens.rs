@@ -133,7 +133,6 @@ pub(super) fn open(app: &mut App) {
     app.update_preview = Some(UpdatePreview {
         lines,
         install_available: false,
-        changelog: None,
         release_url: None,
     });
     app.show_picker(PickerKind::Tokens, "tokens".into(), Vec::new(), false);

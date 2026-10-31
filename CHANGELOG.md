@@ -11,6 +11,10 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Changed (`2026-10-31c`)
+- While an update builds, the message box says so: its title reads `updating Concordia` with the elapsed time, and an empty box reads `Messages are paused until Concordia restarts on the new build`. A draft typed meanwhile is kept.
+- The `/update` screen lists every earlier build with its changes, newest first, formatted like the newest entries, so the whole changelog reads in one place. The `c` key that opened the raw changelog in a side pane is gone.
+
 ### Added (`2026-10-31b`)
 - Concordia keeps a local log of every turn's tokens. `/usage` then `t` shows totals for 24 hours, 7 days and all time, where the tokens went (re-read from the cache, new input, output), and breakdowns by provider, model, account, project and chat. The landing page shows the last 24 hours. Providers count cached input differently, so the log stores the same three parts for each.
 

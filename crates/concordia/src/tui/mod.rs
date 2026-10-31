@@ -1805,26 +1805,6 @@ impl App {
         self.footer_left = FOOTER_HINT.into();
     }
 
-    fn open_update_changelog(&mut self) {
-        if let Some(path) = self
-            .update_preview
-            .as_ref()
-            .and_then(|p| p.changelog.clone())
-        {
-            self.open_file_candidate(
-                crate::file_links::Candidate {
-                    display: path.to_string_lossy().into_owned(),
-                    range: 0..0,
-                    target: path.to_string_lossy().into_owned(),
-                    line: None,
-                    column: None,
-                    markdown: false,
-                },
-                false,
-            );
-        }
-    }
-
     fn open_update_release(&mut self) {
         let Some(url) = self
             .update_preview
@@ -3088,9 +3068,6 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                 {
                     app.dismiss_picker();
                     app.start_job(JobKind::Update);
-                }
-                KeyCode::Char('c') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.open_update_changelog()
                 }
                 KeyCode::Char('o') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.open_update_release()
@@ -4490,12 +4467,35 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
-    let border = if app.busy {
+    // Sending waits for the restart, so the box itself says so, not only the footer.
+    let updating = app
+        .job
+        .as_ref()
+        .filter(|j| j.kind == JobKind::Update)
+        .map(|j| j.started.elapsed().as_secs());
+    let border = if updating.is_some() {
+        Color::Cyan
+    } else if app.busy {
         app.phase.color()
     } else {
         Color::Indexed(240)
     };
-    let title = if app.busy {
+    let title = if let Some(secs) = updating {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(spinner(app.tick_count), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                " updating Concordia",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" \u{b7} {secs}s \u{b7} Esc to cancel "),
+                Style::default().fg(Color::Gray),
+            ),
+        ])
+    } else if app.busy {
         let color = app.phase.color();
         let secs = app.turn_started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         Line::from(vec![
@@ -4558,7 +4558,11 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
             }];
             if empty && i == 0 {
                 spans.push(Span::styled(
-                    "Message Concordia...  (/ for commands)",
+                    if updating.is_some() {
+                        "Messages are paused until Concordia restarts on the new build"
+                    } else {
+                        "Message Concordia...  (/ for commands)"
+                    },
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),

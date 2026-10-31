@@ -1673,11 +1673,10 @@ fn update_preview(install: bool, bullets: usize) -> crate::update::UpdatePreview
         ),
     ];
     lines.extend((0..bullets).map(|i| P::Bullet(format!("change number {i}"))));
-    lines.push(P::Hint("c full changelog · Esc close".into()));
+    lines.push(P::Hint("Esc close".into()));
     crate::update::UpdatePreview {
         lines,
         install_available: install,
-        changelog: None,
         release_url: None,
     }
 }
@@ -1728,13 +1727,13 @@ fn enter_installs_only_when_the_screen_offers_an_update() {
 fn the_update_screen_scrolls_to_its_last_line() {
     let mut h = Harness::new(80, 16);
     update_screen(&mut h, update_preview(true, 30));
-    assert!(!h.screen().contains("c full changelog"));
+    assert!(!h.screen().contains("Esc close"));
     for _ in 0..5 {
         h.key(KeyCode::PageDown, KeyModifiers::NONE);
         h.draw();
     }
     let screen = h.screen();
-    assert!(screen.contains("c full changelog · Esc close"), "{screen}");
+    assert!(screen.contains("Esc close"), "{screen}");
     assert!(screen.contains("change number 29"), "{screen}");
 }
 
@@ -1748,7 +1747,6 @@ fn a_second_update_cannot_start_while_one_is_running() {
         JR::Check(Ok(crate::update::UpdatePreview {
             lines: vec![crate::update::PreviewLine::Text("done".into())],
             install_available: false,
-            changelog: None,
             release_url: None,
         }))
     }));
@@ -3005,4 +3003,27 @@ fn the_landing_page_shows_the_last_24_hours_of_tokens() {
         "{}",
         h.screen()
     );
+}
+
+#[test]
+fn while_updating_the_message_box_says_sending_waits_for_the_restart() {
+    let mut h = Harness::new(110, 24);
+    h.app.job = Some(spawn_job(JobKind::Update, |ctl| {
+        while !ctl.cancelled() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        JR::Update(Err(anyhow::anyhow!("cancelled")))
+    }));
+    h.draw();
+    let screen = h.screen();
+    assert!(screen.contains("updating Concordia"), "{screen}");
+    assert!(
+        screen.contains("Messages are paused until Concordia restarts on the new build"),
+        "{screen}"
+    );
+    h.type_str("hello");
+    h.enter();
+    assert!(h.transcript_text().contains("an update is in progress"));
+    assert_eq!(h.app.editor.text(), "hello", "the draft is kept");
+    h.app.job.as_ref().unwrap().cancel();
 }
