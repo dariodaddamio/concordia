@@ -52,7 +52,8 @@ pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome
             ..RunOutcome::default()
         };
     };
-    let mut command = Command::new(program);
+    // Resolve as a shell would, so npm-style `.cmd` shims start; the stored name is unchanged.
+    let mut command = Command::new(which::which(program).unwrap_or_else(|_| program.into()));
     command
         .args(args)
         .current_dir(cwd)
