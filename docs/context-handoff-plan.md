@@ -309,7 +309,7 @@ through the adapter, as it reads `version --json` and `tools --json`. Open: the 
 - A fixture where the needed detail sits only in the previous chat, and a fake-provider test
   that the new chat finds it by following the pointer.
 
-## Token statistics (owner, 2026-10-31)
+## Token statistics (built in `2026-10-31b`)
 
 Concordia sees every turn's usage, so it can show what was spent through it and where. No model
 and no estimate when the provider reports real numbers; a reading the provider did not report
@@ -333,7 +333,8 @@ Open: how long the log is kept, and whether outside-Concordia chats are counted 
 1. Everyday chat works for real (done in `2026-10-30a`), then the 12-command cut (done in
    `2026-10-30b`).
 2. Landing page: chats by project, Harness to-dos, goals (done in `2026-10-31a`).
-3. Token statistics, logged per turn, shown on the landing page and behind `/usage`.
+3. Token statistics, logged per turn, shown on the landing page and behind `/usage` (done in
+   `2026-10-31b`; worker turns and chats run outside Concordia are not counted yet).
 4. Thread log on by default, and the MCP server registered in created homes.
 5. The opt-in "inside Concordia" note, with timestamps on prompts.
 6. Context-size reading per provider, then the compaction controls.
