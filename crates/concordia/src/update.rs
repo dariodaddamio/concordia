@@ -173,7 +173,6 @@ impl PreviewLine {
 pub struct UpdatePreview {
     pub lines: Vec<PreviewLine>,
     pub install_available: bool,
-    pub changelog: Option<PathBuf>,
     pub release_url: Option<String>,
 }
 
@@ -186,7 +185,6 @@ impl UpdatePreview {
                 PreviewLine::Hint("Esc close".into()),
             ],
             install_available: false,
-            changelog: None,
             release_url: None,
         }
     }
@@ -530,8 +528,7 @@ fn source_preview_for(
         1 => "1 uncommitted file".to_string(),
         n => format!("{n} uncommitted files"),
     };
-    let changelog = root.join("CHANGELOG.md");
-    let sections = fs::read_to_string(&changelog)
+    let sections = fs::read_to_string(root.join("CHANGELOG.md"))
         .map(|s| changelog_sections(&s))
         .unwrap_or_default();
     let from = PreviewLine::Field("From", format!("source checkout · {branch} · {state}"));
@@ -572,6 +569,8 @@ fn source_preview_for(
         lines.push(PreviewLine::Hint(
             "Enter build and restart (about a minute)".into(),
         ));
+        lines.push(PreviewLine::Blank);
+        lines.extend(builds(&sections, |s| s <= installed));
     } else {
         lines.push(PreviewLine::Title(format!(
             "You're on the newest build ({installed})."
@@ -584,14 +583,33 @@ fn source_preview_for(
             lines.extend(current);
             lines.push(PreviewLine::Blank);
         }
+        lines.extend(builds(&sections, |s| s < installed));
     }
-    lines.push(PreviewLine::Hint("c full changelog · Esc close".into()));
+    lines.push(PreviewLine::Hint("Esc close".into()));
     Ok(UpdatePreview {
         lines,
         install_available,
-        changelog: Some(changelog),
         release_url: None,
     })
+}
+
+/// Every build that `include` keeps, newest first, each with its changes: the whole changelog
+/// on this screen, formatted like the newest entries.
+fn builds(sections: &[ChangelogSection], include: impl Fn(&str) -> bool) -> Vec<PreviewLine> {
+    let mut stamps: Vec<&str> = sections
+        .iter()
+        .map(|s| s.stamp.as_str())
+        .filter(|s| include(s))
+        .collect();
+    stamps.sort_unstable_by(|a, b| b.cmp(a));
+    stamps.dedup();
+    let mut lines = Vec::new();
+    for stamp in stamps {
+        lines.push(PreviewLine::Title(format!("Build {stamp}")));
+        lines.extend(grouped(sections, |s| s == stamp));
+        lines.push(PreviewLine::Blank);
+    }
+    lines
 }
 
 /// `/update`: what an update would install, without installing anything.
@@ -623,7 +641,6 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
                     PreviewLine::Hint("Esc close".into()),
                 ],
                 install_available: false,
-                changelog: None,
                 release_url: None,
             },
             crate::release::Check::Available(rel) => {
@@ -657,7 +674,6 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
                 UpdatePreview {
                     lines,
                     install_available: true,
-                    changelog: None,
                     release_url: Some(rel.html_url),
                 }
             }
@@ -1267,7 +1283,6 @@ mod tests {
             JobResult::Check(Ok(UpdatePreview {
                 lines: vec![PreviewLine::Text("stopped".into())],
                 install_available: false,
-                changelog: None,
                 release_url: None,
             }))
         });
@@ -1391,7 +1406,12 @@ mod tests {
                 " · Text before a tool shows once.",
                 "",
                 "Enter build and restart (about a minute)",
-                "c full changelog · Esc close",
+                "",
+                "Build 2026-10-30a",
+                " Fixed",
+                " · Cursor tool names.",
+                "",
+                "Esc close",
             ]
         );
 
@@ -1405,22 +1425,28 @@ mod tests {
     }
 
     #[test]
-    fn the_installed_build_shows_what_is_in_it_and_offers_no_install() {
-        let dir = checkout_at_build("2026-10-30a");
+    fn the_installed_build_shows_what_is_in_it_then_every_earlier_build() {
+        let dir = checkout_at_build("2026-10-30b");
         let preview =
-            source_preview_for(dir.path(), "0.0.1", "2026-10-30a", &JobControl::default()).unwrap();
+            source_preview_for(dir.path(), "0.0.1", "2026-10-30b", &JobControl::default()).unwrap();
         assert!(!preview.install_available);
         assert_eq!(
             preview.plain_lines(),
             [
-                "You're on the newest build (2026-10-30a).",
+                "You're on the newest build (2026-10-30b).",
                 "From       source checkout · main · clean",
                 "",
                 "What's in this build",
+                " Changed",
+                " · The list has 12 commands, each opening one screen.",
+                " Fixed",
+                " · Text before a tool shows once.",
+                "",
+                "Build 2026-10-30a",
                 " Fixed",
                 " · Cursor tool names.",
                 "",
-                "c full changelog · Esc close",
+                "Esc close",
             ]
         );
     }
@@ -1443,7 +1469,7 @@ mod tests {
                 "",
                 "The checkout is behind this build. Pull or switch branch, then run /update again.",
                 "",
-                "c full changelog · Esc close",
+                "Esc close",
             ]
         );
     }

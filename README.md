@@ -125,7 +125,7 @@ Prebuilt downloads (`concordia-x86_64-pc-windows-msvc.exe`, `SHA256SUMS`, `THIRD
 
 `/update` adapts to how you installed Concordia:
 
-- **From source:** it shows the installed build, the checkout's build, its branch and whether it has uncommitted files, and the changelog entries in between. Enter rebuilds, installs into a free slot and restarts the pane on the new build; `c` opens the full changelog.
+- **From source:** it shows the installed build, the checkout's build, its branch and whether it has uncommitted files, and the changelog entries in between, followed by every earlier build. Enter rebuilds, installs into a free slot and restarts the pane on the new build; while it builds, the message box shows that sending waits for the restart.
 - **From a release download:** it shows the newest release and its notes from the configured repository (`CONCORDIA_UPDATE_REPO=owner/name`). Enter fetches it, verifies the checksum, confirms the new binary runs and reports the expected version, and only then switches over. If any check fails, nothing is installed. `/update check` opens the same preview without changing anything. Esc closes it; `o` opens the release page.
 
 Concordia only contacts the network when you run `/update`.
