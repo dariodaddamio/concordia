@@ -301,7 +301,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
         f.render_widget(Paragraph::new(lines), inner);
         if focused {
             f.render_widget(
-                Paragraph::new("Esc chat · F6 focus · Ctrl+W close").style(style),
+                Paragraph::new("Esc chat · F6 focus · q close").style(style),
                 Rect {
                     x: rect.x + 1,
                     y: rect.bottom() - 1,
@@ -342,8 +342,8 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         state.focused = None;
         return true;
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('w' | 'W'))
-    {
+    // A read-only pane closes on `q`, as pagers do; Ctrl+W belongs to the terminal's tabs.
+    if key.modifiers.is_empty() && key.code == KeyCode::Char('q') {
         state.close(id);
         return true;
     }

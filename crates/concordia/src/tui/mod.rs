@@ -3331,12 +3331,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
             app.cycle_mode();
             false
         }
-        // Ctrl+W deletes the previous word, as in shells; a focused file pane closes on it first.
         KeyCode::Backspace if ctrl => {
-            app.editor.delete_word_left();
-            false
-        }
-        KeyCode::Char('w' | 'W') if ctrl && !alt => {
             app.editor.delete_word_left();
             false
         }

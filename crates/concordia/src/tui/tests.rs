@@ -2940,11 +2940,9 @@ fn there_is_no_landing_page_without_chats() {
 }
 
 #[test]
-fn ctrl_w_deletes_the_previous_word_in_the_prompt() {
+fn ctrl_w_is_left_to_the_terminal() {
     let mut h = Harness::new(80, 20);
     h.type_str("hello there world");
     h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
-    assert_eq!(h.app.editor.text(), "hello there ");
-    h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
-    assert_eq!(h.app.editor.text(), "hello ");
+    assert_eq!(h.app.editor.text(), "hello there world");
 }

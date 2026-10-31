@@ -197,8 +197,8 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `Ctrl+E` | Open searchable full activity detail; `Esc` closes and `Ctrl+C` copies |
 | `Ctrl+Up` / `Ctrl+Down` | Focus queued prompts / return to the draft after save or cancel |
 | `Ctrl+R` | Resume a paused queue while preserving the draft |
-| `/open PATH` | Internal read-only file pane; repeat to split; F6 changes focus and Esc/X closes it |
-| `Ctrl+W`, `Ctrl+Backspace` | Delete the previous word in the prompt (`Ctrl+W` closes a focused file pane) |
+| `/open PATH` | Internal read-only file pane; repeat to split; F6 changes focus, Esc returns to the chat, and `q` or X closes it |
+| `Ctrl+Backspace` | Delete the previous word in the prompt |
 | `Ctrl+Z` | Undo in the prompt (also right after a send, which puts the sent text back) |
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | Right-click | Copy the selection, or paste when there is none |

@@ -116,7 +116,10 @@ fn focused_preview_consumes_typing_enter_and_paste_and_esc_restores_chat() {
     assert_eq!(h.app.editor.text(), "preserve me!");
     h.key(KeyCode::F(6), KeyModifiers::NONE);
     assert!(h.app.workspace.focused.is_some());
+    // Ctrl+W is the terminal's; q closes a focused read-only pane.
     h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+    assert!(!h.app.workspace.panes.is_empty());
+    h.key(KeyCode::Char('q'), KeyModifiers::NONE);
     assert!(h.app.workspace.panes.is_empty());
 }
 
