@@ -11,6 +11,10 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Changed (`2026-10-30c`)
+- `/update` shows what an update contains before installing it: the installed and available build, where it comes from (the source checkout with its branch and uncommitted files, or the GitHub release with its date), and the changelog entries in between or the release notes. Only Enter installs; `c` opens the full changelog and `o` the release page. A checkout behind the running build is shown but not offered for install.
+- Published releases carry the matching `CHANGELOG.md` section as their notes, and a release without a changelog entry fails.
+
 ### Fixed (`2026-10-30b`)
 - Cursor text written just before a tool call no longer appears twice: Cursor sends it in fragments and then whole, and the whole copy is now recognised.
 

@@ -269,7 +269,9 @@ pub fn dispatch_slash(
         SlashCommand::Exit => (CommandOutcome::Exit, Vec::new()),
         SlashCommand::Invalid(name) => (
             CommandOutcome::Ok,
-            vec![format!("invalid arguments for /{name}; type / to see the commands")],
+            vec![format!(
+                "invalid arguments for /{name}; type / to see the commands"
+            )],
         ),
         SlashCommand::Config => (CommandOutcome::Ok, vec![format_config_help()]),
         SlashCommand::New => (
@@ -307,11 +309,8 @@ pub fn dispatch_slash(
                 .map(str::to_string)
                 .collect(),
         ),
-        SlashCommand::Update => (CommandOutcome::Update, vec!["updating...".into()]),
-        SlashCommand::UpdateCheck => (
-            CommandOutcome::UpdateCheck,
-            vec!["checking for updates...".into()],
-        ),
+        SlashCommand::Update => (CommandOutcome::Update, Vec::new()),
+        SlashCommand::UpdateCheck => (CommandOutcome::UpdateCheck, Vec::new()),
         SlashCommand::Version => {
             let exe = std::env::current_exe()
                 .map(|p| p.display().to_string())
@@ -357,7 +356,9 @@ pub fn dispatch_slash(
         ),
         SlashCommand::Unknown(name) => (
             CommandOutcome::Ok,
-            vec![format!("unknown command: /{name}; type / to see the commands")],
+            vec![format!(
+                "unknown command: /{name}; type / to see the commands"
+            )],
         ),
         SlashCommand::Harness(_) => (
             CommandOutcome::Ok,
