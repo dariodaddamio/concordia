@@ -145,7 +145,7 @@ impl StreamParser {
                 let detail = block
                     .get("input")
                     .filter(|v| !v.is_null() && *v != &Value::Object(Default::default()))
-                    .map(format_provider_value);
+                    .and_then(|i| self.input_detail(i));
                 self.partial_tools
                     .insert(index, (id.clone(), String::new(), false));
                 self.tools
@@ -250,7 +250,7 @@ impl StreamParser {
                 "tool_use" => {
                     let id = b.get("id").and_then(Value::as_str).unwrap_or("tool");
                     let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
-                    let detail = b.get("input").and_then(tool_input_detail);
+                    let detail = b.get("input").and_then(|i| self.input_detail(i));
                     self.tools
                         .insert(id.to_string(), (name.to_string(), detail.clone()));
                     out.push(StreamPart::Card(StreamCard {
@@ -409,6 +409,19 @@ impl StreamParser {
     }
 
     /// `text` with this session's folder removed from the front of any path inside it.
+    /// A tool's input as card detail, with file paths inside the session folder made relative.
+    fn input_detail(&self, input: &Value) -> Option<String> {
+        let mut input = input.clone();
+        if let Some(map) = input.as_object_mut() {
+            for key in ["file_path", "path", "notebook_path"] {
+                if let Some(Value::String(path)) = map.get_mut(key) {
+                    *path = self.relative(path);
+                }
+            }
+        }
+        tool_input_detail(&input)
+    }
+
     fn relative(&self, text: &str) -> String {
         let Some(cwd) = self.cwd.as_ref().and_then(|c| c.to_str()) else {
             return text.to_string();
@@ -757,6 +770,19 @@ mod usage_tests {
         }
         let mut c = StreamParser::new(Flavor::Cursor);
         assert!(usage_of(&c.parse_line(r#"{"type":"result","result":"ok"}"#)).is_empty());
+    }
+
+    #[test]
+    fn claude_tool_paths_inside_the_session_folder_are_shown_relative() {
+        let mut p = StreamParser::new(Flavor::Claude).with_cwd(Path::new(r"C:\work\calc"));
+        let parts = p.parse_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"C:\\work\\calc\\calc.py"}}]}}"#,
+        );
+        let StreamPart::Card(card) = &parts[0] else {
+            panic!("{parts:?}");
+        };
+        let line = crate::provider::stream_cards::format_card_line(card);
+        assert!(line.contains("calc.py") && !line.contains("work"), "{line}");
     }
 
     /// A recorded Cursor turn, parsed as a turn in `C:\work\calc` would be.

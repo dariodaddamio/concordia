@@ -11,6 +11,13 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed (`2026-10-31d`)
+- Cursor usage refreshes again. Concordia types `/usage` into Cursor's own screen, and Cursor ignores a bare carriage return there, so every fetch timed out and the header kept showing an old reading. It now sends a real Enter key event.
+- Claude tool cards name what they act on (`Read calc.py`) instead of showing `{`: the preview read the whole detail as JSON, but Claude's detail is the input followed by the tool's output. Paths inside the session folder are shown relative to it, as Cursor's already were.
+
+### Changed (`2026-10-31d`)
+- After Enter on the `/update` screen, the screen stays open and shows the update's progress (the current step and elapsed time) with `Esc cancels the update`, and closes when the update finishes. Closing any other screen no longer touches a running update.
+
 ### Changed (`2026-10-31c`)
 - While an update builds, the message box says so: its title reads `updating Concordia` with the elapsed time, and an empty box reads `Messages are paused until Concordia restarts on the new build`. A draft typed meanwhile is kept.
 - The `/update` screen lists every earlier build with its changes, newest first, formatted like the newest entries, so the whole changelog reads in one place. The `c` key that opened the raw changelog in a side pane is gone.

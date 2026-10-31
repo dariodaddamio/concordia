@@ -603,17 +603,31 @@ fn card_preview(detail: &str) -> String {
         .or_else(|| input.strip_prefix("input: "))
         .unwrap_or(input);
     if arguments.trim_start().starts_with(['{', '"']) {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) {
+        // Only the leading JSON value: the tool's output may follow it (Claude's cards).
+        let first = serde_json::Deserializer::from_str(arguments)
+            .into_iter::<serde_json::Value>()
+            .next()
+            .and_then(Result::ok);
+        if let Some(value) = first {
             let value = match value.as_str() {
                 Some(s) => serde_json::from_str(s).unwrap_or(value.clone()),
                 None => value,
             };
-            if let Some(cmd) = value
-                .get("cmd")
-                .or_else(|| value.get("command"))
-                .and_then(|v| v.as_str())
+            // The argument that names what the tool acted on.
+            if let Some(subject) = [
+                "cmd",
+                "command",
+                "file_path",
+                "path",
+                "pattern",
+                "query",
+                "url",
+                "description",
+            ]
+            .iter()
+            .find_map(|key| value.get(key).and_then(|v| v.as_str()))
             {
-                command = cmd.into();
+                command = subject.into();
             }
         }
     }

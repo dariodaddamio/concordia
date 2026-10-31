@@ -1246,6 +1246,7 @@ impl App {
         self.poll_pending_login();
         self.poll_job();
         landing::poll(self);
+        self.update_progress();
         self.poll_compat();
         self.poll_proposals();
         if self.usage_fetcher.poll() {
@@ -1790,11 +1791,60 @@ impl App {
         };
     }
 
-    fn dismiss_picker(&mut self) {
-        if self
-            .job
+    /// While an update runs, the update screen shows its progress instead of the changelog.
+    fn update_progress(&mut self) {
+        let showing = self
+            .picker
             .as_ref()
-            .is_some_and(|job| job.kind == JobKind::Check)
+            .is_some_and(|p| p.kind == PickerKind::Update);
+        let Some(job) = self.job.as_ref().filter(|j| j.kind == JobKind::Update) else {
+            return;
+        };
+        if !showing {
+            return;
+        }
+        let status = job.status();
+        let step = if status.is_empty() {
+            "starting".to_string()
+        } else {
+            status.chars().take(120).collect()
+        };
+        use crate::update::PreviewLine as P;
+        self.update_preview = Some(crate::update::UpdatePreview {
+            lines: vec![
+                P::Title(format!("{} Updating Concordia", spinner(self.tick_count))),
+                P::Field("Elapsed", format!("{}s", job.started.elapsed().as_secs())),
+                P::Field("Step", step),
+                P::Blank,
+                P::Text("Messages are paused until Concordia restarts on the new build.".into()),
+                P::Blank,
+                P::Hint("Esc cancels the update".into()),
+            ],
+            install_available: false,
+            release_url: None,
+        });
+        self.footer_left = "Esc cancels the update".into();
+    }
+
+    /// Close the update screen when its update has finished, without cancelling anything.
+    fn close_update_screen(&mut self) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Update)
+        {
+            self.picker = None;
+            self.update_preview = None;
+            self.footer_left = FOOTER_HINT.into();
+        }
+    }
+
+    fn dismiss_picker(&mut self) {
+        // Only the update screen owns a job: its check, or the update it started.
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Update)
         {
             if let Some(job) = &self.job {
                 job.cancel();
@@ -2361,6 +2411,9 @@ impl App {
         };
         let cancelled = self.job.as_ref().is_some_and(Job::is_cancelled);
         self.job = None;
+        if matches!(result, JobResult::Update(_)) {
+            self.close_update_screen();
+        }
         match result {
             JobResult::Update(Ok(UpdateOutcome::Installed(result))) => {
                 crate::logging::info(&format!(
@@ -3066,8 +3119,12 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                         .as_ref()
                         .is_some_and(|p| p.install_available) =>
                 {
-                    app.dismiss_picker();
                     app.start_job(JobKind::Update);
+                    if app.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
+                        app.update_progress();
+                    } else {
+                        app.dismiss_picker();
+                    }
                 }
                 KeyCode::Char('o') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.open_update_release()
