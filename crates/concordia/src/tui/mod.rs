@@ -72,6 +72,7 @@ mod stats_ui;
 mod text;
 mod tips;
 mod token_line;
+mod tokens;
 mod transcript;
 mod usage_style;
 mod workers;
@@ -228,6 +229,8 @@ struct PendingLogin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PickerKind {
+    /// Tokens through Concordia, opened with `t` from `/usage`.
+    Tokens,
     Agents,
     Recovery,
     Resume,
@@ -968,10 +971,36 @@ impl App {
         Some(tips::tip_for(self.tip_seed))
     }
 
+    /// Add a finished turn's tokens to the local token log.
+    fn record_tokens(&self, usage: &crate::provider::stream_cards::TurnUsage) {
+        let (new_input, cached_input, output) = crate::token_log::split(self.provider, usage);
+        let entry = crate::token_log::Entry {
+            at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            provider: self.provider.as_str().to_string(),
+            account: self.account.clone(),
+            model: (!self.model.is_empty() && self.model != "?").then(|| self.model.clone()),
+            project: self.cwd.to_string_lossy().into_owned(),
+            chat: self.native_session_id.clone(),
+            new_input,
+            cached_input,
+            output,
+            cost_usd: usage.cost_usd,
+        };
+        if let Err(e) = crate::token_log::record(&self.state_root, &entry) {
+            crate::logging::info(&format!("token log not written: {e}"));
+        }
+    }
+
     fn finalize_turn(&mut self, outcome: TurnOutcome) {
         self.submitted_prompt = None;
         let elapsed = self.turn_started.map(|t| t.elapsed());
         let usage = std::mem::take(&mut self.turn_usage);
+        if !usage.is_empty() {
+            self.record_tokens(&usage);
+        }
         self.session_input += usage.input.unwrap_or(0);
         self.session_output += usage.output.unwrap_or(0);
         self.session_cost += usage.cost_usd.unwrap_or(0.0);
@@ -1718,6 +1747,7 @@ impl App {
                 .collect()
         };
         self.show_picker(PickerKind::Usage, "usage".into(), rows, false);
+        self.footer_left = "↑↓ Enter · r refresh · t tokens · Esc".into();
     }
 
     fn show_picker(
@@ -2069,7 +2099,7 @@ impl App {
                     }
                 }
             }
-            PickerKind::Update => {}
+            PickerKind::Update | PickerKind::Tokens => {}
         }
         let _ = label;
     }
@@ -3045,7 +3075,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         return false;
     }
     if let Some(picker) = app.picker.as_mut() {
-        if picker.kind == PickerKind::Update {
+        if matches!(picker.kind, PickerKind::Update | PickerKind::Tokens) {
             let visible = app.update_view.max(1);
             let last = app.update_rows.saturating_sub(visible);
             match key.code {
@@ -3088,6 +3118,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
             KeyCode::Esc => app.dismiss_picker(),
             KeyCode::Enter => app.apply_picker_selection(Some(turn_tx)),
             KeyCode::Delete if picker.kind == PickerKind::Resume => app.prepare_resume_delete(),
+            KeyCode::Char('t') if picker.kind == PickerKind::Usage => tokens::open(app),
             KeyCode::Char('r') if picker.kind == PickerKind::Usage => {
                 for account in crate::accounts::accounts_with_auth(&app.state_root) {
                     app.usage_fetcher.invalidate(&account.account);
@@ -3464,7 +3495,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     }
     if app.picker.is_some() {
         let max = app.update_rows.saturating_sub(app.update_view.max(1));
-        if let Some(picker) = app.picker.as_mut().filter(|p| p.kind == PickerKind::Update) {
+        if let Some(picker) = app
+            .picker
+            .as_mut()
+            .filter(|p| matches!(p.kind, PickerKind::Update | PickerKind::Tokens))
+        {
             match m.kind {
                 MouseEventKind::ScrollUp => picker
                     .state
@@ -4353,7 +4388,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(picker) = app.picker.as_mut() else {
         return;
     };
-    if picker.kind == PickerKind::Update {
+    if matches!(picker.kind, PickerKind::Update | PickerKind::Tokens) {
         let width = area.width.saturating_sub(4).min(100);
         let inner = width.saturating_sub(4) as usize;
         let loading = [crate::update::PreviewLine::Text(
@@ -4389,7 +4424,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         let visible: Vec<Line> = rows.into_iter().skip(offset).take(view).collect();
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" update ")
+            .title(format!(" {} ", picker.title))
             .padding(ratatui::widgets::Padding::horizontal(1));
         f.render_widget(Paragraph::new(visible).block(block), popup);
         return;

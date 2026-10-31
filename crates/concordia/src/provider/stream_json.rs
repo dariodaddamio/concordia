@@ -423,6 +423,13 @@ impl StreamParser {
 
     fn result(&mut self, ev: &Value, out: &mut Vec<StreamPart>) {
         let mut usage = TurnUsage::from_json(ev.get("usage"), "cache_read_input_tokens");
+        if self.flavor == Flavor::Cursor && usage.is_empty() {
+            // Cursor names its counts in camelCase (`inputTokens`, `cacheReadTokens`).
+            let num = |k: &str| ev.pointer(&format!("/usage/{k}")).and_then(Value::as_u64);
+            usage.input = num("inputTokens");
+            usage.output = num("outputTokens");
+            usage.cached = num("cacheReadTokens");
+        }
         usage.cost_usd = ev.get("total_cost_usd").and_then(Value::as_f64);
         if !usage.is_empty() {
             out.push(StreamPart::Usage(usage));
@@ -810,6 +817,18 @@ mod usage_tests {
             thinking.lines().next(),
             Some("I need to explain what calc.py does in one sentence.")
         );
+        // Cursor reports its counts in camelCase; they used to be dropped.
+        let usage: Vec<_> = parts
+            .iter()
+            .filter_map(|p| match p {
+                StreamPart::Usage(u) => Some(u.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].input, Some(12350));
+        assert_eq!(usage[0].cached, Some(36864));
+        assert_eq!(usage[0].output, Some(224));
     }
 
     #[test]

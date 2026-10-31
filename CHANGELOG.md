@@ -11,6 +11,12 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Added (`2026-10-31b`)
+- Concordia keeps a local log of every turn's tokens. `/usage` then `t` shows totals for 24 hours, 7 days and all time, where the tokens went (re-read from the cache, new input, output), and breakdowns by provider, model, account, project and chat. The landing page shows the last 24 hours. Providers count cached input differently, so the log stores the same three parts for each.
+
+### Fixed (`2026-10-31b`)
+- Cursor turns show their token counts: Cursor reports them in camelCase (`inputTokens`, `cacheReadTokens`), which Concordia did not read.
+
 ### Added (`2026-10-31a`)
 - A landing page opens with Concordia and with `/new` when chats have been recorded: recent chats grouped by project (a git worktree's chats join its repository, and Concordia's own usage-probe sessions are left out), the current project first and expanded; Enter or a double-click resumes a chat or expands a project. A goals pane keeps your goals (`Tab`, then `a` adds, Enter marks done) and, with a Harness connected, each project's open work from `harness run plan:open --json`. Typing anything starts a message and Esc goes to the chat.
 - A focused file pane closes with `q` (or its X). `Ctrl+W`, which terminals use to close tabs, is no longer bound.

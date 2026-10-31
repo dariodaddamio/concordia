@@ -2946,3 +2946,63 @@ fn ctrl_w_is_left_to_the_terminal() {
     h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "hello there world");
 }
+
+fn log_turn(h: &Harness, provider: &str, parts: (u64, u64, u64)) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    crate::token_log::record(
+        &h.app.state_root,
+        &crate::token_log::Entry {
+            at,
+            provider: provider.into(),
+            account: "acct-x".into(),
+            model: Some("auto".into()),
+            project: h.app.cwd.to_string_lossy().into_owned(),
+            chat: Some("chat-1".into()),
+            new_input: parts.0,
+            cached_input: parts.1,
+            output: parts.2,
+            cost_usd: None,
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
+    let mut h = Harness::new(100, 40);
+    log_turn(&h, "cursor", (12_000, 36_000, 200));
+    log_turn(&h, "codex", (500, 1_500, 100));
+    tokens::open(&mut h.app);
+    h.draw();
+    let screen = h.screen();
+    assert!(screen.contains(" tokens "), "{screen}");
+    assert!(
+        screen.contains("24 hours   50.3k tokens · 2 turns"),
+        "{screen}"
+    );
+    assert!(screen.contains("Re-read from the cache"), "{screen}");
+    assert!(screen.contains("cursor") && screen.contains("codex"));
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
+fn the_landing_page_shows_the_last_24_hours_of_tokens() {
+    let mut h = Harness::new(100, 24);
+    log_turn(&h, "cursor", (1_000, 2_000, 300));
+    let here = h.app.cwd.clone();
+    landing::open_with(
+        &mut h.app,
+        vec![landing_session("acct-x", &here, "first", 1)],
+        None,
+    );
+    h.draw();
+    assert!(
+        h.screen().contains("3.3k tokens in 24 hours"),
+        "{}",
+        h.screen()
+    );
+}

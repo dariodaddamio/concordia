@@ -193,6 +193,8 @@ pub struct Landing {
     chats_area: Rect,
     goals_area: Rect,
     last_click: Option<(usize, Instant)>,
+    /// Tokens through Concordia in the last 24 hours, read once when the page opens.
+    tokens_24h: u64,
 }
 
 impl Landing {
@@ -295,6 +297,7 @@ pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: O
         chats_area: Rect::default(),
         goals_area: Rect::default(),
         last_click: None,
+        tokens_24h: super::tokens::last_day_total(&app.state_root),
     };
     app.footer_left = landing.hint().into();
     app.landing = Some(landing);
@@ -589,10 +592,22 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let dim = Style::default().add_modifier(Modifier::DIM);
 
     // Chats: groups and their chats, the selection kept in view.
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .title(" chats ")
         .border_style(border(landing.pane == Pane::Chats));
+    if landing.tokens_24h > 0 {
+        block = block.title_bottom(
+            Line::styled(
+                format!(
+                    " {} tokens in 24 hours ",
+                    super::token_line::compact(landing.tokens_24h)
+                ),
+                dim,
+            )
+            .right_aligned(),
+        );
+    }
     let inner = block.inner(panes[0]);
     f.render_widget(block, panes[0]);
     landing.chats_area = inner;

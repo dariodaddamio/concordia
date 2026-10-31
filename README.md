@@ -167,7 +167,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `/use` | Switch, add or remove accounts |
 | `/model` | Choose the model |
 | `/mode` | How much the agent may do without asking |
-| `/usage` | Limits for every account (`r` refreshes) |
+| `/usage` | Limits for every account (`r` refreshes, `t` shows tokens through Concordia) |
 | `/new` | Start a fresh chat, opening on the landing page |
 | `/resume` | Continue an earlier chat (`Delete` confirms removal) |
 | `/delegate` | Run tasks on worker accounts; management choices are inside the screen |
