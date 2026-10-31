@@ -186,3 +186,20 @@ fn verify_end_to_end_opens_the_gate_only_for_a_real_matching_report() {
         .iter()
         .any(|l| l.contains("verified")));
 }
+
+/// npm installs Node CLIs on Windows as `name.cmd`; a program named without its extension must
+/// still start, as `harness` does in a shell.
+#[cfg(windows)]
+#[test]
+fn a_cmd_shim_starts_by_its_bare_name() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("fake-shim.cmd"),
+        "@echo off\r\necho shim says %1\r\n",
+    )
+    .unwrap();
+    let bare = dir.path().join("fake-shim").to_string_lossy().into_owned();
+    let out = run_command(&[bare, "hello".into()], dir.path(), Duration::from_secs(20));
+    assert_eq!(out.exit, Some(0), "{}", out.stderr);
+    assert_eq!(out.stdout.trim(), "shim says hello");
+}

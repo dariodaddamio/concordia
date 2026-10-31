@@ -54,6 +54,7 @@ mod editor;
 mod files;
 mod input;
 mod input_stream;
+mod landing;
 mod markdown;
 mod native_agents;
 mod palette;
@@ -327,6 +328,7 @@ pub struct App {
     native_agents: native_agents::State,
     footer_left: String,
     picker: Option<Picker>,
+    landing: Option<landing::Landing>,
     update_preview: Option<UpdatePreview>,
     /// Wrapped rows of the `/update` screen and how many fit, as last drawn.
     update_rows: usize,
@@ -1214,6 +1216,7 @@ impl App {
         self.workspace.poll();
         self.poll_pending_login();
         self.poll_job();
+        landing::poll(self);
         self.poll_compat();
         self.poll_proposals();
         if self.usage_fetcher.poll() {
@@ -2284,6 +2287,7 @@ impl App {
             self.need_context_pack = false;
             self.thread = crate::threads::start(&self.state_root);
             self.thread_meta_done = false;
+            landing::open(self);
         }
         if !lines.is_empty() {
             self.push_command(line);
@@ -2576,6 +2580,7 @@ impl App {
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            landing: None,
             update_preview: None,
             update_rows: 0,
             update_view: 0,
@@ -2685,6 +2690,7 @@ pub async fn run_chat_tui() -> Result<()> {
     if !app.recovery_choices().is_empty() {
         app.open_recovery_picker();
     }
+    landing::open(&mut app);
     app.prior_provider = app.provider;
     app.prior_home = app
         .home_path
@@ -3034,6 +3040,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         KeyEventKind::Release => return false,
         KeyEventKind::Repeat if !matches!(key.code, KeyCode::Backspace) => return false,
         _ => {}
+    }
+    if landing::visible(app) && landing::handle_key(app, key) {
+        return false;
     }
     if let Some(picker) = app.picker.as_mut() {
         if picker.kind == PickerKind::Update {
@@ -3436,6 +3445,9 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if landing::visible(app) && landing::handle_mouse(app, m) {
+        return;
+    }
     if app.activity.detail.is_some() {
         match m.kind {
             MouseEventKind::ScrollUp => {
@@ -3701,7 +3713,11 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
     }
 
     draw_header(f, chunks[0], app);
-    draw_transcript(f, chunks[1], app);
+    if landing::visible(app) {
+        landing::draw(f, chunks[1], app);
+    } else {
+        draw_transcript(f, chunks[1], app);
+    }
     draw_input(f, chunks[2], app);
     queue::draw(f, queue_area, app);
     if app.picker.is_some() {

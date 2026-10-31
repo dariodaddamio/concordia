@@ -52,7 +52,7 @@ include a line/column (`src/main.rs:12:3`) or Markdown line fragment (`#L12`). M
 keep the explicit destination. `/open PATH` opens up to three file panes beside
 chat; reopening a file focuses its existing pane. Click to focus, F6 cycles focus, Esc returns to
 chat, arrows/PageUp/PageDown/Home/End scroll, and Left/Right pan. The title shows a stable pane id.
-Click X or press Ctrl+W in a focused file. Drag the main divider or
+Click X or press q in a focused file. Drag the main divider or
 the bottom border between file panes to resize. Files are read asynchronously, limited to 2 MiB
 and 50,000 lines each, and must be UTF-8 text. File focus consumes typing/Enter and rejects paste;
 these panes do not edit files. Small terminals hide panes without losing their contents and restore

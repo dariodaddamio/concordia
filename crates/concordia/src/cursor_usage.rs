@@ -25,6 +25,12 @@ pub struct PtySpec {
     pub cwd: PathBuf,
 }
 
+/// A fixed empty folder, so Cursor records its workspace trust once rather than per fetch. The
+/// sessions Cursor records there are Concordia's, not the person's.
+pub fn probe_dir() -> PathBuf {
+    std::env::temp_dir().join("concordia-usage-probe")
+}
+
 /// Program, args and env for the interactive agent behind `bin`. A `.cmd` shim is bypassed through
 /// the PowerShell script it would run (as in `provider::launch`), else run through `cmd.exe /c`.
 pub fn interactive_launch(bin: &str) -> (String, Vec<String>, Vec<(String, String)>) {
@@ -71,8 +77,7 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     if let Some(key) = crate::identity::cursor_api_key_for_home(home) {
         env.push(("CURSOR_API_KEY".into(), key));
     }
-    // A fixed empty folder, so Cursor records its workspace trust once rather than per fetch.
-    let cwd = std::env::temp_dir().join("concordia-usage-probe");
+    let cwd = probe_dir();
     std::fs::create_dir_all(&cwd).map_err(|e| format!("temp dir: {e}"))?;
     run_usage_in_pty(
         &PtySpec {
