@@ -63,6 +63,43 @@ fn cli_and_mcp_read_the_same_revision_and_reject_stale_sources() {
     let excerpt: native_memory::Excerpt =
         serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(excerpt.raw, raw);
+    let history = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"native_read","arguments":{"id":summary.id,"history":true}}});
+    let history_response = read(&history);
+    assert_eq!(history_response["result"]["isError"], false);
+    let whole: native_memory::Summary = serde_json::from_str(
+        history_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(whole.history.as_ref().unwrap().complete);
+    assert_eq!(
+        native_memory::read(dir.path(), &whole.id, 1, 0, 4096)
+            .unwrap()
+            .raw,
+        raw
+    );
+    let listed = Command::new(env!("CARGO_BIN_EXE_concordia"))
+        .env("CONCORDIA_STATE_DIR", dir.path())
+        .args([
+            "chat",
+            "sources",
+            &whole.id,
+            "--from-message",
+            "1",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed["messages"][0]["message"], 1);
+    assert_eq!(listed["messages"].as_array().unwrap().len(), 1);
     let mut invalid = request.clone();
     invalid["params"]["arguments"]["offset"] = json!("0");
     assert_eq!(read(&invalid)["result"]["isError"], true);

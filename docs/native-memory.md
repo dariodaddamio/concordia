@@ -6,6 +6,28 @@ native readback reports unavailable rather than guessing a source.
 
 ## Identity and exact readback
 
+Build `2026-11-02e` adds forward whole-history scans. Existing recent-window indexes and pointers
+remain compatible. Each operation reads a bounded page and persists ranges/hashes, not text:
+
+```text
+concordia chat index SESSION --account ACCOUNT --provider codex --scope whole
+concordia chat index SESSION --account ACCOUNT --provider codex --scope whole --cursor PREVIOUS_INDEX
+concordia chat sources INDEX --from-message NEXT_ORDINAL --limit 20
+```
+
+Follow `history.next_cursor` until it is null. Each scan page contains at most 128 records and
+8 MiB of source bytes; continuation also verifies the preceding page. The initial source length
+stays fixed during pagination, so appends cannot shift ordinals or silently extend the scan.
+`history.complete` is true only at the snapshot end with no skipped records. Oversized records
+that exceed a scan page and malformed JSON are explicitly counted in `skipped_records`;
+these scans do not claim complete readback. Cursors still advance across oversized records.
+Whole-history records up to 8 MiB can be read through the same bounded UTF-8 excerpt API.
+
+`native_read` accepts `from_message` and `limit` for range listings. `{ "id": INDEX, "history": true }`
+starts whole-history indexing from a recent pointer, or follows the next page from a history pointer.
+Message ordinals are global within that history snapshot; each returned page names its first ordinal.
+No provider process or inference call is used for these Codex/Claude file operations.
+
 Every saved index binds the provider, registered account, canonical home, explicit native session,
 relative session-file path, OS file identity, captured file length, SHA-256 of a bounded header,
 and the byte range/hash of each indexed event. The index ID is a SHA-256 of this metadata.

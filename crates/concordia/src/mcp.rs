@@ -176,8 +176,8 @@ fn tool_list() -> Value {
         },
         {
             "name": "native_read",
-            "description": "Read exact native-source chunks by revision-checked pointer; omit message to list ranges.",
-            "inputSchema": {"type":"object","properties":{"id":{"type":"string"},"message":{"type":"integer"},"offset":{"type":"integer"},"max_bytes":{"type":"integer"}},"required":["id"]}
+            "description": "Read exact chunks/ranges. history scans the next bounded whole-history page.",
+            "inputSchema": {"type":"object","properties":{"id":{"type":"string"},"message":{"type":"integer"},"offset":{"type":"integer"},"max_bytes":{"type":"integer"},"from_message":{"type":"integer"},"limit":{"type":"integer"},"history":{"type":"boolean"}},"required":["id"]}
         },
         {
             "name": "usage",
@@ -247,13 +247,22 @@ fn tool_native_read(root: &Path, args: &Value) -> Result<String, String> {
     let object = args
         .as_object()
         .ok_or("native_read arguments must be an object")?;
-    if object
-        .keys()
-        .any(|key| !matches!(key.as_str(), "id" | "message" | "offset" | "max_bytes"))
-    {
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "id" | "message" | "offset" | "max_bytes" | "from_message" | "limit" | "history"
+        )
+    }) {
         return Err("unsupported native_read argument".into());
     }
     let id = str_arg(args, "id").ok_or("native_read requires id")?;
+    if let Some(history) = args.get("history") {
+        if history.as_bool() != Some(true) || object.len() != 2 {
+            return Err("history must be true without excerpt/range options".into());
+        }
+        return serde_json::to_string(&crate::native_memory::history_from_pointer(root, id)?)
+            .map_err(|e| e.to_string());
+    }
     let mut command = vec![
         if object.contains_key("message") {
             "excerpt"
@@ -267,6 +276,8 @@ fn tool_native_read(root: &Path, args: &Value) -> Result<String, String> {
         ("message", "--message"),
         ("offset", "--offset"),
         ("max_bytes", "--max-bytes"),
+        ("from_message", "--from-message"),
+        ("limit", "--limit"),
     ] {
         if let Some(value) = args.get(key) {
             let number = value

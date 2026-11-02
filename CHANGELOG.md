@@ -11,6 +11,9 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Changed (`2026-11-02e`)
+- Native source indexing can scan whole Codex/Claude histories through immutable bounded pages, with resumable identity-checked cursors, snapshot-stable ordinals, explicit malformed/oversized-record gaps, and no stored conversation bodies. CLI and MCP range listings now page beyond the first twenty records; MCP can expand a known pointer into whole-history pages.
+
 ### Fixed (`2026-11-02d`)
 - Ordinary status updates mentioning "select an option" no longer turn later feature bullets into unrelated reply choices. Conversational choices require an explicit closing question or invitation followed immediately by options; example JSON is interpreted only in question-tool cards.
 - Conversational options never take keyboard focus automatically. Digits in a focused conversational reply are text, typing/pasting selects the note-only row, and note-only replies send exactly the user's text. Notes preserve pasted line breaks, support Shift+Enter, and survive Esc back to the composer. The complete assistant response stays in the transcript for context and long-option inspection; native approval shortcuts remain separate.
