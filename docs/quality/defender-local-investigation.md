@@ -65,6 +65,12 @@ no real model turn was started. The three broader test corrections retain the in
 check the compact header's origin marker, preserve the trailing newline, and wait for asynchronous
 draft persistence before asserting its saved value.
 
+Final checks also pass: 851 enabled library tests and all enabled integration tests,
+all-target clippy with warnings denied, formatting/diff checks, and the installed everyday
+smoke (including its read-only usage check). The main suite leaves 45 terminal journeys opt-in;
+the six exact-artifact checks above were run explicitly. The smoke log is retained locally at
+ignored `target/av-investigation/everyday-smoke.log`.
+
 The observations are consistent with a Defender classification change after the intelligence
 update and ordinary rebuild. They do not identify a particular source function as the cause.
 There is no evidence here that a paid certificate or a runtime code change is needed to resolve
