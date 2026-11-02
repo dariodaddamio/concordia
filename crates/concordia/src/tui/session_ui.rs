@@ -41,7 +41,7 @@ impl State {
 impl App {
     pub(super) fn memory_command(&mut self, argument: &str) {
         if argument.is_empty() {
-            self.push_system("Memory: /memory recall TEXT · /memory sources INDEX · /memory next INDEX · /memory excerpt INDEX --message N · /memory lineage INDEX · /memory link PARENT CHILD · /memory detach PARENT CHILD. Search suggestions never become links automatically. Use concordia chat index SESSION --account ID --scope whole for the first whole-history page.");
+            self.push_system("Memory: /memory recall TEXT · /memory recall-account ACCOUNT TEXT · /memory recall-source INDEX TEXT · /memory sources INDEX · /memory next INDEX · /memory excerpt INDEX --message N · /memory lineage INDEX · /memory link PARENT CHILD · /memory detach PARENT CHILD. Search suggestions never become links automatically. /memory index SESSION --account ID --scope whole starts a whole-history scan.");
             return;
         }
         if self.session_ui.memory_jobs.len() >= 2 {
@@ -53,13 +53,16 @@ impl App {
         let argument = argument.to_owned();
         let (tx, rx) = std::sync::mpsc::channel();
         let result = std::thread::Builder::new().name("concordia-memory-read".into()).spawn(move || {
-            let search = argument.strip_prefix("recall ").map(|q| (None, q)).or_else(|| argument.strip_prefix("recall-account ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(a,q)| (Some(a),q)));
-            let output = if let Some((account, query)) = search {
-                    crate::native_memory::retrieval::recall(&root, query, None, account, Some(&workspace)).map(|r| {
+            let search = argument.strip_prefix("recall ").map(|q| (None, None, q))
+                .or_else(|| argument.strip_prefix("recall-account ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(a,q)| (Some(a),None,q)))
+                .or_else(|| argument.strip_prefix("recall-source ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(s,q)| (None,Some(s),q)));
+            let output = if let Some((account, source, query)) = search {
+                    crate::native_memory::retrieval::recall(&root, query, source, account, if source.is_none() { Some(&workspace) } else { None }).map(|r| {
                     let mut lines = vec![format!("Memory search: {} matches in {} bounded source windows{}", r.hits.len(), r.pages.len(), if r.incomplete { "; incomplete scan" } else { "" })];
                     for hit in r.hits {
                         lines.push(format!("{} / {} · {} · message {}\n{}\nSource: {}\nLexical suggestion; use /memory link to confirm a relationship.", hit.source.account, hit.source.session_id, hit.role, hit.message, hit.preview, hit.source.id));
                     }
+                    for page in r.pages { lines.push(format!("Scanned source: {} / {} · {}",page.account,page.session_id,page.id)); }
                     lines.extend(r.unavailable);
                     lines.join("\n\n")
                 })

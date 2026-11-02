@@ -2,6 +2,71 @@ use super::*;
 use crate::context::PackRole;
 use crate::store::{upsert_stored_account, StoredAccount};
 
+#[test]
+fn worker_quota_failover_stops_on_uncertain_exit_cancellation_tools_or_partial_output() {
+    let dir = tempfile::tempdir().unwrap();
+    make_account(
+        dir.path(),
+        "worker-one",
+        ProviderKind::Codex,
+        "identity-one",
+    );
+    make_account(
+        dir.path(),
+        "worker-two",
+        ProviderKind::Codex,
+        "identity-two",
+    );
+    modify_store(dir.path(), |s| {
+        s.settings.delegate_quota_failover = true;
+        s.settings.workers = vec!["worker-one".into(), "worker-two".into()];
+        Ok(())
+    })
+    .unwrap();
+    for case in 0..5 {
+        let mut d = Delegates::default();
+        d.attach_recovery(
+            &dir.path().join(format!("case-{case}")),
+            dir.path(),
+            dir.path(),
+        )
+        .unwrap();
+        let id = d.push_test_job(
+            "worker-one",
+            ProviderKind::Codex,
+            WorkerState::Thinking,
+            "",
+            0,
+        );
+        let j = d.get_mut(id).unwrap();
+        j.spec.home = Some(dir.path().join("home-worker-one"));
+        j.spec.cwd = dir.path().into();
+        let mut outcome = TurnOutcome {
+            failed: true,
+            exit_code: Some(1),
+            stderr_tail: "usage limit reached".into(),
+            ..Default::default()
+        };
+        match case {
+            0 => j.cancel_requested = true,
+            1 => outcome.exit_code = None,
+            2 => j.cards.push(StreamCard {
+                id: "action".into(),
+                title: "tool completed".into(),
+                detail: None,
+                status: CardStatus::Done,
+            }),
+            3 => j.text = "partial answer".into(),
+            _ => outcome.stderr_tail = "connection closed".into(),
+        }
+        assert!(
+            !d.worker_failover(id, &outcome, Instant::now()),
+            "case {case}"
+        );
+        assert_eq!(d.get(id).unwrap().account, "worker-one");
+    }
+}
+
 /// A codex-style home that reports a login (`chatgpt:<first 8 of account_id>`).
 fn make_account(root: &Path, id: &str, provider: ProviderKind, who: &str) {
     let home = root.join(format!("home-{id}"));
@@ -141,6 +206,11 @@ fn worker_context_is_bounded_and_never_carries_a_session() {
 
 fn bare_job(id: u32, account: &str, state: WorkerState) -> Job {
     Job {
+        run_id: uuid::Uuid::new_v4().to_string(),
+        conversation_id: uuid::Uuid::new_v4().to_string(),
+        source_id: None,
+        attempts: vec![],
+        attempt_records: vec![],
         model: None,
         collected: false,
         id,

@@ -17,10 +17,13 @@ use crate::provider::turn::{
     run_provider_turn_with_progress, ProviderTurnRequest, RunningTurn, TurnOutcome, TurnProgress,
 };
 use crate::store::{get_settings, modify_store, ChildTrust, ProviderKind, TrustMode};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+#[path = "delegate_recovery.rs"]
+mod recovery;
 
 pub const MAX_WORKERS: usize = 3;
 /// Jobs waiting behind a busy worker (per worker).
@@ -199,7 +202,7 @@ pub fn build_worker_context(
 // Jobs
 // ---------------------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkerState {
     Queued,
     Starting,
@@ -209,11 +212,15 @@ pub enum WorkerState {
     Done,
     Failed,
     Cancelled,
+    Paused,
 }
 
 impl WorkerState {
     pub fn is_finished(self) -> bool {
-        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Done | Self::Failed | Self::Cancelled | Self::Paused
+        )
     }
 
     /// Holds the worker (a process exists or is about to).
@@ -234,11 +241,12 @@ impl WorkerState {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Paused => "recovered; inspect before retry",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Origin {
     User,
     /// Proposed by an orchestrator reply and approved by the user.
@@ -246,17 +254,23 @@ pub enum Origin {
 }
 
 /// Everything needed to run the turn, captured when the user delegates.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobSpec {
     pub model: Option<String>,
     pub home: Option<PathBuf>,
     pub cwd: PathBuf,
     pub prompt: String,
+    #[serde(skip)]
     pub prefix: Option<String>,
     pub trust: TrustMode,
 }
 
 pub struct Job {
+    pub run_id: String,
+    pub conversation_id: String,
+    pub source_id: Option<String>,
+    attempts: Vec<String>,
+    attempt_records: Vec<Attempt>,
     pub model: Option<String>,
     /// A result is only collected once unless explicitly selected again with /delegate use.
     pub collected: bool,
@@ -306,10 +320,21 @@ impl Job {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Attempt {
+    account: String,
+    provider: ProviderKind,
+    home: Option<PathBuf>,
+    model: Option<String>,
+    native_session: Option<String>,
+    source: Option<String>,
+}
+
 pub enum Event {
     Started(u32, Arc<RunningTurn>),
     Progress(u32, TurnProgress),
     Finished(u32, Box<TurnOutcome>),
+    Source(u32, String),
 }
 
 pub struct Submit {
@@ -325,6 +350,9 @@ pub struct Delegates {
     next_id: u32,
     tx: mpsc::UnboundedSender<Event>,
     rx: mpsc::UnboundedReceiver<Event>,
+    conversation_id: String,
+    recovery: Option<recovery::Recovery>,
+    recovery_error: Option<String>,
 }
 
 impl Default for Delegates {
@@ -335,6 +363,9 @@ impl Default for Delegates {
             next_id: 1,
             tx,
             rx,
+            conversation_id: uuid::Uuid::new_v4().to_string(),
+            recovery: None,
+            recovery_error: None,
         }
     }
 }
@@ -359,6 +390,7 @@ impl Delegates {
                 job.collected = true;
             }
         }
+        self.persist_recovery();
     }
 
     fn get_mut(&mut self, id: u32) -> Option<&mut Job> {
@@ -405,6 +437,18 @@ impl Delegates {
         let id = self.next_id;
         self.next_id += 1;
         self.jobs.push(Job {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: self.conversation_id.clone(),
+            source_id: None,
+            attempts: vec![s.account.clone()],
+            attempt_records: vec![Attempt {
+                account: s.account.clone(),
+                provider: s.provider,
+                home: s.spec.home.clone(),
+                model: s.spec.model.clone(),
+                native_session: None,
+                source: None,
+            }],
             model: s.spec.model.clone(),
             collected: false,
             id,
@@ -429,6 +473,12 @@ impl Delegates {
             announced: false,
             spec: s.spec,
         });
+        if let Err(error) = self.save_recovery() {
+            self.jobs.pop();
+            return Err(format!(
+                "worker not dispatched: recovery save failed: {error}"
+            ));
+        }
         if !busy {
             self.launch(id, now);
         }
@@ -438,6 +488,23 @@ impl Delegates {
     /// Spawn the turn for a queued job (needs a tokio runtime).
     fn launch(&mut self, id: u32, now: Instant) {
         let tx = self.tx.clone();
+        if self.get(id).is_some_and(|j| j.cancel_requested) {
+            return;
+        }
+        if let Some(job) = self.get_mut(id) {
+            job.state = WorkerState::Starting;
+            job.started = Some(now);
+        }
+        if let Err(error) = self.save_recovery() {
+            self.recovery_error = Some(error.clone());
+            if let Some(j) = self.get_mut(id) {
+                j.state = WorkerState::Paused;
+                j.error = Some(error);
+                j.finished = Some(now);
+            }
+            return;
+        }
+        let state_root = self.recovery.as_ref().map(|r| r.state_root.clone());
         let Some(job) = self.get_mut(id) else { return };
         if tokio::runtime::Handle::try_current().is_err() {
             job.state = WorkerState::Failed;
@@ -449,9 +516,31 @@ impl Delegates {
         job.started = Some(now);
         let spec = job.spec.clone();
         let provider = job.provider;
+        let account = job.account.clone();
         tokio::spawn(async move {
             let (hs_tx, mut hs_rx) = mpsc::unbounded_channel::<Arc<RunningTurn>>();
             let (pg_tx, mut pg_rx) = mpsc::unbounded_channel::<TurnProgress>();
+            let compaction = match (&state_root, &spec.home) {
+                (Some(root), Some(home)) => {
+                    crate::native_memory::Binding::new(provider, &account, home, "worker-policy")
+                        .and_then(|b| crate::capacity::load(root, &b))
+                        .map(|p| p.compaction)
+                }
+                _ => Ok(Default::default()),
+            };
+            let compaction = match compaction {
+                Ok(p) => p,
+                Err(error) => {
+                    let _ = tx.send(Event::Finished(
+                        id,
+                        Box::new(TurnOutcome {
+                            stderr_tail: error,
+                            ..Default::default()
+                        }),
+                    ));
+                    return;
+                }
+            };
             let req = ProviderTurnRequest {
                 images: &[],
                 provider,
@@ -464,7 +553,7 @@ impl Delegates {
                 trust: spec.trust,
                 context_prefix: spec.prefix.as_deref(),
                 local_time: Some(crate::prompt_time::now()),
-                compaction: Default::default(),
+                compaction,
             };
             let run = run_provider_turn_with_progress(&req, Some(hs_tx), Some(pg_tx));
             tokio::pin!(run);
@@ -485,6 +574,19 @@ impl Delegates {
                 stderr_tail: format!("{e:#}"),
                 ..Default::default()
             });
+            if let (Some(root), Some(home), Some(session)) =
+                (state_root, spec.home.clone(), outcome.session_id.as_ref())
+            {
+                let session = session.clone();
+                if let Ok(Ok(page)) = tokio::task::spawn_blocking(move || {
+                    crate::native_memory::Binding::new(provider, &account, &home, &session)
+                        .and_then(|b| crate::native_memory::index_bound(&root, &b))
+                })
+                .await
+                {
+                    let _ = tx.send(Event::Source(id, page.id));
+                }
+            }
             let _ = tx.send(Event::Finished(id, Box::new(outcome)));
         });
     }
@@ -510,11 +612,24 @@ impl Delegates {
                     }
                 }
                 Event::Finished(id, out) => {
+                    let retry = self.worker_failover(id, &out, now);
+                    if retry {
+                        continue;
+                    }
                     if let Some(j) = self.get_mut(id) {
                         apply_outcome(j, *out, now);
                     }
                 }
+                Event::Source(id, source) => {
+                    if let Some(j) = self.get_mut(id) {
+                        if let Some(attempt) = j.attempt_records.last_mut() {
+                            attempt.source = Some(source.clone());
+                        }
+                        j.source_id = Some(source);
+                    }
+                }
             }
+            self.persist_recovery();
         }
         // Start the next queued job of every worker that just became free.
         let ready: Vec<u32> = self
@@ -545,6 +660,7 @@ impl Delegates {
             finished.push(j.id);
         }
         self.prune();
+        self.persist_recovery();
         finished
     }
 
@@ -566,7 +682,7 @@ impl Delegates {
         let Some(j) = self.get_mut(id) else {
             return false;
         };
-        match j.state {
+        let cancelled = match j.state {
             WorkerState::Queued => {
                 j.state = WorkerState::Cancelled;
                 j.finished = Some(now);
@@ -581,7 +697,9 @@ impl Delegates {
                 true
             }
             _ => false,
-        }
+        };
+        self.persist_recovery();
+        cancelled
     }
 
     /// Cancel everything of one worker (running and queued). Returns how many jobs were hit.
@@ -645,6 +763,11 @@ impl Delegates {
         let now = Instant::now();
         let started = now.checked_sub(Duration::from_secs(secs)).unwrap_or(now);
         self.jobs.push(Job {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: self.conversation_id.clone(),
+            source_id: None,
+            attempts: vec![account.into()],
+            attempt_records: Vec::new(),
             model: None,
             collected: false,
             id,
@@ -699,6 +822,9 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
             j.snippet="Worker needs native input; request declined because no foreground interaction owns it".into();
         }
         TurnProgress::Session(id) => {
+            if let Some(attempt) = j.attempt_records.last_mut() {
+                attempt.native_session = Some(id.clone());
+            }
             j.session_id = Some(id);
             if j.state == WorkerState::Starting {
                 j.state = WorkerState::Thinking;

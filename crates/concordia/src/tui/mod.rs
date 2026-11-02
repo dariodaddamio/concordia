@@ -2501,7 +2501,17 @@ impl App {
 
     fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if ["/delegate fallback", "/delegate recover", "/delegate retry"]
+            .iter()
+            .any(|p| trimmed == *p || trimmed.starts_with(&format!("{p} ")))
+        {
+            landing::close(self);
+            self.push_command(line);
+            self.worker_recovery_command(trimmed.strip_prefix("/delegate ").unwrap_or_default());
+            return true;
+        }
         if trimmed == "/context" || trimmed.starts_with("/context ") {
+            landing::close(self);
             self.push_command(line);
             let result = self
                 .home_path
@@ -2528,6 +2538,7 @@ impl App {
             return true;
         }
         if trimmed == "/memory" || trimmed.starts_with("/memory ") {
+            landing::close(self);
             self.push_command(line);
             self.memory_command(trimmed.strip_prefix("/memory").unwrap_or_default().trim());
             return true;

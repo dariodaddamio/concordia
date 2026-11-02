@@ -52,7 +52,17 @@ interfaces from work still being implemented; it does not mark the complete road
 - Policy checks cover unknown capacity, threshold boundary, overflow, provider isolation, exact
   native measurement, cumulative-usage exclusion, model changes and compaction invalidation.
 
-Durable workers are still in progress. Whole-app and terminal checks remain for final integration.
+- Durable workers now have atomic pane-owned metadata, OS locks, stable UUIDs, exact native source
+  references, paused crash recovery and explicit reconciled retry. Delivery is reserved before
+  dispatch. Quota failover is opt-in, bounded and refuses partial/uncertain/cancelled work.
+- Recovery checks cover competing owners, workspace mismatch, no saved native text/context pack,
+  failed writes, paused restart and delivery reservations. The fake-provider integration passes
+  Codex-to-Claude quota failover and proves restart does not execute another task.
+- The Windows terminal proactive-rollover journey passes: exact native measurement, explicit model,
+  enabled threshold, fresh-session argv, original source pointers and reversible policy.
+
+Whole-app and final installed-terminal checks remain for final integration. These implementations
+are bounded interfaces, not blanket live-provider parity or public-release clearance.
 
 ## Supported-interface evidence
 

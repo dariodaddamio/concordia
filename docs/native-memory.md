@@ -33,8 +33,9 @@ native discovery budgets bound one request. Incomplete scans are explicit; no cl
 recall is made. Broad discovery skips Cursor replay; explicitly indexed Cursor pages are searchable.
 
 CLI `chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR]` returns JSON. `--source`
-searches any verified recent or whole-history page. Advance a whole-history page with `/memory next
-INDEX`, then search the returned page with the CLI. Exact excerpts use `/memory excerpt INDEX
+searches any verified recent or whole-history page. `/memory recall-source INDEX TEXT` exposes the
+same page search in the TUI. Advance a whole-history page with `/memory next INDEX`, then search
+the returned page. `/memory index SESSION --account ID --scope whole` starts the scan. Exact excerpts use `/memory excerpt INDEX
 --message N`; continue UTF-8 chunks using `next_offset`. Source changes withhold results.
 
 `/memory link PARENT CHILD` confirms a relationship between two verified index pointers;
@@ -160,9 +161,9 @@ request and source directory. A second capacity failure pauses for explicit choi
 edits/modals/jobs and unfinished/error tool states still block automatic continuation. A pending
 cancel wins even if the provider's failure arrived first.
 
-This is reactive capacity-error recovery. Preemptive near-capacity rollover and verified per-version
-compaction controls remain planned. Cumulative billed tokens are never treated as context size;
-unknown capacity stays unknown, and provider compaction settings are not changed.
+This reactive capacity-error recovery is separate from the opt-in between-turn `/context` policy
+described above. Cumulative billed tokens are never treated as context size; unknown capacity stays
+unknown. Native compaction defaults are preserved unless explicitly overridden per process.
 
 ## Pinned decisions
 

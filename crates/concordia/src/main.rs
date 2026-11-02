@@ -16,6 +16,7 @@ fn print_help() {
            concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
            concordia chat list|read|search  bounded native CLI chats across your own accounts\n\
            concordia chat index|sources|excerpt  revision-checked native history pointers\n\
+           concordia chat recall|lineage|link|detach  bounded retrieval and explicit source links\n\
            concordia preview FILE          read-only Markdown preview in this terminal\n\
            concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
                                read recorded threads (opt-in: CONCORDIA_THREADS=1); read-only\n\

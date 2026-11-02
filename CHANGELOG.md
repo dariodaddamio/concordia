@@ -11,6 +11,12 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Added (`2026-11-02i`)
+- Durable pane-owned worker runs with explicit UUIDs, native session/source references, paused
+  crash recovery, source inspection/reconciled retry, and reserved result delivery.
+- Opt-in bounded worker quota failover before tools or partial output. Cancellation, uncertain
+  exits and interrupted work stop automatic failover.
+
 ### Added (`2026-11-02h`)
 - Per-account `/context` policy: optional Codex proactive rollover between turns from native
   context measurements; documented process-local Codex/Claude compaction controls. Unknown

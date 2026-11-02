@@ -48,6 +48,9 @@ pub struct RecoveryLease {
 }
 
 impl RecoveryLease {
+    pub fn workers_directory(&self) -> PathBuf {
+        self.directory.join("worker-runs")
+    }
     pub fn save_files(&self, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() > 32 * 1024 * 1024 {
             return Err(io::Error::other("file recovery exceeds 32 MiB"));
@@ -246,11 +249,15 @@ pub fn available(root: &Path) -> io::Result<Vec<RecoveryChoice>> {
         let files = fs::metadata(e.path().join("files.json"))
             .ok()
             .filter(|m| m.len() > 2);
+        let workers = fs::metadata(e.path().join("worker-runs/workers.json"))
+            .ok()
+            .is_some_and(|m| m.len() > 2);
         if data.draft.trim().is_empty()
             && data.queue.is_empty()
             && data.pending_edit.is_none()
             && unfinished.is_none()
             && files.is_none()
+            && !workers
         {
             continue;
         }

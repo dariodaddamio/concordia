@@ -2332,6 +2332,142 @@ fn reported_context_capacity_starts_one_new_native_session_with_original_source_
 }
 
 #[test]
+#[ignore = "isolated proactive context policy journey; fake providers only"]
+fn proactive_context_policy_rolls_before_dispatch_and_keeps_original_pointers() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    std::fs::write(
+        dir.path().join("profile/.codex/models_cache.json"),
+        r#"{"models":[{"slug":"synthetic-model"}]}"#,
+    )
+    .unwrap();
+    let folder = dir.path().join("profile/.codex/sessions");
+    std::fs::create_dir_all(&folder).unwrap();
+    let lines = [
+        serde_json::json!({"type":"session_meta","payload":{"id":"proactive-session","cwd":dir.path().join("workspace")}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"ORIGINAL_CONTEXT_SOURCE"}]}}),
+        serde_json::json!({"type":"turn_context","payload":{"model":"synthetic-model"}}),
+        serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":800},"total_token_usage":{"total_tokens":9999999},"model_context_window":1000}}}),
+    ];
+    std::fs::write(
+        folder.join("proactive.jsonl"),
+        lines.iter().map(|v| format!("{v}\n")).collect::<String>(),
+    )
+    .unwrap();
+    let mut s = Session::launch(dir.path());
+    s.submit("/resume");
+    s.enter();
+    s.until("native history loaded", |s| {
+        s.screen().contains("ORIGINAL_CONTEXT_SOURCE")
+    });
+    s.submit("/model synthetic-model");
+    s.until("explicit model selected", |_s| {
+        concordia::store::get_use_selection(dir.path())
+            .is_some_and(|selected| selected.model.as_deref() == Some("synthetic-model"))
+    });
+    s.submit("/context rollover 80");
+    s.until("policy enabled", |s| s.screen().contains("at 80%"));
+    s.submit("A new task after the threshold");
+    s.until("new task completed", |s| {
+        s.journal().iter().any(|e| e["kind"] == "done")
+    });
+    let journal = s.journal();
+    let starts: Vec<_> = journal.iter().filter(|e| e["kind"] == "start").collect();
+    assert_eq!(starts.len(), 1);
+    let args = starts[0]["args"].as_array().unwrap();
+    assert!(!args.iter().any(|a| a == "resume"));
+    assert!(starts[0]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("[native source pointers]"));
+    assert!(starts[0]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("proactive-session"));
+    s.submit("/context rollover off");
+    s.until("policy disabled", |s| {
+        s.screen().contains("proactive rollover off")
+    });
+    s.exit();
+}
+
+#[test]
+#[ignore = "isolated memory retrieval terminal journey; no provider turns"]
+fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let folder = dir.path().join("profile/.codex/sessions");
+    std::fs::create_dir_all(&folder).unwrap();
+    let source = format!(
+        "{}\n{}\n",
+        serde_json::json!({"type":"session_meta","payload":{"id":"memory-fixture","cwd":dir.path().join("workspace")}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"MEMORY_NEEDLE exact original"}]}})
+    );
+    std::fs::write(folder.join("memory.jsonl"), source).unwrap();
+    let mut s = Session::launch(dir.path());
+    s.submit("/memory recall-account codex MEMORY_NEEDLE");
+    s.until("verified lexical result", |s| {
+        s.screen().contains("MEMORY_NEEDLE exact original")
+            && s.screen().contains("Lexical suggestion")
+    });
+    s.paste("2 finish all requested features");
+    s.until("number remains ordinary draft text", |s| {
+        s.draft() == "2 finish all requested features"
+    });
+    assert!(s.prompts().is_empty());
+    s.exit();
+}
+
+#[test]
+#[ignore = "isolated worker crash recovery terminal journey; fake providers only"]
+fn worker_crash_recovery_preserves_request_and_pauses_without_reexecution() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Claude);
+    let mut s = Session::launch(dir.path());
+    s.submit("/workers add codex");
+    s.until("worker enrolled", |s| s.screen().contains("worker added"));
+    s.submit("/delegate codex RECOVERY_TASK [wait]");
+    s.until("worker request started", |s| {
+        s.journal().iter().any(|e| e["kind"] == "start")
+    });
+    let ledgers = || {
+        std::fs::read_dir(dir.path().join("pane-recovery"))
+            .unwrap()
+            .flatten()
+            .flat_map(|w| std::fs::read_dir(w.path()).unwrap().flatten())
+            .filter_map(|p| std::fs::read_to_string(p.path().join("worker-runs/workers.json")).ok())
+            .collect::<Vec<_>>()
+    };
+    s.until("native worker session checkpointed", |_| {
+        ledgers()
+            .iter()
+            .any(|l| l.contains("99999999-2222-3333-4444-555555555555") && l.contains("Tool"))
+    });
+    drop(s); // Kill only the owned synthetic TUI/process tree, simulating an interrupted host.
+    let mut s = Session::launch(dir.path());
+    s.until("worker metadata restored", |s| {
+        s.screen().contains("Recovered 1 worker run records")
+    });
+    assert_eq!(
+        s.journal().iter().filter(|e| e["kind"] == "start").count(),
+        1
+    );
+    s.submit("/delegate recover 1");
+    s.until("uncertain run inspection requires reconciliation", |s| {
+        s.screen().contains("No verified result pointer") && s.screen().contains("RECOVERY_TASK")
+    });
+    assert_eq!(
+        s.journal().iter().filter(|e| e["kind"] == "start").count(),
+        1
+    );
+    assert!(ledgers().iter().any(|l| l.contains("Paused")));
+    s.exit();
+}
+
+#[test]
 #[ignore = "isolated exact Harness pin delivery; fake provider only"]
 fn connected_harness_pins_are_sent_once_per_new_native_session_and_not_on_resume() {
     use sha2::{Digest, Sha256};

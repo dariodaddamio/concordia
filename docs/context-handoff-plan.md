@@ -6,8 +6,11 @@ criteria. Bounded maps, explicit native resume, optional thread logs, token stat
 handoff are already implemented. Build `2026-10-31s` adds recent Codex/Claude source pointers,
 exact chunk readback, unfinished-request recovery, file-backed Harness pins and bounded recovery
 from explicit capacity errors; see [the shipped slice and limits](native-memory.md).
-Whole-history indexing, related-chat retrieval and proactive context-capacity rollover remain planned. Historical research below is not evidence that those features
-have shipped.
+Build `2026-11-02i` adds bounded whole-history pages, lexical retrieval/explicit lineage, supported
+Cursor ACP replay, optional Codex proactive rollover, documented native compaction controls and
+durable worker recovery/quota failover. [Current bounds and evidence](quality/memory-orchestration-progress.md)
+distinguish fixture proof from live-provider parity. The rest of this document remains target
+design; historical research is not proof of unsupported provider capabilities.
 
 ## The idea
 

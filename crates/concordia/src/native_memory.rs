@@ -490,6 +490,57 @@ pub fn context_measurement(
     Ok(measurement)
 }
 
+/// Recover a known completed worker's display result from its immutable native pointer.
+pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
+    let index = load(root, id)?;
+    let mut source = open_index_source(root, &index)?;
+    let mut text = String::new();
+    for span in index.messages.iter().filter(|m| m.role == "assistant") {
+        let raw = read_at(&mut source, span.start, span.len)?;
+        if digest(&raw) != span.sha256 {
+            return Err("worker source changed since completion".into());
+        }
+        let value: Value = serde_json::from_slice(&raw).map_err(|_| "invalid worker source")?;
+        let payload = match index.binding.provider {
+            ProviderKind::Codex => &value["payload"],
+            ProviderKind::Claude => &value["message"],
+            ProviderKind::Cursor => &value["params"]["update"],
+        };
+        let content = &payload["content"];
+        let rendered = if let Some(blocks) = content.as_array() {
+            blocks
+                .iter()
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            content
+                .as_str()
+                .or_else(|| content["text"].as_str())
+                .or_else(|| payload["message"].as_str())
+                .unwrap_or("")
+                .to_owned()
+        };
+        if text.len() + rendered.len() > 1024 * 1024 {
+            return Err("worker result exceeds display budget; inspect exact source chunks".into());
+        }
+        text.push_str(&rendered);
+        if index.binding.provider != ProviderKind::Cursor {
+            text.push('\n');
+        }
+    }
+    let _ = open_index_source(root, &index)?;
+    if text.trim().is_empty() {
+        return Err("no assistant result in the recorded source window".into());
+    }
+    let suffix = if index.truncated {
+        "\n[Bounded native window; inspect older source pages for omitted history.]"
+    } else {
+        ""
+    };
+    Ok(format!("{}{suffix}", crate::chat_cli::terminal_safe(&text)))
+}
+
 pub fn index_session(
     root: &Path,
     provider: ProviderKind,

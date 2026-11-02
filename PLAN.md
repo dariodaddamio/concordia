@@ -8,7 +8,9 @@ Status: pre-release, private. Memory management and orchestration are the core p
 and a reliable UI are their execution surface. Scope was reaffirmed by the owner on 2026-10-31.
 Bounded continuity maps, explicit delegation, recent native-source pointers/readback (Codex/Claude),
 pane-owned unfinished-request recovery and one-attempt explicit capacity-error rollover are implemented.
-Related-chat retrieval, whole-history indexing and proactive capacity/compaction policy remain planned.
+Whole-history pages, bounded lexical retrieval/lineage, supported Cursor ACP readback, opt-in Codex
+proactive rollover/native compaction controls and durable worker recovery/failover are implemented
+with fixture evidence. Unsupported provider capacity and live parity remain open.
 Current bounds and controls: [native memory](docs/native-memory.md).
 Native image inputs for Codex/Claude/Cursor and local Mermaid rendering are implemented;
 [image/diagram limits](docs/images-and-diagrams.md) distinguish fixture proof from live-provider validation.
@@ -77,20 +79,24 @@ Worker models, bounded automatic result return and remaining orchestration gaps:
 [orchestration and latency](docs/orchestration-and-latency.md).
 
 1. **Native-source memory index.** Recent-window source identity/readback is implemented for
-   Codex/Claude; Cursor readback and whole-history indexing remain. Bind pointers to provider, account home, session, file revision
+   Codex/Claude; whole-history pages and supported Cursor ACP readback are also implemented. Bind pointers to provider, account home, session, file revision
    and exact range. Index session sources only, preserve existing logs, and detect missing,
    compacted or replaced originals. An unknown or stale source must not yield an unrelated chat.
-2. **Bounded retrieval and lineage.** Link explicit handoffs, projects, touched files and time.
+2. **Bounded retrieval and lineage.** Lexical page retrieval, workspace filters, explicit confirmed
+   links and observed handoffs are implemented. Richer goal/file relationships remain future work.
+   Link explicit handoffs, projects, touched files and time.
    Return exact excerpts with source identity and bounded read budgets. Keep lexical suggestions
    distinct from confirmed relationships. Evaluate recall, stale-source handling and task success
    using synthetic histories before choosing more complex retrieval.
 3. **Durable orchestration policy.** Unfinished request/run/source recovery and file-backed
-   Harness pinned-decision delivery are implemented. Broader worker/run ownership and target
-   eligibility explanations remain. Persist ordered account/model fallbacks and eligibility
+   Harness pinned-decision delivery, pane-owned worker ledgers and bounded worker quota failover
+   are implemented. Richer dependency/workspace isolation and eligibility explanations remain.
+   Persist ordered account/model fallbacks and eligibility
    reasons, distinguish quota exhaustion from context capacity, and bind queues, completed actions,
    worker ownership and recovery to explicit run ids. Preserve drafts and stop uncertain replay.
-4. **Context-capacity handoff.** Explicit capacity-error recovery is implemented; proactive
-   rollover and compaction controls remain unverified. Verify supported capacity signals and compaction controls per
+4. **Context-capacity handoff.** Explicit capacity-error recovery and optional Codex proactive
+   rollover are implemented. Codex threshold/Claude automatic-compaction controls use documented
+   process-local settings. Verify live behavior and unsupported capacity signals per
    provider/version. Unknown capacity stays unknown. Introduce rollover only after pointer readback,
    lineage and pinned decision delivery work; keep the policy visible and reversible.
 5. **Provider and host parity.** Record fake-provider checks separately from real-provider and

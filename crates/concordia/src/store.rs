@@ -98,6 +98,8 @@ pub struct OrchestratorSettings {
     /// Explicit opt-in: return worker batches to their owning conversation.
     #[serde(default)]
     pub delegate_auto_return: bool,
+    #[serde(default)]
+    pub delegate_quota_failover: bool,
     /// Opt-in: let an orchestrator reply propose a delegation (still needs a yes from the user).
     /// `None` = never set by the user: `[delegation] protocol` in config.toml decides (see
     /// [`delegation_protocol_on`]).
@@ -135,6 +137,7 @@ impl Default for OrchestratorSettings {
             workers: Vec::new(),
             worker_models: Default::default(),
             delegate_auto_return: false,
+            delegate_quota_failover: false,
             delegation_protocol: None,
             continuation_automatic: None,
             thread_log: false,
