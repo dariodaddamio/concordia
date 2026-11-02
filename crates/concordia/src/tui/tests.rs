@@ -1871,14 +1871,12 @@ fn the_update_screen_wraps_bullets_under_their_text() {
 #[test]
 fn enter_installs_only_when_the_screen_offers_an_update() {
     let mut h = Harness::new(80, 30);
+    h.type_str("keep my draft");
     update_screen(&mut h, update_preview(false, 0));
     h.enter();
-    assert!(
-        h.app.picker.is_some(),
-        "nothing to install keeps the screen open"
-    );
-    h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.app.picker.is_none() && h.app.update_preview.is_none());
+    assert!(h.app.job.is_none() && !h.app.busy);
+    assert_eq!(h.app.editor.text(), "keep my draft");
 
     // A busy chat blocks installation and keeps the explanation on screen.
     let mut h = Harness::new(80, 30);

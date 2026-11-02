@@ -3881,6 +3881,16 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                 }
                 KeyCode::Esc => app.dismiss_picker(),
                 KeyCode::Enter
+                    if picker.kind == PickerKind::Update
+                        && app.job.is_none()
+                        && app
+                            .update_preview
+                            .as_ref()
+                            .is_some_and(|p| !p.install_available) =>
+                {
+                    app.dismiss_picker();
+                }
+                KeyCode::Enter
                     if app
                         .update_preview
                         .as_ref()
@@ -5936,6 +5946,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )
         }
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+        && app.job.is_none()
+        && app.update_preview.is_some()
+    {
+        ("Enter / Esc close", Style::default().fg(Color::DarkGray))
     } else if !app.palette_entries().is_empty() {
         (
             "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",

@@ -54,6 +54,16 @@ $personal = @($env:USERNAME, (Split-Path -Leaf $env:USERPROFILE)) |
     Where-Object { $_ -and $_.Length -ge 3 } | Select-Object -Unique
 $personalRegex = if ($personal.Count -gt 0) { '(?i)(' + (($personal | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')' } else { $null }
 
+# Exact public product identifiers are intentional metadata, not personal filesystem data.
+# Scope exceptions to the files that need each identifier; all remaining text is still scanned.
+$publicIdentifiers = @{
+    'crates/concordia/Cargo.toml' = @('dariodaddamio/concordia')
+    'crates/concordia/src/harness/adapter.rs' = @('@dariodaddamio/harness')
+    'scripts/install.ps1' = @('dariodaddamio/concordia')
+    'scripts/test-install.ps1' = @('dariodaddamio/concordia')
+    'scripts/verify-oss-gates.ps1' = @('dariodaddamio/concordia', '@dariodaddamio/harness')
+}
+
 $binaryExt = '\.(png|jpg|jpeg|gif|ico|exe|dll|zip|gz|7z|pdf|woff2?)$'
 $tracked = git ls-files | Where-Object { $_ -notmatch $binaryExt -and $_ -ne "Cargo.lock" }
 $privateHits = New-Object System.Collections.Generic.List[string]
@@ -64,7 +74,12 @@ foreach ($rel in $tracked) {
     $t = Get-Content $p -Raw -ErrorAction SilentlyContinue
     if ($null -eq $t) { continue }
     if ($t -match $privateRegex) { [void]$privateHits.Add($rel) }
-    if ($personalRegex -and ($t -match $personalRegex)) { [void]$personalHits.Add($rel) }
+    $personalText = $t
+    foreach ($identifier in $publicIdentifiers[$rel]) {
+        $pattern = '(?<![\w@.-])' + [regex]::Escape($identifier) + '(?![\w.-])'
+        $personalText = [regex]::Replace($personalText, $pattern, '')
+    }
+    if ($personalRegex -and ($personalText -match $personalRegex)) { [void]$personalHits.Add($rel) }
 }
 if ($privateHits.Count -gt 0) {
     [void]$failures.Add("mentions of private projects in: " + ($privateHits -join ", "))

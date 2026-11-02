@@ -81,7 +81,7 @@ interfaces from work still being implemented; it does not mark the complete road
   Cargo target directory. A workspace-only junction fixes the harness; the complete rerun passes.
   Terminal validation also caught landing-page masking of memory output; the shipped build closes
   that screen for the new commands and makes recovered-worker notices visible.
-- Brain lookup was not configured; no unavailable notes or history were invented.
+- Optional external lookup was not configured; no unavailable notes or history were invented.
 
 Logs are local ignored artifacts: `target/memory-tests-final.log`,
 `target/memory-installed-smoke.log`, and `target/memory-installed-journeys.log`.
@@ -91,16 +91,19 @@ parity or public-release clearance. Claude/Cursor proactive capacity remains una
 
 ## CI status and inherited blockers
 
-The [dependency check](https://github.com/dariodaddamio/concordia/actions/runs/41530529699/job/125569231781)
+The earlier dependency check
 fails on existing transitive maintenance advisories: `bincode 1.3.3` (RUSTSEC-2025-0141) and
-`yaml-rust 0.4.5` (RUSTSEC-2024-0320), through `syntect`. This branch changes no Cargo manifests,
-lockfile or audit policy. The audit gate remains intact; resolving the upstream dependencies is
-still required before claiming a clean release gate.
+`yaml-rust 0.4.5` (RUSTSEC-2024-0320), through `syntect`. The subsequent CI repair removes
+unused YAML/plist import features and records one reviewed Bincode maintenance exception for
+embedded assets. See [dependency security](dependency-security.md). This is an explicit policy
+exception, not an upstream maintenance fix or a zero-advisory claim.
 
 The preceding branch's Windows job also hit a 20-second PowerShell-output fixture timeout.
 That positive transport fixture now allows 60 seconds for startup; the separate wedged-helper
-test retains its short cancellation bound. This changes test timing only, not clipboard behavior
-or the installed artifact. The current remote Windows run is not used as completed validation.
+test retains its short cancellation bound. The next Windows run passed all 48 terminal journeys
+and failed the stale 6 MiB artifact gate. The repair deliberately adopts a 20 MiB distribution
+budget for the current native feature set; [release readiness](../release-blockers.md) records
+the decision. Final CI results must refer to the repaired commit.
 
 ## Supported-interface evidence
 

@@ -11,6 +11,12 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed (`2026-11-02j`)
+- Enter closes a completed update screen when there is nothing to install, preserving the chat draft.
+- CI uses a reviewed 20 MiB Windows artifact budget for the current native feature set.
+- Disable unused Syntect grammar/theme import features, removing yaml-rust. Review the remaining
+  bincode maintenance advisory narrowly for embedded assets; vulnerability checks remain enforced.
+
 ### Added (`2026-11-02i`)
 - Durable pane-owned worker runs with explicit UUIDs, native session/source references, paused
   crash recovery, source inspection/reconciled retry, and reserved result delivery.

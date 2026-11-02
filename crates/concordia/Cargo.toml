@@ -46,7 +46,8 @@ ignore = "0.4"
 mermansi = "=0.1.6"
 sha2 = "0.10"
 unicode-width = "0.2.3"
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# Only embedded grammars/themes are used; never load external YAML/plist grammars or themes.
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 portable-pty = "0.9"
 
 [target.'cfg(windows)'.dependencies]
