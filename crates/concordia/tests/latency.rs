@@ -51,6 +51,7 @@ async fn fake_process_transport_latency() {
         trust: TrustMode::Workspace,
         context_prefix: None,
         local_time: None,
+        compaction: Default::default(),
     };
     let mut direct = Vec::new();
     let mut wrapped = Vec::new();

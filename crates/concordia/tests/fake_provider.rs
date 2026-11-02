@@ -116,6 +116,7 @@ fn req<'a>(prompt: &'a str, cwd: &'a Path, home: Option<&'a Path>) -> ProviderTu
         trust: TrustMode::Workspace,
         context_prefix: None,
         local_time: None,
+        compaction: Default::default(),
     }
 }
 
@@ -518,6 +519,7 @@ fn req_for<'a>(
         trust: TrustMode::Workspace,
         context_prefix: None,
         local_time: None,
+        compaction: Default::default(),
     }
 }
 
