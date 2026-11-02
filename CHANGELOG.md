@@ -11,6 +11,11 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Added (`2026-11-02h`)
+- Per-account `/context` policy: optional Codex proactive rollover between turns from native
+  context measurements; documented process-local Codex/Claude compaction controls. Unknown
+  capacity stays unknown, and original-source verification is required for proactive handoff.
+
 ### Added (`2026-11-02g`)
 - Bounded lexical native-history retrieval with exact excerpt pointers, confirmed links and
   observed context handoffs. `/memory` performs background reads and preserves drafts.

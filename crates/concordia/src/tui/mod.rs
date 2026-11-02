@@ -2501,6 +2501,32 @@ impl App {
 
     fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if trimmed == "/context" || trimmed.starts_with("/context ") {
+            self.push_command(line);
+            let result = self
+                .home_path
+                .as_ref()
+                .ok_or_else(|| "account home is unavailable".to_string())
+                .and_then(|h| {
+                    crate::native_memory::Binding::new(
+                        self.provider,
+                        &self.account,
+                        h,
+                        self.native_session_id
+                            .as_deref()
+                            .unwrap_or("context-policy"),
+                    )
+                })
+                .and_then(|b| {
+                    crate::capacity::set(
+                        &self.state_root,
+                        &b,
+                        trimmed.strip_prefix("/context").unwrap_or_default().trim(),
+                    )
+                });
+            self.push_system(result.unwrap_or_else(|e| format!("context policy: {e}")));
+            return true;
+        }
         if trimmed == "/memory" || trimmed.starts_with("/memory ") {
             self.push_command(line);
             self.memory_command(trimmed.strip_prefix("/memory").unwrap_or_default().trim());
@@ -3524,6 +3550,59 @@ pub async fn run_chat_tui() -> Result<()> {
                                 .map(PathBuf::from)
                         });
                     let home_str = home.as_ref().map(|p| p.to_string_lossy().into_owned());
+                    let binding = home.as_ref().and_then(|h| {
+                        crate::native_memory::Binding::new(
+                            provider,
+                            &account,
+                            h,
+                            session.as_deref().unwrap_or("context-policy"),
+                        )
+                        .ok()
+                    });
+                    let policy = match binding
+                        .as_ref()
+                        .map(|b| crate::capacity::load(&state_root, b))
+                        .transpose()
+                    {
+                        Ok(p) => p.unwrap_or_default(),
+                        Err(error) => {
+                            let _ = done_tx.send(TurnOutcome {
+                                stderr_tail: format!("invalid context policy: {error}"),
+                                ..Default::default()
+                            });
+                            return;
+                        }
+                    };
+                    let mut rollover = false;
+                    if policy.rollover_percent.is_some() && session.is_some() {
+                        if let Some(binding) = binding {
+                            let root = state_root.clone();
+                            let selected_model = model.clone();
+                            let measured = tokio::task::spawn_blocking(move || {
+                                crate::native_memory::context_measurement(
+                                    &root,
+                                    &binding,
+                                    &selected_model,
+                                )
+                            })
+                            .await;
+                            match measured {
+                                Ok(Ok(measurement)) => {
+                                    rollover = policy.rollover(measurement);
+                                    let notice = measurement.map_or("native context capacity unknown; proactive rollover skipped".into(), |m| format!("Native context: {} / {} tokens{}", m.used, m.window, if rollover { "; starting a fresh session before this turn" } else { "" }));
+                                    let _ = progress_tx.send(TurnProgress::Notice(notice));
+                                }
+                                _ => {
+                                    let _ = progress_tx.send(TurnProgress::Notice("native context measurement unavailable; proactive rollover skipped".into()));
+                                }
+                            }
+                        }
+                    }
+                    let need_pack_hint = need_pack_hint || rollover;
+                    if rollover && native_sources.is_empty() {
+                        let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: no original source binding is available".into(), ..Default::default() });
+                        return;
+                    }
                     // Pack only after an explicit switch (need_pack_hint). Planner clears
                     // session id on cross-home/provider; omits pack when native resume applies.
                     let decision = plan_continuity(&ContinuityRequest {
@@ -3531,13 +3610,19 @@ pub async fn run_chat_tui() -> Result<()> {
                         to_provider: provider,
                         from_home: prior_home.as_deref().or(home_str.as_deref()),
                         to_home: home_str.as_deref(),
-                        session_id: session.as_deref(),
+                        session_id: if rollover { None } else { session.as_deref() },
                         messages: &pack_msgs,
                         thread_id: thread_id.as_deref(),
                         include_pack_if_needed: need_pack_hint,
                     });
                     let session_out = if decision.native_resume {
-                        decision.session_id.clone().or(session.clone())
+                        decision.session_id.clone().or_else(|| {
+                            if rollover {
+                                None
+                            } else {
+                                session.clone()
+                            }
+                        })
                     } else {
                         // Never leak a foreign / cross-home session id.
                         None
@@ -3555,6 +3640,10 @@ pub async fn run_chat_tui() -> Result<()> {
                         .await;
                         match indexed {
                             Ok((sources, notices)) => {
+                                if rollover && (sources.is_empty() || !notices.is_empty()) {
+                                    let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: original native sources could not all be verified".into(), ..Default::default() });
+                                    return;
+                                }
                                 for notice in notices {
                                     let _ = progress_tx.send(TurnProgress::Notice(notice));
                                 }
@@ -3565,6 +3654,15 @@ pub async fn run_chat_tui() -> Result<()> {
                                 }
                             }
                             Err(error) => {
+                                if rollover {
+                                    let _ = done_tx.send(TurnOutcome {
+                                        stderr_tail: format!(
+                                            "proactive source preparation failed: {error}"
+                                        ),
+                                        ..Default::default()
+                                    });
+                                    return;
+                                }
                                 let _ = progress_tx.send(TurnProgress::Notice(format!(
                                     "native source indexing unavailable: {error}"
                                 )));
@@ -3593,6 +3691,7 @@ pub async fn run_chat_tui() -> Result<()> {
                         trust,
                         context_prefix: prefix.as_deref(),
                         local_time: Some(crate::prompt_time::now()),
+                        compaction: policy.compaction,
                     };
                     // Validate plan even if spawn fails (argv safety).
                     if let Err(e) = plan_provider_turn(&req) {

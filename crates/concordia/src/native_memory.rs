@@ -421,6 +421,75 @@ pub fn cursor_text(root: &Path, binding: &Binding) -> Result<Vec<(String, String
     Ok(messages)
 }
 
+/// Last native Codex context measurement, not cumulative billed usage. Unsupported formats and
+/// measurements invalidated by model changes/compaction remain unknown. No provider process runs.
+pub fn context_measurement(
+    root: &Path,
+    binding: &Binding,
+    model: &str,
+) -> Result<Option<crate::capacity::Measurement>, String> {
+    if binding.provider != ProviderKind::Codex {
+        return Ok(None);
+    }
+    let (mut file, index) = open_bound(root, binding)?;
+    let start = index.source_len.saturating_sub(TAIL_BYTES);
+    let bytes = read_at(&mut file, start, (index.source_len - start) as usize)?;
+    let begin = if start > 0 {
+        bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |n| n + 1)
+    } else {
+        0
+    };
+    let mut measurement = None;
+    let mut native_model = None;
+    for raw in bytes[begin..].split(|b| *b == b'\n') {
+        if raw.len() > LINE_BYTES {
+            measurement = None;
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(raw) else {
+            continue;
+        };
+        if v["type"] == "compacted" {
+            measurement = None;
+        }
+        if v["type"] == "turn_context" {
+            let next = v
+                .pointer("/payload/model")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if native_model != next {
+                measurement = None;
+            }
+            native_model = next;
+        }
+        if v["type"] == "event_msg" && v["payload"]["type"] == "token_count" {
+            measurement = v
+                .pointer("/payload/info/last_token_usage/total_tokens")
+                .and_then(Value::as_u64)
+                .zip(
+                    v.pointer("/payload/info/model_context_window")
+                        .and_then(Value::as_u64),
+                )
+                .filter(|(_, window)| *window > 0)
+                .map(|(used, window)| crate::capacity::Measurement { used, window });
+        }
+    }
+    if native_model.as_deref() != Some(model) || model == "?" {
+        return Ok(None);
+    }
+    let (mut check, current) = open_bound(root, binding)?;
+    if current.file_identity != index.file_identity
+        || current.source_len != index.source_len
+        || digest(&read_at(&mut check, start, bytes.len())?) != digest(&bytes)
+    {
+        return Err("native context source changed during measurement".into());
+    }
+    Ok(measurement)
+}
+
 pub fn index_session(
     root: &Path,
     provider: ProviderKind,
@@ -1019,6 +1088,49 @@ mod tests {
             .write_all(bytes)
             .unwrap();
     }
+    #[test]
+    fn native_context_uses_last_request_and_invalidates_after_compaction_or_model_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture");
+        let binding = Binding::new(
+            ProviderKind::Codex,
+            "fixture",
+            &dir.path().join("fixture"),
+            &session,
+        )
+        .unwrap();
+        let context =
+            json!({"type":"turn_context","payload":{"model":"fixture-model"}}).to_string() + "\n";
+        append(&path, context.as_bytes());
+        let count = json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":9999999},"last_token_usage":{"total_tokens":80},"model_context_window":100}}}).to_string() + "\n";
+        append(&path, count.as_bytes());
+        assert_eq!(
+            context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
+            Some(crate::capacity::Measurement {
+                used: 80,
+                window: 100
+            })
+        );
+        assert_eq!(
+            context_measurement(dir.path(), &binding, "other-model").unwrap(),
+            None
+        );
+        append(&path, b"{\"type\":\"compacted\",\"payload\":{}}\n");
+        assert_eq!(
+            context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
+            None
+        );
+        append(&path, count.as_bytes());
+        append(
+            &path,
+            b"{\"type\":\"turn_context\",\"payload\":{\"model\":\"other-model\"}}\n",
+        );
+        assert_eq!(
+            context_measurement(dir.path(), &binding, "other-model").unwrap(),
+            None
+        );
+    }
+
     #[test]
     fn retrieval_separates_exact_hits_from_verified_links_and_rejects_stale_sources() {
         for provider in [ProviderKind::Codex, ProviderKind::Claude] {

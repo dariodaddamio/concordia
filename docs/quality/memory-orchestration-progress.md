@@ -45,7 +45,14 @@ interfaces from work still being implemented; it does not mark the complete road
 - Retrieval validation covers Codex and Claude exact hit readback, account mismatch, mutation,
   confirmed-link removal, no stored text, draft preservation and stale TUI results. Clippy passes.
 
-Proactive capacity policy and durable workers are still in progress.
+- `/context` policy now implements between-turn Codex proactive rollover using the last native
+  request's context measurement, with original-source verification and normal cancellation/pack
+  delivery. Claude and Cursor capacity remain explicitly unavailable. Per-process Codex token
+  threshold and Claude automatic-compaction controls are visible, opt-in and reversible.
+- Policy checks cover unknown capacity, threshold boundary, overflow, provider isolation, exact
+  native measurement, cumulative-usage exclusion, model changes and compaction invalidation.
+
+Durable workers are still in progress. Whole-app and terminal checks remain for final integration.
 
 ## Supported-interface evidence
 

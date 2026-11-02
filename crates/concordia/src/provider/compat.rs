@@ -850,6 +850,7 @@ mod planning_tests {
             trust: TrustMode::Plan,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         let mut plan = plan_provider_turn(&req).unwrap();
         assert!(plan

@@ -1,5 +1,30 @@
 # Native source pointers and unfinished work
 
+`/context` shows the policy for the selected account/home. `/context rollover 80` enables
+between-turn proactive rollover at 80% of Codex's reported context window (allowed range 50–95).
+`/context rollover off` disables it. The reader accepts native `event_msg/token_count` records only
+when `last_token_usage.total_tokens`, `model_context_window` and the selected native `turn_context`
+model are present. Cumulative billed usage is ignored. Compaction/model changes invalidate prior
+measurements; missing, changing or unsupported signals stay unknown. This is a tested native-log
+adapter, not a guarantee that every CLI version writes these records. Claude/Cursor proactive
+capacity is unavailable until a supported, verified signal exists.
+
+An enabled rollover starts a fresh native session before the next submitted turn, carries the
+bounded continuity pack, verifies original source pointers, preserves native pinned-decision
+delivery, and checks cancellation before provider launch. No in-flight task is interrupted or
+replayed. Failed source verification stops the launch. The usual explicit capacity-error recovery
+remains separate. The threshold is a policy against the last native measurement; it cannot predict
+the token size of the next prompt, tools or native compaction performed by another process.
+
+`/context compact tokens N` sets Codex's documented `model_auto_compact_token_limit` for future
+Concordia turns through `-c`; `/context compact automatic-off` sets Claude's documented
+`DISABLE_AUTO_COMPACT=1` in that child process only. Unsupported provider/control combinations are
+rejected. `/context compact native` restores inherited native behavior. Defaults remain native.
+No provider config or authentication files are edited. Policy lives under Concordia state and is
+bound to the canonical account home. These controls have fixture validation; no real model turns
+were run. Sources: [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
+[Claude environment variables](https://code.claude.com/docs/en/env-vars).
+
 `/memory` opens its command guide. `/memory recall TEXT` searches this workspace across at most
 eight recent native source windows; `/memory recall-account ACCOUNT TEXT` restricts discovery.
 Search never spends inference tokens. Results carry exact index/message references and are

@@ -46,6 +46,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
             trust: TrustMode::Workspace,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         },
         None,
     )

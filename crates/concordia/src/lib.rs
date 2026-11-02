@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod capacity;
 pub mod catalog;
 pub mod chat_cli;
 pub mod commands;

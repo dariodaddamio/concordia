@@ -464,6 +464,7 @@ impl Delegates {
                 trust: spec.trust,
                 context_prefix: spec.prefix.as_deref(),
                 local_time: Some(crate::prompt_time::now()),
+                compaction: Default::default(),
             };
             let run = run_provider_turn_with_progress(&req, Some(hs_tx), Some(pg_tx));
             tokio::pin!(run);

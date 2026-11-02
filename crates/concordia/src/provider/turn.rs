@@ -57,6 +57,7 @@ pub struct ProviderTurnRequest<'a> {
     /// When set, the prompt opens with this time and the relative times it mentions resolved
     /// (`prompt_time::header`). Every user and worker turn sets it; `None` sends the text as is.
     pub local_time: Option<crate::prompt_time::LocalTime>,
+    pub compaction: crate::capacity::Compaction,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +201,7 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         ..req.clone()
     };
     let mut plan = plan_provider_turn_raw(req)?;
+    crate::capacity::apply(&mut plan, &req.compaction).map_err(anyhow::Error::msg)?;
     // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
     crate::provider::compat::degrade_planned(&mut plan, req.trust);
     // That fallback can drop the plan switch (Claude to manual, Cursor without --mode plan).
@@ -903,6 +905,7 @@ mod gate_tests {
             trust: TrustMode::Workspace,
             context_prefix: Some("<concordia_context>last week</concordia_context>"),
             local_time: Some(now),
+            compaction: Default::default(),
         };
         let plan = plan_provider_turn(&req).unwrap();
         // "last week" in the pack is not the user's words, so it is not resolved.
@@ -915,6 +918,7 @@ mod gate_tests {
         let plain = plan_provider_turn(&ProviderTurnRequest {
             images: &[],
             local_time: None,
+            compaction: Default::default(),
             context_prefix: None,
             ..req
         })
@@ -934,6 +938,7 @@ mod gate_tests {
             trust,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         plan_provider_turn(&req).unwrap().argv
     }
@@ -974,6 +979,7 @@ mod gate_tests {
             trust: TrustMode::Workspace,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         let notice = enforcement_notice(&req).expect("a lowered turn must explain itself");
         assert!(notice.contains("cursor") && notice.contains("read-only"));
@@ -1012,6 +1018,7 @@ mod gate_tests {
             trust: TrustMode::Full,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         let result = plan_provider_turn(&req);
         set_caps(
