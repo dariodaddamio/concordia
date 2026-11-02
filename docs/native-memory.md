@@ -1,5 +1,25 @@
 # Native source pointers and unfinished work
 
+`/memory` opens its command guide. `/memory recall TEXT` searches this workspace across at most
+eight recent native source windows; `/memory recall-account ACCOUNT TEXT` restricts discovery.
+Search never spends inference tokens. Results carry exact index/message references and are
+labelled lexical suggestions. Twelve hits, eight source windows (8 MiB each), and the existing
+native discovery budgets bound one request. Incomplete scans are explicit; no claim of exhaustive
+recall is made. Broad discovery skips Cursor replay; explicitly indexed Cursor pages are searchable.
+
+CLI `chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR]` returns JSON. `--source`
+searches any verified recent or whole-history page. Advance a whole-history page with `/memory next
+INDEX`, then search the returned page with the CLI. Exact excerpts use `/memory excerpt INDEX
+--message N`; continue UTF-8 chunks using `next_offset`. Source changes withhold results.
+
+`/memory link PARENT CHILD` confirms a relationship between two verified index pointers;
+`/memory detach PARENT CHILD` removes it. `/memory lineage INDEX` shows confirmed links separately
+from observed Concordia context handoffs. Observed handoffs store explicit account/home/session and
+workspace identities only, verify both sources on readback, and never claim provider-native ancestry.
+No transcript bodies or search queries are stored by retrieval or lineage. New conversations discard
+late display results; background reads remain bounded. Cross-workspace discovery is available through
+the CLI without `--workspace`.
+
 Build `2026-10-31s` adds a bounded pointer index for Codex and Claude JSONL sessions. It works
 with Concordia transcript recording off. Build `2026-11-02f` also reads Cursor histories through
 the provider's supported ACP history replay; unsupported capabilities report unavailable rather

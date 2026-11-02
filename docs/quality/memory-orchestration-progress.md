@@ -39,7 +39,13 @@ interfaces from work still being implemented; it does not mark the complete road
   source mutation, unsupported capability, wrong session and rejected tool requests), nine chat
   reader tests and all-target clippy pass. This is fixture evidence, not live Cursor parity.
 
-Related retrieval, proactive capacity policy and durable workers are still in progress.
+- Bounded lexical retrieval and explicit/observed lineage are implemented. `/memory` uses background
+  readers and drops late results after conversation changes. CLI source-page search reaches older
+  whole-history pages. Exact pointers remain authoritative; suggestions never imply ancestry.
+- Retrieval validation covers Codex and Claude exact hit readback, account mismatch, mutation,
+  confirmed-link removal, no stored text, draft preservation and stale TUI results. Clippy passes.
+
+Proactive capacity policy and durable workers are still in progress.
 
 ## Supported-interface evidence
 

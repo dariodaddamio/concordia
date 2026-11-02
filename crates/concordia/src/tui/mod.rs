@@ -1440,6 +1440,7 @@ impl App {
         self.persist_tick();
         self.poll_file_jobs();
         self.poll_session_history();
+        self.poll_memory();
         self.workspace.poll();
         if let Some(notice) = self.workspace.take_notice() {
             self.flash(notice);
@@ -2500,6 +2501,11 @@ impl App {
 
     fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if trimmed == "/memory" || trimmed.starts_with("/memory ") {
+            self.push_command(line);
+            self.memory_command(trimmed.strip_prefix("/memory").unwrap_or_default().trim());
+            return true;
+        }
         if trimmed == "/trust" || trimmed.starts_with("/trust ") {
             self.push_command(line);
             self.push_system("/trust is now /mode");

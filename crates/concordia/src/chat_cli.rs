@@ -223,6 +223,12 @@ fn bounded_field(value: &str, max_chars: usize) -> String {
 pub fn run(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
     if args
         .first()
+        .is_some_and(|s| matches!(s.as_str(), "recall" | "lineage" | "link" | "detach"))
+    {
+        return crate::native_memory::retrieval::command(root, args).map_err(|e| (e, 2));
+    }
+    if args
+        .first()
         .is_some_and(|operation| matches!(operation.as_str(), "index" | "excerpt" | "sources"))
     {
         return crate::native_memory::command(root, args).map_err(|error| (error, 2));
@@ -505,7 +511,7 @@ fn read_messages(path: &Path, provider: ProviderKind) -> Result<(Vec<String>, bo
     Ok((messages, truncated))
 }
 
-fn terminal_safe(text: &str) -> String {
+pub(crate) fn terminal_safe(text: &str) -> String {
     text.chars()
         .filter(|c| !c.is_control() || matches!(*c, '\n' | '\t'))
         .collect()

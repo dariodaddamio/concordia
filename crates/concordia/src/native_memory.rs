@@ -18,6 +18,8 @@ const EXCERPT_BYTES: usize = 8192;
 
 #[path = "cursor_history.rs"]
 mod cursor_history;
+#[path = "memory_retrieval.rs"]
+pub mod retrieval;
 
 enum Source {
     File(File),
@@ -1017,6 +1019,63 @@ mod tests {
             .write_all(bytes)
             .unwrap();
     }
+    #[test]
+    fn retrieval_separates_exact_hits_from_verified_links_and_rejects_stale_sources() {
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, session) = fixture(provider, dir.path(), "fixture");
+            append(&path, message(provider, "distinctive needle 雪").as_bytes());
+            let parent = index_session(dir.path(), provider, "fixture", &session).unwrap();
+            let report = retrieval::recall(
+                dir.path(),
+                "needle",
+                Some(&parent.id),
+                Some("fixture"),
+                None,
+            )
+            .unwrap();
+            assert_eq!(report.hits.len(), 1);
+            let hit = &report.hits[0];
+            assert!(hit.relationship.starts_with("lexical suggestion"));
+            assert!(read(dir.path(), &hit.source.id, hit.message, 0, 8192)
+                .unwrap()
+                .raw
+                .contains("needle"));
+            assert!(
+                retrieval::recall(dir.path(), "needle", Some(&parent.id), Some("other"), None)
+                    .is_err()
+            );
+            append(&path, message(provider, "later record").as_bytes());
+            let child = index_session(dir.path(), provider, "fixture", &session).unwrap();
+            retrieval::link(dir.path(), &parent.id, &child.id, "user-confirmed").unwrap();
+            assert_eq!(
+                retrieval::links(dir.path(), &parent.id).unwrap()["links"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            retrieval::detach(dir.path(), &parent.id, &child.id).unwrap();
+            assert!(retrieval::links(dir.path(), &parent.id).unwrap()["links"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            let stored =
+                fs::read_to_string(directory(dir.path()).join(format!("{}.json", parent.id)))
+                    .unwrap();
+            assert!(!stored.contains("needle"));
+            let bytes = fs::read(&path).unwrap();
+            fs::write(
+                &path,
+                String::from_utf8(bytes)
+                    .unwrap()
+                    .replace("needle", "edited"),
+            )
+            .unwrap();
+            assert!(retrieval::recall(dir.path(), "needle", Some(&parent.id), None, None).is_err());
+        }
+    }
+
     #[test]
     fn whole_history_pages_reach_every_record_and_keep_snapshot_ordinals_after_append() {
         for provider in [ProviderKind::Codex, ProviderKind::Claude] {
