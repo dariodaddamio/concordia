@@ -579,7 +579,8 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
                 .lines()
                 .next()
                 .unwrap_or_default()
-                .contains("concordia")
+                .trim_start()
+                .starts_with('◆')
                 && screen.contains("resize-draft-marker")
                 && screen
                     .lines()
@@ -611,7 +612,8 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
             .lines()
             .next()
             .unwrap_or_default()
-            .contains("concordia")
+            .trim_start()
+            .starts_with('◆')
             && screen
                 .lines()
                 .nth(28)
@@ -1248,7 +1250,7 @@ fn unbracketed_crlf_paste_keeps_blank_lines_and_trailing_newline_until_send() {
     assert!(s.prompts().is_empty());
     s.enter();
     s.until("CRLF paste submitted once", |s| {
-        s.prompts() == ["alpha\n\nbeta"]
+        s.prompts() == ["alpha\n\nbeta\n"]
     });
     s.until("reply", |s| s.screen().contains("FAKE REPLY:"));
     s.exit();
@@ -1717,7 +1719,10 @@ fn internal_preview_remains_responsive_during_gated_stream() {
     s.paste("preview input must not become a prompt");
     s.send("\r");
     s.send("\x1b");
-    assert!(s.draft().is_empty());
+    s.until(
+        "preview editing leaves the persisted chat draft empty",
+        |s| s.draft().is_empty(),
+    );
     assert_eq!(s.prompts(), ["[wait] keep streaming"]);
     assert!(s.journal().iter().all(|event| event["kind"] != "done"));
 
