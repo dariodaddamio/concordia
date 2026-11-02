@@ -11,6 +11,9 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Changed (`2026-11-02f`)
+- Cursor native readback uses capability-checked ACP session loading with exact account/session binding. Pointer excerpts, whole-history pages within the bounded replay budget, CLI chat reads and resume scrollback use the same reader. Replay sends no prompt, starts no new session, rejects tool requests, preserves native auth in the selected config home, and persists only pointer metadata. Cursor pointers explicitly identify protocol replay rather than claiming local JSONL-file provenance.
+
 ### Changed (`2026-11-02e`)
 - Native source indexing can scan whole Codex/Claude histories through immutable bounded pages, with resumable identity-checked cursors, snapshot-stable ordinals, explicit malformed/oversized-record gaps, and no stored conversation bodies. CLI and MCP range listings now page beyond the first twenty records; MCP can expand a known pointer into whole-history pages.
 

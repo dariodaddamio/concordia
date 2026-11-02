@@ -1,8 +1,9 @@
 # Native source pointers and unfinished work
 
 Build `2026-10-31s` adds a bounded pointer index for Codex and Claude JSONL sessions. It works
-with Concordia transcript recording off. Cursor still exposes session metadata only; unsupported
-native readback reports unavailable rather than guessing a source.
+with Concordia transcript recording off. Build `2026-11-02f` also reads Cursor histories through
+the provider's supported ACP history replay; unsupported capabilities report unavailable rather
+than guessing a source or database format.
 
 ## Identity and exact readback
 
@@ -61,6 +62,30 @@ provider-owned logs are never edited. Exact source readback can contain material
 provider previously wrote into that session; it is not a redacted summary.
 
 ## Handoff and restart
+
+### Cursor protocol sources
+
+Cursor pointers use `native_protocol: "acp/session.load"` and `file: "acp-history"`. Their bytes
+are the provider's original replay notifications, not a claim to read an undocumented local
+JSONL file. The selected account's canonical config home is passed through documented
+`CURSOR_CONFIG_DIR`; inherited API-key/token variables are removed. Concordia neither copies
+credentials nor starts login. The provider remains responsible for its own authentication.
+
+The reader requires native `loadSession` capability and existing exact session/workspace metadata.
+It sends only `initialize` and `session/load`, with no new session, model prompt, mode change or
+MCP server supplied by Concordia. Tool/client requests are rejected. A tracked process guard,
+25-second replay timeout, 1 MiB frame bound and 16 MiB wire budget bound the read; larger replays
+report unavailable instead of returning an incomplete history as complete. No replay body is
+persisted. Fresh replay revalidates pointer prefixes/ranges; changed content fails stale.
+
+`chat index|sources|excerpt`, MCP native reads, `chat read`, and resume scrollback share this
+transport. UI display keeps its existing 200-message/1 MiB text budget and sanitizes terminal
+controls. Unsupported native versions, missing workspace metadata and authentication errors
+remain explicit. Fixture validation does not establish live-provider compatibility for every version.
+
+Sources: [Cursor ACP](https://cursor.com/docs/cli/acp),
+[Cursor config homes](https://cursor.com/docs/cli/reference/configuration),
+[ACP load/replay contract](https://agentclientprotocol.com/protocol/v1/session-setup).
 
 After a switch/continuation, a cancellable preparation step indexes up to three distinct recent
 native sources. The next provider receives a bounded directory of pointer IDs and readback

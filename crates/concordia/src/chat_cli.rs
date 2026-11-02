@@ -35,15 +35,21 @@ pub fn read_history(
     provider: ProviderKind,
     session_id: &str,
 ) -> Result<History, String> {
-    if provider == ProviderKind::Cursor {
-        return Err(
-            "Cursor native transcript reading is not supported; only session metadata is available"
-                .into(),
-        );
-    }
     let (session, path) = sessions::find_native_record(root, account, Some(provider), session_id)?
         .ok_or_else(|| "session not found in that registered account and provider".to_string())?;
-    let mut history = read_history_file(&path, provider)?;
+    let mut history = if provider == ProviderKind::Cursor {
+        let home = crate::accounts::get_account(root, account)
+            .and_then(|a| a.home_path)
+            .ok_or("Cursor account home is unavailable")?;
+        let binding = crate::native_memory::Binding::new(provider, account, &home, session_id)?;
+        let mut buffer = HistoryBuffer::new(false);
+        for (role, text) in crate::native_memory::cursor_text(root, &binding)? {
+            buffer.push(&role, &text);
+        }
+        buffer.finish()
+    } else {
+        read_history_file(&path, provider)?
+    };
     history.title = session.preview.map(|s| terminal_safe(&s));
     Ok(history)
 }
@@ -315,10 +321,19 @@ fn run_inner(root: &Path, args: &[String]) -> Result<String, String> {
         let account = account.ok_or("read requires --account to bind chat ownership")?;
         let (session, path) = sessions::find_native_record(root, account, provider, id)?
             .ok_or_else(|| "session not found in that registered account".to_string())?;
-        if session.provider == ProviderKind::Cursor {
-            return Err("Cursor exposes chat metadata here; its native transcript format is not supported for reading".into());
-        }
-        let (messages, truncated) = read_messages(&path, session.provider)?;
+        let (messages, truncated) = if session.provider == ProviderKind::Cursor {
+            let history = read_history(root, account, session.provider, id)?;
+            (
+                history
+                    .messages
+                    .into_iter()
+                    .map(|m| format!("{}: {}", m.role, m.text))
+                    .collect(),
+                history.truncated,
+            )
+        } else {
+            read_messages(&path, session.provider)?
+        };
         let messages: Vec<_> = messages
             .into_iter()
             .filter(|s| grep.is_none_or(|g| s.contains(g)))
@@ -614,12 +629,12 @@ mod tests {
     }
 
     #[test]
-    fn structured_history_rejects_unsupported_provider() {
+    fn structured_cursor_history_requires_an_explicit_registered_account() {
         let dir = tempfile::tempdir().unwrap();
         assert!(
             read_history(dir.path(), "account", ProviderKind::Cursor, "session")
                 .unwrap_err()
-                .contains("not supported")
+                .contains("account")
         );
     }
     #[test]

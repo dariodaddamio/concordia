@@ -31,7 +31,15 @@ interfaces from work still being implemented; it does not mark the complete road
   all-target clippy with warnings denied pass. The cases include 400 records, sources beyond the
   old tail bound, appended records, Unicode, source rewrites and cross-account cursor misuse.
 
-The remaining four items and the broader TUI retrieval workflow are still in progress.
+- Cursor readback now uses supported ACP `session/load` for exact account/session replay. The
+  same reader serves pointer indexing, `chat read` and asynchronous resume scrollback. No prompt,
+  login, tool execution or conversation copy is involved. Replay is bounded to 16 MiB/25 seconds;
+  unsupported capabilities, source changes and unexpected client requests fail closed.
+- Cursor validation: public CLI integration (including exact Unicode text, config-home isolation,
+  source mutation, unsupported capability, wrong session and rejected tool requests), nine chat
+  reader tests and all-target clippy pass. This is fixture evidence, not live Cursor parity.
+
+Related retrieval, proactive capacity policy and durable workers are still in progress.
 
 ## Supported-interface evidence
 

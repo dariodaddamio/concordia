@@ -16,6 +16,45 @@ const MAX_MESSAGES: usize = 128;
 const INDEX_BYTES: u64 = 256 * 1024;
 const EXCERPT_BYTES: usize = 8192;
 
+#[path = "cursor_history.rs"]
+mod cursor_history;
+
+enum Source {
+    File(File),
+    Replay(std::io::Cursor<Vec<u8>>),
+}
+
+impl Read for Source {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::File(file) => file.read(buffer),
+            Self::Replay(replay) => replay.read(buffer),
+        }
+    }
+}
+impl Seek for Source {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::File(file) => file.seek(position),
+            Self::Replay(replay) => replay.seek(position),
+        }
+    }
+}
+impl Source {
+    fn len(&self) -> Result<u64, String> {
+        match self {
+            Self::File(file) => file.metadata().map(|m| m.len()).map_err(|e| e.to_string()),
+            Self::Replay(replay) => Ok(replay.get_ref().len() as u64),
+        }
+    }
+    fn identity(&self) -> Result<String, String> {
+        match self {
+            Self::File(file) => identity(file),
+            Self::Replay(_) => Ok("cursor-acp-v1".into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Binding {
     pub provider: ProviderKind,
@@ -73,6 +112,8 @@ pub struct Summary {
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistorySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_protocol: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,12 +182,7 @@ impl Binding {
         })
     }
 
-    fn verify(&self, root: &Path) -> Result<PathBuf, String> {
-        if self.provider == ProviderKind::Cursor {
-            return Err(
-                "Cursor native transcript indexing is not supported; no source was invented".into(),
-            );
-        }
+    fn account_home(&self, root: &Path) -> Result<PathBuf, String> {
         let account = accounts::get_account(root, &self.account)
             .ok_or("native source account is unavailable")?;
         let home = account
@@ -157,7 +193,11 @@ impl Binding {
         {
             return Err("native source binding changed; refusing another account/home".into());
         }
-        let home = normalize_home(home)?;
+        normalize_home(home)
+    }
+
+    fn verify(&self, root: &Path) -> Result<PathBuf, String> {
+        let home = self.account_home(root)?;
         let source_root = fs::canonicalize(home.join(match self.provider {
             ProviderKind::Codex => "sessions",
             _ => "projects",
@@ -189,7 +229,7 @@ fn open_source(path: &Path, allowed: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-fn read_at(file: &mut File, offset: u64, len: usize) -> Result<Vec<u8>, String> {
+fn read_at(file: &mut Source, offset: u64, len: usize) -> Result<Vec<u8>, String> {
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
     let mut bytes = vec![0; len];
@@ -246,6 +286,23 @@ fn identity(_: &File) -> Result<String, String> {
 }
 
 fn message_role(value: &Value, provider: ProviderKind, session: &str) -> Option<(String, bool)> {
+    if provider == ProviderKind::Cursor {
+        if value["method"] != "session/update"
+            || value.pointer("/params/sessionId").and_then(Value::as_str) != Some(session)
+        {
+            return None;
+        }
+        let role = match value
+            .pointer("/params/update/sessionUpdate")
+            .and_then(Value::as_str)?
+        {
+            "user_message_chunk" => "user",
+            "agent_message_chunk" => "assistant",
+            "tool_call" | "tool_call_update" => "tool",
+            _ => return None,
+        };
+        return Some((role.into(), false));
+    }
     if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
         if id != session {
             return None;
@@ -314,6 +371,52 @@ fn message_role(value: &Value, provider: ProviderKind, session: &str) -> Option<
     } else {
         has_tool.then(|| ("tool".into(), false))
     }
+}
+
+/// Display text from the same validated native Cursor replay used by exact pointers.
+/// Text is returned in memory only; the caller applies its own transcript/display budget.
+pub fn cursor_text(root: &Path, binding: &Binding) -> Result<Vec<(String, String)>, String> {
+    if binding.provider != ProviderKind::Cursor {
+        return Err("Cursor history requires a Cursor binding".into());
+    }
+    let source = cursor_history::open(root, binding)?;
+    let Source::Replay(replay) = source else {
+        return Err("invalid Cursor history transport".into());
+    };
+    let mut messages: Vec<(String, String)> = Vec::new();
+    let mut previous = None;
+    for raw in replay.get_ref().split(|b| *b == b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(raw) else {
+            continue;
+        };
+        let Some((role, _)) = message_role(&value, ProviderKind::Cursor, &binding.session_id)
+        else {
+            continue;
+        };
+        if !matches!(role.as_str(), "user" | "assistant") {
+            continue;
+        }
+        let Some(text) = value
+            .pointer("/params/update/content/text")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let key = value
+            .pointer("/params/update/messageId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(|id| (role.clone(), id.to_owned()));
+        if key.is_some() && key == previous {
+            if let Some((_, content)) = messages.last_mut() {
+                content.push_str(text);
+            }
+        } else {
+            messages.push((role, text.into()));
+        }
+        previous = key;
+    }
+    Ok(messages)
 }
 
 pub fn index_session(
@@ -387,7 +490,32 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
     save_index(root, &mut file, index)
 }
 
-fn open_bound(root: &Path, binding: &Binding) -> Result<(File, SourceIndex), String> {
+fn open_bound(root: &Path, binding: &Binding) -> Result<(Source, SourceIndex), String> {
+    if binding.provider == ProviderKind::Cursor {
+        let home = binding.account_home(root)?;
+        let mut source = cursor_history::open(root, binding)?;
+        let source_len = source.len()?;
+        let anchor_len = source_len.min(HEAD_BYTES);
+        let head = read_at(&mut source, 0, anchor_len as usize)?;
+        return Ok((
+            source,
+            SourceIndex {
+                version: 1,
+                binding: Binding {
+                    home,
+                    ..binding.clone()
+                },
+                relative_file: "acp-history".into(),
+                file_identity: "cursor-acp-v1".into(),
+                source_len,
+                anchor_len,
+                anchor_sha256: digest(&head),
+                messages: Vec::new(),
+                truncated: false,
+                history: None,
+            },
+        ));
+    }
     let allowed = binding.verify(root)?;
     let (_, path) = sessions::find_native_record(
         root,
@@ -401,9 +529,9 @@ fn open_bound(root: &Path, binding: &Binding) -> Result<(File, SourceIndex), Str
         .strip_prefix(&allowed)
         .map_err(|_| "native source escapes its bound session tree")?
         .to_path_buf();
-    let mut file = open_source(&canonical, &allowed)?;
-    let file_identity = identity(&file)?;
-    let source_len = file.metadata().map_err(|e| e.to_string())?.len();
+    let mut file = Source::File(open_source(&canonical, &allowed)?);
+    let file_identity = file.identity()?;
+    let source_len = file.len()?;
     let anchor_len = source_len.min(HEAD_BYTES);
     let head = read_at(&mut file, 0, anchor_len as usize)?;
     let owns_session = head
@@ -439,13 +567,13 @@ fn open_bound(root: &Path, binding: &Binding) -> Result<(File, SourceIndex), Str
     Ok((file, index))
 }
 
-fn save_index(root: &Path, file: &mut File, mut index: SourceIndex) -> Result<Summary, String> {
+fn save_index(root: &Path, file: &mut Source, mut index: SourceIndex) -> Result<Summary, String> {
     let source_len = index.source_len;
     let anchor_len = index.anchor_len;
     let binding = &index.binding;
     index.binding.home = normalize_home(&binding.home)?;
-    if identity(file)? != index.file_identity
-        || file.metadata().map_err(|e| e.to_string())?.len() < source_len
+    if file.identity()? != index.file_identity
+        || file.len()? < source_len
         || digest(&read_at(file, 0, anchor_len as usize)?) != index.anchor_sha256
     {
         return Err("native source changed while indexing; retry explicitly".into());
@@ -479,6 +607,8 @@ fn summary(id: &str, index: &SourceIndex) -> Summary {
             complete: page.next.is_none() && page.skipped_records == 0,
             parent: page.parent.clone(),
         }),
+        native_protocol: (index.binding.provider == ProviderKind::Cursor)
+            .then(|| "acp/session.load".into()),
     }
 }
 
@@ -650,8 +780,7 @@ pub fn describe_page(
     )
 }
 
-fn open_index_source(root: &Path, index: &SourceIndex) -> Result<File, String> {
-    let allowed = index.binding.verify(root)?;
+fn open_index_source(root: &Path, index: &SourceIndex) -> Result<Source, String> {
     if index.relative_file.is_absolute()
         || index
             .relative_file
@@ -660,10 +789,17 @@ fn open_index_source(root: &Path, index: &SourceIndex) -> Result<File, String> {
     {
         return Err("unsafe native source path in pointer".into());
     }
-    let mut file = open_source(&allowed.join(&index.relative_file), &allowed)?;
-    if identity(&file)? != index.file_identity
-        || file.metadata().map_err(|e| e.to_string())?.len() < index.source_len
-    {
+    let mut file = if index.binding.provider == ProviderKind::Cursor {
+        index.binding.account_home(root)?;
+        if index.relative_file != Path::new("acp-history") {
+            return Err("invalid Cursor protocol source".into());
+        }
+        cursor_history::open(root, &index.binding)?
+    } else {
+        let allowed = index.binding.verify(root)?;
+        Source::File(open_source(&allowed.join(&index.relative_file), &allowed)?)
+    };
+    if file.identity()? != index.file_identity || file.len()? < index.source_len {
         return Err(
             "native source is stale: replaced or truncated; index this session again".into(),
         );
@@ -708,7 +844,10 @@ pub fn read(
     if digest(&bytes) != span.sha256 {
         return Err("native source is stale: indexed message changed or was compacted".into());
     }
-    if identity(&open_index_source(root, &index)?)? != index.file_identity {
+    // Re-open files to detect replacement, but do not issue a second Cursor replay in one read.
+    if index.binding.provider != ProviderKind::Cursor
+        && open_index_source(root, &index)?.identity()? != index.file_identity
+    {
         return Err("native source replaced during read".into());
     }
     let raw = std::str::from_utf8(&bytes).map_err(|_| "native source is no longer UTF-8")?;
@@ -737,7 +876,7 @@ pub fn read(
 /// CLI and MCP share the same validated, bounded operations.
 pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
     let Some(operation) = args.first().map(String::as_str) else {
-        return Err("usage: chat index SESSION --account ID --provider codex|claude [--scope recent|whole --cursor INDEX] | chat excerpt INDEX [--message N --offset N --max-bytes N] | chat sources INDEX [--from-message N --limit N]".into());
+        return Err("usage: chat index SESSION --account ID --provider codex|claude|cursor [--scope recent|whole --cursor INDEX] | chat excerpt INDEX [--message N --offset N --max-bytes N] | chat sources INDEX [--from-message N --limit N]".into());
     };
     let positional = args
         .get(1)
