@@ -12,14 +12,20 @@ actual tool preview. Completed replies retain duration and local stop time. Bott
 when already at the bottom. Command lists share horizontal inner padding. File-browser headings retain the end of a long
 directory path with a leading ellipsis in narrow split layouts.
 
-Conversational question choices are clickable and keyboard-selectable (arrows/Enter/digits;
-F8 refocuses). They are offered only when a reply ends with a question line followed by top-level
-choices. List items that quote a question, nested bullets and choices in the middle of an answer
-are content, not a prompt. A note row under the choices takes typed or pasted text: Enter on a
-choice sends the choice with the note, and Enter on the note row sends the note alone. Esc clears
-the note, then returns to the message box. Their transcript presentation avoids repeating the
-visible options, but retains the original text for copy/history and when a short terminal cannot
-fit the panel. These replies are follow-up messages, not native approval RPCs.
+Conversational question choices are clickable and keyboard-selectable (F8, then arrows/Enter).
+They never take focus from the message box automatically. They are offered only when a reply ends
+with a question or explicit invitation immediately followed by top-level choices. Mentioning
+"select an option" in a status update does not create a question. Intervening/trailing prose,
+list items quoting a question, and example JSON remain content. Only question-tool cards interpret
+structured question JSON. The complete original reply stays in the transcript, including long options.
+
+A note row takes text after explicitly entering the panel with F8 or a click. Typing or pasting
+selects this row, including when the text starts with a digit. Enter sends the note alone,
+preserving its text without prepending the inferred question. To include an option, move to it
+after writing the note and press Enter, or click it. Paste preserves logical line breaks;
+Shift+Enter inserts one. Esc returns to the message box and retains the note. Existing composer
+drafts remain intact when an option/note is sent. These replies are follow-up messages, not native
+approval RPCs; native permission requests retain their explicit response and digit shortcuts.
 
 Chat underlines a file reference only when it names an existing file relative to the chat's
 working directory, or is an explicit Markdown link. Prose before a filename is not underlined.

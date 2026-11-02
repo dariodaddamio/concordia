@@ -9,9 +9,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 struct Question {
     prompt: String,
     options: Vec<String>,
-    /// Byte offset of the question line in the source message; the transcript shows the text
-    /// before it while the picker shows the question itself.
-    start: usize,
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -23,32 +20,11 @@ pub(super) struct State {
     last_source: String,
     targets: Vec<(Rect, usize)>,
     pressed: Option<usize>,
-    visible: bool,
     native: Option<crate::provider::turn::NativeRequest>,
     native_choices: Vec<usize>,
     note: String,
 }
 impl State {
-    pub fn presentation(&self, text: &str) -> Option<String> {
-        if !self.visible
-            || !self.waiting()
-            || self.native.is_some()
-            || text.trim() != self.last_source.trim()
-        {
-            return None;
-        }
-        let question = self.questions.first()?;
-        let prefix = self
-            .last_source
-            .get(..question.start)
-            .unwrap_or("")
-            .trim_end();
-        Some(if prefix.is_empty() {
-            "Choose a reply below.".into()
-        } else {
-            prefix.into()
-        })
-    }
     pub fn waiting(&self) -> bool {
         !self.questions.is_empty()
     }
@@ -66,14 +42,26 @@ impl State {
             self.clear();
         }
     }
-    pub fn offer(&mut self, text: &str, focus: bool) {
+    pub fn offer(&mut self, text: &str) {
+        self.offer_questions(text, false);
+    }
+
+    pub fn offer_tool(&mut self, text: &str) {
+        self.offer_questions(text, true);
+    }
+
+    fn offer_questions(&mut self, text: &str, structured: bool) {
         if self.native.is_some() {
             return;
         }
         if text.len() > 128 * 1024 || self.last_source == text {
             return;
         }
-        let questions = parse(text);
+        let questions = if structured {
+            parse_tool(text)
+        } else {
+            parse(text)
+        };
         if questions.is_empty() {
             return;
         }
@@ -83,7 +71,9 @@ impl State {
         self.selected = 0;
         self.answers.clear();
         self.note.clear();
-        self.focused = focus;
+        // Inferred conversational replies must never take keyboard ownership from the composer.
+        // F8 or a click explicitly enters the options; native requests keep their own contract.
+        self.focused = false;
     }
     /// Rows the cursor can reach: the choices plus, for conversational replies, the note row.
     fn rows(&self) -> usize {
@@ -107,7 +97,6 @@ impl State {
                     .flatten()
                     .map(|o| o["name"].as_str().unwrap_or("Permission option").to_owned())
                     .collect(),
-                start: 0,
             }]
         } else {
             params["questions"]
@@ -124,7 +113,6 @@ impl State {
                         .take(9)
                         .map(|o| o["label"].as_str().unwrap_or("Option").to_owned())
                         .collect(),
-                    start: 0,
                 })
                 .collect()
         };
@@ -168,8 +156,9 @@ fn asks(line: &str) -> bool {
     if option(line).is_some() || line.starts_with([' ', '\t']) {
         return false;
     }
+    let line = line.trim_start_matches('#').trim();
     let end = line.trim_end().trim_end_matches(['*', '_', ':', ' ']);
-    let lower = line.to_ascii_lowercase();
+    let lower = end.trim_start_matches(['*', '_']).to_ascii_lowercase();
     end.ends_with('?')
         || [
             "choose one",
@@ -179,7 +168,7 @@ fn asks(line: &str) -> bool {
             "your preference",
         ]
         .iter()
-        .any(|s| lower.contains(s))
+        .any(|s| lower == *s)
 }
 fn close(open: &mut Option<Question>, found: &mut Option<Question>, after: &mut usize) {
     if let Some(q) = open.take().filter(|q| q.options.len() >= 2) {
@@ -187,8 +176,8 @@ fn close(open: &mut Option<Question>, found: &mut Option<Question>, after: &mut 
         *after = 0;
     }
 }
-fn parse(text: &str) -> Vec<Question> {
-    // Tool cards retain their input JSON, including multi-question requests.
+fn parse_tool(text: &str) -> Vec<Question> {
+    // Only explicit question-tool cards interpret JSON. Code examples in assistant prose do not.
     if let Some(start) = text.find('{') {
         if let Some(Ok(value)) = serde_json::Deserializer::from_str(&text[start..])
             .into_iter::<serde_json::Value>()
@@ -212,27 +201,23 @@ fn parse(text: &str) -> Vec<Question> {
                                     .map(str::to_owned)
                             })
                             .collect::<Vec<_>>();
-                        (options.len() >= 2).then_some(Question {
-                            prompt,
-                            options,
-                            start: 0,
-                        })
+                        (options.len() >= 2).then_some(Question { prompt, options })
                     })
                     .collect();
             }
         }
     }
-    // Only the last question-and-choices block counts, and only when at most one short line (a
-    // sign-off) follows it. Choices in the middle of an answer are content, not a prompt.
+    Vec::new()
+}
+
+fn parse(text: &str) -> Vec<Question> {
+    // Choices must immediately follow their question and finish the reply. Intervening or
+    // trailing prose makes this ordinary content, not an inferred request for user input.
     let mut found: Option<Question> = None;
     let mut after = 0usize;
     let mut open: Option<Question> = None;
-    let mut gap = 0usize;
     let mut fenced = false;
-    let mut offset = 0usize;
     for raw in text.split_inclusive('\n') {
-        let start = offset;
-        offset += raw.len();
         let line = raw.trim_end_matches(['\n', '\r']);
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
@@ -258,26 +243,21 @@ fn parse(text: &str) -> Vec<Question> {
                 last.push_str(&option(line).unwrap_or_else(|| plain(line)));
                 continue;
             }
-            if q.options.is_empty() && gap < 3 && !asks(line) {
-                gap += 1; // A short explanation may sit between the question and its choices.
-                continue;
-            }
             close(&mut open, &mut found, &mut after);
         }
         if asks(line) {
+            found = None;
             open = Some(Question {
                 prompt: plain(line.trim().trim_matches(['*', '#', ' '])),
                 options: Vec::new(),
-                start,
             });
-            gap = 0;
             continue;
         }
         after += 1;
     }
     close(&mut open, &mut found, &mut after);
     match found {
-        Some(q) if after <= 1 => vec![q],
+        Some(q) if after == 0 => vec![q],
         _ => Vec::new(),
     }
 }
@@ -287,12 +267,13 @@ fn choose(app: &mut App, index: usize) {
     let Some(q) = s.questions.get(s.current) else {
         return;
     };
-    let note = s.note.trim().to_owned();
+    let note = s.note.clone();
     if s.native.is_none() && index == q.options.len() {
-        if note.is_empty() {
+        if note.trim().is_empty() {
             return;
         }
-        s.answers.push(format!("{}\n{note}", q.prompt));
+        // A free reply stands on its own; never prepend an inferred question or selected option.
+        s.answers.push(note);
     } else {
         let Some(answer) = q.options.get(index) else {
             return;
@@ -360,8 +341,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             if let Some(native) = app.questions.native.take() {
                 native.respond(serde_json::json!({"outcome":{"outcome":"cancelled"}}));
                 app.questions.clear();
-            } else if !app.questions.note.is_empty() {
-                app.questions.note.clear();
             } else {
                 app.questions.focused = false;
             }
@@ -370,14 +349,19 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Down | KeyCode::Tab => {
             app.questions.selected = (app.questions.selected + 1) % count
         }
+        KeyCode::Enter if !native && key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.questions.note.push('\n');
+            app.questions.selected = choices;
+        }
         KeyCode::Enter => choose(app, app.questions.selected),
-        // Digits pick a choice until a note is started; after that they are part of the note.
-        KeyCode::Char(c @ '1'..='9')
-            if app.questions.note.is_empty() && (c as usize - '1' as usize) < choices =>
-        {
+        // Native permission choices retain digit shortcuts. Conversational digits are text.
+        KeyCode::Char(c @ '1'..='9') if native && (c as usize - '1' as usize) < choices => {
             choose(app, c as usize - '1' as usize)
         }
-        KeyCode::Char(c) if !native => app.questions.note.push(c),
+        KeyCode::Char(c) if !native => {
+            app.questions.note.push(c);
+            app.questions.selected = choices;
+        }
         KeyCode::Backspace if !native => {
             app.questions.note.pop();
         }
@@ -389,13 +373,13 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     }
     true
 }
-/// A paste while the picker has focus goes into the note, on one line.
+/// A deliberate paste into the focused reply panel preserves logical line breaks.
 pub(super) fn paste(app: &mut App, text: &str) -> bool {
     if !app.questions.focused || app.questions.native.is_some() || !app.questions.waiting() {
         return false;
     }
-    let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
-    app.questions.note.push_str(&text);
+    app.questions.note.push_str(&text::normalize_newlines(text));
+    app.questions.selected = app.questions.questions[app.questions.current].options.len();
     true
 }
 pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
@@ -404,7 +388,6 @@ pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
     } else {
         0
     };
-    app.questions.visible = h >= 3;
     transcript.height -= h;
     Rect::new(transcript.x, transcript.bottom(), transcript.width, h)
 }
@@ -492,7 +475,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                     base.fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
                 )
             } else {
-                (format!("{}▏", tail(&s.note, room.saturating_sub(1))), base)
+                (
+                    format!(
+                        "{}▏",
+                        tail(&s.note.replace('\n', " ↵ "), room.saturating_sub(1))
+                    ),
+                    base,
+                )
             };
             Line::from(vec![
                 marker,
@@ -507,9 +496,9 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new(if s.native.is_some() {
             " F8 options · ↑↓ choose · Enter answer · Esc cancel request"
         } else if s.focused {
-            " ↑↓ choose · type a note · Enter send · Esc clear note, then back to the message box"
+            " ↑↓ choose · type a reply · Shift+Enter newline · Enter send · Esc message box"
         } else {
-            " F8 options · ↑↓ choose · type a note · Enter send"
+            " Type in the message box, or F8 / click to reply with an option or note"
         })
         .style(Style::default().fg(Color::DarkGray)),
         Rect::new(area.x, area.bottom() - 1, area.width, 1),
@@ -562,18 +551,58 @@ pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn a_short_terminal_retains_the_original_question_when_choices_cannot_fit() {
+    fn status_updates_and_example_json_do_not_become_questions() {
+        let status = "I also found an input edge case: typing a number at the start of a note could select an option. I’m fixing that and checking both note-only and choice-with-note replies before building.\n\nInstalled the new build. Reopen the app.\n\n- `/use` lets you choose an account.\n- Includes note and session fixes.\n- Notes can start with numbers.";
+        assert!(parse(status).is_empty());
+        assert!(parse("Which approach?\nHere is what shipped.\n- Notes\n- Providers").is_empty());
+        assert!(parse("Example payload:\n```json\n{\"questions\":[{\"question\":\"Which?\",\"options\":[\"One\",\"Two\"]}]}\n```").is_empty());
+        assert_eq!(
+            parse("Choose one:\n- Small patch\n- Full refactor").len(),
+            1
+        );
+        assert!(
+            parse("Which approach?\n- Small patch\n- Full refactor\nWhat should we do next?")
+                .is_empty()
+        );
+        assert!(parse(
+            "Which approach?\n- Small patch\n- Full refactor\nThese are the changes that shipped."
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn native_permission_digit_shortcuts_still_answer_the_exact_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().into(), dir.path().into());
+        let (request, mut rx) = crate::provider::turn::NativeRequest::channel(
+            "session/request_permission".into(),
+            serde_json::json!({"toolCall":{"title":"Read synthetic file?"},"options":[{"name":"Allow once","optionId":"allow-once"},{"name":"Reject","optionId":"reject"}]}),
+        );
+        app.questions.offer_native(request, true);
+        assert!(handle_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)
+        ));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            serde_json::json!({"outcome":{"outcome":"selected","optionId":"allow-once"}})
+        );
+        assert!(!app.questions.waiting());
+        assert!(app.queue.items.is_empty());
+    }
+
+    #[test]
+    fn offering_choices_never_takes_focus_and_small_layouts_do_not_underflow() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(dir.path().into(), dir.path().into());
         let text = "Which approach?\n1. Small patch\n2. Full refactor";
-        app.questions.offer(text, true);
-        carve(&mut Rect::new(0, 0, 80, 4), &mut app);
-        assert!(app.questions.presentation(text).is_none());
-        carve(&mut Rect::new(0, 0, 80, 20), &mut app);
-        assert_eq!(
-            app.questions.presentation(text).as_deref(),
-            Some("Choose a reply below.")
-        );
+        app.questions.offer(text);
+        assert!(!app.questions.focused);
+        for height in 0..20 {
+            let mut transcript = Rect::new(0, 0, 80, height);
+            let area = carve(&mut transcript, &mut app);
+            assert_eq!(area.height + transcript.height, height);
+        }
     }
     #[test]
     fn choices_require_a_question_and_skip_code_and_ordinary_steps() {
@@ -583,6 +612,6 @@ mod tests {
         assert!(parse("Steps:\n1. Build\n2. Test").is_empty());
         assert!(parse("```\nWhich?\n1. one\n2. two\n```").is_empty());
         assert_eq!(parse("Which approach do you prefer?\n\n1. **Small patch** (Recommended)\n2. Full refactor")[0].options.len(),2);
-        assert_eq!(parse(r#"input: {"questions":[{"question":"Which?","options":[{"label":"One"},{"label":"Two"}]}]}"#)[0].options[0],"One");
+        assert_eq!(parse_tool(r#"input: {"questions":[{"question":"Which?","options":[{"label":"One"},{"label":"Two"}]}]}"#)[0].options[0],"One");
     }
 }

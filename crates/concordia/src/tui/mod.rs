@@ -250,6 +250,7 @@ enum PickerKind {
     Model,
     Usage,
     Continuation,
+    HandoffSettings,
     ResumeDeleteConfirm,
     Update,
 }
@@ -965,7 +966,7 @@ impl App {
             && (name.contains("request_user_input") || name.contains("askuserquestion"))
         {
             if let Some(detail) = &card.detail {
-                self.questions.offer(detail, self.editor.text().is_empty());
+                self.questions.offer_tool(detail);
             }
         }
         self.related_files.invalidate();
@@ -1265,8 +1266,7 @@ impl App {
         }
         let has_reply = !text.is_empty() || self.streamed_text_committed;
         if has_reply && !failed && !outcome.cancelled {
-            self.questions
-                .offer(&scan_text, self.editor.text().is_empty());
+            self.questions.offer(&scan_text);
         }
         if !text.is_empty() {
             self.push_assistant(text);
@@ -1743,12 +1743,17 @@ impl App {
         }
         rows.push(PickerRow {
             id: "use-continuation".into(),
-            label: "limit handoff".into(),
+            label: "limit handoff (save default)".into(),
             detail: if self.continuation.automatic() {
                 "continue on another account automatically (Enter toggles to pause)".into()
             } else {
                 "pause at a usage limit (Enter toggles to continue)".into()
             },
+        });
+        rows.push(PickerRow {
+            id: "use-handoff".into(),
+            label: "next provider for this session".into(),
+            detail: self.handoff_description(),
         });
         self.show_picker(PickerKind::Use, "accounts".into(), rows, true);
     }
@@ -2322,6 +2327,10 @@ impl App {
                 }
             }
             PickerKind::Use => {
+                if id == "use-handoff" {
+                    self.open_handoff_settings();
+                    return;
+                }
                 if id == "use-continue" {
                     self.show_unfinished_request();
                     return;
@@ -2466,6 +2475,11 @@ impl App {
                     } else {
                         self.continuation_target = Some(account.to_string());
                     }
+                }
+            }
+            PickerKind::HandoffSettings => {
+                if let Some(value) = id.strip_prefix("handoff:") {
+                    self.set_session_handoff(value);
                 }
             }
             PickerKind::ResumeDeleteConfirm => {
@@ -3018,7 +3032,6 @@ impl App {
             .strip_prefix("/continuation")
             .filter(|arg| arg.is_empty() || arg.starts_with(' '))
         {
-            self.push_system("/continuation is now the usage handoff row in /use");
             self.continuation_command(arg.trim());
             return;
         }
@@ -4824,7 +4837,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(idx, m)| match m.role {
-            MsgRole::Assistant if app.questions.waiting() => app.questions.presentation(&m.text),
             MsgRole::Card if app.activity.is_expanded(idx, app.expanded_activity) => m
                 .card
                 .as_ref()

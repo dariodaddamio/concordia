@@ -2,6 +2,15 @@
 
 ## Limit continuation and unfinished work
 
+In `/use`, **next provider for this session** opens choices to pause at a limit, choose
+automatically, or try a specific connected provider account first. `/continuation` opens the
+same screen. These choices apply to the current window without switching the active turn or
+changing the saved default. A selected account takes priority over configured model/account
+preferences; if it also reaches a limit, bounded automatic selection continues through the
+remaining targets. `/continuation manual|automatic` changes the session mode directly and clears
+the session's preferred account. Choosing a policy does not send an already paused request;
+use `/continue` to review and continue it.
+
 The limit handoff row in `/use` pauses or automatically continues when usage runs out. A paused
 request offers account and cached-model choices. The toggle is saved for future windows. Persistent defaults:
 
@@ -181,8 +190,11 @@ always win a name clash; `concordia doctor` lists clashes. Files are scanned whe
 ## Question choices, queue sending and file discovery (`2026-11-01d`)
 
 Recognized conversational questions with numbered/lettered/bulleted options and question-tool card
-inputs show a reply panel below chat. Click an option, use arrows then Enter, or press its digit.
-Esc returns to typing and F8 focuses options again. The answer is a normal follow-up message,
+inputs show a reply panel below chat without taking typing focus. Click an option, or use F8 then
+arrows and Enter. Digits typed in conversational replies remain text. Typing/pasting in the panel
+selects the note-only row; move to an option afterward to send both. Notes preserve line breaks
+and Shift+Enter inserts one. Esc returns to the composer while retaining the note.
+The answer is a normal follow-up message,
 queued durably and sent after any active turn stops. The existing draft remains intact. This
 panel does not answer native provider approval RPCs or transfer their tool state.
 

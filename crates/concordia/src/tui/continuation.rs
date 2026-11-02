@@ -6,6 +6,7 @@ pub(super) struct State {
     automatic: bool,
     accounts: Vec<String>,
     models: Vec<String>,
+    preferred_account: Option<String>,
     tried: HashSet<String>,
     pub errors: Vec<String>,
     prompt: Option<String>,
@@ -29,6 +30,7 @@ impl State {
                 .unwrap_or(config.automatic),
             accounts: config.accounts,
             models: config.models,
+            preferred_account: None,
             tried: HashSet::new(),
             errors: Vec::new(),
             prompt: None,
@@ -148,23 +150,79 @@ fn context_exhausted(text: &str) -> bool {
 }
 
 impl App {
+    pub(super) fn open_handoff_settings(&mut self) {
+        let mut rows = vec![
+            PickerRow {
+                id: "handoff:manual".into(),
+                label: "Choose when the limit is reached".into(),
+                detail: "pause and show accounts and models; this session only".into(),
+            },
+            PickerRow {
+                id: "handoff:automatic".into(),
+                label: "Choose automatically for this session".into(),
+                detail: "use configured preferences, then connected accounts".into(),
+            },
+        ];
+        rows.extend(
+            accounts_with_auth(&self.state_root)
+                .into_iter()
+                .filter(|a| a.account != self.account && a.home_path.is_some())
+                .map(|a| PickerRow {
+                    id: format!("handoff:account:{}", a.account),
+                    label: format!("Continue with {} ({})", a.label, a.provider.as_str()),
+                    detail: "try this account first automatically; this session only".into(),
+                }),
+        );
+        self.show_picker(
+            PickerKind::HandoffSettings,
+            "next provider at a usage limit".into(),
+            rows,
+            true,
+        );
+    }
+
+    pub(super) fn set_session_handoff(&mut self, value: &str) {
+        let preferred = match value {
+            "manual" | "automatic" => None,
+            _ => {
+                let Some(account) = value
+                    .strip_prefix("account:")
+                    .and_then(|id| get_account(&self.state_root, id))
+                    .filter(|a| a.home_path.is_some())
+                else {
+                    self.push_system("handoff account unavailable; session preference unchanged");
+                    return;
+                };
+                Some(account.account)
+            }
+        };
+        self.continuation.automatic = value != "manual";
+        self.continuation.preferred_account = preferred;
+        self.continuation.deferred = false;
+        self.push_system(format!(
+            "usage handoff for this session: {}. Future windows keep their saved default.",
+            self.handoff_description()
+        ));
+    }
+
+    pub(super) fn handoff_description(&self) -> String {
+        if !self.continuation.automatic {
+            "pause and choose".into()
+        } else if let Some(account) = &self.continuation.preferred_account {
+            format!("try {account} first, then choose automatically")
+        } else {
+            "choose automatically".into()
+        }
+    }
+
     pub(super) fn continuation_command(&mut self, arg: &str) {
         match arg {
-            "automatic" => self.continuation.automatic = true,
-            "manual" => self.continuation.automatic = false,
-            "" => {}
+            "automatic" | "manual" => self.set_session_handoff(arg),
+            "" => self.open_handoff_settings(),
             _ => {
                 self.push_system("usage: /continuation [manual|automatic]; /continue ACCOUNT continues an interrupted request");
-                return;
             }
         }
-        let mode = if self.continuation.automatic {
-            "automatic"
-        } else {
-            "manual"
-        };
-        let accounts = self.continuation.accounts.join(", ");
-        self.push_system(format!("usage continuation: {mode}; accounts: {}; model preferences: {}. /use saves the handoff toggle; config.toml can order accounts and models.", if accounts.is_empty() { "connected accounts, then cached models" } else { &accounts }, self.continuation.models.join(", ")));
     }
 
     /// Called before finalization while the completed turn's cards and draft still exist.
@@ -280,6 +338,23 @@ impl App {
             self.push_system("automatic context rollover stopped after one attempt; inspect the source and choose a target explicitly");
             self.open_continuation_picker();
             return None;
+        }
+        if let Some(account) = self
+            .continuation
+            .preferred_account
+            .as_ref()
+            .and_then(|id| get_account(&self.state_root, id))
+            .filter(|a| {
+                a.home_path.is_some()
+                    && a.account != self.account
+                    && !self
+                        .continuation
+                        .tried
+                        .iter()
+                        .any(|key| key.split_once(' ').is_some_and(|(id, _)| id == a.account))
+            })
+        {
+            return Some(account.account);
         }
         // At most three handoffs, each account/model pair once.
         let known_models = self
@@ -448,6 +523,87 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_preference_routes_first_without_persisting_or_cycling() {
+        let (mut app, dir) = setup();
+        let home = dir.path().join("third");
+        crate::store::upsert_stored_account(
+            dir.path(),
+            crate::store::StoredAccount {
+                id: "third".into(),
+                provider: ProviderKind::Claude,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "Other provider".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        // Synthetic login-presence marker; no provider process or real credentials.
+        std::fs::write(
+            home.join("credentials.json"),
+            "synthetic-login-presence-marker",
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        app.continuation_command("manual");
+        app.continuation_command("");
+        let picker = app.picker.as_mut().unwrap();
+        let index = picker
+            .rows
+            .iter()
+            .position(|r| r.id == "handoff:account:third")
+            .unwrap();
+        assert!(picker.rows[index].label.contains("claude"));
+        picker.state.select(Some(index));
+        app.apply_picker_selection(Some(&tx));
+        assert!(rx.try_recv().is_err());
+        assert!(!app.busy);
+        assert_eq!(app.continuation.preferred_account.as_deref(), Some("third"));
+        // A new window still uses the configured order, not this window's choice.
+        let reopened = App::new(dir.path().into(), dir.path().into());
+        assert!(reopened.continuation.preferred_account.is_none());
+        assert!(reopened.continuation.automatic);
+        app.run_line("Finish the change".into(), &tx);
+        rx.try_recv().unwrap();
+        exhausted(&mut app, &tx);
+        assert_eq!(app.account, "third");
+        assert_eq!(app.provider, ProviderKind::Claude);
+        rx.try_recv().unwrap();
+        exhausted(&mut app, &tx);
+        assert_eq!(app.account, "backup");
+        rx.try_recv().unwrap();
+        exhausted(&mut app, &tx);
+        assert!(rx.try_recv().is_err());
+        app.dismiss_picker();
+        app.continuation_command("automatic");
+        assert!(app.continuation.preferred_account.is_none());
+        app.set_session_handoff("account:missing-account");
+        assert!(app.continuation.preferred_account.is_none());
+    }
+
+    #[test]
+    fn session_handoff_screen_changes_policy_without_sending_paused_work() {
+        let (mut app, _dir) = setup();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        app.continuation_command("manual");
+        app.run_line("Finish the change".into(), &tx);
+        rx.try_recv().unwrap();
+        exhausted(&mut app, &tx);
+        assert!(rx.try_recv().is_err());
+        app.dismiss_picker();
+        app.editor.set_text("draft stays");
+        app.continuation_command("");
+        let picker = app.picker.as_mut().unwrap();
+        assert_eq!(picker.kind, PickerKind::HandoffSettings);
+        picker.state.select(Some(1));
+        app.apply_picker_selection(Some(&tx));
+        assert!(app.continuation.automatic);
+        assert!(app.continuation.waiting());
+        assert_eq!(app.editor.text(), "draft stays");
+        app.queue_advance(&tx);
+        assert!(rx.try_recv().is_err());
+    }
+
     #[test]
     fn closing_a_screen_cannot_bypass_the_four_pair_handoff_limit() {
         let (mut app, dir) = setup();

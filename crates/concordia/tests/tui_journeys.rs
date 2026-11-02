@@ -62,9 +62,9 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
             let (y, line) = screen
                 .lines()
                 .enumerate()
-                .find(|(_, l)| l.contains("[ 1 ] Allow once"))
+                .find(|(_, l)| l.contains("1. Allow once"))
                 .unwrap();
-            let x = line.find("[ 1 ]").unwrap();
+            let x = line.find("1. Allow once").unwrap();
             s.send(&format!(
                 "\x1b[<0;{};{}M\x1b[<0;{};{}m",
                 x + 1,
@@ -99,6 +99,39 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
 }
 
 #[test]
+#[ignore = "isolated conversational focus and exact free-reply journey; fake providers only"]
+fn question_choices_do_not_swallow_an_unattended_work_instruction() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+        let dir = tempfile::tempdir().unwrap();
+        setup(dir.path(), provider);
+        let mut s = Session::launch(dir.path());
+        s.submit("[choices]");
+        s.until("completed reply with optional choices", |s| {
+            let screen = s.screen();
+            screen.contains("2. Full refactor") && screen.contains("Worked for")
+        });
+        // Slow individual keys must edit the composer, including an option-shaped first digit.
+        s.send("2");
+        s.until("digit is a draft, not an answer", |s| s.draft() == "2");
+        assert_eq!(s.prompts().len(), 1);
+        s.paste(" tasks:\n  commit and push for review\n  test while I sleep");
+        let instruction = "2 tasks:\n  commit and push for review\n  test while I sleep";
+        s.until("complete work instruction preserved", |s| {
+            s.draft() == instruction
+        });
+        s.enter();
+        s.until("exact instruction dispatched", |s| s.prompts().len() == 2);
+        assert_eq!(s.prompts()[1], instruction);
+        s.until("free reply completes", |s| {
+            s.screen().contains("Worked for")
+                && s.journal().iter().filter(|e| e["kind"] == "done").count() == 2
+        });
+        s.exit();
+    }
+}
+
+#[test]
 #[ignore = "isolated selectable question reply journey; fake provider only"]
 fn question_choices_select_a_reply_without_losing_the_unsent_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -107,7 +140,7 @@ fn question_choices_select_a_reply_without_losing_the_unsent_draft() {
     let mut s = Session::launch(dir.path());
     s.submit("[choices]");
     s.until("selectable provider options", |s| {
-        s.screen().contains("[ 2 ] Full refactor")
+        s.screen().contains("2. Full refactor")
     });
     s.paste("keep my unsent draft");
     s.until("draft is safe", |s| s.draft() == "keep my unsent draft");
@@ -418,6 +451,48 @@ fn terminal_word_deletion_usage_and_focus_repaint() {
         s.prompts().is_empty(),
         "UI commands must not spend provider turns"
     );
+    s.exit();
+}
+
+#[test]
+#[ignore = "isolated session-selected provider handoff journey; fake providers only"]
+fn a_session_selected_provider_continues_without_changing_the_saved_default() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.submit("/continuation");
+    s.until("session policy screen", |s| {
+        s.screen().contains("next provider at a usage limit")
+    });
+    s.paste("claude");
+    s.enter();
+    s.until("session account chosen", |s| {
+        s.screen().contains("try claude first")
+    });
+    assert!(s.prompts().is_empty());
+    assert!(concordia::store::get_settings(dir.path())
+        .continuation_automatic
+        .is_none());
+    s.submit("Fix graph [quota] [coded-limit]");
+    s.until("selected provider completes continuation", |s| {
+        s.journal()
+            .iter()
+            .any(|e| e["kind"] == "done" && e["provider"] == "claude")
+    });
+    let starts: Vec<_> = s
+        .journal()
+        .into_iter()
+        .filter(|e| e["kind"] == "start")
+        .collect();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[0]["provider"], "codex");
+    assert_eq!(starts[1]["provider"], "claude");
+    assert!(!starts[1]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|arg| arg == "quota-source-session" || arg == "--resume"));
     s.exit();
 }
 

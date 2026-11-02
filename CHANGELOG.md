@@ -11,6 +11,14 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed (`2026-11-02d`)
+- Ordinary status updates mentioning "select an option" no longer turn later feature bullets into unrelated reply choices. Conversational choices require an explicit closing question or invitation followed immediately by options; example JSON is interpreted only in question-tool cards.
+- Conversational options never take keyboard focus automatically. Digits in a focused conversational reply are text, typing/pasting selects the note-only row, and note-only replies send exactly the user's text. Notes preserve pasted line breaks, support Shift+Enter, and survive Esc back to the composer. The complete assistant response stays in the transcript for context and long-option inspection; native approval shortcuts remain separate.
+
+### Changed (`2026-11-02c`)
+- `/use` adds a session handoff screen: pause and choose at a limit, select automatically, or prefer a specific connected provider account. `/continuation` opens the same screen. Session choices preserve saved defaults and never start a provider turn by themselves.
+- Notes entered in the question picker's note row can start with a digit without accidentally selecting an option.
+
 ### Fixed (`2026-11-02b`)
 - After a provider or account handoff, later turns resume the new native session instead of starting a fresh one each time and re-sending the handoff map.
 - A model-at-capacity error (`server_overloaded`) is recognized and offers continuation on another model or account. The turn's own error now takes priority over the Codex rollout-recording stderr line it can cause.

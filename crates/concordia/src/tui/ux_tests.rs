@@ -141,6 +141,123 @@ impl Ui {
     }
 }
 #[test]
+fn conversational_choices_never_take_a_typed_instruction_from_the_composer() {
+    for explicit_focus in [false, true] {
+        let mut ui = Ui::new();
+        ui.app.run_line("Review the change".into(), &ui.tx);
+        ui.rx.try_recv().unwrap();
+        ui.app.on_turn_done(
+            TurnOutcome {
+                exit_code: Some(0),
+                text: "Which approach?\n1. Small patch\n2. Full refactor".into(),
+                ..Default::default()
+            },
+            &ui.tx,
+        );
+        assert!(!ui.app.questions.focused);
+        if explicit_focus {
+            ui.key(KeyCode::F(8), KeyModifiers::NONE);
+            // Return from the choices to ordinary typing without choosing or clearing work.
+            ui.key(KeyCode::Esc, KeyModifiers::NONE);
+        }
+        let instruction =
+            "2 tasks: commit and push the features for review; test everything while I sleep.";
+        for c in instruction.chars() {
+            ui.key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(ui.app.editor.text(), instruction);
+        assert!(ui.rx.try_recv().is_err());
+        ui.key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(ui.rx.try_recv().unwrap(), instruction);
+        assert!(ui.rx.try_recv().is_err());
+        assert!(!ui.app.questions.waiting());
+    }
+}
+
+#[test]
+fn explicitly_focused_reply_text_never_sends_the_highlighted_option() {
+    let mut ui = Ui::new();
+    let text = "Which approach?\n1. Small patch\n2. Full refactor";
+    ui.app.push_assistant(text.into());
+    ui.app.questions.offer(text);
+    ui.app.editor.set_text("separate composer draft");
+    ui.draw();
+    ui.key(KeyCode::F(8), KeyModifiers::NONE);
+    ui.key(KeyCode::Char('2'), KeyModifiers::NONE);
+    ui.key(KeyCode::Char('x'), KeyModifiers::NONE);
+    ui.key(KeyCode::Enter, KeyModifiers::SHIFT);
+    assert!(questions::paste(
+        &mut ui.app,
+        "  commit\r\n\r\n  push\rtest  "
+    ));
+    assert!(ui.rx.try_recv().is_err());
+    ui.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(ui.app.editor.text(), "separate composer draft");
+    ui.key(KeyCode::F(8), KeyModifiers::NONE);
+    ui.key(KeyCode::Enter, KeyModifiers::NONE);
+    ui.app.queue_advance(&ui.tx);
+    assert_eq!(ui.rx.try_recv().unwrap(), "2x\n  commit\n\n  push\ntest  ");
+    assert!(ui.rx.try_recv().is_err());
+    assert_eq!(ui.app.editor.text(), "separate composer draft");
+}
+
+#[test]
+fn a_choice_panel_keeps_the_full_reply_and_long_options_in_the_transcript() {
+    let mut ui = Ui::new();
+    let option = "Read and test the complete change before committing it. ".repeat(5);
+    let reply = format!("Which approach?\n1. {option}\n2. Defer");
+    let message_index = ui.app.messages.len();
+    ui.app.push_assistant(reply.clone());
+    ui.app.questions.offer(&reply);
+    ui.draw();
+    let transcript: String = ui
+        .app
+        .view
+        .rows
+        .iter()
+        .filter(|r| r.identity == Some(message_index))
+        .flat_map(|r| r.text.iter())
+        .collect();
+    assert!(transcript.contains("Which approach?"));
+    assert_eq!(transcript.matches("Read and test").count(), 5);
+    assert!(!transcript.contains("Choose a reply below"));
+}
+
+#[test]
+fn question_notes_can_start_with_digits_and_send_alone_or_with_a_choice() {
+    for note_only in [true, false] {
+        let mut ui = Ui::new();
+        ui.app.editor.set_text("unsent draft");
+        let text = "Which approach?\n1. **Small patch**\n2. Full refactor";
+        ui.app.push_assistant(text.into());
+        ui.app.questions.offer(text);
+        let screen = ui.draw();
+        assert!(screen.contains("1. Small patch"));
+        assert!(!screen.contains("**Small patch**"));
+        let note_row = ui.target("Add a note:");
+        ui.click(note_row);
+        ui.key(KeyCode::Char('2'), KeyModifiers::NONE);
+        assert!(ui.rx.try_recv().is_err());
+        assert!(questions::paste(&mut ui.app, " iterations\nplease"));
+        assert!(ui.draw().contains("2 iterations ↵ please"));
+        if !note_only {
+            ui.key(KeyCode::Up, KeyModifiers::NONE);
+        }
+        ui.key(KeyCode::Enter, KeyModifiers::NONE);
+        ui.app.queue_advance(&ui.tx);
+        let sent = ui.rx.try_recv().unwrap();
+        assert!(sent.contains("2 iterations\nplease"));
+        if note_only {
+            assert_eq!(sent, "2 iterations\nplease");
+        }
+        assert_eq!(sent.contains("Full refactor"), !note_only);
+        assert!(!sent.contains("Small patch"));
+        assert_eq!(ui.app.editor.text(), "unsent draft");
+        assert!(ui.rx.try_recv().is_err());
+    }
+}
+
+#[test]
 fn questions_are_selectable_preserve_drafts_and_pause_automatic_queued_work() {
     let mut ui = Ui::new();
     ui.app.native_session_id = Some("exact-native-session".into());
