@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-02a
+# Feature completion audit: 2026-11-02d
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -6,6 +6,17 @@ memory-management/orchestration roadmap remains unfinished. This audit does not 
 features complete because their UI exists or because a synthetic demonstration passes.
 
 ## Closed in this build
+
+- Session handoff selection through `/use` or `/continuation`: pause and choose, automatic
+  selection, or a preferred connected account. Session choices preserve the saved default;
+  retries remain bounded and uncertain tool completion still stops automatic continuation.
+- Conversational choices require a closing question/invitation and never take typing focus.
+  Free replies retain their exact text and line breaks; typed digits do not send a highlighted
+  choice. The complete assistant reply remains visible, and native permission responses stay
+  separate. Regression tests cover the unattended-work instruction that previously became a choice.
+- Later turns resume the new native session after a handoff. Model server-capacity failures offer
+  account/model continuation, while generic native history-write errors retain explicit recovery.
+- File underlines and click targets cover existing file references without including preceding prose.
 
 - Paste line-ending and whitespace preservation through send/queue/edit, plus explicit recovery
   after native Codex history-recording failure without automatic replay.

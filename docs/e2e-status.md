@@ -1,6 +1,55 @@
 # Everyday E2E status (MVP A)
 
-## Current record, 2026-11-02a
+## Current record, 2026-11-02d
+
+The installed feature build is `2026-11-02d`, SHA-256
+`E363CC47480B386F5605906807987904AA8AC89121210032952B398D50B5B49E`.
+Its runtime source is committed on `feat/batch-b`; later commits record validation and test
+corrections. Separate local signing/workflow changes are outside this feature snapshot.
+Existing windows retain their loaded executable until reopened.
+
+The full enabled suite passes: 851 library tests (six ignored helpers) and all enabled integration
+tests. All-target clippy with warnings denied, formatting/diff checks, the release build and
+`scripts/smoke-e2e-everyday.ps1` pass. The smoke includes a read-only native usage check.
+All 45 opt-in Windows ConPTY journeys pass against the exact installed executable in one
+sequential run (263.33 seconds). Its SHA-256 was unchanged before and after the run. This includes
+the session-specific provider picker, complete unattended free replies, native image inputs for
+all three adapters, raw editing/recovery, resizing, queues, worker returns and native-source
+handoffs. Every provider process used by these journeys is a fixture; no real model turn was run.
+
+This build includes session-specific provider handoff choices, native-session resume after a
+switch, model-at-capacity continuation, conservative conversational choices, and existing-file
+underlines. Typing stays in the composer unless the user explicitly focuses options. A free
+reply sends its own text without adding the highlighted option or inferred question; line breaks,
+drafts and paused queues are preserved. Native permission responses remain separate.
+
+The batch also contains recent native-source pointers and interrupted-request recovery, raw file
+editing/save/recovery, bounded file discovery, Markdown tables/links, local Mermaid, native image
+inputs, per-worker models and bounded result return. The [completion audit](feature-completion-audit.md)
+distinguishes these implementations from the remaining roadmap. Synthetic providers establish
+adapter and UI behavior; they do not certify live model/auth/approval parity.
+
+The investigated Codex writer diagnostic followed a model server-capacity failure in that native
+thread. Continuation reads that terminal provider error before its secondary recording diagnostic;
+generic recording failures still retain explicit fresh-session recovery. See the
+[diagnostic record](quality/native-thread-recording.md).
+
+The installed unsigned artifact and an independent clean build pass Defender scans under
+intelligence `1.463.94.0` with antivirus and real-time protection enabled. The original blocked
+artifact was not available for a same-bytes comparison, so the precise earlier detection cause
+remains unconfirmed. No protection settings were changed for the investigation. See the
+[local evidence](quality/defender-local-investigation.md).
+
+This is a feature-review snapshot, not release clearance. Existing dependency, artifact-size,
+privacy/namespace, terms and distribution gates remain separate. The feature implementation is
+now committed; the earlier uncommitted-feature-snapshot blocker does not describe this branch.
+No protected branch was merged and no release, tag or public-visibility change was made.
+
+Evidence is retained locally in ignored `target/av-investigation/everyday-smoke.log` and
+`target/av-investigation/installed-all-journeys.log`. Exact scan/build hashes and reproduction
+commands are recorded in the local Defender investigation linked above.
+
+## Earlier build, 2026-11-02a
 
 Build `2026-11-02a` is installed and its SHA-256 matches the final release artifact:
 `42DD455B2AEB07BA804DDAF85DFB2BC5C5435924D89C71EBA91091A7EC1087F0`.
