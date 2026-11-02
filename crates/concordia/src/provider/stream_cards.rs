@@ -108,6 +108,16 @@ pub fn usage_exhausted(text: &str) -> bool {
         .any(|code| lower.replace(['_', '-'], "").contains(code))
 }
 
+/// The provider rejected the selected model because its servers are busy (Codex
+/// `server_overloaded` / "Selected model is at capacity", Claude `overloaded_error`). Quota is
+/// not the cause, so another model or account can take the request.
+pub fn model_overloaded(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("model is at capacity")
+        || lower.contains("overloaded_error")
+        || lower.replace(['_', '-'], "").contains("serveroverloaded")
+}
+
 pub(super) fn capacity_error_text(message: &str, code: Option<&str>) -> String {
     let code = code.map(|code| {
         if code.eq_ignore_ascii_case("ContextWindowExceeded") {
@@ -116,7 +126,9 @@ pub(super) fn capacity_error_text(message: &str, code: Option<&str>) -> String {
             code
         }
     });
-    if let Some(code) = code.filter(|code| usage_exhausted(code) && !message.contains(code)) {
+    if let Some(code) = code
+        .filter(|code| (usage_exhausted(code) || model_overloaded(code)) && !message.contains(code))
+    {
         return format!("{code}: {message}");
     }
     match code {
@@ -155,7 +167,11 @@ fn native_error_code(ev: &serde_json::Value) -> Option<&str> {
     codes
         .iter()
         .copied()
-        .find(|code| usage_exhausted(code) || code.eq_ignore_ascii_case("ContextWindowExceeded"))
+        .find(|code| {
+            usage_exhausted(code)
+                || model_overloaded(code)
+                || code.eq_ignore_ascii_case("ContextWindowExceeded")
+        })
         .or_else(|| codes.first().copied())
 }
 

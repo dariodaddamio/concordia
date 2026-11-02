@@ -158,7 +158,7 @@ fn questions_are_selectable_preserve_drafts_and_pause_automatic_queued_work() {
     );
     assert!(ui.rx.try_recv().is_err());
     assert!(ui.app.queue.paused);
-    assert!(ui.draw().contains("[ 2 ] Full refactor"));
+    assert!(ui.draw().contains("2. Full refactor"));
     ui.key(KeyCode::F(8), KeyModifiers::NONE);
     ui.key(KeyCode::Down, KeyModifiers::NONE);
     ui.key(KeyCode::Enter, KeyModifiers::NONE);
@@ -218,7 +218,7 @@ fn mouse_answers_and_force_send_wait_for_cancellation_and_dispatch_once() {
     ui.draw();
     // Mouse targets come from real question layout; no selection means no dispatch.
     assert!(ui.app.questions.waiting());
-    let rect = ui.target("[ 2 ] Change it");
+    let rect = ui.target("2. Change it");
     ui.click(rect);
     ui.app.queue_advance(&ui.tx);
     assert!(ui.rx.try_recv().unwrap().contains("Change it"));

@@ -13,9 +13,16 @@ when already at the bottom. Command lists share horizontal inner padding. File-b
 directory path with a leading ellipsis in narrow split layouts.
 
 Conversational question choices are clickable and keyboard-selectable (arrows/Enter/digits;
-Esc types, F8 refocuses). Their transcript presentation avoids repeating the visible options,
-but retains the original text for copy/history and when a short terminal cannot fit the panel.
-These replies are follow-up messages, not native approval RPCs.
+F8 refocuses). They are offered only when a reply ends with a question line followed by top-level
+choices. List items that quote a question, nested bullets and choices in the middle of an answer
+are content, not a prompt. A note row under the choices takes typed or pasted text: Enter on a
+choice sends the choice with the note, and Enter on the note row sends the note alone. Esc clears
+the note, then returns to the message box. Their transcript presentation avoids repeating the
+visible options, but retains the original text for copy/history and when a short terminal cannot
+fit the panel. These replies are follow-up messages, not native approval RPCs.
+
+Chat underlines a file reference only when it names an existing file relative to the chat's
+working directory, or is an explicit Markdown link. Prose before a filename is not underlined.
 
 The stock npm Codex bridge from package 0.165.0 is verified by exact shim shape, manifest and JS
 SHA-256 before resolving its own unmodified vendor executable. Unknown or changed bridge content

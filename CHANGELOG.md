@@ -11,6 +11,12 @@ also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
 
+### Fixed (`2026-11-02b`)
+- After a provider or account handoff, later turns resume the new native session instead of starting a fresh one each time and re-sending the handoff map.
+- A model-at-capacity error (`server_overloaded`) is recognized and offers continuation on another model or account. The turn's own error now takes priority over the Codex rollout-recording stderr line it can cause.
+- Question choices appear only for a closing question with top-level choices; list items that quote a question no longer become a picker, and choosing no longer sends half a sentence. Choices are numbered plainly, long ones end with an ellipsis, and a note row lets you send a note with a choice or on its own.
+- File underlines cover only references to existing files, so words before a filename and other path-shaped prose are no longer underlined or clickable.
+
 ### Fixed (`2026-11-02a`)
 - Pasted CR-only, CRLF and LF line endings retain their logical line breaks. Sending, queueing and editing queued prompts preserve leading indentation, blank lines and trailing spaces instead of trimming the message. Prompt tabs retain the existing four-space display policy; raw file editing retains tabs.
 - Codex native rollout-recording failures are distinguished from quota exhaustion. The unfinished request is kept for explicit fresh-session continuation with source pointers; partial actions are not automatically replayed and native history is not removed or rewritten.

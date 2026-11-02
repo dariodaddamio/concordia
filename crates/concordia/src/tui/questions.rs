@@ -1,10 +1,17 @@
 //! Selectable conversational replies. These send messages, never native tool approvals.
+//!
+//! A reply is offered only when the assistant's message ends with a question followed by
+//! top-level choices. The note row lets the user send a choice with a note, or a note alone.
 use super::*;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Debug)]
 struct Question {
     prompt: String,
     options: Vec<String>,
+    /// Byte offset of the question line in the source message; the transcript shows the text
+    /// before it while the picker shows the question itself.
+    start: usize,
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -19,17 +26,23 @@ pub(super) struct State {
     visible: bool,
     native: Option<crate::provider::turn::NativeRequest>,
     native_choices: Vec<usize>,
+    note: String,
 }
 impl State {
     pub fn presentation(&self, text: &str) -> Option<String> {
-        if !self.visible || !self.waiting() || text.trim() != self.last_source.trim() {
+        if !self.visible
+            || !self.waiting()
+            || self.native.is_some()
+            || text.trim() != self.last_source.trim()
+        {
             return None;
         }
         let question = self.questions.first()?;
-        let prefix = text
-            .split_once(&question.prompt)
-            .map(|(before, _)| before.trim_end())
-            .unwrap_or("");
+        let prefix = self
+            .last_source
+            .get(..question.start)
+            .unwrap_or("")
+            .trim_end();
         Some(if prefix.is_empty() {
             "Choose a reply below.".into()
         } else {
@@ -46,6 +59,7 @@ impl State {
         self.focused = false;
         self.targets.clear();
         self.last_source.clear();
+        self.note.clear();
     }
     pub fn cancel_native(&mut self) {
         if self.native.is_some() {
@@ -68,7 +82,14 @@ impl State {
         self.current = 0;
         self.selected = 0;
         self.answers.clear();
+        self.note.clear();
         self.focused = focus;
+    }
+    /// Rows the cursor can reach: the choices plus, for conversational replies, the note row.
+    fn rows(&self) -> usize {
+        self.questions
+            .get(self.current)
+            .map_or(0, |q| q.options.len() + usize::from(self.native.is_none()))
     }
     pub fn offer_native(&mut self, request: crate::provider::turn::NativeRequest, focus: bool) {
         self.clear();
@@ -86,6 +107,7 @@ impl State {
                     .flatten()
                     .map(|o| o["name"].as_str().unwrap_or("Permission option").to_owned())
                     .collect(),
+                start: 0,
             }]
         } else {
             params["questions"]
@@ -102,6 +124,7 @@ impl State {
                         .take(9)
                         .map(|o| o["label"].as_str().unwrap_or("Option").to_owned())
                         .collect(),
+                    start: 0,
                 })
                 .collect()
         };
@@ -132,8 +155,37 @@ fn option(line: &str) -> Option<String> {
         }
         line[n + 1..].strip_prefix(' ')?
     };
-    let value = value.replace("**", "").trim().to_owned();
+    let value = plain(value);
     (!value.is_empty() && value.len() <= 1200).then_some(value)
+}
+/// Inline Markdown emphasis and code marks read as noise in a one-line choice.
+fn plain(text: &str) -> String {
+    text.replace("**", "").replace('`', "").trim().to_owned()
+}
+/// A line that asks the user something. List items are answers, not questions, even when they
+/// quote one ("2. **Is it ready?** No.").
+fn asks(line: &str) -> bool {
+    if option(line).is_some() || line.starts_with([' ', '\t']) {
+        return false;
+    }
+    let end = line.trim_end().trim_end_matches(['*', '_', ':', ' ']);
+    let lower = line.to_ascii_lowercase();
+    end.ends_with('?')
+        || [
+            "choose one",
+            "pick one",
+            "select an option",
+            "which option",
+            "your preference",
+        ]
+        .iter()
+        .any(|s| lower.contains(s))
+}
+fn close(open: &mut Option<Question>, found: &mut Option<Question>, after: &mut usize) {
+    if let Some(q) = open.take().filter(|q| q.options.len() >= 2) {
+        *found = Some(q);
+        *after = 0;
+    }
 }
 fn parse(text: &str) -> Vec<Question> {
     // Tool cards retain their input JSON, including multi-question requests.
@@ -160,88 +212,99 @@ fn parse(text: &str) -> Vec<Question> {
                                     .map(str::to_owned)
                             })
                             .collect::<Vec<_>>();
-                        (options.len() >= 2).then_some(Question { prompt, options })
+                        (options.len() >= 2).then_some(Question {
+                            prompt,
+                            options,
+                            start: 0,
+                        })
                     })
                     .collect();
             }
         }
     }
-    let mut prompt = String::new();
-    let mut options: Vec<String> = Vec::new();
+    // Only the last question-and-choices block counts, and only when at most one short line (a
+    // sign-off) follows it. Choices in the middle of an answer are content, not a prompt.
+    let mut found: Option<Question> = None;
+    let mut after = 0usize;
+    let mut open: Option<Question> = None;
+    let mut gap = 0usize;
     let mut fenced = false;
-    for line in text.lines() {
+    let mut offset = 0usize;
+    for raw in text.split_inclusive('\n') {
+        let start = offset;
+        offset += raw.len();
+        let line = raw.trim_end_matches(['\n', '\r']);
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
+            close(&mut open, &mut found, &mut after);
+            after += 1;
             continue;
         }
-        if fenced {
+        if fenced || line.trim().is_empty() {
             continue;
         }
-        if !options.is_empty()
-            && line.starts_with([' ', '\t'])
-            && option(line).is_none()
-            && !line.trim().is_empty()
-        {
-            if let Some(last) = options.last_mut() {
-                last.push(' ');
-                last.push_str(line.trim());
-            }
-            continue;
-        }
-        if !prompt.is_empty() {
-            if let Some(o) = option(line) {
-                options.push(o);
-                if options.len() == 9 {
-                    break;
+        if let Some(q) = open.as_mut() {
+            if !line.starts_with([' ', '\t']) {
+                if let Some(choice) = option(line) {
+                    q.options.push(choice);
+                    if q.options.len() == 9 {
+                        close(&mut open, &mut found, &mut after);
+                    }
+                    continue;
                 }
+            } else if let Some(last) = q.options.last_mut() {
+                // Wrapped or nested text belongs to the choice above it.
+                last.push(' ');
+                last.push_str(&option(line).unwrap_or_else(|| plain(line)));
                 continue;
             }
-        }
-        let lower = line.to_ascii_lowercase();
-        if line.contains('?')
-            || [
-                "choose one",
-                "pick one",
-                "select an option",
-                "which option",
-                "your preference",
-            ]
-            .iter()
-            .any(|s| lower.contains(s))
-        {
-            if !options.is_empty() {
-                break;
+            if q.options.is_empty() && gap < 3 && !asks(line) {
+                gap += 1; // A short explanation may sit between the question and its choices.
+                continue;
             }
-            prompt = line.trim().trim_matches('*').to_owned();
+            close(&mut open, &mut found, &mut after);
+        }
+        if asks(line) {
+            open = Some(Question {
+                prompt: plain(line.trim().trim_matches(['*', '#', ' '])),
+                options: Vec::new(),
+                start,
+            });
+            gap = 0;
             continue;
         }
-        if !prompt.is_empty() {
-            if let Some(o) = option(line) {
-                options.push(o);
-                if options.len() == 9 {
-                    break;
-                }
-            } else if !options.is_empty() && !line.trim().is_empty() {
-                break;
-            }
-        }
+        after += 1;
     }
-    if options.len() >= 2 {
-        vec![Question { prompt, options }]
-    } else {
-        Vec::new()
+    close(&mut open, &mut found, &mut after);
+    match found {
+        Some(q) if after <= 1 => vec![q],
+        _ => Vec::new(),
     }
 }
+/// `index` past the last choice is the note row: the note is sent on its own.
 fn choose(app: &mut App, index: usize) {
     let s = &mut app.questions;
     let Some(q) = s.questions.get(s.current) else {
         return;
     };
-    let Some(answer) = q.options.get(index) else {
-        return;
-    };
-    s.answers.push(format!("{}\n{}", q.prompt, answer));
-    s.native_choices.push(index);
+    let note = s.note.trim().to_owned();
+    if s.native.is_none() && index == q.options.len() {
+        if note.is_empty() {
+            return;
+        }
+        s.answers.push(format!("{}\n{note}", q.prompt));
+    } else {
+        let Some(answer) = q.options.get(index) else {
+            return;
+        };
+        s.answers.push(if note.is_empty() {
+            format!("{}\n{answer}", q.prompt)
+        } else {
+            format!("{}\n{answer}\nNote: {note}", q.prompt)
+        });
+        s.native_choices.push(index);
+    }
+    s.note.clear();
     if s.current + 1 < s.questions.len() {
         s.current += 1;
         s.selected = 0;
@@ -282,19 +345,23 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     {
         return false;
     }
-    let count = app
+    let count = app.questions.rows();
+    if count == 0 {
+        return false;
+    }
+    let choices = app
         .questions
         .questions
         .get(app.questions.current)
         .map_or(0, |q| q.options.len());
-    if count == 0 {
-        return false;
-    }
+    let native = app.questions.native.is_some();
     match key.code {
         KeyCode::Esc => {
             if let Some(native) = app.questions.native.take() {
                 native.respond(serde_json::json!({"outcome":{"outcome":"cancelled"}}));
                 app.questions.clear();
+            } else if !app.questions.note.is_empty() {
+                app.questions.note.clear();
             } else {
                 app.questions.focused = false;
             }
@@ -304,8 +371,15 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             app.questions.selected = (app.questions.selected + 1) % count
         }
         KeyCode::Enter => choose(app, app.questions.selected),
-        KeyCode::Char(c @ '1'..='9') if key.modifiers.is_empty() => {
+        // Digits pick a choice until a note is started; after that they are part of the note.
+        KeyCode::Char(c @ '1'..='9')
+            if app.questions.note.is_empty() && (c as usize - '1' as usize) < choices =>
+        {
             choose(app, c as usize - '1' as usize)
+        }
+        KeyCode::Char(c) if !native => app.questions.note.push(c),
+        KeyCode::Backspace if !native => {
+            app.questions.note.pop();
         }
         KeyCode::Char(_) | KeyCode::Backspace => {
             app.questions.focused = false;
@@ -315,11 +389,18 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     }
     true
 }
+/// A paste while the picker has focus goes into the note, on one line.
+pub(super) fn paste(app: &mut App, text: &str) -> bool {
+    if !app.questions.focused || app.questions.native.is_some() || !app.questions.waiting() {
+        return false;
+    }
+    let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+    app.questions.note.push_str(&text);
+    true
+}
 pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
-    let q = app.questions.questions.get(app.questions.current);
     let h = if app.questions.waiting() {
-        q.map_or(0, |q| q.options.len() + 2)
-            .min(transcript.height.saturating_sub(3) as usize) as u16
+        (app.questions.rows() + 2).min(transcript.height.saturating_sub(3) as usize) as u16
     } else {
         0
     };
@@ -327,57 +408,108 @@ pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
     transcript.height -= h;
     Rect::new(transcript.x, transcript.bottom(), transcript.width, h)
 }
+/// Cut `text` to `width` columns, ending with an ellipsis when it does not fit.
+fn fit(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w + 1 > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+/// The end of `text` that fits in `width` columns, so the typing position stays visible.
+fn tail(text: &str, width: usize) -> String {
+    let mut used = 0;
+    let mut out: Vec<char> = Vec::new();
+    for c in text.chars().rev() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.into_iter().rev().collect()
+}
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     app.questions.targets.clear();
     let s = &mut app.questions;
     let Some(q) = s.questions.get(s.current).filter(|_| area.height > 1) else {
         return;
     };
-    let header = Line::from(vec![Span::styled(
-        format!(" {} ", q.prompt),
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )]);
+    let width = area.width.saturating_sub(2) as usize;
     f.render_widget(
-        Paragraph::new(header),
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {}", fit(&q.prompt, width)),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))),
         Rect::new(area.x, area.y, area.width, 1),
     );
+    let rows = q.options.len() + usize::from(s.native.is_none());
     let count = (area.height as usize).saturating_sub(2);
     let first = s.selected.saturating_sub(count.saturating_sub(1));
-    for (row, (index, choice)) in q
-        .options
-        .iter()
-        .enumerate()
-        .skip(first)
-        .take(count)
-        .enumerate()
-    {
+    for (row, index) in (0..rows).skip(first).take(count).enumerate() {
         let rect = Rect::new(
             area.x + 1,
             area.y + 1 + row as u16,
             area.width.saturating_sub(2),
             1,
         );
-        let style = if s.focused && s.selected == index {
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Indexed(238))
-                .add_modifier(Modifier::BOLD)
+        let current = s.focused && s.selected == index;
+        let base = if current {
+            Style::default().fg(Color::White).bg(Color::Indexed(238))
         } else {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(Color::Gray)
         };
-        f.render_widget(
-            Paragraph::new(format!("[ {} ] {choice}", index + 1)).style(style),
-            rect,
+        let marker = Span::styled(
+            if current { "› " } else { "  " },
+            base.fg(Color::Cyan).add_modifier(Modifier::BOLD),
         );
+        let line = if let Some(choice) = q.options.get(index) {
+            let number = format!("{}. ", index + 1);
+            let room = width.saturating_sub(2 + number.len());
+            Line::from(vec![
+                marker,
+                Span::styled(number, base.fg(Color::DarkGray)),
+                Span::styled(fit(choice, room), base),
+            ])
+        } else {
+            let room = width.saturating_sub(4);
+            let (text, style) = if s.note.is_empty() {
+                (
+                    fit("Add a note: type here, then Enter on a choice (or here to send only the note)", room),
+                    base.fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                )
+            } else {
+                (format!("{}▏", tail(&s.note, room.saturating_sub(1))), base)
+            };
+            Line::from(vec![
+                marker,
+                Span::styled("✎ ", base.fg(Color::Cyan)),
+                Span::styled(text, style),
+            ])
+        };
+        f.render_widget(Paragraph::new(line).style(base), rect);
         s.targets.push((rect, index));
     }
     f.render_widget(
         Paragraph::new(if s.native.is_some() {
             " F8 options · ↑↓ choose · Enter answer · Esc cancel request"
+        } else if s.focused {
+            " ↑↓ choose · type a note · Enter send · Esc clear note, then back to the message box"
         } else {
-            " F8 options · ↑↓ choose · Enter reply · Esc type instead"
+            " F8 options · ↑↓ choose · type a note · Enter send"
         })
         .style(Style::default().fg(Color::DarkGray)),
         Rect::new(area.x, area.bottom() - 1, area.width, 1),
@@ -398,7 +530,18 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
         MouseEventKind::Up(MouseButton::Left) => {
             if let Some(index) = app.questions.pressed.take() {
                 if hit == Some(index) {
-                    choose(app, index);
+                    let note_row = app
+                        .questions
+                        .questions
+                        .get(app.questions.current)
+                        .is_some_and(|q| index == q.options.len());
+                    if note_row && app.questions.note.trim().is_empty() {
+                        // Clicking the empty note row starts a note rather than sending nothing.
+                        app.questions.focused = true;
+                        app.questions.selected = index;
+                    } else {
+                        choose(app, index);
+                    }
                 }
                 true
             } else {

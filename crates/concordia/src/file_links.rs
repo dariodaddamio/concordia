@@ -223,6 +223,37 @@ pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String
     })
 }
 
+/// Whether `candidate` names an existing file, remembered briefly so redraws do not stat the
+/// same prose again. Rendering uses this to underline only references that open.
+pub fn exists_cached(candidate: &Candidate, cwd: &Path) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    type Cache = HashMap<(PathBuf, String), (bool, Instant)>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    const FRESH: Duration = Duration::from_secs(10);
+    let key = (cwd.to_path_buf(), candidate.target.clone());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((exists, at)) = cache.lock().ok().and_then(|c| c.get(&key).copied()) {
+        if at.elapsed() < FRESH {
+            return exists;
+        }
+    }
+    let probe = Candidate {
+        line: None,
+        column: None,
+        ..candidate.clone()
+    };
+    let exists = valid_position(candidate.line, candidate.column) && resolve(&probe, cwd).is_ok();
+    if let Ok(mut c) = cache.lock() {
+        if c.len() > 4096 {
+            c.clear();
+        }
+        c.insert(key, (exists, Instant::now()));
+    }
+    exists
+}
+
 fn normalized_local_path(target: &str) -> &str {
     if target.starts_with('/')
         && target

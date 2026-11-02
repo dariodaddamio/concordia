@@ -131,6 +131,9 @@ pub struct TranscriptView {
     height: usize,
     first: usize,
     row_blocks: Vec<(Option<usize>, usize)>,
+    /// Directory that relative file references resolve against. When set, only references that
+    /// name an existing file are underlined and clickable.
+    pub link_root: Option<std::path::PathBuf>,
 }
 
 impl TranscriptView {
@@ -185,7 +188,7 @@ impl TranscriptView {
                 }
                 None => {
                     let revision = super::diagrams::revision();
-                    let pending = wrap_block(b, width, &mut self.rows);
+                    let pending = wrap_block(b, width, self.link_root.as_deref(), &mut self.rows);
                     let mut key = BlockKey::of(b);
                     key.diagram_revision = pending.then_some(revision);
                     key
@@ -451,7 +454,12 @@ fn row_spans(r: &Row, selection: Option<(usize, usize)>) -> Vec<Span<'static>> {
 
 /// Wrap one block into display rows. The gutter glyph appears once, on the block's first row;
 /// every other row gets blank space of the same width, plus any indent the line asks for.
-fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) -> bool {
+fn wrap_block(
+    b: &Block,
+    width: usize,
+    link_root: Option<&std::path::Path>,
+    rows: &mut Vec<Row>,
+) -> bool {
     let gw = b.gutter.chars().count();
     let (clean, offsets) = super::text::terminal_text(b.text);
     let diff = !b.markdown && is_diff(&clean);
@@ -519,6 +527,20 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) -> bool {
             )
         })
         .collect();
+        if let Some(root) = link_root {
+            // Prose before a filename also forms path-shaped candidates ("I edited main.rs"), so
+            // keep only references that exist, and the longest one where they overlap.
+            links.retain(|(_, _, c)| c.markdown || crate::file_links::exists_cached(c, root));
+            links.sort_by_key(|(a, z, _)| (std::cmp::Reverse(z - a), *a));
+            let mut kept: Vec<(usize, usize, crate::file_links::Candidate)> = Vec::new();
+            for link in links {
+                if !kept.iter().any(|(a, z, _)| link.0 < *z && *a < link.1) {
+                    kept.push(link);
+                }
+            }
+            kept.sort_by_key(|(a, z, _)| (*a, *z));
+            links = kept;
+        }
         let mut web_links = Vec::new();
         for (a, b, target) in &ml.links {
             links.retain(|(x, y, _)| !(*x < *b && *a < *y));

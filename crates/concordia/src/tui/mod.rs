@@ -3422,7 +3422,9 @@ pub async fn run_chat_tui() -> Result<()> {
                             if let Some(burst) = key_burst.take_pending() {
                                 dispatch_key_burst(&mut app, burst, &turn_tx);
                             }
-                            app.paste_text(&s)
+                            if !questions::paste(&mut app, &s) {
+                                app.paste_text(&s)
+                            }
                         }
                         Event::FocusGained | Event::Resize(..) => {
                             // The host may have invalidated visible cells while our diff buffer
@@ -3464,6 +3466,12 @@ pub async fn run_chat_tui() -> Result<()> {
                 let session = app.native_session_id.clone();
                 let prior_prov = app.prior_provider;
                 let prior_home = app.prior_home.clone();
+                // This dispatch carries any pending switch; later turns resume the new session.
+                app.prior_provider = app.provider;
+                app.prior_home = app
+                    .home_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned());
                 let pack_msgs = app.pack_messages();
                 // Drop the just-typed user message from pack (already in prompt).
                 let pack_msgs: Vec<_> = if pack_msgs
@@ -3669,6 +3677,10 @@ fn dispatch_key_burst(
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
     if burst.text {
+        let text = burst.text_content.as_deref().unwrap_or_default();
+        if questions::paste(app, text) {
+            return false;
+        }
         app.paste_text_chunk(
             burst.text_content.as_deref().unwrap_or_default(),
             burst.continues_paste,
@@ -5012,6 +5024,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: false,
             runs: &[],
         });
+    }
+    if app.view.link_root.as_deref() != Some(app.cwd.as_path()) {
+        app.view.link_root = Some(app.cwd.clone());
     }
     app.view
         .rebuild(&blocks, inner.width as usize, inner.height as usize);

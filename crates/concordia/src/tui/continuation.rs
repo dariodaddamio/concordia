@@ -177,14 +177,6 @@ impl App {
             self.continuation.pending = None;
             return None;
         }
-        if crate::provider::turn::thread_recording_failed(self.provider, &outcome.stderr_tail) {
-            self.continuation.pending = self.continuation.prompt.clone();
-            self.continuation.retry_draft = self.last_sent.clone();
-            self.continuation.blocked = true;
-            self.continuation.recovered = true; // Explicit continuation must start a fresh session.
-            self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Inspect partial edits, then /continue {} starts a fresh native session with source pointers. No automatic replay was attempted.", self.account));
-            return None;
-        }
         let exhausted = self.continuation.errors.iter().any(|e| usage_exhausted(e))
             || (outcome.exit_code.is_some_and(|code| code != 0)
                 && usage_exhausted(&outcome.stderr_tail));
@@ -195,8 +187,25 @@ impl App {
             .any(|error| context_exhausted(error))
             || (outcome.exit_code.is_some_and(|code| code != 0)
                 && context_exhausted(&outcome.stderr_tail));
+        // The turn's own error wins over stderr side effects such as a late tool result that
+        // Codex could no longer record after the turn had already failed.
+        let overloaded = self
+            .continuation
+            .errors
+            .iter()
+            .any(|error| crate::provider::stream_cards::model_overloaded(error))
+            || (outcome.exit_code.is_some_and(|code| code != 0)
+                && crate::provider::stream_cards::model_overloaded(&outcome.stderr_tail));
         self.continuation.context_limited = context_full;
-        if !exhausted && !context_full {
+        if !exhausted && !context_full && !overloaded {
+            if crate::provider::turn::thread_recording_failed(self.provider, &outcome.stderr_tail) {
+                self.continuation.pending = self.continuation.prompt.clone();
+                self.continuation.retry_draft = self.last_sent.clone();
+                self.continuation.blocked = true;
+                self.continuation.recovered = true; // Explicit continuation must start a fresh session.
+                self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Inspect partial edits, then /continue {} starts a fresh native session with source pointers. No automatic replay was attempted.", self.account));
+                return None;
+            }
             self.continuation.pending = None;
             return None;
         }
@@ -210,6 +219,7 @@ impl App {
                 .any(|card| card.status == CardStatus::Running);
         self.push_system(
             if context_full { "provider reported context capacity exhausted; a new native session can continue using exact-source pointers. Queued prompts stay paused." }
+            else if overloaded && !exhausted { "the selected model is at capacity on the provider's servers (not your quota); choose another model or account to continue. Queued prompts stay paused." }
             else { "usage limit reached; choose another account or model to continue. Queued prompts stay paused." },
         );
         if !self.continuation.automatic {
