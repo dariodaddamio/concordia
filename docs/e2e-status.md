@@ -1,6 +1,25 @@
 # Everyday E2E status (MVP A)
 
-## Current record, 2026-11-02d
+## Current record, 2026-11-02i
+
+The installed memory/orchestration feature build is `2026-11-02i`, SHA-256
+`EC9A4AA15F804DF770D2D486934F5C2B5407C0656BB075E1215FA429B2748554`.
+Runtime source is `0cb942f` on `feat/memory-orchestration`, stacked on `feat/batch-b`.
+The full enabled suite (862 library tests and integrations), clippy with warnings denied,
+release build, formatting/diff checks and installed everyday smoke pass.
+
+All 48 opt-in Windows ConPTY journeys pass against the exact installed executable in one
+sequential run (276.34 seconds), with its hash unchanged afterward. They include the new memory
+search, proactive rollover and paused worker crash recovery, plus the original unattended-note
+and provider-selection regressions. Model turns use fake providers only. Defender's custom scan
+reports no threats while antivirus and real-time protection remain enabled.
+
+[Detailed evidence and limits](quality/memory-orchestration-progress.md) distinguish these local
+checks from live-provider parity. CI's dependency gate still flags inherited `syntect` maintenance
+advisories; no audit checks were disabled. Separate signing changes are excluded from this branch.
+Existing windows retain their loaded executable until reopened.
+
+## Previous record, 2026-11-02d
 
 The installed feature build is `2026-11-02d`, SHA-256
 `E363CC47480B386F5605906807987904AA8AC89121210032952B398D50B5B49E`.

@@ -61,8 +61,46 @@ interfaces from work still being implemented; it does not mark the complete road
 - The Windows terminal proactive-rollover journey passes: exact native measurement, explicit model,
   enabled threshold, fresh-session argv, original source pointers and reversible policy.
 
-Whole-app and final installed-terminal checks remain for final integration. These implementations
-are bounded interfaces, not blanket live-provider parity or public-release clearance.
+## Final installed validation (`2026-11-02i`)
+
+- Runtime source: `0cb942f` on `feat/memory-orchestration`, stacked on `feat/batch-b`.
+- Release and installed SHA-256:
+  `EC9A4AA15F804DF770D2D486934F5C2B5407C0656BB075E1215FA429B2748554`.
+- The full enabled suite passes: 862 library tests (six ignored helpers) and enabled integrations.
+  All-target clippy denies warnings; formatting/diff checks and release build pass.
+- Installed everyday smoke passes, including the read-only native quota check. Every model turn
+  in tests uses a fake provider; no real provider model usage was spent.
+- All 48 opt-in Windows ConPTY journeys pass against that exact installed executable in one
+  sequential run (276.34 seconds). Its hash is unchanged afterward. New journeys cover proactive
+  rollover, memory search with a numbered draft, and interrupted worker recovery without replay.
+  Existing provider-selection, unattended notes, images, files, queues and recovery journeys pass.
+- Defender's custom file scan reports no threats with intelligence `1.463.94.0`; antivirus and
+  real-time protection remain enabled. Scan preserves the exact artifact hash. This is local-host
+  evidence, not a promise about every future classifier or operating system.
+- The first isolated-worktree suite run found a missing local `target` path when using a shared
+  Cargo target directory. A workspace-only junction fixes the harness; the complete rerun passes.
+  Terminal validation also caught landing-page masking of memory output; the shipped build closes
+  that screen for the new commands and makes recovered-worker notices visible.
+- Brain lookup was not configured; no unavailable notes or history were invented.
+
+Logs are local ignored artifacts: `target/memory-tests-final.log`,
+`target/memory-installed-smoke.log`, and `target/memory-installed-journeys.log`.
+
+These are bounded implementations with fixture/installed-host proof, not blanket live-provider
+parity or public-release clearance. Claude/Cursor proactive capacity remains unavailable.
+
+## CI status and inherited blockers
+
+The [dependency check](https://github.com/dariodaddamio/concordia/actions/runs/41530529699/job/125569231781)
+fails on existing transitive maintenance advisories: `bincode 1.3.3` (RUSTSEC-2025-0141) and
+`yaml-rust 0.4.5` (RUSTSEC-2024-0320), through `syntect`. This branch changes no Cargo manifests,
+lockfile or audit policy. The audit gate remains intact; resolving the upstream dependencies is
+still required before claiming a clean release gate.
+
+The preceding branch's Windows job also hit a 20-second PowerShell-output fixture timeout.
+That positive transport fixture now allows 60 seconds for startup; the separate wedged-helper
+test retains its short cancellation bound. This changes test timing only, not clipboard behavior
+or the installed artifact. The current remote Windows run is not used as completed validation.
 
 ## Supported-interface evidence
 

@@ -281,8 +281,10 @@ mod tests {
 
     #[test]
     fn a_normal_helper_returns_its_output() {
+        // Allow slower Windows CI PowerShell startup. This case checks
+        // stdout transport; the wedged-helper test separately verifies prompt cancellation.
         let out =
-            run_with_timeout(ps("Write-Output hello"), None, Duration::from_secs(20)).unwrap();
+            run_with_timeout(ps("Write-Output hello"), None, Duration::from_secs(60)).unwrap();
         assert_eq!(String::from_utf8_lossy(&out).trim(), "hello");
     }
 
