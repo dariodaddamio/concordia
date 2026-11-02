@@ -4,6 +4,7 @@ pub mod compat;
 pub mod cursor;
 pub mod enforcement;
 pub mod launch;
+pub(crate) mod npm;
 mod session_guard;
 pub mod stream_cards;
 pub mod stream_json;

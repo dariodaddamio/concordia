@@ -1,100 +1,64 @@
-# Release blockers
+# Release readiness, 2026-11-02
 
-What stands between this private repo and a public `v0.1.0`. Items marked **needs you** cannot be
-decided or verified by the code alone.
+Concordia is a working private Windows build. It is not ready to advertise as a proven,
+complete context manager/orchestrator. A limited public preview has a smaller product scope,
+but still needs the concrete gates below. This document does not authorize publication.
 
-## Done and enforced
+## Confirmed gate failures
 
-| Gate | Where |
-| --- | --- |
-| `cargo fmt --check`, `clippy -D warnings`, all tests `--locked` | `.github/workflows/ci.yml` |
-| Pinned toolchain so lints cannot drift | `rust-toolchain.toml` |
-| Release binary smoke (size budget, stamp, read-only `--version`, help surface, `doctor` contract) | `scripts/smoke-ci.ps1` |
-| Dependency licenses, advisories, sources | `cargo deny check` (`deny.toml`) |
-| Third-party notices shipped with every release | `cargo about` -> `THIRD-PARTY-LICENSES.txt` |
-| Tag must equal the crate version; gates re-run before publishing | `.github/workflows/release.yml` |
-| Stranger-safe update path (checksum + runs + right version, else nothing installed) | `crates/concordia/src/release.rs` |
-| No mentions of private projects, no personal data (username) in any tracked file | `scripts/verify-oss-gates.ps1` |
-| Rust-only product (the TypeScript prototype and research spikes are removed) | `scripts/verify-oss-gates.ps1` |
+| Gate | Current evidence | Needed before release |
+| --- | --- | --- |
+| Dependency advisories | `cargo deny check advisories` fails on bincode 1.3.3 and yaml-rust 0.4.5 through syntect; both are unmaintained advisories. | Replace/update the affected paths or explicitly review an appropriate policy decision. No ignore was added. |
+| Artifact size | The installed 2026-11-02a release artifact is 16.02 MiB; `scripts/smoke-ci.ps1` enforces 6 MiB and fails. | Reduce the artifact or deliberately review the distribution budget against the new features. Do not silently loosen the gate. Re-run on the exact candidate. |
+| Privacy preflight | `scripts/verify-oss-gates.ps1` flags functional namespace references in `crates/concordia/Cargo.toml`, `src/harness/adapter.rs`, `scripts/install.ps1` and `scripts/test-install.ps1`. | Finalize public repository/package identifiers and reconcile intentional public metadata with the privacy policy. These hits do not themselves establish leaked credentials. |
+| Source snapshot | Extensive modified and untracked source remains local. CI checks out committed source; publishing existing HEAD would omit current implementation. | Review and commit a complete candidate, including new modules/tests, then run gates on that exact snapshot. Preserve unrelated work. |
 
-## Blockers
+The privacy script scans tracked files only; new files also need the final privacy/secrets review.
+No credential files were read or copied for this audit. Evidence: ignored
+`target/advisories-2026-11-02a.log`, `target/artifact-smoke-2026-11-02a-final.log` and
+`target/oss-gates-2026-11-02a.log`.
 
-### 1. Fresh history - done
+## Validation and release decisions still open
 
-Published as a single clean root commit to a **private** repository
-(the private `concordia` repository). The old history (which contained the removed material and a username) is
-kept only locally: the `archive/pre-release` branch and `concordia-pre-release-history.bundle` next to the
-repo. It was never pushed. Keep it that way: push only `main`.
+- **Native providers and physical hosts.** Fixtures and selected installed terminal journeys
+  pass, but do not prove live model, image, approval and session compatibility for every CLI
+  version. The reported Codex history-write failure still needs an upstream cause or controlled
+  reproduction. A read-only diagnostic on Codex 0.165.0 found the existing rollout/state/history
+  records and successfully read the exact thread without starting a turn. Saved history is
+  readable now; recording/retry is not thereby verified.
+- **Real-turn test scope.** `AGENTS.md` requires explicit provider/task scope and a usage budget
+  for real model turns. Local implementation and synthetic tests need no further permission.
+  No live model turn was run for this audit.
+- **Terms and notices.** `provider-terms.md` retains unresolved provider review, including
+  automatic same-provider account switching. Historical legal reading is not current clearance.
+  Regenerate and check third-party notices for the exact artifact, including the renderer's
+  scoped MPL dependencies.
+- **Candidate rehearsal.** Run current CI/release workflows on the complete candidate; earlier
+  green rehearsals predate it. Verify checksum/install/update from a fresh download. A public
+  release feed cannot be certified from local source rebuilds alone.
+- **Release choices.** Confirm version, public namespace and signing/distribution policy.
+  Packaging generates checksums; executable signing is not implemented. Explicit Windows-only
+  support is valid for a Windows preview; Linux/macOS are not prerequisites.
 
-### 2. Product name - decided: Concordia
+Keep the archived pre-release branch and history bundle local. They are not part of a public
+candidate. Publishing/tagging/remote visibility changes remain separate explicit actions.
 
-The name is Latin *concordia*, "harmony, agreeing together": many providers in concord.
-The command is `concordia`. `concordia` is free on crates.io. Still to do before publishing: check
-the name against trademarks and existing products, and pick the GitHub organization and repository.
+## Full product versus preview
 
-### 3. Provider terms - needs you
+Implemented: recent bounded Codex/Claude source identity/readback, source pointers, interrupted
+request recovery, explicit quota/capacity-error recovery, selectable worker models, bounded
+supervisor/worker result handback, Markdown/files, native images and local Mermaid.
+Image paste and internal editing are no longer unimplemented blockers.
 
-See [provider-terms.md](provider-terms.md). Anthropic's text is read and Concordia's design fits it;
-OpenAI's Terms of Use and Cursor's terms still need a manual read. The failover feature must not
-ship until that is done.
+Still open: whole-history indexing/pagination, related-chat retrieval and verified lineage,
+Cursor exact native readback, proactive context/compaction policy, durable worker ownership
+across restart, task dependencies, file/worktree isolation, worker quota failover, combined
+worker usage/cost accounting and native interactive approval parity. General tool/plugin
+integration and unified file-open choices also remain unfinished. See the
+[feature audit](feature-completion-audit.md), [orchestration](orchestration-and-latency.md)
+and [workspace requirements](workspace-panes.md).
 
-### 4. Live verification - needs you
-
-Covered by tests with fakes, never run against the real thing. (Nothing here asks an agent to
-spend tokens except the last item, which needs your explicit budget.)
-
-- [ ] `/use add codex` opens a real login window and the "connected" announcement fires
-- [ ] Mouse selection, click-to-caret, wheel and right-click in a live WezTerm pane
-- [ ] `concordia install` from a fresh download, then `concordia --version` in a new terminal
-- [ ] `/update` from a real GitHub release (needs a tagged release in the repo)
-- [x] The GitHub workflows run green on a real runner (CI and a release rehearsal both passed; the first run
-      caught a real bug: `Get-FileHash` missing on a clean machine, now replaced by .NET hashing)
-- [x] A CI-built release artifact verified as a stranger would: checksum matches, runs, installs
-- [ ] One short real turn with a multi-line prompt (stdin path), under a budget you set
-
-### 5. Product and release gaps
-
-- Account handoff on exhaustion (user-confirmed, explicit session bind), after item 3
-- Verify Claude/Cursor session binding against live supported CLI versions; synthetic stream session events are parsed and bound, but that does not establish full version parity
-- Native approval interaction parity for headless runs; `plan`, `ask`, `workspace` and `full` modes exist, but modes alone do not prove every native approval flow works
-- Image paste; picker mouse support
-- Signed releases (checksums protect against corruption, not a compromised release)
-- Linux and macOS (not claimed; CI is Windows-only)
-
-### 6. Current production-readiness audit
-
-See [production-plan.md](production-plan.md) and [command-audit.md](command-audit.md).
-The previous command audit was not exhaustive; tests do not prove zero defects. Public release
-remains blocked until known high-impact findings and required host/provider checks are resolved.
-
-- WezTerm config is embedded in the binary and extracted on demand; the earlier source-checkout
-  requirement is no longer an implementation blocker.
-- Native-chat CLI listing and explicit-account reads support the discovered Codex/Claude text
-  transcript formats. Cursor metadata can be listed, but native transcript reading is explicitly
-  unsupported. Search currently searches previews/IDs, not every message in every transcript.
-- File links and Markdown preview have synthetic/terminal checks; actual configured editor
-  launch, clipboard/selection behavior and keyboard behavior across supported Windows hosts
-  still need a human pass. WezTerm and an installed/configured terminal editor are required for
-  separate editor tabs/windows through `/edit`. Installed `2026-10-21b` includes internal read-only
-  `/open`/`/preview` panes with a 2 MiB/50,000-line cap, without an editor/WezTerm requirement.
-  Internal editing, layout recovery and human host verification remain open.
-- Expanded tool details retain provider-supplied data. A CLI event that omits a patch cannot
-  produce native-quality edited-line diffs; Concordia must say what is missing, not fabricate
-  before/after content from unrelated workspace changes. Complete native UI/MCP/edit parity
-  against currently supported provider versions remains unverified.
-- Invalid-argument, stale-cache, account-switch, busy/update, restart and corrupt-state coverage
-  still needs to be completed for the enumerated surface. The command matrix records gaps.
-- On Windows hosts exposing a paste as individual key events, paste inference still depends on
-  source-observed quiet intervals. A bounded input reader now preserves those intervals across
-  slow frames; extreme source scheduling/channel saturation remains a host stress-check gap.
-- Worker limits interrupted the initial pass; workers were retried successfully after the
-  requested 06:05 America/Phoenix time, when the user continued the active session. No unattended
-  task was scheduled; this chat has no exposed scheduling capability.
-
-## Re-scan
-
-```powershell
-powershell -NoProfile -File .\scripts\verify-oss-gates.ps1    # content scan of every tracked file
-git archive HEAD | tar -t | Select-String -Pattern "\.ao/|\.env|node_modules"
-gitleaks detect --source . -v                                  # secrets (install gitleaks first)
-```
+No controlled comparison proves best-in-class quality, token savings, compaction quality or live
+inference speed. These are claim/evaluation gaps, not a requirement to finish every future feature
+for a labelled preview. Demo editing, custom terminal pointers and broader platform support are
+separate work; they do not resolve the concrete gate failures above.

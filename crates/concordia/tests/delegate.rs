@@ -75,6 +75,7 @@ fn submit(d: &mut Delegates, account: &str, task: &str, cwd: &Path, trust: Trust
             task: task.into(),
             origin: Origin::User,
             spec: JobSpec {
+                model: None,
                 home: None,
                 cwd: cwd.to_path_buf(),
                 prompt: task.into(),

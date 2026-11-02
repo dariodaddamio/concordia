@@ -1,11 +1,23 @@
 # Concordia plan
 
-**Concordia is the provider orchestration layer: use all your AI coding subscriptions from one terminal
-app.** It is a fast, native Rust TUI for Windows that drives the official Codex, Claude Code and
-Cursor CLIs under your own logins. Providers are backends; Concordia draws the interface.
+**Concordia is a local memory-management and orchestration layer for AI coding CLIs.**
+It keeps tasks navigable across provider accounts, sessions and worker runs. Its native Rust TUI
+for Windows drives the official Codex, Claude Code and Cursor CLIs under your own logins. Providers are backends; Concordia draws the interface.
 
-Status: pre-release, private. Product first (everyday chat that works end to end), then an
-MIT-licensed, stranger-downloadable Windows binary. Live status: [docs/e2e-status.md](docs/e2e-status.md).
+Status: pre-release, private. Memory management and orchestration are the core product; native chat
+and a reliable UI are their execution surface. Scope was reaffirmed by the owner on 2026-10-31.
+Bounded continuity maps, explicit delegation, recent native-source pointers/readback (Codex/Claude),
+pane-owned unfinished-request recovery and one-attempt explicit capacity-error rollover are implemented.
+Related-chat retrieval, whole-history indexing and proactive capacity/compaction policy remain planned.
+Current bounds and controls: [native memory](docs/native-memory.md).
+Native image inputs for Codex/Claude/Cursor and local Mermaid rendering are implemented;
+[image/diagram limits](docs/images-and-diagrams.md) distinguish fixture proof from live-provider validation.
+Current UI behavior and installed-host pointer limits: [chat rendering](docs/chat-rendering.md).
+The owner's implementation-first campaign gates and X/LinkedIn drafts are in the
+[launch plan](docs/launch-plan.md); unfinished roadmap features are not launch claims.
+The [completion audit](docs/feature-completion-audit.md) records what is closed and what remains;
+the two draft GIFs demonstrate completed UI behavior only.
+Product first, then an MIT-licensed Windows release with documented limits. Live status: [docs/e2e-status.md](docs/e2e-status.md).
 What blocks a public release: [docs/release-blockers.md](docs/release-blockers.md).
 
 ## Product
@@ -18,7 +30,7 @@ What blocks a public release: [docs/release-blockers.md](docs/release-blockers.m
 | Backends | Programmatic CLIs: `codex exec`, `claude -p`, `agent --print`. Never a scraped hidden TUI |
 | Accounts | Several per provider, each in an isolated home; sign-in is the provider's own flow |
 | Context across switches | One Concordia thread; on a switch, a bounded pack of Concordia's own recorded conversation goes to the next provider |
-| Workspace | Installed build `2026-10-21d`: `/open` and `/preview` create internal read-only split panes, `/close` closes them, `/edit` launches an external editor. Editing/recovery stages: [workspace requirements](docs/workspace-panes.md) |
+| Workspace | `/open` and `/preview` create internal splits; Markdown/JSON default to formatted, read-only view. Raw mode edits with syntax colors, explicit save, conflict checks and recovery. `/edit` launches an external editor. Remaining stages: [workspace requirements](docs/workspace-panes.md) |
 | Multi-session | Separate conversations can still use WezTerm panes and tabs; internal file panes belong to one conversation workspace |
 | Install | One binary: `concordia install` puts it where `concordia` on PATH finds it; `/update` keeps it current |
 
@@ -52,31 +64,43 @@ stores or shares credentials. See [docs/provider-terms.md](docs/provider-terms.m
 | `tui/` | Screen, input editor, mouse selection, transcript rows (cached), clipboard |
 | `provider/` | Per-provider argv planning, `launch` (stdin vs argv, shim handling), `turn` runner (stream, cancel, stderr), stream cards |
 | `accounts`, `connect`, `store` | Account discovery, Concordia-owned homes and login launch, atomic locked state |
-| `context`, `sessions`, `usage`, `catalog`, `identity` | Bounded context pack, resumable sessions, limits and models read from provider-written files |
+| `context`, `sessions`, `usage`, `catalog`, `identity` | Bounded context pack, resumable sessions, limits from read-only native interfaces; models from provider-written files |
 | `update`, `release` | Install (`concordia.exe` swap that works while running), `concordia install`, source and release updates |
 | `doctor`, `commands`, `host` | Diagnostics, slash commands, WezTerm integration |
 
-Provider state stays native: usage, sessions and models are read from the files the CLIs already
-write, never re-implemented.
+Provider state stays native: sessions/models use provider-written files, and Codex usage also
+uses its read-only quota RPC. Native execution, authentication and approvals remain authoritative.
 
 ## Roadmap
 
-1. **Reconcile readiness**: retain recorded installed fake-provider verification and distinguish
-   outstanding human host checks and versioned real-provider checks. See [E2E status](docs/e2e-status.md).
-2. **Internal workspace**: bounded file preview panes, then explicit editing, recovery and cwd
-   search/replacement. Prove focus, mouse and command behavior before expanding; acceptance is in
-   [workspace requirements](docs/workspace-panes.md).
-3. **Reliable self-development**: complete a bounded Concordia change through the stable installed
-   app, including interruption and recovery. Build a candidate separately; a failed candidate must
-   not remove the working interface.
-4. **Thin delegation routing**: evolve existing explicit workers beyond first-idle selection using
-   Harness-owned eligibility and task policy, with visible reasons and bounded handoffs. No extra
-   inference for routing. Worktree lifecycle requires explicit ownership and preservation of unique
-   or active work; existing user work is never automatically cleaned.
-5. **Provider parity**: verify Claude/Cursor session binding, native approvals and cancellation
-   against supported CLI versions. Account exhaustion requires explicit session binding and no
-   uncertain replay; terms review remains a release prerequisite.
-6. **Distribution**: name checks, signed releases and first public tag after everyday reliability.
+Worker models, bounded automatic result return and remaining orchestration gaps:
+[orchestration and latency](docs/orchestration-and-latency.md).
+
+1. **Native-source memory index.** Recent-window source identity/readback is implemented for
+   Codex/Claude; Cursor readback and whole-history indexing remain. Bind pointers to provider, account home, session, file revision
+   and exact range. Index session sources only, preserve existing logs, and detect missing,
+   compacted or replaced originals. An unknown or stale source must not yield an unrelated chat.
+2. **Bounded retrieval and lineage.** Link explicit handoffs, projects, touched files and time.
+   Return exact excerpts with source identity and bounded read budgets. Keep lexical suggestions
+   distinct from confirmed relationships. Evaluate recall, stale-source handling and task success
+   using synthetic histories before choosing more complex retrieval.
+3. **Durable orchestration policy.** Unfinished request/run/source recovery and file-backed
+   Harness pinned-decision delivery are implemented. Broader worker/run ownership and target
+   eligibility explanations remain. Persist ordered account/model fallbacks and eligibility
+   reasons, distinguish quota exhaustion from context capacity, and bind queues, completed actions,
+   worker ownership and recovery to explicit run ids. Preserve drafts and stop uncertain replay.
+4. **Context-capacity handoff.** Explicit capacity-error recovery is implemented; proactive
+   rollover and compaction controls remain unverified. Verify supported capacity signals and compaction controls per
+   provider/version. Unknown capacity stays unknown. Introduce rollover only after pointer readback,
+   lineage and pinned decision delivery work; keep the policy visible and reversible.
+5. **Provider and host parity.** Record fake-provider checks separately from real-provider and
+   physical-host evidence. Live provider turns require an explicit scope and usage budget.
+6. **OSS distribution.** Resolve security, terms, license/attribution and reproducible packaging
+   gates in docs/release-blockers.md. Documentation must state shipped limits; publishing is a
+   separate authorized action. Editing features and managed worktree cleanup follow core memory
+   and orchestration rather than displacing them.
+
+Acceptance details and research: [context handoff plan](docs/context-handoff-plan.md).
 
 Locked-code launch gate: implemented (`provider::enforcement`, see [architecture](docs/architecture.md)).
 A write-capable turn in a project with `docs/quality/locked-code.json` runs read-only unless a verified
@@ -85,10 +109,10 @@ verifier writes that identity from the live manifest; file-backed manifests are 
 protected launch, so a changed manifest closes the gate until verification runs again.
 
 Bounded context handoff and explicit delegation already exist; see [delegation](docs/delegation.md).
-Internal preview panes are implemented in source; editing/recovery, policy-based routing and
-managed worktree cleanup remain requirements. Hosted services, resident inference and Linux/macOS
-support remain outside current scope. Local installed build is `2026-10-21d`; earlier running
-windows retain their existing executable until reopened.
+Internal preview panes, raw editing/recovery, bounded file discovery and explicit quota fallback
+are implemented. Broader policy-based routing and managed worktree cleanup remain requirements. Hosted services, resident inference and Linux/macOS
+support remain outside current scope. Use `concordia --version` to identify an installed build; running windows retain their existing
+executable until reopened.
 
 ## Open decisions (the maintainer's)
 

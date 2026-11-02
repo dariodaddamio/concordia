@@ -119,6 +119,7 @@ pub async fn run_turn(req: &TurnRequest<'_>) -> Result<StreamOutcome> {
     let plan = plan_turn_argv(req);
     assert_safe_argv(&plan.argv)?;
     let mut cmd = Command::new(&plan.command);
+    crate::process_ui::background(&mut cmd);
     cmd.args(&plan.argv)
         .current_dir(&plan.cwd)
         .stdin(Stdio::null())

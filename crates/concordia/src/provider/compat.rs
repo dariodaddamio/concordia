@@ -284,7 +284,11 @@ pub fn run_cli(program: &Path, args: &[&str]) -> Result<String, String> {
                 .env("CURSOR_INVOKED_AS", program.file_name().unwrap_or_default());
         }
         None => {
-            cmd = Command::new(program);
+            let native = super::npm::codex(&program.to_string_lossy());
+            cmd = Command::new(native.as_ref().map_or(program, |n| n.program.as_path()));
+            if let Some(native) = native {
+                cmd.envs(native.env);
+            }
             cmd.args(args);
         }
     }
@@ -836,6 +840,7 @@ mod planning_tests {
     fn a_planned_claude_turn_falls_back_to_text_and_ask() {
         let cwd = std::env::temp_dir();
         let req = ProviderTurnRequest {
+            images: &[],
             provider: ProviderKind::Claude,
             prompt: "hello",
             cwd: &cwd,

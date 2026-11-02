@@ -10,7 +10,6 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::sync::{Arc, Weak};
 
@@ -31,39 +30,7 @@ pub fn queue_path(root: &Path) -> PathBuf {
 
 /// Write `bytes` to `path` through a temp file in the same directory, then rename over it.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    let tmp = path.with_file_name(format!(
-        "{name}.tmp-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let write = || -> io::Result<()> {
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-        drop(f);
-        // Another pane may hold the destination open for a moment (Windows): try a few times.
-        let mut last = Ok(());
-        for _ in 0..3 {
-            match fs::rename(&tmp, path) {
-                Ok(()) => return Ok(()),
-                Err(e) => last = Err(e),
-            }
-        }
-        last
-    };
-    let r = write();
-    if r.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    r
+    crate::state_io::write_atomic(path, bytes)
 }
 
 /// Move an unreadable file aside as `<name>.bad` (replacing an older one) so it is kept for
@@ -121,6 +88,7 @@ type DraftSlot = Mutex<
         String,
         Vec<String>,
         Option<super::recovery::RecoveryEdit>,
+        Option<String>,
     )>,
 >;
 static PANIC_DRAFT: DraftSlot = Mutex::new(None);
@@ -130,9 +98,10 @@ fn mirror_snapshot(
     text: String,
     queue: Vec<String>,
     pending: Option<super::recovery::RecoveryEdit>,
+    alternate: Option<String>,
 ) {
     if let Ok(mut g) = PANIC_DRAFT.lock() {
-        *g = Some((Arc::downgrade(&lease), text, queue, pending));
+        *g = Some((Arc::downgrade(&lease), text, queue, pending, alternate));
     }
 }
 
@@ -143,9 +112,10 @@ pub fn flush_on_panic() {
 
 fn flush_from(slot: &DraftSlot) {
     if let Ok(g) = slot.try_lock() {
-        if let Some((lease, text, queue, pending)) = g.as_ref() {
+        if let Some((lease, text, queue, pending, alternate)) = g.as_ref() {
             if let Some(lease) = lease.upgrade() {
-                let _ = lease.save_with_edit(text, queue, pending.as_ref());
+                let _ =
+                    lease.save_with_alternate(text, queue, pending.as_ref(), alternate.as_deref());
             }
         }
     }
@@ -280,6 +250,7 @@ const MAX_RETRIES: u8 = 5;
 pub(super) struct Keep {
     /// `[ui] persist_history`.
     pub history: bool,
+    pub turn_recovery_notice: bool,
     /// Lines currently in history.jsonl (to know when to compact).
     on_disk: usize,
     rev_saved: u64,
@@ -300,6 +271,7 @@ impl Keep {
     pub fn new(root: &Path) -> Keep {
         Keep {
             history: crate::config::for_root(root).ui.persist_history,
+            turn_recovery_notice: false,
             on_disk: 0,
             rev_saved: 0,
             rev_seen: 0,
@@ -340,12 +312,21 @@ fn edit_signature(app: &super::App) -> u64 {
 }
 
 impl super::App {
+    fn alternate_draft(&self) -> Option<String> {
+        self.parked_draft
+            .as_ref()
+            .filter(|s| !s.is_empty() && **s != self.draft_text())
+            .cloned()
+    }
     /// The draft as it should be saved: while browsing history, the text that was being typed.
-    fn draft_text(&self) -> String {
+    pub(super) fn draft_text(&self) -> String {
         if self.hist_pos.is_some() {
             self.hist_draft.clone()
+        } else if self.fresh_draft && self.editor.text().is_empty() && self.images.draft.is_empty()
+        {
+            self.parked_draft.clone().unwrap_or_default()
         } else {
-            self.editor.text()
+            self.composer_value()
         }
     }
 
@@ -370,7 +351,8 @@ impl super::App {
                     self.keep.lease = Some(Arc::new(lease));
                     self.keep.recovery_choices = choices;
                     if let Some(data) = restored {
-                        self.editor.set_text(&data.draft);
+                        self.restore_composer(&data.draft);
+                        self.parked_draft = data.alternate_draft;
                         self.queue.items = data.queue;
                         self.restore_pending_edit(data.pending_edit);
                         self.queue.paused = true;
@@ -388,6 +370,12 @@ impl super::App {
             self.push_system(
                 "legacy shared draft or queue found; use /recover to import it safely",
             );
+        }
+        self.restore_turn_checkpoint();
+        if let Some(lease) = self.keep.lease.clone() {
+            if let Err(error) = self.workspace.set_file_recovery(lease, &self.cwd) {
+                self.keep.warning = Some(format!("File recovery unavailable: {error}"));
+            }
         }
         self.keep.rev_saved = self.editor.revision();
         self.keep.rev_seen = self.keep.rev_saved;
@@ -417,6 +405,7 @@ impl super::App {
                     self.draft_text(),
                     self.queue.items.clone(),
                     pending_edit(self),
+                    self.alternate_draft(),
                 );
             }
         }
@@ -437,6 +426,12 @@ impl super::App {
                             super::recovery::available(&root).unwrap_or_default();
                         self.keep.lease = Some(Arc::new(lease));
                         self.keep.warning = None;
+                        if let Some(lease) = self.keep.lease.clone() {
+                            if let Err(error) = self.workspace.set_file_recovery(lease, &self.cwd) {
+                                self.keep.warning =
+                                    Some(format!("File recovery unavailable: {error}"));
+                            }
+                        }
                         self.keep.retries = 0;
                     }
                     Err(error) => self.retry_failed(error),
@@ -468,13 +463,15 @@ impl super::App {
                 self.draft_text(),
                 self.queue.items.clone(),
                 pending_edit(self),
+                self.alternate_draft(),
             );
         }
         if let Some(lease) = &self.keep.lease {
-            match lease.save_with_edit(
+            match lease.save_with_alternate(
                 &self.draft_text(),
                 &self.queue.items,
                 pending_edit(self).as_ref(),
+                self.alternate_draft().as_deref(),
             ) {
                 Ok(()) => {
                     self.keep.rev_saved = self.editor.revision();
@@ -541,6 +538,11 @@ impl super::App {
     }
 
     pub(super) fn claim_recovery(&mut self, id: &str) -> io::Result<()> {
+        if self.workspace.has_unsaved() {
+            return Err(io::Error::other(
+                "save or close current file edits before switching recovery",
+            ));
+        }
         self.persist_draft_now();
         if let Some(warning) = self.keep.warning.as_deref() {
             return Err(io::Error::other(warning.to_owned()));
@@ -554,13 +556,22 @@ impl super::App {
         self.clear_queue_editor();
         self.hist_pos = None;
         self.hist_draft.clear();
+        self.parked_draft = None;
+        self.fresh_draft = false;
         self.keep.lease.take();
-        self.editor.set_text(&data.draft);
+        self.restore_composer(&data.draft);
+        self.parked_draft = data.alternate_draft;
         self.queue.items = data.queue;
         self.restore_pending_edit(data.pending_edit);
         self.queue.paused = true;
         self.keep.lease = Some(Arc::new(lease));
+        if let Some(lease) = self.keep.lease.clone() {
+            self.workspace
+                .set_file_recovery(lease, &self.cwd)
+                .map_err(io::Error::other)?;
+        }
         self.keep.recovery_choices.clear();
+        self.restore_turn_checkpoint();
         self.persist_draft_now();
         self.push_system("restored selected unsent draft and queued prompts");
         Ok(())
@@ -581,9 +592,12 @@ impl super::App {
         self.clear_queue_editor();
         self.hist_pos = None;
         self.hist_draft.clear();
+        self.parked_draft = None;
+        self.fresh_draft = false;
         self.keep.lease.take();
         self.keep.lease = Some(Arc::new(lease));
-        self.editor.set_text(&data.draft);
+        self.restore_composer(&data.draft);
+        self.parked_draft = data.alternate_draft;
         self.queue.items = data.queue;
         self.restore_pending_edit(data.pending_edit);
         self.queue.paused = true;
@@ -823,15 +837,26 @@ mod tests {
                 index: 0,
                 text: "pending upper edit".into(),
             }),
+            Some("other unsent draft".into()),
         )));
         flush_from(&slot);
         assert_eq!(lease.data().unwrap().draft, "typed before the crash");
         assert_eq!(lease.data().unwrap().queue, ["latest queue"]);
         assert_eq!(
+            lease.data().unwrap().alternate_draft.as_deref(),
+            Some("other unsent draft")
+        );
+        assert_eq!(
             lease.data().unwrap().pending_edit.unwrap().text,
             "pending upper edit"
         );
-        *slot.lock().unwrap() = Some((Arc::downgrade(&lease), String::new(), Vec::new(), None));
+        *slot.lock().unwrap() = Some((
+            Arc::downgrade(&lease),
+            String::new(),
+            Vec::new(),
+            None,
+            None,
+        ));
         flush_from(&slot);
         assert_eq!(lease.data().unwrap().draft, "");
     }
@@ -842,13 +867,14 @@ mod tests {
         let recovery_root = super::super::recovery::recovery_root(d.path(), d.path()).unwrap();
         let lease = super::super::recovery::create(&recovery_root).unwrap();
         lease
-            .save_with_edit(
+            .save_with_alternate(
                 "main draft",
                 &["first queued".into(), "committed queue value".into()],
                 Some(&super::super::recovery::RecoveryEdit {
                     index: 1,
                     text: "unfinished edit".into(),
                 }),
+                Some("alternate prompt"),
             )
             .unwrap();
         drop(lease);
@@ -856,6 +882,7 @@ mod tests {
         let mut app = super::super::App::new(d.path().to_path_buf(), d.path().to_path_buf());
         app.restore_state();
         assert_eq!(app.editor.text(), "main draft");
+        assert_eq!(app.parked_draft.as_deref(), Some("alternate prompt"));
         assert_eq!(app.queue.items[1], "committed queue value");
         assert_eq!(app.queue.edit.as_ref().unwrap().text(), "unfinished edit");
         assert_eq!(app.queue.sel, 1);

@@ -1,16 +1,27 @@
 # Internal terminal workspace
 
-Status: first read-only preview slice implemented in source build `2026-10-21a` and included in
-locally installed build `2026-10-21b`.
+Status: build `2026-11-01d` adds bounded chat/recent/workspace file discovery and directory browsing.
+Build `2026-11-01c` adds internal editing and pane-owned file recovery to the existing
+preview/search/reload/current-chat suggestion surface. Markdown/JSON open formatted by default;
+Alt+V or the view bar switches modes. Formatted view is read-only. Source code opens raw,
+editable and syntax-colored. Ctrl+S saves; Ctrl+Z/Ctrl+Y undo/redo; Ctrl+F finds; F3/Shift+F3
+navigate matches. Raw letters such as `v`, `r`, `/` and `q` are file content.
+Visible pointer shapes depend on the terminal host; the installed WezTerm 2024 build does not
+implement the requested control. [Chat rendering](chat-rendering.md) records the evidence and
+the newer table/link rendering and input-scroll behavior.
+The initial preview slice shipped in local build `2026-10-21b`.
 `/open` uses internal panes; `/edit PATH` (unlisted) preserves the external-editor route. The
-editing/recovery and search/replacement stages below remain requirements. Keep the stable
+search/replacement stage below remains a requirement. Keep the stable
 installed binary usable while developing this feature. No live providers are required here.
 
-Continuation `2026-10-21b` compiles and tests the recovered `file_document` foundation separately:
-exact UTF-8 bytes, BOM/CRLF/tab preservation, delta undo/redo, bounded edit history and staged
-compare-before-replace saves. Windows replacement retains a backup when a concurrent change is
-detected at replacement. This is groundwork; it does not expose internal editing controls or
-claim completed draft/layout recovery. Read-only panes continue to be the user-facing slice.
+Internal editing uses exact UTF-8 bytes, preserves BOM/CRLF/tabs, bounds delta history, and stages
+compare-before-replace saves. Windows replacement retains a backup if a concurrent change is
+detected at replacement. Closing, reloading or quitting with edits asks S save / D discard / Esc
+cancel. Save errors retain the buffer. Editing is paused if recovery storage is unavailable.
+File drafts, baseline, cursor, mode and split layout are stored in the pane's recovery lease,
+debounced 250 ms and flushed at normal exit. Recovery checks canonical workspace/path bindings;
+changed or missing originals never silently replace recovered edits. Recovery retains the newest
+buffer, not the prior undo stack. The existing `/recover` flow claims interrupted pane records.
 
 Concordia should provide a graphical workspace inside the terminal: chat and files share one
 screen, with mouse operations and slash commands controlling the same pane state. Harness owns
@@ -21,14 +32,18 @@ The project's design system owns applicable UI principles. Neither provider sess
 
 | Action | Required behavior |
 | --- | --- |
+| `/open` | Browse chat references, workspace recent previews and bounded workspace files/folders; Enter opens without starting a provider turn |
+| `@path` suggestions | Tab/Enter inserts a literal reference; Ctrl+P or a file-row click opens the preview while retaining the draft |
 | `/open FILE[:LINE[:COLUMN]]` | Resolve relative to the conversation cwd and open an internal file pane beside chat. Honor explicit location references and show errors without losing the prompt |
 | Another `/open` | Add another split when space and limits permit. Give every pane a visible stable id. Reopening an existing file focuses its pane rather than creating conflicting buffers |
 | Click pane | Focus it, with a visible indicator. Keys target the focused surface; file navigation must never submit a chat prompt |
 | Click top-right X | Close that file pane; use the same close operation as the command |
+| Ctrl+F in a focused file pane | Search; F3/Shift+F3 navigate. Formatted view also supports `/` and `n`/`N`; raw letters edit the file |
+| Ctrl+R in a focused file pane | Reload asynchronously, keeping the pane and draft; formatted view also supports `r`. Dirty reload requires a decision |
 | Drag divider | Resize adjacent panes within minimum dimensions, retaining content, selection and focus |
 | Small terminal or pane limit | Keep chat usable; explain a refused additional split. Never create invisible panes with live hit targets. Tabs may be added later |
-| `/open FILE` | Open an internal read-only pane; clearly label read-only state. Standalone CLI preview can remain available |
-| Edit/save/close | Later slice: show dirty state, save explicitly, protect unsaved edits on close and detect external changes before overwriting |
+| `/open FILE` | Open an internal pane, formatted for Markdown/JSON and raw for source code. Standalone CLI preview remains read-only |
+| Edit/save/close | Raw mode edits; explicit save, dirty decisions, external-change checks and bounded pane-owned recovery |
 | Search/replace | Later slice: search the cwd with visible scope/ignore rules. Preview replacement diffs and apply selected changes explicitly |
 
 Initial layout: chat occupies the left column; file panes share the right column. The first slice
@@ -38,8 +53,7 @@ Errors for binary, oversized, missing, inaccessible or non-regular files must re
 Do not evaluate terminal control characters from file contents. Do not start an editor process
 per internal pane or scan the entire repository during rendering.
 
-The first implementation provides preview only, labels it and must not claim editing,
-restored layout or project replacement support until those behaviors are implemented and tested.
+The preview and editing/recovery slices are implemented. Project replacement remains planned.
 Keep the external-editor launch path explicitly accessible when changing `/open` semantics; never
 silently depend on an editor installation for an internal preview.
 
@@ -79,3 +93,10 @@ branch and path ownership, active-session checks, and preservation of dirty or u
 Only an explicitly authorized lifecycle policy can retire managed workspaces; age or a model's
 completion message alone is insufficient. Existing manually created worktrees need reconciliation
 before enrollment. Never automatically clean unrelated user work.
+
+## Accepted file-opening choices
+
+The owner chose the labels **Preview here**, **Split off** (a new terminal), and **Open in editor**.
+Internal preview/editing and the existing terminal-editor `/edit` route are implemented. A unified
+three-choice preference, direct GUI editor launch and a dedicated Concordia editor process remain
+workspace work; they are not closed by the image/diagram build.

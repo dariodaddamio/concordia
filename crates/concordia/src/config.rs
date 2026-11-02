@@ -27,8 +27,10 @@ pub struct Config {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Continuation {
     pub automatic: bool,
-    /// Explicit ordered allowlist; no account is selected implicitly.
+    /// Optional ordered allowlist; empty uses connected accounts in automatic mode.
     pub accounts: Vec<String>,
+    /// Ordered models on the current account, validated against its native catalog.
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -199,6 +201,12 @@ impl Config {
                         Some("automatic") => cfg.continuation.automatic = true,
                         Some("manual") => cfg.continuation.automatic = false,
                         _ => warnings.push("continuation.mode must be manual or automatic; using manual".into()),
+                    },
+                    "continuation.models" => match v.as_array() {
+                        Some(models) if models.iter().all(|m| m.as_str().is_some()) => {
+                            cfg.continuation.models = models.iter().filter_map(|m| m.as_str().map(str::to_owned)).collect();
+                        }
+                        _ => warnings.push("continuation.models must be an array of model ids".into()),
                     },
                     "continuation.accounts" => match v.as_array() {
                         Some(accounts) if accounts.iter().all(|a| a.as_str().is_some_and(|s| !s.trim().is_empty())) => {

@@ -5,7 +5,8 @@ accounts can be **workers**. You hand a worker one task; it runs in the backgrou
 folder, as a separate turn of that account's own CLI. You see it live under the transcript and
 decide what happens with its result.
 
-Nothing here is automatic. Delegation is something you start, watch and can stop.
+Worker starts require your command or approval. Result handback can be manual or explicitly automatic.
+[Model selection, return modes and remaining limitations](orchestration-and-latency.md).
 
 Native provider subagents are also visible when the CLI reports them. `Ctrl+G`
 opens a browser of those reports and Concordia worker jobs; Enter opens details. Codex
@@ -62,7 +63,8 @@ bold focus marker stays.
 
 When a worker finishes, a block appears in the orchestrator transcript: worker, provider, state,
 duration, tool-card count, task and final text, marked **untrusted worker output**. Nothing is
-sent to the orchestrator and nothing in it is executed. `/delegate use` is the only way it reaches
+sent to the orchestrator and nothing in it is executed. `/delegate use`, `/delegate collect`,
+or opt-in automatic returns determine when it reaches
 the orchestrator: you choose it, it is capped at 6000 characters and wrapped in a label telling
 the orchestrator it is data from another agent, not instructions.
 

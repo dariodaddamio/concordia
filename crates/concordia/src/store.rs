@@ -92,11 +92,19 @@ pub struct OrchestratorSettings {
     /// Accounts that may run as delegated workers (max 3, never the orchestrator).
     #[serde(default)]
     pub workers: Vec<String>,
+    /// Per-worker native model ids. Missing entry means the provider's own default.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub worker_models: std::collections::BTreeMap<String, String>,
+    /// Explicit opt-in: return worker batches to their owning conversation.
+    #[serde(default)]
+    pub delegate_auto_return: bool,
     /// Opt-in: let an orchestrator reply propose a delegation (still needs a yes from the user).
     /// `None` = never set by the user: `[delegation] protocol` in config.toml decides (see
     /// [`delegation_protocol_on`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation_protocol: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_automatic: Option<bool>,
     /// Opt-in: record conversations to `<state>/threads` (stores prompts). Read via `threads::enabled`.
     #[serde(default)]
     pub thread_log: bool,
@@ -125,7 +133,10 @@ impl Default for OrchestratorSettings {
             trust: TrustMode::Workspace,
             child_trust: ChildTrust::Inherit,
             workers: Vec::new(),
+            worker_models: Default::default(),
+            delegate_auto_return: false,
             delegation_protocol: None,
+            continuation_automatic: None,
             thread_log: false,
         }
     }
@@ -145,6 +156,9 @@ pub struct OrchestratorStore {
     /// (`~/.codex` and friends): they are hidden, never deleted.
     #[serde(default)]
     pub hidden_accounts: Vec<String>,
+    /// User-facing names only; account ids, native homes and routing remain unchanged.
+    #[serde(default)]
+    pub account_nicknames: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub settings: OrchestratorSettings,
 }
@@ -157,6 +171,7 @@ impl Default for OrchestratorStore {
             chats: Vec::new(),
             accounts: Vec::new(),
             hidden_accounts: Vec::new(),
+            account_nicknames: Default::default(),
             settings: OrchestratorSettings::default(),
         }
     }
@@ -355,6 +370,13 @@ pub fn modify_store<T>(
 
 pub fn get_settings(root: &Path) -> OrchestratorSettings {
     load_store(root).settings
+}
+
+pub fn set_continuation_automatic(root: &Path, automatic: bool) -> Result<()> {
+    modify_store(root, |store| {
+        store.settings.continuation_automatic = Some(automatic);
+        Ok(())
+    })
 }
 
 pub fn set_trust_mode(root: &Path, trust: TrustMode) -> Result<OrchestratorSettings> {

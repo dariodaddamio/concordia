@@ -30,7 +30,7 @@ fn documented_command_aliases_resolve_to_the_same_action() {
         ("/chats", SlashCommand::Resume),
         ("/resume", SlashCommand::Resume),
         ("/upgrade", SlashCommand::Update),
-        ("/rebuild check", SlashCommand::UpdateCheck),
+        ("/rebuild", SlashCommand::Update),
         ("/ver", SlashCommand::Version),
         ("/about", SlashCommand::Version),
         ("/cp", SlashCommand::Copy),
@@ -84,7 +84,10 @@ fn argument_free_actions_and_split_orientation_are_explicit() {
         assert_eq!(parse_slash(line).unwrap().0, SlashCommand::Update);
     }
     for line in ["/update check", "/upgrade CHECK", "/rebuild check"] {
-        assert_eq!(parse_slash(line).unwrap().0, SlashCommand::UpdateCheck);
+        assert_eq!(
+            parse_slash(line).unwrap().0,
+            SlashCommand::Invalid("update".into())
+        );
     }
     assert!(!parse_slash("/split").unwrap().1);
     assert!(!parse_slash("/split h").unwrap().1);

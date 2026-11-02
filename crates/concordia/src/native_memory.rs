@@ -1,0 +1,878 @@
+//! Revision-checked pointers into native session files. Persist metadata, never chat bodies.
+use crate::{accounts, sessions, store::ProviderKind};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, File},
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+};
+
+const TAIL_BYTES: u64 = 8 * 1024 * 1024;
+const HEAD_BYTES: u64 = 64 * 1024;
+const LINE_BYTES: usize = 256 * 1024;
+const MAX_MESSAGES: usize = 128;
+const INDEX_BYTES: u64 = 256 * 1024;
+const EXCERPT_BYTES: usize = 8192;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Binding {
+    pub provider: ProviderKind,
+    pub account: String,
+    pub home: PathBuf,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Span {
+    pub start: u64,
+    pub len: usize,
+    pub sha256: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceIndex {
+    pub version: u32,
+    pub binding: Binding,
+    pub relative_file: PathBuf,
+    pub file_identity: String,
+    pub source_len: u64,
+    pub anchor_len: u64,
+    pub anchor_sha256: String,
+    pub messages: Vec<Span>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Summary {
+    pub id: String,
+    pub home_id: String,
+    pub file: PathBuf,
+    pub provider: ProviderKind,
+    pub account: String,
+    pub session_id: String,
+    pub messages: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Excerpt {
+    pub source: Summary,
+    pub message: usize,
+    pub role: String,
+    pub source_byte_start: u64,
+    pub source_byte_end: u64,
+    pub sha256: String,
+    /// Exact UTF-8 bytes from the native JSONL event, possibly one bounded chunk.
+    pub raw: String,
+    pub next_offset: Option<usize>,
+}
+
+fn digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+fn valid_id(id: &str) -> bool {
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+fn directory(root: &Path) -> PathBuf {
+    root.join(".ao/native-memory")
+}
+fn normalize_home(home: &Path) -> Result<PathBuf, String> {
+    fs::canonicalize(home).map_err(|_| "native account home is unavailable".into())
+}
+
+impl Binding {
+    pub fn new(
+        provider: ProviderKind,
+        account: &str,
+        home: &Path,
+        session_id: &str,
+    ) -> Result<Self, String> {
+        if account.is_empty()
+            || account.len() > 128
+            || session_id.is_empty()
+            || session_id.len() > 128
+            || account
+                .chars()
+                .chain(session_id.chars())
+                .any(char::is_control)
+        {
+            return Err("invalid native source identity".into());
+        }
+        Ok(Self {
+            provider,
+            account: account.into(),
+            home: normalize_home(home)?,
+            session_id: session_id.into(),
+        })
+    }
+
+    fn verify(&self, root: &Path) -> Result<PathBuf, String> {
+        if self.provider == ProviderKind::Cursor {
+            return Err(
+                "Cursor native transcript indexing is not supported; no source was invented".into(),
+            );
+        }
+        let account = accounts::get_account(root, &self.account)
+            .ok_or("native source account is unavailable")?;
+        let home = account
+            .home_path
+            .as_ref()
+            .ok_or("native source account has no explicit home")?;
+        if account.provider != self.provider || normalize_home(home)? != normalize_home(&self.home)?
+        {
+            return Err("native source binding changed; refusing another account/home".into());
+        }
+        let home = normalize_home(home)?;
+        let source_root = fs::canonicalize(home.join(match self.provider {
+            ProviderKind::Codex => "sessions",
+            _ => "projects",
+        }))
+        .map_err(|_| "native session source directory is unavailable")?;
+        if !source_root.starts_with(&home) {
+            return Err("native session directory escapes the bound home".into());
+        }
+        Ok(source_root)
+    }
+}
+
+fn open_source(path: &Path, allowed: &Path) -> Result<File, String> {
+    let canonical = fs::canonicalize(path).map_err(|_| "native source unavailable or moved")?;
+    if !canonical.starts_with(allowed)
+        || canonical.extension().is_none_or(|e| e != "jsonl")
+        || canonical
+            .components()
+            .any(|part| part.as_os_str() == "subagents")
+    {
+        return Err("source is outside the registered native session tree".into());
+    }
+    let file = File::open(&canonical).map_err(|_| "native source cannot be opened")?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file()
+        || fs::canonicalize(path).map_err(|_| "native source moved while opening")? != canonical
+    {
+        return Err("native source changed while opening".into());
+    }
+    Ok(file)
+}
+
+fn read_at(file: &mut File, offset: u64, len: usize) -> Result<Vec<u8>, String> {
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| e.to_string())?;
+    let mut bytes = vec![0; len];
+    file.read_exact(&mut bytes)
+        .map_err(|_| "native source was truncated or became unreadable")?;
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn identity(file: &File) -> Result<String, String> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    #[derive(Default)]
+    struct Time {
+        low: u32,
+        high: u32,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct Info {
+        attributes: u32,
+        created: Time,
+        accessed: Time,
+        written: Time,
+        volume: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(handle: *mut std::ffi::c_void, info: *mut Info) -> i32;
+    }
+    let mut info = Info::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err("native file identity is unavailable".into());
+    }
+    Ok(format!(
+        "{}:{}:{}:{}:{}",
+        info.volume, info.index_high, info.index_low, info.created.high, info.created.low
+    ))
+}
+#[cfg(unix)]
+fn identity(file: &File) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    Ok(format!("{}:{}", meta.dev(), meta.ino()))
+}
+#[cfg(not(any(windows, unix)))]
+fn identity(_: &File) -> Result<String, String> {
+    Err("native file identity is unsupported on this host".into())
+}
+
+fn message_role(value: &Value, provider: ProviderKind, session: &str) -> Option<(String, bool)> {
+    if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
+        if id != session {
+            return None;
+        }
+    }
+    let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
+    let event_fallback = provider == ProviderKind::Codex && kind == "event_msg";
+    let payload = if provider == ProviderKind::Codex {
+        value.get("payload").unwrap_or(value)
+    } else {
+        value.get("message").unwrap_or(value)
+    };
+    if event_fallback {
+        return match payload.get("type").and_then(Value::as_str) {
+            Some("user_message") => Some(("user".into(), true)),
+            Some("agent_message") => Some(("assistant".into(), true)),
+            _ => None,
+        };
+    }
+    if provider == ProviderKind::Codex && kind != "response_item" {
+        return None;
+    }
+    if provider == ProviderKind::Claude && !matches!(kind, "user" | "assistant") {
+        return None;
+    }
+    if provider == ProviderKind::Codex
+        && matches!(
+            payload.get("type").and_then(Value::as_str),
+            Some(
+                "function_call"
+                    | "function_call_output"
+                    | "custom_tool_call"
+                    | "custom_tool_call_output"
+            )
+        )
+    {
+        return Some(("tool".into(), false));
+    }
+    let role = payload.get("role").and_then(Value::as_str).unwrap_or(kind);
+    if !matches!(role, "user" | "assistant") {
+        return None;
+    }
+    let content = payload.get("content")?;
+    let has_text = content.as_str().is_some_and(|text| !text.is_empty())
+        || content.as_array().is_some_and(|blocks| {
+            blocks.iter().any(|b| {
+                matches!(
+                    b.get("type").and_then(Value::as_str),
+                    Some("text" | "input_text" | "output_text") | None
+                ) && b
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| !t.is_empty())
+            })
+        });
+    let has_tool = content.as_array().is_some_and(|blocks| {
+        blocks.iter().any(|block| {
+            matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("tool_use" | "tool_result")
+            )
+        })
+    });
+    if has_text {
+        Some((role.into(), false))
+    } else {
+        has_tool.then(|| ("tool".into(), false))
+    }
+}
+
+pub fn index_session(
+    root: &Path,
+    provider: ProviderKind,
+    account: &str,
+    session_id: &str,
+) -> Result<Summary, String> {
+    let account_def = accounts::get_account(root, account).ok_or("unknown native account")?;
+    if account_def.provider != provider {
+        return Err("native account/provider mismatch".into());
+    }
+    let home = account_def.home_path.ok_or("native account has no home")?;
+    index_bound(root, &Binding::new(provider, account, &home, session_id)?)
+}
+
+pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
+    let allowed = binding.verify(root)?;
+    let (_, path) = sessions::find_native_record(
+        root,
+        &binding.account,
+        Some(binding.provider),
+        &binding.session_id,
+    )?
+    .ok_or("explicit native session was not found")?;
+    let canonical = fs::canonicalize(&path).map_err(|_| "native source unavailable")?;
+    let relative_file = canonical
+        .strip_prefix(&allowed)
+        .map_err(|_| "native source escapes its bound session tree")?
+        .to_path_buf();
+    let mut file = open_source(&canonical, &allowed)?;
+    let file_identity = identity(&file)?;
+    let source_len = file.metadata().map_err(|e| e.to_string())?.len();
+    let anchor_len = source_len.min(HEAD_BYTES);
+    let head = read_at(&mut file, 0, anchor_len as usize)?;
+    let owns_session = head
+        .split(|b| *b == b'\n')
+        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+        .any(|v| {
+            if binding.provider == ProviderKind::Codex {
+                v.get("type").and_then(Value::as_str) == Some("session_meta")
+                    && v.pointer("/payload/id").and_then(Value::as_str)
+                        == Some(binding.session_id.as_str())
+            } else {
+                v.get("sessionId").and_then(Value::as_str) == Some(binding.session_id.as_str())
+            }
+        });
+    if !owns_session {
+        return Err(
+            "native source does not confirm the exact session identity in its bounded header"
+                .into(),
+        );
+    }
+    let start = source_len.saturating_sub(TAIL_BYTES);
+    let bytes = read_at(&mut file, start, (source_len - start) as usize)?;
+    let skip = if start > 0 && read_at(&mut file, start - 1, 1)? != b"\n" {
+        bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1)
+    } else {
+        0
+    };
+    let mut offset = start + skip as u64;
+    let mut messages = Vec::new();
+    let mut fallback = Vec::new();
+    let mut truncated = start > 0;
+    for line in bytes[skip..].split_inclusive(|b| *b == b'\n') {
+        if line.len() > LINE_BYTES {
+            truncated = true;
+            offset += line.len() as u64;
+            continue;
+        }
+        if let Ok(value) = serde_json::from_slice::<Value>(line) {
+            if let Some((role, is_fallback)) =
+                message_role(&value, binding.provider, &binding.session_id)
+            {
+                let span = Span {
+                    start: offset,
+                    len: line.len(),
+                    sha256: digest(line),
+                    role,
+                };
+                if is_fallback {
+                    fallback.push(span);
+                } else {
+                    messages.push(span);
+                }
+            }
+        } else if !line.iter().all(u8::is_ascii_whitespace) {
+            truncated = true;
+        }
+        offset += line.len() as u64;
+    }
+    if !messages.iter().any(|span| span.role != "tool") {
+        messages.extend(fallback);
+        messages.sort_by_key(|span| span.start);
+    }
+    if messages.len() > MAX_MESSAGES {
+        truncated = true;
+        messages.drain(..messages.len() - MAX_MESSAGES);
+    }
+    let mut index = SourceIndex {
+        version: 1,
+        binding: binding.clone(),
+        relative_file,
+        file_identity,
+        source_len,
+        anchor_len,
+        anchor_sha256: digest(&head),
+        messages,
+        truncated,
+    };
+    index.binding.home = normalize_home(&binding.home)?;
+    if identity(&file)? != index.file_identity
+        || file.metadata().map_err(|e| e.to_string())?.len() < source_len
+        || digest(&read_at(&mut file, 0, anchor_len as usize)?) != index.anchor_sha256
+    {
+        return Err("native source changed while indexing; retry explicitly".into());
+    }
+    let encoded = serde_json::to_vec(&index).map_err(|e| e.to_string())?;
+    if encoded.len() as u64 > INDEX_BYTES {
+        return Err("native pointer index exceeds its metadata budget".into());
+    }
+    let id = digest(&encoded);
+    crate::state_io::write_atomic(&directory(root).join(format!("{id}.json")), &encoded)
+        .map_err(|e| e.to_string())?;
+    Ok(summary(&id, &index))
+}
+
+fn summary(id: &str, index: &SourceIndex) -> Summary {
+    Summary {
+        id: id.into(),
+        home_id: digest(index.binding.home.to_string_lossy().as_bytes()),
+        file: index.relative_file.clone(),
+        provider: index.binding.provider,
+        account: index.binding.account.clone(),
+        session_id: index.binding.session_id.clone(),
+        messages: index.messages.len(),
+        truncated: index.truncated,
+    }
+}
+
+fn load(root: &Path, id: &str) -> Result<SourceIndex, String> {
+    if !valid_id(id) {
+        return Err("invalid native pointer id (expected 64 lowercase hex characters)".into());
+    }
+    let file = File::open(directory(root).join(format!("{id}.json")))
+        .map_err(|_| "native pointer index is unavailable")?;
+    let mut bytes = Vec::new();
+    file.take(INDEX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > INDEX_BYTES || digest(&bytes) != id {
+        return Err("native pointer index is corrupt or replaced".into());
+    }
+    let index: SourceIndex =
+        serde_json::from_slice(&bytes).map_err(|_| "malformed native pointer index")?;
+    if index.version != 1 || index.messages.len() > MAX_MESSAGES || index.anchor_len > HEAD_BYTES {
+        return Err("unsupported native pointer index".into());
+    }
+    Ok(index)
+}
+
+pub fn describe(root: &Path, id: &str) -> Result<Value, String> {
+    let index = load(root, id)?;
+    index.binding.verify(root)?;
+    Ok(
+        json!({"source":summary(id, &index),"next_unlisted_message":(index.messages.len() > 20).then_some(21),"messages":index.messages.iter().take(20).enumerate().map(|(i, m)| json!({"message":i+1,"role":m.role,"byte_start":m.start,"bytes":m.len,"sha256":m.sha256})).collect::<Vec<_>>()}),
+    )
+}
+
+pub fn read(
+    root: &Path,
+    id: &str,
+    message: usize,
+    offset: usize,
+    max_bytes: usize,
+) -> Result<Excerpt, String> {
+    if !(1..=EXCERPT_BYTES).contains(&max_bytes) {
+        return Err("native excerpt max_bytes must be 1..8192".into());
+    }
+    let index = load(root, id)?;
+    let allowed = index.binding.verify(root)?;
+    if index.relative_file.is_absolute()
+        || index
+            .relative_file
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("unsafe native source path in pointer".into());
+    }
+    let span = message
+        .checked_sub(1)
+        .and_then(|i| index.messages.get(i))
+        .ok_or("native message ordinal is outside the indexed range")?;
+    if span.len > LINE_BYTES
+        || span
+            .start
+            .checked_add(span.len as u64)
+            .is_none_or(|end| end > index.source_len)
+    {
+        return Err("invalid native source range".into());
+    }
+    let mut file = open_source(&allowed.join(&index.relative_file), &allowed)?;
+    if identity(&file)? != index.file_identity
+        || file.metadata().map_err(|e| e.to_string())?.len() < index.source_len
+    {
+        return Err(
+            "native source is stale: replaced or truncated; index this session again".into(),
+        );
+    }
+    if digest(&read_at(&mut file, 0, index.anchor_len as usize)?) != index.anchor_sha256 {
+        return Err("native source is stale: its original header changed".into());
+    }
+    let bytes = read_at(&mut file, span.start, span.len)?;
+    if digest(&bytes) != span.sha256 {
+        return Err("native source is stale: indexed message changed or was compacted".into());
+    }
+    if identity(&open_source(&allowed.join(&index.relative_file), &allowed)?)?
+        != index.file_identity
+    {
+        return Err("native source replaced during read".into());
+    }
+    let raw = std::str::from_utf8(&bytes).map_err(|_| "native source is no longer UTF-8")?;
+    if offset >= raw.len() || !raw.is_char_boundary(offset) {
+        return Err("native excerpt offset is outside the message or splits UTF-8".into());
+    }
+    let mut end = offset.saturating_add(max_bytes).min(raw.len());
+    while end > offset && !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == offset {
+        return Err("max_bytes is too small for the next UTF-8 character".into());
+    }
+    Ok(Excerpt {
+        source: summary(id, &index),
+        message,
+        role: span.role.clone(),
+        source_byte_start: span.start + offset as u64,
+        source_byte_end: span.start + end as u64,
+        sha256: span.sha256.clone(),
+        raw: raw[offset..end].into(),
+        next_offset: (end < raw.len()).then_some(end),
+    })
+}
+
+/// CLI and MCP share the same validated, bounded operations.
+pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
+    let Some(operation) = args.first().map(String::as_str) else {
+        return Err("usage: chat index SESSION --account ID --provider codex|claude | chat excerpt INDEX [--message N --offset N --max-bytes N] | chat sources INDEX".into());
+    };
+    let positional = args
+        .get(1)
+        .ok_or("native source command needs an exact session/index id")?;
+    let mut options = std::collections::HashMap::new();
+    let (pairs, remainder) = args[2..].as_chunks::<2>();
+    for pair in pairs {
+        if options.insert(pair[0].as_str(), pair[1].as_str()).is_some() {
+            return Err("duplicate native source option".into());
+        }
+    }
+    if !remainder.is_empty() {
+        return Err("native source option needs a value".into());
+    }
+    let number = |key: &str, default: usize| -> Result<usize, String> {
+        options
+            .get(key)
+            .map(|v| v.parse().map_err(|_| format!("invalid {key}")))
+            .unwrap_or(Ok(default))
+    };
+    let allowed = match operation {
+        "index" => &["--account", "--provider"][..],
+        "excerpt" => &["--message", "--offset", "--max-bytes"][..],
+        "sources" => &[][..],
+        _ => return Err("unknown native source operation".into()),
+    };
+    if options.keys().any(|key| !allowed.contains(key)) {
+        return Err("unsupported native source option".into());
+    }
+    let value = match operation {
+        "index" => {
+            let provider = crate::commands::parse_provider(
+                options
+                    .get("--provider")
+                    .ok_or("index requires --provider")?,
+            )
+            .ok_or("invalid native provider")?;
+            serde_json::to_value(index_session(
+                root,
+                provider,
+                options.get("--account").ok_or("index requires --account")?,
+                positional,
+            )?)
+            .map_err(|e| e.to_string())?
+        }
+        "sources" => describe(root, positional)?,
+        "excerpt" => serde_json::to_value(read(
+            root,
+            positional,
+            number("--message", 1)?,
+            number("--offset", 0)?,
+            number("--max-bytes", 4096)?,
+        )?)
+        .map_err(|e| e.to_string())?,
+        _ => unreachable!(),
+    };
+    let output = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    if output.chars().count() > 16_000 {
+        return Err(
+            "native source result exceeds 16000 characters; request a smaller excerpt".into(),
+        );
+    }
+    Ok(output + "\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    fn fixture(provider: ProviderKind, root: &Path, account: &str) -> (PathBuf, String) {
+        let home = root.join(account);
+        let folder = home.join(if provider == ProviderKind::Codex {
+            "sessions"
+        } else {
+            "projects/fixture"
+        });
+        fs::create_dir_all(&folder).unwrap();
+        let session = "11111111-2222-4333-8444-555555555555".to_string();
+        let path = folder.join(format!("{session}.jsonl"));
+        let header = if provider == ProviderKind::Codex {
+            json!({"type":"session_meta","payload":{"id":session}})
+        } else {
+            json!({"type":"system","sessionId":session})
+        };
+        fs::write(&path, format!("{header}\n")).unwrap();
+        crate::store::upsert_stored_account(
+            root,
+            crate::store::StoredAccount {
+                id: account.into(),
+                provider,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: account.into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        (path, session)
+    }
+    fn message(provider: ProviderKind, text: &str) -> String {
+        if provider == ProviderKind::Codex {
+            json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":text}]}}).to_string() + "\n"
+        } else {
+            json!({"type":"user","message":{"role":"user","content":text}}).to_string() + "\n"
+        }
+    }
+    fn append(path: &Path, bytes: &[u8]) {
+        fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
+    }
+    #[test]
+    fn exact_native_readback_survives_append_and_never_copies_chat_bodies_into_the_index() {
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, session) = fixture(provider, dir.path(), "fixture-account");
+            let raw = message(provider, "exact request with whitespace  and \nnew line");
+            append(&path, raw.as_bytes());
+            let indexed = index_session(dir.path(), provider, "fixture-account", &session).unwrap();
+            let stored =
+                fs::read(directory(dir.path()).join(format!("{}.json", indexed.id))).unwrap();
+            assert!(!String::from_utf8(stored).unwrap().contains("exact request"));
+            assert_eq!(read(dir.path(), &indexed.id, 1, 0, 8192).unwrap().raw, raw);
+            append(&path, message(provider, "later").as_bytes());
+            assert_eq!(read(dir.path(), &indexed.id, 1, 0, 8192).unwrap().raw, raw);
+            assert_eq!(
+                index_session(dir.path(), provider, "fixture-account", &session)
+                    .unwrap()
+                    .messages,
+                2
+            );
+        }
+    }
+    #[test]
+    fn same_session_id_in_two_account_homes_has_distinct_pointers_and_retargeting_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, session) = fixture(ProviderKind::Codex, dir.path(), "first");
+        let (b, _) = fixture(ProviderKind::Codex, dir.path(), "second");
+        append(&a, message(ProviderKind::Codex, "one").as_bytes());
+        append(&b, message(ProviderKind::Codex, "two").as_bytes());
+        let first = index_session(dir.path(), ProviderKind::Codex, "first", &session).unwrap();
+        let second = index_session(dir.path(), ProviderKind::Codex, "second", &session).unwrap();
+        assert_ne!(first.id, second.id);
+        let mut account = crate::store::list_stored_accounts(dir.path())
+            .into_iter()
+            .find(|a| a.id == "first")
+            .unwrap();
+        account.home_path = Some(dir.path().join("second").to_string_lossy().into_owned());
+        crate::store::upsert_stored_account(dir.path(), account).unwrap();
+        assert!(read(dir.path(), &first.id, 1, 0, 100)
+            .unwrap_err()
+            .contains("binding changed"));
+    }
+    #[test]
+    fn replacement_truncation_rewrite_deletion_and_corrupt_index_are_explicitly_unavailable() {
+        for case in ["replace", "truncate", "rewrite", "delete", "index"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture-account");
+            append(&path, message(ProviderKind::Codex, "original").as_bytes());
+            let indexed =
+                index_session(dir.path(), ProviderKind::Codex, "fixture-account", &session)
+                    .unwrap();
+            match case {
+                "replace" => {
+                    let original = fs::read(&path).unwrap();
+                    fs::rename(&path, path.with_extension("old")).unwrap();
+                    fs::write(&path, original).unwrap();
+                }
+                "truncate" => {
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .open(&path)
+                        .unwrap()
+                        .set_len(0)
+                        .unwrap();
+                }
+                "rewrite" => {
+                    let text = fs::read_to_string(&path)
+                        .unwrap()
+                        .replace("original", "modified");
+                    fs::write(&path, text).unwrap();
+                }
+                "delete" => fs::remove_file(&path).unwrap(),
+                "index" => fs::write(
+                    directory(dir.path()).join(format!("{}.json", indexed.id)),
+                    "{}",
+                )
+                .unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(read(dir.path(), &indexed.id, 1, 0, 8192).is_err(), "{case}");
+        }
+    }
+    #[test]
+    fn excerpts_are_chunked_without_guessing_or_splitting_unicode_and_reject_invalid_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture-account");
+        let raw = message(ProviderKind::Codex, &"\u{96ea}".repeat(5000));
+        append(&path, raw.as_bytes());
+        let indexed =
+            index_session(dir.path(), ProviderKind::Codex, "fixture-account", &session).unwrap();
+        let mut output = String::new();
+        let mut offset = 0;
+        loop {
+            let chunk = read(dir.path(), &indexed.id, 1, offset, 1000).unwrap();
+            output.push_str(&chunk.raw);
+            let Some(next) = chunk.next_offset else { break };
+            offset = next;
+        }
+        assert_eq!(output, raw);
+        assert!(read(dir.path(), &indexed.id, 0, 0, 10).is_err());
+        assert!(read(dir.path(), &indexed.id, 1, 0, 8193).is_err());
+        assert!(read(dir.path(), "../auth", 1, 0, 10).is_err());
+        assert!(command(
+            dir.path(),
+            &[
+                "index".into(),
+                session,
+                "--account".into(),
+                "fixture-account".into()
+            ]
+        )
+        .is_err());
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+    #[test]
+    fn exact_range_rewrite_past_the_anchor_and_tool_results_are_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let session = "11111111-2222-4333-8444-555555555555";
+        let path = home.join("sessions").join(format!("{session}.jsonl"));
+        crate::store::upsert_stored_account(
+            dir.path(),
+            crate::store::StoredAccount {
+                id: "fixture".into(),
+                provider: ProviderKind::Codex,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "Fixture".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        let text = format!(
+            "{}\n{}\n{}\n{}\n",
+            json!({"type":"session_meta","payload":{"id":session}}),
+            json!({"type":"system","padding":"x".repeat(70_000)}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","output":"original tool result"}}),
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"original request"}})
+        );
+        fs::write(&path, &text).unwrap();
+        let indexed = index_session(dir.path(), ProviderKind::Codex, "fixture", session).unwrap();
+        assert_eq!(indexed.messages, 2);
+        assert_eq!(
+            read(dir.path(), &indexed.id, 1, 0, 4096).unwrap().role,
+            "tool"
+        );
+        fs::write(
+            &path,
+            text.replace("original tool result", "modified tool result"),
+        )
+        .unwrap();
+        assert!(read(dir.path(), &indexed.id, 1, 0, 4096)
+            .unwrap_err()
+            .contains("indexed message changed"));
+        let binding = Binding::new(ProviderKind::Codex, "fixture", &home, session).unwrap();
+        let (prefix, notices) = handoff_prefix(dir.path(), &[binding]);
+        assert!(notices.is_empty());
+        assert!(prefix.contains("chat excerpt"));
+        assert!(
+            !prefix.contains("modified tool result"),
+            "handoff includes pointers rather than copied messages"
+        );
+    }
+}
+
+/// Build a bounded handoff directory on a worker, while keeping provider originals in place.
+pub fn handoff_prefix(root: &Path, bindings: &[Binding]) -> (String, Vec<String>) {
+    let mut sections = Vec::new();
+    let mut notices = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for binding in bindings.iter().rev().take(8) {
+        let key = serde_json::to_string(&(binding.provider, &binding.home, &binding.session_id))
+            .unwrap_or_default();
+        if !seen.insert(key) {
+            continue;
+        }
+        if seen.len() > 3 {
+            break;
+        }
+        match index_bound(root, binding) {
+            Ok(source) => sections.push(format!(
+                "{}: {}/{}/{}; {} indexed records{}",
+                source.id,
+                source.provider.as_str(),
+                source.account,
+                source.session_id,
+                source.messages,
+                if source.truncated {
+                    " (recent bounded window; older records omitted)"
+                } else {
+                    ""
+                }
+            )),
+            Err(error) => notices.push(format!(
+                "native source {}/{} unavailable: {error}",
+                binding.provider.as_str(),
+                binding.account
+            )),
+        }
+    }
+    if sections.is_empty() && notices.is_empty() {
+        return (String::new(), notices);
+    }
+    let mut body = sections.join("\n");
+    if !notices.is_empty() {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(
+            &notices
+                .iter()
+                .map(|notice| format!("UNAVAILABLE: {notice}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    let instructions = if sections.is_empty() {
+        "No exact source is available; do not invent earlier messages or assume tool completion. Reconcile the workspace or ask for missing information."
+    } else {
+        "Use concordia chat sources INDEX to list message ordinals. Read exact UTF-8 JSONL chunks with concordia chat excerpt INDEX --message N [--offset BYTE --max-bytes 4096]; follow next_offset. Check source identity before continuing. Do not invent unavailable history."
+    };
+    (format!("[native source pointers]\n{body}\n{instructions}\nNative tool/approval state is not transferred."), notices)
+}

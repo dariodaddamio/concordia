@@ -28,6 +28,7 @@ fn foreign_session_id_never_in_cross_home_argv() {
     assert!(decision.session_id.is_none());
 
     let plan = plan_provider_turn(&ProviderTurnRequest {
+        images: &[],
         provider: ProviderKind::Codex,
         prompt: "next",
         cwd: &cwd,
@@ -69,6 +70,7 @@ fn native_resume_omits_pack_and_keeps_session_in_argv() {
     assert_eq!(decision.session_id.as_deref(), Some(sid));
 
     let plan = plan_provider_turn(&ProviderTurnRequest {
+        images: &[],
         provider: ProviderKind::Codex,
         prompt: "continue",
         cwd: &cwd,

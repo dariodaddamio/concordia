@@ -1,5 +1,239 @@
 # Everyday E2E status (MVP A)
 
+## Current record, 2026-11-02a
+
+Build `2026-11-02a` is installed and its SHA-256 matches the final release artifact:
+`42DD455B2AEB07BA804DDAF85DFB2BC5C5435924D89C71EBA91091A7EC1087F0`.
+Reopen existing windows to load it. Paste preserves logical LF/CRLF/CR-only line breaks,
+indentation, blank lines and trailing spaces through send/queue/queue-edit. Prompt tabs retain
+four-space expansion. Native Codex history-recording failures keep the unfinished request for
+explicit fresh-session recovery; no automatic replay or native history deletion occurs.
+
+The full enabled suite passes: 843 library tests (six ignored helpers) and all enabled integration
+tests. All-target clippy with warnings denied, formatting/diff checks and the everyday smoke pass.
+Four selected journeys pass against the exact installed binary: formatted paste payloads using
+all three line endings, automatic quota handoff, cross-provider worker model/result return, and
+workspace completion with explicit queued Send now. Forty-three terminal journeys remain opt-in.
+The first test run caught three older assertions expecting trimming; those now check preserved
+whitespace. Native-history recovery has a regression for no automatic dispatch, retained newer
+draft and explicit same-account continuation with a fresh session.
+
+This is not a clean release audit. The exact-artifact CI smoke fails its size gate (16.02 MiB
+against 6 MiB); dependency advisories and privacy gates also fail. See the current
+[release readiness](release-blockers.md). No gate was relaxed or advisory ignored.
+
+The reported native thread was inspected only through existing record metadata and native
+`thread/read`; saved records exist and the read succeeds on Codex 0.165.0. No real model turn was
+started. Root cause of the native writer failure remains unresolved. See the
+[diagnostic record](quality/native-thread-recording.md).
+
+Evidence: ignored `target/smoke-2026-11-02a.log`, `target/clippy-2026-11-02a-shipped.log`,
+`target/release-2026-11-02a-shipped.log`, `target/installed-2026-11-02a-*.log`,
+`target/artifact-smoke-2026-11-02a-final.log`, `target/advisories-2026-11-02a.log` and
+`target/oss-gates-2026-11-02a.log`. Synthetic task/vision/worker tests do not certify live provider
+behavior. The exact failing release gates remain visible independently of everyday smoke results.
+
+## Earlier build, 2026-11-01f
+
+Build `2026-11-01f` is installed; SHA-256 matches the final release artifact:
+`4BAAD2198D107DC4D0CAF4A7DC145F7D2C62D5142A930A1072F823740ECB8FB2`.
+Existing windows keep their loaded executable until reopened.
+
+This includes e's local Mermaid rendering, native image inputs for all three adapters,
+non-clickable timing/token metadata and broader quota-error classification. F adds native Windows
+text clipboard actions, accurate failure-safe cut feedback, faster active-output polling,
+stable diagram history rendering, worker model selection and opt-in automatic result handback.
+[Orchestration and latency](orchestration-and-latency.md) records exact controls and remaining gaps.
+
+Final source passes 840 enabled library tests (six ignored helpers), all enabled integration tests,
+all-target clippy with warnings denied, and `scripts/smoke-e2e-everyday.ps1`. Forty-two terminal
+journeys are opt-in; these seven pass against the final installed binary:
+
+- Claude main agent / Codex worker, separately selected native model, automatic result return once,
+  fresh worker session and unsent draft preservation.
+- Local Mermaid rendering plus native image payloads for all three adapters and Cursor permissions.
+- Numeric/CamelCase quota-error automatic provider handoff without foreign-session resume.
+- Selectable question replies with a preserved unsent draft.
+- Workspace completion and explicit Send now queue handling.
+- Usage-screen paused input and mouse X close.
+- Formatted defaults, raw editing, save and dirty close in a real pseudo-console.
+
+The separate ignored latency probe passes using only fake processes: medians 19.713 ms direct vs
+21.484 ms wrapped over twelve alternating samples. This excludes native CLI/model latency and
+cannot establish inference speed or token savings.
+
+Evidence: ignored `target/smoke-2026-11-01f-final.log`, `target/clippy-2026-11-01f-shipped.log`,
+`target/release-2026-11-01f-shipped.log`, `target/latency-2026-11-01f-final.log` and
+`target/installed-f-*.log`. The initial worker journey expected the wrong Codex model flag;
+the final journey checks the adapter's `-m` argument. Earlier failed logs are retained.
+
+All task/vision/worker turns used synthetic providers and temporary homes. The earlier native
+Cursor initialize-only probe advertised images/session loading; it did not start a session or
+model turn. No real clipboard was read or overwritten by tests. Native Windows clipboard code
+is compiled and uses a test double for content/failure tests; physical-host behavior is not a
+full clipboard compatibility certification. No actual provider inference or compaction quality
+comparison was run. The [dependency advisory audit](quality/dependency-security.md) still records
+two pre-existing unmaintained syntax-highlighting dependencies; it is not a clean advisory audit.
+
+## Earlier build, 2026-11-01d
+
+Build `2026-11-01d` is installed and its SHA-256 matches the final release artifact. Existing
+windows retain their loaded executable until reopened. This build adds conversational question
+choices, chat/recent/workspace file discovery, explicit Send now queue controls, below-chat run
+status/Esc, completion timing, user-message highlights and fresh read-only Codex quota requests.
+Structured quota error codes survive generic/missing messages, and paused automatic handoffs
+explain their guard. Native approval RPC interaction remains outside this change.
+
+Final validation passes 828 enabled library tests (six ignored helpers), all enabled integration
+tests, clippy for all targets with warnings denied, formatting/diff checks, the release build,
+and `scripts/smoke-e2e-everyday.ps1`. Forty terminal journeys remain opt-in in the main suite.
+Six explicitly run journeys pass against the final installed binary:
+
+- Structured quota-error automatic provider handoff, preserving source/request identity and
+  rejecting foreign native-session resume.
+- Selectable question replies without losing an unsent draft.
+- Workspace completion without prior mentions, followed by mouse Send now: cancellation finishes
+  before one queued message starts, and other queued work stays paused.
+- Usage-screen paused input and mouse X close.
+- Current-chat file preview, raw/formatted toggle, completion and existing-pane reuse.
+- Formatted defaults, raw editing, save and dirty close in a real pseudo-console.
+
+A separate manually invoked read-only native Codex `account/rateLimits/read` smoke returned quota
+windows. It did not create a thread or model turn. Deterministic RPC fixtures verify the exact
+initialize/initialized/quota-read sequence, home isolation, nullable compatibility view with a
+multi-bucket fallback, server errors, EOF and oversized output. No real provider model turn was run.
+
+The first smoke failed only because the installed binary was still build c. An installed file
+journey then exposed a long browser heading clipped by a split layout and an obsolete assertion
+for its old scope title. The heading now retains the directory suffix within the available width;
+the updated journey checks the visible current directory and file, and passes on the final binary.
+Earlier failure logs are retained. Evidence is in ignored `target/smoke-2026-11-01d-final-delivery.log`,
+`target/clippy-2026-11-01d-heading.log`, `target/installed-d-final-*.log` and
+`target/live-quota-2026-11-01d.log`.
+
+The verified npm bridge shortcut and no-window process flags are covered by launch tests. This
+is not physical-host proof that every transient black console window has disappeared. Visible
+custom cursor shapes remain limited by the installed WezTerm host; the [feature audit](feature-completion-audit.md)
+retains the open native-interaction, memory/orchestration and host-parity work.
+
+### Earlier build, 2026-11-01c
+
+Build `2026-11-01c` is installed. Markdown/JSON default to formatted view; raw editing includes
+syntax colors, selection, undo/redo, explicit save, conflict checks and dirty close/reload/exit
+decisions. Pane-owned file recovery restores edits, mode, cursor and layout. A watcher conflict
+indicator remains visible until explicitly reconciled. Continuation no longer echoes internal
+handoff instructions. Headless provider/diagnostic launchers request Windows `CREATE_NO_WINDOW`.
+
+The full default-concurrency suite passes 818 enabled library tests (six ignored helpers) and
+enabled integrations; 38 ConPTY journeys are opt-in. Clippy with warnings denied and the release
+build and final everyday smoke pass. The installed SHA-256 matches the release artifact.
+Explicit installed-binary journeys pass: editor save/conflict/interruption recovery,
+current-chat Markdown preview/raw toggle, two-pane focus/dirty close, preview during a gated fake
+stream, and usage-screen X/paused input. No real provider model turn is used. Synthetic GIFs
+include cursor/click overlays, larger captions and detail crops; they are not live provider proof.
+
+Validation caught a transient file-read assertion in the new journey (now retried until save
+acknowledgement), a Windows executable lock from concurrent test compilation (the full suite was
+rerun without that collision), and the real watcher-indicator race described above. The retained
+earlier failure logs are not rewritten as passing evidence. Local details remain in ignored
+`target/*2026-11-01c*.log`; completion limits are in the [feature audit](feature-completion-audit.md).
+
+### Earlier build, 2026-11-01b
+
+Build `2026-11-01b` is installed. Command screens and activity output have shared X controls and
+message-box exit/input-ownership cues. Pinned tool headers show command details and output
+counts. Explicit GIF/image links use the system viewer. [Completion audit](feature-completion-audit.md)
+separates these completed changes from the open memory/orchestration roadmap.
+
+The default-concurrency full test run passes 813 enabled library tests and all enabled integration
+tests; six library helpers and 37 terminal journeys remain ignored by the main suite. Clippy with
+warnings denied, formatting/diff checks, and everyday smoke pass. Three explicitly run isolated
+fake-provider ConPTY journeys pass against the installed binary: usage modal/X close with no
+unintended send, file suggestions/table preview/raw toggle/draft preservation, and account/model
+completion/profile display. The installed executable's SHA-256 matches the release artifact.
+This records a new passing default-concurrency run; it does not attribute earlier timing failures
+to a fixed lock policy. No real provider model turn or physical host-cursor check runs.
+
+Two [draft GIFs](media/README.md) are generated from the actual renderer and input handlers,
+visually reviewed and verified as looping animations under 1 MB. Their synthetic-data labels
+remain visible. README screenshots are regenerated from the same renderer.
+
+### Earlier build, 2026-11-01a
+
+Build `2026-11-01a` adds rendered Markdown pipe tables and explicit clickable link labels in chat
+and formatted file panes, relative document links, independent message-box scrolling, and one
+update-progress location. [Chat rendering](chat-rendering.md) records limits and the verified
+installed WezTerm 2024 pointer-control limitation. No visible cursor-shape support is claimed for
+that host. The [launch plan](launch-plan.md) gates X/LinkedIn claims on implementation and evidence.
+
+Serial everyday smoke passes with `RUST_TEST_THREADS=1`: 808 enabled library tests and all enabled
+integration tests, including token-writer reliability, plus read-only live usage. The final Windows
+`/C:/...` destination fix and its regression additionally pass all eight focused file-reference
+tests. Clippy with warnings denied, formatting and diff checks pass. Real provider turns and
+physical-host cursor behavior are not exercised. Earlier default-concurrency failures remain open.
+The final installed `2026-11-01a` executable's SHA-256 matches the release artifact. Its isolated
+fake-provider Windows ConPTY journey passes current-chat suggestions, formatted table preview,
+raw toggle, draft preservation and existing-pane reuse. README screenshots are regenerated from
+the actual renderer with synthetic state.
+
+## Previous record, 2026-10-31
+
+Build `2026-10-31t` is installed locally. `/update` owns a fresh page, including visible check
+errors; `/update check` is removed from parsing and completion. Forty-eight focused tests,
+Clippy with warnings denied, formatting and diff checks pass. The installed binary's SHA-256
+matches the release artifact. The everyday smoke rerun passes on 2026-11-01 with
+`RUST_TEST_THREADS=1`: 802 enabled library tests, all enabled integration tests (including the
+token-writer reliability suite), and the live read-only usage check. The final error-page guard
+and its new regression are covered by the 48-test focused run. No real provider turn runs.
+The serial result does not resolve earlier default-concurrency timing failures.
+
+Build `2026-10-31s` adds bounded native-source pointers/exact readback for Codex and Claude,
+pane-owned unfinished-request recovery, verified file-backed Harness pins, explicit capacity-error
+rollover, and preview search/reload/change indication. [Native memory](native-memory.md) is the
+canonical contract for source identities, read budgets, storage and remaining limits.
+Whole-history indexing, Cursor exact readback, related-chat discovery, broader worker ownership,
+and proactive capacity/compaction controls remain milestones in [the memory plan](context-handoff-plan.md).
+
+Verification on current source:
+
+- Earlier full runs pass 800 enabled library tests and all enabled integration tests; ignored
+  helpers and terminal journeys are not counted as automatically verified by the main suite.
+  The final installed-build smoke rerun fails the concurrent token-writer stress tests with lock
+  waits/child timeouts. A separate reliability rerun reproduces the thread-writer lock timeout;
+  the process-writer test passes there. The isolated thread-writer test subsequently passes.
+  Another full rerun develops widespread slow tests and additional UI timing failures and is
+  stopped. The live read-only usage check passes. These earlier default-concurrency failures
+  remain recorded; the later serial `2026-10-31t` smoke result is stated above.
+- Clippy with warnings denied and formatting pass.
+- Fake-runner coverage verifies repeated `/usage` and `/use` readings arrive in open lists,
+  model fallback retains the original request without retry cycles, view toggles preserve the
+  draft, and pointer shapes match divider/close/view targets. OSC 22 physical-host support and
+  live provider behavior are not established by these deterministic checks.
+- Five isolated Windows ConPTY journeys pass against installed build `2026-10-31s`: native-pointer
+  handoff with transcript recording off, paused unfinished-request restart with a separate newer
+  draft, same-account capacity-error rollover into a fresh native session, exact pinned-rule
+  delivery once per new session, and current-chat file suggestions/raw-formatted preview without
+  sending the draft. Every provider is synthetic; no real turn runs.
+- The installed executable reports `2026-10-31s` and its SHA-256 matches the release build.
+- CLI/MCP fixtures verify exact native chunks, stale-source failure, home/session isolation and
+  changed pinned-manifest rejection. The recent-window index is not whole-history discovery.
+- Earlier installed-build account/profile journey evidence remains recorded: typing a complete `/use`
+  reveals its options before a space or Enter, Tab selects a child without launching login,
+  model/account choices apply, and email/plan share the account heading. Provider binaries are
+  synthetic and no model turn is run.
+- README screenshots are regenerated from the actual UI with synthetic data, and relative links
+  in the updated documentation resolve.
+- The tracked-file OSS privacy gate still flags existing maintainer namespaces in functional
+  package/repository identifiers. Fixture references were neutralized; the remaining decision is
+  recorded in [release blockers](release-blockers.md#tracked-file-privacy-preflight-2026-10-31).
+
+This is local deterministic and fake-provider evidence, not independent security certification,
+real-provider parity or a physical-host check. `concordia --version` identifies the installed
+artifact; the older dates and build stamps below are historical records.
+
+## Historical record
+
+
 **Verdict (2026-10-21): Partial, with installation and fake-provider verification established.**
 The locally installed build is `2026-10-21d`, including session titles, resumed scrollback,
 compact activity and opt-in usage-limit continuation, alongside the earlier pane, stream-order,

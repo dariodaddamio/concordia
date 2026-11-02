@@ -53,10 +53,13 @@ impl H {
     }
 
     fn add(&mut self, account: &str, state: S, snippet: &str) -> u32 {
-        self.app
+        let id = self
+            .app
             .deleg
             .d
-            .push_test_job(account, ProviderKind::Codex, state, snippet, 12)
+            .push_test_job(account, ProviderKind::Codex, state, snippet, 12);
+        self.app.deleg.owners.insert(id, self.app.deleg.generation);
+        id
     }
 
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) {
@@ -596,4 +599,72 @@ fn mcp_proposals_reach_the_confirm_prompt_only_while_the_protocol_is_on() {
     h.app.poll_proposals();
     assert_eq!(h.app.deleg.confirms.len(), 1);
     assert!(h.messages().contains("ignored: not one of your workers"));
+}
+
+#[test]
+fn worker_models_use_their_own_catalog_and_apply_to_new_jobs() {
+    let mut h = H::new(120, 30);
+    let root = h.dir.path().to_path_buf();
+    account(&root, "codex-w1", "WORKERAA1");
+    set_workers(&root, vec!["codex-w1".into()]).unwrap();
+    std::fs::write(
+        root.join("home-codex-w1/models_cache.json"),
+        r#"{"models":[{"slug":"fixture-fast"}]}"#,
+    )
+    .unwrap();
+    h.submit("/delegate model codex-w1 fixture-fast");
+    assert_eq!(
+        get_settings(&root)
+            .worker_models
+            .get("codex-w1")
+            .map(String::as_str),
+        Some("fixture-fast")
+    );
+    h.submit("/delegate model codex-w1 invented-model");
+    assert!(h.messages().contains("not in codex-w1's local catalog"));
+    h.submit("/delegate codex-w1 scoped fixture task");
+    assert_eq!(h.app.deleg.d.jobs[0].model.as_deref(), Some("fixture-fast"));
+    assert!(super::viewer_text(&h.app.deleg.d.jobs[0]).contains("model: fixture-fast"));
+    h.submit("/delegate model codex-w1 default");
+    assert!(!get_settings(&root).worker_models.contains_key("codex-w1"));
+    assert_eq!(h.app.deleg.d.jobs[0].model.as_deref(), Some("fixture-fast"));
+}
+
+#[test]
+fn automatic_returns_batch_once_preserve_drafts_and_exclude_other_conversations() {
+    let mut h = H::new(120, 30);
+    h.submit("/delegate returns auto");
+    for i in 0..2 {
+        h.add(&format!("codex-w{i}"), S::Done, "");
+        h.app.deleg.d.jobs[i].text = format!("worker result {i}");
+    }
+    h.app.editor.set_text("my unsent draft");
+    h.app.busy = true;
+    h.app.poll_delegates();
+    assert!(h.app.deleg.outbox.is_none());
+    h.app.busy = false;
+    h.app.poll_delegates();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    h.app.flush_delegate_prompt(&tx);
+    let sent = rx.try_recv().unwrap();
+    assert!(sent.contains("worker result 0") && sent.contains("worker result 1"));
+    assert_eq!(sent.matches("UNTRUSTED").count(), 2);
+    assert_eq!(h.app.editor.text(), "my unsent draft");
+    assert!(h.app.deleg.d.jobs.iter().all(|j| j.collected));
+    assert!(h
+        .app
+        .continuation
+        .checkpoint(None, vec![], h.app.cwd.clone())
+        .is_some());
+    h.app.busy = false;
+    h.app.poll_delegates();
+    h.app.flush_delegate_prompt(&tx);
+    assert!(rx.try_recv().is_err());
+    let old = h.add("codex-old", S::Done, "");
+    h.app.deleg.d.jobs.last_mut().unwrap().text = "foreign result".into();
+    h.app.deleg.change_conversation();
+    h.app.poll_delegates();
+    h.app.flush_delegate_prompt(&tx);
+    assert!(rx.try_recv().is_err());
+    assert!(!h.app.deleg.d.get(old).unwrap().collected);
 }

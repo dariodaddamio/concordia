@@ -5,11 +5,13 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Use,
+    UseAccount(String),
     /// `/use add [provider]`; `None` opens the provider picker.
     UseAdd(Option<String>),
     /// `/use remove [account]`; `None` opens the account picker.
     UseRemove(Option<String>),
     Model,
+    ModelSet(String),
     /// `/usage`: limits for the current account.
     Usage,
     /// `/usage all`: limits for every ready account.
@@ -23,8 +25,6 @@ pub enum SlashCommand {
     Mode(Option<String>),
     Split,
     Update,
-    /// `/update check`: report only.
-    UpdateCheck,
     Version,
     Copy,
     Doctor,
@@ -40,6 +40,12 @@ pub enum SlashCommand {
     },
     DelegateStop(Option<String>),
     DelegateUse(Option<String>),
+    DelegateCollect,
+    DelegateReturns(Option<bool>),
+    DelegateModel {
+        account: String,
+        model: Option<String>,
+    },
     DelegateHelp,
     /// `/delegate protocol [on|off]`.
     DelegateProtocol(Option<bool>),
@@ -59,14 +65,25 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
     let tail = it.next().unwrap_or("").trim();
     let second = tail.split_whitespace().next().map(str::to_lowercase);
     let lower = first.to_lowercase();
+    if matches!(cmd, "delegate" | "delegates") && lower == "model" {
+        let args: Vec<_> = tail.split_whitespace().collect();
+        return Some(if args.len() > 2 {
+            SlashCommand::Invalid("delegate model ACCOUNT [MODEL|default]".into())
+        } else {
+            SlashCommand::DelegateModel {
+                account: args.first().copied().unwrap_or("").to_lowercase(),
+                model: args.get(1).map(|m| m.to_string()),
+            }
+        });
+    }
     let control = matches!(
         lower.as_str(),
-        "help" | "?" | "stop" | "cancel" | "use" | "send" | "protocol"
+        "help" | "?" | "stop" | "cancel" | "use" | "send" | "protocol" | "collect" | "returns"
     );
     if ((cmd == "workers" || cmd == "worker") || control) && tail.split_whitespace().count() > 1 {
         return Some(SlashCommand::Invalid(cmd.into()));
     }
-    if matches!(lower.as_str(), "help" | "?") && !tail.is_empty() {
+    if matches!(lower.as_str(), "help" | "?" | "collect") && !tail.is_empty() {
         return Some(SlashCommand::Invalid(cmd.into()));
     }
     match cmd {
@@ -80,6 +97,13 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
             "" | "help" | "?" => SlashCommand::DelegateHelp,
             "stop" | "cancel" => SlashCommand::DelegateStop(second),
             "use" | "send" => SlashCommand::DelegateUse(second),
+            "collect" => SlashCommand::DelegateCollect,
+            "returns" => match second.as_deref() {
+                Some("auto") => SlashCommand::DelegateReturns(Some(true)),
+                Some("manual") => SlashCommand::DelegateReturns(Some(false)),
+                None => SlashCommand::DelegateReturns(None),
+                _ => SlashCommand::Invalid("delegate returns auto|manual".into()),
+            },
             "protocol" => match second.as_deref() {
                 Some("on" | "true" | "yes") => SlashCommand::DelegateProtocol(Some(true)),
                 Some("off" | "false" | "no") => SlashCommand::DelegateProtocol(Some(false)),
@@ -107,11 +131,9 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     let vertical = rest.eq_ignore_ascii_case("v") || rest.eq_ignore_ascii_case("vertical");
     let words = body.split_whitespace().count();
     let max_words = match cmd.as_str() {
-        "model" | "chats" | "resume" | "new" | "config" | "version" | "ver" | "about" | "copy"
-        | "cp" | "doctor" | "diag" | "exit" | "quit" | "q" | "agents" | "stats" | "close" => {
-            Some(1)
-        }
-        "mode" | "trust" | "split" | "login" | "connect" => Some(2),
+        "chats" | "resume" | "new" | "config" | "version" | "ver" | "about" | "copy" | "cp"
+        | "doctor" | "diag" | "exit" | "quit" | "q" | "agents" | "stats" | "close" => Some(1),
+        "model" | "mode" | "trust" | "split" | "login" | "connect" => Some(2),
         "use" => Some(3),
         _ => None,
     };
@@ -130,13 +152,15 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
                 false,
             )),
             "" | "list" if words <= 2 => Some((SlashCommand::Use, false)),
+            _ if words == 2 => Some((SlashCommand::UseAccount(rest.to_lowercase()), false)),
             _ => Some((SlashCommand::Invalid("use".into()), false)),
         },
         "login" | "connect" => Some((
             SlashCommand::UseAdd(Some(rest.to_lowercase()).filter(|r| !r.is_empty())),
             false,
         )),
-        "model" => Some((SlashCommand::Model, false)),
+        "model" if rest.is_empty() => Some((SlashCommand::Model, false)),
+        "model" => Some((SlashCommand::ModelSet(rest.to_string()), false)),
         "usage"
             if (rest.eq_ignore_ascii_case("all") || rest.eq_ignore_ascii_case("refresh"))
                 && parts.next().is_none() =>
@@ -162,11 +186,6 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
             Some((SlashCommand::Split, vertical))
         }
         "split" => Some((SlashCommand::Invalid("split".into()), false)),
-        "update" | "upgrade" | "rebuild"
-            if rest.eq_ignore_ascii_case("check") && parts.next().is_none() =>
-        {
-            Some((SlashCommand::UpdateCheck, false))
-        }
         "update" | "upgrade" | "rebuild" if rest.is_empty() => Some((SlashCommand::Update, false)),
         "update" | "upgrade" | "rebuild" => Some((SlashCommand::Invalid("update".into()), false)),
         "version" | "ver" | "about" => Some((SlashCommand::Version, false)),
@@ -203,7 +222,10 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/resume", "continue an earlier chat"),
     ("/delegate", "run tasks on worker accounts"),
     ("/harness", "connect and run harness tools"),
-    ("/open", "open a file in a side pane"),
+    (
+        "/open",
+        "preview files mentioned in this chat, or /open PATH",
+    ),
     ("/copy", "copy the last reply"),
     ("/doctor", "check your setup"),
     ("/update", "update Concordia"),
@@ -234,7 +256,6 @@ pub enum CommandOutcome {
     Ok,
     Exit,
     Update,
-    UpdateCheck,
     OpenResume,
     OpenTrust,
     OpenUse,
@@ -284,7 +305,9 @@ pub fn dispatch_slash(
         SlashCommand::Resume => (CommandOutcome::OpenResume, Vec::new()),
         SlashCommand::Trust => (CommandOutcome::OpenTrust, Vec::new()),
         // Handled by the TUI (it owns the live mode); nothing to do headless.
-        SlashCommand::Mode(_) => (CommandOutcome::Ok, Vec::new()),
+        SlashCommand::Mode(_) | SlashCommand::UseAccount(_) | SlashCommand::ModelSet(_) => {
+            (CommandOutcome::Ok, Vec::new())
+        }
         SlashCommand::Use => (CommandOutcome::OpenUse, Vec::new()),
         SlashCommand::UseAdd(None) => (CommandOutcome::OpenAddProvider, Vec::new()),
         SlashCommand::UseRemove(_) => (CommandOutcome::OpenRemovePicker, Vec::new()),
@@ -310,7 +333,6 @@ pub fn dispatch_slash(
                 .collect(),
         ),
         SlashCommand::Update => (CommandOutcome::Update, Vec::new()),
-        SlashCommand::UpdateCheck => (CommandOutcome::UpdateCheck, Vec::new()),
         SlashCommand::Version => {
             let exe = std::env::current_exe()
                 .map(|p| p.display().to_string())
@@ -349,6 +371,9 @@ pub fn dispatch_slash(
         | SlashCommand::Delegate { .. }
         | SlashCommand::DelegateStop(_)
         | SlashCommand::DelegateUse(_)
+        | SlashCommand::DelegateCollect
+        | SlashCommand::DelegateReturns(_)
+        | SlashCommand::DelegateModel { .. }
         | SlashCommand::DelegateHelp
         | SlashCommand::DelegateProtocol(_) => (
             CommandOutcome::Ok,
@@ -453,16 +478,16 @@ mod update_tests {
     use super::*;
 
     #[test]
-    fn update_and_update_check_parse_separately() {
+    fn update_opens_the_page_and_rejects_removed_check_argument() {
         assert_eq!(parse_slash("/update").unwrap().0, SlashCommand::Update);
         assert_eq!(parse_slash("/upgrade").unwrap().0, SlashCommand::Update);
         assert_eq!(
             parse_slash("/update check").unwrap().0,
-            SlashCommand::UpdateCheck
+            SlashCommand::Invalid("update".into())
         );
         assert_eq!(
             parse_slash("/update CHECK").unwrap().0,
-            SlashCommand::UpdateCheck
+            SlashCommand::Invalid("update".into())
         );
     }
 

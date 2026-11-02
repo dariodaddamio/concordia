@@ -1,8 +1,5 @@
-//! System clipboard via PowerShell (no extra dependencies). UTF-8 is forced in both directions:
-//! Windows PowerShell 5.1 otherwise uses the OEM code page and mangles non-ASCII text.
-//!
-//! Every call has a deadline, because these run on the UI thread: a wedged PowerShell must turn
-//! into an error message, never a frozen terminal.
+//! Native Windows text clipboard. No subprocess or shell startup on copy/cut/paste.
+//! The bounded helper runner is retained for the asynchronous image/file pickers.
 //!
 //! Under `cfg(test)` an in-memory slot stands in, so tests never touch the user's clipboard.
 
@@ -67,9 +64,10 @@ pub fn run_with_timeout(
 thread_local! {
     static TEST_CLIPBOARD: std::cell::RefCell<String> =
         const { std::cell::RefCell::new(String::new()) };
+    pub(super) static FAIL_WRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Clipboard text with `\r` removed.
+/// Clipboard text without trimming or discarding line endings.
 #[cfg(test)]
 pub fn get_text() -> Result<String, String> {
     Ok(TEST_CLIPBOARD.with(|c| c.borrow().clone()))
@@ -77,14 +75,17 @@ pub fn get_text() -> Result<String, String> {
 
 #[cfg(test)]
 pub fn set_text(text: &str) -> Result<(), String> {
+    if FAIL_WRITES.get() {
+        return Err("clipboard is busy; try again".into());
+    }
     TEST_CLIPBOARD.with(|c| *c.borrow_mut() = text.to_string());
     Ok(())
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(windows)))]
 pub use system::{get_text, set_text};
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(windows)))]
 mod system {
     use super::run_with_timeout;
     use std::process::Command;
@@ -105,32 +106,166 @@ mod system {
 
     fn powershell(script: &str) -> Command {
         let mut cmd = Command::new("powershell.exe");
-        cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        cmd.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script]);
         hide_window(&mut cmd);
         cmd
     }
 
-    /// Clipboard text with `\r` removed.
+    /// Clipboard text without trimming or discarding line endings.
     pub fn get_text() -> Result<String, String> {
         let out = run_with_timeout(
-            powershell("[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw"),
+            powershell("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write((Get-Clipboard -Raw))"),
             None,
             CLIPBOARD_TIMEOUT,
         )
         .map_err(|e| format!("clipboard read failed: {e}"))?;
-        Ok(String::from_utf8_lossy(&out).replace('\r', ""))
+        Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
     pub fn set_text(text: &str) -> Result<(), String> {
         run_with_timeout(
             powershell(
-                "[Console]::InputEncoding=[Text.Encoding]::UTF8; Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+                "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.Encoding]::UTF8; $copyText=[Console]::In.ReadToEnd(); for ($attempt=0; $attempt -lt 5; $attempt++) { try { Set-Clipboard -Value $copyText -ErrorAction Stop; exit 0 } catch { if ($attempt -eq 4) { exit 1 }; Start-Sleep -Milliseconds 50 } }",
             ),
             Some(text.as_bytes()),
             CLIPBOARD_TIMEOUT,
         )
         .map(drop)
         .map_err(|e| format!("clipboard write failed: {e}"))
+    }
+}
+
+#[cfg(all(windows, not(test)))]
+pub use native::{get_text, has_image, set_text};
+
+#[cfg(any(test, not(windows)))]
+pub fn has_image() -> bool {
+    false
+}
+
+#[cfg(all(windows, not(test)))]
+mod native {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
+        OpenClipboard, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, HWND_MESSAGE,
+    };
+    const UNICODE_TEXT: u32 = 13;
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+
+    struct Open;
+    impl Drop for Open {
+        fn drop(&mut self) {
+            // SAFETY: only constructed after this thread opens the clipboard.
+            unsafe {
+                CloseClipboard();
+            }
+        }
+    }
+    struct Owner(windows_sys::Win32::Foundation::HWND);
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            // SAFETY: the hidden message-only window belongs to this call/thread.
+            unsafe {
+                DestroyWindow(self.0);
+            }
+        }
+    }
+    fn open(owner: windows_sys::Win32::Foundation::HWND) -> Result<Open, String> {
+        for attempt in 0..4 {
+            // SAFETY: owner is null for a read, or a live window on this thread.
+            if unsafe { OpenClipboard(owner) } != 0 {
+                return Ok(Open);
+            }
+            if attempt < 3 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        Err("clipboard is busy; try again".into())
+    }
+    pub fn has_image() -> bool {
+        // CF_BITMAP, CF_DIB and CF_DIBV5; no data is read by this inexpensive query.
+        [2, 8, 17]
+            .into_iter()
+            .any(|format| unsafe { IsClipboardFormatAvailable(format) != 0 })
+    }
+    pub fn get_text() -> Result<String, String> {
+        let _open = open(null_mut())?;
+        // SAFETY: clipboard is held for the duration of the borrowed data/lock.
+        unsafe {
+            let data = GetClipboardData(UNICODE_TEXT);
+            if data.is_null() {
+                return Ok(String::new());
+            }
+            let bytes = GlobalSize(data);
+            if bytes > MAX_BYTES || !bytes.is_multiple_of(2) {
+                return Err("clipboard text exceeds preview limit or is invalid".into());
+            }
+            let ptr = GlobalLock(data) as *const u16;
+            if ptr.is_null() {
+                return Err("clipboard text could not be locked".into());
+            }
+            let wide = std::slice::from_raw_parts(ptr, bytes / 2);
+            let end = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+            let text = String::from_utf16_lossy(&wide[..end]);
+            GlobalUnlock(data);
+            Ok(text)
+        }
+    }
+    pub fn set_text(text: &str) -> Result<(), String> {
+        let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+        let bytes = wide.len().saturating_mul(2);
+        if bytes > MAX_BYTES {
+            return Err("clipboard text exceeds 16 MiB".into());
+        }
+        // SAFETY: STATIC is a system window class; the window is never shown. A real
+        // owner is required: EmptyClipboard with a null owner prevents SetClipboardData.
+        unsafe {
+            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+            let hwnd = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                null(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                null_mut(),
+                null_mut(),
+                null(),
+            );
+            if hwnd.is_null() {
+                return Err("clipboard owner could not be created".into());
+            }
+            let _owner = Owner(hwnd);
+            let _open = open(hwnd)?;
+            let data = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if data.is_null() {
+                return Err("clipboard allocation failed".into());
+            }
+            let ptr = GlobalLock(data) as *mut u16;
+            if ptr.is_null() {
+                GlobalFree(data);
+                return Err("clipboard allocation could not be locked".into());
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+            GlobalUnlock(data);
+            if EmptyClipboard() == 0 || SetClipboardData(UNICODE_TEXT, data).is_null() {
+                GlobalFree(data);
+                return Err("clipboard write failed; selection retained".into());
+            }
+            // Windows now owns data; do not free it.
+            Ok(())
+        }
     }
 }
 

@@ -1,13 +1,19 @@
 # Context handoff plan
 
-Status: in progress. The landing page and the command cut are built (`2026-10-31a`); the memory
-manager, handoff and token statistics are not. Written 2026-10-30 from the owner's description.
+Status, 2026-10-31: memory management and orchestration are the product's core scope, reaffirmed
+by the owner. This document describes the target native-source memory manager and its acceptance
+criteria. Bounded maps, explicit native resume, optional thread logs, token statistics and quota
+handoff are already implemented. Build `2026-10-31s` adds recent Codex/Claude source pointers,
+exact chunk readback, unfinished-request recovery, file-backed Harness pins and bounded recovery
+from explicit capacity errors; see [the shipped slice and limits](native-memory.md).
+Whole-history indexing, related-chat retrieval and proactive context-capacity rollover remain planned. Historical research below is not evidence that those features
+have shipped.
 
 ## The idea
 
 Concordia wraps the provider CLIs, so it can own what happens when a chat fills up. The
-providers compact the chat themselves, which replaces content with a summary and costs
-accuracy. Instead:
+providers can compact history themselves. The target design preserves exact source readback
+across sessions and gives the user a verified compaction policy:
 
 1. Turn the providers' own compaction off for the CLIs that Concordia launches.
 2. When a chat's context is nearly full, Concordia starts a new chat at once.
@@ -17,27 +23,33 @@ accuracy. Instead:
 4. Chats are linked and grouped by what they are about, so "the previous related chat" can be
    found without the user naming it.
 
-This works across providers, because the log and the map belong to Concordia, not to a CLI.
+Provider-owned session files remain the source of conversation text; Concordia owns pointers,
+lineage, retrieval budgets and the map.
 
-## Constraint that needs a decision
+## Authorized scope
 
-`AGENTS.md` says: "Do not broaden scope to replace provider tools, context management,
-authentication, or terminal rendering", and bans automatic summarization. This plan uses no
-model and no summary: the map is deterministic and the log is read verbatim. But owning the
-moment a chat is replaced is context management. If this is wanted, `AGENTS.md` and `PLAN.md`
-must say so first.
+On 2026-10-31 the owner explicitly reaffirmed memory management and orchestration as Concordia's
+main purpose. `AGENTS.md`, `PLAN.md` and the README now reflect that scope. Provider-native tool
+execution, authentication and approvals remain authoritative. Memory work may index session
+sources and coordinate handoff, with bounded reads and explicit identities. It must not introduce
+an external memory service, summarizer calls or silent changes to compaction policy.
+
+The pointer-only design is a target invariant. Current optional Concordia thread logs still copy
+conversation text. Existing logs, drafts and queued work must be preserved when this design is
+implemented; this document does not authorize deleting or migrating them automatically.
 
 ## Decisions so far (owner, 2026-10-30)
 
-- Concordia broadens into context management on purpose. `AGENTS.md` and the README change
-  to say so when this is built.
+- Concordia owns context and memory management on purpose. The scope is authorized; each feature
+  must still meet its source, isolation and recovery acceptance criteria before it is described as built.
 - Concordia keeps **no copy of any conversation**. It is a memory manager: an index of
   pointers into each provider's own session files, and the map. The provider files stay the
   only record of what was said.
 - Secrets: Concordia ignores `.env`-style files and other well-known secret files by
   default, and the ignore list is editable in the config screen. Beyond that, what a person
   pastes into a chat is that person's responsibility, and the README says so plainly.
-- Nothing leaves the machine through Concordia: no hosted memory service.
+- No hosted memory service. Retrieved excerpts included in a model turn go to the selected
+  provider through its official CLI; local retrieval itself adds no inference call.
 - No model, no embeddings, no summarization. Supermemory was considered and rejected: it
   extracts "memories" with a model and its MCP server is hosted.
 - Written in Rust, inside the existing crate.
@@ -108,9 +120,26 @@ Field names and counts only; no message content was read.
 | --- | --- |
 | Thread map, deterministic, no model (`threads::build_map`) | Built, 1600-character budget |
 | Thread log and `concordia thread read <id> --tail / --grep / --range` | Built, off by default (`CONCORDIA_THREADS=1` or the `thread_log` setting) |
-| MCP server for chat read and search (`mcp.rs`) | Built, not registered with any provider automatically |
-| Opt-in note telling the model it runs inside Concordia | Planned in the README, not built |
+| MCP server for chat read and search (`mcp.rs`) | Built; opt-in registration in Concordia-owned homes through `[threads] mcp` |
+| Short awareness note in Concordia-owned homes | Built; controlled by `[threads] awareness`, without copying user-owned provider setup |
 | Explicit session binding on resume | Built |
+
+## Implementation milestones and observable acceptance
+
+| Milestone | Deliverable | Acceptance |
+| --- | --- | --- |
+| Source identity | Provider/account/session/file/revision/range pointer records | Same session id in two homes remains distinct; paths stay within configured session sources; credentials and unrelated files are never indexed |
+| Fresh readback | Bounded exact excerpt reads from native originals | Replacement, truncation, compaction, deletion and malformed input produce an explicit stale/unavailable result; no unrelated fallback or unbounded scan |
+| Lineage and discovery | Parent-run links, project/file/time metadata and lexical suggestions | Explicit handoff ancestry is certain; suggested relationships remain labelled; results identify their exact source and obey count/byte limits |
+| Account/model policy | Durable ordered fallback targets with model choices and eligibility reasons | Restart preserves choices; no quota probes or inferred capacity; unavailable targets explain why they were skipped; attempts remain bounded |
+| Worker ownership | Durable task/run identity and workspace ownership | Cancellation and result adoption target the right run; concurrent writes require an explicit policy; incomplete tool results are reconciled before retry |
+| Capacity rollover | Supported per-version context signals and visible compaction policy | Unknown capacity stays unknown; no threshold guessed from cumulative billed tokens; originals and pinned decisions remain readable across a rollover |
+| OSS evidence | Current-source documentation, fixtures and release report | Public claims match implemented capabilities; security/provider/host gaps remain explicit; publishing and live model spend retain their separate authorization |
+
+Build and prove these in order: source identity, exact readback, lineage, durable orchestration,
+then capacity rollover. Synthetic histories cover collisions, stale offsets, moved/deleted files,
+unknown model capacity, interruption and repeated quota failures. Live provider experiments need
+an explicit usage budget; earlier proposed experiment sizes below are not spend authorization.
 
 ## Design
 
@@ -271,8 +300,9 @@ belongs to the search and is not built.
 
 ## Landing page (built in `2026-10-31a`)
 
-Opening Concordia, or starting a chat with `/new`, shows a landing page. Typing anything or
-pressing Esc goes straight to the chat input, so it never stands in the way.
+Opening Concordia, or starting a chat with `/new`, shows a landing page. The historical sketch
+below is superseded where current UI behavior differs: drafting keeps the lists visible until
+a message is sent, and pressing Esc can close them explicitly.
 
     ┌ chats ──────────────────────────────┐┌ goals ──────────────────────────┐
     │> ▾ concordia (2)              today││  ○ ship the 1.0                │
@@ -373,3 +403,52 @@ Friction met along the way goes into the pain-point log.
 6. Context-size reading per provider, then the compaction controls.
 7. The handoff, then grouping by content, shown on the landing page.
 8. A UI parity audit against Claude Code, as a separate plan.
+
+
+## Research review, 2026-10-31
+
+Reviewed accepted research notes through 2026-10-31; primary references are linked below. The implementation remains the bounded-map design described above; this review does
+not enable or implement the proposed pointer-only memory manager.
+
+- [STAIR](https://arxiv.org/html/2609.03874v1), reviewed on October 29, uses document
+  structure and a table of contents for retrieval. Its retriever is a trained LLM. The useful
+  design direction here is a small hierarchical index with exact source pointers and selective
+  reads. Its benchmark scores do not establish performance for chat logs, and using the trained
+  retriever would conflict with Concordia's no-model memory policy.
+- [rederive](https://github.com/dmustapha/rederive), accepted on October 25, is a different
+  application with metered services. Its change-based invalidation is worth evaluating locally:
+  bind pointers to provider/session identity and source revision, then refresh changed sections
+  and detect unavailable or replaced originals. This does not require adopting its service stack.
+- An older knowledge-graph critique is commentary, not evidence that a graph is required.
+  Start with explicit continuation lineage, project/file identity, timestamps and lexical search.
+  Measure retrieval correctness before introducing a graph or changing the architecture.
+
+Current gaps remain: automatic context-capacity rollover, native-file pointer indexing, related
+chat grouping, and comparative retrieval evaluation. Same-account native resume and cross-account
+bounded-map handoff are implemented. Optional Concordia thread logs store transcript copies;
+that existing behavior differs from the owner's proposed pointer-only design. With logs disabled,
+the map explicitly says the full text is not stored. Provider-native compaction is not disabled
+by the current implementation.
+
+Usage exhaustion is a separate trigger from context capacity. Automatic quota continuation uses
+an ordered account allowlist and at most three handoffs. Account switching resets the explicit
+model selection and resolves the target home's native model; there is no account/model fallback
+policy yet. A future policy should display each fallback's account, provider and model before use,
+without transferring native approval state or treating uncertain tool results as completed.
+
+## Compaction decision status, 2026-11-01e
+
+There is no controlled live comparison establishing whether native compaction or fresh-session
+handoff has better task completion, constraint retention, latency or reported usage in Concordia.
+Native compaction defaults remain unchanged. Compaction addresses context size, not subscription
+quota; an exhausted account still requires eligible capacity or its reset. Preserve pinned
+constraints and exact source pointers across both paths; do not treat a compact map as the full
+history. A bounded fixture proves implementation behavior, not model recall quality.
+
+An eventual comparison should use the same synthetic repository/task, check retained constraints
+and duplicate side effects, and measure completion plus reported input/cache/output usage across
+native resume/compaction and a fresh handoff. Real provider trials require explicit scope/budget
+under AGENTS.md. No such trial was run in this change.
+
+Official behavior: [Claude context/compaction](https://code.claude.com/docs/en/how-claude-code-works)
+and [Codex thread compaction](https://learn.chatgpt.com/docs/app-server).

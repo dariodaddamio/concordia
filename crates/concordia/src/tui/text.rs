@@ -2,6 +2,87 @@
 
 use unicode_width::UnicodeWidthChar;
 
+/// Preserve logical lines from Unix, Windows and CR-only clipboard sources.
+pub fn normalize_newlines(input: &str) -> std::borrow::Cow<'_, str> {
+    if input.contains('\r') {
+        std::borrow::Cow::Owned(input.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(input)
+    }
+}
+
+/// Provider output is text, never terminal instructions. Return a source-character
+/// boundary map as well so callers can preserve styles after removing escape sequences.
+pub fn terminal_text(input: &str) -> (String, Vec<usize>) {
+    #[derive(Clone, Copy)]
+    enum State {
+        Text,
+        Escape,
+        Csi,
+        String,
+        StringEscape,
+        Intermediate,
+    }
+    let mut state = State::Text;
+    let mut out = String::with_capacity(input.len());
+    let mut offsets = vec![0];
+    let mut count = 0;
+    for c in input.chars() {
+        match state {
+            State::Text => match c {
+                '\u{1b}' => state = State::Escape,
+                '\u{9b}' => state = State::Csi,
+                '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => state = State::String,
+                '\t' => {
+                    out.push_str("    ");
+                    count += 4;
+                }
+                '\n' => {
+                    out.push(c);
+                    count += 1;
+                }
+                _ if c.is_control() => {}
+                _ => {
+                    out.push(c);
+                    count += 1;
+                }
+            },
+            State::Escape => {
+                state = match c {
+                    '[' => State::Csi,
+                    ']' | 'P' | 'X' | '^' | '_' => State::String,
+                    '\u{20}'..='\u{2f}' => State::Intermediate,
+                    _ => State::Text,
+                }
+            }
+            State::Csi => {
+                if ('\u{40}'..='\u{7e}').contains(&c) {
+                    state = State::Text;
+                }
+            }
+            State::String => match c {
+                '\u{7}' | '\u{9c}' => state = State::Text,
+                '\u{1b}' => state = State::StringEscape,
+                _ => {}
+            },
+            State::StringEscape => {
+                state = match c {
+                    '\\' | '\u{7}' | '\u{9c}' => State::Text,
+                    '\u{1b}' => State::StringEscape,
+                    _ => State::String,
+                }
+            }
+            State::Intermediate => {
+                if ('\u{30}'..='\u{7e}').contains(&c) {
+                    state = State::Text;
+                }
+            }
+        }
+        offsets.push(count);
+    }
+    (out, offsets)
+}
+
 /// Terminal columns a char occupies (control chars count as 0, wide CJK/emoji as 2).
 pub fn char_width(c: char) -> usize {
     UnicodeWidthChar::width(c).unwrap_or(0)

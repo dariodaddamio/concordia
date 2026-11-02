@@ -131,9 +131,7 @@ fn titles_are_generated_without_thread_logging_and_survive_native_binding() {
         .as_deref(),
         Some("Fix the project graph refresh")
     );
-    assert!(app
-        .window_title()
-        .starts_with("Fix the project graph refresh"));
+    assert!(app.window_title().contains("Fix the project graph refresh"));
 }
 
 #[test]

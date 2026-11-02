@@ -36,6 +36,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     std::env::set_var("FAKE_PROVIDER_STREAM", &fixture);
     let outcome = run_provider_turn(
         &ProviderTurnRequest {
+            images: &[],
             provider: ProviderKind::Codex,
             prompt: "say hello",
             cwd: work.path(),

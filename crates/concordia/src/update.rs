@@ -172,13 +172,26 @@ impl PreviewLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdatePreview {
     pub lines: Vec<PreviewLine>,
+    pub history: Vec<PreviewLine>,
+    pub history_expanded: bool,
     pub install_available: bool,
     pub release_url: Option<String>,
 }
 
 impl UpdatePreview {
+    pub fn visible_lines(&self) -> Vec<PreviewLine> {
+        let mut lines = self.lines.clone();
+        if self.history_expanded {
+            lines.push(PreviewLine::Title("Earlier updates".into()));
+            lines.extend(self.history.clone());
+        }
+        lines
+    }
+
     fn message(text: &str) -> Self {
         UpdatePreview {
+            history: Vec::new(),
+            history_expanded: false,
             lines: vec![
                 PreviewLine::Text(text.into()),
                 PreviewLine::Blank,
@@ -254,6 +267,7 @@ pub fn start_check(cwd: PathBuf) -> Job {
 /// Run `cmd`, relaying its latest output line as progress, and kill its whole process tree if the
 /// job is cancelled. Returns `(success, exit code, last lines of output)`.
 pub fn run_child_with_cancel(mut cmd: Command, ctl: &JobControl) -> Result<(bool, i32, String)> {
+    crate::process_ui::background_std(&mut cmd);
     use std::collections::VecDeque;
     use std::io::{BufRead, BufReader};
     cmd.stdin(Stdio::null())
@@ -568,7 +582,6 @@ fn source_preview_for(
             lines.extend(news);
             lines.push(PreviewLine::Blank);
         }
-        lines.extend(builds(&sections, |s| s <= installed));
     } else {
         lines.push(PreviewLine::Title(format!(
             "You're on the newest build ({installed})."
@@ -581,10 +594,25 @@ fn source_preview_for(
             lines.extend(current);
             lines.push(PreviewLine::Blank);
         }
-        lines.extend(builds(&sections, |s| s < installed));
     }
-    lines.push(PreviewLine::Hint("Esc close".into()));
+    let history = builds(&sections, |s| {
+        if install_available {
+            s <= installed
+        } else {
+            s < installed
+        }
+    });
+    lines.push(PreviewLine::Hint(
+        if history.is_empty() {
+            "Esc close"
+        } else {
+            "H history · Esc close"
+        }
+        .into(),
+    ));
     Ok(UpdatePreview {
+        history,
+        history_expanded: false,
         lines,
         install_available,
         release_url: None,
@@ -639,6 +667,8 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
     Ok(
         match crate::release::check(&cfg, current, &crate::release::PowerShellFetcher)? {
             crate::release::Check::UpToDate { current, .. } => UpdatePreview {
+                history: Vec::new(),
+                history_expanded: false,
                 lines: vec![
                     PreviewLine::Title(format!("You're on the newest release ({current}).")),
                     from,
@@ -678,6 +708,8 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
                 }
                 lines.push(PreviewLine::Hint("o open release page · Esc close".into()));
                 UpdatePreview {
+                    history: Vec::new(),
+                    history_expanded: false,
                     lines,
                     install_available: true,
                     release_url: Some(rel.html_url),
@@ -1287,6 +1319,8 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
             JobResult::Check(Ok(UpdatePreview {
+                history: Vec::new(),
+                history_expanded: false,
                 lines: vec![PreviewLine::Text("stopped".into())],
                 install_available: false,
                 release_url: None,
@@ -1413,11 +1447,7 @@ mod tests {
                 " Fixed",
                 " · Text before a tool shows once.",
                 "",
-                "Build 2026-10-30a",
-                " Fixed",
-                " · Cursor tool names.",
-                "",
-                "Esc close",
+                "H history · Esc close",
             ]
         );
 
@@ -1431,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn the_installed_build_shows_what_is_in_it_then_every_earlier_build() {
+    fn the_installed_build_keeps_earlier_history_out_of_the_default_page() {
         let dir = checkout_at_build("2026-10-30b");
         let preview =
             source_preview_for(dir.path(), "0.0.1", "2026-10-30b", &JobControl::default()).unwrap();
@@ -1448,11 +1478,7 @@ mod tests {
                 " Fixed",
                 " · Text before a tool shows once.",
                 "",
-                "Build 2026-10-30a",
-                " Fixed",
-                " · Cursor tool names.",
-                "",
-                "Esc close",
+                "H history · Esc close",
             ]
         );
     }
@@ -1475,7 +1501,7 @@ mod tests {
                 "",
                 "The checkout is behind this build. Pull or switch branch, then run /update again.",
                 "",
-                "Esc close",
+                "H history \u{b7} Esc close",
             ]
         );
     }

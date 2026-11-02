@@ -13,17 +13,12 @@
 <rect x="338" y="36" width="666" height="19" fill="#303030"/>
 <rect x="302" y="245" width="54" height="19" fill="#303030"/>
 <rect x="59" y="302" width="234" height="19" fill="#303030"/>
-<rect x="59" y="321" width="54" height="19" fill="#303030"/>
-<rect x="95" y="340" width="36" height="19" fill="#303030"/>
-<rect x="59" y="397" width="333" height="19" fill="#303030"/>
-<rect x="59" y="416" width="153" height="19" fill="#303030"/>
-<rect x="59" y="435" width="9" height="19" fill="#303030"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
 <text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">◆</text>
-<text x="41" y="50" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">concordia</text>
-<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-21d</text>
+<text x="41" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#666666">concordia 2026-11-01b</text>
 <text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
-<text x="356" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
+<text x="356" y="50" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">member@example.invalid</text>
+<text x="572" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
 <text x="770" y="50" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#666666">5h 59% left · 7d 41% left</text>
 <text x="23" y="69" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#5fafff">| i</text>
 <text x="59" y="69" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
@@ -31,7 +26,7 @@
 <text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">interrupts.</text>
 <text x="23" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
 <text x="41" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Add a /doctor check for duplicate accounts and show me the diff</text>
-<text x="23" y="145" textLength="279" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex · codex-3 · gpt-5.1-codex</text>
+<text x="23" y="145" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3 · gpt-5.1-codex</text>
 <text x="23" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
 <text x="41" y="164" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n duplicate src</text>
 <text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
@@ -50,50 +45,55 @@
 <text x="41" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
 <text x="59" y="316" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">accounts::duplicate_groups</text>
 <text x="302" y="316" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">finds the groups</text>
-<text x="41" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="335" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
-<text x="122" y="335" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">prints a warning per group, naming both accounts and the fix</text>
-<text x="41" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="354" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the</text>
-<text x="95" y="354" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use</text>
-<text x="140" y="354" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">picker marks each side with</text>
-<text x="392" y="354" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-style="italic">same login as ...</text>
-<text x="59" y="392" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">rust</text>
-<text x="59" y="411" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">for group in duplicate_groups(root) {</text>
-<text x="95" y="430" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">warn(&amp;group);</text>
-<text x="59" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">}</text>
-<text x="32" y="468" textLength="954" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">┌usage───────────────────────────────────────────────────────────────────────────────────────────────────┐</text>
-<text x="32" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="41" y="487" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt; Codex 3  5h 59% left</text>
-<text x="248" y="487" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700" fill-opacity="0.6">(41% used)</text>
-<text x="347" y="487" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">· 7d 41% left</text>
-<text x="473" y="487" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700" fill-opacity="0.6">(59% used) · resets in 3h</text>
+<text x="32" y="335" textLength="918" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">┌usage────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="959" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">X</text>
+<text x="977" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">┐</text>
+<text x="32" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="41" y="354" textLength="486" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt; Codex 3 · Email: member@example.invalid · Plan: Plus</text>
+<text x="977" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="32" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="59" y="373" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">5h 59% left</text>
+<text x="167" y="373" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700" fill-opacity="0.6">(41% used) · resets in 3h</text>
+<text x="977" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="32" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="59" y="392" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">7d 41% left</text>
+<text x="167" y="392" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700" fill-opacity="0.6">(59% used) · resets in 3d</text>
+<text x="977" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="32" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="59" y="411" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#0dbc79">Claude 1 · Email: member@example.invalid · Plan: Pro</text>
+<text x="977" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="32" y="430" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│  5h</text>
+<text x="86" y="430" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">77% left</text>
+<text x="167" y="430" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(23% used) · resets in 4h</text>
+<text x="977" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="32" y="449" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│  7d</text>
+<text x="86" y="449" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">36% left</text>
+<text x="167" y="449" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(64% used) · resets in 2d</text>
+<text x="977" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="32" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="59" y="468" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#e5e510">Claude 2 · Email: member@example.invalid · Plan: Pro</text>
+<text x="977" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="32" y="487" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│  5h</text>
+<text x="86" y="487" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#e5e510" font-weight="700">8% left</text>
+<text x="158" y="487" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(92% used) · resets in 1h</text>
 <text x="977" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="506" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│  Claude 1  5h</text>
-<text x="176" y="506" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">77% left</text>
-<text x="257" y="506" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(23% used)</text>
-<text x="356" y="506" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">· 7d</text>
-<text x="401" y="506" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">36% left</text>
-<text x="482" y="506" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(64% used) · resets in 4h</text>
+<text x="32" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="59" y="506" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#666666">Cursor 1 · Email: member@example.invalid · Plan: Pro</text>
 <text x="977" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="525" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│  Claude 2  5h</text>
-<text x="176" y="525" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#e5e510" font-weight="700">8% left</text>
-<text x="248" y="525" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(92% used) · resets in 1h</text>
+<text x="32" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="59" y="525" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#666666">not shown by Cursor CLI</text>
 <text x="977" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
 <text x="32" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="59" y="544" textLength="918" lengthAdjust="spacingAndGlyphs" fill="#666666">Cursor 1  not shown by Cursor CLI  Cursor's CLI has no usage command, so Concordia cannot show it. See</text>
+<text x="59" y="544" textLength="846" lengthAdjust="spacingAndGlyphs" fill="#666666">Cursor's CLI has no usage command, so Concordia cannot show it. See cursor.com/dashboard/usage</text>
 <text x="977" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
 <text x="23" y="563" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
 <text x="32" y="563" textLength="954" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">└────────────────────────────────────────────────────────────────────────────────────────────────────────┘</text>
-<text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">╭</text>
-<text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
-<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
-<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
-<text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
-<text x="41" y="601" textLength="342" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">Message Concordia...  (/ for commands)</text>
-<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
-<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#585858">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="23" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#666666">↑↓ Enter · Esc</text>
+<text x="14" y="582" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ message · paused ──────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="23" y="601" textLength="513" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Esc or X closes usage. r refreshes. Chat input is paused.</text>
+<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#666666">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="23" y="639" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#666666">↑↓ Enter · r refresh · Esc</text>
 <text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">auth workspace</text>
 </g>
 </g>

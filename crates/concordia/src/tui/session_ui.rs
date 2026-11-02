@@ -63,7 +63,6 @@ impl App {
     }
 
     pub(super) fn resume_session(&mut self, account: &str, id: &str) {
-        self.continuation.invalidate();
         if self.busy {
             self.flash("finish or cancel the active turn before resuming");
             return;
@@ -105,6 +104,8 @@ impl App {
             self.push_system(format!("could not start history reader: {error}"));
             return;
         }
+        self.continuation.invalidate();
+        self.keep.turn_recovery_notice = false;
         self.session_ui.next = self.session_ui.next.wrapping_add(1);
         let generation = self.session_ui.next;
         self.session_ui.pending = Some(generation);
@@ -112,10 +113,16 @@ impl App {
             crate::session_titles::get(&self.state_root, provider, account, &home, id);
         self.session_chip = self.session_ui.title.clone();
         self.native_session_id = Some(id.to_string());
+        self.native_sources.clear();
+        self.remember_native_source();
+        let checkpoint_cleared = self.save_turn_checkpoint(true);
         self.need_context_pack = false;
         self.prior_provider = provider;
         self.prior_home = Some(home.to_string_lossy().into_owned());
+        self.deleg.change_conversation();
         self.messages.clear();
+        self.related_files.reset();
+        self.questions.clear();
         self.native_agents = native_agents::State::default();
         self.activity = activity::Activity::default();
         self.expanded_activity = false;
@@ -132,6 +139,9 @@ impl App {
         self.pause_queue();
         self.thread = crate::threads::start(&self.state_root);
         self.thread_meta_done = false;
+        if !checkpoint_cleared {
+            self.push_system("could not clear the previous unfinished-request record; it has been kept for recovery");
+        }
         self.push_system("Loading recent messages for the selected session…");
         self.session_ui.jobs.push(Load {
             generation,
@@ -172,6 +182,8 @@ impl App {
                 .take()
                 .and_then(|index| index.checked_sub(1));
             self.messages.clear();
+            self.related_files.reset();
+            self.questions.clear();
             self.view = TranscriptView::default();
             match result {
                 Ok(history) => {

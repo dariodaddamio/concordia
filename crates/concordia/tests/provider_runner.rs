@@ -20,6 +20,7 @@ async fn closed_started_receiver_cancels_the_provider() {
     let (tx, rx) = mpsc::unbounded_channel();
     drop(rx);
     let req = ProviderTurnRequest {
+        images: &[],
         provider: ProviderKind::Codex,
         prompt: "cancel when startup handoff is unavailable",
         cwd: &cwd,

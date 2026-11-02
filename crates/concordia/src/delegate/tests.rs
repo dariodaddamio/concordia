@@ -141,6 +141,8 @@ fn worker_context_is_bounded_and_never_carries_a_session() {
 
 fn bare_job(id: u32, account: &str, state: WorkerState) -> Job {
     Job {
+        model: None,
+        collected: false,
         id,
         account: account.into(),
         provider: ProviderKind::Codex,
@@ -162,6 +164,7 @@ fn bare_job(id: u32, account: &str, state: WorkerState) -> Job {
         cancel_requested: false,
         announced: false,
         spec: JobSpec {
+            model: None,
             home: None,
             cwd: PathBuf::from("."),
             prompt: "t".into(),
@@ -357,4 +360,20 @@ fn workers_report_shows_status_and_last_result() {
     // The orchestrator switching onto a worker is called out.
     let lines = workers_report(r, "codex-w1", &del, Instant::now());
     assert!(lines[1].contains("orchestrator now"));
+}
+
+#[test]
+fn structured_failure_with_a_zero_exit_is_not_a_successful_worker_result() {
+    let mut j = bare_job(1, "worker", WorkerState::Writing);
+    apply_outcome(
+        &mut j,
+        TurnOutcome {
+            failed: true,
+            exit_code: Some(0),
+            text: "partial output".into(),
+            ..Default::default()
+        },
+        Instant::now(),
+    );
+    assert_eq!(j.state, WorkerState::Failed);
 }

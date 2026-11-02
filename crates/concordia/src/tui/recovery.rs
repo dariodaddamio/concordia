@@ -17,6 +17,8 @@ const RECORD_FILE: &str = "recovery.json";
 pub struct RecoveryData {
     pub owner_pid: u32,
     pub draft: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternate_draft: Option<String>,
     pub queue: Vec<String>,
     #[serde(default)]
     pub pending_edit: Option<RecoveryEdit>,
@@ -46,6 +48,41 @@ pub struct RecoveryLease {
 }
 
 impl RecoveryLease {
+    pub fn save_files(&self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err(io::Error::other("file recovery exceeds 32 MiB"));
+        }
+        crate::state_io::write_atomic(&self.directory.join("files.json"), bytes)
+    }
+    pub fn files(&self) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        let file = match File::open(self.directory.join("files.json")) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut bytes = Vec::new();
+        file.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err(io::Error::other("file recovery exceeds 32 MiB"));
+        }
+        Ok(bytes)
+    }
+    pub fn save_turn(
+        &self,
+        checkpoint: Option<&super::turn_checkpoint::Checkpoint>,
+    ) -> io::Result<()> {
+        let bytes = serde_json::to_vec(&checkpoint)?;
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err(io::Error::other("unfinished request exceeds 2 MiB"));
+        }
+        crate::state_io::write_atomic(&self.directory.join("turn.json"), &bytes)
+    }
+
+    pub fn turn(&self) -> io::Result<Option<super::turn_checkpoint::Checkpoint>> {
+        read_turn(&self.directory.join("turn.json"))
+    }
+
     #[cfg(test)]
     pub fn id(&self) -> &str {
         &self.id
@@ -59,9 +96,20 @@ impl RecoveryLease {
         queue: &[String],
         pending: Option<&RecoveryEdit>,
     ) -> io::Result<()> {
+        self.save_with_alternate(draft, queue, pending, None)
+    }
+
+    pub fn save_with_alternate(
+        &self,
+        draft: &str,
+        queue: &[String],
+        pending: Option<&RecoveryEdit>,
+        alternate: Option<&str>,
+    ) -> io::Result<()> {
         let data = RecoveryData {
             owner_pid: std::process::id(),
             draft: draft.to_owned(),
+            alternate_draft: alternate.map(str::to_owned),
             queue: queue.to_vec(),
             pending_edit: pending.cloned(),
             updated_unix_ms: now_ms(),
@@ -194,18 +242,60 @@ pub fn available(root: &Path) -> io::Result<Vec<RecoveryChoice>> {
         let Ok(data) = read_data(&e.path().join(RECORD_FILE)) else {
             continue;
         };
-        if data.draft.trim().is_empty() && data.queue.is_empty() && data.pending_edit.is_none() {
+        let unfinished = read_turn(&e.path().join("turn.json")).ok().flatten();
+        let files = fs::metadata(e.path().join("files.json"))
+            .ok()
+            .filter(|m| m.len() > 2);
+        if data.draft.trim().is_empty()
+            && data.queue.is_empty()
+            && data.pending_edit.is_none()
+            && unfinished.is_none()
+            && files.is_none()
+        {
             continue;
         }
         out.push(RecoveryChoice {
             id,
-            draft: data.draft,
+            draft: crate::attachments::Message::text(&if data.draft.trim().is_empty() {
+                unfinished.map(|c| c.prompt).unwrap_or_else(|| {
+                    if files.is_some() {
+                        "Unsaved file workspace".into()
+                    } else {
+                        data.draft
+                    }
+                })
+            } else {
+                data.draft
+            })
+            .to_owned(),
             queued: data.queue.len(),
-            updated_unix_ms: data.updated_unix_ms,
+            updated_unix_ms: data.updated_unix_ms.max(
+                files
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_millis()),
+            ),
         });
     }
     out.sort_by_key(|choice| std::cmp::Reverse(choice.updated_unix_ms));
     Ok(out)
+}
+
+fn read_turn(path: &Path) -> io::Result<Option<super::turn_checkpoint::Checkpoint>> {
+    use std::io::Read;
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.take(2 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(io::Error::other(
+            "unfinished-request record exceeds its limit",
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
 fn read_data(path: &Path) -> io::Result<RecoveryData> {

@@ -17,6 +17,8 @@ pub mod identity;
 pub mod integration;
 pub mod logging;
 pub mod mcp;
+pub mod native_memory;
+pub(crate) mod process_ui;
 pub mod prompt_time;
 pub mod provider;
 pub mod release;
@@ -29,8 +31,11 @@ pub mod token_log;
 pub mod tui;
 pub mod update;
 pub mod usage;
+pub(crate) mod usage_codex;
 pub mod user_commands;
 pub mod version;
 
+pub mod attachments;
+mod state_io;
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -41,7 +41,10 @@ pub(super) struct Panel {
     /// Screen rows from the last draw, for clicks.
     rects: Vec<(Rect, u32)>,
     /// A prompt for the orchestrator produced by `/delegate use`, sent by `flush_delegate_prompt`.
-    outbox: Option<String>,
+    outbox: Option<(String, Vec<u32>)>,
+    generation: u64,
+    owners: std::collections::BTreeMap<u32, u64>,
+    auto_return_paused: bool,
 }
 
 struct Viewer {
@@ -49,6 +52,23 @@ struct Viewer {
     scroll: usize,
     /// Largest useful scroll, learned at draw time.
     max_scroll: usize,
+}
+
+impl Panel {
+    pub(super) fn change_conversation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.outbox = None;
+        self.auto_return_paused = false;
+        self.confirms.clear();
+    }
+
+    fn owns(&self, id: u32) -> bool {
+        self.owners.get(&id) == Some(&self.generation)
+    }
+
+    pub(super) fn has_pending_prompt(&self) -> bool {
+        self.outbox.is_some()
+    }
 }
 
 struct Confirm {
@@ -145,7 +165,14 @@ pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
     }
 }
 
-fn row_line(j: &Job, selected: bool, width: usize, tick: u64, now: Instant) -> Line<'static> {
+fn row_line(
+    j: &Job,
+    label: String,
+    selected: bool,
+    width: usize,
+    tick: u64,
+    now: Instant,
+) -> Line<'static> {
     let (icon, color) = icon_of(j.state, tick);
     let base = if selected {
         Style::default()
@@ -155,9 +182,14 @@ fn row_line(j: &Job, selected: bool, width: usize, tick: u64, now: Instant) -> L
         Style::default()
     };
     let badge = if width >= 90 {
-        format!("{} ({})", j.label(), j.provider.as_str())
+        format!(
+            "{} ({}/{})",
+            label,
+            j.provider.as_str(),
+            j.model.as_deref().unwrap_or("default")
+        )
     } else {
-        j.label()
+        label
     };
     let secs = if j.state == WorkerState::Queued {
         "queued".to_string()
@@ -218,6 +250,7 @@ pub(super) fn draw(f: &mut Frame, strip: Rect, over: Rect, app: &mut App) {
         for (row, j) in visible.iter().skip(first).take(shown).enumerate() {
             lines.push(row_line(
                 j,
+                app.named_account(j.provider, &j.account),
                 app.deleg.selected == Some(j.id),
                 strip.width as usize,
                 tick,
@@ -329,6 +362,15 @@ fn wrap_plain(s: &str, width: usize) -> Vec<String> {
 pub(super) fn viewer_text(j: &Job) -> String {
     let mut t = String::new();
     t.push_str(&format!("task: {}\n", one_line(&j.task)));
+    t.push_str(&format!(
+        "model: {} | result: {}\n",
+        j.model.as_deref().unwrap_or("provider default"),
+        if j.collected {
+            "sent to main agent"
+        } else {
+            "not sent"
+        }
+    ));
     t.push_str(&format!(
         "worker: {} ({}) \u{b7} trust {} \u{b7} session {}\n",
         j.label(),
@@ -525,7 +567,16 @@ impl App {
     pub(super) fn poll_delegates(&mut self) {
         let now = Instant::now();
         let finished = self.deleg.d.poll(now);
+        self.deleg
+            .owners
+            .retain(|id, _| self.deleg.d.get(*id).is_some());
         for id in finished {
+            if !self.deleg.owns(id) {
+                self.flash(format!(
+                    "worker #{id} finished for an earlier conversation; Ctrl+G inspects it"
+                ));
+                continue;
+            }
             let Some(j) = self.deleg.d.get(id) else {
                 continue;
             };
@@ -544,6 +595,26 @@ impl App {
             self.flash(format!("worker {note}"));
         }
         self.refresh_agents_picker();
+        if !self.busy
+            && !self.deleg.auto_return_paused
+            && !self.deleg.d.any_active()
+            && self.deleg.outbox.is_none()
+            && self.picker.is_none()
+            && self.job.is_none()
+            && !self.session_ui.loading()
+            && !self.continuation.waiting()
+            && self.queue.items.is_empty()
+            && self.queue.edit.is_none()
+            && self
+                .deleg
+                .d
+                .jobs
+                .iter()
+                .any(|j| self.deleg.owns(j.id) && j.state == WorkerState::Done && !j.collected)
+            && get_settings(&self.state_root).delegate_auto_return
+        {
+            self.collect_results(false);
+        }
     }
 
     pub(super) fn cancel_all_delegates(&mut self) {
@@ -552,21 +623,30 @@ impl App {
 
     /// Send the prompt `/delegate use` prepared (a user action) to the orchestrator.
     pub(super) fn flush_delegate_prompt(&mut self, turn_tx: &mpsc::UnboundedSender<String>) {
-        let Some(p) = self.deleg.outbox.take() else {
-            return;
-        };
-        if self.session_ui.loading() {
-            self.flash("history is loading; use the worker result after it finishes");
+        if self.update_running()
+            || self.busy
+            || self.session_ui.loading()
+            || turn_tx.is_closed()
+            || self.images.height() > self.images.draft.len()
+        {
             return;
         }
-        self.submitted_prompt = Some(p.clone());
-        self.push_user(p.clone());
-        self.turn_started = Some(Instant::now());
-        self.phase = Phase::Waiting;
-        self.live_thinking.clear();
-        self.busy = true;
-        self.pulse_on = true;
-        let _ = turn_tx.send(p);
+        let Some((p, ids)) = self.deleg.outbox.take() else {
+            return;
+        };
+        let draft = self.composer_value();
+        self.cancel_requested = false;
+        // Normal dispatch owns checkpoints, context, timing, quota recovery and images.
+        self.run_line(p.clone(), turn_tx);
+        self.restore_composer(&draft);
+        if self.busy {
+            self.deleg.d.mark_collected(&ids);
+        } else {
+            self.deleg.auto_return_paused = true;
+            self.flash(
+                "worker return paused; fix recovery storage, then /delegate collect to retry",
+            );
+        }
     }
 
     /// Queue protocol proposals found in an orchestrator reply. Off unless the user opted in.
@@ -651,6 +731,11 @@ impl App {
         task: &str,
         origin: Origin,
     ) -> Result<String, String> {
+        if self.update_running() {
+            return Err(
+                "Workers are paused while Concordia updates. Try again after it restarts.".into(),
+            );
+        }
         let settings = get_settings(&self.state_root);
         let orch = normalize_account_id(&self.account);
         let workers: Vec<String> = settings
@@ -722,6 +807,7 @@ impl App {
                 task: task.to_string(),
                 origin,
                 spec: JobSpec {
+                    model: settings.worker_models.get(&account).cloned(),
                     home,
                     cwd: self.cwd.clone(),
                     prompt: task.to_string(),
@@ -731,6 +817,7 @@ impl App {
             },
             Instant::now(),
         )?;
+        self.deleg.owners.insert(id, self.deleg.generation);
         crate::logging::info(&format!(
             "delegate-start id={id} worker={account} provider={} origin={origin:?} trust={} task_chars={}",
             acct.provider.as_str(),
@@ -795,6 +882,31 @@ impl App {
             }
             SlashCommand::DelegateStop(acct) => self.delegate_stop(acct.as_deref()),
             SlashCommand::DelegateUse(acct) => self.delegate_use(acct.as_deref()),
+            SlashCommand::DelegateCollect => self.delegate_collect(),
+            SlashCommand::DelegateReturns(mode) => {
+                if let Some(auto) = mode {
+                    if let Err(e) = crate::store::modify_store(&root, |s| {
+                        s.settings.delegate_auto_return = *auto;
+                        Ok(())
+                    }) {
+                        self.push_system(format!("could not save return mode: {e}"));
+                        return true;
+                    }
+                    self.deleg.auto_return_paused = false;
+                    if !auto {
+                        self.deleg.outbox = None;
+                    }
+                }
+                self.push_system(if get_settings(&root).delegate_auto_return {
+                    "Worker returns: auto. Completed batches start a main-agent turn when idle; drafts stay intact. Proposals still need approval. /delegate returns manual disables this."
+                } else {
+                    "Worker returns: manual. /delegate collect sends new completed results together; /delegate returns auto enables automatic batches."
+                });
+            }
+            SlashCommand::DelegateModel { account, model } => {
+                let result = self.worker_model(account, model.as_deref());
+                self.push_system(result);
+            }
             SlashCommand::DelegateHelp => {
                 for l in help_lines(crate::store::delegation_protocol_on(&root)) {
                     self.push_system(l);
@@ -856,6 +968,10 @@ impl App {
 
     /// User action: hand a finished result to the orchestrator as (labelled, bounded) context.
     fn delegate_use(&mut self, acct: Option<&str>) {
+        if self.update_running() {
+            self.push_system("Worker results cannot be sent while Concordia updates. Try again after it restarts.");
+            return;
+        }
         if self.session_ui.loading() {
             self.push_system("history is loading; use the worker result after it finishes");
             return;
@@ -884,14 +1000,106 @@ impl App {
                     j.id,
                     j.final_text().chars().count()
                 ));
-                self.deleg.outbox = Some(use_prompt(j));
+                self.deleg.outbox = Some((use_prompt(j), vec![j.id]));
             }
             None => {
                 self.push_system("no finished worker result to send - /workers shows the last ones")
             }
         }
     }
+
+    fn worker_model(&self, account: &str, model: Option<&str>) -> String {
+        let account = normalize_account_id(account);
+        let settings = get_settings(&self.state_root);
+        if account.is_empty() {
+            return format!(
+                "/delegate model ACCOUNT [MODEL|default]\nWorkers: {}",
+                settings.workers.join(", ")
+            );
+        }
+        if !settings.workers.contains(&account) {
+            return format!("{account} is not a worker; /workers add {account} first");
+        }
+        let Some(acct) = get_account(&self.state_root, &account) else {
+            return "worker account is unavailable".into();
+        };
+        let models = acct
+            .home_path
+            .as_deref()
+            .map(|h| crate::catalog::list_models(acct.provider, h))
+            .unwrap_or_default();
+        let Some(model) = model else {
+            return format!("{account}: {}\nNative models: {}\n/delegate model {account} MODEL | default (applies to new jobs)",
+                settings.worker_models.get(&account).map(String::as_str).unwrap_or("provider default"),
+                if models.is_empty() { "catalog unavailable".into() } else { models.join(", ") });
+        };
+        if model != "default" && !models.iter().any(|m| m == model) {
+            return format!("model is not in {account}'s local catalog; /delegate model {account} lists available ids");
+        }
+        match crate::store::modify_store(&self.state_root, |store| {
+            if model == "default" {
+                store.settings.worker_models.remove(&account);
+            } else {
+                store
+                    .settings
+                    .worker_models
+                    .insert(account.clone(), model.to_string());
+            }
+            Ok(())
+        }) {
+            Ok(()) => format!("{account} model: {model}; applies to new jobs, including proposals"),
+            Err(e) => format!("could not save worker model: {e}"),
+        }
+    }
+
+    /// One main-agent turn for up to three newly completed results, preserving the composer.
+    fn delegate_collect(&mut self) {
+        if self.busy || self.update_running() || self.session_ui.loading() {
+            self.push_system("wait for the current operation, then /delegate collect");
+            return;
+        }
+        self.deleg.auto_return_paused = false;
+        self.collect_results(true);
+    }
+
+    fn collect_results(&mut self, report_empty: bool) {
+        let jobs: Vec<_> = self
+            .deleg
+            .d
+            .jobs
+            .iter()
+            .filter(|j| {
+                self.deleg.owns(j.id)
+                    && j.state == WorkerState::Done
+                    && !j.collected
+                    && !j.final_text().is_empty()
+            })
+            .take(crate::delegate::MAX_WORKERS)
+            .collect();
+        if jobs.is_empty() {
+            if report_empty {
+                self.push_system(
+                    "no new completed worker results; /delegate use can resend a selected result",
+                );
+            }
+            return;
+        }
+        let prompt = jobs
+            .iter()
+            .map(|j| crate::delegate::use_prompt_capped(j, 3000))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        self.deleg.outbox = Some((prompt, jobs.iter().map(|j| j.id).collect()));
+    }
 }
 
 #[cfg(test)]
 mod tests;
+
+pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
+    app.deleg.viewer.is_none() && app.deleg.rects.iter().any(|(r, _)| contains(*r, x, y))
+}
+
+pub(super) fn overlay_open(app: &App) -> bool {
+    app.deleg.viewer.is_some() || !app.deleg.confirms.is_empty()
+}

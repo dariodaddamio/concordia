@@ -41,6 +41,7 @@ pub(super) fn run(path: &Path) -> Result<()> {
             );
             view.rebuild(
                 &[TBlock {
+                    linkify: true,
                     identity: None,
                     gutter: "",
                     gutter_style: Style::default(),

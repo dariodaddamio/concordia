@@ -215,6 +215,12 @@ fn bounded_field(value: &str, max_chars: usize) -> String {
 }
 
 pub fn run(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
+    if args
+        .first()
+        .is_some_and(|operation| matches!(operation.as_str(), "index" | "excerpt" | "sources"))
+    {
+        return crate::native_memory::command(root, args).map_err(|error| (error, 2));
+    }
     run_inner(root, args)
         .map(|output| terminal_safe(&output))
         .map_err(|error| (terminal_safe(&format!("{error}\n{HELP}")), 2))

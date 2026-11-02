@@ -43,6 +43,9 @@ pub(super) struct Queue {
     pub rects: Vec<(Rect, usize)>,
     /// The turn that just ended was clean: the next item may be sent.
     pub(super) advance: bool,
+    pub(super) force_pending: bool,
+    pub(super) send_targets: Vec<(Rect, usize)>,
+    pressed_send: Option<usize>,
 }
 
 impl Queue {
@@ -70,7 +73,10 @@ impl Queue {
 
 /// One-line label: whitespace collapsed, cut to [`LABEL_CHARS`].
 fn label(text: &str) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = crate::attachments::Message::text(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut it = flat.chars();
     let head: String = it.by_ref().take(LABEL_CHARS).collect();
     if it.next().is_some() {
@@ -151,6 +157,7 @@ pub(super) fn carve(transcript: &mut Rect, app: &App) -> Rect {
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     app.queue.rects.clear();
+    app.queue.send_targets.clear();
     app.queue.edit_rect = None;
     if area.height == 0 || area.width == 0 || app.queue.items.is_empty() {
         return;
@@ -184,16 +191,29 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             Style::default().fg(DIM)
         };
-        let text = fit(&format!("{prefix}{}", label(&q.items[i])), w);
+        let text = fit(
+            &format!("{prefix}{}", label(&q.items[i])),
+            if w >= 28 { w.saturating_sub(13) } else { w },
+        );
         let pad = w.saturating_sub(text.chars().count());
-        let line = Line::from(Span::styled(
+        let mut line = Line::from(Span::styled(
             if selected {
-                format!("{text}{}", " ".repeat(pad))
+                format!("{text}{}", " ".repeat(pad.saturating_sub(13)))
             } else {
                 text
             },
             base,
         ));
+        if w >= 28 {
+            let remaining = w.saturating_sub(line.width() + 12);
+            line.spans.push(Span::raw(" ".repeat(remaining)));
+            line.spans.push(Span::styled(
+                "[ Send now ]",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         rects.push((
             Rect {
                 x: area.x,
@@ -213,6 +233,12 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     }
     lines.truncate(area.height as usize);
     f.render_widget(Paragraph::new(lines), area);
+    if w >= 28 {
+        app.queue.send_targets = rects
+            .iter()
+            .map(|(r, i)| (Rect::new(r.right() - 12, r.y, 12, 1), *i))
+            .collect();
+    }
     app.queue.rects = rects;
 }
 
@@ -379,10 +405,25 @@ fn plan_indices(q: &Queue) -> std::ops::Range<usize> {
 /// Tab: queue the typed prompt when a turn is running or others are already queued. Returns
 /// false when Tab should keep its slash-completion job.
 pub(super) fn tab(app: &mut App) -> bool {
-    let line = app.editor.text().trim().to_string();
-    if line.is_empty() || line.starts_with('/') || !(app.busy || !app.queue.items.is_empty()) {
+    if app.images.height() > app.images.draft.len() {
+        app.flash("Wait for the image to finish attaching");
+        return true;
+    }
+    let mut line = app.editor.text();
+    if line.trim().is_empty() && !app.images.draft.is_empty() {
+        line = "Describe the attached image.".into();
+    }
+    if line.trim().is_empty()
+        || line.trim_start().starts_with('/')
+        || !(app.busy || !app.queue.items.is_empty())
+    {
         return false;
     }
+    let line = crate::attachments::Message {
+        text: line,
+        images: std::mem::take(&mut app.images.draft),
+    }
+    .encode();
     app.editor.clear();
     app.clear_selections();
     app.palette.reset();
@@ -405,6 +446,18 @@ pub(super) fn focus_on_up(app: &mut App) -> bool {
 
 /// Keys while the panel has focus. Returns true when the key was consumed.
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
+    if app.queue.focused
+        && app.queue.edit.is_none()
+        && key.code == KeyCode::Enter
+        && key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        let index = app.queue.sel;
+        let notice = app.force_queued(index);
+        app.flash(notice);
+        return true;
+    }
     if !app.queue.focused {
         return false;
     }
@@ -433,7 +486,9 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Down => app.queue.sel = (app.queue.sel + 1).min(n - 1),
         KeyCode::Enter => {
             let mut ed = Editor::default();
-            ed.set_text(&app.queue.items[app.queue.sel]);
+            ed.set_text(crate::attachments::Message::text(
+                &app.queue.items[app.queue.sel],
+            ));
             ed.reset_undo();
             app.queue.edit = Some(ed);
             app.queue.edit_scroll = 0;
@@ -463,15 +518,16 @@ fn edit_key(
     match code {
         KeyCode::Enter if ctrl || alt || shift => ed.insert_char('\n'),
         KeyCode::Enter => {
-            let text = ed.text().trim().to_string();
+            let text = ed.text();
             app.queue.edit = None;
             app.queue.edit_scroll = 0;
-            if text.is_empty() {
+            if text.trim().is_empty() {
                 // Emptied on purpose: same as deleting the item.
                 app.remove_queued();
             } else {
                 let i = app.queue.sel;
-                app.queue.items[i] = text;
+                let images = crate::attachments::Message::decode(&app.queue.items[i]).images;
+                app.queue.items[i] = crate::attachments::Message { text, images }.encode();
                 app.queue_changed();
             }
         }
@@ -531,6 +587,25 @@ pub(super) fn paste(app: &mut App, text: &str, continues: bool) -> bool {
 
 /// Click a queued row to select it; a click anywhere else leaves the panel.
 pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
+    let send_hit = app
+        .queue
+        .send_targets
+        .iter()
+        .find(|(r, _)| contains(*r, m.column, m.row))
+        .map(|(_, i)| *i);
+    if m.kind == MouseEventKind::Down(MouseButton::Left) && send_hit.is_some() {
+        app.queue.pressed_send = send_hit;
+        return true;
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left) {
+        if let Some(index) = app.queue.pressed_send.take() {
+            if send_hit == Some(index) {
+                let notice = app.force_queued(index);
+                app.flash(notice);
+            }
+            return true;
+        }
+    }
     if m.kind != MouseEventKind::Down(MouseButton::Left) {
         return false;
     }
@@ -571,8 +646,34 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 // ---- state changes -----------------------------------------------------------------------
 
 impl App {
+    pub(super) fn force_queued(&mut self, index: usize) -> String {
+        if self.queue.edit.is_some() {
+            return "Save or cancel the queued edit before sending.".into();
+        }
+        if self.job.is_some() || self.session_ui.loading() {
+            return "Finish the active command or history load before sending.".into();
+        }
+        if index >= self.queue.items.len() {
+            return "No queued message at that position.".into();
+        }
+        if self.queue.force_pending {
+            return "Stopping the active turn before sending the selected message…".into();
+        }
+        let item = self.queue.items.remove(index);
+        self.queue.items.insert(0, item);
+        self.queue.force_pending = true;
+        self.questions.clear();
+        self.queue_changed();
+        self.continuation.invalidate();
+        if self.busy {
+            self.request_cancel();
+            "Stopping the active turn; the selected queued message sends once it stops.".into()
+        } else {
+            "Sending the selected queued message; remaining messages stay paused.".into()
+        }
+    }
     /// Persist after any change and keep the selection valid.
-    fn queue_changed(&mut self) {
+    pub(super) fn queue_changed(&mut self) {
         self.queue.clamp();
         self.persist_queue_now();
     }
@@ -611,8 +712,8 @@ impl App {
             self.queue.advance = false;
             self.pause_queue();
             if let Some(p) = sent.filter(|_| failed && !cancelled) {
-                if self.editor.text().trim().is_empty() {
-                    self.editor.set_text(&p);
+                if self.editor.text().trim().is_empty() && self.images.draft.is_empty() {
+                    self.restore_composer(&p);
                     self.push_system("your prompt is back in the box");
                 }
             }
@@ -624,15 +725,34 @@ impl App {
     /// A turn ended: finish it, then send the next queued prompt if the turn was clean.
     pub(super) fn on_turn_done(
         &mut self,
-        outcome: crate::provider::turn::TurnOutcome,
+        mut outcome: crate::provider::turn::TurnOutcome,
         tx: &mpsc::UnboundedSender<String>,
     ) {
+        if self.cancel_requested {
+            outcome.cancelled = true;
+        }
+        let turn_closed = outcome.cancelled || (!outcome.failed && outcome.exit_code == Some(0));
+        self.preparing_cancel = None;
+        if let Some(session) = outcome.session_id.as_ref() {
+            self.native_session_id = Some(session.clone());
+        }
+        self.remember_native_source();
         self.cancel_requested = false;
         self.busy = false;
         self.pulse_on = false;
         self.cancel_handle = None;
-        let automatic_target = self.prepare_usage_continuation(&outcome);
+        self.questions.cancel_native();
+        let automatic_target = if self.queue.force_pending {
+            None
+        } else {
+            self.prepare_usage_continuation(&outcome)
+        };
         self.finalize_turn(outcome);
+        self.save_turn_checkpoint(turn_closed);
+        if self.questions.waiting() {
+            self.pause_queue();
+            self.queue.advance = false;
+        }
         if self.continuation.waiting() {
             self.queue.advance = false;
             self.pause_queue();
@@ -645,6 +765,39 @@ impl App {
 
     /// Send queued prompts through the normal submit path until one starts a turn.
     pub(super) fn queue_advance(&mut self, tx: &mpsc::UnboundedSender<String>) {
+        if self.questions.waiting() {
+            return;
+        }
+        if self.queue.force_pending {
+            if self.busy
+                || self.cancel_requested
+                || self.queue.edit.is_some()
+                || self.job.is_some()
+                || self.session_ui.loading()
+            {
+                return;
+            }
+            self.queue.force_pending = false;
+            self.queue.advance = false;
+            self.queue.paused = true;
+            if !self.queue.items.is_empty() {
+                let line = self.queue.items.remove(0);
+                self.queue_changed();
+                self.push_history(&line);
+                self.run_line(line, tx);
+                self.queue.paused = true;
+                self.queue.advance = false;
+            }
+            return;
+        }
+        if !self.busy {
+            if let Some(target) = self.continuation_target.take() {
+                self.continue_usage(&target, tx);
+            }
+            if let Some(target) = self.resume_deferred_usage() {
+                self.continue_usage(&target, tx);
+            }
+        }
         // An inline editor owns the queue until its edit is saved or cancelled. Removing
         // even an earlier row here would change what `sel` refers to and lose unsaved work.
         if self.queue.edit.is_some() || self.session_ui.loading() {
@@ -669,6 +822,20 @@ impl App {
 
     /// `/queue` and `/queue clear`.
     pub(super) fn queue_command(&mut self, arg: &str) -> Vec<String> {
+        if arg == "send" || arg.starts_with("send ") {
+            let index = if arg == "send" {
+                Some(0)
+            } else {
+                arg[5..]
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| n.checked_sub(1))
+            };
+            return vec![index
+                .map(|i| self.force_queued(i))
+                .unwrap_or_else(|| "usage: /queue send [message number]".into())];
+        }
         match arg {
             "" => {
                 if self.queue.items.is_empty() {

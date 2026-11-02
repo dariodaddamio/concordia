@@ -1,0 +1,128 @@
+# Feature completion audit: 2026-11-02a
+
+Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
+improvements are implemented. The complete
+memory-management/orchestration roadmap remains unfinished. This audit does not mark planned
+features complete because their UI exists or because a synthetic demonstration passes.
+
+## Closed in this build
+
+- Paste line-ending and whitespace preservation through send/queue/edit, plus explicit recovery
+  after native Codex history-recording failure without automatic replay.
+
+- Native Windows text clipboard, accurate/failure-safe cuts and faster active-output polling.
+- Per-worker native models, batched result collection and opt-in automatic handback, bound to
+  the launching conversation and using normal dispatch/recovery. Persistent job state,
+  dependency scheduling, isolation and worker quota failover remain open. See
+  [orchestration and latency](orchestration-and-latency.md).
+- Stable completed-diagram rendering in long histories and inspectable patch-failure diagnostics.
+
+- Local bounded Mermaid terminal rendering, shared by chat and formatted Markdown.
+- Native image payloads for Codex/Claude/Cursor, composer capture/preview/remove chips, immutable
+  snapshots and draft/queue/recovery/handoff references. Cursor requires advertised ACP image
+  capability. Inline raster thumbnails, drag/drop and generic documents remain open.
+- Cursor image-turn native permission/choice responses. Ordinary text adapters and other native
+  approval paths have not been migrated; this is not full provider interaction parity.
+- Draft-preserving automatic quota continuation, deferred retry after command screens/queued edits,
+  completed-error versus still-running-tool classification, and broader terminal quota-event parsing.
+- Non-clickable timing/token metadata, full subtle user-message backgrounds, consistent paused
+  composer spacing and incoming/current-only default update notes with H history expansion.
+
+
+- Selectable conversational question replies, draft preservation and paused queues; these are
+  follow-up messages, not native approval RPC support.
+- Chat/recent/workspace file discovery with bounded ignored-path-aware traversal, quoted absolute
+  and cwd-relative completion, and canonical deduplication.
+- Explicit Send now queue controls; the prior turn stops before one selected item starts.
+- Below-chat run status/Esc, persistent completion timing, user-row highlights, conditional Bottom
+  and consistent command-list padding.
+- Fresh read-only Codex quota requests with identity-bound caching and recorded fallback labels.
+  Structured quota-code handoff and explicit automatic-pause reasons.
+
+
+- Formatted-by-default Markdown/JSON; editable raw source with syntax colors, selection,
+  undo/redo, explicit save, conflict detection and dirty-close/reload/exit decisions.
+- Pane-owned recovery for file buffers, cursor/mode/layout. Interrupted successful saves are
+  reconciled against current disk bytes; external changes retain the recovered buffer.
+- Windows headless provider launches request no console window. Node used by an installed
+  provider remains legitimate subprocess work; no unrelated Node process is terminated.
+- Continuation keeps the original request in chat instead of echoing internal handoff instructions.
+
+- Command pickers, usage, accounts/models, file/recovery lists, token/update screens and activity
+  output have shared X exit controls. Mouse close uses a matching press/release; dragging away
+  does not close. Update close cancels its own job through the same action as Esc.
+- The message box shows Esc/X and explains paused chat ownership. Regular list typing filters;
+  activity typing searches output. The original draft stays in the editor and returns on close.
+- The pinned expanded-tool collapse control uses the same command/argument preview and output
+  count as the compact card, so scrolling retains the command subject rather than only `shell`.
+- Explicit GIF/PNG/JPEG/WebP references use the system viewer, preserving the draft and leaving
+  text previews internal. Viewer launchers are bounded/reaped, and arguments do not pass through
+  a command shell. Tests replace the external opener; physical viewer behavior is not certified.
+
+Implementation: `tui/modal.rs`, `tui/mod.rs`, `tui/pointer.rs`, `tui/files.rs`.
+Interaction evidence is in `tui/tests.rs` and the isolated `tui_journeys.rs` modal journey.
+
+## Existing local features retained
+
+The validation suite covers account/model selection and isolation, provider launch planning,
+native session binding, drafts/queues/recovery, goal/chat navigation and wrapping, fresh native
+usage reads, bounded quota/model fallback, exact recent-source readback, cancellation guards,
+explicit workers and reported native subagents, connected Harness pins, reactive capacity-error
+recovery, Markdown tables/links, chat/recent/workspace file suggestions, raw/formatted previews, search,
+reload/change indication, independent input scrolling, update/install controls and read-only MCP.
+The latest run evidence and its concurrency conditions belong in [E2E status](e2e-status.md).
+This is fixture/automated evidence, not a claim to have tested every possible real-provider event.
+
+## Open core roadmap
+
+These items are not a completed feature set. Repeated UI polishing did not finish the core
+roadmap, and an audit is not implementation. Local engineering can proceed without owner input.
+
+1. Whole-history native indexing and complete bounded pagination. Current Codex/Claude indexes
+   retain a recent window (last 8 MiB, up to 128 events); that is not every historical event.
+2. Cursor exact native readback. The current adapter exposes metadata; it has no supported exact
+   conversation-source reader. A verified source format or supported export path is required.
+3. Related-chat retrieval and richer verified lineage/goals. Current source chains and connected
+   file-backed Harness pins are first slices; lexical chat search is not confirmed ancestry.
+4. Proactive context rollover and per-version compaction policy. Current rollover reacts once
+   to a recognized terminal error. Unknown capacity remains unknown and provider compaction
+   settings are not changed. Verified native signals/controls remain an acceptance prerequisite.
+5. Durable worker/run ownership across restart and uncertain-completion reconciliation. Current
+   unfinished-request recovery does not establish resumed ownership of every background worker.
+6. Live provider/auth/approval parity and public-release gates. Real provider model turns remain
+   prohibited without an explicit scope and budget. Synthetic fixtures do not clear these gates.
+7. Visible custom pointer shapes in the installed WezTerm 2024 host. Its parser does not support
+   the requested control; app-side shape-selection tests do not close that host limitation.
+
+Managed worktrees and cwd search/replacement remain later workspace requirements. Image paste is
+implemented; inline raster thumbnails and drag/drop remain open. Signing and platform expansion
+have their own release/roadmap status. They are not silently
+included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.md),
+[workspace requirements](workspace-panes.md), [release blockers](release-blockers.md), and
+[host evidence](chat-rendering.md).
+
+## What the owner can unblock
+
+- No input is needed for local indexing/pagination, synthetic related-chat evaluation, durable
+  worker ownership, or cwd replacement implementation. Their unfinished status is engineering
+  work, not a permission blocker.
+- Live provider/auth/approval parity needs an explicit provider/task scope and usage budget under
+  `AGENTS.md`. No model turns have been used to clear this gate.
+- Cursor exact readback and proactive rollover require verified native source formats or signals
+  for installed versions. Unknown signals must remain unknown; documentation/read-only inspection
+  can continue without asking the owner to research them.
+- Visible pointer shapes require a terminal host that supports the requested control. The
+  installed WezTerm 2024 build does not; demo cursor overlays do not change this.
+- Publishing, signing identity and distribution choices are release decisions, not reasons to
+  stop implementing local features.
+
+## GIF scope
+
+Two replacement GIFs show file review/edit/save and an explicit account continuation after a
+simulated limit. Their frames come from the actual `draw_ui` renderer and keyboard/mouse/continuation
+handlers, using a fake dispatch channel. Data and replies are synthetic, and each GIF says so.
+Cursor movement/click feedback are editorial overlays. No real provider
+turn, real account mutation, benchmark comparison, release publication or social-media post is involved.
+
+Reproduction and files: [media](media/README.md). These drafts do not clear the full-feature
+[launch gates](launch-plan.md).

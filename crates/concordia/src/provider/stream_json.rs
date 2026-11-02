@@ -117,6 +117,7 @@ impl StreamParser {
             },
             "tool_call" if self.flavor == Flavor::Cursor => self.cursor_tool_call(&ev, &mut out),
             "result" => self.result(&ev, &mut out),
+            "error" => out.extend(super::stream_cards::classify_codex_event(&ev)),
             _ => {}
         }
         out
@@ -457,11 +458,28 @@ impl StreamParser {
                 .get("subtype")
                 .and_then(Value::as_str)
                 .is_some_and(|s| s.starts_with("error"));
+        if text.is_empty() && is_error {
+            if let Some(errors) = ev.get("errors").and_then(Value::as_array) {
+                let text = errors
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.is_empty() {
+                    out.push(StreamPart::Error(text));
+                }
+            }
+        }
         if text.is_empty() {
             return;
         }
         if is_error {
-            out.push(StreamPart::Error(text.to_string()));
+            out.push(StreamPart::Error(super::stream_cards::capacity_error_text(
+                text,
+                ev.pointer("/error/code")
+                    .or_else(|| ev.get("error_code"))
+                    .and_then(Value::as_str),
+            )));
         } else if !self.saw_text {
             // The final result repeats the assistant text; use it only if no text streamed.
             out.push(StreamPart::Text(text.to_string()));

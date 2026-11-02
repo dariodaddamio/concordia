@@ -13,10 +13,10 @@
 <rect x="338" y="36" width="666" height="19" fill="#303030"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
 <text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">◆</text>
-<text x="41" y="50" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">concordia</text>
-<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-21d</text>
+<text x="41" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#666666">concordia 2026-11-01b</text>
 <text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
-<text x="356" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
+<text x="356" y="50" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">member@example.invalid</text>
+<text x="572" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
 <text x="770" y="50" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#666666">5h 59% left · 7d 41% left</text>
 <text x="23" y="69" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#5fafff">| i</text>
 <text x="59" y="69" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
@@ -24,7 +24,7 @@
 <text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">interrupts.</text>
 <text x="23" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
 <text x="41" y="126" textLength="495" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Why does the nightly sync skip rows with a null region?</text>
-<text x="23" y="145" textLength="279" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex · codex-3 · gpt-5.1-codex</text>
+<text x="23" y="145" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3 · gpt-5.1-codex</text>
 <text x="23" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
 <text x="41" y="164" textLength="288" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n region src/sync</text>
 <text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
@@ -36,14 +36,16 @@
 <text x="41" y="221" textLength="576" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">Checking how the region filter treats a null before it compares.</text>
 <text x="41" y="240" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">The comparison runs first, so a missing region never matches and the row is dropped.</text>
 <text x="41" y="259" textLength="531" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">Running the filter tests to confirm before proposing a fix.</text>
-<text x="14" y="582" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">╭ ⡀</text>
-<text x="50" y="582" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc" font-weight="700">thinking</text>
-<text x="131" y="582" textLength="180" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">· 0s · Esc to cancel</text>
-<text x="320" y="582" textLength="684" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">───────────────────────────────────────────────────────────────────────────╮</text>
+<text x="14" y="582" textLength="441" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">╭────────────────────────────────────────────────</text>
+<text x="464" y="582" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">[ Bottom ]</text>
+<text x="563" y="582" textLength="441" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">────────────────────────────────────────────────╮</text>
 <text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">│</text>
 <text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
 <text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">│</text>
-<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="14" y="620" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">╰ ⡀</text>
+<text x="50" y="620" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc" font-weight="700">thinking</text>
+<text x="131" y="620" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">· 8m 20s · Esc to cancel</text>
+<text x="356" y="620" textLength="648" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">───────────────────────────────────────────────────────────────────────╯</text>
 <text x="23" y="639" textLength="369" lengthAdjust="spacingAndGlyphs" fill="#666666">Tab queue · Ctrl+O expand · Ctrl+C cancel</text>
 <text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">auth workspace</text>
 </g>
