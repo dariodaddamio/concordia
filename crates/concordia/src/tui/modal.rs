@@ -66,7 +66,10 @@ pub(super) fn draw_input(f: &mut Frame, area: Rect, app: &mut App) -> bool {
             "Esc or X closes usage. r refreshes. Chat input is paused."
         } else if matches!(
             picker.kind,
-            PickerKind::Update | PickerKind::Tokens | PickerKind::Related
+            PickerKind::Update
+                | PickerKind::Tokens
+                | PickerKind::Related
+                | PickerKind::CreditDetails
         ) {
             "Esc or X closes this screen. Chat input is paused."
         } else {

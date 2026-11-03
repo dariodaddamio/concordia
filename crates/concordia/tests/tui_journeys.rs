@@ -803,12 +803,38 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
     let mut s = Session::launch_mode(dir.path(), &dir.path().join("workspace"), &[], true);
+    s.submit("home navigation");
+    s.until("existing conversation is visible", |s| {
+        s.screen().contains("FAKE REPLY: home navigation")
+    });
     s.submit("/synthetic resize-chat-marker");
     s.until("transcript ready", |s| {
         s.screen().contains("type / to see the commands")
     });
     s.paste("resize-draft-marker");
     s.until("draft persisted", |s| s.draft() == "resize-draft-marker");
+    s.send("\x1b[<0;2;1M\x1b[<0;2;1m");
+    s.until(
+        "Home arrow opens the chat browser without losing the draft",
+        |s| s.screen().contains(" chats ") && s.draft() == "resize-draft-marker",
+    );
+    s.send("\x1b");
+    s.until("Home returns to the existing chat", |s| {
+        !s.screen().contains(" chats ") && s.screen().contains("resize-chat-marker")
+    });
+    s.send("\x1b[<0;2;2M\x1b[<0;2;2m");
+    s.until("credit row opens balance details", |s| {
+        let screen = s.screen();
+        screen.contains("Credit balance")
+            && screen.contains("Balance: Not reported by provider")
+            && screen.contains("Open full credit balance")
+    });
+    s.paste("details must retain the draft");
+    assert_eq!(s.draft(), "resize-draft-marker");
+    s.send("\x1b");
+    s.until("credit details close without dispatching", |s| {
+        s.screen().contains("resize-chat-marker") && s.draft() == "resize-draft-marker"
+    });
     for (cols, rows) in [
         (60, 40),
         (120, 40),
@@ -839,7 +865,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
                 .next()
                 .unwrap_or_default()
                 .trim_start()
-                .starts_with("concordia")
+                .starts_with("← Home")
                 && screen.contains("resize-draft-marker")
                 && screen
                     .lines()
@@ -872,7 +898,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
             .next()
             .unwrap_or_default()
             .trim_start()
-            .starts_with("concordia")
+            .starts_with("← Home")
             && screen
                 .lines()
                 .nth(28)
@@ -880,7 +906,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
                 .contains('\u{2570}')
             && screen.contains("resize-draft-marker")
     });
-    assert!(s.prompts().is_empty());
+    assert_eq!(s.prompts(), ["home navigation"]);
     s.send("\x01\x08");
     s.send("\x03");
     s.send("\x03");
