@@ -374,13 +374,15 @@ fn workspace_completion_handles_paths_without_chat_mentions_and_recents_survive_
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         ui.app.related_files.poll();
-        if std::fs::read_dir(ui.app.state_root.join("file-recent"))
-            .is_ok_and(|mut d| d.next().is_some())
+        if related_files::State::new(&ui.app.state_root, &cwd)
+            .recent
+            .iter()
+            .any(|path| path.ends_with("src/code.c"))
         {
             break;
         }
         assert!(Instant::now() < deadline);
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(5));
     }
     let reopened = App::new(ui.app.state_root.clone(), cwd.clone());
     assert!(reopened
