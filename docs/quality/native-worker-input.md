@@ -63,6 +63,11 @@ reading. Cached or failed refreshes retain freshness labels. No model calls or e
 
 ## Verification
 
-Existing library, integration and terminal checks are extended for queue return, JSON paths, edit
-counts/colors/file opening, usage credit persistence across restart, native plan rejection and
-worker review ownership/draft preservation. Final candidate evidence is recorded after the gates.
+Production source `24e6d9d`, build `2026-11-03e`, passes all 983 enabled checks through everyday
+smoke, all-target Clippy and OSS gates (340 tracked text files). The isolated installed candidate
+is 19,097,088 bytes, SHA-256 `19dd5d649822015c9750edfcc4321cf37f92f45ed7eb2ffb4a0d0dfd6f1b2097`.
+Forty-seven installed terminal journeys pass in the full run; the extended worker journey passes
+separately in 26.11 seconds after correcting its selected-worker gesture and waiting for the
+existing debounced draft persistence before asserting on disk. Those corrections change only the
+test. Its native permission and session-less plan rejection both preserve the main draft, and no
+main turn or print fallback is launched. Final remote CI remains a separate recorded gate.
