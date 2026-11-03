@@ -583,7 +583,7 @@ impl App {
                 ("◇", "Waiting for you".into())
             } else if self.busy {
                 match &self.phase {
-                    Phase::Waiting => ("◌", "Waiting".into()),
+                    Phase::Waiting => ("✧", "Waiting".into()),
                     Phase::Thinking => ("◈", "Thinking".into()),
                     Phase::Tool(name) => (
                         crate::provider::stream_cards::tool_icon(name),
