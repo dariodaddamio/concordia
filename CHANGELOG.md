@@ -1,5 +1,11 @@
 # Changelog
 
+### Added (`2026-11-03w`)
+
+- Left Arrow opens Home when the composer is empty; Right Arrow returns to the chat. Alt+Left
+  and Alt+Right navigate with a draft present. Ordinary cursor movement, focused file/queue
+  editors, goal input and native/modal decisions retain their own arrow handling.
+
 ### Added (`2026-11-03v`)
 
 - A header arrow opens Home from an existing chat without discarding its messages, draft, or

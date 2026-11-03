@@ -436,6 +436,37 @@ fn set_pane(app: &mut App, pane: Pane) {
 
 /// Keys while the page shows. `false` leaves the key to the rest of the interface (Ctrl
 /// shortcuts, and a printable key after it has closed the page and joined the input).
+pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
+    if app.picker.is_some()
+        || app.workspace.focused.is_some()
+        || app.queue.focused
+        || app.queue.edit.is_some()
+        || app.activity.detail.is_some()
+        || app.questions.focused
+        || editing_goal(app)
+    {
+        return false;
+    }
+    let plain = key.modifiers.is_empty() && app.editor.text().is_empty();
+    let navigation = key.modifiers == KeyModifiers::ALT;
+    if !plain && !navigation {
+        return false;
+    }
+    match key.code {
+        KeyCode::Left => {
+            if !visible(app) {
+                open_home(app);
+            }
+            true
+        }
+        KeyCode::Right if visible(app) => {
+            close(app);
+            true
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if key.code == KeyCode::F(6) {
         app.memory_command("groups");

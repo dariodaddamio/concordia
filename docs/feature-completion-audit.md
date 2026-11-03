@@ -1,4 +1,14 @@
-# Feature completion audit: 2026-11-03s
+# Feature completion audit: 2026-11-03w
+
+The full roadmap is **not complete**. Remaining product capabilities include Claude native
+approval provenance, Claude/Cursor proactive capacity signals, verified PDF/binary document
+transport, broader provider file-output coverage and fuller integration management. Live-provider
+qualification, memory-retention experiments and signing/distribution remain separate open gates.
+
+Recent UI follow-ups add automatic composer thumbnails, a separate credit row and details view,
+private-by-default header email, concurrent foreground instances and draft-preserving Home
+navigation by mouse and keyboard. Native numeric credit balances remain unavailable when the
+provider returns null; the details view links to the full account Usage page.
 
 The supported local roadmap slices and the additional UX requests are implemented within their
 documented capabilities. The [current disposition](quality/overnight-roadmap-disposition.md) maps
