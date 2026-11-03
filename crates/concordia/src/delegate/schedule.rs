@@ -40,6 +40,8 @@ pub struct Task {
     conversation_id: String,
     run_id: String,
     prerequisites: Vec<Prerequisite>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivery: Option<super::delivery::Receipt>,
     state: RunState,
 }
 
@@ -55,6 +57,7 @@ impl Task {
             conversation_id,
             run_id,
             prerequisites,
+            delivery: None,
             state: RunState::Pending,
         };
         task.validate_identity()?;
@@ -81,12 +84,32 @@ impl Task {
         self.state
     }
 
+    pub fn delivery(&self) -> Option<&super::delivery::Receipt> {
+        self.delivery.as_ref()
+    }
+
     fn validate_identity(&self) -> Result<(), String> {
         for id in [&self.task_id, &self.conversation_id, &self.run_id] {
             validate_id(id)?;
         }
         if self.prerequisites.len() > MAX_EDGES {
             return Err("dependency graph exceeds 256 edges".into());
+        }
+        if let Some(receipt) = &self.delivery {
+            receipt.validate()?;
+            if receipt.request.child != self.run_id
+                || receipt.request.conversation != self.conversation_id
+                || receipt.request.parents.iter().any(|parent| {
+                    !self
+                        .prerequisites
+                        .iter()
+                        .any(|prerequisite| prerequisite.run_id == parent.run)
+                })
+            {
+                return Err(
+                    "delivery receipt does not match the exact dependency task/edges".into(),
+                );
+            }
         }
         Ok(())
     }
@@ -105,6 +128,9 @@ pub enum BlockReason {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Readiness {
     Ready,
+    IntegrationRequired {
+        reason: String,
+    },
     WaitingDependencies {
         prerequisites: Vec<Prerequisite>,
     },
@@ -231,6 +257,27 @@ impl Graph {
             return Err("dependencies of a running or finished task cannot change".into());
         }
         task.prerequisites = prerequisites;
+        task.delivery = None;
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub(super) fn accept_delivery(
+        &mut self,
+        task_id: &str,
+        receipt: super::delivery::Receipt,
+    ) -> Result<(), String> {
+        let mut candidate = self.clone();
+        let task = candidate
+            .tasks
+            .iter_mut()
+            .find(|task| task.task_id == task_id)
+            .ok_or("unknown dependency task")?;
+        if task.state != RunState::Pending {
+            return Err("only pending dependency tasks accept delivery review".into());
+        }
+        task.delivery = Some(receipt);
         candidate.validate()?;
         *self = candidate;
         Ok(())

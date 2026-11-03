@@ -9,6 +9,7 @@ const LEDGER_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) fn managed_references(
     root: &Path,
     id: &str,
+    retirement: bool,
 ) -> Result<(Vec<String>, Vec<String>), String> {
     use sha2::{Digest, Sha256};
     let recovery = root.join("pane-recovery");
@@ -78,10 +79,13 @@ pub(crate) fn managed_references(
         }
         let ledger: Ledger = serde_json::from_slice(&bytes)
             .map_err(|_| "worker ledger unavailable; references unknown")?;
-        if !(1..=7).contains(&ledger.version) {
+        if !(1..=8).contains(&ledger.version) {
             return Err("unknown worker ledger version; references retained".into());
         }
         let hash = format!("{:x}", Sha256::digest(&bytes));
+        if let Some(graph) = &ledger.schedule {
+            graph.validate()?;
+        }
         for job in ledger.jobs {
             if job
                 .workspace
@@ -89,6 +93,30 @@ pub(crate) fn managed_references(
                 .and_then(|scope| scope.binding.managed.as_ref())
                 .is_some_and(|managed| managed.id == id)
             {
+                if let Some(graph) = &ledger.schedule {
+                    for dependent in graph.tasks().iter().filter(|task| {
+                        task.prerequisites()
+                            .iter()
+                            .any(|prerequisite| prerequisite.run_id == job.run_id)
+                    }) {
+                        references.push(format!(
+                            "dependent run {} references managed prerequisite {} / {:?}",
+                            dependent.run_id(),
+                            job.run_id,
+                            dependent.state()
+                        ));
+                        if retirement
+                            && !matches!(
+                                dependent.state(),
+                                schedule::RunState::Succeeded
+                                    | schedule::RunState::Failed
+                                    | schedule::RunState::Cancelled
+                            )
+                        {
+                            blockers.push(format!("dependency run {} still needs managed prerequisite {}; retain until it finishes or is removed explicitly", dependent.run_id(), job.run_id));
+                        }
+                    }
+                }
                 references.push(format!(
                     "run {} / {:?} / result {} / ledger {}",
                     job.run_id,
@@ -366,7 +394,7 @@ mod tests {
         drop(restored);
         let mut corrupt: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(corrupt["version"], 7);
+        assert_eq!(corrupt["version"], 8);
         corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
         let bytes = serde_json::to_vec(&corrupt).unwrap();
         std::fs::write(&path, &bytes).unwrap();
@@ -468,7 +496,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1..=7)
+            if !matches!(ledger.version, 1..=8)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -632,7 +660,7 @@ impl Delegates {
             })
             .collect();
         let bytes = serde_json::to_vec(&Ledger {
-            version: 7,
+            version: 8,
             owner: recovery.owner.clone(),
             workspace: recovery.workspace.clone(),
             conversation: self.conversation_id.clone(),

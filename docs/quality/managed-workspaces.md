@@ -76,7 +76,8 @@ native directory identities, UUID, base object ID, generated branch and binding 
 ownership. Unsupported/corrupt metadata remains intact and refuses dispatch. Registry capacity
 does not trigger automatic pruning.
 
-Workspace registry v2 and worker ledger v7 read their earlier supported versions. Binding v2
+Workspace registry v2 and worker ledger v8 read their earlier supported versions. Ledger v8 adds
+explicit cross-worktree dependency delivery receipts; earlier ledgers default to no acceptance. Binding v2
 adds explicit managed provenance; ordinary shared-folder bindings retain v1. A legacy reader
 cannot treat a managed folder as an ordinary owner cwd. Unfinished main requests retain their
 existing shared-folder schema because this slice changes worker execution only.

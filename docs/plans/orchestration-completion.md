@@ -4,8 +4,9 @@ Status: proposed, based on source revision `c6d3b7c` (2026-11-02). This document
 not a claim that the capabilities below have shipped. Planning changes only this file.
 
 Implementation progress: [managed workspaces](../quality/managed-workspaces.md) records W2 and
-the current W3 candidate's reviewed integration/retirement controls. Native confinement and
-cross-worktree dependency delivery remain separate from a completed Git lifecycle action.
+the reviewed W3 integration/retirement controls. [Cross-worktree dependency delivery](../quality/dependency-delivery.md)
+adds explicit result-only/already-integrated acceptance over exact successful runs and native
+sources. Native filesystem confinement remains a separate provider capability.
 
 [Native usage coverage](../quality/native-usage-coverage.md) implements bounded U2 source
 observation import and the remaining U3 attempt/outcome/workspace distinctions. Imported native

@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 #[path = "delegate_accounting.rs"]
 mod accounting;
+#[path = "delegate_delivery.rs"]
+pub mod delivery;
 #[path = "delegate_dependencies.rs"]
 mod dependencies;
 #[path = "delegate_input.rs"]
@@ -729,13 +731,32 @@ impl Delegates {
         let Some(root) = self.recovery.as_ref().map(|r| r.state_root.clone()) else {
             return;
         };
+        let delivery = self
+            .get(id)
+            .and_then(|job| {
+                self.schedule
+                    .tasks()
+                    .iter()
+                    .find(|task| task.run_id() == job.run_id)
+            })
+            .and_then(|task| task.delivery())
+            .cloned();
+        let Some(preparation_cancel) = self.get(id).map(|job| job.preparation_cancel.clone())
+        else {
+            return;
+        };
         if tokio::runtime::Handle::try_current().is_err() {
             self.pause_dependency_job(id, "no async runtime".into(), now);
             return;
         }
         tokio::spawn(async move {
             let verified = tokio::task::spawn_blocking(move || {
-                dependencies::verified_prefix(&root, &dependency_sources)
+                dependencies::verified_prefix(
+                    &root,
+                    &dependency_sources,
+                    delivery.as_ref(),
+                    &preparation_cancel,
+                )
             })
             .await;
             let event = match verified {
@@ -1740,7 +1761,8 @@ pub fn help_lines(protocol_on: bool) -> Vec<String> {
         "  /workers add <account>        allow an account to be a worker".into(),
         "  /workers remove <account>".into(),
         "  /delegate <account|auto> <task>   start one worker turn here (own fresh session)".into(),
-        "  /delegate after ID[,ID] ACCOUNT TASK   approve a task after exact successful runs (same workspace)".into(),
+        "  /delegate after ID[,ID] ACCOUNT TASK   approve a task after exact successful runs; managed cross-worktree inputs wait for delivery review".into(),
+        "  /delegate delivery JOB         review base/heads and native results; accept with result-only|integrated RECEIPT".into(),
         "  /delegate graph               inspect dependency readiness and exact prerequisite runs".into(),
         "  /delegate routes [ID]         inspect eligibility or a task's captured failover decisions".into(),
         "  /delegate policy [set ACCOUNT[:MODEL] ...|legacy]   ordered targets for future tasks".into(),

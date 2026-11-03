@@ -52,6 +52,23 @@ pub(super) struct Panel {
         u64,
         std::sync::mpsc::Receiver<Result<crate::routing::Decision, String>>,
     )>,
+    delivery_read: Option<DeliveryRead>,
+}
+
+struct DeliveryRead {
+    job: u32,
+    generation: u64,
+    request: crate::delegate::delivery::Request,
+    mode: Option<crate::delegate::delivery::Mode>,
+    expected: Option<String>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    rx: std::sync::mpsc::Receiver<Result<crate::delegate::delivery::Review, String>>,
+}
+impl Drop for DeliveryRead {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 struct RecoveryRead {
@@ -69,6 +86,10 @@ struct Viewer {
 
 impl Panel {
     pub(super) fn change_conversation(&mut self) {
+        if let Some(read) = &self.delivery_read {
+            read.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.input = None;
         self.recovery_notice = false;
         self.d.new_conversation();
@@ -407,6 +428,12 @@ pub(super) fn viewer_text(j: &Job) -> String {
     t.push('\n');
     t.push_str(&j.workspace_summary());
     t.push('\n');
+    if j.snippet.starts_with("integration_required:") {
+        t.push_str(&format!(
+            "Dependency: {}\nD reviews cross-worktree delivery without consuming the main draft.\n",
+            j.snippet
+        ));
+    }
     t.push_str(&format!("task: {}\n", one_line(&j.task)));
     t.push_str(&format!(
         "model: {} | result: {}\n",
@@ -458,7 +485,9 @@ fn draw_viewer(f: &mut Frame, over: Rect, app: &mut App, now: Instant) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(title)
-        .title_bottom(" Esc close \u{b7} \u{2191}\u{2193} PgUp PgDn scroll ");
+        .title_bottom(
+            " Esc close \u{b7} D delivery review \u{b7} \u{2191}\u{2193} PgUp PgDn scroll ",
+        );
     let inner = block.inner(over);
     let max = body.len().saturating_sub(inner.height as usize);
     let scroll = {
@@ -485,6 +514,11 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.deleg.viewer = None,
             KeyCode::Char('c') if ctrl => app.deleg.viewer = None,
+            KeyCode::Char('d' | 'D') if !ctrl && !alt => {
+                let id = v.job;
+                app.deleg.viewer = None;
+                app.dependency_delivery_command(&id.to_string());
+            }
             KeyCode::Up => v.scroll = v.scroll.saturating_sub(1),
             KeyCode::Down => v.scroll = (v.scroll + 1).min(v.max_scroll),
             KeyCode::PageUp => v.scroll = v.scroll.saturating_sub(10),
@@ -569,6 +603,113 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 }
 
 impl App {
+    fn dependency_delivery_command(&mut self, arguments: &str) {
+        use crate::delegate::delivery::Mode;
+        if arguments.trim() == "cancel" {
+            if let Some(read) = &self.deleg.delivery_read {
+                read.cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.push_system("Dependency review cancelled; no delivery acceptance or Git integration was performed");
+            return;
+        }
+        if self.deleg.delivery_read.is_some() {
+            self.push_system(
+                "A dependency review is already running; /delegate delivery cancel interrupts it",
+            );
+            return;
+        }
+        let parts: Vec<_> = arguments.split_whitespace().collect();
+        if !matches!(parts.as_slice(), [_] | [_, "result-only" | "integrated", _]) {
+            self.push_system("usage: /delegate delivery JOB | /delegate delivery JOB result-only|integrated RECEIPT | /delegate delivery cancel. Review never integrates changes or launches a new task.");
+            return;
+        }
+        let parsed = parts[0]
+            .parse::<u32>()
+            .map_err(|_| "invalid downstream job id".to_string())
+            .and_then(|job| {
+                let request = self.deleg.d.delivery_request(job)?;
+                let mode = parts.get(1).map(|mode| Mode::parse(mode)).transpose()?;
+                let expected = parts.get(2).map(|receipt| receipt.to_string());
+                if expected.as_ref().is_some_and(|receipt| {
+                    receipt.len() != 64 || !receipt.bytes().all(|byte| byte.is_ascii_hexdigit())
+                }) {
+                    return Err("acceptance needs the exact preview receipt".into());
+                }
+                Ok((job, request, mode, expected))
+            });
+        let (job, request, mode, expected) = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.push_system(error);
+                return;
+            }
+        };
+        let root = self.state_root.clone();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = cancel.clone();
+        let input = request.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        if std::thread::Builder::new()
+            .name("concordia-dependency-review".into())
+            .spawn(move || {
+                let result = crate::delegate::delivery::review(&root, &input, &flag);
+                let _ = tx.send(result);
+            })
+            .is_err()
+        {
+            self.push_system("Dependency review could not start; nothing accepted");
+            return;
+        }
+        self.deleg.delivery_read = Some(DeliveryRead {
+            job,
+            generation: self.deleg.generation,
+            request,
+            mode,
+            expected,
+            cancel,
+            rx,
+        });
+        self.push_system("Inspecting exact prerequisite sources and managed heads; no Git integration is running");
+    }
+
+    fn poll_dependency_delivery(&mut self) {
+        let Some(read) = self.deleg.delivery_read.as_ref() else {
+            return;
+        };
+        if read.generation != self.deleg.generation {
+            read.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let result = match read.rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(_) => Err("Dependency reviewer stopped; inspect again".into()),
+        };
+        let Some(read) = self.deleg.delivery_read.take() else {
+            return;
+        };
+        if read.generation != self.deleg.generation
+            || read.cancel.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let result = result.and_then(|review| {
+            if self.deleg.d.delivery_request(read.job)? != read.request || review.request != read.request { return Err("Dependency ownership changed during review; nothing accepted".into()); }
+            match read.mode {
+                None => review.describe(read.job),
+                Some(mode) => {
+                    let receipt = review.receipt(mode)?;
+                    if read.expected.as_deref() != Some(receipt.hash.as_str()) { return Err("Dependency review changed; obtain a fresh receipt before acceptance".into()); }
+                    let hash = receipt.hash.clone();
+                    self.deleg.d.accept_delivery(read.job, receipt)?;
+                    Ok(format!("Dependency delivery accepted for #{} as {} · receipt {}. Dispatch still verifies sources, repository state, routing and native permissions.", read.job, mode.label(), hash))
+                }
+            }
+        });
+        self.push_system(result.unwrap_or_else(|error| format!("Dependency delivery: {error}")));
+    }
+
     pub(super) fn worker_route_inputs(
         &self,
     ) -> Result<(Vec<crate::routing::Target>, crate::routing::Context), String> {
@@ -718,6 +859,7 @@ impl App {
 
     /// Apply worker events and post the result of each worker that finished.
     pub(super) fn poll_delegates(&mut self) {
+        self.poll_dependency_delivery();
         self.poll_managed_workspaces();
         self.poll_scope_inspection();
         if let Some((generation, rx)) = &self.deleg.route_read {
@@ -1178,14 +1320,16 @@ impl App {
                             .find(|task| task.run_id() == job.run_id)
                             .map(|task| task.prerequisites().iter().map(|p| p.run_id.clone()).collect())
                             .unwrap_or_default();
-                        format!("#{} {}: {:?}\nrun {}\nprerequisite runs: {}", job.id, job.account, status,
-                            job.run_id, if parents.is_empty() { "none".into() } else { parents.join(", ") })
+                        let delivery = self.deleg.d.dependency_graph().tasks().iter().find(|task| task.run_id() == job.run_id).and_then(|task| task.delivery()).map(|receipt| format!("{} / {}", receipt.mode.label(), receipt.hash)).unwrap_or_else(|| "no cross-worktree acceptance".into());
+                        format!("#{} {}: {:?}\nrun {}\nprerequisite runs: {}\ndelivery: {}", job.id, job.account, status,
+                            job.run_id, if parents.is_empty() { "none".into() } else { parents.join(", ") }, delivery)
                     }).collect();
                 if lines.is_empty() {
                     self.push_system("No dependency tasks in this conversation.");
                 }
                 for line in lines { self.push_system(line); }
             }
+            SlashCommand::DelegateDelivery(arguments) => self.dependency_delivery_command(arguments),
             SlashCommand::DelegateRoutes(Some(id)) => {
                 self.push_system(self.deleg.d.get(*id).map(|job| job.routing_summary()).unwrap_or_else(|| "Unknown worker job".into()));
             }

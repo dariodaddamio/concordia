@@ -44,6 +44,7 @@ pub enum SlashCommand {
         task: String,
     },
     DelegateGraph,
+    DelegateDelivery(String),
     DelegateRoutes(Option<u32>),
     DelegatePolicy(String),
     DelegateScope(String),
@@ -84,6 +85,9 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
     let tail = it.next().unwrap_or("").trim();
     let second = tail.split_whitespace().next().map(str::to_lowercase);
     let lower = first.to_lowercase();
+    if matches!(cmd, "delegate" | "delegates") && lower == "delivery" {
+        return Some(SlashCommand::DelegateDelivery(tail.into()));
+    }
     if matches!(cmd, "delegate" | "delegates") && lower == "after" {
         let (ids, rest) = tail.split_once(char::is_whitespace).unwrap_or((tail, ""));
         let (target, task) = rest
@@ -482,6 +486,7 @@ pub fn dispatch_slash(
         | SlashCommand::Delegate { .. }
         | SlashCommand::DelegateAfter { .. }
         | SlashCommand::DelegateGraph
+        | SlashCommand::DelegateDelivery(_)
         | SlashCommand::DelegateRoutes(_)
         | SlashCommand::DelegatePolicy(_)
         | SlashCommand::DelegateScope(_)

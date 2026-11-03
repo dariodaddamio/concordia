@@ -72,6 +72,95 @@ pub struct Preview {
     pub receipt: String,
 }
 
+/// Observed repository state for dependency review, never a claim about commit authorship.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependencySnapshot {
+    pub managed: String,
+    pub revision: u64,
+    pub owner: PathBuf,
+    pub execution: PathBuf,
+    pub owner_identity: String,
+    pub common_git: PathBuf,
+    pub common_identity: String,
+    pub execution_identity: String,
+    pub base: String,
+    pub owner_head: String,
+    pub worker_head: String,
+    pub owner_tree: String,
+    pub owner_status_sha256: String,
+    pub worker_status_sha256: String,
+    pub owner_status_excerpt: String,
+    pub worker_status_excerpt: String,
+    pub integration_verified: bool,
+    pub integration_receipt: Option<String>,
+}
+
+pub fn dependency_snapshot(
+    root: &Path,
+    owner: &Path,
+    id: &str,
+    cancel: &AtomicBool,
+    deadline: Instant,
+) -> Result<DependencySnapshot, String> {
+    let mut git = Git::new(cancel)?;
+    git.deadline = git.deadline.min(deadline);
+    let record = bound(root, owner, id)?;
+    verify_record(&git, &record)?;
+    verify_owner(&git, &record)?;
+    idle_git(&git, &record.owner)?;
+    idle_git(&git, &record.execution)?;
+    let owner_head = head(&git, &record.owner, "HEAD")?;
+    let worker_head = head(&git, &record.execution, "HEAD")?;
+    let owner_tree = head(&git, &record.owner, "HEAD^{tree}")?;
+    let owner_status = clean(&git, &record.owner)?;
+    let worker_status = clean(&git, &record.execution)?;
+    let operation = record.operation.as_ref().filter(|operation| {
+        operation.finished
+            && matches!(operation.action, Action::Integrate | Action::CherryPick)
+            && operation.worker_head == worker_head
+            && operation.expected_tree.as_deref() == Some(owner_tree.as_str())
+            && !edited(&owner_status)
+            && !edited(&worker_status)
+    });
+    let snapshot = DependencySnapshot {
+        managed: record.id,
+        revision: record.revision,
+        owner: record.owner,
+        execution: record.execution,
+        owner_identity: record.owner_identity,
+        common_git: record.common_git,
+        common_identity: record.common_identity,
+        execution_identity: record
+            .execution_identity
+            .ok_or("managed execution identity unavailable")?,
+        base: record.base,
+        owner_head,
+        worker_head,
+        owner_tree,
+        owner_status_sha256: format!("{:x}", Sha256::digest(owner_status.as_bytes())),
+        worker_status_sha256: format!("{:x}", Sha256::digest(worker_status.as_bytes())),
+        owner_status_excerpt: crate::chat_cli::terminal_safe(&owner_status)
+            .chars()
+            .take(4096)
+            .collect(),
+        worker_status_excerpt: crate::chat_cli::terminal_safe(&worker_status)
+            .chars()
+            .take(4096)
+            .collect(),
+        integration_verified: operation.is_some(),
+        integration_receipt: operation.map(|operation| operation.receipt.clone()),
+    };
+    let current = bound(root, owner, id)?;
+    if current.revision != snapshot.revision
+        || head(&git, &snapshot.owner, "HEAD")? != snapshot.owner_head
+        || head(&git, &snapshot.execution, "HEAD")? != snapshot.worker_head
+    {
+        return Err("managed dependency state changed during review".into());
+    }
+    Ok(snapshot)
+}
+
 fn head(git: &Git<'_>, path: &Path, revision: &str) -> Result<String, String> {
     let value = git
         .run(path, &["rev-parse", "--verify", revision], false)?
@@ -297,7 +386,11 @@ fn preview_with(
     if preview.changes.len() > 512 {
         return Err("changed path budget exceeded; retain for native review".into());
     }
-    let (references, blockers) = crate::delegate::managed_references(root, id)?;
+    let (references, blockers) = crate::delegate::managed_references(
+        root,
+        id,
+        matches!(action, Action::Retire | Action::DeleteBranch),
+    )?;
     preview.references = references;
     preview.blockers.extend(blockers);
     let paths = if action == Action::DeleteBranch {
@@ -519,7 +612,7 @@ pub(super) fn reconcile_retained(
     verify_owner(&git,record)?;
     idle_git(&git,&record.owner)?;
     if edited(&clean(&git,&record.owner)?) { return Err("owner has edits; retain before reconciliation".into()); }
-    let (_,blockers)=crate::delegate::managed_references(&root,&record.id)?;
+    let (_,blockers)=crate::delegate::managed_references(&root,&record.id,record.operation.as_ref().is_some_and(|operation|matches!(operation.action,Action::Retire | Action::DeleteBranch)))?;
     if !blockers.is_empty() { return Err(blockers.join("; ")); }
     let operation=record.operation.as_ref().ok_or("missing lifecycle operation")?;
     let mut next=record.clone();
