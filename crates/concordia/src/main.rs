@@ -18,6 +18,7 @@ fn print_help() {
            concordia chat index|sources|excerpt  revision-checked native history pointers\n\
            concordia chat recall|lineage|link|detach  bounded retrieval and explicit source links\n\
            concordia preview FILE          read-only Markdown preview in this terminal\n\
+           concordia file-edit FILE        independent file editor (Ctrl+Q closes)\n\
            concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
                                read recorded threads (opt-in: CONCORDIA_THREADS=1); read-only\n\
            concordia mcp       stdio MCP server: threads, thread_map, thread_read, native_read, usage, delegate (docs/mcp.md)\n\
@@ -79,6 +80,7 @@ async fn main() -> Result<()> {
                 std::process::exit(code);
             }
         },
+        "file-edit" => tui::run_file_editor(&args[1..])?,
         "preview" => {
             if args.len() != 2 {
                 anyhow::bail!("usage: concordia preview FILE");

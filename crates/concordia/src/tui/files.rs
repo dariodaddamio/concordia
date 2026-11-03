@@ -1,10 +1,8 @@
 //! Explicit file navigation. Launchers are reaped away from the input/render loop.
 use super::*;
 use crate::file_links;
-#[cfg(not(test))]
-use crate::file_open;
-#[cfg(not(test))]
-use std::ffi::OsString;
+#[path = "file_actions.rs"]
+mod actions;
 
 impl App {
     pub(super) fn open_web_link(&mut self, url: String) {
@@ -71,87 +69,28 @@ impl App {
                 return;
             }
         };
-        #[cfg(test)]
-        {
-            self.last_file_open = Some(file.clone());
-        }
-        if file
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| {
-                matches!(
-                    e.to_ascii_lowercase().as_str(),
-                    "gif" | "png" | "jpg" | "jpeg" | "webp"
-                )
-            })
-        {
-            let path = file.path.to_string_lossy();
-            self.open_host_target(
-                path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned(),
-                "image",
-            );
-            return;
-        }
-        let path = file.path.clone();
-        if let Err(error) = self.workspace.open(file) {
-            self.flash(error);
-        } else {
-            self.related_files.remember(&path);
-            if let Some(id) = self.workspace.focused.filter(|_| preview) {
-                self.workspace.preview(id, preview);
+        let action = self.default_file_action();
+        self.perform_file_action(file, action, base, None);
+        if action == crate::file_open::FileAction::Preview && preview {
+            if let Some(id) = self.workspace.focused {
+                self.workspace.preview(id, true);
             }
         }
     }
 
     fn launch_external_file_candidate(&mut self, candidate: file_links::Candidate) {
-        let file = match file_links::resolve(&candidate, &self.cwd) {
-            Ok(file) => file,
-            Err(error) => {
-                self.flash(error);
-                return;
+        match file_links::resolve(&candidate, &self.cwd) {
+            Ok(file) => {
+                self.perform_file_action(
+                    file,
+                    crate::file_open::FileAction::Editor,
+                    self.cwd.clone(),
+                    None,
+                );
             }
-        };
-        #[cfg(test)]
-        {
-            self.last_file_open = Some(file);
-        }
-        #[cfg(not(test))]
-        {
-            if self.file_jobs.len() >= 8 {
-                self.flash("file launchers are still starting; try again shortly");
-                return;
-            }
-            let plan = match file_plan(&file, &self.cwd, &self.state_root, false) {
-                Ok(plan) => plan,
-                Err(error) => {
-                    self.flash(error);
-                    return;
-                }
-            };
-            let (tx, rx) = mpsc::unbounded_channel();
-            self.file_jobs.push(rx);
-            self.flash("opening file in another terminal editor");
-            tokio::spawn(async move {
-                let message = match file_open::spawn(plan).await {
-                    Ok(child) => match child.wait_with_output().await {
-                        Ok(output) if output.status.success() => "file terminal opened".into(),
-                        Ok(output) => format!(
-                            "file terminal failed: {}",
-                            String::from_utf8_lossy(&output.stderr)
-                                .chars()
-                                .take(400)
-                                .collect::<String>()
-                        ),
-                        Err(error) => format!("file terminal failed: {error}"),
-                    },
-                    Err(error) => error,
-                };
-                let _ = tx.send(message);
-            });
+            Err(error) => self.flash(error),
         }
     }
-
     pub(super) fn file_command(&mut self, reference: &str, external: bool, preview: bool) {
         let reference = reference.trim().trim_matches(['"', '`']);
         let reference = reference.strip_prefix('@').unwrap_or(reference);
@@ -180,7 +119,22 @@ impl App {
             if external {
                 self.launch_external_file_candidate(candidate);
             } else {
-                self.open_file_candidate(candidate, preview);
+                match file_links::resolve(&candidate, &self.cwd) {
+                    Ok(file) => {
+                        self.perform_file_action(
+                            file,
+                            crate::file_open::FileAction::Preview,
+                            self.cwd.clone(),
+                            None,
+                        );
+                        if preview {
+                            if let Some(id) = self.workspace.focused {
+                                self.workspace.preview(id, true);
+                            }
+                        }
+                    }
+                    Err(error) => self.flash(error),
+                }
             }
         } else {
             self.push_system("file not found; use /open path/to/file or /preview path/to/file.md");
@@ -199,52 +153,6 @@ impl App {
             self.flash(message);
         }
     }
-}
-
-#[cfg(not(test))]
-fn file_plan(
-    file: &file_links::ResolvedFile,
-    cwd: &Path,
-    state_root: &Path,
-    preview: bool,
-) -> Result<file_open::LaunchPlan, String> {
-    let host = file_open::host_from_environment(
-        crate::host::wezterm::find_wezterm(),
-        std::env::var_os("WEZTERM_PANE"),
-    )?;
-    if preview {
-        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        return file_open::preview_plan(
-            &host,
-            &[exe.into_os_string(), OsString::from("preview")],
-            &file.path,
-            cwd,
-        );
-    }
-    let config = crate::config::Config::load(state_root).config.editor;
-    let editor = if config.program.is_empty() {
-        let program = ["nvim", "hx", "vim"].iter().find_map(|name| which::which(name).ok())
-            .ok_or("no terminal editor found; configure [editor].program and args in config.toml (or use /preview)")?;
-        let name = program
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        if name == "hx" {
-            file_open::EditorSpec::new(
-                program,
-                [format!(
-                    "{{file}}:{}:{}",
-                    file.line.unwrap_or(1),
-                    file.column.unwrap_or(1)
-                )],
-            )
-        } else {
-            file_open::EditorSpec::new(program, ["+{line}", "--", "{file}"])
-        }
-    } else {
-        file_open::EditorSpec::new(config.program, config.args)
-    };
-    Ok(file_open::editor_plan(&host, &editor, file, cwd))
 }
 
 impl App {
@@ -287,13 +195,20 @@ impl App {
                 self.workspace.replacement_finished(&receipt);
             }
             workspace_search::Action::Open(verified) => {
-                let path = verified.hit.path.clone();
-                match self.workspace.open_verified(verified) {
-                    Ok(()) => {
-                        self.related_files.remember(&path);
-                        self.project_search.close();
-                    }
-                    Err(error) => self.project_search.notice(&error),
+                let file = file_links::ResolvedFile {
+                    path: verified.hit.path.clone(),
+                    line: Some(verified.hit.line),
+                    column: Some(verified.hit.column),
+                };
+                if self.perform_file_action(
+                    file,
+                    self.default_file_action(),
+                    self.cwd.clone(),
+                    Some(verified),
+                ) {
+                    self.project_search.close();
+                } else if let Some((message, _)) = &self.flash {
+                    self.project_search.notice(message);
                 }
             }
             _ => {}

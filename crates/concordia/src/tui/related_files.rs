@@ -403,12 +403,12 @@ impl App {
                 detail: entry
                     .candidate
                     .line
-                    .map(|line| format!("line {line} \u{b7} preview"))
+                    .map(|line| format!("line {line} \u{b7} F4 actions"))
                     .unwrap_or_else(|| {
                         if entry.directory {
                             format!("{} · open folder", entry.origin)
                         } else {
-                            format!("{} · preview", entry.origin)
+                            format!("{} · F4 actions", entry.origin)
                         }
                     }),
             })

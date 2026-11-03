@@ -12,6 +12,10 @@ Progress: [selected project replacement](../quality/project-replacement.md) impl
 the shipped W1 search, including exact preview approval, guarded saves and receipt inspection.
 Remaining file-opening, input, rendering and integration slices retain the boundaries below.
 
+[File actions and independent editors](../quality/file-actions.md) implement W3/W4 through the
+existing file panes, save and recovery engine. Native GUI launches are explicit; host/editor
+physical evidence remains a separate W5 gate.
+
 | Surface | Source evidence | Status and boundary |
 | --- | --- | --- |
 | File discovery | `tui/related_files.rs`, `file_links.rs` | Chat/recent/workspace references, ignored-path-aware traversal, canonical deduplication and directory browsing exist. Discovery does not search file contents. |

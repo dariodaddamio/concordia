@@ -1,5 +1,9 @@
 # Changelog
 
+- Unified file actions offer Preview here, Split off and Open in editor, with explicit defaults
+  and native GUI-editor configuration. Independent Concordia file editors reuse pane saves and
+  owned crash recovery without starting a provider.
+
 - Project search supports selected literal replacements with exact previews, conflict/ownership
   preflight, serial editor saves and durable receipts. Ctrl+H inspects interrupted batches without replay.
 

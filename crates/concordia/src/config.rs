@@ -38,10 +38,12 @@ pub struct EditorConfig {
     /// One executable, never a shell command. Empty selects an installed terminal editor.
     pub program: String,
     pub args: Vec<String>,
+    pub launch: crate::file_open::EditorLaunch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ui {
+    pub file_action: crate::file_open::FileAction,
     pub token_line: bool,
     pub tips: bool,
     pub persist_history: bool,
@@ -78,6 +80,7 @@ impl Default for Config {
                 tips: true,
                 persist_history: true,
                 stats: false,
+                file_action: crate::file_open::FileAction::Preview,
             },
             threads: Threads {
                 enabled: false,
@@ -221,6 +224,15 @@ impl Config {
                     "editor.args" => match v.as_array() {
                         Some(args) if args.iter().all(|arg| arg.is_str()) => cfg.editor.args = args.iter().filter_map(|arg| arg.as_str().map(str::to_owned)).collect(),
                         _ => warnings.push("editor.args must be an array of argument strings".into()),
+                    },
+                    "editor.launch"=>match v.as_str() {
+                        Some("terminal")=>cfg.editor.launch=crate::file_open::EditorLaunch::Terminal,
+                        Some("gui")=>cfg.editor.launch=crate::file_open::EditorLaunch::Gui,
+                        _=>warnings.push("editor.launch must be 'terminal' or 'gui'".into()),
+                    },
+                    "ui.file_action"=>match v.as_str().and_then(crate::file_open::FileAction::parse) {
+                        Some(action)=>cfg.ui.file_action=action,
+                        None=>warnings.push("ui.file_action must be 'preview', 'split' or 'editor'".into()),
                     },
                     "ui.token_line" => set_bool(v, &full, &mut cfg.ui.token_line, &mut warnings),
                     "ui.tips" => set_bool(v, &full, &mut cfg.ui.tips, &mut warnings),
@@ -393,6 +405,16 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(config.editor.program, "nvim");
         assert_eq!(config.editor.args, ["+{line}", "--", "{file}"]);
+        assert_eq!(
+            config.editor.launch,
+            crate::file_open::EditorLaunch::Terminal
+        );
+        let (gui, warnings) = Config::parse(
+            "[editor]\nlaunch='gui'\nprogram='native-editor'\n[ui]\nfile_action='split'\n",
+        );
+        assert!(warnings.is_empty());
+        assert_eq!(gui.editor.launch, crate::file_open::EditorLaunch::Gui);
+        assert_eq!(gui.ui.file_action, crate::file_open::FileAction::Split);
         let (bad, warnings) = Config::parse("[editor]\nargs=['valid',12]\nprogram=3\n");
         assert_eq!(bad.editor, EditorConfig::default());
         assert_eq!(warnings.len(), 2);

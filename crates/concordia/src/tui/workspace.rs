@@ -83,6 +83,7 @@ enum Resize {
 }
 
 pub(super) struct Workspace {
+    standalone: bool,
     pub panes: Vec<Pane>,
     pub focused: Option<u32>,
     next_id: u32,
@@ -101,6 +102,7 @@ pub(super) struct Workspace {
 impl Default for Workspace {
     fn default() -> Self {
         Self {
+            standalone: false,
             panes: Vec::new(),
             focused: None,
             next_id: 1,
@@ -119,6 +121,28 @@ impl Default for Workspace {
 }
 
 impl Workspace {
+    pub fn selected_file(&self) -> Option<file_links::ResolvedFile> {
+        let pane = self
+            .panes
+            .iter()
+            .find(|pane| Some(pane.id) == self.focused)?;
+        let (line, column) = pane
+            .document
+            .as_ref()
+            .map_or((pane.scroll, pane.column), |document| document.position());
+        Some(file_links::ResolvedFile {
+            path: pane.path.clone(),
+            line: Some(line.saturating_add(1) as u32),
+            column: Some(column.saturating_add(1) as u32),
+        })
+    }
+    pub fn standalone(area: Rect) -> Self {
+        Self {
+            standalone: true,
+            screen: area,
+            ..Self::default()
+        }
+    }
     #[cfg(test)]
     pub(super) fn file_workers_idle(&self) -> bool {
         self.jobs.is_empty() && self.panes.iter().all(|p| !p.loading && !p.saving)
@@ -234,7 +258,12 @@ impl Workspace {
         if self.panes.len() >= MAX_PANES || self.jobs.len() >= MAX_PANES {
             return Err("file pane/read limit reached (3); close a pane or wait for reads".into());
         }
-        if self.screen.width < MIN_CHAT + MIN_FILE + 1
+        if self.screen.width
+            < if self.standalone {
+                MIN_FILE
+            } else {
+                MIN_CHAT + MIN_FILE + 1
+            }
             || self.screen.height < (self.panes.len() as u16 + 1) * MIN_HEIGHT
         {
             return Err("terminal too small for another file pane; enlarge it first".into());
@@ -608,7 +637,14 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
     if state.panes.is_empty() {
         return area;
     }
-    if area.width < MIN_CHAT + MIN_FILE + 1 || area.height < state.panes.len() as u16 * MIN_HEIGHT {
+    if area.width
+        < if state.standalone {
+            MIN_FILE
+        } else {
+            MIN_CHAT + MIN_FILE + 1
+        }
+        || area.height < state.panes.len() as u16 * MIN_HEIGHT
+    {
         state.focused = None;
         state.resizing = None;
         f.render_widget(
@@ -624,21 +660,33 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
             ..area
         };
     }
-    let chat_w = ((u32::from(area.width) * u32::from(state.chat_percent) / 100) as u16)
-        .clamp(MIN_CHAT, area.width - MIN_FILE - 1);
+    let chat_w = if state.standalone {
+        0
+    } else {
+        ((u32::from(area.width) * u32::from(state.chat_percent) / 100) as u16)
+            .clamp(MIN_CHAT, area.width - MIN_FILE - 1)
+    };
     let chat = Rect {
         width: chat_w,
         ..area
     };
-    state.divider = Rect {
-        x: area.x + chat_w,
-        width: 1,
-        ..area
+    state.divider = if state.standalone {
+        Rect::default()
+    } else {
+        Rect {
+            x: area.x + chat_w,
+            width: 1,
+            ..area
+        }
     };
-    state.files = Rect {
-        x: area.x + chat_w + 1,
-        width: area.width - chat_w - 1,
-        ..area
+    state.files = if state.standalone {
+        area
+    } else {
+        Rect {
+            x: area.x + chat_w + 1,
+            width: area.width - chat_w - 1,
+            ..area
+        }
     };
     f.render_widget(
         Paragraph::new((0..area.height).map(|_| Line::raw("│")).collect::<Vec<_>>()),
@@ -808,9 +856,17 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
                 } else if pane.searching {
                     format!("/{}  {} matches", pane.query, pane.matches.len())
                 } else if pane.raw() {
-                    "Esc chat · Ctrl+S save · Ctrl+F find".into()
+                    if state.standalone {
+                        "Ctrl+Q close · Ctrl+S save · Ctrl+F find".into()
+                    } else {
+                        "Esc chat · Ctrl+S save · Ctrl+F find".into()
+                    }
                 } else if pane.query.is_empty() {
-                    "Esc chat · Alt+V edit · / find · r reload".into()
+                    if state.standalone {
+                        "Ctrl+Q close · Alt+V edit · / find · r reload".into()
+                    } else {
+                        "Esc chat · Alt+V edit · / find · r reload".into()
+                    }
                 } else {
                     format!(
                         "/{}  {} matches \u{b7} n/N next/prev",

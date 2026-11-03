@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03d
+# Feature completion audit: 2026-11-03i
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,10 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Unified file actions and an independent Concordia editor share pane saves, conflict checks
+  and owned recovery. Native GUI editor configuration is explicit; defaults remain internal preview.
+  [Behavior and verification limits](quality/file-actions.md).
 
 - Selected project replacement uses exact byte-bound previews, ownership/pane preflight and
   the existing editor save path. Durable receipts support explicit reconciliation without replay.
