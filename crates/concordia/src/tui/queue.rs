@@ -749,6 +749,7 @@ impl App {
             self.prepare_usage_continuation(&outcome)
         };
         self.finalize_turn(outcome);
+        self.native_accounting_owner = None;
         self.save_turn_checkpoint(turn_closed);
         if self.questions.waiting() {
             self.pause_queue();

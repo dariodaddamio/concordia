@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (`2026-11-02q`)
+- Main-turn completion retains its captured launch owner until usage is recorded. Failed or
+  cancelled launches with no reported counters retain explicit unknown coverage instead of
+  disappearing or losing attempt attribution.
+
 ### Added (`2026-11-02p`)
 - Main continuation and workers share local route eligibility and explicit skipped-target reasons.
   `/continuation routes` and `/delegate routes [ID]` inspect candidates and captured failover decisions.
