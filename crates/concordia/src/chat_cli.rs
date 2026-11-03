@@ -234,10 +234,12 @@ pub fn run(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
         return crate::native_memory::relations::command(root, args, &cwd)
             .map_err(|error| (error, 2));
     }
-    if args
-        .first()
-        .is_some_and(|s| matches!(s.as_str(), "recall" | "lineage" | "link" | "detach"))
-    {
+    if args.first().is_some_and(|s| {
+        matches!(
+            s.as_str(),
+            "recall" | "ranked" | "lineage" | "link" | "detach" | "file-facts"
+        )
+    }) {
         return crate::native_memory::retrieval::command(root, args).map_err(|e| (e, 2));
     }
     if args

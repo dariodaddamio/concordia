@@ -9,7 +9,7 @@ const MAX_RECORDS: usize = 4096;
 pub const MAX_DECLARATIONS: usize = 64;
 const SCOPE_BYTES: usize = 8 * 1024;
 
-fn word(input: &str) -> Result<Option<(String, usize)>, String> {
+pub(crate) fn word(input: &str) -> Result<Option<(String, usize)>, String> {
     let mut quoted = false;
     let mut value = String::new();
     let mut started = false;
@@ -175,7 +175,10 @@ pub fn path_key(path: &Path) -> String {
     }
 }
 
-fn same_key(left: &str, right: &str) -> bool {
+pub(crate) fn same_key(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
     #[cfg(windows)]
     {
         #[link(name = "kernel32")]
@@ -207,7 +210,7 @@ fn same_key(left: &str, right: &str) -> bool {
     }
 }
 
-fn within_key(path: &str, parent: &str) -> bool {
+pub(crate) fn within_key(path: &str, parent: &str) -> bool {
     let mut parts = path.split('/');
     parent.split('/').all(|part| {
         parts
