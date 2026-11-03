@@ -1,6 +1,6 @@
 # Explicit related-chat groups
 
-Candidate `2026-11-03d` adds M2 group metadata and a read-only related-work screen. Groups
+Build `2026-11-03d` adds M2 group metadata and a read-only related-work screen. Groups
 are user-confirmed associations, independent of project folder grouping and observed handoff links.
 No discovery result creates membership automatically. No provider model turn names a group.
 
@@ -55,5 +55,12 @@ release smoke, portable everyday smoke and OSS gates (330 tracked text files). A
 ConPTY journeys pass in 314.35 seconds; the focused memory journey passes alone in 12.10 seconds.
 That portable candidate is 18,980,352 bytes, SHA-256
 `22469DFF9A06BD8836223758031159EB80AE179245E9004A9AEB7E1AEAF66D63`.
-The corrected d candidate includes the parent workspace-alias and source-update artifact fixes and needs its own
-final candidate checks. No live provider or physical-host parity is claimed.
+Corrected production source `858b48f` (same production tree after main merge `69248d1`) includes
+the parent workspace-alias and source-update artifact fixes. It passes all 983 enabled checks,
+portable everyday smoke, all-target Clippy with warnings denied, release smoke and OSS gates
+(331 tracked text files) in an isolated Cargo target directory. All 48 installed ConPTY
+journeys pass in 313.21 seconds. Build d is 18,916,864 bytes; SHA-256
+`91D861BD911EB32EB923800D18B7A74C36FAE06C0448FAB58273A7B5A7A11DA4`.
+An earlier debug-build attempt exhausted host disk space before testing completed; Cargo's
+package-scoped cache cleanup and a fresh run with incremental compilation disabled resolved it.
+No live provider or physical-host parity is claimed.
