@@ -1318,6 +1318,18 @@ mod tests {
                 )
             };
             let goal_rank = ranked(None, Some(goal), None, None, None).unwrap();
+            let scoped_goal = ranked(None, Some(goal), None, None, Some(dir.path())).unwrap();
+            assert!(
+                scoped_goal
+                    .hits
+                    .iter()
+                    .any(|hit| hit.hit.source.id == parent.id
+                        && hit
+                            .reasons
+                            .iter()
+                            .any(|reason| reason.kind == "confirmed_goal_source")),
+                "current workspace aliases must match canonical goal associations"
+            );
             assert_eq!(
                 goal_rank.hits[0].hit.source.id, parent.id,
                 "confirmed association outranks keyword collisions"
