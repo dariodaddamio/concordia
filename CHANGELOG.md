@@ -1,5 +1,18 @@
 # Changelog
 
+### Fixed (`2026-11-03a`)
+- Goal-aware ranking resolves the explicitly selected current workspace before comparing its
+  stored canonical association. Windows short paths and directory aliases retain confirmed-goal
+  reasons; historical source paths are not resolved or opened.
+
+### Added (`2026-11-02t`)
+- Opt-in `/memory ranked` search explains verified goal, handoff, historical-file, literal-text
+  and native-time signals. Context controls include `ranked-file`, `ranked-goal`, `ranked-from`,
+  `ranked-at` and `ranked-source`; ordinary recall keeps its existing behavior.
+- `/memory file-facts SOURCE [OFFSET REVISION]` exposes bounded historical paths from verified
+  Codex/Claude native tool requests. It never opens referenced files or treats requested edits as
+  completed work. CLI and TUI share validation, exact source pointers and snapshot pagination.
+
 ### Added (`2026-11-02s`)
 - `/worktree create BASE`, `list`, `inspect ID`, `reconcile ID` and `cancel` manage explicit Git
   worktree creation from a clean committed source. Creation intent and exact identities survive

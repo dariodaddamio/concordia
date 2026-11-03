@@ -1,5 +1,19 @@
 # Everyday E2E status (MVP A)
 
+## Historical file facts and ranking, 2026-11-02t
+
+Production source `0374dde` passes all 983 enabled checks, all-target Clippy with warnings denied,
+release smoke, portable everyday smoke and OSS gates (328 tracked text files). All 48 installed
+ConPTY journeys pass in 310.86 seconds; the focused memory journey passes alone in 9.32 seconds.
+The checks exercise synthetic sources/fake providers. Everyday smoke additionally performs the
+existing read-only native quota RPC; no model turn is run.
+
+Release/portable candidate `2026-11-02t`: 18,792,960 bytes, SHA-256
+`226ABF48791F5FD1DA29DD78B573308B13F8BE431B8DFD7AD2C220DE6845098C`.
+[Scope and limits](quality/memory-ranking.md): lexical recall remains the default, historical tool
+requests do not establish completed edits, and Cursor file facts are explicitly unavailable.
+Related-chat groups and corpus evaluation remain separate roadmap work at this candidate.
+
 ## Workspace ownership and managed worktrees, 2026-11-02r/s
 
 Cooperative ownership source `68d533c` passed all 48 installed ConPTY journeys in 301.25 seconds,

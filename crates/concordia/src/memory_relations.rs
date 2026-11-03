@@ -104,6 +104,38 @@ fn active(store: &Store, id: &str) -> bool {
         .is_some_and(|change| change.attached)
 }
 
+pub(super) fn ranking_sources(
+    root: &Path,
+    workspace: Option<&Path>,
+    goal: &str,
+) -> Result<Vec<Relation>, String> {
+    let goals = crate::goals::read_goals(root).map_err(|error| error.to_string())?;
+    if !goals.iter().any(|known| known.id == goal) {
+        return Err("unknown goal id".into());
+    }
+    let store = load_store(root)?;
+    // Goal links capture the canonical workspace. The current explicit context can arrive
+    // through a Windows short path or directory alias; never resolve historical source paths.
+    let canonical_workspace = workspace.and_then(|workspace| fs::canonicalize(workspace).ok());
+    let mut rows: Vec<_> = store
+        .relations
+        .iter()
+        .filter(|relation| {
+            relation.goal == goal
+                && active(&store, &relation.id)
+                && workspace.is_none_or(|workspace| {
+                    super::rank::same_workspace(workspace, &relation.workspace)
+                        || canonical_workspace.as_ref().is_some_and(|canonical| {
+                            super::rank::same_workspace(canonical, &relation.workspace)
+                        })
+                })
+        })
+        .cloned()
+        .collect();
+    rows.sort_by(|left, right| (&left.source, &left.id).cmp(&(&right.source, &right.id)));
+    Ok(rows)
+}
+
 fn mutate(
     root: &Path,
     workspace: &Path,

@@ -23,7 +23,7 @@ pub struct Report {
     pub unavailable: Vec<String>,
 }
 
-fn contains_text(value: &Value, query: &str) -> Option<String> {
+pub(super) fn contains_text(value: &Value, query: &str) -> Option<String> {
     match value {
         Value::String(text) if text.to_lowercase().contains(query) => Some(text.clone()),
         Value::Array(items) => items.iter().find_map(|v| contains_text(v, query)),
@@ -175,6 +175,7 @@ pub fn recall(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Link {
     pub parent: String,
     pub child: String,
@@ -182,10 +183,11 @@ pub struct Link {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Handoff {
-    parent: Binding,
-    child: Binding,
-    workspace: PathBuf,
+#[serde(deny_unknown_fields)]
+pub(super) struct Handoff {
+    pub parent: Binding,
+    pub child: Binding,
+    pub workspace: PathBuf,
 }
 
 /// Record an observed source transition without reading history on the UI thread. This records
@@ -262,7 +264,7 @@ pub fn detach(root: &Path, parent: &str, child: &str) -> Result<(), String> {
     }
 }
 
-fn read_handoff(path: &Path) -> Result<Handoff, String> {
+pub(super) fn read_handoff(path: &Path) -> Result<Handoff, String> {
     let mut bytes = Vec::new();
     File::open(path)
         .and_then(|f| f.take(16385).read_to_end(&mut bytes))
@@ -343,8 +345,40 @@ pub fn links(root: &Path, id: &str) -> Result<Value, String> {
 }
 
 pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
-    let usage = "chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR] | chat lineage INDEX | chat link PARENT CHILD | chat detach PARENT CHILD";
+    let usage = "chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR] | chat file-facts INDEX [OFFSET REVISION] | chat lineage INDEX | chat link PARENT CHILD | chat detach PARENT CHILD";
     let value = match args.first().map(String::as_str) {
+        Some("ranked") => {
+            let text = args.get(1).ok_or("chat ranked TEXT [--source ID] [--account ID] [--workspace DIR] [--goal ID] [--file PATH] [--from ID] [--at RFC3339]")?;
+            let mut request = super::rank::Request {
+                text,
+                source: None,
+                account: None,
+                workspace: None,
+                goal: None,
+                file: None,
+                from: None,
+                at: None,
+            };
+            let mut seen = std::collections::BTreeSet::new();
+            for pair in args[2..].chunks(2) {
+                if pair.len() != 2 || !seen.insert(pair[0].as_str()) {
+                    return Err("ranked options require unique flag/value pairs".into());
+                }
+                match pair[0].as_str() {
+                    "--source" => request.source = Some(&pair[1]),
+                    "--account" => request.account = Some(&pair[1]),
+                    "--workspace" => request.workspace = Some(Path::new(&pair[1])),
+                    "--goal" => request.goal = Some(&pair[1]),
+                    "--file" => request.file = Some(&pair[1]),
+                    "--from" => request.from = Some(&pair[1]),
+                    "--at" => request.at = Some(&pair[1]),
+                    _ => return Err("unknown ranked option".into()),
+                }
+            }
+            serde_json::to_value(super::rank::recall(root, request)?)
+                .map_err(|error| error.to_string())?
+        }
+        Some("file-facts") => super::files::command(root, args)?,
         Some("recall") => {
             let query = args.get(1).ok_or(usage)?;
             let mut source = None;

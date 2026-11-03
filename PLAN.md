@@ -75,6 +75,9 @@ uses its read-only quota RPC. Native execution, authentication and approvals rem
 
 ## Roadmap
 
+Opt-in [explainable memory ranking](docs/quality/memory-ranking.md) adds historical file facts
+and verified goal/handoff context. Related-chat groups and retrieval evaluation remain separate work.
+
 Cooperative workspace declarations and cross-pane reservations now guard main/worker admission
 and internal saves. [Workspace ownership](docs/quality/workspace-reservations.md) explains commands,
 recovery and limits. [Managed Git worktrees](docs/quality/managed-workspaces.md) now support explicit

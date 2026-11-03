@@ -2483,9 +2483,10 @@ fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
     let folder = dir.path().join("profile/.codex/sessions");
     std::fs::create_dir_all(&folder).unwrap();
     let source = format!(
-        "{}\n{}\n",
+        "{}\n{}\n{}\n",
         serde_json::json!({"type":"session_meta","payload":{"id":"memory-fixture","cwd":dir.path().join("workspace")}}),
-        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"MEMORY_NEEDLE exact original"}]}})
+        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"MEMORY_NEEDLE exact original"}]}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/preview space.rs\n@@\n-before\n+synthetic replacement\n*** End Patch"}})
     );
     std::fs::write(folder.join("memory.jsonl"), source).unwrap();
     let mut s = Session::launch(dir.path());
@@ -2493,6 +2494,53 @@ fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
     s.until("verified lexical result", |s| {
         s.screen().contains("MEMORY_NEEDLE exact original")
             && s.screen().contains("Lexical suggestion")
+    });
+    let source_id = std::fs::read_dir(dir.path().join(".ao/native-memory"))
+        .unwrap()
+        .flatten()
+        .find_map(|entry| {
+            let path = entry.path();
+            (path
+                .extension()
+                .is_some_and(|extension| extension == "json"))
+            .then(|| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::to_owned)
+            })
+            .flatten()
+            .filter(|id| id.len() == 64)
+        })
+        .unwrap();
+    s.submit(&format!("/memory file-facts {source_id}"));
+    s.until("historical file fact shown", |s| {
+        s.screen().contains("Historical file facts") && s.screen().contains("preview space.rs")
+    });
+    assert!(!dir.path().join("workspace/src/preview space.rs").exists());
+    s.submit("/memory ranked-file \"src/preview space.rs\" MEMORY_NEEDLE");
+    s.until("ranked file evidence shown", |s| {
+        s.screen().contains("Ranked memory") && s.screen().contains("Historical file +1000")
+    });
+    concordia::goals::save_goals(
+        dir.path(),
+        &[concordia::goals::Goal {
+            id: "fixture-ranking-goal".into(),
+            text: "Synthetic retrieval goal".into(),
+            done: false,
+            added_at: "0".into(),
+            closed_at: None,
+        }],
+    )
+    .unwrap();
+    s.submit(&format!(
+        "/memory goal-link fixture-ranking-goal {source_id}"
+    ));
+    s.until("goal association confirmed", |s| {
+        s.screen().contains("attached") && s.screen().contains("true")
+    });
+    s.submit("/memory ranked-goal fixture-ranking-goal MEMORY_NEEDLE");
+    s.until("confirmed goal ranks with visible reason", |s| {
+        s.screen().contains("Confirmed goal +10000")
     });
     s.paste("2 finish all requested features");
     s.until("number remains ordinary draft text", |s| {

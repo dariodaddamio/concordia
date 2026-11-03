@@ -18,6 +18,10 @@ const EXCERPT_BYTES: usize = 8192;
 
 #[path = "cursor_history.rs"]
 mod cursor_history;
+#[path = "memory_files.rs"]
+pub mod files;
+#[path = "memory_rank.rs"]
+pub mod rank;
 #[path = "memory_relations.rs"]
 pub mod relations;
 #[path = "memory_retrieval.rs"]
@@ -1189,8 +1193,194 @@ mod tests {
         for provider in [ProviderKind::Codex, ProviderKind::Claude] {
             let dir = tempfile::tempdir().unwrap();
             let (path, session) = fixture(provider, dir.path(), "fixture");
-            append(&path, message(provider, "distinctive needle 雪").as_bytes());
+            let workspace = dir.path().join("historical-project");
+            let header = if provider == ProviderKind::Codex {
+                json!({"type":"session_meta","payload":{"id":session,"cwd":workspace}})
+            } else {
+                json!({"type":"system","sessionId":session,"cwd":workspace})
+            };
+            fs::write(&path, format!("{header}\n")).unwrap();
+            let mut request: Value =
+                serde_json::from_str(&message(provider, "distinctive needle 雪")).unwrap();
+            request["timestamp"] = json!("2026-11-02T23:59:59.123-07:00");
+            append(&path, format!("{request}\n").as_bytes());
+            let paths: Vec<_> = ["src/雪 name.rs", ".env", ".git/index", "../escape.rs"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(std::iter::once(
+                    dir.path()
+                        .join("other-project/same.rs")
+                        .to_string_lossy()
+                        .into_owned(),
+                ))
+                .chain((0..80).map(|n| format!("src/historical-{n}.rs")))
+                .collect();
+            let tool = if provider == ProviderKind::Codex {
+                let patch = paths.iter().map(|path| format!("*** Update File: {path}\n@@\n-DO_NOT_COPY_NATIVE_BODY\n+synthetic replacement\n")).collect::<String>();
+                json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":format!("*** Begin Patch\n{patch}*** End Patch")}})
+            } else {
+                json!({"type":"assistant","message":{"role":"assistant","content":paths.iter().enumerate().map(|(n,path)| json!({"type":"tool_use","name":"Read","id":format!("fixture-{n}"),"input":{"file_path":path,"ignored":"DO_NOT_COPY_NATIVE_BODY"}})).collect::<Vec<_>>()}})
+            };
+            append(&path, format!("{tool}\n").as_bytes());
             let parent = index_session(dir.path(), provider, "fixture", &session).unwrap();
+            let facts = files::read_page(dir.path(), &parent.id).unwrap();
+            assert_eq!(facts.workspace.as_ref(), Some(&workspace));
+            assert_eq!(facts.facts.len(), 64);
+            assert!(facts.overflow && facts.incomplete);
+            assert_eq!(facts.facts[0].path, Path::new("src/雪 name.rs"));
+            assert!(
+                !workspace.exists(),
+                "historical workspace and referenced files are never opened"
+            );
+            assert!(facts
+                .facts
+                .iter()
+                .all(|fact| !crate::workspace_paths::sensitive(&fact.path)
+                    && !fact.path.is_absolute()));
+            assert!(
+                read(dir.path(), &parent.id, facts.facts[0].message, 0, 8192)
+                    .unwrap()
+                    .raw
+                    .contains("雪 name.rs")
+            );
+            let listing = files::list(dir.path(), &parent.id, 0, None).unwrap();
+            assert!(serde_json::to_vec_pretty(&listing).unwrap().len() <= 28_000);
+            assert_eq!(listing["facts"].as_array().unwrap().len(), 16);
+            assert_eq!(listing["next_offset"], 16);
+            assert!(files::list(dir.path(), &parent.id, 16, None).is_err());
+            let next =
+                files::list(dir.path(), &parent.id, 16, listing["revision"].as_str()).unwrap();
+            assert_eq!(next["facts"].as_array().unwrap().len(), 16);
+            let cache_path = directory(dir.path())
+                .join("file-facts")
+                .join(format!("{}.json", parent.id));
+            let fact_cache = fs::read(&cache_path).unwrap();
+            assert!(!String::from_utf8_lossy(&fact_cache).contains("DO_NOT_COPY_NATIVE_BODY"));
+            assert_eq!(
+                index_session(dir.path(), provider, "fixture", &session)
+                    .unwrap()
+                    .id,
+                parent.id,
+                "derived facts must not change native pointer IDs"
+            );
+            let other_session = "22222222-3333-4444-8555-666666666666";
+            let other_path = path.with_file_name(format!("{other_session}.jsonl"));
+            let other_workspace = dir.path().join("other-project");
+            let other_header = if provider == ProviderKind::Codex {
+                json!({"type":"session_meta","payload":{"id":other_session,"cwd":other_workspace}})
+            } else {
+                json!({"type":"system","sessionId":other_session,"cwd":other_workspace})
+            };
+            fs::write(&other_path, format!("{other_header}\n")).unwrap();
+            let mut collision: Value =
+                serde_json::from_str(&message(provider, "needle keyword collision")).unwrap();
+            collision["timestamp"] = json!("2026-11-03T06:59:59.123Z");
+            append(&other_path, format!("{collision}\n{tool}\n").as_bytes());
+            let other = index_session(dir.path(), provider, "fixture", other_session).unwrap();
+            let goal = "synthetic-ranking-goal-v1";
+            crate::goals::save_goals(
+                dir.path(),
+                &[crate::goals::Goal {
+                    id: goal.into(),
+                    text: "Synthetic retrieval context".into(),
+                    done: false,
+                    added_at: "0".into(),
+                    closed_at: None,
+                }],
+            )
+            .unwrap();
+            relations::command(
+                dir.path(),
+                &["goal-link".into(), goal.into(), parent.id.clone()],
+                dir.path(),
+            )
+            .unwrap();
+            let ranked = |source, goal, file, from, workspace| {
+                rank::recall(
+                    dir.path(),
+                    rank::Request {
+                        text: "needle",
+                        source,
+                        account: Some("fixture"),
+                        workspace,
+                        goal,
+                        file,
+                        from,
+                        at: Some("2026-11-03T06:59:59.123Z"),
+                    },
+                )
+            };
+            let goal_rank = ranked(None, Some(goal), None, None, None).unwrap();
+            let scoped_goal = ranked(None, Some(goal), None, None, Some(dir.path())).unwrap();
+            assert!(
+                scoped_goal
+                    .hits
+                    .iter()
+                    .any(|hit| hit.hit.source.id == parent.id
+                        && hit
+                            .reasons
+                            .iter()
+                            .any(|reason| reason.kind == "confirmed_goal_source")),
+                "current workspace aliases must match canonical goal associations"
+            );
+            assert_eq!(
+                goal_rank.hits[0].hit.source.id, parent.id,
+                "confirmed association outranks keyword collisions"
+            );
+            assert!(goal_rank.hits[0]
+                .reasons
+                .iter()
+                .any(|reason| reason.kind == "confirmed_goal_source"));
+            assert!(goal_rank
+                .hits
+                .iter()
+                .any(|hit| hit.hit.source.id == other.id && hit.score < 10_000));
+            assert_eq!(
+                serde_json::to_value(&goal_rank).unwrap(),
+                serde_json::to_value(ranked(None, Some(goal), None, None, None).unwrap()).unwrap(),
+                "same snapshot produces identical rank order and evidence"
+            );
+            assert_eq!(
+                rank::timestamp_ms("2026-11-02T23:59:59.123-07:00"),
+                rank::timestamp_ms("2026-11-03T06:59:59.123Z")
+            );
+            assert!(rank::timestamp_ms("2026-02-29T00:00:00Z").is_none());
+            assert!(rank::timestamp_ms("2024-02-29T00:00:00+00:00").is_some());
+            assert!(rank::timestamp_ms("2026-11-03T06:59:60Z").is_none());
+            let file_rank = ranked(
+                Some(&parent.id),
+                None,
+                Some("src/雪 name.rs"),
+                None,
+                Some(workspace.as_path()),
+            )
+            .unwrap();
+            assert!(file_rank.hits.iter().any(|hit| hit
+                .reasons
+                .iter()
+                .any(|reason| reason.kind == "exact_historical_file")));
+            let different_root = ranked(
+                Some(&other.id),
+                None,
+                Some("src/雪 name.rs"),
+                None,
+                Some(workspace.as_path()),
+            )
+            .unwrap();
+            assert!(
+                different_root.hits.iter().all(|hit| hit
+                    .reasons
+                    .iter()
+                    .all(|reason| reason.kind != "exact_historical_file")),
+                "same-named files in different workspaces cannot collide"
+            );
+            retrieval::link(dir.path(), &parent.id, &other.id, "user-confirmed").unwrap();
+            let related = ranked(Some(&other.id), None, None, Some(&parent.id), None).unwrap();
+            assert!(related.hits.iter().any(|hit| hit
+                .reasons
+                .iter()
+                .any(|reason| reason.kind == "explicit_relationship")));
+            retrieval::detach(dir.path(), &parent.id, &other.id).unwrap();
             let report = retrieval::recall(
                 dir.path(),
                 "needle",
@@ -1229,6 +1419,19 @@ mod tests {
                 fs::read_to_string(directory(dir.path()).join(format!("{}.json", parent.id)))
                     .unwrap();
             assert!(!stored.contains("needle"));
+            let original_binding = load(dir.path(), &parent.id).unwrap().binding;
+            let other_binding = load(dir.path(), &other.id).unwrap().binding;
+            retrieval::observe_handoff(dir.path(), &original_binding, &other_binding, dir.path())
+                .unwrap();
+            let handoff = ranked(Some(&other.id), None, None, Some(&parent.id), None).unwrap();
+            assert!(handoff.hits.iter().any(|hit| hit
+                .reasons
+                .iter()
+                .any(|reason| reason.detail.starts_with("observed Concordia handoff"))));
+            fs::write(&cache_path, b"{broken").unwrap();
+            assert!(files::read_page(dir.path(), &parent.id).is_err());
+            assert_eq!(fs::read(&cache_path).unwrap(), b"{broken");
+            fs::write(&cache_path, &fact_cache).unwrap();
             let bytes = fs::read(&path).unwrap();
             fs::write(
                 &path,
@@ -1238,6 +1441,19 @@ mod tests {
             )
             .unwrap();
             assert!(retrieval::recall(dir.path(), "needle", Some(&parent.id), None, None).is_err());
+            assert!(
+                files::read_page(dir.path(), &parent.id).is_err(),
+                "stale source facts must be withheld"
+            );
+            let after_rewrite = ranked(None, Some(goal), None, None, None).unwrap();
+            assert!(after_rewrite.incomplete);
+            assert!(
+                after_rewrite
+                    .hits
+                    .iter()
+                    .all(|hit| hit.hit.source.id != parent.id),
+                "ranking never bypasses stale source verification"
+            );
         }
     }
 

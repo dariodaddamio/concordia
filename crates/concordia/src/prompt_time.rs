@@ -243,7 +243,7 @@ fn weekday(days: i64) -> i64 {
 }
 
 /// Days since 1970-01-01 in the proleptic Gregorian calendar (Howard Hinnant's algorithm).
-fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+pub(crate) fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let month = i64::from(month.clamp(1, 12));
     let y = i64::from(year) - i64::from(month <= 2);
     let era = y.div_euclid(400);
@@ -254,7 +254,7 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-fn civil_from_days(days: i64) -> (i32, u32, u32) {
+pub(crate) fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
