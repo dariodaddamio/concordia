@@ -210,6 +210,13 @@ fn tool_list() -> Value {
                 "task":{"type":"string","description":"complete, self-contained task"},
                 "from_thread":{"type":"string"}
             },"required":["to","task"]}
+        },
+        {
+            "name":"integrations",
+            "description":"Discover connected integration metadata and namespaced tools. Read-only; never executes tools or adapter commands.",
+            "inputSchema":{"type":"object","additionalProperties":false,"properties":{
+                "id":{"type":"string"},"offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
+            }}
         }
     ])
 }
@@ -378,6 +385,24 @@ fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
         "memory" => tool_memory(state_root, &args),
         "goals" => tool_goals(state_root, &args),
         "delegate" => tool_delegate(state_root, &args),
+        "integrations" => {
+            if args.as_object().is_some_and(|args| {
+                args.keys()
+                    .any(|key| !matches!(key.as_str(), "id" | "offset" | "revision"))
+            }) || args.get("offset").is_some_and(|value| !value.is_u64())
+                || args.get("id").is_some_and(|value| !value.is_string())
+                || args.get("revision").is_some_and(|value| !value.is_string())
+            {
+                Err("invalid integration discovery arguments".into())
+            } else {
+                crate::harness::catalog::tool(
+                    state_root,
+                    str_arg(&args, "id"),
+                    uint_arg(&args, "offset").unwrap_or(0),
+                    str_arg(&args, "revision"),
+                )
+            }
+        }
         other => return Err(format!("unknown tool: {other}")),
     };
     Ok(match out {
@@ -747,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_exactly_the_eight_tools_with_terse_schemas() {
+    fn tools_list_has_exactly_the_declared_tools_with_terse_schemas() {
         let d = tempfile::tempdir().unwrap();
         let r = call(d.path(), rpc(1, "tools/list", Value::Null));
         let tools = r["result"]["tools"].as_array().unwrap();
@@ -762,7 +787,8 @@ mod tests {
                 "usage",
                 "memory",
                 "goals",
-                "delegate"
+                "delegate",
+                "integrations"
             ]
         );
         let size = serde_json::to_string(tools).unwrap().len();
@@ -774,6 +800,11 @@ mod tests {
             assert!(t["description"].as_str().unwrap().len() < 120);
             assert_eq!(t["inputSchema"]["type"], "object");
         }
+        let (catalog, error) = tool(d.path(), "integrations", json!({}));
+        assert!(!error, "{catalog}");
+        assert!(catalog.contains("native_registration"));
+        assert!(tool(d.path(), "integrations", json!({"execute":"anything"})).1);
+        assert!(tool(d.path(), "integrations", json!({"offset":-1})).1);
         assert!(tool(d.path(), "memory", json!({"action":"group-link"})).1);
         assert!(
             tool(

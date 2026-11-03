@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03i
+# Feature completion audit: 2026-11-03m
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,15 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Ordered text-document snapshots and explicit F9 pasted-path attachment preserve drafts/queues
+  and exact native text data. [Input scope](images-and-diagrams.md). Binary transports remain unavailable.
+- Context observations bind exact native turn/model and source revision, including same-model
+  invalidation and specific unsupported-provider reasons. [Evidence](quality/capacity-provenance.md).
+- Native usage records have a separate bounded coverage view, excluded from combined totals.
+  Attempts, outcomes and full workspaces remain distinguishable. [Scope](quality/native-usage-coverage.md).
+- F10 and agent MCP discovery share a read-only integration catalog with namespaced tools and
+  revision/native-registration status. [Scope](quality/integrations-catalog.md).
 
 - Unified file actions and an independent Concordia editor share pane saves, conflict checks
   and owned recovery. Native GUI editor configuration is explicit; defaults remain internal preview.
@@ -63,8 +72,8 @@ creation does not change the implementation status recorded here.
 - Main and worker attempts share attributable, idempotent usage recording, including failover,
   cancelled/failed attempts and accounting-only crash reconciliation. The token screen and landing
   totals use bounded background reads, explicit coverage and account/home-aware session grouping.
-  See [accounting evidence and native limits](quality/worker-accounting.md). External native usage
-  import and broader native provider verification remain open.
+  See [accounting evidence and native limits](quality/worker-accounting.md). External source
+  observations are separate coverage; broader live native-provider verification remains open.
 
 - Explicit goal/source associations reuse the existing goal store, verified native pointers and
   one bounded relationship service. CLI/TUI mutation is explicit; MCP exposes reads only.
@@ -107,7 +116,8 @@ creation does not change the implementation status recorded here.
 - Local bounded Mermaid terminal rendering, shared by chat and formatted Markdown.
 - Native image payloads for Codex/Claude/Cursor, composer capture/preview/remove chips, immutable
   snapshots and draft/queue/recovery/handoff references. Cursor requires advertised ACP image
-  capability. Inline raster thumbnails, drag/drop and generic documents remain open.
+  capability. UTF-8 documents and explicit attachment of pasted file paths are implemented;
+  inline raster thumbnails and verified binary document transports remain open.
 - Cursor image-turn native permission/choice responses. Ordinary text adapters and other native
   approval paths have not been migrated; this is not full provider interaction parity.
 - Draft-preserving automatic quota continuation, deferred retry after command screens/queued edits,
@@ -181,8 +191,9 @@ roadmap, and an audit is not implementation. Local engineering can proceed witho
 7. Visible custom pointer shapes in the installed WezTerm 2024 host. Its parser does not support
    the requested control; app-side shape-selection tests do not close that host limitation.
 
-Managed worktrees and cwd search/replacement remain later workspace requirements. Image paste is
-implemented; inline raster thumbnails and drag/drop remain open. Signing and platform expansion
+Managed worktrees and cwd search/replacement are implemented within their documented guards.
+Image/document input and explicit pasted-path attachment are implemented; inline raster thumbnails
+and binary-document transports remain open. Signing and platform expansion
 have their own release/roadmap status. They are not silently
 included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.md),
 [workspace requirements](workspace-panes.md), [release blockers](release-blockers.md), and

@@ -9,13 +9,21 @@ Progress: [wave one](../quality/completion-wave1.md) implements D1/P0/search W1;
 normal dispatch and paused recovery. Other phases below remain planned unless evidence says otherwise.
 The [goal/source slice](../quality/goal-source-associations.md) records M0 implementation separately.
 The [accounting slice](../quality/worker-accounting.md) records U1 and bounded main/worker views;
-external native usage import remains separate.
+[native source observations](../quality/native-usage-coverage.md) add separate U2 coverage and U3
+attempt/outcome/workspace distinctions without double-counting overlapping snapshots.
 The [file facts and ranking slice](../quality/memory-ranking.md) implements opt-in M1;
 [related-chat groups](../quality/related-chat-groups.md) add M2 explicit membership and discovery.
 [Synthetic retrieval evaluation](../quality/memory-evaluation.md) defines M3 corpus and contract
 measurements. Controlled model-retention experiments remain unrun and separately budgeted.
 The [routing slice](../quality/routing-policies.md) connects local eligibility, ordered overrides,
 approval-bound sequences and worker/main inspection; workspace isolation remains separate.
+
+[Managed lifecycle](../quality/managed-workspaces.md), [Codex native input](../quality/codex-native-input.md),
+[capacity provenance](../quality/capacity-provenance.md), [project replacement](../quality/project-replacement.md),
+[file actions](../quality/file-actions.md), [text documents and pasted paths](../images-and-diagrams.md)
+and [integration discovery](../quality/integrations-catalog.md) record later engineering progress.
+Verified binary transports, inline raster, typed artifacts, cross-worktree dependency delivery,
+goal-change proposals and native/physical-host parity retain their separate contracts below.
 
 ## Baseline and scope
 

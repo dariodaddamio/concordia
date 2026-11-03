@@ -58,6 +58,7 @@ mod files;
 mod images;
 mod input;
 mod input_stream;
+mod integrations;
 mod landing;
 mod managed_workspaces;
 mod markdown;
@@ -236,6 +237,7 @@ struct PendingLogin {
 enum PickerKind {
     /// Tokens through Concordia, opened with `t` from `/usage`.
     Tokens,
+    Integrations,
     Related,
     Agents,
     Recovery,
@@ -359,6 +361,7 @@ pub struct App {
     footer_left: String,
     picker: Option<Picker>,
     token_reads: tokens::State,
+    integrations: integrations::State,
     landing: Option<landing::Landing>,
     update_preview: Option<UpdatePreview>,
     /// Wrapped rows of the `/update` screen and how many fit, as last drawn.
@@ -1618,6 +1621,7 @@ impl App {
         self.poll_job();
         landing::poll(self);
         tokens::poll(self);
+        integrations::poll(self);
         self.update_progress();
         self.poll_compat();
         self.poll_proposals();
@@ -2643,7 +2647,10 @@ impl App {
                     }
                 }
             }
-            PickerKind::Update | PickerKind::Tokens | PickerKind::Related => {}
+            PickerKind::Update
+            | PickerKind::Tokens
+            | PickerKind::Related
+            | PickerKind::Integrations => {}
         }
         let _ = label;
     }
@@ -2689,6 +2696,12 @@ impl App {
             landing::close(self);
             self.push_command(line);
             self.worker_recovery_command(trimmed.strip_prefix("/delegate ").unwrap_or_default());
+            return true;
+        }
+        if trimmed == "/integrations" {
+            landing::close(self);
+            self.push_command(line);
+            integrations::open(self);
             return true;
         }
         if trimmed == "/context" || trimmed.starts_with("/context ") {
@@ -3474,6 +3487,7 @@ impl App {
             footer_left: FOOTER_HINT.into(),
             picker: None,
             token_reads: tokens::State::default(),
+            integrations: integrations::State::default(),
             landing: None,
             update_preview: None,
             update_rows: 0,
@@ -4201,6 +4215,17 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     if key.code == KeyCode::F(9) && app.accept_pasted_files() {
         return false;
     }
+    if key.code == KeyCode::F(10)
+        && app.picker.is_none()
+        && app.workspace.focused.is_none()
+        && app.queue.edit.is_none()
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+    {
+        landing::close(app);
+        integrations::open(app);
+        return false;
+    }
     if key.code == KeyCode::Char('f')
         && key.modifiers.contains(KeyModifiers::CONTROL)
         && app
@@ -4258,10 +4283,16 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     if tokens::handle_key(app, key) {
         return false;
     }
+    if integrations::handle_key(app, key) {
+        return false;
+    }
     if let Some(picker) = app.picker.as_mut() {
         if matches!(
             picker.kind,
-            PickerKind::Update | PickerKind::Tokens | PickerKind::Related
+            PickerKind::Update
+                | PickerKind::Tokens
+                | PickerKind::Related
+                | PickerKind::Integrations
         ) {
             let visible = app.update_view.max(1);
             let last = app.update_rows.saturating_sub(visible);
@@ -4794,7 +4825,10 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         if let Some(picker) = app.picker.as_mut().filter(|p| {
             matches!(
                 p.kind,
-                PickerKind::Update | PickerKind::Tokens | PickerKind::Related
+                PickerKind::Update
+                    | PickerKind::Tokens
+                    | PickerKind::Related
+                    | PickerKind::Integrations
             )
         }) {
             match m.kind {
@@ -5997,7 +6031,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     };
     if matches!(
         picker.kind,
-        PickerKind::Update | PickerKind::Tokens | PickerKind::Related
+        PickerKind::Update | PickerKind::Tokens | PickerKind::Related | PickerKind::Integrations
     ) {
         let is_page = picker.kind == PickerKind::Update;
         let width = if is_page {

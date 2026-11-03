@@ -315,6 +315,10 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "choose the model"),
     ("/mode", "how much the agent may do without asking"),
     ("/usage", "limits for every account"),
+    (
+        "/integrations",
+        "inspect connected integrations and agent tools (F10)",
+    ),
     ("/new", "start a fresh chat"),
     ("/resume", "continue an earlier chat"),
     ("/memory", "search original chats and inspect source links"),

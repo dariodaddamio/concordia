@@ -5,7 +5,7 @@ bounded map and shows that map with the submitted prompt. Recording is opt-in th
 `[threads] enabled = true`. A provider can retrieve more with `concordia thread read <id>`.
 
 `concordia mcp` serves JSON-RPC over newline-delimited stdin/stdout. It exposes `threads`,
-`thread_map`, `thread_read`, `native_read`, `usage`, `goals`, and `delegate`. Read tools stay local;
+`thread_map`, `thread_read`, `native_read`, `usage`, `memory`, `goals`, `delegate` and `integrations`. Read tools stay local;
 `native_read` resolves revision-checked native-session pointers without transcript recording.
 `delegate` writes a proposal; the user must approve it in the TUI before any worker starts.
 It is available only when delegation protocol is enabled.
@@ -33,7 +33,14 @@ returned `next_offset` and `revision` for a later page; changed state requires a
 With `goal` and an exact `workspace`, it reads confirmed goal/source association metadata instead.
 Metadata listings launch no provider or native replay and do not claim that a source is currently
 available; use `native_read` for revision-checked readback. This tool cannot add/close goals or
-attach/detach sources. The eight-tool schema is kept below 4,000 bytes; MCP registration remains opt-in.
+attach/detach sources. The nine-tool schema is kept below 4,000 bytes; MCP registration remains opt-in.
+
+`integrations` discovers existing Harness connection metadata and Concordia-owned MCP registration
+status without executing adapters. With an integration `id`, it returns eight namespaced tool
+descriptions at a time. Later `offset` pages require the exact returned manifest `revision`.
+Descriptions are untrusted display data and grant no permissions. Changed manifests expose no
+current tool list; command-backed manifests need an explicit Harness refresh. The same catalog
+opens with F10 or `/integrations`, preserving the message draft. See [catalog limits](quality/integrations-catalog.md).
 
 `memory` gives agents structured read-only discovery without asking the user to type `/memory`.
 Choose `recall` (literal search), `ranked` (opt-in evidence ranking), `files` (historical file facts),
