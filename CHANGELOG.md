@@ -1,5 +1,12 @@
 # Changelog
 
+### Added (`2026-11-03v`)
+
+- A header arrow opens Home from an existing chat without discarding its messages, draft, or
+  running turn. The return arrow or Esc restores the chat. Clicking the credit row opens balance,
+  availability, native-source and refresh details, with a direct Codex balance-dashboard action.
+  Missing numeric balances are labelled explicitly rather than reduced to an availability label.
+
 ### Changed (`2026-11-03u`)
 
 - Header emails are hidden until clicked and can be hidden again; account changes reset disclosure.

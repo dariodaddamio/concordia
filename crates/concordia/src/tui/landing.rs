@@ -157,6 +157,7 @@ enum ChatRow {
 }
 
 pub struct Landing {
+    from_chat: bool,
     groups: Vec<ChatGroup>,
     goals: Vec<Goal>,
     pane: Pane,
@@ -227,7 +228,22 @@ pub(super) fn open(app: &mut App) {
 }
 
 pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: Option<String>) {
-    if sessions.is_empty() {
+    open_with_mode(app, sessions, program, false);
+}
+
+pub(super) fn open_home(app: &mut App) {
+    let sessions = list_recent_sessions(&app.state_root, RECENT_CHATS);
+    let program = harness_program(&app.state_root);
+    open_with_mode(app, sessions, program, true);
+}
+
+fn open_with_mode(
+    app: &mut App,
+    sessions: Vec<SessionSummary>,
+    program: Option<String>,
+    from_chat: bool,
+) {
+    if sessions.is_empty() && !from_chat {
         app.landing = None;
         return;
     }
@@ -280,6 +296,7 @@ pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: O
         }
     };
     let landing = Landing {
+        from_chat,
         groups,
         goals,
         pane: Pane::Chats,
@@ -340,14 +357,18 @@ pub(super) fn editing_goal(app: &App) -> bool {
 
 pub(super) fn visible(app: &App) -> bool {
     app.landing.is_some()
-        && !app.continuation.waiting()
-        && !app.keep.turn_recovery_notice
-        && !app.deleg.has_recovery_notice()
         && app.picker.is_none()
-        && !app
-            .messages
-            .iter()
-            .any(|m| matches!(m.role, MsgRole::User | MsgRole::Assistant))
+        && (app
+            .landing
+            .as_ref()
+            .is_some_and(|landing| landing.from_chat)
+            || (!app.continuation.waiting()
+                && !app.keep.turn_recovery_notice
+                && !app.deleg.has_recovery_notice()
+                && !app
+                    .messages
+                    .iter()
+                    .any(|m| matches!(m.role, MsgRole::User | MsgRole::Assistant))))
 }
 
 /// Collect open work that arrived from the background reader.

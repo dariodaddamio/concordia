@@ -19,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// How long a fetched Claude reading is trusted before it is refreshed in the background.
 pub const USAGE_TTL_SECS: u64 = 120;
+pub const CREDIT_DASHBOARD_URL: &str = "https://chatgpt.com/settings/usage";
 /// Supported native read-only RPC; exposed for isolated process integration checks.
 pub async fn read_codex_limits(bin: &str, home: &Path) -> Result<String, String> {
     crate::usage_codex::fetch_with(bin, home).await
@@ -150,9 +151,29 @@ impl UsageSnapshot {
             }
             Some(credits) if credits.has_credits == Some(false) => "Credits: none available".into(),
             Some(credits) if credits.has_credits == Some(true) => {
-                "Credits: available; balance not reported".into()
+                "Credits: balance not reported".into()
             }
             _ => "Credits: not reported".into(),
+        }
+    }
+
+    pub fn credit_balance_text(&self) -> String {
+        match &self.credits {
+            Some(credits) if credits.balance.is_some() => credits.balance.unwrap().to_string(),
+            Some(credits) if credits.unlimited == Some(true) => "Unlimited".into(),
+            _ => "Not reported by provider".into(),
+        }
+    }
+
+    pub fn credit_availability_text(&self) -> &'static str {
+        match self
+            .credits
+            .as_ref()
+            .and_then(|credits| credits.has_credits)
+        {
+            Some(true) => "Available",
+            Some(false) => "None available",
+            None => "Not reported",
         }
     }
 

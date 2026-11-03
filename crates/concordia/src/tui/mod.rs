@@ -125,6 +125,8 @@ enum Drag {
 /// Screen rectangles from the last draw, for mouse hit-testing.
 #[derive(Default, Clone, Copy)]
 struct Areas {
+    header_home: Option<Rect>,
+    header_credits: Option<Rect>,
     header_email: Option<Rect>,
     transcript: Rect,
     input: Rect,
@@ -238,6 +240,7 @@ struct PendingLogin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PickerKind {
+    CreditDetails,
     /// Tokens through Concordia, opened with `t` from `/usage`.
     Tokens,
     Integrations,
@@ -313,6 +316,8 @@ pub struct App {
     account_email: Option<String>,
     header_email_revealed: bool,
     header_email_pressed: bool,
+    header_home_pressed: bool,
+    header_credits_pressed: bool,
     messages: Vec<ChatLine>,
     editor: Editor,
     /// The visible prompt for the active turn; cancellation never inserts it into the editor.
@@ -546,7 +551,10 @@ impl App {
             snap.detail.trim()
         );
         if self.provider == ProviderKind::Codex {
-            details.push_str("\nCredit balance details: https://chatgpt.com/codex/settings/usage");
+            details.push_str(&format!(
+                "\nCredit balance details: {}",
+                crate::usage::CREDIT_DASHBOARD_URL
+            ));
         }
         let body = details.trim();
         format!("{} - limits\n{}", self.account_label(), body)
@@ -2216,6 +2224,7 @@ impl App {
         match old.kind {
             PickerKind::Use => self.build_use_picker(),
             PickerKind::Usage => self.build_usage_picker(),
+            PickerKind::CreditDetails => self.show_credit_details(false),
             _ => {
                 self.picker = Some(old);
                 return;
@@ -2225,6 +2234,61 @@ impl App {
             picker.filter = old.filter;
             picker.state = old.state;
         }
+    }
+
+    fn show_credit_details(&mut self, force: bool) {
+        let mut balance = "Not reported by provider".to_string();
+        let mut availability = "Not reported".to_string();
+        if let Some(home) = self.home_path.clone() {
+            let snapshot = if force {
+                self.usage_fetcher
+                    .snapshot_refresh(self.provider, &self.account, &home)
+            } else {
+                self.usage_fetcher
+                    .snapshot(self.provider, &self.account, &home)
+            };
+            balance = snapshot.credit_balance_text();
+            availability = snapshot.credit_availability_text().into();
+            self.set_usage_footer(&snapshot);
+        }
+        let mut rows = vec![
+            PickerRow {
+                id: "balance".into(),
+                label: format!("Balance: {balance}"),
+                detail: "Exact amount from the native provider; no estimate".into(),
+            },
+            PickerRow {
+                id: "availability".into(),
+                label: format!("Availability: {availability}"),
+                detail: String::new(),
+            },
+            PickerRow {
+                id: "source".into(),
+                label: format!("Source: {} native quota response", self.provider.as_str()),
+                detail: self.usage_summary.clone(),
+            },
+        ];
+        if self.provider == ProviderKind::Codex {
+            rows.push(PickerRow {
+                id: "credit-dashboard".into(),
+                label: "Open full credit balance and purchase details".into(),
+                detail: format!(
+                    "{} · select the same account",
+                    crate::usage::CREDIT_DASHBOARD_URL
+                ),
+            });
+        }
+        rows.push(PickerRow {
+            id: "credit-refresh".into(),
+            label: "Refresh native balance".into(),
+            detail: "Read-only; no model turn".into(),
+        });
+        self.show_picker(
+            PickerKind::CreditDetails,
+            format!("Credit balance · {}", self.account_label()),
+            rows,
+            false,
+        );
     }
 
     fn build_usage_picker(&mut self) {
@@ -2430,6 +2494,14 @@ impl App {
             return;
         }
         match kind {
+            PickerKind::CreditDetails => match id.as_str() {
+                "credit-dashboard" => self.open_host_target(
+                    crate::usage::CREDIT_DASHBOARD_URL.into(),
+                    "credit balance dashboard",
+                ),
+                "credit-refresh" => self.show_credit_details(true),
+                _ => self.show_credit_details(false),
+            },
             PickerKind::Files => {
                 if id == "artifact-catalog" {
                     artifacts::open(self);
@@ -3281,6 +3353,7 @@ impl App {
         self.clear_selections();
         self.persist_draft_now();
         let was_busy = self.busy;
+        landing::close(self);
         self.run_line(dispatch, turn_tx);
         if !was_busy && self.busy && self.submitted_prompt.is_some() {
             self.submitted_prompt = Some(original_prompt);
@@ -3478,6 +3551,8 @@ impl App {
             account_email: None,
             header_email_revealed: false,
             header_email_pressed: false,
+            header_home_pressed: false,
+            header_credits_pressed: false,
             messages: vec![ChatLine {
                 role: MsgRole::System,
                 text: "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts."
@@ -4815,6 +4890,42 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     if modal::mouse(app, &m) {
         return;
     }
+    let home_hit = app
+        .areas
+        .header_home
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let credits_hit = app
+        .areas
+        .header_credits
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.header_home_pressed = home_hit;
+        app.header_credits_pressed = credits_hit;
+        app.header_email_pressed = false;
+        if home_hit || credits_hit {
+            return;
+        }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_home_pressed)
+    {
+        if home_hit {
+            if landing::visible(app) {
+                landing::close(app);
+            } else {
+                landing::open_home(app);
+            }
+        }
+        return;
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_credits_pressed)
+    {
+        if credits_hit {
+            app.show_credit_details(false);
+        }
+        return;
+    }
     let email_hit = app
         .areas
         .header_email
@@ -5438,6 +5549,8 @@ fn provider_color(p: ProviderKind) -> Color {
 
 fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.areas.header_email = None;
+    app.areas.header_home = None;
+    app.areas.header_credits = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
     let model = if app.model == "?" {
         "model ?".to_string()
@@ -5460,7 +5573,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         " concordia  ".into()
     };
     let model = format!("  {model}");
-    let mut left = vec![Span::styled(brand, bar.fg(Color::Indexed(75)))];
+    let navigation = if landing::visible(app) {
+        " → Chat "
+    } else {
+        " ← Home "
+    };
+    if app.picker.is_none() {
+        app.areas.header_home = Some(Rect::new(area.x, area.y, area.width.min(8), 1));
+    }
+    let mut left = vec![
+        Span::styled(navigation, bar.fg(Color::Cyan)),
+        Span::styled(brand, bar.fg(Color::Indexed(75))),
+    ];
     left.push(Span::styled(
         format!(" {account} "),
         bar.bg(provider_color(app.provider))
@@ -5514,6 +5638,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         },
     );
     if area.height > 1 {
+        if app.picker.is_none() {
+            let width = Line::from(format!(" {} ", app.usage_credits))
+                .width()
+                .min(area.width as usize) as u16;
+            app.areas.header_credits = Some(Rect::new(area.x, area.y + 1, width, 1));
+        }
         let subscription = app
             .usage_summary
             .split(" · ")
