@@ -1,6 +1,7 @@
 # Local routing and approved fallback policies
 
-Baseline: merged `ea4377d`. Build `2026-11-02p`. State: fixture-verified; final artifact checks pending.
+Baseline: merged `ea4377d`. Production source: `6d637dd`. Build `2026-11-02p`.
+State: fixture-verified and portable-installed-verified. Live native-provider evidence is separate.
 
 ## Shared decisions
 
@@ -69,4 +70,9 @@ All 983 enabled tests (885 library checks) and all-target Clippy with warnings d
 The worker fixture runs two distinct model attempts on one account before another account,
 counts all three attempts once, and preserves the captured sequence and decisions after recovery.
 Main fixtures verify future-policy precedence, unchanged config/drafts/queues, replaced bindings
-and corrupt policy preservation. Release and installed terminal evidence follows separately.
+and corrupt policy preservation. Release build/smoke, portable everyday smoke and OSS/privacy gates
+pass. All 48 ConPTY journeys pass against the exact portable-installed release in 290.32 seconds,
+including policy editing/inspection without provider turns and the existing selected-account handoff.
+Size: 18,098,688 bytes (17.26 MiB). Release and installed SHA-256 match and are unchanged afterward:
+`7E9DC3A9939E120D90E7CECCE263072FE96EDF681C1F48FADFFD5218E05CA914`.
+No real model turn ran. Remote CI remains a separate merge gate.
