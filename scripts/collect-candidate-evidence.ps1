@@ -66,14 +66,14 @@ $version = Read-Version $exePath
 if (-not $stamp -or $version -notmatch ('^concordia \d+\.\d+\.\d+ \(' + [regex]::Escape($stamp) + '\)$')) {
     throw 'Executable version does not match the declared build source.'
 }
-$compiler = (Get-Command rustc.exe -CommandType Application -ErrorAction Stop).Source
+$compiler = (Get-Command rustc.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $compilerVersion = Read-Version $compiler
 $checks = @()
 if ($ChecksPath) {
     $receiptPath = Target-File $ChecksPath
     Assert-Regular $receiptPath 65536
-    $receipts = @(Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json)
-    if ($receipts.Count -gt 32) { throw 'At most 32 check receipts are accepted.' }
+    $receipts = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (@($receipts).Count -gt 32) { throw 'At most 32 check receipts are accepted.' }
     foreach ($check in $receipts) {
         if ($check.name -notmatch '^[A-Za-z0-9 _()./-]{1,80}$' -or $check.scope -notin @('source', 'binary') -or
             ($check.exit_code -isnot [int] -and $check.exit_code -isnot [long]) -or $check.exit_code -lt 0 -or $check.exit_code -gt 255) {
