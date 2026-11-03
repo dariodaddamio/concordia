@@ -1124,8 +1124,7 @@ fn cargo_executable(root: &Path, log: &str) -> Result<PathBuf> {
                     == Some(&manifest)
         })
         .filter_map(|record| record["executable"].as_str().map(PathBuf::from))
-        .filter(|path| path.is_absolute())
-        .next_back()
+        .rfind(|path| path.is_absolute())
         .context("Cargo did not report the built Concordia executable; existing install kept")
 }
 
