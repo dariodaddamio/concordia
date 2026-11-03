@@ -1,0 +1,142 @@
+# Luna roadmap execution plan
+
+Status: draft, ready for scoped dispatch. Prepared 2026-11-03 against build
+`2026-11-03w`, source `0caec481a42428f92c024c9429715202cd4e4e74`.
+Three Luna planning reviewers audited the current contracts. This document does not claim
+implementation or live qualification of the remaining features.
+
+## Objective and accountability
+
+Finish the remaining product capabilities in the [completion audit](../../feature-completion-audit.md),
+using the [shipped-contract map](../../quality/overnight-roadmap-disposition.md) as the baseline.
+Do not restart completed foundations from the older area plans. Whole-history retrieval,
+ranking/groups, managed worktrees, dependency delivery, routing, ordinary accounting, image/text
+attachments, file editing, native Codex/Cursor input and the integration catalog already exist.
+
+The previous campaign repeatedly returned after a local slice or a test run. The coordinator
+must own the whole queue, integrate delivered code and immediately assign the next ready slice.
+An unsupported message, a written plan, or a passing fixture does not complete a missing feature.
+A vendor-blocked requirement stays open until the contract becomes available or the owner
+explicitly changes the product scope. Do not silently redefine the roadmap as complete.
+
+## Six Luna assignments
+
+| ID | Owner and brief | First deliverable | Current dependency |
+| --- | --- | --- | --- |
+| L1 | [Claude native approvals](01-claude-approvals.md) | Authenticated native-request adapter into the existing broker | Establish the installed CLI's permission provenance contract first |
+| L2 | [Claude/Cursor context capacity](02-context-capacity.md) | One supported exact current-window sensor, integrated with existing rollover | A documented, actually reported signal; schema-only fields are insufficient |
+| L3 | [Native binary/PDF inputs](03-binary-inputs.md) | One bounded, capability-gated native PDF transport with durable snapshots | Verified native media payload and limits for the selected provider/version |
+| L4 | [Provider file outputs](04-file-outputs.md) | One additional provider in the existing artifact card/catalog path | Verified completed-event correlation and local-path semantics |
+| L5 | [Integration management](05-integrations.md) | F10 connect/verify/disconnect flows using the existing command owner | Buildable now; explicit action review and revision checks |
+| L6 | [External native usage](06-native-usage.md) | One newly supported, separately attributed native usage source | Stable native event identity/counters; missing data stays unknown |
+
+Use Luna for these assignments. The planning host currently exposes `gpt-5.6-luna`; a different
+execution host must resolve its actual Luna model identifier rather than silently choosing another
+model. Do not launch native provider CLIs merely to create these workers. Use the host's approved
+agent mechanism. Each worker receives the common instructions below plus its numbered brief.
+
+## Dispatch order and concurrency
+
+There are four available agent slots: one coordinator and at most three workers. No recursive
+spawning. There are six workstreams, not six simultaneous workers.
+
+1. Start **L5 integrations**, **L4 file outputs**, and **L3 binary inputs**. These have independent
+   implementation surfaces; L3 must verify the transport contract before editing payload code.
+2. As slots free, start **L1 approvals**, **L2 capacity**, then **L6 usage**. A precise vendor
+   blocker frees a slot immediately; it does not halt the rest of the campaign.
+3. Split each feature into independently reviewable code deliveries. After one provider is
+   delivered, keep the other promised provider cells open and assign the next supported cell.
+4. A blocked worker returns evidence and a concrete next dependency. The coordinator assigns
+   another ready task; do not spend a whole run repeatedly rediscovering the same missing API.
+5. After integration, prepare a single exact candidate and its qualification record. Continue
+   independent implementation while background CI runs. Investigate actual failures, not elapsed time.
+
+Provider research can move earlier if the coordinator has an idle slot. Do not create extra
+framework work to keep a blocked agent occupied.
+
+## Shared-file rule
+
+Workers own the files named in their briefs and their feature-specific documentation. The
+coordinator alone integrates shared dispatch and canonical contracts:
+
+- `crates/concordia/src/tui/mod.rs`, `tui/questions.rs`, `tui/queue.rs`, `tui/tokens.rs`,
+  `tui/files.rs`, `tui/artifacts.rs` and picker/command registration.
+- `crates/concordia/src/provider/turn.rs`, `provider/turn_appserver.rs`, `provider/turn_acp.rs`,
+  `provider/stream_json.rs`, `provider/stream_cards.rs`, `provider/interaction.rs`,
+  `provider/compat.rs`, `provider/claude.rs` and provider module registration.
+- `crates/concordia/src/native_memory.rs`, `native_input.rs`, `delegate.rs`, `integration.rs`,
+  `mcp.rs`, shared capability/persistence migrations and the common fake-provider process.
+- `BUILD_STAMP`, `CHANGELOG.md`, `PLAN.md`, the completion audit, this queue and release workflow.
+
+Workers return a small integration patch against the exact baseline for a shared file, or request
+a temporary exclusive handover. They must not edit it concurrently. Register a proposed new
+module with the coordinator before relying on it; uncompiled orphan files are not a delivery.
+Each implementation branch/worktree has one owner. Do not share a writable Cargo target between
+independent builds; the coordinator serializes shared-target Cargo commands to avoid lock churn
+and overwriting the candidate. Never remove another worker's checkout or user work.
+
+## Common worker prompt
+
+> You are Luna, implementing the numbered brief supplied with this prompt. Read AGENTS.md,
+> .cursor/rules/workflow.mdc, this plan, your brief, and its current evidence documents.
+> Reconcile the live baseline before editing. Preserve already shipped behavior, especially
+> draft/queue recovery, private header email, concurrent foreground chats and Home navigation.
+> Own only assigned files. Extend the existing store/broker/adapter; do not create a competing
+> executor, approval queue, artifact registry, accounting ledger or authentication layer.
+> First establish any required native contract using official documentation and bounded read-only
+> installed-CLI inspection. Do not run real provider model turns, read credentials, install global
+> hooks, change authentication, or perform release/account actions. Fake-provider implementation
+> checks are allowed. Extend existing test scenarios/helpers; new unit/integration test functions
+> or files require separate authorization. Do not add tests that merely mirror the implementation.
+> Implement the smallest complete user-visible slice, not just a capability stub. Use focused
+> checks; do not wait for the whole suite before continuing independent work. Return the delivery
+> record below. If a required source/contract is missing, return a precise blocker and stop that
+> slice without calling it done. Do not spawn agents or self-authorize native usage.
+
+## Delivery record and coordinator board
+
+Every handoff includes: task/subtask ID; baseline/head commits; changed paths; migration/rollback
+notes; callable integration API and shared-file patch; observable user behavior; actual focused
+check commands/results; artifact identity if built; unresolved limits; and the next ready task.
+The coordinator reviews the diff and ownership before merging and updates the existing audit
+and relevant evidence document. A new planning document is not an implementation receipt.
+
+| Task | Initial state | Completion condition |
+| --- | --- | --- |
+| L1 Claude approvals | Ready for contract investigation | Supported native request reaches foreground/worker review with exact ownership |
+| L2 Claude capacity | Ready for contract investigation | Exact supported measurement drives existing before-turn policy |
+| L2 Cursor capacity | Ready for contract investigation | Same, with actual negotiated/reported Cursor evidence |
+| L3 binary inputs | Ready for contract investigation | Supported provider payload dispatch plus durable mixed-attachment recovery |
+| L4 Claude outputs | Ready for schema investigation and adapter work | Completed supported file reports reach the existing catalog |
+| L4 Cursor outputs | Ready for schema investigation | Same, independently evidenced |
+| L5 integrations | Ready for implementation | Reviewed connect/verify/disconnect works from F10 without losing the draft |
+| L6 native usage | Ready for source investigation | Exact non-overlapping source coverage for a newly supported provider |
+| Numeric credit balance when native response is null | Vendor/data blocked | A supported numeric source exists; availability is not an amount |
+| Live parity and memory-retention trials | Owner-budget gated | Exact provider/task/model scope and usage budget, then recorded results |
+| Signing and publication | Owner/release gated | Identity, distribution decisions and exact-artifact release evidence |
+
+Use `ready`, `building`, `review`, `integrated`, `blocked-vendor`, `blocked-owner` for work state.
+Track fixture, installed, live and release evidence separately. Blocked is not integrated, and
+integrated is not live-qualified. The board must name the actual owner and commit when work starts.
+
+## Qualification, release, and stop conditions
+
+The coordinator owns candidate assembly using the existing evidence collector, smoke/signing
+scripts and release workflow. Do not build another qualification framework. Reconcile stale
+claims in the older release plan instead of reimplementing the shipped collector/signing checks.
+
+For a production slice: inspect the diff, run focused checks and applicable lint/build checks,
+integrate the complete behavior, and keep full CI running without idling the implementation queue.
+Do not repeatedly rebuild an unchanged candidate. Required repository protections still apply;
+do not bypass them with administrator flags. Planning-only edits need link/diff/privacy checks,
+not Cargo builds. For an integrated release candidate, bind all receipts to its source and hash.
+
+Live model validation remains disabled until a provider/task scope and usage budget are explicitly
+given. Preparing the cases and synthetic fixtures is autonomous. No certificate provisioning,
+paid services, vendor submissions, external uploads, tags, releases or visibility changes are
+authorized by this plan. Prepare the concrete local artifact before requesting any final release action.
+
+Do not stop the campaign at the end of a slice, at a long CI run, or because one provider is
+blocked while another ready task exists. When no ready work remains, report shipped features,
+exact open blockers and the smallest required owner/vendor decisions. Claim full roadmap
+completion only when the agreed capability matrix and its required evidence are actually closed.

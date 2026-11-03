@@ -15,8 +15,9 @@ documented capabilities. The [current disposition](quality/overnight-roadmap-dis
 every area to shipped contracts and separates unavailable native interfaces, live/physical-host
 evidence and release gates. Those remaining gates are not claimed complete by fixture results.
 
-The [remaining-feature execution plan](plans/completion-roadmap.md) covers every open area below,
-including implementation order, parallel ownership and provider/host/release evidence. Plan
+The [active Luna execution plan](plans/luna-completion/README.md) assigns current remaining work,
+including implementation order, parallel ownership and provider/host/release evidence. The
+[original area plans](plans/completion-roadmap.md) retain detailed design history. Plan
 creation does not change the implementation status recorded here.
 
 ## Closed in this build

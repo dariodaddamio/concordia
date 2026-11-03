@@ -1,5 +1,8 @@
 # Provider, host and release validation plan
 
+Active execution and coordinator responsibilities: [Luna queue](luna-completion/README.md).
+Use the existing evidence collector and signing checks; do not rebuild shipped infrastructure.
+
 Current implementation/evidence map: [campaign disposition](../quality/overnight-roadmap-disposition.md).
 The baseline below predates the integrated signing policy and candidate collector. Publication,
 live-provider and physical-host qualification remain separate gates.

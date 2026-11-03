@@ -1,5 +1,8 @@
 # Memory relationships and provider interaction completion
 
+Active remaining work: [Luna queue and provider briefs](luna-completion/README.md).
+The phase design below is historical; consult the current queue before assigning work.
+
 Current status: [campaign disposition](../quality/overnight-roadmap-disposition.md), including
 implemented native text replies and explicit Claude/capacity/live-evidence boundaries.
 

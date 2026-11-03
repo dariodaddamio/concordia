@@ -1,10 +1,13 @@
 # Remaining feature implementation plan
 
+Active dispatch: [six Luna briefs and coordinator queue](luna-completion/README.md), reconciled
+against build `2026-11-03w`. Use that queue for new work; the original wave order below is historical.
+
 Current implementation/capability disposition: [2026-11-03s campaign map](../quality/overnight-roadmap-disposition.md).
 The planning baseline and proposed designs below are historical; shipped contracts are linked there.
 
 Status: planned, 2026-11-02. Baseline: committed build `2026-11-02j` (`c6d3b7c`).
-This is the execution plan for the remaining features, prepared through three parallel source
+This was the execution plan for the remaining features, prepared through three parallel source
 audits. It does not mark these features implemented or authorize provider usage or publication.
 
 Progress: [wave one](../quality/completion-wave1.md) implements D1/P0/search W1;
