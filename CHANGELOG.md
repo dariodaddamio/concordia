@@ -1,5 +1,9 @@
 # Changelog
 
+### Fixed (`2026-11-03b`)
+- Related-chat groups include the current-workspace alias correction from the parent memory
+  ranking slice. Existing group membership and the landing-page shortcut remain unchanged.
+
 ### Added (`2026-11-02u`)
 - Explicit related-chat groups: `/memory group-create SOURCE`, `groups`, `group-members GROUP`,
   `group-link GROUP SOURCE` and `group-unlink GROUP SOURCE`. Overlapping membership retains
@@ -9,6 +13,11 @@
   suggestions separately from confirmed groups. Context-link discovery can label cross-project scope.
 - Relationship store v2 reads earlier goal associations unchanged and serializes group and goal
   changes under the same lock. Group discovery never starts Cursor native replay implicitly.
+
+### Fixed (`2026-11-03a`)
+- Goal-aware ranking resolves the explicitly selected current workspace before comparing its
+  stored canonical association. Windows short paths and directory aliases retain confirmed-goal
+  reasons; historical source paths are not resolved or opened.
 
 ### Added (`2026-11-02t`)
 - Opt-in `/memory ranked` search explains verified goal, handoff, historical-file, literal-text
