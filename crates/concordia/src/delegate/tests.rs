@@ -339,6 +339,67 @@ fn one_turn_per_worker_with_a_bounded_queue_and_cancel() {
     assert_eq!(d.cancel_account("a", now), 3);
     assert_eq!(d.get(q1).unwrap().state, WorkerState::Cancelled);
     assert!(d.get(1).unwrap().cancel_requested);
+
+    // Approved dependent work occupies only a bounded queue, never a running account.
+    let root = tempfile::tempdir().unwrap();
+    let pane = root.path().join("pane");
+    let mut graph = Delegates::default();
+    graph
+        .attach_recovery(&pane, root.path(), root.path())
+        .unwrap();
+    let parent = graph.push_test_job("parent", ProviderKind::Codex, WorkerState::Thinking, "", 0);
+    graph.get_mut(parent).unwrap().spec.cwd = root.path().into();
+    let dependent = |name: &str| Submit {
+        account: name.into(),
+        provider: ProviderKind::Codex,
+        task: "approved dependent".into(),
+        origin: Origin::User,
+        spec: JobSpec {
+            cwd: root.path().into(),
+            ..bare_job(0, name, WorkerState::Queued).spec
+        },
+    };
+    assert!(graph.submit_after(dependent("child"), now, &[999]).is_err());
+    assert!(graph
+        .submit_after(dependent("child"), now, &[parent, parent])
+        .is_err());
+    let child = graph
+        .submit_after(dependent("child"), now, &[parent])
+        .unwrap();
+    assert_eq!(graph.get(child).unwrap().state, WorkerState::Queued);
+    assert!(graph.running_for("child").is_none());
+    assert!(matches!(
+        graph.dependency_status(child).unwrap(),
+        schedule::Readiness::WaitingDependencies { .. }
+    ));
+    graph
+        .submit_after(dependent("child"), now, &[parent])
+        .unwrap();
+    assert!(graph
+        .submit_after(dependent("child"), now, &[parent])
+        .is_err());
+    graph.get_mut(parent).unwrap().state = WorkerState::Cancelled;
+    graph.poll(now);
+    assert!(matches!(
+        graph.dependency_status(child).unwrap(),
+        schedule::Readiness::BlockedDependency { .. }
+    ));
+    assert!(graph.cancel(child, now));
+    assert_eq!(graph.get(child).unwrap().state, WorkerState::Cancelled);
+    let waiting = graph
+        .jobs
+        .iter()
+        .find(|job| job.state == WorkerState::Queued)
+        .unwrap()
+        .id;
+    drop(graph);
+    let mut restored = Delegates::default();
+    restored
+        .attach_recovery(&pane, root.path(), root.path())
+        .unwrap();
+    assert_eq!(restored.get(waiting).unwrap().state, WorkerState::Paused);
+    restored.poll(now);
+    assert!(!restored.any_active());
 }
 
 #[test]

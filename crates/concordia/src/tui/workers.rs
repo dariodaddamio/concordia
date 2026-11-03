@@ -827,6 +827,16 @@ impl App {
         task: &str,
         origin: Origin,
     ) -> Result<String, String> {
+        self.start_delegate_after(target, task, origin, &[])
+    }
+
+    fn start_delegate_after(
+        &mut self,
+        target: &str,
+        task: &str,
+        origin: Origin,
+        after: &[u32],
+    ) -> Result<String, String> {
         #[cfg(not(test))]
         if !self.deleg.d.recovery_ready() {
             return Err("worker recovery storage is unavailable; no task was dispatched".into());
@@ -900,7 +910,7 @@ impl App {
         );
         let trust = worker_trust(self.trust, settings.child_trust);
         let queued_behind = self.deleg.d.running_for(&account).map(|j| j.id);
-        let id = self.deleg.d.submit(
+        let id = self.deleg.d.submit_after(
             Submit {
                 account: account.clone(),
                 provider: acct.provider,
@@ -916,6 +926,7 @@ impl App {
                 },
             },
             Instant::now(),
+            after,
         )?;
         self.deleg.owners.insert(id, self.deleg.generation);
         crate::logging::info(&format!(
@@ -930,6 +941,7 @@ impl App {
             acct.provider.as_str(),
             match queued_behind {
                 Some(b) => format!("queued behind #{b}"),
+                None if !after.is_empty() => format!("approved after {after:?}; /delegate graph shows readiness"),
                 None => "running in the background".into(),
             },
             trust.as_str(),
@@ -981,6 +993,29 @@ impl App {
                 }
             }
             SlashCommand::DelegateStop(acct) => self.delegate_stop(acct.as_deref()),
+            SlashCommand::DelegateAfter { after, target, task } => {
+                match self.start_delegate_after(target, task, Origin::User, after) {
+                    Ok(message) => self.push_system(message),
+                    Err(error) => self.push_system(format!("delegate failed - {error}")),
+                }
+            }
+            SlashCommand::DelegateGraph => {
+                let lines: Vec<_> = self.deleg.d.jobs.iter()
+                    .filter(|job| job.conversation_id == self.deleg.d.conversation_id())
+                    .map(|job| {
+                        let status = self.deleg.d.dependency_status(job.id);
+                        let parents: Vec<_> = self.deleg.d.dependency_graph().tasks().iter()
+                            .find(|task| task.run_id() == job.run_id)
+                            .map(|task| task.prerequisites().iter().map(|p| p.run_id.clone()).collect())
+                            .unwrap_or_default();
+                        format!("#{} {}: {:?}\nrun {}\nprerequisite runs: {}", job.id, job.account, status,
+                            job.run_id, if parents.is_empty() { "none".into() } else { parents.join(", ") })
+                    }).collect();
+                if lines.is_empty() {
+                    self.push_system("No dependency tasks in this conversation.");
+                }
+                for line in lines { self.push_system(line); }
+            }
             SlashCommand::DelegateUse(acct) => self.delegate_use(acct.as_deref()),
             SlashCommand::DelegateCollect => self.delegate_collect(),
             SlashCommand::DelegateReturns(mode) => {

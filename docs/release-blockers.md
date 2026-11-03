@@ -53,7 +53,7 @@ Image paste and internal editing are no longer unimplemented blockers.
 Whole-history indexing/pagination, bounded lexical retrieval and confirmed/observed lineage,
 Cursor ACP readback, optional Codex proactive rollover, native compaction controls, durable worker
 ownership and bounded worker quota failover are implemented with fixture evidence. Still open:
-richer goal/file ranking, task dependencies, file/worktree isolation, combined worker usage/cost
+richer goal/file ranking, cross-worktree dependencies/integration, file/worktree isolation, combined worker usage/cost
 accounting and native interactive approval parity. Claude/Cursor proactive capacity remains unknown.
 General tool/plugin integration and unified file-open choices also remain unfinished. See the
 [feature audit](feature-completion-audit.md), [orchestration](orchestration-and-latency.md)

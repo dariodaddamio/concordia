@@ -55,6 +55,23 @@ remain separate actions.
 | --- | --- |
 | `/delegate` | Lists workers and provides add, remove, stop, result handoff, protocol and help choices. |
 | `/delegate <account\|auto> <task>` | Starts one worker turn as a shortcut. `auto` picks the first idle worker. |
+| `/delegate after ID[,ID] ACCOUNT TASK` | Approves a task that waits for the named successful runs in this workspace. |
+| `/delegate graph` | Shows task readiness and exact prerequisite run identities. |
+
+Dependency tasks accept up to eight prerequisite IDs from the current conversation. For example,
+`/delegate after 1,2 codex Review the completed changes` approves that review now; it runs only
+after both exact runs succeed and the worker is free. Waiting tasks count toward the existing
+two-task queue limit but do not occupy a running account. Failure, cancellation or uncertainty
+blocks dependants while unrelated work can continue. Stop a waiting task through the worker row
+or `/delegate stop ACCOUNT`.
+
+Dispatch rechecks the worker registration, login, home, model and workspace. Results come from
+verified native source snapshots, labelled untrusted and bounded to about 3,000 excerpt characters
+plus source pointers. Missing or stale sources pause the task for inspection. Referenced result
+metadata survives ordinary history pruning. A restart pauses unfinished dependent tasks; it does
+not run them. An explicitly reconciled retry creates a new task and never retargets old edges.
+This slice supports the shared workspace only. Worktree creation and cross-worktree integration
+remain separate work; the scheduler never merges edits.
 
 An account can be a worker when it exists, is logged in, is not the orchestrator, is not the same
 login as the orchestrator or another worker (checked by the same identity used for duplicate
