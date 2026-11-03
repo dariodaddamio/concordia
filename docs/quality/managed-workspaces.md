@@ -1,9 +1,10 @@
 # Explicit managed Git worktrees
 
-Candidate build `2026-11-02s` implements orchestration W2 on top of cooperative reservations.
+Build `2026-11-02s` implements orchestration W2 on top of cooperative reservations;
+candidate `2026-11-03f` adds reviewed W3 integration and retirement.
 Git worktrees organize separate working files; they are not filesystem sandboxes. Native
 provider confinement remains unverified, and an enforced mode is unavailable. Existing native
-trust and approval rules remain authoritative. Integration and retirement are separate W3 work.
+trust and approval rules remain authoritative.
 
 ## Controls and binding
 
@@ -39,15 +40,43 @@ The main agent keeps its original cwd. Cross-worktree dependency dispatch remain
 explicit integration/result-only receipts exist; successful execution does not imply that edits
 are present in a downstream folder. Neither completion nor automatic result return merges work.
 
+## Reviewed integration and retirement
+
+`/worktree review ID ACTION` shows base/head, dirty state (including ignored artifacts), changed
+paths, conflicts, unique commits, workspace reservations and worker/result references. Actions are
+`integrate`, `pick`, `retire` and `delete-branch`. Each review returns a receipt for exactly that
+action and snapshot. `/worktree ACTION ID RECEIPT` is separate explicit execution; changed heads,
+metadata, references or reservations require another review. Completion never authorizes it.
+
+`integrate` uses native Git merge; `pick` applies only the reviewed non-merge worker HEAD commit.
+Native `merge-tree` supplies the preview, and the result must match its tree. Custom merge drivers,
+unsupported tree entries, existing Git operations and conflicts retain the workspace for native
+inspection. Git hooks, filters, recursive submodules and automatic maintenance do not run. No
+stash, reset, forced update or inferred identity is supplied. Native Git still owns merge behavior.
+
+Retirement requires an owned, clean execution folder with no unique commits, active/uncertain
+reservation or unfinished worker reference. Ignored worker artifacts prevent deletion. Ignored
+owner artifacts remain untouched. Worktree removal never deletes its branch; branch deletion has
+its own review and checks the retired branch head and other worktrees. Historical records/results
+remain. The bounded 64-record store never prunes itself.
+
+Execution revalidates under the managed-record and workspace scheduler locks and persists whole-folder
+reservation runs before spawning Git. Interrupted or unconfirmed exits retain those claims.
+Explicit `/worktree stopped ID` acknowledges the process only after the user inspects it; it refuses a live
+Concordia operation lock and clears only that operation's exact claims. The record shows their IDs.
+Interrupted actions remain retained with their exact operation/head receipt. Explicit reconciliation inspects current
+native state and never reissues the action. Lifecycle states are separate from worker execution.
+External Git/processes remain outside cooperative scheduler enforcement; this is not confinement.
+
 ## Persistence and bounds
 
-`managed-workspaces.json` v1 is locked and atomically replaced, with a 1 MiB/64-record bound.
+`managed-workspaces.json` v2 reads v1 and is locked and atomically replaced, with a 1 MiB/64-record bound.
 Creation intent is durable before invoking Git. Canonical owner/common-Git/execution directories,
 native directory identities, UUID, base object ID, generated branch and binding revision establish
 ownership. Unsupported/corrupt metadata remains intact and refuses dispatch. Registry capacity
 does not trigger automatic pruning.
 
-Workspace registry v2 and worker ledger v6 read their earlier supported versions. Binding v2
+Workspace registry v2 and worker ledger v7 read their earlier supported versions. Binding v2
 adds explicit managed provenance; ordinary shared-folder bindings retain v1. A legacy reader
 cannot treat a managed folder as an ordinary owner cwd. Unfinished main requests retain their
 existing shared-folder schema because this slice changes worker execution only.
@@ -62,6 +91,12 @@ network paths remain unsupported. Ordinary Git line-ending conversion still foll
 configuration; committed content is checked out through Git, not copied from dirty source files.
 
 ## Evidence
+
+The W3 candidate extends the same real-Git fixture for active/queued ownership, dirty and stale
+reviews, HEAD cherry-pick, diverged merge, conflict previews, ignored-artifact preservation,
+separate retirement/branch deletion, durable lifecycle claims and explicit crash reconciliation.
+The preceding lifecycle fixture passes in 62.04 seconds; final candidate gates include the added
+stopped-process control and terminal review/execute path. No real provider turn is requested.
 
 Existing synthetic fixtures exercise real local Git creation, source-configuration preservation,
 worker scope binding, uncertain creation reconciliation without a second worktree, stale binding

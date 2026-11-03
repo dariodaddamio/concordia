@@ -2833,6 +2833,43 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     s.until("draft cleared for native input configuration", |s| {
         s.draft().is_empty()
     });
+    use concordia::managed_workspaces::lifecycle::{self, Action};
+    let flag = std::sync::atomic::AtomicBool::new(false);
+    for (action, label) in [
+        (Action::Integrate, "integrate"),
+        (Action::Retire, "retire"),
+        (Action::DeleteBranch, "delete-branch"),
+    ] {
+        s.submit(&format!("/worktree review {} {label}", managed.id));
+        s.until("explicit lifecycle review visible", |s| {
+            s.screen().contains("Explicit action:")
+        });
+        let reviewed = lifecycle::preview(
+            dir.path(),
+            &dir.path().join("workspace"),
+            &managed.id,
+            action,
+            &flag,
+        )
+        .unwrap();
+        assert!(reviewed.blockers.is_empty(), "{reviewed:?}");
+        s.submit(&format!(
+            "/worktree {label} {} {}",
+            managed.id, reviewed.receipt
+        ));
+        s.until("reviewed lifecycle action completed", |s| {
+            s.screen().contains(&format!("Managed {label} finished"))
+        });
+    }
+    assert!(!managed.execution.exists());
+    assert_eq!(
+        s.journal()
+            .iter()
+            .filter(|entry| entry["kind"] == "start")
+            .count(),
+        4,
+        "lifecycle operations must not dispatch providers"
+    );
     s.submit("/delegate returns manual");
     s.until("manual native result return", |s| {
         s.screen().contains("Worker returns: manual")

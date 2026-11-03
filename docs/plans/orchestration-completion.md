@@ -3,6 +3,10 @@
 Status: proposed, based on source revision `c6d3b7c` (2026-11-02). This document is a plan,
 not a claim that the capabilities below have shipped. Planning changes only this file.
 
+Implementation progress: [managed workspaces](../quality/managed-workspaces.md) records W2 and
+the current W3 candidate's reviewed integration/retirement controls. Native confinement and
+cross-worktree dependency delivery remain separate from a completed Git lifecycle action.
+
 The outcome is a bounded task graph whose workers have explicit workspace ownership, visible
 routing decisions and attributable usage. Existing native authentication, approval, cancellation,
 recovery and source-pointer behavior remains authoritative. No provider turns, account changes,

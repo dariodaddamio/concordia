@@ -591,7 +591,7 @@ impl Request {
     }
 }
 
-fn intersects(left: &Claim, right: &Claim) -> bool {
+pub(crate) fn intersects(left: &Claim, right: &Claim) -> bool {
     (left.access == Access::Write || right.access == Access::Write)
         && (same_key(&left.key, &right.key)
             || left
@@ -929,6 +929,140 @@ pub fn with_write_guard<T>(
             )));
         }
         write().map_err(std::io::Error::other)
+    })
+    .map_err(|error| error.to_string())
+}
+
+/// Hold the scheduler lock while a user-approved Git action touches whole worktrees.
+/// This coordinates Concordia owners; it does not claim to constrain external Git/processes.
+pub(crate) struct WorkspaceGuard<'a> {
+    root: &'a Path,
+    registry: Registry,
+    requests: Vec<Request>,
+}
+
+impl WorkspaceGuard<'_> {
+    fn save(&mut self) -> Result<(), String> {
+        self.registry.version = 2;
+        self.registry.revision = self
+            .registry
+            .revision
+            .checked_add(1)
+            .ok_or("workspace registry revision overflow")?;
+        let bytes = serde_json::to_vec(&self.registry).map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > REGISTRY_BYTES {
+            return Err("workspace registry is full; existing reservations kept".into());
+        }
+        crate::state_io::write_atomic(&self.root.join("workspace-registry.json"), &bytes)
+            .map_err(|error| error.to_string())
+    }
+    /// The enclosing OS lock proves exclusive admission; persist claims before spawning Git.
+    pub(crate) fn reserve(
+        &mut self,
+        runs: &[String],
+        conversation: &str,
+        attempt: &str,
+    ) -> Result<(), String> {
+        if runs.len() != self.requests.len()
+            || !uuid_valid(conversation)
+            || !uuid_valid(attempt)
+            || runs.iter().any(|run| {
+                !uuid_valid(run)
+                    || self
+                        .registry
+                        .reservations
+                        .iter()
+                        .any(|known| known.run == *run)
+            })
+            || runs.iter().collect::<std::collections::BTreeSet<_>>().len() != runs.len()
+            || self.registry.reservations.len() + runs.len() > MAX_RECORDS
+            || self
+                .registry
+                .reservations
+                .iter()
+                .filter(|known| known.phase != Phase::Released)
+                .count()
+                + runs.len()
+                > 64
+        {
+            return Err(
+                "lifecycle reservation identity/capacity is invalid; Git was not started".into(),
+            );
+        }
+        for (run, request) in runs.iter().zip(&self.requests) {
+            request.revalidate()?;
+            self.registry.reservations.push(Reservation {
+                run: run.clone(),
+                conversation: conversation.into(),
+                attempt: attempt.into(),
+                request: request.clone(),
+                phase: Phase::Held,
+                confirmed_exit: false,
+            });
+        }
+        self.save()
+    }
+    pub(crate) fn finish(
+        &mut self,
+        runs: &[String],
+        attempt: &str,
+        confirmed: bool,
+    ) -> Result<(), String> {
+        for run in runs {
+            let claim = self
+                .registry
+                .reservations
+                .iter_mut()
+                .find(|known| known.run == *run && known.attempt == attempt)
+                .ok_or("lifecycle reservation changed; retain for reconciliation")?;
+            claim.phase = if confirmed {
+                Phase::Released
+            } else {
+                Phase::ReconcileRequired
+            };
+            claim.confirmed_exit = confirmed;
+        }
+        self.save()
+    }
+}
+
+pub(crate) fn with_workspace_guard<T>(
+    root: &Path,
+    paths: &[&Path],
+    action: impl FnOnce(&mut WorkspaceGuard<'_>) -> Result<T, String>,
+) -> Result<T, String> {
+    let requests = paths
+        .iter()
+        .map(|path| Request::shared(path, &[]))
+        .collect::<Result<Vec<_>, _>>()?;
+    let lock = root.join("workspace-registry.lock");
+    require_regular(&lock)?;
+    crate::state_io::with_lock(&lock, || {
+        let registry = load(root).map_err(std::io::Error::other)?;
+        for request in &requests {
+            request.revalidate().map_err(std::io::Error::other)?;
+            if let Some(other) = registry.reservations.iter().find(|other| {
+                other.phase != Phase::Released
+                    && request.claims.iter().any(|claim| {
+                        other
+                            .request
+                            .claims
+                            .iter()
+                            .any(|known| intersects(claim, known))
+                    })
+            }) {
+                return Err(std::io::Error::other(format!(
+                    "workspace is reserved by run {}; operation retained",
+                    other.run
+                )));
+            }
+        }
+        action(&mut WorkspaceGuard {
+            root,
+            registry,
+            requests,
+        })
+        .map_err(std::io::Error::other)
     })
     .map_err(|error| error.to_string())
 }

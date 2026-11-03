@@ -5,6 +5,118 @@ use std::io::Read;
 
 const LEDGER_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Bounded Concordia-owned metadata only; never scans native session histories.
+pub(crate) fn managed_references(
+    root: &Path,
+    id: &str,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    use sha2::{Digest, Sha256};
+    let recovery = root.join("pane-recovery");
+    if !recovery.exists() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let mut directories = vec![recovery];
+    let mut files = Vec::new();
+    for _ in 0..2 {
+        let mut next = Vec::new();
+        for directory in directories {
+            if crate::workspaces::linked(
+                &std::fs::symlink_metadata(&directory).map_err(|error| error.to_string())?,
+            ) {
+                return Err("linked worker recovery directory; references unknown".into());
+            }
+            for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                let metadata = entry.metadata().map_err(|error| error.to_string())?;
+                if metadata.is_dir() {
+                    if next.len() >= 256 {
+                        return Err("worker reference directory budget exceeded".into());
+                    }
+                    next.push(entry.path());
+                }
+            }
+        }
+        directories = next;
+    }
+    for pane in directories {
+        if crate::workspaces::linked(
+            &std::fs::symlink_metadata(&pane).map_err(|error| error.to_string())?,
+        ) {
+            return Err("linked recovery pane; references unknown".into());
+        }
+        let worker = pane.join("worker-runs");
+        if worker.exists()
+            && crate::workspaces::linked(
+                &std::fs::symlink_metadata(&worker).map_err(|error| error.to_string())?,
+            )
+        {
+            return Err("linked worker ledger directory; references unknown".into());
+        }
+        let path = worker.join("workers.json");
+        if path.exists() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    let mut total = 0;
+    let mut references = Vec::new();
+    let mut blockers = Vec::new();
+    for file in files {
+        let metadata = std::fs::symlink_metadata(&file).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || crate::workspaces::linked(&metadata) {
+            return Err("worker ledger is not a regular file; references unknown".into());
+        }
+        let mut bytes = Vec::new();
+        File::open(&file)
+            .map_err(|error| error.to_string())?
+            .take(LEDGER_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        total += bytes.len();
+        if bytes.len() as u64 > LEDGER_BYTES || total > 64 * 1024 * 1024 {
+            return Err("worker reference byte budget exceeded".into());
+        }
+        let ledger: Ledger = serde_json::from_slice(&bytes)
+            .map_err(|_| "worker ledger unavailable; references unknown")?;
+        if !(1..=7).contains(&ledger.version) {
+            return Err("unknown worker ledger version; references retained".into());
+        }
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        for job in ledger.jobs {
+            if job
+                .workspace
+                .as_ref()
+                .and_then(|scope| scope.binding.managed.as_ref())
+                .is_some_and(|managed| managed.id == id)
+            {
+                references.push(format!(
+                    "run {} / {:?} / result {} / ledger {}",
+                    job.run_id,
+                    job.state,
+                    if job.collected {
+                        "returned"
+                    } else {
+                        "not returned"
+                    },
+                    hash
+                ));
+                if !matches!(
+                    job.state,
+                    WorkerState::Done | WorkerState::Failed | WorkerState::Cancelled
+                ) {
+                    blockers.push(format!(
+                        "worker run {} is {:?}; inspect/reconcile before lifecycle changes",
+                        job.run_id, job.state
+                    ));
+                }
+            }
+        }
+    }
+    references.sort();
+    blockers.sort();
+    Ok((references, blockers))
+}
+
 fn dependency_state(state: WorkerState) -> schedule::RunState {
     match state {
         WorkerState::Queued => schedule::RunState::Pending,

@@ -1,5 +1,9 @@
 # Changelog
 
+- Managed worktrees now support separately reviewed native merge, HEAD cherry-pick, retirement
+  and branch deletion. Receipts bind exact heads, paths, conflicts, worker references and leases;
+  changed state, dirty files, unique commits or uncertain execution preserve the workspace.
+
 - Worker-owned native input review and opt-in Cursor ACP text/plan decisions preserve main drafts,
   native scopes and exact run/attempt ownership. Recovery pauses unresolved requests.
 - Edit cards show reported paths and readable additions/removals, with file navigation; JSON
