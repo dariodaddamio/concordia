@@ -48,6 +48,18 @@ impl State {
         }
     }
     pub fn height(&self) -> usize {
+        self.chip_height()
+            + if self
+                .draft
+                .iter()
+                .any(|attachment| matches!(attachment, Attachment::Image(_)))
+            {
+                8
+            } else {
+                0
+            }
+    }
+    fn chip_height(&self) -> usize {
         self.count() + usize::from(self.job.is_some()) + usize::from(self.pasted.is_some())
     }
 }
@@ -301,6 +313,7 @@ impl App {
                 Err(error) => self.flash(error),
             }
         }
+        self.ensure_inline_raster();
     }
 }
 fn import_attachment(root: &Path, path: &Path) -> Result<Paste, String> {
@@ -374,9 +387,27 @@ fn capture(_: &Path, _: bool) -> Result<Paste, String> {
 
 pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
     app.images.targets.clear();
+    if let Some(index) = app
+        .images
+        .draft
+        .iter()
+        .position(|attachment| matches!(attachment, Attachment::Image(_)))
+    {
+        let height = 8.min(
+            area.height
+                .saturating_sub(app.images.chip_height() as u16 + 3),
+        );
+        let preview = Rect { height, ..area };
+        raster::draw_inline(f, preview, app);
+        if height > 0 {
+            app.images.targets.push((preview, index, false));
+        }
+        area.y += height;
+        area.height -= height;
+    }
     let count = app
         .images
-        .height()
+        .chip_height()
         .min(area.height.saturating_sub(3) as usize);
     for index in 0..count {
         let row = Rect::new(area.x, area.y, area.width, 1);

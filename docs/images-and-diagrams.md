@@ -1,13 +1,14 @@
 # Images and diagrams in Concordia
 
-Build: `2026-11-03p`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
+Build: `2026-11-03t`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
 
 ## Attach an image
 
 Use Ctrl+V when the terminal passes that key to Concordia, `/attach` to choose a file, or
 `/attach "path/to/screenshot.png"`. Relative paths resolve from Concordia's cwd; quoted absolute
 paths work. `/attach clear` removes draft attachments. A visible image chip shows the name and
-size: click it for an inline preview, or X to remove it. Paste and file-picker helpers run
+size. The first image previews automatically above the editable composer; click its thumbnail or
+any image chip to enlarge it, or X to remove it. Paste and file-picker helpers run
 away from the input loop and request no console window.
 
 PNG, JPEG and WebP are accepted, up to four distinct images of 4 MiB each per message. Clipboard
@@ -39,7 +40,7 @@ for every provider or background worker.
 Image chips and image file links open an inline raster preview. Esc returns to the unchanged
 draft; E explicitly opens the system viewer. The preview uses ordinary true-color cells with
 half-block glyphs and normal frame clipping/redraw, without a terminal image escape protocol.
-No-color mode gives a text fallback. This is a terminal-resolution preview, not pixel-perfect
+No-color mode previews the pixels with luminance characters. This is a terminal-resolution preview, not pixel-perfect
 rendering or evidence of physical-host image protocol support.
 GIF links retain the existing system-viewer action; the inline decoder does not enable GIF.
 

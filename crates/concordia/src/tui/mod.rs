@@ -196,10 +196,10 @@ impl Phase {
         }
     }
 
-    /// Each phase has its own width-1 braille animation, so the state reads from motion alone.
+    /// Each phase has its own animation, so the state reads from motion alone.
     fn frames(&self) -> &'static [&'static str] {
         match self {
-            Phase::Waiting => &["◌", "○", "◌", "·"],
+            Phase::Waiting => &["✧", "✦", "✧", "✦"],
             Phase::Thinking => &["◇", "◈", "◆", "◈"],
             Phase::Tool(_) => &["›", "»", "›", "·"],
             Phase::Writing => &["▁", "▂", "▃", "▄", "▃", "▂"],
@@ -383,6 +383,7 @@ pub struct App {
     thread: Option<crate::threads::ThreadLog>,
     thread_meta_done: bool,
     usage_summary: String,
+    usage_credits: String,
     usage_tone: UsageTone,
     usage_warning: Option<String>,
     /// Width-1 ASCII bar drawn before the footer usage text.
@@ -483,6 +484,7 @@ impl App {
         });
         let Some(home) = home else {
             self.usage_summary = "no account yet".into();
+            self.usage_credits = "Credits: not reported".into();
             self.usage_tone = UsageTone::Mute;
             self.usage_warning = None;
             return;
@@ -495,6 +497,7 @@ impl App {
 
     fn set_usage_footer(&mut self, snap: &crate::usage::UsageSnapshot) {
         self.usage_summary = snap.summary.clone();
+        self.usage_credits = snap.credits_text();
         self.usage_tone = usage_tone(snap);
         self.usage_warning = crate::usage::low_limit_warning(snap, self.provider);
     }
@@ -527,7 +530,12 @@ impl App {
 
     /// Header (account) plus one line per limit window, as a single message.
     fn usage_block_text(&self, snap: &crate::usage::UsageSnapshot) -> String {
-        let body = snap.detail.trim();
+        let details = format!(
+            "{}\nCredit spend: not reported separately\n\nSubscription limits\n{}",
+            snap.credits_text(),
+            snap.detail.trim()
+        );
+        let body = details.trim();
         format!("{} - limits\n{}", self.account_label(), body)
     }
 
@@ -575,7 +583,7 @@ impl App {
                 ("◇", "Waiting for you".into())
             } else if self.busy {
                 match &self.phase {
-                    Phase::Waiting => ("◌", "Waiting".into()),
+                    Phase::Waiting => ("✧", "Waiting".into()),
                     Phase::Thinking => ("◈", "Thinking".into()),
                     Phase::Tool(name) => (
                         crate::provider::stream_cards::tool_icon(name),
@@ -586,7 +594,7 @@ impl App {
             } else if self.continuation.waiting() {
                 ("!", "Usage limit".into())
             } else {
-                ("\u{25c7}", "Idle".into())
+                ("✦", "Idle".into())
             };
         let project = self
             .cwd
@@ -3531,6 +3539,7 @@ impl App {
             thread: crate::threads::start(&state_root_for_usage),
             thread_meta_done: false,
             usage_summary: "limits unknown".into(),
+            usage_credits: "Credits: not reported".into(),
             usage_tone: UsageTone::Mute,
             usage_warning: None,
             usage_fetcher: UsageFetcher::new(state_root_for_usage),
@@ -5118,7 +5127,7 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         // A page owns the screen; preserve the workspace without drawing through it.
         app.areas = Areas::default();
         let page = Layout::vertical([
-            Constraint::Length(1),
+            Constraint::Length(2),
             Constraint::Min(1),
             Constraint::Length(3),
             Constraint::Length(1),
@@ -5139,7 +5148,7 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         let mut chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
+                Constraint::Length(2),
                 Constraint::Min(3),
                 Constraint::Length(input_rows as u16 + 2 + app.images.height() as u16),
                 Constraint::Length(1),
@@ -5324,10 +5333,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
 }
 
 const BAR_BG: Color = Color::Indexed(236);
-const SPINNER: [&str; 10] = [
-    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-    "\u{2807}", "\u{280f}",
-];
+const SPINNER: [&str; 4] = ["◇", "◈", "◆", "◈"];
 
 /// Omit unused leading units from the live timer beside the run status.
 fn run_elapsed(seconds: u64) -> String {
@@ -5413,14 +5419,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     };
     let email = app.account_email.as_deref().unwrap_or("email unavailable");
     let account = app.account_label();
-    let right = format!(" {} ", app.usage_summary);
-    let available = (area.width as usize).saturating_sub(Line::from(right.clone()).width());
+    let right = String::new();
+    let available = area.width as usize;
     let identity_width = Line::from(format!(" {account}   {email}")).width();
     let brand = format!("concordia {}   ", short_stamp());
     let model = format!("  {model}");
     let show_brand = 3 + brand.len() + identity_width + model.len() <= available;
     let mut left = vec![Span::styled(
-        " \u{25c6} ",
+        " ✦ ",
         bar.fg(accent).add_modifier(Modifier::BOLD),
     )];
     if show_brand {
@@ -5453,7 +5459,38 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let pad = (area.width as usize).saturating_sub(used + right.chars().count());
     left.push(Span::styled(" ".repeat(pad), bar));
     left.push(Span::styled(right, bar.fg(usage_color)));
-    f.render_widget(Paragraph::new(Line::from(left)).style(bar), area);
+    f.render_widget(
+        Paragraph::new(Line::from(left)).style(bar),
+        Rect {
+            height: area.height.min(1),
+            ..area
+        },
+    );
+    if area.height > 1 {
+        let subscription = app
+            .usage_summary
+            .split(" · ")
+            .filter(|part| !part.starts_with("credits "))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let subscription = if subscription.is_empty() {
+            "not reported"
+        } else {
+            &subscription
+        };
+        let line = Line::from(vec![
+            Span::styled(format!(" {}  │  ", app.usage_credits), bar.fg(Color::Cyan)),
+            Span::styled(format!("Subscription: {subscription}"), bar.fg(usage_color)),
+        ]);
+        f.render_widget(
+            Paragraph::new(line).style(bar),
+            Rect {
+                y: area.y + 1,
+                height: 1,
+                ..area
+            },
+        );
+    }
 }
 
 fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {

@@ -20,6 +20,8 @@ struct Thumbnail {
     pixels: image::RgbaImage,
 }
 struct View {
+    inline: bool,
+    snapshot: Option<String>,
     path: PathBuf,
     conversation: String,
     result: Option<Result<Arc<Thumbnail>, String>>,
@@ -36,7 +38,7 @@ pub(super) struct State {
 }
 impl State {
     pub fn active(&self) -> bool {
-        self.view.is_some()
+        self.view.as_ref().is_some_and(|view| !view.inline)
     }
     pub fn close(&mut self) {
         self.view = None;
@@ -142,14 +144,46 @@ fn decode(
 }
 impl App {
     pub(super) fn start_raster(&mut self, path: PathBuf, expected: Option<String>) {
+        self.start_raster_mode(path, expected, false);
+    }
+    pub(super) fn ensure_inline_raster(&mut self) {
+        if self.raster.active() {
+            return;
+        }
+        let first = self.images.draft.iter().find_map(|attachment| {
+            if let crate::attachments::Attachment::Image(image) = attachment {
+                Some(image.clone())
+            } else {
+                None
+            }
+        });
+        let Some(image) = first else {
+            self.raster.close();
+            return;
+        };
+        if self.raster.view.as_ref().is_some_and(|view| {
+            view.inline
+                && view.snapshot.as_deref() == Some(&image.sha256)
+                && view.conversation == self.deleg.d.conversation_id()
+        }) {
+            return;
+        }
+        self.raster.close();
+        self.start_raster_mode(image.path, Some(image.sha256), true);
+    }
+    fn start_raster_mode(&mut self, path: PathBuf, expected: Option<String>, inline: bool) {
         self.raster.poll();
         if self.raster.job.is_some() {
-            self.flash("An image preview is still finishing; try shortly");
+            if !inline {
+                self.flash("An image preview is still finishing; try shortly");
+            }
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         self.raster.view = Some(View {
+            inline,
+            snapshot: expected.clone(),
             path: path.clone(),
             conversation: self.deleg.d.conversation_id().into(),
             result: None,
@@ -236,15 +270,95 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             return;
         }
     };
-    if app.no_color {
-        f.render_widget(
-            Paragraph::new(
-                "Color preview disabled by no-color mode. E opens the system viewer; Esc returns.",
-            ),
-            content,
-        );
+    paint(f, content, thumb, app.no_color);
+    let footer = format!(
+        "{} × {} · SHA-256 {} · cell preview",
+        thumb.width,
+        thumb.height,
+        &thumb.hash[..12]
+    );
+    f.render_widget(
+        Paragraph::new(footer),
+        Rect {
+            y: inner.y + inner.height.saturating_sub(1),
+            height: inner.height.min(1),
+            ..inner
+        },
+    );
+}
+
+pub(super) fn draw_inline(f: &mut Frame, area: Rect, app: &App) {
+    if area.height == 0 || area.width == 0 {
         return;
     }
+    let first = app.images.draft.iter().find_map(|attachment| {
+        if let crate::attachments::Attachment::Image(image) = attachment {
+            Some(image)
+        } else {
+            None
+        }
+    });
+    let Some(image) = first else { return };
+    f.render_widget(
+        Paragraph::new(format!(" Preview · {} · click to enlarge", image.name))
+            .style(Style::default().fg(Color::Cyan)),
+        Rect { height: 1, ..area },
+    );
+    let content = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    let Some(view) = app.raster.view.as_ref().filter(|view| {
+        view.inline
+            && view.snapshot.as_deref() == Some(&image.sha256)
+            && view.conversation == app.deleg.d.conversation_id()
+    }) else {
+        f.render_widget(Paragraph::new(" Preparing preview…"), content);
+        return;
+    };
+    match &view.result {
+        Some(Ok(thumb)) => {
+            paint(
+                f,
+                Rect {
+                    width: content.width.min(26),
+                    ..content
+                },
+                thumb,
+                app.no_color,
+            );
+            if content.width > 30 {
+                f.render_widget(
+                    Paragraph::new(format!(
+                        "{} × {}\n{}\nVerified attachment snapshot\nThe message stays editable",
+                        thumb.width, thumb.height, image.mime
+                    ))
+                    .wrap(Wrap { trim: false }),
+                    Rect {
+                        x: content.x + 28,
+                        width: content.width - 28,
+                        ..content
+                    },
+                );
+            }
+        }
+        Some(Err(error)) => {
+            f.render_widget(
+                Paragraph::new(format!(
+                    " Preview unavailable: {error}\nClick the image chip for viewer options"
+                ))
+                .wrap(Wrap { trim: false }),
+                content,
+            );
+        }
+        None => {
+            f.render_widget(Paragraph::new(" Preparing preview…"), content);
+        }
+    }
+}
+
+fn paint(f: &mut Frame, content: Rect, thumb: &Thumbnail, monochrome: bool) {
     let scale = (f64::from(content.width) / f64::from(thumb.pixels.width()))
         .min(f64::from(content.height) * 2.0 / f64::from(thumb.pixels.height()));
     let w = (f64::from(thumb.pixels.width()) * scale).floor() as u16;
@@ -266,26 +380,23 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             };
             let top = u32::from(y) * 2 * thumb.pixels.height() / u32::from(h.max(1) * 2);
             let bottom = (u32::from(y) * 2 + 1) * thumb.pixels.height() / u32::from(h.max(1) * 2);
-            f.buffer_mut()[(content.x + (content.width - w) / 2 + x, content.y + y)]
-                .set_symbol("▀")
-                .set_fg(sample(top))
-                .set_bg(sample(bottom));
+            let cell =
+                &mut f.buffer_mut()[(content.x + (content.width - w) / 2 + x, content.y + y)];
+            if monochrome {
+                let Color::Rgb(r, g, b) = sample(top) else {
+                    continue;
+                };
+                let light =
+                    (u32::from(r) * 2126 + u32::from(g) * 7152 + u32::from(b) * 722) / 10000;
+                let symbols = [" ", ".", ":", "-", "=", "+", "*", "#", "%", "@"];
+                cell.set_symbol(symbols[(light * 9 / 255) as usize]);
+            } else {
+                cell.set_symbol("▀")
+                    .set_fg(sample(top))
+                    .set_bg(sample(bottom));
+            }
         }
     }
-    let footer = format!(
-        "{} × {} · SHA-256 {} · cell preview",
-        thumb.width,
-        thumb.height,
-        &thumb.hash[..12]
-    );
-    f.render_widget(
-        Paragraph::new(footer),
-        Rect {
-            y: inner.y + inner.height.saturating_sub(1),
-            height: inner.height.min(1),
-            ..inner
-        },
-    );
 }
 
 #[cfg(test)]
@@ -333,6 +444,49 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
     assert_eq!(app.editor.text(), "preview preserves this draft");
     assert!(key(app, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert!(!app.raster.active());
+    app.images.draft = vec![crate::attachments::Attachment::Image(
+        crate::attachments::import(&app.state_root, &path).unwrap(),
+    )];
+    app.ensure_inline_raster();
+    while app.raster.job.is_some() {
+        app.raster.poll();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(
+        !app.raster.active(),
+        "a composer thumbnail must not capture input"
+    );
+    terminal.draw(|f| super::draw_ui(f, app)).unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(screen.contains("Preview · raster-preview.png"), "{screen}");
+    assert!(screen.contains("12 × 8"), "{screen}");
+    assert!(
+        screen.contains('▀'),
+        "the default composer shows actual pixels"
+    );
+    app.paste_text(" plus typing");
+    assert!(app.editor.text().contains("plus typing"));
+    app.no_color = true;
+    terminal
+        .draw(|f| draw_inline(f, Rect::new(0, 0, 60, 8), app))
+        .unwrap();
+    assert!(
+        (1..8).any(|y| (0..26).any(|x| {
+            let symbol = terminal.backend().buffer()[(x, y)].symbol();
+            symbol != " " && symbol != "▀"
+        })),
+        "monochrome terminals also show image pixels"
+    );
+    app.images.draft.clear();
+    app.ensure_inline_raster();
+    assert!(app.raster.view.is_none());
     app.start_raster(path, None);
     app.raster.close();
     while app.raster.job.is_some() {

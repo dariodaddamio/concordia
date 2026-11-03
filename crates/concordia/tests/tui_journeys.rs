@@ -55,6 +55,13 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
             s.screen().contains("Image 1: diagram.png")
         });
         let preview_draft = s.draft();
+        s.until("automatic image preview without a click", |s| {
+            let screen = s.screen();
+            screen.contains("Preview · diagram.png")
+                && screen.contains("12 × 8")
+                && screen.contains('▀')
+        });
+        assert!(s.screen().contains("Credits: not reported"));
         let screen = s.screen();
         let (y, row) = screen
             .lines()
@@ -832,7 +839,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
                 .next()
                 .unwrap_or_default()
                 .trim_start()
-                .starts_with('◆')
+                .starts_with('✦')
                 && screen.contains("resize-draft-marker")
                 && screen
                     .lines()
@@ -865,7 +872,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
             .next()
             .unwrap_or_default()
             .trim_start()
-            .starts_with('◆')
+            .starts_with('✦')
             && screen
                 .lines()
                 .nth(28)

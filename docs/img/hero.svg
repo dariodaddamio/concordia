@@ -11,37 +11,35 @@
 <rect x="14" y="36" width="243" height="19" fill="#303030"/>
 <rect x="257" y="36" width="81" height="19" fill="#87d787"/>
 <rect x="338" y="36" width="666" height="19" fill="#303030"/>
+<rect x="14" y="55" width="990" height="19" fill="#303030"/>
+<rect x="23" y="112" width="972" height="19" fill="#262626"/>
 <rect x="302" y="245" width="54" height="19" fill="#303030"/>
 <rect x="59" y="302" width="234" height="19" fill="#303030"/>
 <rect x="59" y="321" width="54" height="19" fill="#303030"/>
 <rect x="95" y="340" width="36" height="19" fill="#303030"/>
-<rect x="59" y="397" width="333" height="19" fill="#303030"/>
-<rect x="59" y="416" width="153" height="19" fill="#303030"/>
-<rect x="59" y="435" width="9" height="19" fill="#303030"/>
+<rect x="23" y="397" width="369" height="19" fill="#303030"/>
+<rect x="23" y="416" width="189" height="19" fill="#303030"/>
+<rect x="23" y="435" width="45" height="19" fill="#303030"/>
 <rect x="104" y="473" width="63" height="19" fill="#303030"/>
 <rect x="104" y="492" width="99" height="19" fill="#303030"/>
+<rect x="23" y="549" width="972" height="19" fill="#262626"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
-<text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">◆</text>
-<text x="41" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#666666">concordia 2026-11-01b</text>
+<text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">✦</text>
+<text x="41" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#666666">concordia 2026-11-03t</text>
 <text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
 <text x="356" y="50" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">member@example.invalid</text>
 <text x="572" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
-<text x="770" y="50" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#666666">5h 59% left · 7d 41% left</text>
-<text x="23" y="69" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#5fafff">| i</text>
-<text x="59" y="69" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
+<text x="23" y="69" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Credits: not reported  │</text>
+<text x="257" y="69" textLength="351" lengthAdjust="spacingAndGlyphs" fill="#666666">Subscription: 5h 59% left · 7d 41% left</text>
 <text x="23" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff">|</text>
 <text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">interrupts.</text>
-<text x="23" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
-<text x="41" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Add a /doctor check for duplicate accounts and show me the diff</text>
+<text x="23" y="126" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#87d7ff" font-weight="700">You ›</text>
+<text x="77" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Add a /doctor check for duplicate accounts and show me the diff</text>
 <text x="23" y="145" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3 · gpt-5.1-codex</text>
-<text x="23" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
-<text x="41" y="164" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n duplicate src</text>
-<text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
-<text x="41" y="183" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ edit</text>
-<text x="131" y="183" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#87af87" text-decoration="underline">src/doctor.rs</text>
-<text x="23" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
-<text x="41" y="202" textLength="306" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">│ ◉ shell  cargo test -p concordia</text>
-<text x="23" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f">●</text>
+<text x="23" y="164" textLength="342" lengthAdjust="spacingAndGlyphs" fill="#87af87">▸ │ ✓ Run command  rg -n duplicate src</text>
+<text x="23" y="183" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">▸ │ ✓ Edit file  src/doctor.rs</text>
+<text x="23" y="202" textLength="378" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">▸ │ ◉ Run command  cargo test -p concordia</text>
+<text x="23" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f" font-weight="700">●</text>
 <text x="41" y="221" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">What I changed</text>
 <text x="41" y="259" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">I added a</text>
 <text x="131" y="259" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">duplicate check</text>
@@ -72,20 +70,18 @@
 <text x="68" y="506" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Use</text>
 <text x="104" y="506" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use remove</text>
 <text x="212" y="506" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to drop one</text>
-<text x="23" y="563" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
-<text x="41" y="563" textLength="162" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">looks good, thanks</text>
+<text x="23" y="563" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#87d7ff" font-weight="700">You ›</text>
+<text x="77" y="563" textLength="162" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">looks good, thanks</text>
 <text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">╭</text>
 <text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
-<text x="104" y="582" textLength="351" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────</text>
-<text x="464" y="582" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">[ Bottom ]</text>
-<text x="563" y="582" textLength="441" lengthAdjust="spacingAndGlyphs" fill="#585858">────────────────────────────────────────────────╮</text>
+<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
 <text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
 <text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
 <text x="41" y="601" textLength="342" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">Message Concordia...  (/ for commands)</text>
 <text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
 <text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#585858">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="23" y="639" textLength="729" lengthAdjust="spacingAndGlyphs" fill="#666666">Enter send · / commands · Shift+Tab mode · drag to select · Ctrl+C copy or cancel</text>
-<text x="869" y="639" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">auth workspace</text>
+<text x="23" y="639" textLength="630" lengthAdjust="spacingAndGlyphs" fill="#666666">Enter send · / cmds · Shift+Tab perms · drag select · Ctrl+C copy/stop</text>
+<text x="797" y="639" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">permissions: workspace</text>
 </g>
 </g>
 <rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>

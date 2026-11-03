@@ -3886,7 +3886,7 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     h.app.cwd = PathBuf::from("C:/work/fixture-project");
     assert_eq!(
         h.app.window_title(),
-        "\u{25c7} fixture-project \u{b7} Idle \u{b7} Concordia"
+        "✦ fixture-project \u{b7} Idle \u{b7} Concordia"
     );
     h.app.session_ui.title = Some("Fix parser".into());
     h.app.busy = true;
@@ -4103,12 +4103,15 @@ fn active_email_and_nickname_are_visible_in_header_without_a_picker() {
         h.app.account_names.insert("codex".into(), "Work".into());
         h.app.account_email = Some("member@example.invalid".into());
         h.app.usage_summary = "5h 80% left".into();
+        h.app.usage_credits = "Credits: 12.5 balance".into();
         h.draw();
         let screen = h.screen();
         let header = screen.lines().next().unwrap();
         assert!(header.contains("Work (Codex)"), "{header}");
         assert!(header.contains("member@example.invalid"), "{header}");
-        assert!(header.contains("5h 80% left"), "{header}");
+        let usage = screen.lines().nth(1).unwrap();
+        assert!(usage.contains("Credits: 12.5 balance"), "{usage}");
+        assert!(usage.contains("Subscription: 5h 80% left"), "{usage}");
     }
 }
 

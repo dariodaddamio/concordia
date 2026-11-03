@@ -356,6 +356,51 @@ fn hero() -> String {
     s.svg("concordia")
 }
 
+fn attachment() -> String {
+    let mut s = Shot::new(W, H);
+    s.conversation();
+    s.app.usage_credits = "Credits: 12.5 balance".into();
+    let path = s._dir.path().join("diagram.png");
+    image::RgbaImage::from_fn(64, 32, |x, y| {
+        if (6..25).contains(&x) && (8..24).contains(&y) {
+            image::Rgba([47, 175, 202, 255])
+        } else if (39..58).contains(&x) && (8..24).contains(&y) {
+            image::Rgba([167, 116, 233, 255])
+        } else if (25..39).contains(&x) && (15..18).contains(&y) {
+            image::Rgba([220, 224, 235, 255])
+        } else {
+            image::Rgba([25, 29, 39, 255])
+        }
+    })
+    .save(&path)
+    .unwrap();
+    s.app.images.draft = vec![crate::attachments::Attachment::Image(
+        crate::attachments::import(&s.app.state_root, &path).unwrap(),
+    )];
+    s.app.editor.set_text("Explain this diagram");
+    s.app.ensure_inline_raster();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        s.app.raster.poll();
+        s.draw();
+        if s.term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .any(|cell| cell.symbol() == "▀")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "automatic preview did not appear"
+        );
+        std::thread::yield_now();
+    }
+    s.svg("concordia · attachment preview")
+}
+
 fn palette() -> String {
     let mut s = Shot::new(W, H);
     s.conversation();
@@ -375,6 +420,7 @@ fn snap(windows: &[(&str, f64, &str)]) -> crate::usage::UsageSnapshot {
         })
         .collect();
     crate::usage::UsageSnapshot {
+        credits: None,
         plan: None,
         summary: String::new(),
         detail: String::new(),
@@ -535,6 +581,7 @@ fn scenes() -> Vec<(&'static str, String)> {
         ("palette", palette()),
         ("usage", usage()),
         ("waiting", waiting()),
+        ("attachment", attachment()),
     ]
 }
 
@@ -545,6 +592,7 @@ fn svg_structure_is_valid_and_carries_the_screen_text() {
         ("palette", "/use"),
         ("usage", "Cursor 1"),
         ("waiting", "Working through the next step"),
+        ("attachment", "Preview · diagram.png"),
     ];
     for ((name, svg), (n2, needle)) in scenes().into_iter().zip(expected) {
         assert_eq!(name, n2);
