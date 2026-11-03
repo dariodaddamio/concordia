@@ -2,9 +2,12 @@
 //! rules, fenced code, and inline `code`, **bold** and *italic*. It produces plain text plus style
 //! runs, so selection and copy keep working on exactly what is on screen.
 //!
-//! Deliberately not a full CommonMark parser: tables, links and nested emphasis stay as typed.
+//! Pipe tables adapt to the available width; link labels retain explicit destinations.
 
 use ratatui::style::{Color, Modifier, Style};
+
+#[path = "markdown_tables.rs"]
+mod tables;
 
 /// One rendered source line (before wrapping).
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +20,8 @@ pub struct MdLine {
     /// Extra indent for wrapped continuation rows (list and quote hanging indents).
     pub hang: usize,
     pub base: Style,
+    /// Rendered character ranges and their explicit local-file or HTTP(S) destinations.
+    pub links: Vec<(usize, usize, String)>,
 }
 
 fn code_style() -> Style {
@@ -36,20 +41,82 @@ fn plain(text: String) -> MdLine {
         indent: 0,
         hang: 0,
         base: Style::default(),
+        links: Vec::new(),
     }
 }
 
 /// Render `text` into display lines.
+#[cfg(test)]
 pub fn render(text: &str) -> Vec<MdLine> {
+    render_width(text, 100)
+}
+
+#[cfg(test)]
+pub fn render_width(text: &str, width: usize) -> Vec<MdLine> {
+    render_width_state(text, width).0
+}
+
+pub fn render_width_state(text: &str, width: usize) -> (Vec<MdLine>, bool) {
     let mut out = Vec::new();
+    let mut pending = false;
+    let mut diagrams = 0;
     let mut in_code = false;
     let mut prose_blank = false;
-    for raw in text.lines() {
+    let mut source = text.lines().peekable();
+    while let Some(raw) = source.next() {
         let line = raw.trim_end_matches('\r');
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") {
             if !in_code {
                 let lang = trimmed.trim_start_matches('`').trim();
+                if lang.eq_ignore_ascii_case("mermaid") {
+                    diagrams += 1;
+                    let mut diagram = String::new();
+                    let mut closed = false;
+                    for row in source.by_ref() {
+                        if row.trim_start().starts_with("```") {
+                            closed = true;
+                            break;
+                        }
+                        diagram.push_str(row);
+                        diagram.push('\n');
+                    }
+                    let result = if diagrams > 16 {
+                        Some(Err(
+                            "at most 16 diagrams per message; source retained".into()
+                        ))
+                    } else if closed {
+                        super::diagrams::preview(&diagram, width.saturating_sub(2))
+                    } else {
+                        None
+                    };
+                    pending |= closed && result.is_none();
+                    match result {
+                        Some(Ok(rendered)) => out.extend(rendered.lines().map(|row| MdLine {
+                            base: Style::default().fg(Color::Cyan),
+                            ..plain(row.to_owned())
+                        })),
+                        status => {
+                            let label = match status {
+                                Some(Err(reason)) => format!("Mermaid: {reason}"),
+                                _ if closed => "Rendering Mermaid diagram...".into(),
+                                _ => "Mermaid diagram arriving...".into(),
+                            };
+                            out.push(MdLine {
+                                base: dim(),
+                                ..plain(label)
+                            });
+                            if closed {
+                                out.extend(diagram.lines().map(|row| MdLine {
+                                    base: code_style(),
+                                    ..plain(row.to_owned())
+                                }));
+                            }
+                        }
+                    }
+                    prose_blank = false;
+                    continue;
+                }
                 if !lang.is_empty() {
                     out.push(MdLine {
                         base: dim().add_modifier(Modifier::ITALIC),
@@ -70,6 +137,23 @@ pub fn render(text: &str) -> Vec<MdLine> {
             });
             continue;
         }
+        if let Some(header) = tables::header(line, source.peek().copied().unwrap_or("")) {
+            source.next();
+            let mut rows = vec![header];
+            while rows.len() < 257 {
+                let Some(row) = source.peek().and_then(|s| tables::cells(s)) else {
+                    break;
+                };
+                if row.len() != rows[0].len() {
+                    break;
+                }
+                rows.push(row);
+                source.next();
+            }
+            out.extend(tables::render(rows, width));
+            prose_blank = false;
+            continue;
+        }
         if line.trim().is_empty() {
             if !prose_blank {
                 out.push(render_prose(""));
@@ -80,10 +164,16 @@ pub fn render(text: &str) -> Vec<MdLine> {
         prose_blank = false;
         out.push(render_prose(line));
     }
-    out
+    (out, pending)
 }
 
 fn render_prose(line: &str) -> MdLine {
+    let mut line = render_prose_inner(line);
+    format_links(&mut line);
+    line
+}
+
+fn render_prose_inner(line: &str) -> MdLine {
     let trimmed = line.trim_start();
     let lead = line.len() - trimmed.len();
     let indent = (lead / 2) * 2;
@@ -113,6 +203,7 @@ fn render_prose(line: &str) -> MdLine {
             base: Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
+            links: Vec::new(),
         };
     }
 
@@ -132,6 +223,7 @@ fn render_prose(line: &str) -> MdLine {
             base: Style::default()
                 .fg(Color::Gray)
                 .add_modifier(Modifier::ITALIC),
+            links: Vec::new(),
         };
     }
 
@@ -150,6 +242,7 @@ fn render_prose(line: &str) -> MdLine {
                 indent,
                 hang: 2,
                 base: Style::default(),
+                links: Vec::new(),
             };
         }
     }
@@ -179,6 +272,7 @@ fn render_prose(line: &str) -> MdLine {
                 indent,
                 hang: marker_len,
                 base: Style::default(),
+                links: Vec::new(),
             };
         }
     }
@@ -190,12 +284,97 @@ fn render_prose(line: &str) -> MdLine {
         indent: 0,
         hang: 0,
         base: Style::default(),
+        links: Vec::new(),
     }
+}
+
+pub(super) fn web_target(target: &str) -> bool {
+    target.len() <= 2048
+        && target
+            .strip_prefix("https://")
+            .or_else(|| target.strip_prefix("http://"))
+            .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
+        && !target
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+}
+
+fn format_links(line: &mut MdLine) {
+    let old: Vec<char> = line.text.chars().collect();
+    let mut map: Vec<usize> = (0..=old.len()).collect();
+    let mut text = String::new();
+    let mut source = 0;
+    let mut count = 0;
+    for link in crate::file_links::markdown_links(&line.text) {
+        let start = line.text[..link.syntax.start].chars().count();
+        let end = line.text[..link.syntax.end].chars().count();
+        // Inline code remains literal, and unsupported URL schemes remain visible.
+        if line
+            .runs
+            .iter()
+            .any(|(a, b, s)| *a <= start && end <= *b && s.bg == code_style().bg)
+            || !(web_target(&link.target)
+                || crate::file_links::explicit_reference(&link.target).is_some())
+        {
+            continue;
+        }
+        let a = line.text[..link.label.start].chars().count();
+        let b = line.text[..link.label.end].chars().count();
+        for i in source..start {
+            map[i] = count;
+            text.push(old[i]);
+            count += 1;
+        }
+        for m in &mut map[start..a] {
+            *m = count;
+        }
+        let visible_start = count;
+        for i in a..b {
+            map[i] = count;
+            text.push(old[i]);
+            count += 1;
+        }
+        for m in &mut map[b..=end] {
+            *m = count;
+        }
+        line.links.push((visible_start, count, link.target));
+        source = end;
+    }
+    if line.links.is_empty() {
+        return;
+    }
+    for i in source..old.len() {
+        map[i] = count;
+        text.push(old[i]);
+        count += 1;
+    }
+    map[old.len()] = count;
+    line.runs = line
+        .runs
+        .iter()
+        .filter_map(|(a, b, s)| (map[*a] < map[*b]).then_some((map[*a], map[*b], *s)))
+        .collect();
+    line.runs.extend(line.links.iter().map(|(a, b, _)| {
+        (
+            *a,
+            *b,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
+        )
+    }));
+    line.text = text;
 }
 
 /// Inline `code`, **bold** and *italic*. Markers are removed; style runs index the result.
 pub fn inline(s: &str) -> (String, Vec<(usize, usize, Style)>) {
     let chars: Vec<char> = s.chars().collect();
+    let bytes: Vec<usize> = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(s.len()))
+        .collect();
+    let mut links = crate::file_links::markdown_links(s).into_iter().peekable();
     let mut out = String::new();
     let mut count = 0usize;
     let mut runs = Vec::new();
@@ -206,6 +385,38 @@ pub fn inline(s: &str) -> (String, Vec<(usize, usize, Style)>) {
     };
     while i < chars.len() {
         let c = chars[i];
+        // Parse styles in a label, never in the explicit destination itself.
+        while links
+            .peek()
+            .is_some_and(|link| link.syntax.start < bytes[i])
+        {
+            links.next();
+        }
+        if c == '['
+            && links
+                .peek()
+                .is_some_and(|link| link.syntax.start == bytes[i])
+        {
+            if let Some(link) = links.next() {
+                let (label, label_runs) = inline(&s[link.label.clone()]);
+                out.push('[');
+                count += 1;
+                runs.extend(
+                    label_runs
+                        .into_iter()
+                        .map(|(a, b, s)| (a + count, b + count, s)),
+                );
+                count += label.chars().count();
+                out.push_str(&label);
+                let tail = &s[link.label.end..link.syntax.end];
+                out.push_str(tail);
+                count += tail.chars().count();
+                i = bytes
+                    .binary_search(&link.syntax.end)
+                    .expect("Markdown delimiter boundary");
+                continue;
+            }
+        }
         // `code`
         if c == '`' {
             if let Some(end) = find(i + 1, &['`']) {
@@ -282,6 +493,62 @@ mod tests {
 
     fn texts(md: &str) -> Vec<String> {
         render(md).into_iter().map(|l| l.text).collect()
+    }
+
+    #[test]
+    fn link_labels_keep_exact_destinations_and_code_is_literal() {
+        let rows = render("字 [**plan**](<docs/my plan.md>) and [plan](https://example.test/a_(b)) `code [x](file.md)`");
+        assert_eq!(rows[0].text, "字 plan and plan code [x](file.md)");
+        assert_eq!(rows[0].links.len(), 2);
+        assert_eq!(rows[0].links[0], (2, 6, "docs/my plan.md".into()));
+        assert_eq!(
+            rows[0].links[1],
+            (11, 15, "https://example.test/a_(b)".into())
+        );
+        assert!(render("[bad](javascript:alert(1))")[0].links.is_empty());
+        assert!(!web_target("https://example.test\nattack"));
+        let literal_target = render("[`source`](https://example.test/?q=*value*)");
+        assert_eq!(literal_target[0].text, "source");
+        assert_eq!(
+            literal_target[0].links[0].2,
+            "https://example.test/?q=*value*"
+        );
+    }
+
+    #[test]
+    fn pipe_tables_wrap_and_stack_without_losing_links_or_unicode() {
+        let table = "| Feature | Proof |\n| :--- | ---: |\n| Memory 字 | [Read exact originals](docs/native-memory.md) and `a|b` |\n| Files | New preview |";
+        for width in [12, 24, 40, 100] {
+            let rows = render_width(table, width);
+            let combined = rows
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!combined.contains("| :---"), "{combined}");
+            assert!(combined.contains("Memory"), "{combined}");
+            assert!(rows
+                .iter()
+                .flat_map(|r| &r.links)
+                .any(|(_, _, t)| t == "docs/native-memory.md"));
+            if width >= 15 {
+                assert!(
+                    rows.iter().all(|r| super::super::text::slice_width(
+                        &r.text.chars().collect::<Vec<_>>()
+                    ) <= width),
+                    "{combined}"
+                );
+            }
+            for row in rows {
+                for (a, b, _) in row.links {
+                    assert!(a < b && b <= row.text.chars().count());
+                }
+            }
+        }
+        let literal = render("```md\n| a | b |\n| --- | --- |\n```\nnot a table | yet");
+        assert_eq!(literal[0].text, "md");
+        assert_eq!(literal[1].text, "| a | b |");
+        assert_eq!(literal.last().unwrap().text, "not a table | yet");
     }
 
     fn styled(l: &MdLine, pat: &str) -> Option<Style> {

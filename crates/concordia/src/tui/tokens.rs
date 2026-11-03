@@ -17,10 +17,14 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Total tokens in the last 24 hours, for the landing page.
-pub(super) fn last_day_total(state_root: &Path) -> u64 {
+/// Rolling 24-hour and all-time totals from the persistent Concordia log.
+pub(super) fn landing_totals(state_root: &Path) -> (u64, u64) {
+    let entries = load(state_root);
     let since = now().saturating_sub(DAY);
-    totals(load(state_root).iter().filter(|e| e.at >= since)).total()
+    (
+        totals(entries.iter().filter(|e| e.at >= since)).total(),
+        totals(&entries).total(),
+    )
 }
 
 fn summary(t: &Totals) -> String {
@@ -131,6 +135,8 @@ pub(super) fn open(app: &mut App) {
         crate::session_titles::get(&root, provider, &e.account, &home, e.chat.as_deref()?)
     });
     app.update_preview = Some(UpdatePreview {
+        history: Vec::new(),
+        history_expanded: false,
         lines,
         install_available: false,
         release_url: None,
@@ -191,5 +197,32 @@ mod tests {
             .map(PreviewLine::plain)
             .collect();
         assert_eq!(text[0], "No turns recorded yet.");
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    #[test]
+    fn reopening_the_log_keeps_old_usage_in_all_time_only() {
+        let root = tempfile::tempdir().unwrap();
+        let make = |at, output| Entry {
+            at,
+            provider: "codex".into(),
+            account: "fixture".into(),
+            model: None,
+            project: "fixture".into(),
+            chat: None,
+            new_input: 0,
+            cached_input: 0,
+            output,
+            cost_usd: None,
+        };
+        crate::token_log::record(root.path(), &make(now() - 2 * DAY, 500)).unwrap();
+        crate::token_log::record(root.path(), &make(now(), 100)).unwrap();
+        assert_eq!(landing_totals(root.path()), (100, 600));
+        crate::token_log::record(root.path(), &make(now(), 200)).unwrap();
+        assert_eq!(landing_totals(root.path()), (300, 800));
     }
 }

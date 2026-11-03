@@ -77,6 +77,104 @@ pub fn parse_codex_stream_chunk(chunk: &str) -> Vec<StreamPart> {
     out
 }
 
+pub fn usage_exhausted(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "usage limit",
+        "usage_limit",
+        "usage has run out",
+        "you are out of usage",
+        "you're out of usage",
+        "quota exceeded",
+        "quota_exceeded",
+        "insufficient_quota",
+        "you've hit your limit",
+        "you have hit your limit",
+        "rate_limit_exceeded",
+        "rate limit reached",
+        "usage has been exhausted",
+        "out of usage",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
+        || [
+            "usagelimitexceeded",
+            "usagelimitreached",
+            "quotaexceeded",
+            "insufficientquota",
+            "credit balance is too low",
+        ]
+        .iter()
+        .any(|code| lower.replace(['_', '-'], "").contains(code))
+}
+
+/// The provider rejected the selected model because its servers are busy (Codex
+/// `server_overloaded` / "Selected model is at capacity", Claude `overloaded_error`). Quota is
+/// not the cause, so another model or account can take the request.
+pub fn model_overloaded(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("model is at capacity")
+        || lower.contains("overloaded_error")
+        || lower.replace(['_', '-'], "").contains("serveroverloaded")
+}
+
+pub(super) fn capacity_error_text(message: &str, code: Option<&str>) -> String {
+    let code = code.map(|code| {
+        if code.eq_ignore_ascii_case("ContextWindowExceeded") {
+            "context_window_exceeded"
+        } else {
+            code
+        }
+    });
+    if let Some(code) = code
+        .filter(|code| (usage_exhausted(code) || model_overloaded(code)) && !message.contains(code))
+    {
+        return format!("{code}: {message}");
+    }
+    match code {
+        Some(
+            code @ ("context_length_exceeded"
+            | "context_window_exceeded"
+            | "usage_limit_reached"
+            | "usage_limit_exceeded"
+            | "rate_limit_exceeded"
+            | "quota_exceeded"
+            | "insufficient_quota"),
+        ) if !message.contains(code) => {
+            format!("{code}: {message}")
+        }
+        _ => message.to_string(),
+    }
+}
+
+fn native_error_code(ev: &serde_json::Value) -> Option<&str> {
+    let codes: Vec<_> = [
+        ev.get("code"),
+        ev.pointer("/error/code"),
+        ev.get("codexErrorInfo"),
+        ev.pointer("/error/codexErrorInfo"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|v| {
+        v.as_str().or_else(|| {
+            v.as_object()
+                .and_then(|o| o.keys().next())
+                .map(String::as_str)
+        })
+    })
+    .collect();
+    codes
+        .iter()
+        .copied()
+        .find(|code| {
+            usage_exhausted(code)
+                || model_overloaded(code)
+                || code.eq_ignore_ascii_case("ContextWindowExceeded")
+        })
+        .or_else(|| codes.first().copied())
+}
+
 pub fn classify_codex_event(ev: &serde_json::Value) -> Vec<StreamPart> {
     let typ = ev.get("type").and_then(|x| x.as_str()).unwrap_or("");
     if typ == "thread.started" {
@@ -85,8 +183,15 @@ pub fn classify_codex_event(ev: &serde_json::Value) -> Vec<StreamPart> {
         }
     }
     if typ == "error" {
-        if let Some(msg) = ev.get("message").and_then(|x| x.as_str()) {
-            return vec![StreamPart::Error(msg.to_string())];
+        let code = native_error_code(ev);
+        if let Some(msg) = ev
+            .get("message")
+            .or_else(|| ev.pointer("/error/message"))
+            .or_else(|| ev.get("error").filter(|v| v.is_string()))
+            .and_then(|x| x.as_str())
+            .or(code)
+        {
+            return vec![StreamPart::Error(capacity_error_text(msg, code))];
         }
     }
     if typ == "turn.completed" {
@@ -98,12 +203,14 @@ pub fn classify_codex_event(ev: &serde_json::Value) -> Vec<StreamPart> {
         };
     }
     if typ == "turn.failed" {
+        let code = native_error_code(ev);
         if let Some(msg) = ev
             .get("error")
             .and_then(|e| e.get("message"))
             .and_then(|x| x.as_str())
+            .or(code)
         {
-            return vec![StreamPart::Error(msg.to_string())];
+            return vec![StreamPart::Error(capacity_error_text(msg, code))];
         }
     }
     if typ.starts_with("item.") {

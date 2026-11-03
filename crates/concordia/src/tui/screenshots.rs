@@ -24,6 +24,9 @@ const DEFAULT_FG: &str = "#d4d4d4";
 const DEFAULT_BG: &str = "#14161b";
 const FONT: &str = "Cascadia Mono, Consolas, monospace";
 
+#[path = "demo_gifs.rs"]
+mod demo_gifs;
+
 // ---------------------------------------------------------------- buffer -> SVG
 
 const ANSI16: [&str; 16] = [
@@ -287,6 +290,7 @@ impl Shot {
         app.no_color = false;
         app.provider = ProviderKind::Codex;
         app.account = "codex-3".into();
+        app.account_email = Some("member@example.invalid".into());
         app.model = "gpt-5.1-codex".into();
         app.usage_summary = "5h 59% left \u{b7} 7d 41% left".into();
         let term = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -355,8 +359,10 @@ fn hero() -> String {
 fn palette() -> String {
     let mut s = Shot::new(W, H);
     s.conversation();
-    s.key('/');
-    s.svg("concordia \u{2014} slash palette")
+    for ch in "/use".chars() {
+        s.key(ch);
+    }
+    s.svg("concordia \u{2014} command options")
 }
 
 fn snap(windows: &[(&str, f64, &str)]) -> crate::usage::UsageSnapshot {
@@ -369,6 +375,7 @@ fn snap(windows: &[(&str, f64, &str)]) -> crate::usage::UsageSnapshot {
         })
         .collect();
     crate::usage::UsageSnapshot {
+        plan: None,
         summary: String::new(),
         detail: String::new(),
         primary_pct: windows.first().map(|w| w.used_pct),
@@ -406,7 +413,23 @@ fn usage() -> String {
     ];
     let mut rows = Vec::new();
     for (id, provider, sn) in entries {
-        let r = crate::usage::picker_row(id, provider, &sn);
+        let identity = crate::identity::ProviderIdentity {
+            provider,
+            home_path: "synthetic".into(),
+            login: Some("member@example.invalid".into()),
+            plan: Some(
+                if provider == ProviderKind::Codex {
+                    "plus"
+                } else {
+                    "pro"
+                }
+                .into(),
+            ),
+            team: None,
+            model: None,
+            logged_in: true,
+        };
+        let r = crate::usage::profiled_picker_row(id, provider, &sn, &identity);
         s.app.picker_tones.insert(format!("usage:{}", r.id), r.tone);
         rows.push(PickerRow {
             id: format!("usage:{}", r.id),
@@ -440,6 +463,7 @@ fn waiting() -> String {
     s.app.pulse_on = true;
     s.app.tick_count = 3;
     s.app.phase = Phase::Thinking;
+    s.app.turn_started = Some(Instant::now() - Duration::from_secs(500));
     s.app.live_thinking = "Checking how the region filter treats a null before it compares.\nThe comparison runs first, so a missing region never matches and the row is dropped.\nRunning the filter tests to confirm before proposing a fix.".into();
     s.draw();
     s.svg("concordia \u{2014} working")
@@ -520,7 +544,7 @@ fn svg_structure_is_valid_and_carries_the_screen_text() {
         ("hero", "What I changed"),
         ("palette", "/use"),
         ("usage", "Cursor 1"),
-        ("waiting", "thinking"),
+        ("waiting", "Working through the next step"),
     ];
     for ((name, svg), (n2, needle)) in scenes().into_iter().zip(expected) {
         assert_eq!(name, n2);

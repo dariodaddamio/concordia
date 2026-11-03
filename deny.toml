@@ -6,9 +6,16 @@
 targets = ["x86_64-pc-windows-msvc"]
 
 [advisories]
-# Only flag unmaintained crates we depend on directly; transitive ones are not actionable.
-unmaintained = "workspace"
-yanked = "warn"
+# Check transitive dependencies too: they are part of the shipped application.
+unmaintained = "all"
+yanked = "deny"
+# Reviewed 2026-11-02: syntect 5.3 requires bincode 1.3.3 for its embedded syntax/theme
+# dumps. Concordia deserializes only those compiled-in assets, never user-supplied dumps.
+# No patched upstream release exists. Remove when syntect migrates its dump format.
+# All other maintenance advisories and all vulnerability advisories remain enforced.
+ignore = [
+  { id = "RUSTSEC-2025-0141", reason = "syntect embedded syntax/theme assets only; no external dump loading; no patched upstream version (docs/quality/dependency-security.md)" },
+]
 
 [licenses]
 # Permissive licenses only. Anything else fails the build until reviewed.
@@ -32,6 +39,12 @@ unused-allowed-license = "allow"
 # If it is ever vendored or modified, those files must stay under MPL-2.0 and be published.
 exceptions = [
   { allow = ["MPL-2.0"], crate = "option-ext" },
+  # Unmodified file-copyleft dependencies of the native Mermaid parser's HTML-label support.
+  # These are scoped exceptions; MPL is not added to the global license allow-list.
+  { allow = ["MPL-2.0"], crate = "cssparser" },
+  { allow = ["MPL-2.0"], crate = "cssparser-macros" },
+  { allow = ["MPL-2.0"], crate = "dtoa-short" },
+  { allow = ["MPL-2.0"], crate = "selectors" },
 ]
 
 [bans]

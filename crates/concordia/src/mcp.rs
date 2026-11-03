@@ -175,6 +175,11 @@ fn tool_list() -> Value {
             },"required":["id"]}
         },
         {
+            "name": "native_read",
+            "description": "Read exact chunks/ranges. history scans the next bounded whole-history page.",
+            "inputSchema": {"type":"object","properties":{"id":{"type":"string"},"message":{"type":"integer"},"offset":{"type":"integer"},"max_bytes":{"type":"integer"},"from_message":{"type":"integer"},"limit":{"type":"integer"},"history":{"type":"boolean"}},"required":["id"]}
+        },
+        {
             "name": "usage",
             "description": "Last cached usage limits per account (no live check).",
             "inputSchema": {"type":"object","properties":{}}
@@ -227,6 +232,7 @@ fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
         "threads" => Ok(tool_threads(state_root, uint_arg(&args, "limit"))),
         "thread_map" => tool_thread_map(state_root, &args),
         "thread_read" => tool_thread_read(state_root, &args),
+        "native_read" => tool_native_read(state_root, &args),
         "usage" => Ok(tool_usage(state_root)),
         "delegate" => tool_delegate(state_root, &args),
         other => return Err(format!("unknown tool: {other}")),
@@ -235,6 +241,52 @@ fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
         Ok(t) => text_result(t, false),
         Err(e) => text_result(e, true),
     })
+}
+
+fn tool_native_read(root: &Path, args: &Value) -> Result<String, String> {
+    let object = args
+        .as_object()
+        .ok_or("native_read arguments must be an object")?;
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "id" | "message" | "offset" | "max_bytes" | "from_message" | "limit" | "history"
+        )
+    }) {
+        return Err("unsupported native_read argument".into());
+    }
+    let id = str_arg(args, "id").ok_or("native_read requires id")?;
+    if let Some(history) = args.get("history") {
+        if history.as_bool() != Some(true) || object.len() != 2 {
+            return Err("history must be true without excerpt/range options".into());
+        }
+        return serde_json::to_string(&crate::native_memory::history_from_pointer(root, id)?)
+            .map_err(|e| e.to_string());
+    }
+    let mut command = vec![
+        if object.contains_key("message") {
+            "excerpt"
+        } else {
+            "sources"
+        }
+        .to_string(),
+        id.to_string(),
+    ];
+    for (key, option) in [
+        ("message", "--message"),
+        ("offset", "--offset"),
+        ("max_bytes", "--max-bytes"),
+        ("from_message", "--from-message"),
+        ("limit", "--limit"),
+    ] {
+        if let Some(value) = args.get(key) {
+            let number = value
+                .as_u64()
+                .ok_or_else(|| format!("{key} must be a nonnegative integer"))?;
+            command.extend([option.to_string(), number.to_string()]);
+        }
+    }
+    crate::native_memory::command(root, &command)
 }
 
 fn tool_threads(state_root: &Path, limit: Option<usize>) -> String {
@@ -552,14 +604,21 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_exactly_the_five_tools_with_terse_schemas() {
+    fn tools_list_has_exactly_the_six_tools_with_terse_schemas() {
         let d = tempfile::tempdir().unwrap();
         let r = call(d.path(), rpc(1, "tools/list", Value::Null));
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
-            ["threads", "thread_map", "thread_read", "usage", "delegate"]
+            [
+                "threads",
+                "thread_map",
+                "thread_read",
+                "native_read",
+                "usage",
+                "delegate"
+            ]
         );
         let size = serde_json::to_string(tools).unwrap().len();
         assert!(

@@ -15,10 +15,12 @@ fn print_help() {
            concordia wezterm   launch WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
            concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
            concordia chat list|read|search  bounded native CLI chats across your own accounts\n\
+           concordia chat index|sources|excerpt  revision-checked native history pointers\n\
+           concordia chat recall|lineage|link|detach  bounded retrieval and explicit source links\n\
            concordia preview FILE          read-only Markdown preview in this terminal\n\
            concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
                                read recorded threads (opt-in: CONCORDIA_THREADS=1); read-only\n\
-           concordia mcp       stdio MCP server: threads, thread_map, thread_read, usage, delegate (docs/mcp.md)\n\
+           concordia mcp       stdio MCP server: threads, thread_map, thread_read, native_read, usage, delegate (docs/mcp.md)\n\
          \n\
          Slash: /use [add] /model /usage /resume /agents /trust /config /new /threads /split /update /version /copy /doctor /exit\n\
          Files: /open PATH[:LINE[:COLUMN]] · /preview PATH (internal read-only panes) · /close ID · /edit PATH (external editor)\n\

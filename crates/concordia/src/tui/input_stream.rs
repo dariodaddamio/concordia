@@ -183,6 +183,8 @@ fn read_crossterm_events(sender: SyncSender<Message>, shutdown: Arc<AtomicBool>)
             }
             Ok(true) => match event::read() {
                 Ok(event) => {
+                    #[cfg(windows)]
+                    let event = windows_vt::normalize_event(event);
                     let message = Message::Event(event, Instant::now());
                     boundary.event_arrived();
                     if sender.send(message).is_err() {

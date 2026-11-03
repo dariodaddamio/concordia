@@ -59,6 +59,12 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
         env: Vec::new(),
         stdin: None,
     };
+    if plan.provider == ProviderKind::Codex {
+        if let Some(native) = super::npm::codex(&plan.command) {
+            launch.program = native.program.to_string_lossy().into_owned();
+            launch.env = native.env;
+        }
+    }
     if !prompt_needs_stdin(&plan.prompt, batch) {
         return Ok(launch);
     }

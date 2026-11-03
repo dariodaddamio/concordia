@@ -7,6 +7,7 @@ use unicode_width::UnicodeWidthChar;
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 const HISTORY_BYTES: usize = 4 * 1024 * 1024;
 const HISTORY_STEPS: usize = 1000;
+const MAX_LINES: usize = 50_000;
 
 struct Edit {
     start: usize,
@@ -30,6 +31,8 @@ pub struct Document {
     undo: Vec<Edit>,
     redo: Vec<Edit>,
     history_bytes: usize,
+    anchor: Option<usize>,
+    revision: u64,
 }
 
 impl Document {
@@ -43,6 +46,8 @@ impl Document {
             undo: Vec::new(),
             redo: Vec::new(),
             history_bytes: 0,
+            anchor: None,
+            revision: 0,
         };
         doc.reindex();
         doc
@@ -68,6 +73,56 @@ impl Document {
     }
     pub fn dirty(&self) -> bool {
         self.text != self.baseline
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn acknowledge_save(&mut self, saved: String) {
+        self.baseline = saved;
+        self.revision = self.revision.wrapping_add(1);
+    }
+    pub fn restored(baseline: String, text: String) -> Result<Self, String> {
+        if baseline.len() > MAX_BYTES || text.len() > MAX_BYTES || text.contains('\0') {
+            return Err("file recovery exceeds its bounds".into());
+        }
+        let mut doc = Self::new(text);
+        doc.baseline = baseline;
+        Ok(doc)
+    }
+    pub fn begin_selection(&mut self, extend: bool) {
+        if extend {
+            self.anchor.get_or_insert(self.cursor);
+        } else {
+            self.anchor = None;
+        }
+    }
+    pub fn select_all(&mut self) {
+        self.anchor = Some(if self.text.starts_with('\u{feff}') {
+            3
+        } else {
+            0
+        });
+        self.cursor = self.text.len();
+    }
+    fn selection(&self) -> Option<Range<usize>> {
+        self.anchor
+            .filter(|a| *a != self.cursor)
+            .map(|a| a.min(self.cursor)..a.max(self.cursor))
+    }
+    pub fn selected_text(&self) -> Option<&str> {
+        self.selection().map(|r| &self.text[r])
+    }
+    pub fn selection_columns(&self, row: usize) -> Option<(usize, usize)> {
+        let selection = self.selection()?;
+        let line = self.line_range(row);
+        let a = selection.start.max(line.start);
+        let b = selection.end.min(line.end);
+        (a < b).then(|| {
+            (
+                self.text[line.start..a].chars().map(display_width).sum(),
+                self.text[line.start..b].chars().map(display_width).sum(),
+            )
+        })
     }
     pub fn line_count(&self) -> usize {
         self.starts.len()
@@ -110,6 +165,16 @@ impl Document {
         }
     }
     pub fn horizontal(&mut self, right: bool) {
+        if !right
+            && self.cursor
+                <= if self.text.starts_with('\u{feff}') {
+                    3
+                } else {
+                    0
+                }
+        {
+            return;
+        }
         if right {
             if self.text[self.cursor..].starts_with("\r\n") {
                 self.cursor += 2;
@@ -138,7 +203,13 @@ impl Document {
     pub fn line_end(&mut self, end: bool) {
         let (row, _) = self.position();
         let range = self.line_range(row);
-        self.cursor = if end { range.end } else { range.start };
+        self.cursor = if end {
+            range.end
+        } else if row == 0 && self.text.starts_with('\u{feff}') {
+            3
+        } else {
+            range.start
+        };
     }
 
     fn replace(
@@ -150,6 +221,25 @@ impl Document {
         if self.text.len() - range.len() + inserted.len() > MAX_BYTES {
             return Err("file edit limit is 2 MiB".into());
         }
+        let removed_newlines = self.text[range.clone()]
+            .bytes()
+            .filter(|b| *b == b'\n')
+            .count();
+        let added_newlines = inserted.bytes().filter(|b| *b == b'\n').count();
+        let ends_with_newline = if range.end == self.text.len() {
+            inserted
+                .as_bytes()
+                .last()
+                .or_else(|| self.text.as_bytes()[..range.start].last())
+                == Some(&b'\n')
+        } else {
+            self.text.ends_with('\n')
+        };
+        if self.starts.len() - removed_newlines + added_newlines - usize::from(ends_with_newline)
+            > MAX_LINES
+        {
+            return Err("file edit limit is 50,000 lines".into());
+        }
         let edit = Edit {
             start: range.start,
             removed: self.text[range.clone()].into(),
@@ -159,6 +249,8 @@ impl Document {
         };
         self.text.replace_range(range, inserted);
         self.cursor = cursor;
+        self.anchor = None;
+        self.revision = self.revision.wrapping_add(1);
         self.history_bytes -= self.redo.iter().map(Edit::bytes).sum::<usize>();
         self.redo.clear();
         self.history_bytes += edit.bytes();
@@ -177,7 +269,9 @@ impl Document {
         {
             return Err("file paste contains unsupported control characters".into());
         }
-        self.replace(self.cursor..self.cursor, text, self.cursor + text.len())
+        let range = self.selection().unwrap_or(self.cursor..self.cursor);
+        let cursor = range.start + text.len();
+        self.replace(range, text, cursor)
     }
     pub fn newline(&mut self) -> Result<(), String> {
         let newline = if self.baseline.contains("\r\n") {
@@ -188,6 +282,10 @@ impl Document {
         self.insert(newline)
     }
     pub fn delete(&mut self, forward: bool) -> Result<(), String> {
+        if let Some(range) = self.selection() {
+            let cursor = range.start;
+            return self.replace(range, "", cursor);
+        }
         let cursor = self.cursor;
         self.horizontal(forward);
         let edge = self.cursor;
@@ -198,6 +296,8 @@ impl Document {
         self.replace(cursor.min(edge)..cursor.max(edge), "", cursor.min(edge))
     }
     pub fn undo(&mut self, redo: bool) {
+        self.anchor = None;
+        self.revision = self.revision.wrapping_add(1);
         if redo {
             if let Some(edit) = self.redo.pop() {
                 self.text
@@ -405,6 +505,11 @@ mod tests {
         assert!(doc.undo.len() <= HISTORY_STEPS && doc.history_bytes <= HISTORY_BYTES);
         let before = doc.text.clone();
         assert!(doc.insert(&"x".repeat(MAX_BYTES)).is_err());
+        assert_eq!(doc.text, before);
+        assert!(doc
+            .insert(&"line\n".repeat(50_001))
+            .unwrap_err()
+            .contains("50,000"));
         assert_eq!(doc.text, before);
     }
     #[test]

@@ -210,6 +210,7 @@ fn unified_planner_never_emits_last() {
         ProviderKind::Cursor,
     ] {
         let plan = plan_provider_turn(&ProviderTurnRequest {
+            images: &[],
             provider,
             prompt: "x",
             cwd: &cwd,
@@ -219,6 +220,7 @@ fn unified_planner_never_emits_last() {
             trust: TrustMode::Workspace,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         })
         .unwrap();
         assert!(!plan.argv.iter().any(|a| a == "--last" || a == "--continue"));

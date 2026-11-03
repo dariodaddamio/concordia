@@ -92,6 +92,13 @@ pub struct Compat {
     pub caps: Caps,
 }
 
+impl Compat {
+    /// Legacy flag-cache optimism never supplies native interaction/capacity authority.
+    pub fn interaction_capabilities(&self) -> super::interaction::InteractionCapabilities {
+        super::interaction::InteractionCapabilities::unknown_for_version(Some(&self.version))
+    }
+}
+
 /// Runs `program args...` and returns its output (stdout then stderr).
 pub type Runner<'a> = &'a dyn Fn(&Path, &[&str]) -> Result<String, String>;
 
@@ -284,7 +291,11 @@ pub fn run_cli(program: &Path, args: &[&str]) -> Result<String, String> {
                 .env("CURSOR_INVOKED_AS", program.file_name().unwrap_or_default());
         }
         None => {
-            cmd = Command::new(program);
+            let native = super::npm::codex(&program.to_string_lossy());
+            cmd = Command::new(native.as_ref().map_or(program, |n| n.program.as_path()));
+            if let Some(native) = native {
+                cmd.envs(native.env);
+            }
             cmd.args(args);
         }
     }
@@ -836,6 +847,7 @@ mod planning_tests {
     fn a_planned_claude_turn_falls_back_to_text_and_ask() {
         let cwd = std::env::temp_dir();
         let req = ProviderTurnRequest {
+            images: &[],
             provider: ProviderKind::Claude,
             prompt: "hello",
             cwd: &cwd,
@@ -845,6 +857,7 @@ mod planning_tests {
             trust: TrustMode::Plan,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         let mut plan = plan_provider_turn(&req).unwrap();
         assert!(plan

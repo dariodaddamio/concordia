@@ -1,12 +1,14 @@
 # Usage cache identity and freshness audit
 
-Scope: `usage.rs` fetch/cache state and the MCP `usage` tool. UI snapshot/window fields remain
-unchanged. Verification uses fake runner closures and temporary synthetic cache files; it does not
-launch a provider CLI or probe live quota.
+Build `2026-10-31g`: account pickers show one wrapped line per usage window, each with its own
+remaining capacity and reset. Unknown reset times are labeled unavailable. Cursor's table header
+reset is shared by its monthly categories. Expired readings continue to show usage as unknown.
+
+Scope: `usage.rs`, the read-only Codex RPC reader, and MCP historical usage. Deterministic tests use fake runners, synthetic caches and a fake app-server; live-read evidence is reported separately.
 
 ## Cache binding
 
-Claude and Cursor cache entries are bound to the exact tuple of Concordia account id, provider,
+Codex, Claude and Cursor cache entries are bound to the exact tuple of Concordia account id, provider,
 and normalized home path. The cache filename uses the safe account label, provider, and a
 standard-library hash of the home string; the serialized entry stores the full identity including
 the normalized home path. In-memory key equality and cache validation compare that full path, so a
@@ -22,16 +24,19 @@ matching cache survives process restart. Prior `<account>.json` entries have no 
 and are not loaded into the live fetcher; a fresh fetch is requested instead. They remain visible
 in MCP as legacy data with an explicit unknown identity label.
 
-Codex remains read directly from provider-written home files and does not use this fetcher/cache.
-Build `2026-10-21b` accepts both numeric and text credit balances, so an auxiliary credit field
-cannot discard an otherwise valid limit reading. It selects the first eligible session in
-descending modification-time order (previously the second reading could win), compares it with
-the temporary-cache modification time, and tolerates a UTF-8 character cut at the bounded tail
-boundary. An existing TUI `/usage` block refreshes after a turn alongside the footer. These are
-local reads; `/usage refresh` does not obtain a new Codex server reading or run a model.
-The existing `UsageSnapshot`, `UsageWindow`, picker row and TUI consumers retain their fields.
-`invalidate(account)` marks all in-memory entries with that Concordia account id dirty, so a later
-read of each provider/home binding refreshes it.
+Codex uses the same account/provider/home-bound fetch cache for live limits. Build
+`2026-11-01d` starts the official CLI's app-server, initializes it, then sends only
+`account/rateLimits/read`. No thread/start, turn/start, login, logout, reset consumption or email
+operation is issued. The official [Codex App Server documentation](https://learn.chatgpt.com/docs/app-server)
+defines the quota read and its window/reset fields. Output is bounded to 512 KiB and 128 response
+lines per reply, with a 12-second timeout and cleanup of that reader's process tree.
+
+Native recorded files remain a labeled fallback while refreshing or if a live check fails. The
+UI retains the recorded reset date/time and last percentage, but does not present an expired
+percentage as current usage. The error reason appears in detail. A custom overridden provider
+binary disables automatic live reads; fixtures use an explicit test seam. The standalone
+`read_codex_usage` and MCP historical reads remain file-only. Codex camelCase server fields and
+snake_case recorded fields are both accepted.
 
 The normalized path is slash-normalized and case-folded on Windows; it does not resolve symlinks.
 Pointing two path aliases at one physical home may create separate cache entries, which can cost a
@@ -80,3 +85,16 @@ These tests establish the listed deterministic paths. They do not exercise concu
 writing the same cache, symlink aliases, filesystem permission failures, arbitrary cache corruption
 combinations, or every selected-account timing interleaving. Cache timestamps are wall-clock based;
 clock skew can result in the deliberately conservative `cache age unknown` label for future data.
+
+## Explicit command refresh (2026-10-31q)
+
+`/usage` and `/use` force a fresh check on each invocation (an in-flight fetch is shared).
+A background completion rebuilds an open account/usage list while preserving its filter and
+selection. Picker rows show the source/refresh status, including when numeric values come from
+a previous successful reading. Since build `2026-11-01d`, Codex requests a new server reading on each invocation;
+native files are a labeled fallback. This is not an inference call.
+The fake-runner test invokes both commands twice and checks four distinct readings in the open list.
+
+RPC regression tests verify home binding, the exact initialize/initialized/quota-read sequence,
+server errors, early EOF and oversized output. A separate fake-runner test forces two Codex reads
+and observes changed metrics rather than reusing the first response.

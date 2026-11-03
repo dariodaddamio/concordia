@@ -5,6 +5,29 @@ PATH. None of them needs administrator rights. Routes are listed from simplest t
 
 Replace `OWNER` with the GitHub owner of the release you install from.
 
+## Updating from inside Concordia
+
+`/update` checks for an update and opens its changelog. The green action strip stays
+visible while scrolling: **Enter installs and restarts this tab**. Concordia builds
+or downloads the update, saves the draft and queued messages, and restarts on the new
+build. Other tabs keep running their existing build. Esc closes the preview without
+updating; while installation is running, Esc cancels it.
+
+While this tab's chat or background workers are active, or file edits remain unsaved, the action
+strip turns yellow and says installation is blocked. Finish/cancel work and save or close edited files, then press Enter
+again. Enter does not cancel a task or queue an update for later. New chat/worker sends
+are paused while installation is running.
+
+## Updating provider CLIs
+
+Concordia's `/update` updates Concordia itself. It does not install, pin or upgrade Codex,
+Claude Code or Cursor. Update each official CLI through its own supported installation method,
+with active turns stopped, then restart Concordia and check `/doctor`.
+Concordia reads the CLI version and probes advertised flags; help results are cached per version.
+A new version gets a new capability check. This is not full event-schema or approval compatibility
+certification. Breaking provider changes can require a Concordia adapter update. There is no
+automatic CLI rollback or migration of authentication/history.
+
 ## 1. One-liner (recommended)
 
 In Windows PowerShell 5.1 or PowerShell 7:

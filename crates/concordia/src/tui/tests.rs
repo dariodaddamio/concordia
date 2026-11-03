@@ -1,8 +1,53 @@
 //! End-to-end input tests: real key/mouse events through the handlers, rendered with ratatui's
 //! `TestBackend`, asserting on text, selection, caret and clipboard (in-memory under `cfg(test)`).
 
+#[path = "reliability_tests.rs"]
+mod reliability;
+
 use super::*;
+use crate::usage::picker_row;
 use ratatui::backend::TestBackend;
+
+#[test]
+fn use_picker_shows_every_limit_reset_at_narrow_widths_and_clears_on_close() {
+    for width in [40, 64, 80, 120] {
+        let mut h = Harness::new(width, 30);
+        let mut snap = crate::usage::UsageSnapshot::no_data("", "");
+        for (label, used_pct, reset) in [("5h", 23.0, "3h"), ("7d", 61.0, "2d")] {
+            snap.windows.push(crate::usage::UsageWindow {
+                label: label.into(),
+                used_pct,
+                resets: Some(reset.into()),
+            });
+        }
+        let row = picker_row("codex", ProviderKind::Codex, &snap);
+        h.app.show_picker(
+            PickerKind::Use,
+            "accounts".into(),
+            vec![PickerRow {
+                id: row.id,
+                label: row.label,
+                detail: "".into(),
+            }],
+            false,
+        );
+        h.draw();
+        let screen = h.screen();
+        let joined = screen
+            .lines()
+            .map(|line| line.trim().trim_matches('│').trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for expected in ["5h 77% left", "7d 39% left", "resets in 3h", "resets in 2d"] {
+            assert!(
+                joined.contains(expected),
+                "width {width}: missing {expected}: {screen}"
+            );
+        }
+        h.key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!h.screen().contains("in 2d"));
+    }
+}
 
 #[test]
 fn file_link_click_opens_exact_target_and_drag_keeps_selection() {
@@ -106,10 +151,15 @@ fn limit_warning_updates_with_account_snapshot_and_unknown_clears_it() {
     h.draw();
     assert!(h.screen().contains("5h 4% left"));
     assert!(h.screen().contains("06:03 local"));
-    assert!(h.screen().contains("last reported"));
+    assert!(h.screen().contains("updates after a Codex response"));
     h.app.provider = ProviderKind::Claude;
     h.app.set_usage_footer(&snap);
-    assert!(h.app.usage_warning.as_deref().unwrap().contains("cached"));
+    assert!(h
+        .app
+        .usage_warning
+        .as_deref()
+        .unwrap()
+        .contains("saved reading"));
     h.app
         .set_usage_footer(&crate::usage::UsageSnapshot::no_data(
             "unknown",
@@ -302,9 +352,10 @@ fn drag_selects_transcript_text_and_ctrl_c_copies_it() {
     assert!(!h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert_eq!(clipboard::get_text().unwrap(), "brave");
     assert!(
-        h.app.view.selected_text().is_none(),
-        "selection clears after copy"
+        h.app.view.selected_text().is_some(),
+        "selection stays highlighted after copy"
     );
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
     // With nothing selected and idle, Ctrl+C asks for a second press before quitting.
     assert!(!h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -403,6 +454,7 @@ fn cut_copy_paste_in_prompt() {
     h.key(KeyCode::Char('x'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "");
     assert_eq!(clipboard::get_text().unwrap(), "one two");
+    assert_eq!(h.app.flash.as_ref().unwrap().0, "cut 7 chars");
     h.key(KeyCode::Char('v'), KeyModifiers::CONTROL);
     h.key(KeyCode::Char('v'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "one twoone two");
@@ -780,7 +832,78 @@ fn up_and_down_walk_sent_prompts_and_restore_the_draft() {
     h.key_down(); // past the newest entry: the unsent draft comes back
     assert_eq!(h.app.editor.text(), "dra");
     h.key_down();
+    assert_eq!(h.app.editor.text(), "");
+    h.key_up();
     assert_eq!(h.app.editor.text(), "dra");
+}
+
+#[test]
+fn down_opens_a_fresh_prompt_and_up_preserves_both_unsent_buffers() {
+    let mut h = Harness::new(80, 24);
+    h.app.restore_state();
+    h.type_str("unfinished thought");
+    h.key_down();
+    assert_eq!(h.app.editor.text(), "");
+    assert_eq!(h.app.draft_text(), "unfinished thought");
+    h.key_down(); // Repeated Down must not overwrite the saved draft.
+    h.type_str("another thought");
+    h.key_up();
+    assert_eq!(h.app.editor.text(), "unfinished thought");
+    h.key_down();
+    assert_eq!(h.app.editor.text(), "another thought");
+    h.app.persist_draft_now();
+    let saved = h.app.keep.lease.as_ref().unwrap().data().unwrap();
+    assert_eq!(saved.draft, "another thought");
+    assert_eq!(saved.alternate_draft.as_deref(), Some("unfinished thought"));
+    h.key_up();
+    h.key(KeyCode::Down, KeyModifiers::SHIFT);
+    assert_eq!(h.app.editor.text(), "unfinished thought");
+    h.app.editor.set_text("first\nsecond");
+    h.key(KeyCode::Home, KeyModifiers::CONTROL);
+    h.key_down(); // Move within multiline text before switching buffers.
+    assert_eq!(h.app.editor.text(), "first\nsecond");
+    assert!(!h.app.fresh_draft);
+}
+
+#[test]
+fn centered_bottom_button_follows_new_output_without_changing_the_draft() {
+    for width in [40, 80, 120] {
+        let mut h = Harness::new(width, 24);
+        for i in 0..60 {
+            h.app.push_assistant(format!("reply {i}"));
+        }
+        h.type_str("keep this draft");
+        h.app.view.scroll_up(20);
+        h.draw();
+        assert!(h.app.view.scroll > 0);
+        let button = h.app.areas.bottom_button;
+        assert!(button.width > 0);
+        assert_eq!(button.y, h.app.areas.input.y - 1);
+        h.click(button.x + button.width / 2, button.y);
+        assert_eq!(h.app.view.scroll, 0);
+        assert_eq!(h.app.editor.text(), "keep this draft");
+        h.app.push_assistant("newest reply".into());
+        h.draw();
+        assert!(h.screen().contains("newest reply"));
+    }
+}
+
+#[test]
+fn provider_escape_sequences_cannot_corrupt_terminal_cells() {
+    let mut h = Harness::new(80, 24);
+    h.app
+        .push_assistant("before\u{1b}[2J\u{1b}[Hafter\u{1b}]52;c;c2VjcmV0\u{7}\tend".into());
+    h.app
+        .push_system("plain\toutput\u{1b}[31m red\u{1b}[0m\r\nnext");
+    h.app.model = "model\u{1b}[2J".into();
+    h.draw();
+    let screen = h.screen();
+    assert!(screen.contains("beforeafter    end"), "{screen}");
+    assert!(screen.contains("plain    output red"), "{screen}");
+    assert!(!screen.contains("52;c;"));
+    for cell in &h.term.backend().buffer().content {
+        assert!(!cell.symbol().chars().any(char::is_control));
+    }
 }
 
 #[test]
@@ -1043,6 +1166,7 @@ fn typing_a_slash_previews_every_command_with_its_description() {
 
 #[test]
 fn the_palette_narrows_as_you_type_and_disappears_for_normal_text() {
+    let _iso = Isolated::new();
     let mut h = Harness::new(90, 28);
     h.type_str("/up");
     let s = h.screen();
@@ -1116,13 +1240,14 @@ fn esc_closes_the_palette_until_the_text_changes() {
 
 #[test]
 fn clicking_a_suggestion_completes_it() {
+    let _iso = Isolated::new();
     let mut h = Harness::new(90, 28);
     h.type_str("/use");
     let pal = h.app.areas.palette;
     assert!(pal.height >= 3, "palette should list /use");
-    // The consolidated palette has one /use row.
+    // Once /use is complete, the next row is its add subcommand.
     h.click(pal.x + 4, pal.y + 2);
-    assert_eq!(h.app.editor.text(), "/use");
+    assert_eq!(h.app.editor.text(), "/use add");
 }
 
 #[test]
@@ -1479,7 +1604,7 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     h.draw();
     let s = h.screen();
     assert!(
-        s.contains("> first") && s.contains("\u{25cf} reply") && s.contains("> second"),
+        s.contains("You › first") && s.contains("\u{25cf} reply") && s.contains("You › second"),
         "{s}"
     );
     // A blank row separates turns.
@@ -1503,7 +1628,7 @@ fn a_running_turn_shows_a_spinner_and_how_to_cancel() {
     h.draw();
     let s = h.screen();
     assert!(
-        s.contains("waiting for the model") && s.contains("Esc to cancel"),
+        s.contains("Codex · starting the turn") && s.contains("[ Esc ]"),
         "{s}"
     );
     assert!(SPINNER.iter().any(|f| s.contains(f)), "{s}");
@@ -1675,10 +1800,51 @@ fn update_preview(install: bool, bullets: usize) -> crate::update::UpdatePreview
     lines.extend((0..bullets).map(|i| P::Bullet(format!("change number {i}"))));
     lines.push(P::Hint("Esc close".into()));
     crate::update::UpdatePreview {
+        history: Vec::new(),
+        history_expanded: false,
         lines,
         install_available: install,
         release_url: None,
     }
+}
+
+#[test]
+fn update_is_a_fresh_page_and_escape_restores_chat_and_draft() {
+    for (width, height) in [(40, 12), (90, 28), (150, 45)] {
+        let mut h = Harness::new(width, height);
+        h.app.push_user("CHAT_SENTINEL".into());
+        h.type_str("DRAFT_SENTINEL");
+        update_screen(&mut h, update_preview(true, 1));
+        let screen = h.screen();
+        assert!(screen.contains("Installed"), "{screen}");
+        assert!(!screen.contains("CHAT_SENTINEL"), "{screen}");
+        assert!(!screen.contains("DRAFT_SENTINEL"), "{screen}");
+        assert_eq!(h.app.areas.input, Rect::default());
+        assert_eq!(h.app.areas.transcript, Rect::default());
+        h.key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(h.screen().contains("CHAT_SENTINEL"), "{}", h.screen());
+        assert_eq!(h.app.editor.text(), "DRAFT_SENTINEL");
+    }
+}
+
+#[test]
+fn update_check_failure_is_visible_on_the_page() {
+    let mut h = Harness::new(90, 28);
+    update_screen(&mut h, update_preview(false, 0));
+    h.app.update_preview = None;
+    h.app.job = Some(spawn_job(JobKind::Check, |_| {
+        JR::Check(Err(anyhow::anyhow!("synthetic feed unavailable")))
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.app.job.is_some() && Instant::now() < deadline {
+        h.app.poll_job();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    h.draw();
+    let screen = h.screen();
+    assert!(screen.contains("synthetic feed unavailable"), "{screen}");
+    assert!(!screen.contains("checking for updates"), "{screen}");
+    assert!(!h.app.update_preview.as_ref().unwrap().install_available);
 }
 
 #[test]
@@ -1705,36 +1871,132 @@ fn the_update_screen_wraps_bullets_under_their_text() {
 #[test]
 fn enter_installs_only_when_the_screen_offers_an_update() {
     let mut h = Harness::new(80, 30);
+    h.type_str("keep my draft");
     update_screen(&mut h, update_preview(false, 0));
     h.enter();
-    assert!(
-        h.app.picker.is_some(),
-        "nothing to install keeps the screen open"
-    );
-    h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.app.picker.is_none() && h.app.update_preview.is_none());
+    assert!(h.app.job.is_none() && !h.app.busy);
+    assert_eq!(h.app.editor.text(), "keep my draft");
 
-    // A busy chat defers the update with a notice, which proves Enter asked for it.
+    // A busy chat blocks installation and keeps the explanation on screen.
     let mut h = Harness::new(80, 30);
     update_screen(&mut h, update_preview(true, 0));
     h.app.busy = true;
     h.enter();
-    assert!(h.app.picker.is_none());
-    assert!(h.screen().contains("update deferred"), "{}", h.screen());
+    assert!(h.app.picker.is_some());
+    assert!(h.app.job.is_none());
+    assert!(h.screen().contains("Update blocked"), "{}", h.screen());
+    assert!(h.transcript_text().contains("has not been queued"));
 }
 
 #[test]
 fn the_update_screen_scrolls_to_its_last_line() {
     let mut h = Harness::new(80, 16);
     update_screen(&mut h, update_preview(true, 30));
-    assert!(!h.screen().contains("Esc close"));
-    for _ in 0..5 {
+    assert!(!h.screen().contains("change number 29"));
+    for _ in 0..40 {
         h.key(KeyCode::PageDown, KeyModifiers::NONE);
         h.draw();
     }
     let screen = h.screen();
     assert!(screen.contains("Esc close"), "{screen}");
     assert!(screen.contains("change number 29"), "{screen}");
+}
+
+#[test]
+fn update_action_stays_visible_and_emphasized_while_the_log_scrolls() {
+    for no_color in [false, true] {
+        let mut h = Harness::new(90, 24);
+        h.app.no_color = no_color;
+        update_screen(&mut h, update_preview(true, 40));
+        for _ in 0..20 {
+            h.key(KeyCode::PageDown, KeyModifiers::NONE);
+        }
+        let screen = h.screen();
+        assert!(
+            screen.contains("Enter  Install + restart this tab"),
+            "{screen}"
+        );
+        assert!(screen.contains("Other tabs keep running"), "{screen}");
+        assert!(screen.contains("change number 39"), "{screen}");
+        let buffer = h.term.backend().buffer();
+        let caption_y = screen
+            .lines()
+            .position(|line| line.contains("Enter  Install + restart this tab"))
+            .unwrap();
+        let caption_x = screen
+            .lines()
+            .nth(caption_y)
+            .unwrap()
+            .chars()
+            .position(|c| c == 'E')
+            .unwrap();
+        assert!(buffer[(caption_x as u16, caption_y as u16)]
+            .modifier
+            .contains(Modifier::BOLD));
+        if no_color {
+            assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+        } else {
+            assert!(buffer.content.iter().any(|cell| cell.bg == Color::Green
+                && cell.fg == Color::Black
+                && cell.modifier.contains(Modifier::BOLD)));
+        }
+    }
+}
+
+#[test]
+fn update_blocks_background_workers_and_never_queues_an_install() {
+    let mut h = Harness::new(100, 30);
+    h.app.deleg.d.push_test_job(
+        "synthetic-worker",
+        ProviderKind::Codex,
+        crate::delegate::WorkerState::Tool,
+        "working",
+        1,
+    );
+    update_screen(&mut h, update_preview(true, 10));
+    h.enter();
+    assert!(h.app.job.is_none() && !h.app.should_quit);
+    assert!(h.app.picker.is_some());
+    assert!(h.screen().contains("Update blocked: work pending"));
+    assert!(h
+        .term
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .any(|cell| cell.bg == Color::Yellow));
+    assert_eq!(
+        h.app.deleg.d.jobs[0].state,
+        crate::delegate::WorkerState::Tool
+    );
+    h.app.deleg.d.jobs[0].state = crate::delegate::WorkerState::Done;
+    h.draw();
+    assert!(h.screen().contains("Enter  Install + restart this tab"));
+    assert!(
+        h.app.job.is_none(),
+        "finishing work must not start the update automatically"
+    );
+}
+
+#[test]
+fn workers_cannot_start_during_an_update() {
+    let mut h = Harness::new(100, 24);
+    h.app.job = Some(fake_update_job());
+    let (command, _) =
+        crate::commands::parse_slash("/delegate synthetic-worker check files").unwrap();
+    assert!(h.app.try_delegate_slash(&command));
+    assert!(h
+        .transcript_text()
+        .contains("Workers are paused while Concordia updates"));
+    assert!(!h.app.deleg.d.any_active());
+    let (command, _) = crate::commands::parse_slash("/delegate use").unwrap();
+    assert!(h.app.try_delegate_slash(&command));
+    assert!(h
+        .transcript_text()
+        .contains("Worker results cannot be sent"));
+    assert!(!h.app.deleg.has_pending_prompt());
+    h.app.job.as_ref().unwrap().cancel();
 }
 
 #[test]
@@ -1766,6 +2028,8 @@ fn a_second_update_cannot_start_while_one_is_running() {
             std::thread::sleep(Duration::from_millis(10));
         }
         JR::Check(Ok(crate::update::UpdatePreview {
+            history: Vec::new(),
+            history_expanded: false,
             lines: vec![crate::update::PreviewLine::Text("done".into())],
             install_available: false,
             release_url: None,
@@ -1969,14 +2233,14 @@ fn the_wait_names_what_the_model_is_doing_and_the_colour_follows_it() {
     h.app.busy = true;
     h.app.turn_started = Some(Instant::now());
     h.draw();
-    assert!(h.screen().contains("waiting for the model"));
+    assert!(h.screen().contains("Codex · starting the turn"));
 
     h.app
         .apply_progress(TurnProgress::Thinking("weighing the options".into()));
     h.draw();
     let s = h.screen();
     assert!(
-        s.contains("thinking") && s.contains("weighing the options"),
+        s.contains("Working through the next step") && s.contains("weighing the options"),
         "{s}"
     );
     assert_eq!(h.app.phase.color(), Color::Magenta);
@@ -1990,12 +2254,12 @@ fn the_wait_names_what_the_model_is_doing_and_the_colour_follows_it() {
         },
     ));
     h.draw();
-    assert!(h.screen().contains("running Bash"));
+    assert!(h.screen().contains("cargo test"));
     assert_eq!(h.app.phase.color(), Color::Yellow);
 
     h.app.apply_progress(TurnProgress::Text("Done.".into()));
     h.draw();
-    assert!(h.screen().contains("writing"));
+    assert!(h.screen().contains("Putting the answer together"));
     assert_eq!(h.app.phase.color(), Color::Green);
 }
 
@@ -2126,11 +2390,12 @@ fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
 
 #[test]
 fn shift_tab_moves_the_palette_up_and_tab_still_completes() {
+    let _iso = Isolated::new();
     let mut h = Harness::new(100, 24);
     h.type_str("/use");
     let before = h.app.trust;
     h.key(KeyCode::Down, KeyModifiers::NONE);
-    assert_eq!(h.app.palette.selected, 0);
+    assert_eq!(h.app.palette.selected, 1);
     h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(h.app.palette.selected, 0);
     assert_eq!(
@@ -2138,7 +2403,7 @@ fn shift_tab_moves_the_palette_up_and_tab_still_completes() {
         "the mode must not change while the palette is open"
     );
     h.key(KeyCode::Tab, KeyModifiers::NONE);
-    assert_eq!(h.app.editor.text(), "/use");
+    assert_eq!(h.app.editor.text(), "/use ");
 }
 
 #[test]
@@ -2175,7 +2440,7 @@ fn command_output_is_a_barred_block_and_agent_replies_carry_a_label() {
     h.app.push_system("now using Codex 3");
     h.draw();
     let s = h.screen();
-    assert!(s.contains("Codex \u{b7} codex-3 \u{b7} gpt-5.1"), "{s}");
+    assert!(s.contains("Codex 3 \u{b7} gpt-5.1"), "{s}");
     assert!(s.contains("\u{25cf} hi there"), "{s}");
     assert!(s.contains("| /usage"), "{s}");
     assert!(s.contains("|   codex 3  5h 12% used"), "{s}");
@@ -2201,17 +2466,14 @@ fn command_output_is_a_barred_block_and_agent_replies_carry_a_label() {
     assert_eq!(buf[(x, y)].fg, Color::Red);
     let (x, y) = find("| /usage");
     assert_eq!(buf[(x, y)].fg, Color::Indexed(244));
-    let (x, y) = find("Codex \u{b7} codex-3");
+    let (x, y) = find("Codex 3 \u{b7} gpt-5.1");
     assert_eq!(buf[(x, y)].fg, provider_color(ProviderKind::Codex));
 
     // NO_COLOR keeps the structure (bars, labels) with emphasis only.
     h.app.no_color = true;
     h.draw();
     let s = h.screen();
-    assert!(
-        s.contains("| /usage") && s.contains("Codex \u{b7} codex-3"),
-        "{s}"
-    );
+    assert!(s.contains("| /usage") && s.contains("Codex 3"), "{s}");
 }
 
 #[test]
@@ -2230,12 +2492,9 @@ fn tool_cards_stay_grouped_under_one_reply_label() {
     h.draw();
     let s = h.screen();
     let lines: Vec<&str> = s.lines().collect();
-    let labels = lines.iter().filter(|l| l.contains("Codex \u{b7}")).count();
+    let labels = lines.iter().filter(|l| l.trim() == "Codex").count();
     assert_eq!(labels, 1, "{s}");
-    let label = lines
-        .iter()
-        .position(|l| l.contains("Codex \u{b7}"))
-        .unwrap();
+    let label = lines.iter().position(|l| l.trim() == "Codex").unwrap();
     let reply = lines
         .iter()
         .position(|l| l.contains("\u{25cf} done"))
@@ -2368,7 +2627,12 @@ fn the_token_line_shows_reported_fields_and_the_turn_time() {
         }),
     );
     let s = h.screen();
-    assert!(s.contains("in 12.3k - out 1.4k - cached 9.8k - 0."), "{s}");
+    assert!(
+        s.contains("in 12.3k - out 1.4k - cached 9.8k")
+            && s.contains("Worked for")
+            && s.contains("stopped"),
+        "{s}"
+    );
     assert_eq!((h.app.session_input, h.app.session_output), (12_345, 1400));
     assert!(h
         .app
@@ -2384,7 +2648,9 @@ fn the_token_line_with_nothing_reported_is_just_the_time() {
     let last = h.app.messages.last().unwrap();
     assert!(last.role == MsgRole::Meta);
     assert!(
-        last.text.ends_with('s') && !last.text.contains("in "),
+        last.text.starts_with("Worked for")
+            && last.text.contains("stopped")
+            && !last.text.contains("in "),
         "{}",
         last.text
     );
@@ -2397,7 +2663,10 @@ fn the_token_line_with_nothing_reported_is_just_the_time() {
         }),
     );
     let t = &h.app.messages.last().unwrap().text;
-    assert!(t.starts_with("out 7 - "), "{t}");
+    assert!(
+        t.starts_with("Worked for") && t.ends_with("out 7") && t.contains("stopped"),
+        "{t}"
+    );
 }
 
 #[test]
@@ -2821,30 +3090,30 @@ fn enter_on_a_chat_resumes_exactly_that_chat() {
 }
 
 #[test]
-fn enter_on_a_folder_expands_it_and_the_selection_stops_at_the_last_row() {
+fn enter_on_a_folder_expands_it_and_the_selection_wraps() {
     let mut h = landing_harness();
     for _ in 0..3 {
         h.key(KeyCode::Down, KeyModifiers::NONE);
     }
     h.enter();
     assert!(h.screen().contains("▾ lock (1)") && h.screen().contains("chat third"));
-    for _ in 0..10 {
-        h.key(KeyCode::Down, KeyModifiers::NONE);
-    }
+    h.key(KeyCode::Down, KeyModifiers::NONE);
     h.enter();
     assert!(
         h.screen().contains("resume failed"),
-        "the last row is the lock chat"
+        "the selected row is the lock chat"
     );
 }
 
 #[test]
-fn typing_closes_the_landing_page_and_keeps_the_key() {
+fn typing_keeps_the_landing_page_until_the_message_is_sent() {
     let mut h = landing_harness();
     h.type_str("hi");
-    assert!(h.app.landing.is_none());
+    assert!(landing::visible(&h.app));
     assert_eq!(h.app.editor.text(), "hi");
-    assert!(h.screen().contains("Enter send"), "{}", h.screen());
+    assert!(h.screen().contains(" chats "), "{}", h.screen());
+    h.enter();
+    assert!(!landing::visible(&h.app));
 
     let mut h = landing_harness();
     h.key(KeyCode::Esc, KeyModifiers::NONE);
@@ -3027,6 +3296,220 @@ fn the_landing_page_shows_the_last_24_hours_of_tokens() {
 }
 
 #[test]
+fn message_wheel_scrolls_the_draft_without_moving_caret_or_transcript() {
+    let mut h = Harness::new(90, 28);
+    h.app
+        .push_user((0..70).map(|i| format!("chat {i}\n")).collect());
+    let draft = (0..40).map(|i| format!("draft {i}\n")).collect::<String>();
+    h.app.editor.set_text(&draft);
+    h.draw();
+    let before = h.app.input_scroll;
+    let transcript = h.app.view.scroll;
+    let caret = h.app.editor.cursor_pos(h.app.areas.input_text_w);
+    let inner = h.app.areas.input;
+    handle_mouse(
+        &mut h.app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: inner.x + 2,
+            row: inner.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    h.draw();
+    assert_eq!(h.app.input_scroll, before.saturating_sub(3));
+    assert_eq!(h.app.view.scroll, transcript);
+    assert_eq!(h.app.editor.text(), draft);
+    assert_eq!(h.app.editor.cursor_pos(h.app.areas.input_text_w), caret);
+    let scrolled = h.app.input_scroll;
+    h.draw();
+    assert_eq!(
+        h.app.input_scroll, scrolled,
+        "redraw must not snap back to the caret"
+    );
+    h.key(KeyCode::PageUp, KeyModifiers::ALT);
+    assert!(h.app.input_scroll < scrolled);
+    h.type_str("x");
+    assert!(
+        h.app.input_scroll >= before,
+        "editing restores caret following"
+    );
+}
+
+#[test]
+fn markdown_table_links_preview_exact_file_and_web_labels_open_the_url() {
+    let mut h = Harness::new(100, 30);
+    std::fs::write(h._dir.path().join("plan.md"), "# File preview").unwrap();
+    h.app.messages = vec![ChatLine { role: MsgRole::Assistant, text:"| Area | Source |\n| --- | --- |\n| Files | [friendly](plan.md) |\n\n[plan.md](https://example.test/docs)".into(), card: None,meta:None }];
+    h.draw();
+    let visible = h.screen();
+    assert!(!visible.contains("[friendly]("), "{visible}");
+    assert!(!visible.contains("| --- |"), "{visible}");
+    let (row_index, row) = h
+        .app
+        .view
+        .rows
+        .iter()
+        .enumerate()
+        .find(|(_, r)| !r.web_links.is_empty())
+        .unwrap();
+    assert!(
+        row.links.is_empty(),
+        "a web label shaped like a file must retain its URL target"
+    );
+    let col = row.web_links[0].0;
+    let x = h.app.areas.transcript.x
+        + row.gutter.chars().count() as u16
+        + text::slice_width(&row.text[..col]) as u16;
+    let y = h.app.areas.transcript.y + (row_index - h.app.view.visible().start) as u16;
+    h.down(x, y);
+    h.up(x, y);
+    assert!(h
+        .app
+        .flash
+        .as_ref()
+        .unwrap()
+        .0
+        .contains("https://example.test/docs"));
+    let (index, row) = h
+        .app
+        .view
+        .rows
+        .iter()
+        .enumerate()
+        .find(|(_, r)| !r.links.is_empty())
+        .unwrap();
+    let col = row.links[0].0;
+    let x = h.app.areas.transcript.x
+        + row.gutter.chars().count() as u16
+        + text::slice_width(&row.text[..col]) as u16;
+    let y = h.app.areas.transcript.y + (index - h.app.view.visible().start) as u16;
+    h.down(x, y);
+    h.up(x, y);
+    assert!(h
+        .app
+        .last_file_open
+        .as_ref()
+        .unwrap()
+        .path
+        .ends_with("plan.md"));
+    assert!(!h.app.busy);
+}
+
+#[test]
+fn explicit_gif_link_opens_the_image_viewer_instead_of_a_text_pane() {
+    let mut h = Harness::new(100, 28);
+    std::fs::write(h._dir.path().join("demo.gif"), b"GIF89a").unwrap();
+    h.app.editor.set_text("keep this draft");
+    h.app.open_file_candidate(
+        crate::file_links::explicit_reference("demo.gif").unwrap(),
+        true,
+    );
+    assert!(h.app.workspace.panes.is_empty());
+    assert!(h.app.flash.as_ref().unwrap().0.starts_with("opened image "));
+    assert_eq!(h.app.editor.text(), "keep this draft");
+}
+
+#[test]
+fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft() {
+    for kind in [
+        PickerKind::Usage,
+        PickerKind::Use,
+        PickerKind::Model,
+        PickerKind::Resume,
+        PickerKind::Files,
+        PickerKind::Tokens,
+        PickerKind::Update,
+    ] {
+        let mut h = Harness::new(100, 28);
+        h.app.editor.set_text("keep this draft");
+        h.app.show_picker(
+            kind,
+            "screen".into(),
+            vec![PickerRow {
+                id: "fixture".into(),
+                label: "Fixture entry".into(),
+                detail: "".into(),
+            }],
+            true,
+        );
+        if matches!(kind, PickerKind::Tokens | PickerKind::Update) {
+            h.app.update_preview = Some(update_preview(false, 0));
+        }
+        h.draw();
+        let screen = h.screen();
+        assert!(screen.contains("Esc or X"), "{kind:?}: {screen}");
+        assert!(
+            !screen.contains("keep this draft"),
+            "a modal must show input ownership: {screen}"
+        );
+        let (rect, _) = h.app.areas.modal_close.unwrap();
+        assert_eq!(pointer::shape(&h.app, rect.x, rect.y), "pointer");
+        h.down(rect.x, rect.y);
+        h.drag(rect.x.saturating_sub(5), rect.y);
+        h.up(rect.x.saturating_sub(5), rect.y);
+        assert!(h.app.picker.is_some(), "dragging off X must not close");
+        h.down(rect.x, rect.y);
+        h.up(rect.x, rect.y);
+        assert!(h.app.picker.is_none(), "{kind:?}");
+        assert_eq!(h.app.editor.text(), "keep this draft");
+        assert!(!h.app.busy);
+    }
+}
+
+#[test]
+fn modal_typing_is_a_filter_and_output_x_matches_escape() {
+    let mut h = Harness::new(100, 28);
+    h.app.editor.set_text("keep this draft");
+    h.app.show_picker(
+        PickerKind::Model,
+        "models".into(),
+        vec![PickerRow {
+            id: "fixture".into(),
+            label: "Fixture model".into(),
+            detail: "".into(),
+        }],
+        true,
+    );
+    h.type_str("Fixture");
+    assert_eq!(h.app.picker.as_ref().unwrap().filter, "Fixture");
+    assert_eq!(h.app.editor.text(), "keep this draft");
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    h.app.push_card(StreamCard {
+        id: "cmd".into(),
+        title: "shell".into(),
+        detail: Some("command: cargo test\nOutput: passed".into()),
+        status: CardStatus::Done,
+    });
+    let id = h.app.messages.len() - 1;
+    h.app.activity.open(id);
+    h.draw();
+    assert!(h.screen().contains("Typing searches output"));
+    let (rect, _) = h.app.areas.modal_close.unwrap();
+    h.down(rect.x, rect.y);
+    h.up(rect.x, rect.y);
+    assert!(h.app.activity.detail.is_none());
+    assert_eq!(h.app.editor.text(), "keep this draft");
+}
+
+#[test]
+fn update_page_close_button_cancels_its_job_and_preserves_draft() {
+    let mut h = Harness::new(100, 28);
+    h.app.editor.set_text("keep this draft");
+    update_screen(&mut h, update_preview(true, 0));
+    h.app.job = Some(fake_update_job());
+    h.app.update_progress();
+    h.draw();
+    assert!(h.screen().contains("Esc or X cancels the update"));
+    let (rect, _) = h.app.areas.modal_close.unwrap();
+    h.down(rect.x, rect.y);
+    h.up(rect.x, rect.y);
+    assert!(h.app.picker.is_none());
+    assert!(h.app.job.as_ref().unwrap().is_cancelled());
+    assert_eq!(h.app.editor.text(), "keep this draft");
+}
+
+#[test]
 fn while_updating_the_message_box_says_sending_waits_for_the_restart() {
     let mut h = Harness::new(110, 24);
     h.app.job = Some(spawn_job(JobKind::Update, |ctl| {
@@ -3037,7 +3520,8 @@ fn while_updating_the_message_box_says_sending_waits_for_the_restart() {
     }));
     h.draw();
     let screen = h.screen();
-    assert!(screen.contains("updating Concordia"), "{screen}");
+    assert!(!screen.contains("updating Concordia"), "{screen}");
+    assert_eq!(screen.matches("updating").count(), 1, "{screen}");
     assert!(
         screen.contains("Messages are paused until Concordia restarts on the new build"),
         "{screen}"
@@ -3064,11 +3548,19 @@ fn the_update_screen_turns_into_progress_and_esc_cancels_the_update() {
     let mut h = Harness::new(100, 24);
     update_screen(&mut h, update_preview(true, 0));
     h.app.job = Some(fake_update_job());
-    std::thread::sleep(Duration::from_millis(50));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.app.job.as_ref().unwrap().status().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
     h.app.update_progress();
     h.draw();
     let screen = h.screen();
     assert!(screen.contains("Updating Concordia"), "{screen}");
+    assert_eq!(screen.matches("Updating Concordia").count(), 1, "{screen}");
+    assert!(
+        !screen.contains("updating ·"),
+        "the page owns progress; footer has controls only: {screen}"
+    );
     assert!(screen.contains("Compiling concordia"), "{screen}");
     assert!(screen.contains("Esc cancels the update"), "{screen}");
     h.key(KeyCode::Esc, KeyModifiers::NONE);
@@ -3090,4 +3582,580 @@ fn closing_another_picker_leaves_a_running_update_alone() {
     assert!(h.app.picker.is_none());
     assert!(!h.app.job.as_ref().unwrap().is_cancelled());
     h.app.job.as_ref().unwrap().cancel();
+}
+
+#[test]
+fn landing_draft_paste_keeps_lists_and_enter_runs_the_command() {
+    let mut h = landing_harness();
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    h.app.paste_text("/usage");
+    h.draw();
+    assert!(landing::visible(&h.app));
+    assert!(h.screen().contains(" chats "));
+    assert_eq!(h.app.editor.text(), "/usage");
+    h.enter();
+    assert!(h.app.picker.is_some());
+}
+
+#[test]
+fn landing_chats_wrap_up_and_down() {
+    let mut h = landing_harness();
+    h.key(KeyCode::Up, KeyModifiers::NONE);
+    h.enter();
+    assert!(
+        h.screen().contains("chat third"),
+        "Up wraps to the last folder"
+    );
+    h.key(KeyCode::Up, KeyModifiers::NONE);
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.enter();
+    assert!(
+        !h.screen().contains("chat first"),
+        "Down wraps to the first folder, which Enter collapses"
+    );
+}
+
+#[test]
+fn landing_goals_wrap_in_both_directions() {
+    let mut h = landing_harness();
+    let goals: Vec<_> = ["first goal", "last goal"]
+        .iter()
+        .enumerate()
+        .map(|(i, text)| landing::Goal {
+            id: format!("goal-{i}"),
+            text: text.to_string(),
+            done: false,
+            added_at: "fixture".into(),
+            closed_at: None,
+        })
+        .collect();
+    landing::save_goals(&h.app.state_root, &goals).unwrap();
+    let here = h.app.cwd.clone();
+    landing::open_with(
+        &mut h.app,
+        vec![landing_session("acct-x", &here, "first", 1)],
+        None,
+    );
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    h.key(KeyCode::Up, KeyModifiers::NONE);
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.enter();
+    h.enter();
+    let saved = landing::load_goals(&h.app.state_root);
+    assert!(saved[0].done);
+    assert!(!saved[1].done);
+}
+
+#[test]
+fn right_click_keeps_the_selection_for_repeated_copy() {
+    let mut h = Harness::new(60, 20);
+    h.app.push_assistant("hello brave world".into());
+    h.draw();
+    let row = h.row_of("hello brave world");
+    let (x, y) = h.t_cell(row, 6);
+    let (end, _) = h.t_cell(row, 11);
+    h.down(x, y);
+    h.drag(end, y);
+    h.up(end, y);
+    for _ in 0..2 {
+        h.mouse(MouseEventKind::Down(MouseButton::Right), end, y);
+        assert_eq!(clipboard::get_text().unwrap(), "brave");
+        assert_eq!(h.app.view.selected_text().as_deref(), Some("brave"));
+        assert_eq!(h.app.editor.text(), "");
+    }
+}
+
+#[test]
+fn mouse_pointer_matches_clickable_targets_and_text() {
+    let h = landing_harness();
+    let y = h
+        .screen()
+        .lines()
+        .position(|line| line.contains("chat first"))
+        .unwrap();
+    assert_eq!(pointer::shape(&h.app, 4, y as u16), "pointer");
+    let r = h.app.areas.input;
+    assert_eq!(pointer::shape(&h.app, r.x + 3, r.y), "text");
+    assert_eq!(pointer::shape(&h.app, 0, 0), "default");
+}
+
+#[test]
+fn current_run_timer_omits_unused_leading_units() {
+    let mut h = Harness::new(120, 24);
+    h.app.busy = true;
+    for (seconds, shown) in [(5, "5s"), (500, "8m 20s"), (3723, "1h 02m 03s")] {
+        h.app.turn_started = Some(Instant::now() - Duration::from_secs(seconds));
+        h.draw();
+        assert!(h.screen().contains(shown), "{}", h.screen());
+    }
+}
+
+#[test]
+fn expanded_tool_header_stays_reachable_and_collapses_after_scrolling() {
+    for all in [false, true] {
+        let mut h = Harness::new(100, 20);
+        h.app.push_user("inspect fixture".into());
+        h.app.push_card(StreamCard {
+            id: "long-result".into(),
+            title: "shell".into(),
+            detail: Some(format!(
+                "command: cargo test -p concordia\nOutput: {}",
+                (0..100).map(|i| format!("line {i}\n")).collect::<String>()
+            )),
+            status: CardStatus::Done,
+        });
+        let id = h.app.messages.len() - 1;
+        h.app.expanded_activity = all;
+        if !all {
+            h.app.activity.toggle(id);
+        }
+        h.draw();
+        h.app.view.scroll_up(3);
+        h.draw();
+        let (rect, pinned_id) = h.app.areas.pinned_card.expect("expanded header is pinned");
+        assert_eq!(pinned_id, id);
+        assert!(h.screen().contains("Collapse"));
+        let pinned = h.screen().lines().nth(rect.y as usize).unwrap().to_owned();
+        assert!(pinned.contains("cargo test -p concordia"), "{pinned}");
+        assert!(pinned.contains("output lines"), "{pinned}");
+        assert_eq!(pointer::shape(&h.app, rect.x + 5, rect.y), "pointer");
+        h.click(rect.x + 5, rect.y);
+        assert!(!h.app.activity.is_expanded(id, all));
+        assert!(h.app.areas.pinned_card.is_none());
+        assert_eq!(h.app.editor.text(), "");
+    }
+}
+
+#[test]
+fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
+    let mut h = Harness::new(100, 20);
+    h.app.cwd = PathBuf::from("C:/work/fixture-project");
+    assert_eq!(
+        h.app.window_title(),
+        "\u{25c7} fixture-project \u{b7} Idle \u{b7} Concordia"
+    );
+    h.app.session_ui.title = Some("Fix parser".into());
+    h.app.busy = true;
+    h.app.phase = Phase::Thinking;
+    assert_eq!(
+        h.app.window_title(),
+        "\u{2726} Fix parser \u{b7} Thinking \u{b7} Concordia"
+    );
+    h.app.phase = Phase::Writing;
+    assert!(h.app.window_title().starts_with("\u{270e} Fix parser"));
+    h.app.cancel_requested = true;
+    assert!(h.app.window_title().contains("Stopping"));
+}
+
+#[test]
+fn slash_completion_keeps_tab_while_the_landing_lists_are_visible() {
+    let mut h = landing_harness();
+    h.type_str("/mod");
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(h.app.editor.text(), "/model");
+    assert!(landing::visible(&h.app));
+}
+
+#[test]
+fn model_argument_completion_uses_the_account_catalog_and_can_apply_it() {
+    let mut h = Harness::new(100, 24);
+    let home = h.app.state_root.join("fixture-provider");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("models_cache.json"),
+        r#"{"models":[{"slug":"fixture-model"},{"slug":"another-model"}]}"#,
+    )
+    .unwrap();
+    set_use_selection(
+        &h.app.state_root,
+        UseSelection {
+            provider: ProviderKind::Codex,
+            account: "codex".into(),
+            home_path: Some(home.to_string_lossy().into_owned()),
+            model: None,
+            updated_at: "fixture".into(),
+        },
+    )
+    .unwrap();
+    h.app.home_path = Some(home);
+    h.app.provider = ProviderKind::Codex;
+    h.type_str("/model fix");
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(h.app.editor.text(), "/model fixture-model");
+    h.enter();
+    assert_eq!(h.app.model, "fixture-model");
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
+fn reply_identity_does_not_repeat_the_default_provider_account_name() {
+    let mut h = Harness::new(100, 24);
+    h.app.provider = ProviderKind::Codex;
+    h.app.account = "codex".into();
+    h.app.model = "fixture-model".into();
+    let (_, label) = h.app.reply_meta();
+    assert_eq!(label, "Codex \u{b7} fixture-model");
+    h.app.session_chip = Some("first request".into());
+    h.draw();
+    assert!(!h.screen().lines().next().unwrap().contains("first request"));
+}
+
+#[test]
+fn account_argument_completion_switches_only_to_a_connected_fixture() {
+    let _iso = Isolated::new();
+    let mut h = Harness::new(100, 24);
+    let home = h.app.state_root.join("fixture-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("auth.json"), "{}").unwrap();
+    crate::store::upsert_stored_account(
+        &h.app.state_root,
+        crate::store::StoredAccount {
+            id: "codex-fixture".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(home.to_string_lossy().into_owned()),
+            label: "Fixture".into(),
+            created_at: "0".into(),
+        },
+    )
+    .unwrap();
+    h.type_str("/use codex-f");
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(h.app.editor.text(), "/use codex-fixture");
+    h.enter();
+    assert_eq!(h.app.account, "codex-fixture");
+    assert_eq!(h.app.home_path, Some(home));
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
+fn unknown_model_and_account_arguments_cannot_change_the_binding() {
+    let _iso = Isolated::new();
+    let mut h = Harness::new(100, 24);
+    let home = h.app.state_root.join("fixture-catalog");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("models_cache.json"),
+        r#"{"models":[{"slug":"fixture-model"}]}"#,
+    )
+    .unwrap();
+    h.app.home_path = Some(home);
+    h.app.model = "fixture-model".into();
+    let account = h.app.account.clone();
+    for line in [
+        "/model extra",
+        "/model ../outside",
+        "/model \"quoted\"",
+        "/model && echo unsafe",
+        "/use not-connected",
+    ] {
+        assert!(h.app.handle_slash(line));
+        assert_eq!(h.app.model, "fixture-model");
+        assert_eq!(h.app.account, account);
+        assert!(h.app.picker.is_none());
+    }
+}
+
+#[test]
+fn completed_commands_reveal_their_options_before_a_space_or_enter() {
+    let _iso = Isolated::new();
+    let mut h = Harness::new(110, 28);
+    h.type_str("/us");
+    assert!(!h.screen().contains("connect a provider account"));
+    h.type_str("e");
+    assert!(h.screen().contains("/use options"));
+    assert!(h
+        .app
+        .palette_entries()
+        .iter()
+        .any(|e| e.command == "/use add"));
+    assert!(!h
+        .app
+        .palette_entries()
+        .iter()
+        .any(|e| e.command == "/use add codex"));
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(h.app.editor.text(), "/use add");
+    assert!(h
+        .app
+        .palette_entries()
+        .iter()
+        .any(|e| e.command == "/use add codex"));
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(h.app.editor.text(), "/use add ");
+    assert!(h.app.picker.is_none(), "completion never starts a login");
+}
+
+#[test]
+fn waiting_status_and_the_adjacent_timer_describe_the_current_run() {
+    let mut h = Harness::new(120, 24);
+    h.app.busy = true;
+    h.app.turn_started = Some(Instant::now() - Duration::from_secs(500));
+    h.draw();
+    let screen = h.screen();
+    let line = screen
+        .lines()
+        .find(|line| line.contains("Codex · starting the turn"))
+        .unwrap();
+    assert!(line.contains("8m 20s"), "{line}");
+    assert!(line.find("8m 20s").unwrap() > line.find("starting the turn").unwrap());
+    h.app.apply_progress(TurnProgress::Card(StreamCard {
+        id: "completed".into(),
+        title: "Read fixture.rs".into(),
+        detail: None,
+        status: CardStatus::Done,
+    }));
+    h.draw();
+    assert!(h.screen().contains("Reviewing the latest tool results"));
+}
+
+#[test]
+fn account_nickname_persists_without_changing_the_native_binding() {
+    let _iso = Isolated::new();
+    let mut h = Harness::new(120, 24);
+    let before = get_account(&h.app.state_root, "codex").unwrap();
+    let selection = get_use_selection(&h.app.state_root);
+    h.send("/use rename codex Work account");
+    assert_eq!(h.app.account_label(), "Work account (Codex)");
+    let after = get_account(&h.app.state_root, "codex").unwrap();
+    assert_eq!(before.home_path, after.home_path);
+    assert_eq!(before.custom, after.custom);
+    assert_eq!(after.label, "Work account (Codex)");
+    assert_eq!(
+        serde_json::to_value(selection).unwrap(),
+        serde_json::to_value(get_use_selection(&h.app.state_root)).unwrap()
+    );
+    h.app.account_names.clear();
+    h.app.refresh_binding();
+    assert!(h
+        .app
+        .named_account(ProviderKind::Codex, "codex")
+        .starts_with("Work account"));
+    assert!(crate::accounts::set_nickname(&h.app.state_root, "codex", "bad\u{1b}name").is_err());
+    assert!(crate::accounts::set_nickname(&h.app.state_root, "missing-account", "Name").is_err());
+    h.send("/use rename codex");
+    assert_eq!(h.app.account_label(), "Codex");
+}
+
+#[test]
+fn active_email_and_nickname_are_visible_in_header_without_a_picker() {
+    for width in [80, 100, 160] {
+        let mut h = Harness::new(width, 24);
+        h.app.account_names.insert("codex".into(), "Work".into());
+        h.app.account_email = Some("member@example.invalid".into());
+        h.app.usage_summary = "5h 80% left".into();
+        h.draw();
+        let screen = h.screen();
+        let header = screen.lines().next().unwrap();
+        assert!(header.contains("Work (Codex)"), "{header}");
+        assert!(header.contains("member@example.invalid"), "{header}");
+        assert!(header.contains("5h 80% left"), "{header}");
+    }
+}
+
+#[test]
+fn at_file_reference_click_opens_the_internal_split() {
+    let mut h = Harness::new(120, 24);
+    std::fs::write(h._dir.path().join("reference.md"), "# File").unwrap();
+    h.app.messages = vec![ChatLine {
+        role: MsgRole::User,
+        text: "Read @reference.md:1".into(),
+        card: None,
+        meta: None,
+    }];
+    h.draw();
+    let (index, row) = h
+        .app
+        .view
+        .rows
+        .iter()
+        .enumerate()
+        .find(|(_, row)| !row.links.is_empty())
+        .unwrap();
+    let start = row
+        .links
+        .iter()
+        .find(|(_, _, c)| c.target == "reference.md")
+        .unwrap()
+        .0;
+    let x = h.app.areas.transcript.x
+        + row.gutter.chars().count() as u16
+        + row.text[..start]
+            .iter()
+            .map(|c| text::char_width(*c) as u16)
+            .sum::<u16>();
+    let y = h.app.areas.transcript.y + (index - h.app.view.visible().start) as u16;
+    h.down(x, y);
+    h.up(x, y);
+    assert_eq!(h.app.workspace.panes.len(), 1);
+    assert!(h
+        .app
+        .last_file_open
+        .as_ref()
+        .unwrap()
+        .path
+        .ends_with("reference.md"));
+    h.send("/open @reference.md:1");
+    assert_eq!(
+        h.app.workspace.panes.len(),
+        1,
+        "reopening focuses the existing file"
+    );
+}
+
+#[test]
+fn each_usage_and_use_invocation_fetches_again_and_updates_open_rows() {
+    let _iso = Isolated::new();
+    let mut h = Harness::new(120, 35);
+    let home = h._dir.path().join("claude-fixture");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("credentials.json"),
+        r#"{"fixture":"presence marker only"}"#,
+    )
+    .unwrap();
+    crate::store::upsert_stored_account(
+        &h.app.state_root,
+        crate::store::StoredAccount {
+            id: "claude-fixture".into(),
+            provider: ProviderKind::Claude,
+            home_path: Some(home.to_string_lossy().into()),
+            label: "Fixture".into(),
+            created_at: "0".into(),
+        },
+    )
+    .unwrap();
+    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = count.clone();
+    h.app.usage_fetcher = UsageFetcher::with_runner(
+        h.app.state_root.clone(),
+        std::sync::Arc::new(move |_| {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            Ok(format!("Current session: {}% used\n", n * 10))
+        }),
+    );
+    for (iteration, command) in ["/usage", "/usage", "/use", "/use"].iter().enumerate() {
+        h.app.picker = None;
+        assert!(h.app.handle_slash(command));
+        h.app.picker.as_mut().unwrap().state.select(Some(1));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let expected = format!("{}% left", 100 - (iteration + 1) * 10);
+        loop {
+            h.app.on_tick();
+            let picker = h.app.picker.as_ref().unwrap();
+            if picker.rows.iter().any(|r| {
+                r.id.ends_with("claude-fixture")
+                    && r.label.contains(&expected)
+                    && !r.detail.contains("refreshing")
+            }) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "missing {expected}");
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            iteration + 1
+        );
+        assert_eq!(h.app.picker.as_ref().unwrap().state.selected(), Some(1));
+    }
+}
+
+#[test]
+fn replayed_tool_completion_is_logged_once_but_reused_ids_in_new_turns_are_preserved() {
+    let mut h = Harness::new(100, 24);
+    h.app.thread = Some(crate::threads::ThreadLog::open(
+        &h.app.state_root,
+        "dedup-fixture",
+    ));
+    let card = StreamCard {
+        id: "same-id".into(),
+        title: "Read".into(),
+        detail: Some("src/code.rs".into()),
+        status: CardStatus::Done,
+    };
+    h.app.push_user("inspect file".into());
+    h.app.push_card(card.clone());
+    h.app.push_card(card.clone());
+    let log = crate::threads::ThreadLog::open(&h.app.state_root, "dedup-fixture");
+    assert_eq!(
+        log.read_all()
+            .unwrap()
+            .iter()
+            .filter(|e| e.k == "card")
+            .count(),
+        1
+    );
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.role == MsgRole::Card)
+            .count(),
+        1
+    );
+    h.app.push_user("inspect again".into());
+    h.app.push_card(card);
+    assert_eq!(
+        log.read_all()
+            .unwrap()
+            .iter()
+            .filter(|e| e.k == "card")
+            .count(),
+        2
+    );
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.role == MsgRole::Card)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn failed_cut_keeps_the_original_selection_and_text() {
+    let mut h = Harness::new(60, 20);
+    h.type_str("retain this text");
+    h.key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    clipboard::FAIL_WRITES.set(true);
+    h.key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+    clipboard::FAIL_WRITES.set(false);
+    assert_eq!(h.app.editor.text(), "retain this text");
+    assert_eq!(
+        h.app.editor.selected_text().as_deref(),
+        Some("retain this text")
+    );
+    assert!(h.app.flash.as_ref().unwrap().0.contains("busy"));
+}
+
+#[test]
+fn retained_patch_errors_are_inspectable_without_claiming_the_exit_cause() {
+    let mut h = Harness::new(100, 30);
+    let old_error = "2026-01-01 ERROR tools::router: apply_patch verification failed: Failed to find expected lines";
+    h.app.finalize_turn(TurnOutcome {
+        exit_code: Some(1),
+        stderr_tail: format!("{old_error}\n  use old::import;"),
+        ..Default::default()
+    });
+    let diagnostics = h
+        .app
+        .messages
+        .iter()
+        .filter_map(|m| m.card.as_ref())
+        .find(|c| c.title.starts_with("Provider diagnostics"))
+        .unwrap();
+    assert!(diagnostics.detail.as_deref().unwrap().contains(old_error));
+    assert!(diagnostics
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("do not establish why"));
+    assert!(!h
+        .app
+        .messages
+        .iter()
+        .any(|m| m.role == MsgRole::System && m.text.contains(old_error)));
 }

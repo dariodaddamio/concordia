@@ -461,7 +461,9 @@ pub fn build_map_with(
     };
 
     let asked = users.first().map(|u| one_line(u.text(), 160));
-    let now = if users.len() > 1 {
+    let now = if users.len() > 1
+        && users.first().map(|e| e.text().trim()) != users.last().map(|e| e.text().trim())
+    {
         users.last().map(|u| one_line(u.text(), 160))
     } else {
         None
@@ -496,7 +498,8 @@ pub fn build_map_with(
             files.push(detail.to_string());
         }
     }
-    errors.dedup();
+    let mut seen_errors = std::collections::HashSet::new();
+    errors.retain(|error| seen_errors.insert(error.clone()));
     errors.truncate(3);
 
     let last_reply = events
@@ -848,6 +851,27 @@ mod tests {
         assert!(m.contains("errors: Bash: boom"), "{m}");
         assert!(m.contains("last reply: done with it"), "{m}");
         assert!(m.contains("4 msgs"), "{m}");
+    }
+
+    #[test]
+    fn map_omits_repeated_request_field_and_nonadjacent_identical_errors() {
+        let events = vec![
+            user("same request"),
+            ThreadEvent::card("shell", Some("error one"), "error"),
+            ThreadEvent::card("shell", Some("error two"), "error"),
+            ThreadEvent::card("shell", Some("error one"), "error"),
+            user("same request"),
+        ];
+        let map = build_map(&events, "fixture", 1600, true);
+        assert!(map.contains("asked: same request"));
+        assert!(!map.contains("now:"));
+        let errors = map
+            .lines()
+            .find(|line| line.starts_with("errors:"))
+            .unwrap();
+        assert_eq!(errors.matches("error one").count(), 1);
+        assert_eq!(errors.matches("error two").count(), 1);
+        assert!(map.contains("2 msgs"), "source events are retained");
     }
 
     #[test]

@@ -7,6 +7,8 @@ pub(super) struct State {
     next: u64,
     pending: Option<u64>,
     jobs: Vec<Load>,
+    memory_pending: Option<u64>,
+    memory_jobs: Vec<(u64, std::sync::mpsc::Receiver<Result<String, String>>)>,
 }
 
 struct Load {
@@ -19,11 +21,16 @@ struct Load {
 }
 
 impl State {
+    #[cfg(test)]
+    pub fn memory_reading(&self) -> bool {
+        !self.memory_jobs.is_empty()
+    }
     pub fn loading(&self) -> bool {
         self.pending.is_some()
     }
     pub fn invalidate(&mut self) {
         self.pending = None;
+        self.memory_pending = None;
     }
     #[cfg(test)]
     pub fn reading(&self) -> bool {
@@ -32,6 +39,76 @@ impl State {
 }
 
 impl App {
+    pub(super) fn memory_command(&mut self, argument: &str) {
+        if argument.is_empty() {
+            self.push_system("Memory: /memory recall TEXT · /memory recall-account ACCOUNT TEXT · /memory recall-source INDEX TEXT · /memory sources INDEX · /memory next INDEX · /memory excerpt INDEX --message N · /memory lineage INDEX · /memory link PARENT CHILD · /memory detach PARENT CHILD. Search suggestions never become links automatically. /memory index SESSION --account ID --scope whole starts a whole-history scan.");
+            return;
+        }
+        if self.session_ui.memory_jobs.len() >= 2 {
+            self.flash("memory reads are finishing; try again shortly");
+            return;
+        }
+        let root = self.state_root.clone();
+        let workspace = self.cwd.clone();
+        let argument = argument.to_owned();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = std::thread::Builder::new().name("concordia-memory-read".into()).spawn(move || {
+            let search = argument.strip_prefix("recall ").map(|q| (None, None, q))
+                .or_else(|| argument.strip_prefix("recall-account ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(a,q)| (Some(a),None,q)))
+                .or_else(|| argument.strip_prefix("recall-source ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(s,q)| (None,Some(s),q)));
+            let output = if let Some((account, source, query)) = search {
+                    crate::native_memory::retrieval::recall(&root, query, source, account, if source.is_none() { Some(&workspace) } else { None }).map(|r| {
+                    let mut lines = vec![format!("Memory search: {} matches in {} bounded source windows{}", r.hits.len(), r.pages.len(), if r.incomplete { "; incomplete scan" } else { "" })];
+                    for hit in r.hits {
+                        lines.push(format!("{} / {} · {} · message {}\n{}\nSource: {}\nLexical suggestion; use /memory link to confirm a relationship.", hit.source.account, hit.source.session_id, hit.role, hit.message, hit.preview, hit.source.id));
+                    }
+                    for page in r.pages { lines.push(format!("Scanned source: {} / {} · {}",page.account,page.session_id,page.id)); }
+                    lines.extend(r.unavailable);
+                    lines.join("\n\n")
+                })
+            } else {
+                let args: Vec<String> = argument.split_whitespace().map(str::to_owned).collect();
+                if args.first().is_some_and(|s| s == "next") && args.len() == 2 {
+                    crate::native_memory::history_from_pointer(&root, &args[1]).and_then(|s| serde_json::to_string_pretty(&s).map_err(|e| e.to_string()))
+                } else {
+                    crate::chat_cli::run(&root, &args).map_err(|(e, _)| e)
+                }
+            };
+            let _ = tx.send(output);
+        });
+        if let Err(e) = result {
+            self.push_system(format!("memory reader could not start: {e}"));
+            return;
+        }
+        self.session_ui.next = self.session_ui.next.wrapping_add(1);
+        let generation = self.session_ui.next;
+        self.session_ui.memory_pending = Some(generation);
+        self.session_ui.memory_jobs.push((generation, rx));
+        self.flash("reading native memory…");
+    }
+
+    pub(super) fn poll_memory(&mut self) {
+        let mut i = 0;
+        while i < self.session_ui.memory_jobs.len() {
+            let result = match self.session_ui.memory_jobs[i].1.try_recv() {
+                Ok(r) => r,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    i += 1;
+                    continue;
+                }
+                Err(_) => Err("memory reader stopped".into()),
+            };
+            let (generation, _) = self.session_ui.memory_jobs.swap_remove(i);
+            if self.session_ui.memory_pending != Some(generation) {
+                continue;
+            }
+            self.session_ui.memory_pending = None;
+            self.push_system(crate::chat_cli::terminal_safe(
+                &result.unwrap_or_else(|e| format!("memory unavailable: {e}")),
+            ));
+        }
+    }
+
     pub(super) fn ensure_session_title(&mut self, prompt: &str) {
         if self.session_ui.title.is_none() {
             let title = crate::session_titles::title_from_prompt(prompt);
@@ -63,7 +140,6 @@ impl App {
     }
 
     pub(super) fn resume_session(&mut self, account: &str, id: &str) {
-        self.continuation.invalidate();
         if self.busy {
             self.flash("finish or cancel the active turn before resuming");
             return;
@@ -105,6 +181,8 @@ impl App {
             self.push_system(format!("could not start history reader: {error}"));
             return;
         }
+        self.continuation.invalidate();
+        self.keep.turn_recovery_notice = false;
         self.session_ui.next = self.session_ui.next.wrapping_add(1);
         let generation = self.session_ui.next;
         self.session_ui.pending = Some(generation);
@@ -112,10 +190,18 @@ impl App {
             crate::session_titles::get(&self.state_root, provider, account, &home, id);
         self.session_chip = self.session_ui.title.clone();
         self.native_session_id = Some(id.to_string());
+        self.native_sources.clear();
+        self.remember_native_source();
+        let checkpoint_cleared = self.save_turn_checkpoint(true);
         self.need_context_pack = false;
         self.prior_provider = provider;
         self.prior_home = Some(home.to_string_lossy().into_owned());
+        self.project_search.close();
+        self.native_owner = None;
+        self.deleg.change_conversation();
         self.messages.clear();
+        self.related_files.reset();
+        self.questions.clear();
         self.native_agents = native_agents::State::default();
         self.activity = activity::Activity::default();
         self.expanded_activity = false;
@@ -132,6 +218,9 @@ impl App {
         self.pause_queue();
         self.thread = crate::threads::start(&self.state_root);
         self.thread_meta_done = false;
+        if !checkpoint_cleared {
+            self.push_system("could not clear the previous unfinished-request record; it has been kept for recovery");
+        }
         self.push_system("Loading recent messages for the selected session…");
         self.session_ui.jobs.push(Load {
             generation,
@@ -172,6 +261,8 @@ impl App {
                 .take()
                 .and_then(|index| index.checked_sub(1));
             self.messages.clear();
+            self.related_files.reset();
+            self.questions.clear();
             self.view = TranscriptView::default();
             match result {
                 Ok(history) => {

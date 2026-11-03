@@ -50,6 +50,25 @@ pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
     id
 }
 
+/// A nickname changes display only, never account ids, credential homes or removal ownership.
+pub fn set_nickname(root: &Path, account: &str, name: &str) -> anyhow::Result<()> {
+    let id = normalize_account_id(account);
+    anyhow::ensure!(get_account(root, &id).is_some(), "unknown account: {id}");
+    let name = name.trim();
+    anyhow::ensure!(
+        name.chars().count() <= 48 && !name.chars().any(char::is_control),
+        "nickname must be at most 48 characters without control characters"
+    );
+    crate::store::modify_store(root, |store| {
+        if name.is_empty() {
+            store.account_nicknames.remove(&id);
+        } else {
+            store.account_nicknames.insert(id, name.to_string());
+        }
+        Ok(())
+    })
+}
+
 /// Whether `home` holds a usable login for `provider` (existence/shape check only).
 pub fn is_logged_in(provider: ProviderKind, home: &Path) -> bool {
     dir_logged_in(provider, home)
@@ -230,11 +249,20 @@ pub fn list_all_accounts(state_root: &Path) -> Vec<AccountDef> {
     for s in list_stored_accounts(state_root) {
         merge_stored(&mut by_id, s);
     }
-    let hidden = crate::store::hidden_accounts(state_root);
+    let store = crate::store::load_store(state_root);
+    let hidden = store.hidden_accounts;
     let mut out: Vec<_> = by_id
         .into_values()
         .filter(|a| !hidden.contains(&a.account))
         .collect();
+    for a in &mut out {
+        if !a.custom {
+            a.label = display_account_name(a.provider, &a.account);
+        }
+        if let Some(name) = store.account_nicknames.get(&a.account) {
+            a.label = format!("{name} ({})", display_account_name(a.provider, &a.account));
+        }
+    }
     out.sort_by(|a, b| {
         a.provider
             .as_str()

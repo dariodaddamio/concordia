@@ -5,8 +5,8 @@
 <h1 align="center">Concordia</h1>
 
 <p align="center">
-  <b>One terminal for all your AI coding subscriptions.</b><br>
-  A fast, local, Rust TUI that drives Codex, Claude and Cursor under the accounts you already pay for.
+  <b>Local memory management and orchestration for AI coding CLIs.</b><br>
+  A native Rust terminal app that connects tasks, accounts and sessions across Codex, Claude and Cursor.
 </p>
 
 <p align="center">
@@ -17,39 +17,133 @@
   <img alt="status" src="https://img.shields.io/badge/status-pre--release-yellow">
 </p>
 
-> **Status: pre-release.** Codex chat works end to end for an already-logged-in home.
-> Account onboarding, Claude/Cursor parity and failover are in progress.
-> The honest, ranked gap list lives in [docs/e2e-status.md](docs/e2e-status.md).
+> **Status: private pre-release, Windows first.** Session continuity, bounded context maps,
+> explicit workers, recent Codex/Claude native-source pointers, unfinished-request recovery and
+> opt-in limit handoff are implemented. Related-chat discovery and proactive capacity/compaction
+> policy remain planned; [native memory](docs/native-memory.md) describes the shipped bounds.
+> Fake-provider checks establish local behavior; live provider parity and physical-host checks
+> remain separate release gates. See [release blockers](docs/release-blockers.md).
 
 ## Why Concordia
 
-You pay for more than one AI coding tool. Each has its own CLI, its own login, its own session store and its own usage limit, and switching between them means losing your place. Concordia puts them in one terminal, as a thin layer over the CLIs you already have. It does not replace them, proxy them, or touch your credentials.
+A task can outlive one chat, one account's usage window or one coding provider. Concordia's
+purpose is to keep that task navigable and coordinate the work across those boundaries.
+Memory management and orchestration are the core product. The terminal UI makes their state,
+sources and controls visible.
 
-- **Use several of your own subscriptions in one terminal.** Codex, Claude and Cursor side by side: no hosted service, no API keys, no extra billing.
-- **Switch accounts in one command.** `/use` picks a provider and account; each account keeps an isolated home.
-- **See what is used and what is left.** `/usage` shows the current account's limit windows as used and left (`/usage all` for every account), taken from each CLI's own usage view. It never sends a prompt to a model.
-- **Share bounded context between providers.** Switch provider mid-task and Concordia hands the new one a bounded continuity pack instead of the whole history ([continuity](docs/continuity.md)).
-- **Delegate to worker accounts.** One account is the orchestrator you type into; up to three others run as visible workers on tasks you hand them (`/delegate`). Each worker gets its own session and a bounded slice of context, nothing runs unseen, and you can stop any of them ([delegation](docs/delegation.md)).
-- **Expand activity.** Click a card's gutter to expand it, or use `Ctrl+E` for searchable detail and copy. `Ctrl+O` toggles all received tool activity and reasoning.
-- **Process counters.** Setup diagnostics include Concordia and provider process health; `[ui] stats = true` enables counters at startup.
-- **Provider updates.** Keep updating the official CLIs normally. Concordia checks version/help capabilities and falls back when optional flags disappear; it never updates provider CLIs itself.
-- **See the wait.** The prompt border and title show what the model is doing (waiting, thinking, running a tool, writing) with its own colour, animation and timer; reasoning appears as dim lines ([waiting states](docs/tui-states.md)).
-- **Robust turns.** Provider output with invalid UTF-8 or multi-megabyte lines cannot truncate a reply; multi-line prompts go over stdin when the provider CLI sits behind a Windows `.cmd` shim; `Ctrl+C` kills the provider's whole process tree; a failing provider reports its exit code and stderr instead of an empty reply.
-- **Safe shared state.** State writes are atomic and serialized across panes, an unreadable `store.json` is backed up rather than overwritten, and `concordia --version` and `concordia doctor` never modify anything.
-- **Never guess a session.** Resume is always bound to an explicit session id. Concordia will never run `resume --last` or pick "whichever pane is focused".
-- **Honest about state.** Every build carries a stamp so you can tell at a glance whether a pane is running stale code.
+Concordia runs the official Codex, Claude Code and Cursor CLIs under your own accounts. Those
+CLIs still execute model turns and tools, enforce their permission modes, and own authentication
+and native session history. Concordia owns account/session binding, continuity between sessions,
+worker coordination, queueing and recovery. It has no routing model, embedding service or hosted
+memory backend.
 
-## What Concordia is, and is not
+## How memory works today
 
-**It is** a thin Windows terminal app that runs the Codex, Claude Code and Cursor CLIs, unmodified, under your own logins, and adds the parts that live between them: several accounts, what is left of each one's limits, bounded context when you switch, visible delegation to other accounts, and a prompt box that behaves like a normal editor.
+Concordia currently provides continuity with a small deterministic map. This is the foundation
+for the planned memory manager, rather than a complete cross-provider retrieval system.
 
-**It is not**
-- **A model or an agent.** It has no model of its own, no agent loop and no tool runtime. Every answer, tool call and approval is the provider CLI's.
-- **A replacement for the CLIs' own setup.** Skills, rules, memory, MCP servers and hooks stay with each CLI and keep working, because Concordia only points the CLI at an account folder. Concordia never reads or imports them. One consequence: an account Concordia creates starts with an empty folder, so skills you installed in your own `.claude` or `.codex` are not there until you add them.
-- **A credential tool.** You sign in through each provider's own login window. Concordia never reads, stores or sends a token, key or cookie.
-- **An account rotator.** Moving to another account is always your choice. Concordia will not switch for you to get around a limit.
-- **Cross-platform yet.** Windows only for now.
-- **Hosted or tracking.** There is no server, account or telemetry. The binary has no HTTP client; the only network access Concordia starts itself is the release download behind `/update`. The provider CLIs make their own connections, as they always do.
+1. A normal turn uses an explicit provider, account home, model and native session id.
+2. Continuing on the same provider and home resumes that native session by id. No context pack
+   is added, and Concordia does not choose a session with `resume --last`.
+3. Switching provider or account starts a new native session. The next prompt includes a map of
+   the conversation's requests, touched files, commands, errors and last reply, capped at 1,600
+   characters. The map is computed locally without a summarization call.
+4. With optional thread logging enabled, the map points to `concordia thread read <id>`.
+   `--grep`, `--tail` and `--range` retrieve a bounded exact excerpt. Without that log, the map
+   is built from in-memory events and explicitly says full text is not stored.
+5. `@chat` references can bring another recorded thread's map into a prompt. Optional MCP tools
+   expose local chat/thread reads and search. Access varies by provider format; it is not full
+   automatic recall of every previous conversation.
+
+```mermaid
+flowchart LR
+    A[Explicit account and session] --> B[Official provider CLI]
+    B --> C[Native session history]
+    B --> D[In-memory conversation events]
+    D --> E[Bounded local map]
+    D --> F[Optional Concordia thread log]
+    E --> G[New session after a switch]
+    F --> H[Bounded exact readback]
+    C -->|same home and explicit id| B
+```
+
+Enable the existing optional log with `[threads] enabled = true` in local `config.toml`.
+It stores conversation text; the native pointer index stores metadata and hashes instead. Prompt history,
+drafts and queued prompts have their own persistence and recovery controls. Native provider
+compaction remains active. A recognized terminal capacity error can trigger one fresh-session
+rollover; preemptive rollover remains planned.
+See [continuity](docs/continuity.md) and [architecture](docs/architecture.md) for the current
+formats, read limits and storage paths.
+
+## How orchestration works today
+
+The conversation you type into is the orchestrator. Up to three registered worker accounts can
+run bounded tasks in separate native sessions. `/delegate` provides worker controls; completed
+results stay visible until you explicitly include them in the main conversation. Results are
+labelled untrusted data and capped before inclusion. Provider-native subagents are a separate
+source of reports shown in `/agents`; displaying a report does not start another model turn.
+
+Each conversation has one active executor. Drafts and queued work are preserved across
+interruption. Cancellation targets the tracked provider process tree. Tool requests and completed
+tool results remain distinct, so uncertain work can be reconciled before continuing.
+
+Usage exhaustion and context capacity are different conditions. An explicit quota failure can
+trigger opt-in handoff to an ordered list of your accounts. The default is manual. Each account
+is tried once, with at most three automatic handoffs per request. The new session receives the
+original request and bounded map, with instructions to inspect completed workspace changes.
+An unsent draft, active modal/edit or uncertain tool completion can stop automatic handoff;
+queued prompts remain paused for explicit resume. There is no quota-prediction model or hidden
+probe turn. Explicit cached-model fallback preferences are supported. See [configuration](docs/config.md).
+
+For example, with account ids taken from your `/use` choices:
+
+```toml
+[continuation]
+mode = "automatic"
+accounts = ["codex-2", "claude", "cursor"]
+```
+
+This is a user-configured continuation policy. Native tool and approval state stays with its
+original account. See [delegation](docs/delegation.md) and [configuration](docs/config.md).
+
+## The memory manager we are building
+
+The target design indexes pointers into provider-owned session files, preserving exact sources
+instead of maintaining another full conversation archive. A bounded map leads to selective reads
+from those originals. Explicit handoff lineage, project/file identity and timestamps make related
+work discoverable; lexical matches suggest relationships without inventing certainty.
+
+| Area | Available now | Next implementation milestone |
+| --- | --- | --- |
+| Session continuity | Explicit native resume and bounded cross-account maps | Durable lineage across handoffs |
+| Source readback | Optional Concordia logs; native reads where supported | Validated native-file pointers with stale/missing-source handling |
+| Retrieval | Explicit thread reads, references and local tools | Related-chat lookup with source citations and bounded results |
+| Context capacity | Provider-native compaction and one-attempt explicit capacity-error recovery | Verified proactive capacity signals and compaction policy |
+| Account routing | Manual selection or ordered opt-in quota fallback | Persisted account/model fallback choices and eligibility reasons |
+| Worker routing | Explicit tasks, bounded workers and result adoption | Task policy, ownership and recovery tied to durable run identities |
+
+These are implementation milestones, not shipped capabilities. Existing logs and drafts must
+survive any migration. No automatic deletion, hosted memory service, extra summarizer calls or
+resident inference model is part of this design. The detailed contract and acceptance criteria
+are in the [memory and orchestration plan](docs/context-handoff-plan.md) and [PLAN.md](PLAN.md).
+
+## Data and execution boundaries
+
+Prompts and context you choose to send reach the selected provider through its official CLI.
+Concordia has no hosted relay or telemetry service. Its updater can download releases, and
+provider CLIs make their own network connections.
+
+Account display reads local provider state, including authentication metadata for email and plan.
+Provider CLIs own sign-in, credential refresh and tool execution. Each account has an explicit
+home; Concordia does not rotate credentials beneath a running turn. Provider homes, optional
+conversation logs, prompt history and recovery files should be treated as sensitive local data.
+Pasted secrets can appear in saved prompts or provider history.
+
+Memory retrieval does not grant tool permission. Permission modes, project policy and provider
+approval controls still apply. Cross-provider handoff carries selected conversation context,
+not native approval state. Current security scope and remaining release work are documented in
+[SECURITY.md](SECURITY.md), [provider terms](docs/provider-terms.md) and
+[release blockers](docs/release-blockers.md).
 
 ## Features
 
@@ -58,13 +152,17 @@ You pay for more than one AI coding tool. Each has its own CLI, its own login, i
 | Chat TUI | Streaming turns with live command and tool cards, built on `ratatui` |
 | Mouse-native | Click to place the caret, drag to select, double/triple-click for word/line, wheel to scroll, right-click to copy or paste |
 | Real prompt editor | Multi-line, caret and selection, word moves, cut/copy/paste, bracketed paste (pasted newlines never send) |
+| Draft switching and latest output | Down at the last prompt row opens a fresh buffer; Up at its first row returns to the previous draft. Click `Bottom` at the top center of the prompt box to follow the newest output |
+| Landing goals | Keyboard and mouse scrolling, visible goal entry in narrow windows, and saves that preserve additions and completed goals from other panes |
 | Account picker | `/use` across Codex, Claude and Cursor homes |
 | WezTerm launcher | `concordia wezterm` opens WezTerm running Concordia with split/tab keys (Ctrl+Shift+D/E/T); the config ships inside the binary |
-| Slash palette | Type `/` for a live list of commands with descriptions; arrows and Tab to pick |
+| Slash palette | Type `/` to find commands; complete `/use`, `/model` or another family to reveal its actions and arguments |
 | Account connect | `/use add` creates an isolated home for a new account and opens the provider's own login; Concordia tells you when it connects |
 | Usage at a glance | `/usage` shows used and left per limit window: Codex from its session data, Claude from its local `/usage`, Cursor from its usage screen. No prompt is ever sent to a model |
 | Explicit resume | `/resume` lists sessions and binds by id |
-| Continuity pack | Bounded context hand-off when you switch provider mid-task |
+| Continuity pack | Bounded map and revision-checked native-source pointers on handoff |
+| Unfinished work | Original request/source identity survives restart without sending newer drafts |
+| File preview | Current-chat suggestions, raw/formatted views, search, reload and changed-file indicator |
 | Trust modes | `ask`, `workspace`, `full`, shown live in the status line |
 | Self-update | `/update` previews the source/release changes; Enter builds or downloads, then re-execs in the same pane |
 | Cancel | `Ctrl+C` terminates the tracked provider child process, nothing else |
@@ -125,10 +223,11 @@ Prebuilt downloads (`concordia-x86_64-pc-windows-msvc.exe`, `SHA256SUMS`, `THIRD
 
 `/update` adapts to how you installed Concordia:
 
-- **From source:** it shows the installed build, the checkout's build, its branch and whether it has uncommitted files, and the changelog entries in between, followed by every earlier build. Enter rebuilds, installs into a free slot and restarts the pane on the new build; while it builds, the message box shows that sending waits for the restart.
-- **From a release download:** it shows the newest release and its notes from the configured repository (`CONCORDIA_UPDATE_REPO=owner/name`). Enter fetches it, verifies the checksum, confirms the new binary runs and reports the expected version, and only then switches over. If any check fails, nothing is installed. `/update check` opens the same preview without changing anything. Esc closes it; `o` opens the release page.
+- **From source:** it shows the installed build, the checkout's build, its branch and whether it has uncommitted files, and the incoming changelog entries. H expands earlier history. Enter rebuilds, installs into a free slot and restarts the pane on the new build; while it builds, the message box shows that sending waits for the restart.
+- **From a release download:** `/update` opens a fresh page with the newest release and its notes from the configured repository (`CONCORDIA_UPDATE_REPO=owner/name`). Enter fetches it, verifies the checksum, confirms the new binary runs and reports the expected version, and only then switches over. If any check fails, nothing is installed. Esc returns to your chat; `o` opens the release page.
 
-Concordia only contacts the network when you run `/update`.
+Provider CLIs make their own network connections for turns, sign-in and usage views. Concordia
+has no hosted relay or memory service; `/update` can download a release.
 
 ## Quick start
 
@@ -142,7 +241,13 @@ concordia
 
 ## Workflows
 
-**You ran out of usage mid-task.** The footer shows used and left for the current account (`/usage` for the detail). Switch with `/use` and keep typing. Concordia starts a new session on the other account and puts a bounded pack of the recent conversation in front of your next prompt, headed `[concordia prior thread - bounded - N chars - tools/approvals NOT transferred]`. It is plain recent user and assistant text, capped at 6000 characters, with no summarising model and nothing copied that you did not see. The new model learns the thread from that header and text; it is not given your credentials, tool state or approvals. Switching stays manual, on purpose: Concordia never rotates accounts for you to get around a limit.
+**You ran out of usage mid-task.** A provider-reported quota failure pauses the request.
+Manual mode offers another account; opt-in automatic mode tries the configured account order.
+The new native session receives the original request and a deterministic map capped at 1,600
+characters, with pointers for additional readback when logging is enabled. Native tool and
+approval state stays with the previous account. Uncertain tool completion stops automatic
+handoff, and queued prompts remain paused until explicitly resumed. See the orchestration
+section above for bounds and model-selection limitations.
 
 **You continue the same conversation on the same account.** Nothing is injected. Concordia resumes the explicit session id it recorded (`--resume <id>`), never `--last`.
 
@@ -150,7 +255,7 @@ concordia
 
 **You want to inspect subagents.** `Ctrl+G` opens reported native child-agent activity and Concordia worker jobs. Enter opens the task, state and reported result. Codex collaboration events and Claude Agent/Task cards are supported; available detail depends on what the provider emits.
 
-**You think of the next prompt while a turn runs.** Press `Tab` to queue it; the queue shows above the prompt box and each item is sent when the turn before it finishes cleanly. `Ctrl+Up` focuses the queue while preserving your draft. Enter opens a multiline upper editor and saves it; Esc cancels the edit. `Ctrl+Down` returns to the draft after save/cancel; `Alt+Up/Down` reorders queued prompts. Cancelling, failure and restart pause the queue: `Ctrl+R` resumes it. Drafts and queues use separate recovery records for each pane and workspace. Sent history remains shared.
+**You think of the next prompt while a turn runs.** Press `Tab` to queue it; the queue shows above the prompt box and each item is sent when the turn before it finishes cleanly. `Ctrl+Up` focuses the queue while preserving your draft. Enter opens a multiline upper editor and saves it; Esc cancels the edit. `Ctrl+Down` returns to the draft after save/cancel; `Alt+Up/Down` reorders queued prompts. Cancelling, failure and restart pause the queue: `Ctrl+R` resumes it. Click **Send now**, press Ctrl+Enter or Alt+Enter on a focused queue row, or use `/queue send 2` to send that item after stopping the active turn; other queued items stay paused. Drafts and queues use separate recovery records for each pane and workspace. Sent history remains shared.
 
 **You want help from another account.** Open `/delegate` to add a worker, then use `/delegate <account> <task>` as a shortcut. The worker runs one visible turn with its own session and a bounded slice of context. Its result comes back as a labelled block and can be sent to your main conversation from that screen ([delegation](docs/delegation.md)).
 
@@ -164,15 +269,15 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 
 | Command | What it does |
 | --- | --- |
-| `/use` | Switch, add or remove accounts |
-| `/model` | Choose the model |
+| `/use [ACCOUNT]` | Switch, add or remove accounts |
+| `/model [MODEL]` | Choose a model from the active account's catalog |
 | `/mode` | How much the agent may do without asking |
 | `/usage` | Limits for every account (`r` refreshes, `t` shows tokens through Concordia) |
 | `/new` | Start a fresh chat, opening on the landing page |
 | `/resume` | Continue an earlier chat (`Delete` confirms removal) |
 | `/delegate` | Run tasks on worker accounts; management choices are inside the screen |
 | `/harness` | Connect and run harness tools |
-| `/open` | Open a file in a side pane; Esc or X closes it |
+| `/open` | Browse chat, recent and workspace files/folders; Enter opens, Esc or X leaves the browser |
 | `/copy` | Copy the last reply |
 | `/doctor` | Check your setup, version and configuration |
 | `/update` | Preview an update; Enter builds/downloads an available update |
@@ -186,7 +291,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `Tab` | Complete a slash command; while a turn runs (or prompts are queued), queue the typed prompt |
 | `Shift+Tab` | Cycle the mode: plan, ask, auto-edit, full (moves the selection up while the palette is open) |
 | `Alt+Up` / `Alt+Down` | Select a worker row; `Enter` opens its transcript, `Esc` closes it. In the queue panel, move the selected prompt up or down |
-| Click | Place the caret (prompt); release on an underlined file reference to open it in another terminal. Alt+click previews Markdown; dragging keeps selection |
+| Click | Place the caret (prompt); release on an underlined file reference to open its internal split pane. Alt+click requests formatted preview; dragging keeps selection |
 | Drag, double-click, triple-click | Select text / a word / a line (prompt or transcript) |
 | `Ctrl+C` | Copy the selection; with nothing selected, cancel the running turn; when idle, press twice to exit |
 | `Up` / `Down` | Walk previously sent prompts (on the first / last prompt row); with an empty box and a non-empty queue, `Up` focuses the queue panel (`Enter` edits, `Delete` removes, `Esc` returns). History is kept in `<state>\history.jsonl` (`[ui] persist_history`) |
@@ -197,7 +302,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `Ctrl+E` | Open searchable full activity detail; `Esc` closes and `Ctrl+C` copies |
 | `Ctrl+Up` / `Ctrl+Down` | Focus queued prompts / return to the draft after save or cancel |
 | `Ctrl+R` | Resume a paused queue while preserving the draft |
-| `/open PATH` | Internal read-only file pane; repeat to split; F6 changes focus, Esc returns to the chat, and `q` or X closes it |
+| `/open PATH` | Internal file pane; formatted Markdown/JSON by default, raw editable source with syntax colors. Alt+V switches view; Ctrl+S saves; F6 changes focus; Esc returns to chat; X closes with an unsaved-edit decision |
 | `Ctrl+Backspace` | Delete the previous word in the prompt |
 | `Ctrl+Z` | Undo in the prompt (also right after a send, which puts the sent text back) |
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
@@ -207,14 +312,96 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 
 > **WezTerm note:** Concordia captures the mouse, so plain drags select inside Concordia. Hold `Shift` while dragging to use WezTerm's own selection instead. WezTerm intercepts `Ctrl+Shift+C`, so use `Ctrl+C`, right-click or `/copy`.
 
+## Icons and animations
+
+| Where / symbol | Meaning |
+| --- | --- |
+| Header `◆` | Concordia; pulses cyan/blue while a turn runs |
+| Cyan rotating dots `⠋ ⠙ ⠹` | Awaiting the selected provider's first or next output |
+| Magenta moving dot `⠁ ⠂ ⠄` | Provider reports thinking/reasoning |
+| Yellow rotating dense dots `⣾ ⣽ ⣻` | A provider tool is running; its name appears beside the animation |
+| Green moving dots `⠉ ⠙ ⠚` | Answer text is streaming |
+| Tool `▸` / `▾` | Collapsed / expanded output; click to toggle; an expanded header pins while scrolling |
+| Worker `◌` / `✓` / `✗` | Queued / finished / failed; live workers use the same phase animations as the main run |
+| Transcript `>` / `●` / `~` | Your prompt / provider reply / reasoning |
+| Notice `i` / `+` / `!` / `x` | Information / success / warning / error |
+| Footer `full ⚠` | Full permission mode; native permission checks are bypassed where the provider supports it |
+| Hand cursor | A clickable control or file reference, on terminals supporting cursor-shape feedback |
+
+The adjacent timer measures the whole current turn, including tool time. Motion indicates the last
+reported phase; it does not measure progress, token use, or provider-side activity during silence.
+Green/yellow/red usage text indicates normal/low/depleted capacity; unknown values stay muted.
+
+Terminal tabs use `◇` Idle, `◌` Waiting, `✦` Thinking, `⚙` Running tool, `✎` Writing,
+`■` Stopping, `↻` Updating, or `!` Usage limit. The readable state remains beside the icon.
+See the [UI glossary](docs/ui-glossary.md) for controls, file previews and chat references.
+
+## Images and diagrams
+
+Paste an image with Ctrl+V, use `/attach` to choose one, or `/attach PATH`. Preview chips support
+open/remove; `/attach clear` removes draft images. Native image inputs are implemented for Codex,
+Claude and Cursor (ACP capability/model support required). Snapshots stay with drafts, queues and
+recovery. Mermaid fences render as local terminal diagrams in chat and formatted Markdown.
+See [images and diagrams](docs/images-and-diagrams.md) for limits and transport evidence.
+
+## Files beside chat and chat references
+
+Click a local file link or path in the transcript, including `@src/main.rs`, to open its
+split pane. `/open src/main.rs:42` or `/open @src/main.rs:42` opens it directly without a model call.
+Repeat for up to three files; drag dividers to resize, use F6 to change focus, Esc to return to chat,
+and X or `/close ID` to close. Press Alt+V in a focused file pane, or click its view bar, to switch
+between raw text and formatted Markdown/JSON. `/preview FILE` starts in formatted mode when
+supported; other file types retain raw text. Resize borders request horizontal/vertical resize
+cursors, and clickable controls request a hand cursor through OSC 22 (terminal support required).
+File preview does not attach the file contents to a provider prompt.
+Raw mode supports internal editing and explicit Ctrl+S save; `/edit FILE` uses an external editor.
+
+`/open` without a path browses files from the current chat, recently previewed files in this
+workspace, and the workspace itself. The title shows the directory. Enter opens a file or folder;
+type part of a name to filter. Generated, ignored and sensitive paths are excluded from discovery.
+Recent files survive a new chat. Discovery is bounded, so an explicit path can open a file outside
+the scanned set.
+
+Relative paths resolve from Concordia's working directory: `/open docs/notes.md`.
+Absolute paths also work: `/open "C:/work/project/notes with spaces.md"`. A `:42` suffix jumps to a
+line. Typing `/open docs/` or `@docs/` offers matching paths; Tab completes, Enter opens a `/open`
+result. For `@` results, Tab/Enter inserts the reference; Ctrl+P or clicking previews it while
+keeping the draft. Recorded-chat references remain in the `@` menu. Side-by-side chat previews
+remain planned; literal file references stay clickable in the transcript.
+
+
 ## Behaviours worth knowing
+
+`/usage` shows each connected account's email and plan beside its account name, above its limits; providers that omit a field
+show `not reported`. A workspace name is displayed separately from its subscription tier.
+Use `/use add` to connect Codex, Claude or Cursor, and `/use remove` to choose an account to remove.
+Finish typing `/use` or `/model` to reveal actions and argument hints immediately. Tab advances
+into arguments; Up/Down selects a choice and Enter opens or applies it. Suggestions
+use connected accounts and the active provider's on-disk model catalog. `/use ACCOUNT` switches
+accounts; `/model MODEL` chooses an available model. The chat title stays in the terminal tab and
+resume list; the main status header shows the active account and email, with model and limits as space permits.
+Set a display nickname with `/use rename codex Work`; omit `Work` to reset it. Names persist locally
+and appear in the header, account choices and worker strip. Commands and fallback configuration keep
+using stable account IDs such as `codex` and `codex-2`; renaming never changes a login or provider home.
+
+
+The elapsed timer beside the live run status omits unused leading units: `20s`, `8m 20s`,
+or `1h 02m 03s`. The waiting label names the account and whether its first or next output is awaited. Expanded tool output pins its header at the top as you
+scroll, so you can click it to collapse without finding the original line. Terminal titles use the
+chat or project name with a status icon and a readable state such as Idle, Thinking or Writing.
+Codex usage warnings say `updates after a Codex response`: the figures come from the provider's
+latest saved response, rather than a live balance request.
 
 Concordia opens on a landing page when this machine has recorded chats. The left pane lists recent
 chats grouped by the folder they ran in, with this folder first. Enter resumes a chat, or expands a
 folder; a double-click does the same. The right pane holds your goals: `Tab` to it, `a` adds one,
 and Enter marks one done. When a Harness is connected (`/harness connect harness`), the pane also
-lists each project's open work from its plan ledger. Typing anything starts a message, and `Esc`
-goes straight to the chat. `/new` opens the page again.
+lists each project's open work from its plan ledger. Chats and goals stay visible while you type or
+paste a draft; Enter sends it. Up/Down wrap between the first and last list entries when the draft
+is empty. `Esc` goes straight to chat; `/new` opens the page again. The page shows all-time and rolling
+24-hour token usage recorded through Concordia, including cached input. Older unrecorded usage is
+not reconstructed. Copying with right-click or Ctrl+C keeps the selection highlighted. Clickable
+rows, buttons and file links request a hand cursor on terminals supporting OSC 22.
 
 
 - **Continuing on the same account** resumes the session id Concordia recorded (`--resume <id>`). Nothing is added to your prompt.
@@ -223,15 +410,20 @@ goes straight to the chat. `/new` opens the page again.
 - **`/usage` never sends a prompt to a model.** It runs each CLI's own usage view.
 - **Streaming and thinking.** Claude and Cursor run in streaming mode, so tool and command cards appear as they happen. Reasoning is shown only if the provider emits it, as dim lines that stay in the transcript but are never sent as context.
 - **Plan mode** maps to each CLI's own flag. Codex has no separate plan mode, so Plan there is the same read-only sandbox as Ask.
-- **The models do not know they are inside Concordia** beyond the header on a switch pack. A short opt-in note, `@chat` references and a thread map they can look things up in are planned (see [architecture](docs/architecture.md)).
+- **Concordia awareness is configurable.** Homes Concordia creates can receive a short awareness
+  note; optional MCP registration exposes local tools. `@chat` and bounded maps are implemented.
+  User-owned provider setup is preserved. See [architecture](docs/architecture.md).
 - **Unsigned and unpublished.** The release binary is not code-signed yet, so Windows SmartScreen may warn. No release has been published, and the install scripts use a placeholder owner until one is.
 - **Not yet verified live:** the `/use add` login window, mouse selection inside WezTerm, and real multi-line turns through each provider. The automated tests use a fake provider by design, so they never spend your subscription.
 
 ## Safety and provider terms
 
 - Concordia runs the **unmodified** provider CLIs under **your own logins**. It is not a proxy and does not pool or share accounts.
-- It never reads, copies, stores or asks for a password, key or token. New accounts get an isolated home that Concordia creates, and login is the provider's own flow. It never writes to your existing `.codex` / `.claude` homes.
-- It makes no network calls of its own, except when you run `/update`.
+- New accounts get isolated homes and sign in through the provider's own flow. Account display
+  reads local provider metadata, including public email and plan claims. Treat those homes as
+  sensitive; Concordia preserves user-owned provider configuration.
+- The updater can fetch releases. Provider CLIs and explicitly invoked harness tools use their
+  own connections; there is no hosted Concordia memory backend.
 - What the providers' terms say, and where the lines are: [docs/provider-terms.md](docs/provider-terms.md).
 
 ## Configuration
@@ -271,41 +463,24 @@ flowchart LR
 
 More detail: [continuity](docs/continuity.md), [UI architecture](docs/ui-architecture.md), [provider capabilities](docs/capabilities.md), [provider terms](docs/provider-terms.md), [changelog](CHANGELOG.md).
 
-## Project stats
+## Verification and release scope
 
-Measured from this checkout (`cargo test -p concordia --tests --locked`, `cargo tree`), not estimated.
+The project remains a private pre-release. Source builds and local installation are supported;
+public release assets and signing must not be assumed to exist. Automated tests use synthetic
+accounts and fake providers. They establish local transport, binding, UI and recovery behavior;
+they do not certify every provider version, real login flow or physical terminal host.
 
-| Metric | Value |
-| --- | --- |
-| Rust source | 41 files under `crates/concordia/src`, ~21.0k lines |
-| Tests | 342 passing, 0 failing (unit, TUI end-to-end with simulated mouse/keys, a fake provider driving the real turn runner, continuity, control-plane) |
-| Release binary | 2838 KB |
-| Dependencies | 11 direct, 76 crates in the normal dependency tree (all permissive except one unmodified MPL-2.0 crate; see `NOTICE`) |
-| Provider adapters | Codex, Claude, Cursor |
-
-## Roadmap
-
-| Area | State |
-| --- | --- |
-| Launch / versioning (`current` pointer, build stamp, `/update`) | Done |
-| Codex chat, cards, cancel, usage, resume | Working |
-| Tab complete, paste, mouse selection, copy, scroll, caret editing | Implemented, awaiting live-pane verification |
-| `/use add`: create and connect an account from inside Concordia | Implemented, awaiting live login check |
-| Prompt history (up arrow), double-tap `Ctrl+C` exit | Done |
-| Claude / Cursor session-id bind after turns | Done |
-| Orchestrator and worker accounts (`/delegate`) | Implemented, awaiting live verification |
-| Opt-in "inside Concordia" note, `@chat` references, `/handoff` | Planned |
-| Exhaustion to another account with explicit session bind | Planned |
-| Linux / macOS | Not claimed |
-| Autonomous multi-agent crews (no user approval) | Out of scope |
-
-What stands between this and a public release is tracked in [docs/release-blockers.md](docs/release-blockers.md).
+The next product work is the native-source memory index and durable account/model orchestration
+policy. Distribution work includes independent security review, provider compatibility evidence,
+terms review, licensing/attribution checks and a reproducible release process. Track the concrete
+criteria in [PLAN.md](PLAN.md), [release blockers](docs/release-blockers.md) and the
+[evidence ledger](docs/e2e-status.md). Query `concordia --version` for the actual installed build.
 
 ## Contributing
 
 ```powershell
 cargo test -p concordia --tests
-powershell -NoProfile -File .\scripts\smoke-e2e-everyday.ps1    # installs your build, then checks help, tests, usage read
+powershell -NoProfile -File .\scripts\smoke-e2e-everyday.ps1    # checks the installed build, help, tests and a read-only usage reader
 powershell -NoProfile -File .\scripts\verify-oss-gates.ps1
 cargo test -p concordia --lib screenshots -- --ignored            # regenerate docs/img/*.svg after a UI change
 powershell -NoProfile -File .\scripts\metrics.ps1                # regenerate docs/metrics.md
@@ -322,9 +497,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [UI architec
 
 ## FAQ
 
-**Does Concordia send my code or prompts anywhere?** No. It runs the provider CLI locally under your login. Concordia itself makes no network calls.
+**Where do prompts and retrieved context go?** To the provider selected for the turn, through its official CLI under your login. Concordia has no hosted memory or relay service. Release downloads are a separate updater operation.
 
-**Does it read my credentials?** No. Credentials stay in each provider's own home; Concordia never reads secret files.
+**What account data does it read?** Local provider state supplies email, plan and login metadata. Native CLIs own authentication and refresh. Keep provider homes and saved conversation data private.
 
 **Does `/usage` cost tokens?** No. It never sends a prompt to a model: Codex limits come from session data on disk, Claude answers its own `/usage` locally, and Cursor's usage screen is read from the CLI.
 
@@ -335,3 +510,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [UI architec
 ## License
 
 [MIT](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
+
+Current UI/context duplication checks and remaining planned improvements are recorded in the
+[scoped audit](docs/quality/duplication-audit.md).

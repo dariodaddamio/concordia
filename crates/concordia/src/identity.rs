@@ -11,6 +11,7 @@ pub struct ProviderIdentity {
     pub home_path: PathBuf,
     pub login: Option<String>,
     pub team: Option<String>,
+    pub plan: Option<String>,
     pub model: Option<String>,
     pub logged_in: bool,
 }
@@ -30,7 +31,7 @@ fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&raw).ok()
 }
 
-fn email_from_jwt(token: &str) -> Option<String> {
+fn jwt_claims(token: &str) -> Option<Value> {
     let parts: Vec<_> = token.split('.').collect();
     if parts.len() < 2 {
         return None;
@@ -42,8 +43,16 @@ fn email_from_jwt(token: &str) -> Option<String> {
         _ => b64,
     };
     let decoded = decode_b64(&padded)?;
-    let v: Value = serde_json::from_slice(&decoded).ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+fn email_from_jwt(token: &str) -> Option<String> {
+    let v = jwt_claims(token)?;
     v.get("email")
+        .or_else(|| {
+            v.get("https://api.openai.com/profile")
+                .and_then(|p| p.get("email"))
+        })
         .or_else(|| v.get("preferred_username"))
         .or_else(|| v.get("upn"))
         .and_then(|x| x.as_str())
@@ -119,6 +128,15 @@ pub fn inspect_codex_home(home: &Path) -> ProviderIdentity {
         home_path: home.to_path_buf(),
         login,
         team: None,
+        plan: id_token
+            .and_then(jwt_claims)
+            .and_then(|v| {
+                v.get("https://api.openai.com/auth")?
+                    .get("chatgpt_plan_type")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .filter(|p| p != "unknown"),
         model,
         logged_in,
     }
@@ -142,15 +160,23 @@ pub fn inspect_claude_home(home: &Path) -> ProviderIdentity {
         .and_then(|c| c.get("email"))
         .and_then(|e| e.as_str())
         .map(|s| s.to_string());
-    let mut team = oauth
+    let mut plan = oauth
         .and_then(|o| o.get("subscriptionType"))
         .and_then(|t| t.as_str())
         .filter(|t| *t != "unknown")
         .map(|s| s.to_string());
+    let mut team = None;
     if let Some(raw) = read_json(&home.join(".claude.json")) {
         if let Some(oa) = raw.get("oauthAccount") {
             if let Some(e) = oa.get("emailAddress").and_then(|x| x.as_str()) {
                 login = Some(e.to_string());
+            }
+            if plan.is_none() {
+                plan = oa
+                    .get("subscriptionType")
+                    .and_then(Value::as_str)
+                    .filter(|p| *p != "unknown")
+                    .map(str::to_string);
             }
             if let Some(t) = oa.get("organizationName").and_then(|x| x.as_str()) {
                 team = Some(t.to_string());
@@ -169,6 +195,7 @@ pub fn inspect_claude_home(home: &Path) -> ProviderIdentity {
         home_path: home.to_path_buf(),
         login,
         team,
+        plan,
         model,
         logged_in,
     }
@@ -216,6 +243,7 @@ pub fn inspect_cursor_home(home: &Path) -> ProviderIdentity {
         home_path: home.to_path_buf(),
         login: email.or_else(|| key.map(|_| "api-key".into())),
         team: None,
+        plan: None,
         model,
         logged_in,
     }
@@ -239,5 +267,39 @@ mod tests {
             parse_toml_model("model = \"gpt-5.6-sol\"\n"),
             Some("gpt-5.6-sol".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn codex_profile_reads_only_public_email_and_plan_claims() {
+        let root = tempfile::tempdir().unwrap();
+        let token = "e30.eyJlbWFpbCI6ICJtZW1iZXJAZXhhbXBsZS5pbnZhbGlkIiwgImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6IHsiY2hhdGdwdF9wbGFuX3R5cGUiOiAicGx1cyJ9fQ.fixture";
+        std::fs::write(
+            root.path().join("auth.json"),
+            serde_json::json!({"tokens":{"id_token":token}}).to_string(),
+        )
+        .unwrap();
+        let profile = inspect_codex_home(root.path());
+        assert_eq!(profile.login.as_deref(), Some("member@example.invalid"));
+        assert_eq!(profile.plan.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn claude_workspace_name_does_not_replace_the_subscription_plan() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"fixture","subscriptionType":"pro"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.path().join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"member@example.invalid","organizationName":"Fixture Team"}}"#).unwrap();
+        let profile = inspect_claude_home(root.path());
+        assert_eq!(profile.plan.as_deref(), Some("pro"));
+        assert_eq!(profile.team.as_deref(), Some("Fixture Team"));
+        assert_eq!(profile.login.as_deref(), Some("member@example.invalid"));
     }
 }

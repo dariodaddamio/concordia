@@ -32,3 +32,12 @@ provider and isolated home, and the current SHA-256 policy revision. Other resul
 unverified and do not write a receipt. Connecting never copies authentication files; the optional
 `skill` is metadata and `/harness skill` installs only Concordia's connection skill into the active
 provider home.
+
+## Exact pinned decisions (2026-10-31s)
+
+File-backed manifests may declare `"pinned_decisions": ["Keep this rule verbatim."]`. Entries are
+limited to 16 nonempty strings / 4096 UTF-8 bytes total. Explicitly reconnect the manifest to bind
+its current SHA-256. Matching provider/home/project new-session launches, including workers,
+receive the rules verbatim; native resumes retain their existing context. Changed pinned manifests
+must be reconnected before a new session starts. Command-backed manifest pins are not supported.
+See [native memory](native-memory.md) for the complete delivery and failure contract.

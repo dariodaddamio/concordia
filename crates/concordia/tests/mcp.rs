@@ -82,7 +82,14 @@ fn a_client_can_initialize_list_tools_and_call_them() {
         .collect();
     assert_eq!(
         names,
-        ["threads", "thread_map", "thread_read", "usage", "delegate"]
+        [
+            "threads",
+            "thread_map",
+            "thread_read",
+            "native_read",
+            "usage",
+            "delegate"
+        ]
     );
 
     let map = c.ask(json!({"jsonrpc":"2.0","id":3,"method":"tools/call",

@@ -1,6 +1,16 @@
 # Changelog
 
 ### Changed (`2026-10-21d`)
+
+### Added (`2026-11-02k`)
+- Read-only project content search (`/search`, or Ctrl+F in the file browser), with literal/case
+  controls, bounded cancellable scans, exact source hashes and draft-preserving input ownership.
+- Worker dependency graph and recovery foundation. Metadata validation/readiness does not dispatch
+  dependencies; interrupted work remains paused and only exact successful run receipts satisfy edges.
+- Typed native interaction/capability foundation; existing Cursor ACP requests retain native option
+  IDs/scopes and bind responses to their conversation, run, attempt and live connection. Cancelling
+  or completing a turn invalidates its pending UI requests. Other adapters and worker approvals remain open.
+
 - Compact tool rows foreground the command instead of PowerShell launcher paths, retain complete expanded output, and show output line counts. Completed reasoning is collapsed to one preview line.
 - Terminal titles use the terminal API, including the Windows console path, and follow the generated session title.
 - Usage-limit continuation defaults to manual (`/continue ACCOUNT`), with opt-in automatic handoff through configured accounts. Attempts are bounded, native session ids stay account-local, drafts and queued work are preserved, and uncertain tool results stop automatic handoff.
@@ -10,6 +20,170 @@ Concordia has not had a tagged release yet, so everything is under Unreleased. E
 also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
+
+### Fixed (`2026-11-02j`)
+- Enter closes a completed update screen when there is nothing to install, preserving the chat draft.
+- CI uses a reviewed 20 MiB Windows artifact budget for the current native feature set.
+- Disable unused Syntect grammar/theme import features, removing yaml-rust. Review the remaining
+  bincode maintenance advisory narrowly for embedded assets; vulnerability checks remain enforced.
+
+### Added (`2026-11-02i`)
+- Durable pane-owned worker runs with explicit UUIDs, native session/source references, paused
+  crash recovery, source inspection/reconciled retry, and reserved result delivery.
+- Opt-in bounded worker quota failover before tools or partial output. Cancellation, uncertain
+  exits and interrupted work stop automatic failover.
+
+### Added (`2026-11-02h`)
+- Per-account `/context` policy: optional Codex proactive rollover between turns from native
+  context measurements; documented process-local Codex/Claude compaction controls. Unknown
+  capacity stays unknown, and original-source verification is required for proactive handoff.
+
+### Added (`2026-11-02g`)
+- Bounded lexical native-history retrieval with exact excerpt pointers, confirmed links and
+  observed context handoffs. `/memory` performs background reads and preserves drafts.
+
+### Changed (`2026-11-02f`)
+- Cursor native readback uses capability-checked ACP session loading with exact account/session binding. Pointer excerpts, whole-history pages within the bounded replay budget, CLI chat reads and resume scrollback use the same reader. Replay sends no prompt, starts no new session, rejects tool requests, preserves native auth in the selected config home, and persists only pointer metadata. Cursor pointers explicitly identify protocol replay rather than claiming local JSONL-file provenance.
+
+### Changed (`2026-11-02e`)
+- Native source indexing can scan whole Codex/Claude histories through immutable bounded pages, with resumable identity-checked cursors, snapshot-stable ordinals, explicit malformed/oversized-record gaps, and no stored conversation bodies. CLI and MCP range listings now page beyond the first twenty records; MCP can expand a known pointer into whole-history pages.
+
+### Fixed (`2026-11-02d`)
+- Ordinary status updates mentioning "select an option" no longer turn later feature bullets into unrelated reply choices. Conversational choices require an explicit closing question or invitation followed immediately by options; example JSON is interpreted only in question-tool cards.
+- Conversational options never take keyboard focus automatically. Digits in a focused conversational reply are text, typing/pasting selects the note-only row, and note-only replies send exactly the user's text. Notes preserve pasted line breaks, support Shift+Enter, and survive Esc back to the composer. The complete assistant response stays in the transcript for context and long-option inspection; native approval shortcuts remain separate.
+
+### Changed (`2026-11-02c`)
+- `/use` adds a session handoff screen: pause and choose at a limit, select automatically, or prefer a specific connected provider account. `/continuation` opens the same screen. Session choices preserve saved defaults and never start a provider turn by themselves.
+- Notes entered in the question picker's note row can start with a digit without accidentally selecting an option.
+
+### Fixed (`2026-11-02b`)
+- After a provider or account handoff, later turns resume the new native session instead of starting a fresh one each time and re-sending the handoff map.
+- A model-at-capacity error (`server_overloaded`) is recognized and offers continuation on another model or account. The turn's own error now takes priority over the Codex rollout-recording stderr line it can cause.
+- Question choices appear only for a closing question with top-level choices; list items that quote a question no longer become a picker, and choosing no longer sends half a sentence. Choices are numbered plainly, long ones end with an ellipsis, and a note row lets you send a note with a choice or on its own.
+- File underlines cover only references to existing files, so words before a filename and other path-shaped prose are no longer underlined or clickable.
+
+### Fixed (`2026-11-02a`)
+- Pasted CR-only, CRLF and LF line endings retain their logical line breaks. Sending, queueing and editing queued prompts preserve leading indentation, blank lines and trailing spaces instead of trimming the message. Prompt tabs retain the existing four-space display policy; raw file editing retains tabs.
+- Codex native rollout-recording failures are distinguished from quota exhaustion. The unfinished request is kept for explicit fresh-session continuation with source pointers; partial actions are not automatically replayed and native history is not removed or rewritten.
+
+### Changed (`2026-11-01f`)
+- Windows text clipboard actions use native Unicode APIs instead of starting PowerShell on the UI thread. Cut reports `cut`, preserves selected text if copying fails, and file-pane cuts share the feedback. Ordinary text paste skips image helpers.
+- Active provider/worker output is checked every 33 ms instead of waiting for the 200 ms animation tick. Standard provider turns log setup/spawn/first-event/parser timings without content; live speed parity is not claimed.
+- Workers can select a distinct native model from their own catalog with `/delegate model ACCOUNT MODEL`. Models appear in worker inspection and the agent browser. `/delegate collect` batches new results; opt-in `/delegate returns auto` returns finished batches once when idle, preserves drafts and binds delivery to the owning conversation.
+- Worker result turns use normal checkpoints and quota recovery. Structured failures cannot become successful worker results through a zero process exit; unknown exits and interrupted tools are labelled honestly. Retained patch-verification diagnostics are inspectable without flooding chat or claiming an exit cause.
+- Completed Mermaid blocks reuse their rows when earlier messages change. Bounded FIFO caching and per-message render limits prevent long diagram histories from cycling through background renders.
+
+### Changed (`2026-11-01e`)
+- Mermaid fences render locally as Unicode terminal diagrams in chat and formatted Markdown panes. Parsing/layout run on bounded background workers, with a small cache and source fallback; no Node/browser renderer or model call is started.
+- Image attachments support clipboard paste, a file chooser (`/attach`), explicit paths and removable preview chips. Immutable content-addressed snapshots follow drafts, queues, recovery and quota handoffs. Native input uses Codex image-file arguments, Claude streaming image blocks, or Cursor ACP image blocks with capability negotiation.
+- Cursor image turns bind exact sessions and answer native permission/multiple-choice requests through the UI. Unsupported client methods receive explicit protocol errors; capabilities are checked before starting a model turn.
+- Completed error cards no longer count as still-running tools for quota recovery. Unsent drafts survive automatic handoff; open command screens/queued edits defer recovery until they close instead of permanently abandoning it. Error-only quota events, CamelCase quota codes and Claude error arrays are recognized.
+- Timing/token metadata is excluded from file-link detection. Bare numeric measurements no longer become filename links. User-message backgrounds fill blank/trailing cells and use a subtler shade; paused composer hints share the normal prompt inset.
+- Update screens show incoming/current changes by default, with earlier history behind H and restrained category colors.
+
+### Changed (`2026-11-01d`)
+- Conversational question choices support clicks, arrows/Enter and digits, with F8 returning to choices and Esc returning to typing. Replies preserve drafts and pause queued work. These are follow-up messages, not native approval RPC responses.
+- `/open` and `@` include current-chat references, recent previews and bounded workspace discovery, with folder browsing, quoted absolute paths and relative paths. Canonical paths deduplicate slash variants; generated/ignored/sensitive files are excluded from discovery.
+- Queued rows add Send now, focused Ctrl+Enter/Alt+Enter, and `/queue send [N]`. An active turn stops before one selected message starts; remaining messages stay paused.
+- Run status, elapsed time and a styled clickable Esc control move below chat. Completed replies keep duration and stop time, user rows have a background highlight, Bottom disappears at the bottom, and command lists have consistent inner padding.
+- Each `/usage` and `/use` requests fresh Codex limits through read-only `account/rateLimits/read`, bound to the selected home. Refresh/failure provenance and actual recorded reset dates remain visible; expired data never implies free capacity.
+- Structured quota error codes survive generic/missing messages and can trigger bounded automatic continuation. Paused handoffs explain their guard rather than silently stopping.
+- Verified stock Windows npm Codex launchers resolve to their unmodified native executable, avoiding the Node bridge. Unknown/custom bridge content falls back to normal launch; no unrelated processes are stopped.
+
+### Changed (`2026-11-01c`)
+- Markdown/JSON panes open formatted by default. Raw mode provides internal editing, explicit Ctrl+S save, undo/redo, selection and syntax highlighting; source code always opens in that editable view.
+- Unsaved file close/reload/exit requires a save/discard/cancel decision. Byte-exact conflict checks protect changed files, and pane-owned recovery retains edits, cursor and layout across interruption.
+- Headless provider processes use Windows `CREATE_NO_WINDOW`, matching background update children. Interactive sign-in remains a separate flow.
+- Account continuation no longer echoes internal handoff instructions into chat or restores those instructions as the user's retry draft.
+- Replaced the GIF menu tour with an edit/save workflow and a synthetic account-handoff demonstration, with larger text, cursor movement and click feedback.
+
+### Changed (`2026-11-01b`)
+- Command screens explain Esc/X and input ownership in the message box. Pickers, update/token screens and activity output have an X close button; closing an active update cancels that update, and drafts remain intact.
+- The pinned collapse control includes the command preview and output count instead of only the tool name.
+- Explicit GIF/image links open in the system viewer instead of a text pane. Added two reproducible GIF drafts driven by the actual renderer and input handlers with synthetic data and no provider calls.
+
+### Changed (`2026-11-01a`)
+- Chat and formatted Markdown file panes render pipe tables with wrapped cells or a narrow-pane labeled layout. Markdown links show clickable labels with explicit file or HTTP(S) destinations; file-pane links resolve relative to the document.
+- The message box supports independent mouse-wheel and Alt+PageUp/PageDown scrolling. Redraws retain the chosen viewport; editing or moving the caret resumes caret following.
+- Update progress has one owner: the update page while open, otherwise the footer. The message box shows a paused state instead of duplicating update progress.
+- Documented the installed WezTerm 2024 build's pointer-shape limitation and added an implementation-gated X/LinkedIn launch plan.
+
+### Changed (`2026-10-31t`)
+- `/update` opens a full page that hides the chat, draft, queue and file panes until dismissed. Enter still confirms installation when available. Removed the redundant `/update check` command and completion.
+
+### Changed (`2026-10-31s`)
+- Added revision-checked native-source indexes and exact UTF-8 chunk readback for recent Codex/Claude JSONL history, available through `chat index|sources|excerpt` and MCP `native_read`. Handoffs can supply source pointers even with Concordia transcript recording off.
+- Pane-owned unfinished requests preserve run/workspace/source identities separately from drafts and queues. Restart restores paused work for explicit continuation. Cancellation wins over a pending limit handoff, including cancellation during source preparation.
+- Recognized terminal context-capacity errors may start one fresh native session on the same account. Proactive near-capacity rollover and compaction controls remain planned; unknown capacity is not guessed.
+- Explicitly connected file-backed Harness manifests can supply exact pinned decisions for matching new-session launches, including workers, with manifest revision checking.
+- File panes add `/` search, `n`/`N` match navigation, asynchronous `r` reload and a changed-on-disk indicator. Current-chat suggestions include a recovered unfinished request's file references.
+
+### Changed (`2026-10-31r`)
+- `/open` lists files mentioned in the current chat; `@` offers those files alongside recorded chats. Tab/Enter completes, Ctrl+P or a file-row click previews without sending the draft. Discovery is bounded, runs off the render loop and deduplicates canonical file identities.
+- Identical completed tool replays no longer append duplicate thread-log events. Identified complete provider snapshots are deduplicated within a bounded per-turn cache; repeated deltas and distinct messages remain intact.
+- Handoff maps omit duplicate first/latest request fields and nonadjacent repeated errors. File paths with hexadecimal prefixes no longer expand as chat references, and repeated identical missing-reference notices appear once. Audit scope and next planned features are recorded in docs/quality/duplication-audit.md.
+
+### Changed (`2026-10-31q`)
+- Every `/usage` and `/use` requests a fresh check; open account lists update in place and show reading provenance/refresh status. Codex re-reads the latest native files without claiming a server refresh.
+- Internal file panes toggle raw/formatted Markdown and JSON with `v` or the view bar. `/preview` starts formatted; unsupported types stay raw. Resize dividers now request matching pointer shapes, including during dragging.
+- The usage-handoff toggle persists. Automatic mode without an account preference list tries connected accounts and then native-catalog models, with at most three handoffs. Explicit model preferences and manual account/model continuation are supported; uncertain tools and unsent drafts still stop automatic sending.
+
+### Changed (`2026-10-31p`)
+- Run timers omit unused leading units. README now documents icons, phase animations and terminal-tab states.
+- `/use rename ACCOUNT NICKNAME` persists a display name without changing account bindings. Header, account choices, completion descriptions and running worker rows use it; the active email appears in the header.
+- `@path/to/file` transcript references and `/open @FILE` open the existing internal file split. Documented current file preview, chat-reference controls and remaining completion/viewer gaps.
+
+### Changed (`2026-10-31o`)
+- Usage headings place email and plan beside the account name, with limits below. Narrow windows wrap the heading without dropping metadata.
+- Completing a command such as `/use` immediately reveals its actions and argument help. Nested choices appear after their parent subcommand is complete; Enter still opens the command and Tab advances into its arguments.
+- The prompt's waiting label names the account and whether first or next output is awaited. The adjacent elapsed timer always shows hours, minutes and seconds.
+- The README, architecture and project guidance center memory management and orchestration, explain existing continuity and worker behavior, and separate the native-source memory roadmap from shipped features and OSS release gates.
+
+### Changed (`2026-10-31n`)
+- `/usage` and `/use` show each account's email, subscription tier and workspace name when reported. Unknown fields remain explicit. Claude workspace names no longer replace subscription tiers, and Cursor's reported plan survives cached usage reads.
+- Slash completion includes connected account ids, add/remove provider arguments and the active account's cached model ids. Tab completion also works while the landing lists remain visible. `/use ACCOUNT` and `/model MODEL` apply completed choices through the existing picker binding paths.
+- Reply labels show the provider/account name once, followed by the model. The generated first-message title remains in the terminal tab title and resume picker, and is removed from the main status header.
+
+### Changed (`2026-10-31m`)
+- Run, worker and update timers show hours, minutes and seconds instead of a growing seconds counter.
+- Expanded tool output keeps a clickable header pinned at the top while its original header is above the viewport. Individual cards can collapse even in full-activity mode.
+- Terminal titles use a short chat or project name with distinct idle, waiting, thinking, tool, writing, stopping, usage-limit and updating status icons.
+- Usage warnings explain that Codex readings update after a response, replacing the vague `last reported` suffix. Saved provider readings are labelled explicitly.
+
+### Changed (`2026-10-31l`)
+- Chats and goals remain visible while typing or pasting a draft; Enter sends it. Arrow-key list navigation wraps at both ends.
+- The landing page shows all-time and rolling 24-hour token usage through Concordia, refreshed every minute from its persistent local log.
+- Copy keeps selections highlighted, retries temporary Windows clipboard contention, and treats clipboard helper errors as failures. Clipboard reads preserve text without adding a newline.
+- Clickable list rows, buttons, tool toggles and file links request a hand cursor using OSC 22, with text cursors over editable/selectable regions and reset on exit. Host support is required.
+
+### Fixed (`2026-10-31k`)
+- Windows exit restores the shell even when keyboard enhancement is unsupported. Cleanup attempts each terminal reset independently and erases the alternate screen before leaving, preventing chat artifacts after exit.
+- Frames use synchronized updates, resize handling queries the current dimensions before clearing, and Windows resize polling continues during continuous input. A ConPTY journey checks repeated half/full width and height changes, draft alignment, and return to a parent shell.
+
+### Fixed (`2026-10-31j`)
+- The landing page scrolls selected goals and their confirmation/input into view. On narrow terminals, Tab switches the visible chat/goals pane. Wrapped and scrolled goal rows keep correct mouse targets, and goal-entry navigation/undo cannot edit the prompt underneath.
+- Goal saves merge additions and completed status across panes under a bounded file lock. Unreadable existing goal files are preserved and reported instead of overwritten; new goals use unique ids.
+- Chat groups use repository paths, including worktree roots, so unrelated projects with identical folder names stay separate.
+- Concurrent token-log writers serialize complete records. Oversized token counters saturate safely in totals, session accounting and display formatting instead of overflowing.
+- Added deterministic editor, resize, transport, persistence, concurrent-write and real-terminal stress checks, plus a bounded provider-free reliability runner (`scripts/test-reliability.ps1`).
+
+### Fixed and added (`2026-10-31i`)
+- Esc immediately followed by a paste no longer leaks a literal `[200~` marker into the prompt. The Windows input parser preserves the second escape sequence instead of consuming both escape keys together.
+- A centered `Bottom` button on the prompt's top border jumps to the newest output and resumes following it without changing the draft. Active-turn status and cancellation guidance use the bottom border so they do not overlap the button.
+- Down on the last prompt row opens a fresh unsent buffer; Up on its first row restores the previous draft. Both buffers survive switching and recovery. Multiline movement, selection and sent-prompt history remain available.
+- Provider escape sequences are removed before transcript wrapping, tabs expand consistently, and raw control characters are blocked in every rendered widget. Text cannot emit terminal screen, title or clipboard commands through the display path.
+- Updated Ratatui to 0.30.2, Unicode width handling to 0.2.3 and compatible locked dependencies. This removes the old LRU memory-safety advisories and the unmaintained `paste` dependency. Dependency policy also checks transitive unmaintained crates and rejects yanked versions.
+
+### Changed (`2026-10-31h`)
+- `/update` keeps a bold green `Enter — Install + restart this tab` action above the scrolling changelog, with an explanation that the draft and queue are saved and other tabs keep running. A yellow action strip explains when a task blocks installation; emphasis remains when terminal colors are disabled.
+- Update installation is blocked while this tab's chat or background workers are active. Pressing Enter leaves the explanation open, does not cancel work, and does not schedule an automatic update. New worker tasks and worker-result sends pause during installation.
+
+### Fixed (`2026-10-31g`)
+- Pasting a message or command from the landing page now returns focus to chat, so Enter sends the message or opens `/resume` instead of activating a landing-page row. Pasting into an open goal entry stays in that entry.
+- `/use` and the usage account picker put each limit on its own wrapped line with its remaining percentage and its own reset time. Cursor's monthly reset applies to every row in its monthly usage table. Missing reset times are explicit.
+- Windows word-backspace preserves word deletion for Ctrl+H and Ctrl+W encodings through both terminal input readers; ordinary DEL remains single-character Backspace.
+- Terminal focus return and resize invalidate the screen buffer and repaint the interface. Startup clears the alternate screen, and exit disables focus reporting.
+- The isolated Windows terminal journey helper now uses Ctrl+C twice to exit and separates the timestamp prefix from user-text assertions, matching the current interface.
 
 ### Added (`2026-10-31e`)
 - Every prompt Concordia sends to a provider, from a chat or a worker, opens with the local date and time, for example `[Fri Oct 30 2026, 2:05pm local]`. When the prompt mentions today, yesterday, this morning, last night, last week, N days ago, or a weekday (`on Monday`, `last Monday`), a line after it gives the date, for example `"yesterday" = Thu Oct 29 2026`. `on Monday` names both the past and the coming Monday. Concordia works these out itself, without a model. The lines are not shown in the transcript, and resumed chats, chat titles and the chat list leave them out.

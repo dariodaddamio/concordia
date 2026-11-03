@@ -353,7 +353,7 @@ mod tests {
         let burst = buffer.take_if_due(enter_at + BURST_QUIET).unwrap();
         assert!(!burst.text);
         assert!(!super::super::dispatch_key_burst(&mut app, burst, &tx));
-        assert_eq!(rx.try_recv().unwrap(), "first\n\nsecond");
+        assert_eq!(rx.try_recv().unwrap(), pasted);
         assert!(rx.try_recv().is_err());
     }
 
@@ -533,8 +533,8 @@ mod tests {
         let submit = buffer.take_quiet().unwrap();
         assert!(!submit.text);
         super::super::dispatch_key_burst(&mut app, submit, &tx);
-        // Submission trims trailing whitespace; the draft retained both pasted newlines.
-        assert_eq!(rx.try_recv().unwrap(), "a");
+        // Submission preserves both pasted newlines as well as the draft.
+        assert_eq!(rx.try_recv().unwrap(), "a\n\n");
     }
 
     #[test]

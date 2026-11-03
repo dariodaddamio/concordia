@@ -159,7 +159,7 @@ mod tests {
             },
             Some("tools") => RunOutcome {
                 exit: Some(0),
-                stdout: r#"[{"name":"brain","description":"Search"}]"#.into(),
+                stdout: r#"[{"name":"reference-search","description":"Search"}]"#.into(),
                 ..Default::default()
             },
             _ => RunOutcome {
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(manifest.version.as_deref(), Some("0.11.0"));
         assert_eq!(
             manifest.tools[0].argv,
-            ["C:/bin/harness.cmd", "tool", "brain"]
+            ["C:/bin/harness.cmd", "tool", "reference-search"]
         );
         assert_eq!(
             manifest.providers["cursor"].verify.as_ref().unwrap()[0],
@@ -210,7 +210,7 @@ mod tests {
         })
         .unwrap();
         assert_ne!(text_one, text_two);
-        assert_eq!(one.tools[0].name, "brain");
+        assert_eq!(one.tools[0].name, "reference-search");
     }
 
     #[test]

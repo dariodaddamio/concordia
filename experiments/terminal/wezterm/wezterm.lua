@@ -74,6 +74,10 @@ local function looks_like_shell_title(title)
     return true
   end
   local t = title:lower()
+  -- Concordia supplies status and chat names; a chat may itself mention PowerShell.
+  if t:match('concordia$') then
+    return false
+  end
   return t:find('powershell')
     or t:find('pwsh')
     or t:find('cmd%.exe')

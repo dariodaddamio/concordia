@@ -1,8 +1,16 @@
-# Architecture: a thin, configurable orchestrator
+# Architecture: local memory and provider orchestration
 
-Concordia runs the unmodified Codex, Claude Code and Cursor CLIs under the user's own logins. It
-adds accounts, limits, continuity and delegation on top, and nothing else. This page is the
-contract the pieces are built against.
+Concordia coordinates memory/session continuity, account routing and worker runs around the
+unmodified Codex, Claude Code and Cursor CLIs. Those CLIs retain native execution, authentication
+and approvals. Concordia owns the index/map, orchestration policy, process lifecycle and UI.
+
+Current source implements explicit resume, bounded maps, optional Concordia thread logs,
+recent Codex/Claude native-source pointers and exact readback, unfinished-request recovery,
+file-backed Harness pins and explicit capacity-error rollover. [Native memory](native-memory.md)
+documents the identities, byte budgets and remaining limits. Whole-history indexing, related-chat
+retrieval, broader worker/run policy and proactive rollover remain target features in the
+[implementation plan](context-handoff-plan.md). This page describes the existing runtime unless
+a section is explicitly marked planned.
 
 ## Principles
 
@@ -19,13 +27,16 @@ current provider, isolated home and policy revision; provider turns cannot creat
    map and a way to fetch the part it needs. Never paste a transcript.
 2. **No summariser model.** Maps are built deterministically from recorded events. They cost no
    tokens to make.
-3. **The CLIs own skills, rules, tools and memory.** Concordia never parses or imports them. They
+3. **The CLIs own skills, rules, tools and native session execution.** Concordia coordinates
+   memory access and continuity between sessions; it does not import provider skills or hooks. They
    keep working because Concordia only points the CLI at an account home.
 4. **Declarative extension only.** User customisation is config and files. There is no plugin
    runtime and no agent loop in the binary.
-5. **Small and fast.** One binary, no resident model, no background work beyond the usage cache.
-   Budgets are checked in CI (see "Budgets").
-6. **Local and opt-in.** Anything that stores prompts is off until the user turns it on.
+5. **Small and fast.** One binary and no resident inference model. Background provider/worker
+   tasks, usage refresh and local reads are bounded and tracked. Budgets are checked in CI.
+6. **Document retention explicitly.** Full Concordia thread logging is opt-in. Prompt history,
+   drafts and queue recovery have separate persistence controls and may store sensitive text;
+   they must not be described as all disabled by default.
 
 ## Layers
 
@@ -38,7 +49,7 @@ current provider, isolated home and policy revision; provider turns cannot creat
 | Config | User-edited `config.toml` and `commands/*.md` | `<state>/config.toml`, `<state>/commands/` |
 | MCP (opt-in) | `concordia mcp`: the same data as tools | same binary |
 
-`<state>` is `%LOCALAPPDATA%\concordia` (override: `CONCORDIA_STATE`).
+`<state>` is `%LOCALAPPDATA%\concordia` (override: `CONCORDIA_STATE_DIR`).
 
 ## Thread log
 
@@ -225,6 +236,14 @@ preserving the main draft and queued edit underneath.
 
 ## Process stats
 
+Shared goals and the token log use stable adjacent lock files through `state_io`.
+Lock acquisition is bounded to two seconds. Goal saves merge additions and completion
+by immutable id before atomic replacement, preserving unreadable originals. Token
+writers append complete serialized records under the lock, so concurrent panes cannot
+interleave JSON lines. Goals are bounded to 2 MiB on read/save; token counters saturate
+instead of wrapping. The landing page wraps, scrolls and hit-tests goals using the same
+visual rows, and displays the focused pane when the terminal is too narrow for two.
+
 Optional footer segment `mem 41 MB - cpu 1%` for Concordia, and `+ agents 380 MB - 6%` for the
 provider processes it started (their whole process trees). `[ui] stats = true` (default false).
 Sampled every 2 s on a background thread using Win32 (`GetProcessMemoryInfo`, `GetProcessTimes`,
@@ -269,14 +288,17 @@ plan switch, so after planning the command line must still be provably read-only
 refused instead of started. The Harness verifier writes the receipt; agents never do. A changed
 connection or file-backed manifest closes the gate until verification runs again.
 
-## Attachments (planned, after the queue lands)
+## Images and remaining attachment work
 
-Pasting or dropping file paths, or pasting an image from the clipboard, adds an attachment chip
-above the prompt (name, size, dimensions) and passes the file to the provider the way that CLI
-accepts it (Codex `--image`, a path reference for Claude and Cursor). Files the agent creates
-(Write cards with a document or image path) show as artifact chips with open and reveal actions.
-Concordia renders nothing itself; previews open in the default viewer, with optional inline
-images in terminals that support them.
+Build `2026-11-01e` implements clipboard/file image import, composer preview/remove chips,
+content-addressed snapshots, durable draft/queue envelopes and native inputs for Codex/Claude/Cursor.
+Cursor image turns use ACP and route permission/choice requests back to their original RPC ids.
+Ordinary text turns retain their existing provider adapters. No vector embeddings are created.
+
+[Images and diagrams](images-and-diagrams.md) records formats, budgets, lifecycle and fixture/live
+capability evidence. Inline raster thumbnails, generic document/drop attachments and generated
+artifact cards remain planned. Mermaid terminal diagrams render locally with bounded background
+workers and a pinned native renderer; no browser/Node rendering service is launched.
 
 ## Budgets (checked in CI)
 
