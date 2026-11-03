@@ -922,7 +922,9 @@ mod tests {
             .unwrap();
         }
         select_account(dir.path(), "primary").unwrap();
-        (App::new(dir.path().into(), dir.path().into()), dir)
+        let mut app = App::new(dir.path().into(), dir.path().into());
+        app.refresh_binding();
+        (app, dir)
     }
 
     fn exhausted(app: &mut App, tx: &mpsc::UnboundedSender<String>) {
