@@ -2587,7 +2587,7 @@ fn proactive_context_policy_rolls_before_dispatch_and_keeps_original_pointers() 
         serde_json::json!({"type":"session_meta","payload":{"id":"proactive-session","cwd":dir.path().join("workspace")}}),
         serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"ORIGINAL_CONTEXT_SOURCE"}]}}),
         serde_json::json!({"type":"turn_context","payload":{"model":"synthetic-model","turn_id":"proactive-turn-1"}}),
-        serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":800},"total_token_usage":{"total_tokens":9999999},"model_context_window":1000}}}),
+        serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":800,"input_tokens":600,"cached_input_tokens":100,"output_tokens":200},"total_token_usage":{"total_tokens":9999999},"model_context_window":1000}}}),
     ];
     std::fs::write(
         folder.join("proactive.jsonl"),
@@ -2605,6 +2605,24 @@ fn proactive_context_policy_rolls_before_dispatch_and_keeps_original_pointers() 
         concordia::store::get_use_selection(dir.path())
             .is_some_and(|selected| selected.model.as_deref() == Some("synthetic-model"))
     });
+    s.submit("/usage");
+    s.send("t");
+    s.until("Concordia usage view", |s| {
+        s.screen().contains("No turns recorded yet.")
+    });
+    s.send("e");
+    s.until("separate native usage source coverage", |s| {
+        let screen = s.screen();
+        screen.contains("Native source observations")
+            && screen.contains("proactive-session")
+            && screen.contains("1 snapshots this page")
+    });
+    assert!(s.prompts().is_empty());
+    s.send("c");
+    s.until("native snapshots do not change Concordia totals", |s| {
+        s.screen().contains("No turns recorded yet.")
+    });
+    s.send("\x1b");
     s.submit("/context rollover 80");
     s.until("policy enabled", |s| s.screen().contains("at 80%"));
     s.submit("A new task after the threshold");

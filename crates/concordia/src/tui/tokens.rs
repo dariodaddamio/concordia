@@ -4,6 +4,7 @@ use super::token_line::compact;
 use super::{App, PickerKind};
 use crate::token_log::{breakdown, totals, Entry, Totals};
 use crate::update::{PreviewLine, UpdatePreview};
+#[cfg(test)]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -13,12 +14,15 @@ pub(super) struct State {
     generation: u64,
     screen: Option<u64>,
     next: Option<crate::token_log::Cursor>,
+    external: bool,
+    external_next: Option<crate::native_memory::usage::Cursor>,
     jobs: Vec<ReadJob>,
 }
 
 #[derive(Clone, Copy)]
 enum ReadKind {
     Screen,
+    External,
     Landing,
 }
 
@@ -32,6 +36,10 @@ struct ReadJob {
 
 enum Loaded {
     Screen(Vec<PreviewLine>, Option<crate::token_log::Cursor>),
+    External(
+        Vec<PreviewLine>,
+        Option<crate::native_memory::usage::Cursor>,
+    ),
     Landing(u64, u64, bool),
 }
 
@@ -63,7 +71,9 @@ fn summary(t: &Totals) -> String {
 }
 
 fn share(part: u64, whole: u64) -> String {
-    let percent = (part * 100 + whole / 2).checked_div(whole).unwrap_or(0);
+    let percent = (u128::from(part) * 100 + u128::from(whole) / 2)
+        .checked_div(u128::from(whole))
+        .unwrap_or(0);
     format!("{percent}%")
 }
 
@@ -108,7 +118,8 @@ pub fn lines(
                 share(n, w.total())
             )));
         }
-        let sections: [Section; 6] = [
+        let sections: [Section; 8] = [
+            ("By provider", Box::new(|e: &Entry| e.provider.clone())),
             (
                 "By origin",
                 Box::new(|e: &Entry| match e.attribution.as_ref().map(|a| a.origin) {
@@ -126,21 +137,30 @@ pub fn lines(
                         .unwrap_or_else(|| "legacy / unknown run".into())
                 }),
             ),
-            ("By provider", Box::new(|e: &Entry| e.provider.clone())),
+            (
+                "By attempt",
+                Box::new(|e: &Entry| {
+                    e.attribution
+                        .as_ref()
+                        .map(|a| a.attempt.clone())
+                        .unwrap_or_else(|| "legacy / unknown attempt".into())
+                }),
+            ),
+            (
+                "By outcome",
+                Box::new(|e: &Entry| {
+                    e.attribution
+                        .as_ref()
+                        .map(|a| a.outcome.clone())
+                        .unwrap_or_else(|| "legacy / unknown outcome".into())
+                }),
+            ),
             (
                 "By model",
                 Box::new(|e: &Entry| e.model.clone().unwrap_or_else(|| "not reported".into())),
             ),
             ("By account", Box::new(|e: &Entry| e.account.clone())),
-            (
-                "By project",
-                Box::new(|e: &Entry| {
-                    Path::new(&e.project)
-                        .file_name()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| e.project.clone())
-                }),
-            ),
+            ("By workspace", Box::new(|e: &Entry| e.project.clone())),
         ];
         for (title, key) in sections {
             out.push(PreviewLine::Blank);
@@ -211,8 +231,10 @@ fn chat_key(entry: &Entry) -> String {
 pub(super) fn close(state: &mut State) {
     state.screen = None;
     state.next = None;
+    state.external = false;
+    state.external_next = None;
     for job in &state.jobs {
-        if matches!(job.kind, ReadKind::Screen) {
+        if matches!(job.kind, ReadKind::Screen | ReadKind::External) {
             job.cancel.store(true, Ordering::Relaxed);
         }
     }
@@ -243,6 +265,9 @@ fn start(app: &mut App, cursor: Option<crate::token_log::Cursor>, kind: ReadKind
                                 totals(&report.entries).total(),
                                 report.incomplete || totals(&report.entries).incomplete_events > 0,
                             )
+                        }
+                        ReadKind::External => {
+                            unreachable!("external usage has its own identity-bound reader")
                         }
                         ReadKind::Screen => {
                             let mut rows = lines(&report.entries, now(), |entry| {
@@ -289,7 +314,7 @@ fn start(app: &mut App, cursor: Option<crate::token_log::Cursor>, kind: ReadKind
         return false;
     }
     match kind {
-        ReadKind::Screen => app.token_reads.screen = Some(generation),
+        ReadKind::Screen | ReadKind::External => app.token_reads.screen = Some(generation),
         ReadKind::Landing => super::landing::begin_usage(app, generation),
     }
     app.token_reads.jobs.push(ReadJob {
@@ -304,6 +329,119 @@ fn start(app: &mut App, cursor: Option<crate::token_log::Cursor>, kind: ReadKind
 
 pub(super) fn open(app: &mut App) {
     open_page(app, None);
+}
+
+fn external_rows(page: &crate::native_memory::usage::Page) -> Vec<PreviewLine> {
+    let mut rows = vec![
+        PreviewLine::Title("Native source observations · separate coverage".into()),
+        PreviewLine::Text("These snapshots may overlap Concordia turns or each other. They are excluded from all combined totals; no billing or unique-request count is inferred.".into()),
+        PreviewLine::Field("Provider / account", format!("{} / {}", page.binding.provider.as_str(), page.binding.account)),
+        PreviewLine::Field("Native session", page.binding.session_id.clone()),
+        PreviewLine::Field("Canonical home", page.binding.home.display().to_string()),
+        PreviewLine::Field("Source page", page.source.clone()),
+        PreviewLine::Field("Source revision", page.revision.clone()),
+        PreviewLine::Text(format!("{} snapshots this page · {} retained exact records · {} malformed, unavailable or boundary records skipped", page.observations.len(), page.retained, page.skipped)),
+    ];
+    for observation in &page.observations {
+        let value =
+            |number: Option<u64>| number.map_or("unknown".into(), |number| number.to_string());
+        rows.push(PreviewLine::Blank);
+        rows.push(PreviewLine::Kind(format!(
+            "{} · bytes {}..{}",
+            observation.kind,
+            observation.start,
+            observation.start + observation.bytes as u64
+        )));
+        rows.push(PreviewLine::Text(format!(
+            "input {} · cache read {} · cache write {} · output {}",
+            value(observation.input),
+            value(observation.cached),
+            value(observation.cache_write),
+            value(observation.output)
+        )));
+        rows.push(PreviewLine::Text(format!(
+            "native event {} · model {} · record {}",
+            observation.native_event.as_deref().unwrap_or("unavailable"),
+            observation
+                .model
+                .as_deref()
+                .unwrap_or("not reported in this record"),
+            observation.sha256
+        )));
+    }
+    rows.push(PreviewLine::Hint(
+        "N next source page · R restart snapshot · C Concordia usage · Esc close".into(),
+    ));
+    rows
+}
+
+fn open_external(app: &mut App, cursor: Option<crate::native_memory::usage::Cursor>) {
+    if app.token_reads.jobs.len() >= 2 {
+        app.flash("Usage reads are finishing; try again shortly");
+        return;
+    }
+    let binding = app
+        .home_path
+        .as_ref()
+        .zip(app.native_session_id.as_deref())
+        .ok_or_else(|| {
+            "Select or resume an exact native session before inspecting its usage source"
+                .to_string()
+        })
+        .and_then(|(home, session)| {
+            crate::native_memory::Binding::new(app.provider, &app.account, home, session)
+        });
+    close(&mut app.token_reads);
+    app.token_reads.generation = app.token_reads.generation.wrapping_add(1);
+    let generation = app.token_reads.generation;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let job_cancel = cancel.clone();
+    let root = app.state_root.clone();
+    let (tx, rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("concordia-native-usage".into())
+        .spawn(move || {
+            let result = binding
+                .and_then(|binding| {
+                    crate::native_memory::usage::import_page(
+                        &root,
+                        &binding,
+                        cursor.as_ref(),
+                        &job_cancel,
+                    )
+                })
+                .map(|page| Loaded::External(external_rows(&page), page.next));
+            let _ = tx.send(result);
+        });
+    if spawned.is_err() {
+        app.flash("Native usage reader could not start");
+        return;
+    }
+    app.token_reads.external = true;
+    app.token_reads.screen = Some(generation);
+    app.token_reads.jobs.push(ReadJob {
+        generation,
+        conversation: app.deleg.d.conversation_id().into(),
+        kind: ReadKind::External,
+        cancel,
+        rx,
+    });
+    app.update_preview = Some(UpdatePreview {
+        history: Vec::new(),
+        history_expanded: false,
+        lines: vec![PreviewLine::Title(
+            "Reading verified native usage source…".into(),
+        )],
+        install_available: false,
+        release_url: None,
+    });
+    app.show_picker(
+        PickerKind::Tokens,
+        "native usage source".into(),
+        Vec::new(),
+        false,
+    );
+    app.footer_left = "C Concordia usage · Esc close".into();
 }
 
 fn open_page(app: &mut App, cursor: Option<crate::token_log::Cursor>) {
@@ -336,6 +474,22 @@ pub(super) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool
         return false;
     }
     match key.code {
+        KeyCode::Char('e' | 'E') => {
+            open_external(app, None);
+            true
+        }
+        KeyCode::Char('c' | 'C') => {
+            open(app);
+            true
+        }
+        KeyCode::Char('n' | 'N') if app.token_reads.external => {
+            if let Some(cursor) = app.token_reads.external_next.clone() {
+                open_external(app, Some(cursor));
+            } else {
+                app.flash("No later native usage page in this snapshot");
+            }
+            true
+        }
         KeyCode::Char('n' | 'N') => {
             if let Some(cursor) = app.token_reads.next.clone() {
                 open_page(app, Some(cursor));
@@ -345,7 +499,11 @@ pub(super) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool
             true
         }
         KeyCode::Char('r' | 'R') => {
-            open(app);
+            if app.token_reads.external {
+                open_external(app, None);
+            } else {
+                open(app);
+            }
             true
         }
         _ => false,
@@ -364,7 +522,7 @@ pub(super) fn poll(app: &mut App) {
     while index < app.token_reads.jobs.len() {
         let job = &app.token_reads.jobs[index];
         let valid = match job.kind {
-            ReadKind::Screen => {
+            ReadKind::Screen | ReadKind::External => {
                 screen_visible
                     && current_screen == Some(job.generation)
                     && job.conversation == conversation
@@ -395,6 +553,30 @@ pub(super) fn poll(app: &mut App) {
                 };
                 super::landing::apply_usage(app, job.generation, value);
             }
+            (ReadKind::External, result) => {
+                let (rows, next) = match result {
+                    Ok(Loaded::External(rows, next)) => (rows, next),
+                    Err(error) => (
+                        vec![
+                            PreviewLine::Title("Native source coverage unavailable".into()),
+                            PreviewLine::Text(error),
+                        ],
+                        None,
+                    ),
+                    _ => (
+                        vec![PreviewLine::Text(
+                            "Usage reader returned a different view".into(),
+                        )],
+                        None,
+                    ),
+                };
+                app.token_reads.external_next = next;
+                if let Some(preview) = app.update_preview.as_mut() {
+                    preview.lines = rows;
+                }
+                app.footer_left =
+                    "N next source page · R restart · C Concordia usage · Esc close".into();
+            }
             (ReadKind::Screen, result) => {
                 let (rows, next) = match result {
                     Ok(Loaded::Screen(rows, next)) => (rows, next),
@@ -418,9 +600,9 @@ pub(super) fn poll(app: &mut App) {
                     preview.lines = rows;
                 }
                 app.footer_left = if app.token_reads.next.is_some() {
-                    "N next page · R first page · Esc close"
+                    "N next page · R first page · E native source · Esc close"
                 } else {
-                    "R refresh · Esc close"
+                    "R refresh · E native source · Esc close"
                 }
                 .into();
             }
@@ -475,6 +657,10 @@ mod tests {
         assert!(text.contains(&" · codex                   4k tokens · 1 turn".to_string()));
         assert!(text.iter().any(|l| l.contains("concordia")));
         assert!(!text.iter().any(|l| l.contains("old")), "older than 7 days");
+        assert!(text.iter().any(|line| line.contains("By attempt")));
+        assert!(text.iter().any(|line| line.contains("By outcome")));
+        assert!(text.iter().any(|line| line.contains("C:/work/concordia")));
+        assert_eq!(share(u64::MAX, u64::MAX), "100%");
     }
 
     #[test]

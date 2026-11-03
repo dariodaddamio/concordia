@@ -7,6 +7,11 @@ Implementation progress: [managed workspaces](../quality/managed-workspaces.md) 
 the current W3 candidate's reviewed integration/retirement controls. Native confinement and
 cross-worktree dependency delivery remain separate from a completed Git lifecycle action.
 
+[Native usage coverage](../quality/native-usage-coverage.md) implements bounded U2 source
+observation import and the remaining U3 attempt/outcome/workspace distinctions. Imported native
+snapshots stay in a separate coverage view because cross-channel unique-request attribution is
+unverified; they never inflate Concordia attempt totals. Cursor import remains unavailable.
+
 The outcome is a bounded task graph whose workers have explicit workspace ownership, visible
 routing decisions and attributable usage. Existing native authentication, approval, cancellation,
 recovery and source-pointer behavior remains authoritative. No provider turns, account changes,

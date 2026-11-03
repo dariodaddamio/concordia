@@ -1,5 +1,9 @@
 # Changelog
 
+- The usage screen offers a separate, paginated native-source coverage view with verified
+  counter records and metadata-only checkpoints. Overlapping native snapshots are excluded from
+  Concordia totals. Recorded totals now separate attempts, outcomes and full workspace paths.
+
 - Context observations include exact account/home/session/turn/model and source revision evidence.
   Same-model new turns, malformed records and legacy records without turn ids invalidate capacity.
   Claude permission and Claude/Cursor capacity controls explain their native-interface blockers.

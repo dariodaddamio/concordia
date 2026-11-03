@@ -26,6 +26,8 @@ pub mod rank;
 pub mod relations;
 #[path = "memory_retrieval.rs"]
 pub mod retrieval;
+#[path = "native_usage.rs"]
+pub mod usage;
 
 #[cfg(test)]
 #[path = "memory_evaluation.rs"]
@@ -1631,6 +1633,70 @@ mod tests {
             assert_eq!(ordinal, 401);
             assert!(page.history.as_ref().unwrap().complete);
             assert!(index_history(dir.path(), &binding, Some(&page.id)).is_err());
+            for number in 0..600 {
+                let usage = if provider == ProviderKind::Claude {
+                    json!({"type":"assistant","sessionId":session,"message":{"id":format!("native-usage-{number}"),"role":"assistant","content":"PRIVATE_SOURCE_BODY_NOT_IMPORTED","usage":{"input_tokens":7,"cache_read_input_tokens":2,"output_tokens":3}}})
+                } else {
+                    json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":999999},"last_token_usage":{"input_tokens":7,"cached_input_tokens":2,"output_tokens":3}}}})
+                };
+                append(&path, format!("{usage}\n").as_bytes());
+            }
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let mut cursor = None;
+            let mut imported = 0;
+            let mut last_cursor = None;
+            let mut last_retained = 0;
+            loop {
+                let usage =
+                    usage::import_page(dir.path(), &binding, cursor.as_ref(), &cancel).unwrap();
+                assert!(usage.observations.len() <= 256);
+                assert!(usage
+                    .observations
+                    .iter()
+                    .all(|observation| observation.input == Some(7)
+                        && observation.output == Some(3)
+                        && observation.cached == Some(2)));
+                imported += usage.observations.len();
+                last_retained = last_retained.max(usage.retained);
+                last_cursor = cursor.clone().or(last_cursor);
+                cursor = usage.next;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(imported, 600);
+            assert_eq!(last_retained, 600);
+            let repeated =
+                usage::import_page(dir.path(), &binding, last_cursor.as_ref(), &cancel).unwrap();
+            assert_eq!(repeated.retained, 600);
+            let other = Binding {
+                session_id: "foreign-native-session".into(),
+                ..binding.clone()
+            };
+            assert!(usage::import_page(dir.path(), &other, last_cursor.as_ref(), &cancel).is_err());
+            let metadata = fs::read_dir(dir.path().join(".ao/native-usage"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|file| {
+                    file.path()
+                        .extension()
+                        .is_some_and(|extension| extension == "json")
+                })
+                .map(|file| fs::read_to_string(file.path()).unwrap())
+                .collect::<String>();
+            assert!(!metadata.contains("PRIVATE_SOURCE_BODY_NOT_IMPORTED"));
+            assert!(!metadata.contains("history token"));
+            assert!(crate::token_log::load(dir.path()).is_empty());
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(usage::import_page(dir.path(), &binding, None, &cancel).is_err());
+            cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+            let changed = fs::read_to_string(&path)
+                .unwrap()
+                .replace("\"input_tokens\":7", "\"input_tokens\":8");
+            fs::write(&path, changed).unwrap();
+            assert!(
+                usage::import_page(dir.path(), &binding, last_cursor.as_ref(), &cancel).is_err()
+            );
         }
     }
 
