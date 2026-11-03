@@ -11,7 +11,8 @@ The [goal/source slice](../quality/goal-source-associations.md) records M0 imple
 The [accounting slice](../quality/worker-accounting.md) records U1 and bounded main/worker views;
 external native usage import remains separate.
 The [file facts and ranking slice](../quality/memory-ranking.md) implements opt-in M1;
-related-chat groups and retrieval evaluation remain separate.
+[related-chat groups](../quality/related-chat-groups.md) add M2 explicit membership and discovery.
+Retrieval evaluation remains separate.
 The [routing slice](../quality/routing-policies.md) connects local eligibility, ordered overrides,
 approval-bound sequences and worker/main inspection; workspace isolation remains separate.
 

@@ -1,6 +1,9 @@
 //! Explicit goal/source relationships. Native sources stay authoritative; no transcript copies.
 use super::*;
 
+#[path = "memory_groups.rs"]
+pub mod groups;
+
 const STORE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_RELATIONS: usize = 1024;
 const MAX_EVENTS: usize = 4096;
@@ -30,6 +33,10 @@ struct Store {
     version: u8,
     relations: Vec<Relation>,
     changes: Vec<Change>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    groups: Vec<groups::Group>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    memberships: Vec<groups::Membership>,
 }
 
 impl Default for Store {
@@ -38,6 +45,8 @@ impl Default for Store {
             version: 1,
             relations: Vec::new(),
             changes: Vec::new(),
+            groups: Vec::new(),
+            memberships: Vec::new(),
         }
     }
 }
@@ -52,6 +61,16 @@ fn relation_id(workspace: &Path, goal: &str, source: &str) -> Result<String, Str
 }
 
 fn load_store(root: &Path) -> Result<Store, String> {
+    match fs::symlink_metadata(store_path(root)) {
+        Ok(metadata) if !metadata.is_file() || crate::workspaces::linked(&metadata) => {
+            return Err(
+                "relationship metadata must remain a regular owned file; original kept".into(),
+            );
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Store::default()),
+        Err(error) => return Err(error.to_string()),
+    }
     let file = match File::open(store_path(root)) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Store::default()),
@@ -66,12 +85,13 @@ fn load_store(root: &Path) -> Result<Store, String> {
     }
     let store: Store =
         serde_json::from_slice(&bytes).map_err(|_| "invalid relationship store; original kept")?;
-    if store.version != 1
+    if !matches!(store.version, 1 | 2)
         || store.relations.len() > MAX_RELATIONS
         || store.changes.len() > MAX_EVENTS
     {
         return Err("unsupported relationship version or bounds; original kept".into());
     }
+    groups::validate(&store)?;
     let mut ids = std::collections::BTreeSet::new();
     for relation in &store.relations {
         if !relation.workspace.is_absolute()

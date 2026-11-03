@@ -241,6 +241,7 @@ struct PendingLogin {
 enum PickerKind {
     /// Tokens through Concordia, opened with `t` from `/usage`.
     Tokens,
+    Related,
     Agents,
     Recovery,
     Files,
@@ -2242,6 +2243,14 @@ impl App {
     }
 
     fn dismiss_picker(&mut self) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Related)
+        {
+            self.session_ui.memory_pending = None;
+            self.session_ui.memory_screen = None;
+        }
         tokens::close(&mut self.token_reads);
         // Only the update screen owns a job: its check, or the update it started.
         if self
@@ -2562,7 +2571,7 @@ impl App {
                     }
                 }
             }
-            PickerKind::Update | PickerKind::Tokens => {}
+            PickerKind::Update | PickerKind::Tokens | PickerKind::Related => {}
         }
         let _ = label;
     }
@@ -4052,7 +4061,10 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         return false;
     }
     if let Some(picker) = app.picker.as_mut() {
-        if matches!(picker.kind, PickerKind::Update | PickerKind::Tokens) {
+        if matches!(
+            picker.kind,
+            PickerKind::Update | PickerKind::Tokens | PickerKind::Related
+        ) {
             let visible = app.update_view.max(1);
             let last = app.update_rows.saturating_sub(visible);
             match key.code {
@@ -4553,11 +4565,12 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     }
     if app.picker.is_some() {
         let max = app.update_rows.saturating_sub(app.update_view.max(1));
-        if let Some(picker) = app
-            .picker
-            .as_mut()
-            .filter(|p| matches!(p.kind, PickerKind::Update | PickerKind::Tokens))
-        {
+        if let Some(picker) = app.picker.as_mut().filter(|p| {
+            matches!(
+                p.kind,
+                PickerKind::Update | PickerKind::Tokens | PickerKind::Related
+            )
+        }) {
             match m.kind {
                 MouseEventKind::ScrollUp => picker
                     .state
@@ -5711,7 +5724,10 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(picker) = app.picker.as_mut() else {
         return;
     };
-    if matches!(picker.kind, PickerKind::Update | PickerKind::Tokens) {
+    if matches!(
+        picker.kind,
+        PickerKind::Update | PickerKind::Tokens | PickerKind::Related
+    ) {
         let is_page = picker.kind == PickerKind::Update;
         let width = if is_page {
             area.width

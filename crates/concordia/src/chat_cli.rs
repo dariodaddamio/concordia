@@ -227,6 +227,16 @@ pub fn run(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
     if args.first().is_some_and(|operation| {
         matches!(
             operation.as_str(),
+            "groups" | "group-create" | "group-members" | "group-link" | "group-unlink"
+        )
+    }) {
+        let cwd = std::env::current_dir().map_err(|error| (error.to_string(), 2))?;
+        return crate::native_memory::relations::groups::command(root, args, &cwd)
+            .map_err(|error| (error, 2));
+    }
+    if args.first().is_some_and(|operation| {
+        matches!(
+            operation.as_str(),
             "goals" | "goal-sources" | "goal-link" | "goal-unlink"
         )
     }) {

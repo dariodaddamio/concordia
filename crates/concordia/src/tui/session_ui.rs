@@ -7,7 +7,8 @@ pub(super) struct State {
     next: u64,
     pending: Option<u64>,
     jobs: Vec<Load>,
-    memory_pending: Option<u64>,
+    pub(super) memory_pending: Option<u64>,
+    pub(super) memory_screen: Option<u64>,
     memory_jobs: Vec<(u64, std::sync::mpsc::Receiver<Result<String, String>>)>,
 }
 
@@ -31,6 +32,7 @@ impl State {
     pub fn invalidate(&mut self) {
         self.pending = None;
         self.memory_pending = None;
+        self.memory_screen = None;
     }
     #[cfg(test)]
     pub fn reading(&self) -> bool {
@@ -69,7 +71,69 @@ fn file_facts_memory(value: serde_json::Value) -> String {
     rows.join("\n\n")
 }
 
-fn ranked_memory(root: &Path, workspace: &Path, argument: &str) -> Option<Result<String, String>> {
+fn groups_memory(output: String, argument: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(&output).map_err(|error| error.to_string())?;
+    let mut lines =
+        vec!["Confirmed related-chat groups · suggestions do not create membership".into()];
+    if let Some(group) = value["group"].as_object() {
+        lines.push(format!(
+            "{} · {}",
+            group["title"].as_str().unwrap_or_default(),
+            group["id"].as_str().unwrap_or_default()
+        ));
+    }
+    for row in value["rows"].as_array().into_iter().flatten() {
+        if row["group"].is_object() {
+            let group = &row["group"];
+            lines.push(format!(
+                "{} · {} members\nGroup: {}\n/memory group-members {}",
+                group["title"].as_str().unwrap_or_default(),
+                row["members"],
+                group["id"].as_str().unwrap_or_default(),
+                group["id"].as_str().unwrap_or_default()
+            ));
+        } else {
+            let source = row["source"].as_str().unwrap_or_default();
+            lines.push(format!(
+                "{} / {} · {}\nSource: {source}\n{}\n/memory sources {source}",
+                row["native"]["account"].as_str().unwrap_or("unavailable"),
+                row["native"]["session_id"].as_str().unwrap_or_default(),
+                row["status"].as_str().unwrap_or_default(),
+                row["reason"].as_str().unwrap_or(
+                    "User-confirmed membership; original native source verified for this read."
+                )
+            ));
+        }
+    }
+    if value["rows"].as_array().is_some_and(Vec::is_empty) {
+        lines.push("No confirmed members in this view.".into());
+    }
+    if let Some(next) = value["next_offset"].as_u64() {
+        let base = argument
+            .split_whitespace()
+            .take(if argument.starts_with("group-members ") {
+                2
+            } else {
+                1
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        lines.push(format!(
+            "Next: /memory {base} {next} {}",
+            value["revision"].as_str().unwrap_or_default()
+        ));
+    }
+    lines.push("Esc / X closes · arrows scroll · /memory group-link GROUP SOURCE confirms membership · group-unlink detaches".into());
+    Ok(lines.join("\n\n"))
+}
+
+fn ranked_memory(
+    root: &Path,
+    workspace: &Path,
+    argument: &str,
+    cross_project: bool,
+) -> Option<Result<String, String>> {
     let (mode, input) = [
         "ranked",
         "ranked-file",
@@ -116,7 +180,7 @@ fn ranked_memory(root: &Path, workspace: &Path, argument: &str) -> Option<Result
                 text,
                 source: source.as_deref(),
                 account: None,
-                workspace: Some(workspace),
+                workspace: (!cross_project).then_some(workspace),
                 goal: goal.as_deref(),
                 file: file.as_deref(),
                 from: from.as_deref(),
@@ -133,6 +197,9 @@ fn ranked_memory(root: &Path, workspace: &Path, argument: &str) -> Option<Result
                 ""
             }
         )];
+        if cross_project {
+            lines.push("Cross-project suggestions enabled. Check each recorded workspace; suggestions never confirm membership.".into());
+        }
         for hit in report.hits {
             let reasons = hit
                 .reasons
@@ -165,6 +232,9 @@ fn ranked_memory(root: &Path, workspace: &Path, argument: &str) -> Option<Result
                         ""
                     }
                 ));
+                if cross_project {
+                    lines.push("Context suggestion; inspect the recorded workspace before using it. Membership and native ancestry are unconfirmed.".into());
+                }
             }
         }
         lines.extend(
@@ -181,6 +251,7 @@ fn ranked_memory(root: &Path, workspace: &Path, argument: &str) -> Option<Result
 impl App {
     pub(super) fn memory_command(&mut self, argument: &str) {
         if argument.is_empty() {
+            self.push_system("Related work: /memory groups · group-create SOURCE · group-members GROUP · group-link GROUP SOURCE · group-unlink GROUP SOURCE. Membership requires your explicit action. /memory related-file PATH TEXT, related-goal GOAL TEXT and related-from SOURCE TEXT show suggestions separately.");
             self.push_system("Ranking: /memory ranked TEXT · /memory ranked-file PATH TEXT · /memory ranked-goal GOAL TEXT. Quote paths containing spaces. Reasons retain original source pointers; suggestions never create links.");
             self.push_system("Context: /memory ranked-from SOURCE TEXT · /memory ranked-source SOURCE TEXT · /memory ranked-at RFC3339 TEXT. Native timestamps stay unknown when their format is unsupported.");
             self.push_system("Files: /memory file-facts INDEX [OFFSET REVISION] reads historical paths from verified native tool records; it does not open referenced project files.");
@@ -194,13 +265,18 @@ impl App {
         }
         let root = self.state_root.clone();
         let workspace = self.cwd.clone();
+        let screen = argument == "groups"
+            || argument.starts_with("groups ")
+            || argument.starts_with("group-members ")
+            || argument.starts_with("related-");
         let argument = argument.to_owned();
         let (tx, rx) = std::sync::mpsc::channel();
         let result = std::thread::Builder::new().name("concordia-memory-read".into()).spawn(move || {
             let search = argument.strip_prefix("recall ").map(|q| (None, None, q))
                 .or_else(|| argument.strip_prefix("recall-account ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(a,q)| (Some(a),None,q)))
                 .or_else(|| argument.strip_prefix("recall-source ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(s,q)| (None,Some(s),q)));
-            let output = if let Some(ranked) = ranked_memory(&root, &workspace, &argument) { ranked }
+            let ranking = argument.strip_prefix("related-").map(|rest| format!("ranked-{rest}"));
+            let output = if let Some(ranked) = ranked_memory(&root, &workspace, ranking.as_deref().unwrap_or(&argument), argument.starts_with("related-from ")) { ranked }
                 else if let Some((account, source, query)) = search {
                     crate::native_memory::retrieval::recall(&root, query, source, account, if source.is_none() { Some(&workspace) } else { None }).map(|r| {
                     let mut lines = vec![format!("Memory search: {} matches in {} bounded source windows{}", r.hits.len(), r.pages.len(), if r.incomplete { "; incomplete scan" } else { "" })];
@@ -213,7 +289,10 @@ impl App {
                 })
             } else {
                 let args: Vec<String> = argument.split_whitespace().map(str::to_owned).collect();
-                if args.first().is_some_and(|operation| operation == "file-facts") {
+                if args.first().is_some_and(|operation| matches!(operation.as_str(), "groups" | "group-create" | "group-members" | "group-link" | "group-unlink")) {
+                    crate::native_memory::relations::groups::command(&root, &args, &workspace)
+                        .and_then(|output| if screen { groups_memory(output, &argument) } else { Ok(output) })
+                } else if args.first().is_some_and(|operation| operation == "file-facts") {
                     crate::native_memory::files::command(&root, &args).map(file_facts_memory)
                 } else if args.first().is_some_and(|operation| matches!(operation.as_str(), "goals" | "goal-sources" | "goal-link" | "goal-unlink")) {
                     crate::native_memory::relations::command(&root, &args, &workspace)
@@ -232,7 +311,25 @@ impl App {
         self.session_ui.next = self.session_ui.next.wrapping_add(1);
         let generation = self.session_ui.next;
         self.session_ui.memory_pending = Some(generation);
+        self.session_ui.memory_screen = screen.then_some(generation);
         self.session_ui.memory_jobs.push((generation, rx));
+        if screen {
+            self.update_preview = Some(crate::update::UpdatePreview {
+                history: Vec::new(),
+                history_expanded: false,
+                lines: vec![crate::update::PreviewLine::Text(
+                    "Loading related work…".into(),
+                )],
+                install_available: false,
+                release_url: None,
+            });
+            self.show_picker(
+                PickerKind::Related,
+                "related work".into(),
+                Vec::new(),
+                false,
+            );
+        }
         self.flash("reading native memory…");
     }
 
@@ -252,9 +349,34 @@ impl App {
                 continue;
             }
             self.session_ui.memory_pending = None;
-            self.push_system(crate::chat_cli::terminal_safe(
+            let output = crate::chat_cli::terminal_safe(
                 &result.unwrap_or_else(|e| format!("memory unavailable: {e}")),
-            ));
+            );
+            if self.session_ui.memory_screen == Some(generation) {
+                if self
+                    .picker
+                    .as_ref()
+                    .is_some_and(|picker| picker.kind == PickerKind::Related)
+                {
+                    self.update_preview = Some(crate::update::UpdatePreview {
+                        history: Vec::new(),
+                        history_expanded: false,
+                        lines: output
+                            .lines()
+                            .map(|line| crate::update::PreviewLine::Text(line.into()))
+                            .collect(),
+                        install_available: false,
+                        release_url: None,
+                    });
+                }
+            } else if self.session_ui.memory_screen.is_none()
+                && !self
+                    .picker
+                    .as_ref()
+                    .is_some_and(|picker| picker.kind == PickerKind::Related)
+            {
+                self.push_system(output);
+            }
         }
     }
 

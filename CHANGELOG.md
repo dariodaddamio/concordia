@@ -1,5 +1,23 @@
 # Changelog
 
+### Fixed (`2026-11-03d`)
+- Related-chat groups include the parent source-update artifact fix and current-workspace alias
+  correction. Group membership, provenance and discovery controls retain their existing behavior.
+
+### Fixed (`2026-11-03b`)
+- Related-chat groups include the current-workspace alias correction from the parent memory
+  ranking slice. Existing group membership and the landing-page shortcut remain unchanged.
+
+### Added (`2026-11-02u`)
+- Explicit related-chat groups: `/memory group-create SOURCE`, `groups`, `group-members GROUP`,
+  `group-link GROUP SOURCE` and `group-unlink GROUP SOURCE`. Overlapping membership retains
+  exact native source identities and detach provenance; stale members remain visibly unavailable.
+- F6 on the landing page opens related work while preserving its selection and the draft.
+  `/memory related-file`, `related-goal`, `related-at` and `related-from` show evidence-backed
+  suggestions separately from confirmed groups. Context-link discovery can label cross-project scope.
+- Relationship store v2 reads earlier goal associations unchanged and serializes group and goal
+  changes under the same lock. Group discovery never starts Cursor native replay implicitly.
+
 ### Fixed (`2026-11-03c`)
 - Source updates install the executable reported by Cargo for the selected Concordia manifest,
   including custom target directories. Missing artifact evidence or a mismatched source version
