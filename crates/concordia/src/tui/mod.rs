@@ -101,7 +101,7 @@ const MAX_INPUT_ROWS: usize = 6;
 const PROMPT_W: usize = 2;
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const FLASH_FOR: Duration = Duration::from_secs(3);
-const FOOTER_HINT: &str = "Enter send \u{b7} / commands \u{b7} Shift+Tab mode \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
+const FOOTER_HINT: &str = "Enter send \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
 /// How often (in 200 ms ticks) to look for a finished login, and when to stop looking.
 /// A second idle Ctrl+C within this window exits.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
@@ -787,7 +787,7 @@ impl App {
     }
 
     fn has_selection(&self) -> bool {
-        self.selected_text().is_some()
+        self.view.sel.is_some_and(|(a, b)| a != b) || self.editor.selection().is_some()
     }
 
     fn clear_selections(&mut self) {
@@ -5957,10 +5957,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let color = mode_color(mode);
     // The mode column is kept only while it leaves room for the first hint.
     const MIN_LEFT: usize = 12;
-    let right = [format!("auth {label} "), format!("{label} ")]
-        .into_iter()
-        .find(|r| r.chars().count() + MIN_LEFT <= w)
-        .unwrap_or_default();
+    let right = [
+        (100, format!("permissions: {label} ")),
+        (0, format!("{label} ")),
+    ]
+    .into_iter()
+    .find(|(min_width, r)| w >= *min_width && r.chars().count() + MIN_LEFT <= w)
+    .map(|(_, r)| r)
+    .unwrap_or_default();
     let rw = right.chars().count() as u16;
     let cols = [
         Rect {
@@ -6048,6 +6052,11 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         (
             "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",
             Style::default().fg(Color::DarkGray),
+        )
+    } else if app.has_selection() {
+        (
+            "right-click or Ctrl+C to copy \u{b7} click to clear",
+            Style::default().fg(Color::Indexed(179)),
         )
     } else if app.view.scroll > 0 {
         (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
@@ -6244,7 +6253,7 @@ fn fit_segments(text: &str, width: usize) -> String {
 const HINTS: [(&str, &str); 5] = [
     ("Enter send", "Enter send"),
     ("/ commands", "/ cmds"),
-    ("Shift+Tab mode", "S-Tab mode"),
+    ("Shift+Tab permissions", "Shift+Tab perms"),
     ("drag to select", "drag select"),
     ("Ctrl+C copy or cancel", "Ctrl+C copy/stop"),
 ];

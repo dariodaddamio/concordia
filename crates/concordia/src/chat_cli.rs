@@ -181,9 +181,9 @@ impl HistoryBuffer {
     }
 }
 
-fn visible_user_history(mut text: &str) -> &str {
-    // Native Codex rollouts include setup as user messages. Hide recognized setup
-    // blocks while keeping any actual question following a wrapper.
+pub(crate) fn visible_user_history(mut text: &str) -> &str {
+    // Native transcripts include setup and background notices as user messages.
+    // Keep any actual request following those wrappers.
     loop {
         text = text.trim_start();
         let wrapper = [
@@ -191,6 +191,9 @@ fn visible_user_history(mut text: &str) -> &str {
             "permissions instructions",
             "skills_instructions",
             "collaboration_mode",
+            "task-notification",
+            "system-reminder",
+            "local-command-caveat",
         ]
         .into_iter()
         .find(|tag| text.starts_with(&format!("<{tag}>")));
@@ -485,7 +488,14 @@ fn read_messages(path: &Path, provider: ProviderKind) -> Result<(Vec<String>, bo
                             .join("\n")
                     })
                 });
-            if let Some(text) = text.filter(|s| !s.is_empty()) {
+            let text = text.map(|text| {
+                if role == "user" {
+                    visible_user_history(&text).to_owned()
+                } else {
+                    text
+                }
+            });
+            if let Some(text) = text.filter(|s| !s.trim().is_empty()) {
                 messages.push(format!("{role}: {}", terminal_safe(&text)));
             }
         } else if kind == "event_msg" {
@@ -645,6 +655,17 @@ mod tests {
     }
     #[test]
     fn read_chat_text_handles_both_formats_and_never_emits_terminal_escapes() {
+        for tag in [
+            "task-notification",
+            "system-reminder",
+            "local-command-caveat",
+        ] {
+            assert_eq!(visible_user_history(&format!("<{tag}>notice</{tag}>")), "");
+            assert_eq!(
+                visible_user_history(&format!("<{tag}>notice</{tag}>\nreal question")),
+                "real question"
+            );
+        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.jsonl");
         std::fs::write(&path,concat!(

@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (`2026-11-02l`)
+- Filter native background notices from readable user history and session previews/titles.
+- Show selection copy controls and clearer permission labels in the footer. Retain the newer
+  focus repaint, word deletion, independent draft scrolling and draft-visible landing page.
+
 ### Changed (`2026-10-21d`)
 
 ### Added (`2026-11-02k`)
