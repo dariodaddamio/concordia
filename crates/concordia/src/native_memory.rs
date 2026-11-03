@@ -1418,6 +1418,7 @@ mod tests {
                     done: false,
                     added_at: "0".into(),
                     closed_at: None,
+                    ..Default::default()
                 }],
             )
             .unwrap();

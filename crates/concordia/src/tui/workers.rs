@@ -117,6 +117,10 @@ struct Confirm {
     /// When it became the front prompt. A bare y/n only answers after `ARM_AFTER`, so type-ahead
     /// that happens to start with y or n can never approve or decline by accident.
     since: Instant,
+    goal: Option<crate::goals::changes::Proposal>,
+    goal_armed: std::cell::Cell<bool>,
+    goal_visible: std::cell::Cell<bool>,
+    goal_draft_revision: std::cell::Cell<u64>,
 }
 
 /// Ticks (about 200 ms each) between looks at `<state>/proposals`: about 2 s.
@@ -326,6 +330,60 @@ pub(super) fn draw(f: &mut Frame, strip: Rect, over: Rect, app: &mut App) {
 }
 
 fn draw_confirm(f: &mut Frame, over: Rect, app: &App, c: &Confirm) {
+    if let Some(goal) = &c.goal {
+        c.goal_visible.set(false);
+        if app.picker.is_some()
+            || app.workspace.focused.is_some()
+            || app.activity.detail.is_some()
+            || app.questions.focused
+            || app.project_search.active()
+            || app.deleg.input.is_some()
+        {
+            c.goal_armed.set(false);
+            return;
+        }
+        if over.height < 3 || over.width < 20 {
+            c.goal_armed.set(false);
+            return;
+        }
+        let prompt = if c.goal_armed.get() {
+            "Goal review focused: Y applies · N/Esc declines (message draft preserved)"
+        } else {
+            "F7 focuses goal review; your message draft is preserved."
+        };
+        let rows = wrap_plain(
+            &format!("{}\n{prompt}", goal.description()),
+            over.width.saturating_sub(4) as usize,
+        );
+        let full = rows.len().saturating_add(2) <= over.height as usize;
+        c.goal_visible.set(full);
+        if !full {
+            c.goal_armed.set(false);
+        }
+        let lines = if full {
+            rows.into_iter().map(Line::from).collect::<Vec<_>>()
+        } else {
+            vec![Line::from("Goal proposal waiting. Enlarge the terminal to review the full text; approval is disabled.")]
+        };
+        let height = (lines.len() as u16 + 2).min(over.height);
+        let area = Rect {
+            x: over.x,
+            y: over.y + over.height - height,
+            width: over.width,
+            height,
+        };
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title(" goal proposal · requester unverified "),
+            ),
+            area,
+        );
+        return;
+    }
     if over.height < 5 || over.width < 20 {
         return;
     }
@@ -510,6 +568,30 @@ fn draw_viewer(f: &mut Frame, over: Rect, app: &mut App, now: Instant) {
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let goal_focus = app.workspace.focused.is_none()
+        && app.picker.is_none()
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+        && app.deleg.viewer.is_none()
+        && app.queue.edit.is_none()
+        && !app.queue.focused
+        && !super::landing::editing_goal(app);
+    if goal_focus && !ctrl && !alt && key.code == KeyCode::F(7) {
+        if let Some(confirm) = app
+            .deleg
+            .confirms
+            .front()
+            .filter(|confirm| confirm.goal.is_some())
+        {
+            if confirm.goal_visible.get() {
+                confirm.goal_armed.set(!confirm.goal_armed.get());
+                confirm.goal_draft_revision.set(app.editor.revision());
+            } else {
+                app.flash("The entire goal proposal must be visible before approval");
+            }
+            return true;
+        }
+    }
     if let Some(v) = app.deleg.viewer.as_mut() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.deleg.viewer = None,
@@ -530,12 +612,21 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         return true;
     }
     // Only chat focus may answer; read-only file typing must never approve or reject work.
-    let armed = app
+    let armed = app.deleg.confirms.front().is_some_and(|c| {
+        if c.goal.is_some() {
+            c.goal_armed.get()
+                && c.goal_visible.get()
+                && c.goal_draft_revision.get() == app.editor.revision()
+        } else {
+            c.since.elapsed() >= ARM_AFTER
+        }
+    });
+    let goal_answer = app
         .deleg
         .confirms
         .front()
-        .is_some_and(|c| c.since.elapsed() >= ARM_AFTER);
-    if armed && app.workspace.focused.is_none() && app.editor.text().is_empty() && !ctrl && !alt {
+        .is_some_and(|confirm| confirm.goal.is_some());
+    if armed && goal_focus && (app.editor.text().is_empty() || goal_answer) && !ctrl && !alt {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 app.answer_confirm(true);
@@ -545,7 +636,17 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                 app.answer_confirm(false);
                 return true;
             }
-            _ => {}
+            KeyCode::Enter if goal_answer => {
+                app.flash("Goal review: Y applies, N declines, F7 returns to your message");
+                return true;
+            }
+            _ => {
+                if goal_answer {
+                    if let Some(confirm) = app.deleg.confirms.front() {
+                        confirm.goal_armed.set(false);
+                    }
+                }
+            }
         }
     }
     if alt && matches!(key.code, KeyCode::Up | KeyCode::Down) {
@@ -1024,21 +1125,86 @@ impl App {
         self.queue_proposals(extract_delegate_blocks(reply));
     }
 
-    /// Proposals recorded by `concordia mcp`'s `delegate` tool (files in `<state>/proposals`).
-    /// Checked about every 2 s, and only consumed while the delegation protocol is on. They go
-    /// through the same confirm prompt as protocol blocks: nothing runs without the user's y.
+    /// One bounded proposal queue. Worker proposals require delegation mode; goal proposals
+    /// always require complete local review and explicit F7 focus before any goal mutation.
     pub(super) fn poll_proposals(&mut self) {
+        if self.picker.is_some()
+            || self.workspace.focused.is_some()
+            || self.activity.detail.is_some()
+            || self.questions.focused
+            || self.project_search.active()
+            || self.deleg.viewer.is_some()
+            || self.deleg.input.is_some()
+            || self.queue.focused
+            || self.queue.edit.is_some()
+            || super::landing::editing_goal(self)
+        {
+            for confirm in &self.deleg.confirms {
+                if confirm.goal.is_some() {
+                    confirm.goal_armed.set(false);
+                    confirm.goal_visible.set(false);
+                }
+            }
+        }
+        for confirm in &self.deleg.confirms {
+            if confirm.goal.is_some() && confirm.goal_draft_revision.get() != self.editor.revision()
+            {
+                confirm.goal_armed.set(false);
+            }
+        }
         if !self.tick_count.is_multiple_of(PROPOSAL_POLL_TICKS)
             || !crate::mcp::has_proposals(&self.state_root)
-            || !crate::store::delegation_protocol_on(&self.state_root)
+            || super::landing::editing_goal(self)
+            || self.picker.is_some()
+            || self.workspace.focused.is_some()
         {
             return;
         }
-        let blocks: Vec<_> = crate::mcp::take_proposals(&self.state_root)
-            .into_iter()
-            .filter_map(|p| crate::delegate::block_from(&p.to, &p.task))
-            .collect();
-        self.queue_proposals(blocks);
+        let slots = MAX_PENDING_CONFIRMS.saturating_sub(self.deleg.confirms.len());
+        for proposal in crate::mcp::take_pending(
+            &self.state_root,
+            crate::store::delegation_protocol_on(&self.state_root),
+            slots,
+        ) {
+            match proposal {
+                crate::mcp::PendingProposal::Delegate(proposal) => {
+                    if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
+                        self.queue_proposals(vec![block]);
+                    }
+                }
+                crate::mcp::PendingProposal::Goal(proposal) => {
+                    if self.deleg.confirms.iter().any(|confirm| {
+                        confirm
+                            .goal
+                            .as_ref()
+                            .is_some_and(|goal| goal.request_id == proposal.request_id)
+                    }) {
+                        continue;
+                    }
+                    match crate::goals::changes::existing_status(&self.state_root, &proposal) {
+                        Ok(Some(status)) => {
+                            self.push_system(status);
+                            continue;
+                        }
+                        Err(error) => {
+                            self.push_system(format!("Goal proposal unavailable: {error}"));
+                            continue;
+                        }
+                        Ok(None) => {}
+                    }
+                    super::landing::close(self);
+                    self.deleg.confirms.push_back(Confirm {
+                        to: "goals".into(),
+                        task: proposal.description(),
+                        since: Instant::now(),
+                        goal: Some(proposal),
+                        goal_armed: std::cell::Cell::new(false),
+                        goal_visible: std::cell::Cell::new(false),
+                        goal_draft_revision: std::cell::Cell::new(0),
+                    });
+                }
+            }
+        }
     }
 
     fn queue_proposals(&mut self, blocks: Vec<crate::delegate::DelegateBlock>) {
@@ -1069,6 +1235,10 @@ impl App {
                 to: b.to,
                 task: b.task,
                 since: Instant::now(),
+                goal: None,
+                goal_armed: std::cell::Cell::new(false),
+                goal_visible: std::cell::Cell::new(false),
+                goal_draft_revision: std::cell::Cell::new(0),
             });
         }
     }
@@ -1079,6 +1249,19 @@ impl App {
         };
         if let Some(next) = self.deleg.confirms.front_mut() {
             next.since = Instant::now();
+            next.goal_armed.set(false);
+            next.goal_visible.set(false);
+        }
+        if let Some(goal) = c.goal {
+            let result = if yes {
+                crate::goals::changes::apply(&self.state_root, &goal)
+            } else {
+                crate::goals::changes::decline(&self.state_root, &goal)
+            };
+            self.push_system(
+                result.unwrap_or_else(|error| format!("Goal proposal not applied: {error}")),
+            );
+            return;
         }
         crate::logging::info(&format!("delegate-answer to={} approved={yes}", c.to));
         if !yes {

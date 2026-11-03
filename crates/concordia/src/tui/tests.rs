@@ -3780,6 +3780,7 @@ fn landing_goals_wrap_in_both_directions() {
             done: false,
             added_at: "fixture".into(),
             closed_at: None,
+            ..Default::default()
         })
         .collect();
     landing::save_goals(&h.app.state_root, &goals).unwrap();

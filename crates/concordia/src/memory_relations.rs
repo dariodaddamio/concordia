@@ -291,7 +291,7 @@ fn check_revision(offset: usize, revision: Option<&str>, current: &str) -> Resul
 
 pub fn goals(root: &Path, offset: usize, revision: Option<&str>) -> Result<Value, String> {
     let goals = crate::goals::read_goals(root).map_err(|e| e.to_string())?;
-    let current_revision = digest(&serde_json::to_vec(&goals).map_err(|e| e.to_string())?);
+    let current_revision = crate::goals::revision(&goals)?;
     check_revision(offset, revision, &current_revision)?;
     if offset > goals.len() {
         return Err("goal offset is outside this snapshot".into());
@@ -300,7 +300,7 @@ pub fn goals(root: &Path, offset: usize, revision: Option<&str>) -> Result<Value
     let rows: Vec<_> = goals[offset..end].iter().map(|goal| {
         let text = crate::chat_cli::terminal_safe(&goal.text);
         json!({"id": goal.id, "text": text.chars().take(240).collect::<String>(), "text_truncated": text.chars().count() > 240,
-            "done":goal.done, "added_at":goal.added_at, "closed_at":goal.closed_at})
+              "done":goal.done, "added_at":goal.added_at, "closed_at":goal.closed_at,"origin":goal.origin,"closed_origin":goal.closed_origin})
     }).collect();
     Ok(
         json!({"goals": rows, "next_offset": (end < goals.len()).then_some(end), "revision": current_revision}),

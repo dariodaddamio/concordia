@@ -332,6 +332,12 @@ pub(super) fn handle_paste(app: &mut App, text: &str) -> bool {
 }
 
 /// On screen: opened, nothing said in this chat yet, and no picker over it.
+pub(super) fn editing_goal(app: &App) -> bool {
+    app.landing
+        .as_ref()
+        .is_some_and(|landing| !matches!(&landing.mode, Mode::Browse))
+}
+
 pub(super) fn visible(app: &App) -> bool {
     app.landing.is_some()
         && !app.continuation.waiting()
@@ -448,6 +454,9 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                             done: false,
                             added_at: now,
                             closed_at: None,
+                            origin: Some(crate::goals::Attribution::user()),
+                            closed_origin: None,
+                            ..Default::default()
                         });
                         landing.goal_sel = landing.open_goals().len().saturating_sub(1);
                         save(app);
@@ -487,6 +496,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                     if let Some(&i) = open.get(landing.goal_sel) {
                         landing.goals[i].done = true;
                         landing.goals[i].closed_at = Some(super::now_stamp());
+                        landing.goals[i].closed_origin = Some(crate::goals::Attribution::user());
                     }
                     landing.mode = Mode::Browse;
                     landing.goal_sel = landing
@@ -882,7 +892,33 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
         lines.push(Line::from(vec![
             Span::styled(if focused { "> " } else { "  " }, style),
-            Span::styled(format!("○ {}", landing.goals[i].text), style),
+            Span::styled(
+                format!(
+                    "{} {}{}",
+                    if landing.goals[i]
+                        .origin
+                        .as_ref()
+                        .is_some_and(|origin| origin.source
+                            == crate::goals::ChangeSource::McpProposalApprovedLocally)
+                    {
+                        "◇"
+                    } else {
+                        "○"
+                    },
+                    landing.goals[i].text,
+                    if landing.goals[i]
+                        .origin
+                        .as_ref()
+                        .is_some_and(|origin| origin.source
+                            == crate::goals::ChangeSource::McpProposalApprovedLocally)
+                    {
+                        " [MCP proposal · approved locally]"
+                    } else {
+                        ""
+                    }
+                ),
+                style,
+            ),
         ]));
         hits.push(Some(row));
         if focused && landing.mode == Mode::ConfirmDone {
@@ -1102,14 +1138,38 @@ mod tests {
     #[test]
     fn goals_round_trip() {
         let dir = tempdir().unwrap();
-        let goals = vec![Goal {
+        let mut goals = vec![Goal {
             id: "g-1".into(),
             text: "ship".into(),
             done: false,
             added_at: "now".into(),
             closed_at: None,
+            ..Default::default()
         }];
+        goals[0].extra.insert(
+            "external_note".into(),
+            serde_json::json!("keep existing metadata"),
+        );
+        std::fs::write(
+            dir.path().join("goals.json"),
+            serde_json::to_vec(&goals).unwrap(),
+        )
+        .unwrap();
+        let legacy = std::fs::read(dir.path().join("goals.json")).unwrap();
+        assert_eq!(load_goals(dir.path()), goals);
+        assert_eq!(
+            std::fs::read(dir.path().join("goals.json")).unwrap(),
+            legacy,
+            "reading does not migrate data"
+        );
         save_goals(dir.path(), &goals).unwrap();
+        assert!(
+            serde_json::from_slice::<Vec<Goal>>(
+                &std::fs::read(dir.path().join("goals.json")).unwrap()
+            )
+            .is_err(),
+            "legacy writers must fail closed on attributed goal stores"
+        );
         assert_eq!(load_goals(dir.path()), goals);
         let mut close = goals[0].clone();
         close.done = true;
@@ -1122,6 +1182,164 @@ mod tests {
         assert!(saved[0].done);
         assert_eq!(saved[0].text, "ship");
         assert_eq!(saved[0].added_at, "now");
+        assert_eq!(saved[0].extra["external_note"], "keep existing metadata");
+
+        use crate::goals::{changes, ChangeSource};
+        let request = uuid::Uuid::new_v4().to_string();
+        let revision = crate::goals::revision(&saved).unwrap();
+        let before = std::fs::read(dir.path().join("goals.json")).unwrap();
+        let add =
+            changes::propose_add(dir.path(), &request, &revision, "Agent-proposed exact goal")
+                .unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("goals.json")).unwrap(),
+            before
+        );
+        changes::apply(dir.path(), &add).unwrap();
+        let added = load_goals(dir.path());
+        let goal = added.iter().find(|goal| goal.id == add.goal_id()).unwrap();
+        assert_eq!(
+            goal.origin.as_ref().unwrap().source,
+            ChangeSource::McpProposalApprovedLocally
+        );
+        assert_eq!(
+            goal.origin.as_ref().unwrap().request_id.as_deref(),
+            Some(request.as_str())
+        );
+        let applied_bytes = std::fs::read(dir.path().join("goals.json")).unwrap();
+        changes::apply(dir.path(), &add).unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("goals.json")).unwrap(),
+            applied_bytes
+        );
+        assert!(
+            changes::propose_add(dir.path(), &request, &revision, "different reused request")
+                .is_err()
+        );
+        assert_eq!(
+            changes::propose_add(dir.path(), &request, &revision, "Agent-proposed exact goal")
+                .unwrap(),
+            add
+        );
+
+        let stale = changes::propose_add(
+            dir.path(),
+            &uuid::Uuid::new_v4().to_string(),
+            &crate::goals::revision(&added).unwrap(),
+            "Stale proposal",
+        )
+        .unwrap();
+        save_goals(
+            dir.path(),
+            &[Goal {
+                id: "concurrent-user-goal".into(),
+                text: "User goal".into(),
+                added_at: "now".into(),
+                origin: Some(crate::goals::Attribution::user()),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let concurrent = std::fs::read(dir.path().join("goals.json")).unwrap();
+        assert!(changes::apply(dir.path(), &stale)
+            .unwrap_err()
+            .contains("goals changed"));
+        assert_eq!(
+            std::fs::read(dir.path().join("goals.json")).unwrap(),
+            concurrent
+        );
+
+        let close = changes::propose_close(
+            dir.path(),
+            &uuid::Uuid::new_v4().to_string(),
+            &crate::goals::revision(&load_goals(dir.path())).unwrap(),
+            &add.goal_id(),
+        )
+        .unwrap();
+        changes::apply(dir.path(), &close).unwrap();
+        let closed = load_goals(dir.path());
+        let closed_goal = closed.iter().find(|goal| goal.id == add.goal_id()).unwrap();
+        assert!(closed_goal.done);
+        assert_eq!(
+            closed_goal
+                .closed_origin
+                .as_ref()
+                .unwrap()
+                .request_id
+                .as_deref(),
+            Some(close.request_id.as_str())
+        );
+        let duplicate = changes::propose_close(
+            dir.path(),
+            &uuid::Uuid::new_v4().to_string(),
+            &crate::goals::revision(&closed).unwrap(),
+            &add.goal_id(),
+        )
+        .unwrap();
+        assert!(changes::apply(dir.path(), &duplicate)
+            .unwrap()
+            .contains("already complete"));
+        assert_eq!(load_goals(dir.path()), closed);
+
+        let current_revision = crate::goals::revision(&closed).unwrap();
+        let declined = changes::propose_add(
+            dir.path(),
+            &uuid::Uuid::new_v4().to_string(),
+            &current_revision,
+            "Declined goal",
+        )
+        .unwrap();
+        changes::decline(dir.path(), &declined).unwrap();
+        assert!(changes::apply(dir.path(), &declined)
+            .unwrap_err()
+            .contains("declined"));
+        assert_eq!(load_goals(dir.path()), closed);
+        let uncertain = changes::propose_add(
+            dir.path(),
+            &uuid::Uuid::new_v4().to_string(),
+            &current_revision,
+            "Uncertain goal",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".ao/goal-changes").join(format!("{}.json", uncertain.request_id)), serde_json::to_vec(&serde_json::json!({"version":1,"proposal":uncertain,"proposal_sha256":uncertain.hash().unwrap(),"status":"prepared"})).unwrap()).unwrap();
+        assert!(changes::apply(dir.path(), &uncertain)
+            .unwrap_err()
+            .contains("unconfirmed"));
+        assert!(changes::status(dir.path(), &uncertain.request_id)
+            .unwrap()
+            .contains("\"current_goal_matches_request\":false"));
+        assert_eq!(load_goals(dir.path()), closed);
+
+        let receipt_path = dir
+            .path()
+            .join(".ao/goal-changes")
+            .join(format!("{request}.json"));
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt_path).unwrap()).unwrap();
+        receipt["status"] = serde_json::json!("prepared");
+        std::fs::write(receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(changes::apply(dir.path(), &add)
+            .unwrap_err()
+            .contains("unconfirmed"));
+        assert!(changes::status(dir.path(), &request)
+            .unwrap()
+            .contains("\"current_goal_matches_request\":true"));
+        assert_eq!(load_goals(dir.path()), closed);
+
+        let pending = changes::propose_add(
+            dir.path(),
+            &uuid::Uuid::new_v4().to_string(),
+            &current_revision,
+            "Future schema refusal",
+        )
+        .unwrap();
+        let future = serde_json::to_vec(&serde_json::json!({"version":99,"goals":closed})).unwrap();
+        std::fs::write(dir.path().join("goals.json"), &future).unwrap();
+        assert!(changes::apply(dir.path(), &pending).is_err());
+        assert_eq!(
+            std::fs::read(dir.path().join("goals.json")).unwrap(),
+            future
+        );
     }
 
     #[test]

@@ -284,12 +284,13 @@ labels. An interrupted uncertain call is inspected, never replayed to obtain a c
 ### MCP goals and tool-extension disposition
 
 The context-handoff plan calls for agents to read/add/close goals with visible change origin.
-This remains missing from `mcp.rs`. Memory/provider M0 owns the shared goal service, bounded MCP
+[Goal proposals](../quality/goal-proposals.md) now implement explicit add/close review over the
+shared goal store. Memory/provider M0 owns the shared goal service, bounded MCP
 goal reads and goal/thread/file associations. It must reuse the current `tui/landing.rs` store's
 stable ids, 2 MiB ceiling, atomic lock, immutable goal text and monotonic completion behavior;
 the integration catalog must not invent a second goal database or relationship graph.
 
-A later goal-change tool writes typed add/close proposals through the existing delegation
+The goal-change tool writes typed add/close proposals through the existing delegation
 proposal/approval boundary, with exact goal id, observed revision and request id. User review
 applies once to the displayed proposal/revision. Duplicate close is idempotent; stale/corrupt
 state or failed receipt writes preserve existing data and never trigger automatic restart replay.

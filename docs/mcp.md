@@ -32,8 +32,16 @@ See [native memory](native-memory.md) for source validation, budgets and Cursor 
 returned `next_offset` and `revision` for a later page; changed state requires a fresh listing.
 With `goal` and an exact `workspace`, it reads confirmed goal/source association metadata instead.
 Metadata listings launch no provider or native replay and do not claim that a source is currently
-available; use `native_read` for revision-checked readback. This tool cannot add/close goals or
-attach/detach sources. The nine-tool schema is kept below 4,000 bytes; MCP registration remains opt-in.
+available; use `native_read` for revision-checked readback. Source links cannot be mutated through
+MCP. The nine-tool schema stays below 4,000 bytes; MCP registration remains opt-in.
+
+Goal changes use `action: "propose_add"` with `text`, or `action: "propose_close"` with an exact
+`goal` id. Both require a canonical UUID `request_id` and the current goal-list `revision`.
+These calls only queue proposals. The local UI shows the full proposed goal, observed revision
+and unverified requester, then requires F7 focus and Y/N. Existing message drafts remain intact.
+`action: "status"` with `request_id` reads the result/uncertainty without replay. Goal proposals
+do not require enabling worker delegation and never authorize native tools or workers.
+[Goal change contracts and recovery](quality/goal-proposals.md).
 
 `integrations` discovers existing Harness connection metadata and Concordia-owned MCP registration
 status without executing adapters. With an integration `id`, it returns eight namespaced tool
