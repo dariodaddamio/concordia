@@ -925,15 +925,16 @@ impl Delegates {
                 Event::Finished(id, out) => {
                     self.finish_worker_attempt(id, &out);
                     let confirmed = out.exit_code.is_some()
-                        && !out
-                            .cards
-                            .iter()
-                            .any(|card| card.status == CardStatus::Running)
-                        && self.get(id).is_none_or(|job| {
-                            !job.cards
+                        && (out.cancelled
+                            || (!out
+                                .cards
                                 .iter()
                                 .any(|card| card.status == CardStatus::Running)
-                        });
+                                && self.get(id).is_none_or(|job| {
+                                    !job.cards
+                                        .iter()
+                                        .any(|card| card.status == CardStatus::Running)
+                                })));
                     let released = self.finish_workspace(id, confirmed, false);
                     let retry = released && self.worker_failover(id, &out, now);
                     if retry {

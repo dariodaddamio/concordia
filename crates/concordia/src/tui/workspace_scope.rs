@@ -95,11 +95,12 @@ impl App {
         let not_started = !invoked.load(std::sync::atomic::Ordering::SeqCst);
         let confirmed = not_started
             || outcome.exit_code.is_some()
-                && !outcome
-                    .cards
-                    .iter()
-                    .chain(&self.live_cards)
-                    .any(|card| card.status == CardStatus::Running);
+                && (outcome.cancelled
+                    || !outcome
+                        .cards
+                        .iter()
+                        .chain(&self.live_cards)
+                        .any(|card| card.status == CardStatus::Running));
         match workspaces::finish(
             &self.state_root,
             &owner.run_id,

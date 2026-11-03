@@ -956,6 +956,35 @@ impl Session {
         std::fs::write(self.root.join("gate"), "continue").unwrap();
     }
 
+    fn acknowledge_stopped_scope(&mut self) {
+        let draft = self.draft();
+        let prompts = self.prompts().len();
+        let registry = concordia::workspaces::load(&self.root).unwrap();
+        let run = registry
+            .reservations
+            .iter()
+            .find(|entry| entry.phase == concordia::workspaces::Phase::ReconcileRequired)
+            .unwrap()
+            .run
+            .clone();
+        self.send("\x1b[1;5B");
+        self.send("\x01\x08");
+        self.until("draft cleared for reconciliation command", |s| {
+            s.draft().is_empty()
+        });
+        self.submit(&format!("/scope stopped {run}"));
+        self.until("stopped process acknowledged", |s| {
+            s.screen().contains("Stopped-process acknowledgment saved")
+        });
+        assert_eq!(
+            self.prompts().len(),
+            prompts,
+            "acknowledgment never replays a turn"
+        );
+        self.paste(&draft);
+        self.until("independent draft restored", |s| s.draft() == draft);
+    }
+
     fn exit(&mut self) {
         self.send("\x01"); // clear the draft before native cancel/quit keys
         self.send("\x08");
@@ -1457,6 +1486,7 @@ fn explicit_queue_resume_preserves_the_recovered_draft() {
         s.screen().contains("Ctrl+R resumes")
     });
     assert_eq!(s.prompts().len(), 1);
+    s.acknowledge_stopped_scope();
     s.send("\x12"); // Ctrl+R
     s.until("one resumed prompt", |s| s.prompts().len() == 2);
     s.until("followup complete", |s| {
@@ -1575,27 +1605,7 @@ fn crash_restores_the_unsaved_upper_editor_separately_and_holds_dispatch() {
     s.until("edit committed", |s| {
         s.queue() == ["saved queued item\nunsaved upper edit"]
     });
-    let registry = concordia::workspaces::load(dir.path()).unwrap();
-    let uncertain = registry
-        .reservations
-        .iter()
-        .find(|entry| entry.phase == concordia::workspaces::Phase::ReconcileRequired)
-        .unwrap();
-    s.send("\x1b[1;5B"); // focus the independent draft to issue an explicit local command
-    s.send("\x01\x08");
-    s.until("draft cleared for reconciliation command", |s| {
-        s.draft().is_empty()
-    });
-    s.submit(&format!("/scope stopped {}", uncertain.run));
-    s.until("stopped process acknowledged", |s| {
-        s.screen().contains("Stopped-process acknowledgment saved")
-    });
-    assert_eq!(
-        s.prompts().len(),
-        1,
-        "acknowledgment must not replay the interrupted turn"
-    );
-    s.paste("independent draft");
+    s.acknowledge_stopped_scope();
     s.send("\x12");
     s.until("recovered edited item sent", |s| {
         s.prompts() == ["[wait] first", "saved queued item\nunsaved upper edit"]
