@@ -634,7 +634,13 @@ impl App {
         let args: Vec<_> = argument.split_whitespace().collect();
         let result: Result<String,String> = match args.as_slice() {
             ["fallback", mode @ ("on" | "off")] => crate::store::modify_store(&self.state_root, |s| { s.settings.delegate_quota_failover = *mode == "on"; Ok(()) }).map(|_| format!("Worker quota failover {mode}. Only confirmed quota failures before tools or partial output can move to the next configured worker; at most four attempts. Uncertain/crash recovery stays paused.")).map_err(|e| e.to_string()),
-            ["retry", id, "reconciled"] => id.parse::<u32>().map_err(|_| "invalid run id".to_string()).and_then(|id| self.deleg.d.recovered_task(id)).and_then(|(account, task)| self.start_delegate(&account, &task, Origin::User)),
+            ["retry", id, "reconciled"] => id.parse::<u32>().map_err(|_| "invalid run id".to_string()).and_then(|id| {
+                let (account, task) = self.deleg.d.recovered_task(id)?;
+                let job = self.deleg.d.get(id).ok_or("unknown worker run")?;
+                let declarations: Vec<_> = job.workspace.as_ref().map(|request| request.claims.iter().map(|claim| crate::workspaces::Declaration { path: claim.relative.clone(), access: claim.access }).collect()).unwrap_or_default();
+                let managed = job.workspace.as_ref().and_then(|request| request.binding.managed.as_ref()).map(|managed| managed.id.clone());
+                self.start_delegate_workspace(&account, &task, Origin::User, &[], &declarations, managed.as_deref())
+            }),
             ["recover", id] => {
                 let request = id.parse::<u32>().map_err(|_| "invalid run id".to_string()).and_then(|id| self.deleg.d.recovery_source(id).map(|(root,source)| (id,root,source)));
                 request.and_then(|(id,root,source)| {
@@ -689,6 +695,7 @@ impl App {
 
     /// Apply worker events and post the result of each worker that finished.
     pub(super) fn poll_delegates(&mut self) {
+        self.poll_managed_workspaces();
         self.poll_scope_inspection();
         if let Some((generation, rx)) = &self.deleg.route_read {
             match rx.try_recv() {
@@ -940,6 +947,18 @@ impl App {
         after: &[u32],
         declarations: &[crate::workspaces::Declaration],
     ) -> Result<String, String> {
+        self.start_delegate_workspace(target, task, origin, after, declarations, None)
+    }
+
+    fn start_delegate_workspace(
+        &mut self,
+        target: &str,
+        task: &str,
+        origin: Origin,
+        after: &[u32],
+        declarations: &[crate::workspaces::Declaration],
+        managed: Option<&str>,
+    ) -> Result<String, String> {
         #[cfg(not(test))]
         if !self.deleg.d.recovery_ready() {
             return Err("worker recovery storage is unavailable; no task was dispatched".into());
@@ -1018,7 +1037,7 @@ impl App {
         );
         let trust = worker_trust(self.trust, settings.child_trust);
         let queued_behind = self.deleg.d.running_for(&account).map(|j| j.id);
-        let id = self.deleg.d.submit_scoped(
+        let id = self.deleg.d.submit_workspace(
             Submit {
                 account: account.clone(),
                 provider: acct.provider,
@@ -1036,6 +1055,7 @@ impl App {
             Instant::now(),
             after,
             declarations,
+            managed,
         )?;
         self.deleg.owners.insert(id, self.deleg.generation);
         crate::logging::info(&format!(
@@ -1044,8 +1064,13 @@ impl App {
             trust.as_str(),
             task.chars().count()
         ));
+        let workspace_note = managed
+            .map(|workspace| {
+                format!(" · managed worktree {workspace}; native filesystem confinement unverified")
+            })
+            .unwrap_or_default();
         Ok(format!(
-            "delegated #{id} to {} ({}) \u{b7} {} \u{b7} trust {}{} \u{b7} {note} \u{b7} /delegate stop {account} cancels",
+            "delegated #{id} to {} ({}) \u{b7} {} \u{b7} trust {}{} \u{b7} {note} \u{b7} /delegate stop {account} cancels{workspace_note}",
             crate::accounts::display_account_name(acct.provider, &account),
             acct.provider.as_str(),
             match queued_behind {
@@ -1141,6 +1166,11 @@ impl App {
             SlashCommand::DelegateScoped { account, declarations, task } => {
                 let result = self.start_delegate_scoped(account, task, Origin::User, &[], declarations)
                     .unwrap_or_else(|error| format!("scoped worker not dispatched: {error}"));
+                self.push_system(result);
+            }
+            SlashCommand::DelegateWorktree { workspace, account, task } => {
+                let result = self.start_delegate_workspace(account, task, Origin::User, &[], &[], Some(workspace))
+                    .unwrap_or_else(|error| format!("managed worker not dispatched: {error}"));
                 self.push_system(result);
             }
             SlashCommand::DelegateScope(command) => {

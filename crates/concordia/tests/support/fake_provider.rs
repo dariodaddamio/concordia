@@ -378,7 +378,7 @@ fn interaction(args: &[String]) {
                 let _ = writeln!(
                     file,
                     "{}",
-                    json!({"kind":kind,"provider":provider,"prompt":prompt,"image_count":image_count,"args":args,"home":std::env::var(if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" }).ok()})
+                    json!({"kind":kind,"provider":provider,"prompt":prompt,"image_count":image_count,"args":args,"cwd":std::env::current_dir().ok(),"home":std::env::var(if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" }).ok()})
                 );
             }
         }

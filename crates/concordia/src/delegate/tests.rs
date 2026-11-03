@@ -215,6 +215,7 @@ fn bare_job(id: u32, account: &str, state: WorkerState) -> Job {
         workspace_notice: None,
         workspace_next_check: None,
         workspace_invoked: None,
+        preparation_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         attempts: vec![],
         attempt_records: vec![],
         model: None,

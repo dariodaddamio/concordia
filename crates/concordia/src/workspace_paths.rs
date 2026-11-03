@@ -323,5 +323,146 @@ mod tests {
         std::fs::write(&corrupted, b"{invalid").unwrap();
         assert!(workspaces::reserve(&state, &writer, &run, &conversation, &attempt).is_err());
         assert_eq!(std::fs::read(corrupted).unwrap(), b"{invalid");
+        // Exercise the supported Git CLI against only this synthetic committed repository.
+        let repository = fixture.path().join("repository");
+        let managed_state = fixture.path().join("managed-state");
+        let empty_hooks = fixture.path().join("empty-hooks");
+        std::fs::create_dir_all(repository.join("src")).unwrap();
+        std::fs::create_dir(&empty_hooks).unwrap();
+        std::fs::write(repository.join("src/input.txt"), "committed fixture\n").unwrap();
+        std::fs::write(repository.join(".gitattributes"), "*.txt filter=fixture\n").unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let mut command = std::process::Command::new(which::which("git").unwrap());
+            command
+                .current_dir(cwd)
+                .args([
+                    "-c",
+                    &format!("core.hooksPath={}", empty_hooks.display()),
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "commit.gpgSign=false",
+                ])
+                .args(args);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "synthetic Git command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&repository, &["init", "-b", "main"]);
+        git(&repository, &["config", "core.autocrlf", "false"]);
+        git(
+            &repository,
+            &["add", "--", "src/input.txt", ".gitattributes"],
+        );
+        git(&repository, &["commit", "-m", "synthetic base"]);
+        git(
+            &repository,
+            &[
+                "config",
+                "filter.fixture.process",
+                "nonexistent-concordia-fixture-filter-must-not-run",
+            ],
+        );
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let record =
+            crate::managed_workspaces::create(&managed_state, &repository, "HEAD", &cancel)
+                .unwrap();
+        assert_eq!(record.phase, crate::managed_workspaces::Phase::Ready);
+        assert_eq!(
+            std::fs::read_to_string(record.execution.join("src/input.txt")).unwrap(),
+            "committed fixture\n"
+        );
+        assert!(
+            git(&repository, &["config", "--get", "filter.fixture.process"])
+                .contains("must-not-run"),
+            "creation never rewrites source configuration"
+        );
+        let managed_request =
+            Request::managed(&managed_state, &repository, &record.id, &[]).unwrap();
+        assert_ne!(
+            managed_request.binding.owner,
+            managed_request.binding.execution
+        );
+        let managed_run = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            workspaces::reserve(
+                &managed_state,
+                &managed_request,
+                &managed_run,
+                &conversation,
+                &attempt
+            )
+            .unwrap(),
+            Admission::Reserved
+        );
+        assert!(
+            Request::shared(&repository, &[]).unwrap().binding.execution
+                != managed_request.binding.execution
+        );
+        workspaces::finish(&managed_state, &managed_run, &attempt, true).unwrap();
+        let mut registry = crate::managed_workspaces::load(&managed_state).unwrap();
+        registry.records[0].phase = crate::managed_workspaces::Phase::Creating;
+        registry.records[0].execution_identity = None;
+        std::fs::write(
+            managed_state.join("managed-workspaces.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        assert!(crate::managed_workspaces::bound(&managed_state, &repository, &record.id).is_err());
+        let reconciled =
+            crate::managed_workspaces::reconcile(&managed_state, &repository, &record.id, &cancel)
+                .unwrap();
+        assert_eq!(reconciled.phase, crate::managed_workspaces::Phase::Ready);
+        assert!(
+            workspaces::reserve(
+                &managed_state,
+                &managed_request,
+                &uuid::Uuid::new_v4().to_string(),
+                &conversation,
+                &attempt
+            )
+            .is_err(),
+            "changed registry revision invalidates approval"
+        );
+        assert_eq!(
+            git(&repository, &["worktree", "list", "--porcelain"])
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            2,
+            "reconciliation never creates another worktree"
+        );
+        std::fs::write(repository.join("unsaved.txt"), "retain this local edit").unwrap();
+        assert!(
+            crate::managed_workspaces::create(&managed_state, &repository, "HEAD", &cancel)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(repository.join("unsaved.txt")).unwrap(),
+            "retain this local edit"
+        );
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            crate::managed_workspaces::create(&managed_state, &repository, "HEAD", &cancel)
+                .is_err()
+        );
+        assert_eq!(
+            crate::managed_workspaces::load(&managed_state)
+                .unwrap()
+                .records
+                .len(),
+            1
+        );
     }
 }

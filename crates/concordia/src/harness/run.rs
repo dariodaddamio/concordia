@@ -46,6 +46,21 @@ fn drain(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<String> {
 
 /// Run `argv` (program first) in `cwd`. A program that cannot start is reported in `stderr`.
 pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome {
+    run_command_cancellable(
+        argv,
+        cwd,
+        timeout,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+}
+
+/// The caller retains cancellation ownership; cancellation kills this child's tracked tree.
+pub fn run_command_cancellable(
+    argv: &[String],
+    cwd: &Path,
+    timeout: Duration,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> RunOutcome {
     let Some((program, args)) = argv.split_first() else {
         return RunOutcome {
             stderr: "could not start: empty command".into(),
@@ -108,14 +123,19 @@ pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome
     let (exit, timed_out) = loop {
         match child.try_wait() {
             Ok(Some(status)) => break (status.code(), false),
-            Ok(None) if Instant::now() >= deadline => {
+            Ok(None)
+                if Instant::now() >= deadline
+                    || cancel.load(std::sync::atomic::Ordering::SeqCst) =>
+            {
                 #[cfg(windows)]
                 {
                     if let Some(job) = &job {
                         job.terminate();
                     } else {
+                        use std::os::windows::process::CommandExt;
                         let _ = std::process::Command::new("taskkill.exe")
                             .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                            .creation_flags(0x0800_0000)
                             .status();
                     }
                 }
