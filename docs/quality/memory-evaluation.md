@@ -70,6 +70,13 @@ report pair was 5,413 bytes. The slowest ranked query took 15,434 microseconds, 
 scope above. All-target Clippy with warnings denied passes. Corpus line endings are pinned to
 LF so its byte identity survives checkout. No ranking weights or defaults were tuned.
 
+After the workspace-alias and source-update corrections, clean source `e29078b` reproduces
+all sixteen comparisons, all thirty exact excerpts and all nine integrity checks in 9.143 seconds.
+Its test executable SHA-256 is
+`7082b85ef646f6de819204771da4dd20a5571fb05b0f0c7aa7bcf7402573a228`.
+The observed process peak working set is 63,864,832 bytes and the largest retained serialized
+report pair remains 5,413 bytes. Relevance and incomplete-scope outcomes remain unchanged.
+
 ## Controlled model-retention experiment: prepared, not run
 
 Use three arms on the same synthetic committed repository and pinned constraints: native resume
