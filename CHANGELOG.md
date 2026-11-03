@@ -1,5 +1,10 @@
 # Changelog
 
+- Image attachments now show a thumbnail above the editable composer automatically, with a
+  monochrome fallback and a click target for the enlarged view. Credits have their own persistent
+  header row beside subscription limits; missing balances and separately unavailable credit spend
+  are stated explicitly. App branding and update activity use the new geometric glyphs.
+
 - GIF links retain the explicit system-viewer fallback. A read-only candidate evidence collector
   binds executable hashes, build source, environment and bounded check receipts without publishing.
 

@@ -2031,12 +2031,14 @@ mod tests {
             first.summary
         );
         assert!(first.detail.contains("credits balance 12.5"));
+        assert_eq!(first.credits_text(), "Credits: 12.5 balance");
         let mut restarted = UsageFetcher::with_runner(root.path().into(), fake_runner(SAMPLE));
         assert!(restarted
             .snapshot(ProviderKind::Codex, "synthetic", root.path())
             .summary
             .contains("credits balance 12.5"));
         let pending = fetcher.snapshot_refresh(ProviderKind::Codex, "synthetic", root.path());
+        assert_eq!(pending.credits_text(), "Credits: 12.5 balance");
         assert!(pending.detail.contains("refreshing"));
         wait_for(&mut fetcher);
         assert_eq!(

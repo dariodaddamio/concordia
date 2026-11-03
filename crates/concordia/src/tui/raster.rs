@@ -444,6 +444,49 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
     assert_eq!(app.editor.text(), "preview preserves this draft");
     assert!(key(app, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert!(!app.raster.active());
+    app.images.draft = vec![crate::attachments::Attachment::Image(
+        crate::attachments::import(&app.state_root, &path).unwrap(),
+    )];
+    app.ensure_inline_raster();
+    while app.raster.job.is_some() {
+        app.raster.poll();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(
+        !app.raster.active(),
+        "a composer thumbnail must not capture input"
+    );
+    terminal.draw(|f| super::draw_ui(f, app)).unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(screen.contains("Preview · raster-preview.png"), "{screen}");
+    assert!(screen.contains("12 × 8"), "{screen}");
+    assert!(
+        screen.contains('▀'),
+        "the default composer shows actual pixels"
+    );
+    app.paste_text(" plus typing");
+    assert!(app.editor.text().contains("plus typing"));
+    app.no_color = true;
+    terminal
+        .draw(|f| draw_inline(f, Rect::new(0, 0, 60, 8), app))
+        .unwrap();
+    assert!(
+        (1..8).any(|y| (0..26).any(|x| {
+            let symbol = terminal.backend().buffer()[(x, y)].symbol();
+            symbol != " " && symbol != "▀"
+        })),
+        "monochrome terminals also show image pixels"
+    );
+    app.images.draft.clear();
+    app.ensure_inline_raster();
+    assert!(app.raster.view.is_none());
     app.start_raster(path, None);
     app.raster.close();
     while app.raster.job.is_some() {

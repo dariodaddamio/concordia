@@ -196,10 +196,10 @@ impl Phase {
         }
     }
 
-    /// Each phase has its own width-1 braille animation, so the state reads from motion alone.
+    /// Each phase has its own animation, so the state reads from motion alone.
     fn frames(&self) -> &'static [&'static str] {
         match self {
-            Phase::Waiting => &["◌", "○", "◌", "·"],
+            Phase::Waiting => &["✧", "✦", "✧", "✦"],
             Phase::Thinking => &["◇", "◈", "◆", "◈"],
             Phase::Tool(_) => &["›", "»", "›", "·"],
             Phase::Writing => &["▁", "▂", "▃", "▄", "▃", "▂"],
@@ -5473,6 +5473,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             .filter(|part| !part.starts_with("credits "))
             .collect::<Vec<_>>()
             .join(" · ");
+        let subscription = if subscription.is_empty() {
+            "not reported"
+        } else {
+            &subscription
+        };
         let line = Line::from(vec![
             Span::styled(format!(" {}  │  ", app.usage_credits), bar.fg(Color::Cyan)),
             Span::styled(format!("Subscription: {subscription}"), bar.fg(usage_color)),

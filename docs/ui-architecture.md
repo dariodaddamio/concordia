@@ -5,6 +5,16 @@
 Concordia is a **terminal app** you talk to. It should feel like a polished agent client. Codex, Claude
 and Cursor are **backends** (your subscriptions and their tools), not the thing you live in.
 
+Image attachments show a bounded snapshot thumbnail above the composer without requiring a click.
+The first attached image previews automatically; every image chip can open the enlarged viewer.
+The thumbnail leaves typing active, and monochrome terminals use luminance characters. Pasted file
+paths retain their text and offer explicit attachment through F9; a path alone is not an attachment.
+
+The second header row separates native credit balance/availability from subscription limits. A
+missing native balance reads `Credits: not reported`; the usage view also states when credit spend
+is not reported separately. App title glyphs describe activity. The graphical Windows Terminal tab
+icon belongs to the host profile and is independent of Concordia's title text.
+
 ## Non-negotiables
 
 - One input for chat and orchestrator commands (`/use`, `/config`, ...).
