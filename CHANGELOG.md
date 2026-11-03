@@ -167,6 +167,8 @@ also bumps the build stamp shown by `concordia --version`.
 
 ### Changed (`2026-11-02e`)
 - Native source indexing can scan whole Codex/Claude histories through immutable bounded pages, with resumable identity-checked cursors, snapshot-stable ordinals, explicit malformed/oversized-record gaps, and no stored conversation bodies. CLI and MCP range listings now page beyond the first twenty records; MCP can expand a known pointer into whole-history pages.
+### Distribution
+- Windows releases and rehearsals now require a trusted, timestamped signature matching the configured publisher and a clean Defender scan before packaging. Added local signing and verification scripts. Removed antivirus-exclusion installation advice; the detected private build remains blocked pending review and publisher-signing setup.
 
 ### Fixed (`2026-11-02d`)
 - Ordinary status updates mentioning "select an option" no longer turn later feature bullets into unrelated reply choices. Conversational choices require an explicit closing question or invitation followed immediately by options; example JSON is interpreted only in question-tool cards.

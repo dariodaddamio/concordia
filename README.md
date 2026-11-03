@@ -413,7 +413,7 @@ rows, buttons and file links request a hand cursor on terminals supporting OSC 2
 - **Concordia awareness is configurable.** Homes Concordia creates can receive a short awareness
   note; optional MCP registration exposes local tools. `@chat` and bounded maps are implemented.
   User-owned provider setup is preserved. See [architecture](docs/architecture.md).
-- **Unsigned and unpublished.** The release binary is not code-signed yet, so Windows SmartScreen may warn. No release has been published, and the install scripts use a placeholder owner until one is.
+- **Private pre-release.** Public distribution is blocked until publisher signing and exact-artifact antivirus validation pass. An earlier private artifact triggered Defender; publisher setup and vendor review remain pending. See [Windows signing](docs/windows-signing.md) and [release blockers](docs/release-blockers.md).
 - **Not yet verified live:** the `/use add` login window, mouse selection inside WezTerm, and real multi-line turns through each provider. The automated tests use a fake provider by design, so they never spend your subscription.
 
 ## Safety and provider terms
