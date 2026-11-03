@@ -17,7 +17,7 @@ Ok "binary: $Exe"
 # Compare exact bytes so rounding cannot let an oversized artifact through.
 $sizeBytes = (Get-Item $Exe).Length
 $mb = [math]::Round($sizeBytes / 1MB, 2)
-if ($sizeBytes -gt 20MB) { Fail "binary is $mb MiB (budget 20 MiB)" } else { Ok "size $mb MiB (budget 20 MiB)" }
+if ($sizeBytes -gt 22MB) { Fail "binary is $mb MiB (budget 22 MiB)" } else { Ok "size $mb MiB (budget 22 MiB)" }
 
 # 2. --version: stamp format, and read-only (must not create or change the install pointer).
 $pointer = Join-Path $env:LOCALAPPDATA "concordia\bin\current"

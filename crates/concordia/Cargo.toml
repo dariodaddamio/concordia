@@ -32,6 +32,7 @@ test = false
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 crossterm = "0.28"
 dirs = "6"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }

@@ -196,6 +196,10 @@ No credential-file fixtures or real credential reads are needed.
 
 ## I2: inline raster previews
 
+Implemented as bounded color-cell previews in `2026-11-03p`; see
+[current limits](../images-and-diagrams.md). Ordinary cells avoid enabling an unverified image
+protocol. The protocol-specific design below remains separate.
+
 Add `tui/raster.rs` as a bounded decode/downsample/cache service and a typed terminal presentation
 adapter. Keep original attachments unchanged; cached thumbnails are derived from verified
 snapshots, keyed by hash, viewport, scale and host capability generation. Start with composer and

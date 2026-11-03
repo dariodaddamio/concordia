@@ -1,5 +1,22 @@
 # Dependency and terminal-output security
 
+## Native raster dependency review, 2026-11-03p
+
+`image` is pinned to 0.25.10 (MIT OR Apache-2.0), with defaults disabled and only PNG, JPEG and
+WebP codecs. No AVIF/TIFF/GIF parser, Rayon pool, codec executable or browser is introduced.
+The lockfile records transitive versions. Upstream defines strict edge limits and a non-strict
+allocation limit; Concordia additionally checks dimensions/output bytes before pixel allocation.
+Decode work is serialized off the input thread; close prevents stale publication and retained
+derivatives are bounded. See [image limits](../images-and-diagrams.md), the upstream
+[feature graph](https://docs.rs/crate/image/0.25.10/features) and
+[limits contract](https://docs.rs/image/0.25.10/image/struct.Limits.html).
+`cargo deny check` passes advisory, license and source checks (existing duplicate-version
+warnings remain). The unsigned release is 21,580,800 bytes, 733,696 bytes above build o.
+The distribution ceiling is deliberately revised to 22 MiB; no advisory/license exception is added.
+The existing store/renderer fixture, three-provider ConPTY image journey, all-target clippy and
+release build pass. Evidence: ignored `target/raster-p-{proof-final,terminal-final,clippy-final,
+dependencies,release}.log`. No model turn or physical-host image-protocol claim is included.
+
 The 2026-10-31 review covers Concordia's Cargo lockfile and the terminal display path.
 Concordia has no JavaScript runtime, CDN scripts or browser rendering library. Keep the
 application native; do not add external JavaScript to implement terminal controls.

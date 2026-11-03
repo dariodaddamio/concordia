@@ -145,11 +145,7 @@ impl App {
                         "gif" | "png" | "jpg" | "jpeg" | "webp"
                     )
                 }) {
-                    let target = file.path.to_string_lossy();
-                    self.open_host_target(
-                        target.strip_prefix(r"\\?\").unwrap_or(&target).to_owned(),
-                        "image",
-                    );
+                    self.start_raster(file.path, None);
                     return true;
                 }
                 let path = file.path.clone();

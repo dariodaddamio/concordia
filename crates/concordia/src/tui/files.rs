@@ -13,7 +13,7 @@ impl App {
         self.open_host_target(url, "link");
     }
 
-    fn open_host_target(&mut self, target: String, label: &'static str) {
+    pub(super) fn open_host_target(&mut self, target: String, label: &'static str) {
         #[cfg(test)]
         {
             self.flash(format!("opened {label} {target}"));

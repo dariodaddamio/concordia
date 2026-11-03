@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03o
+# Feature completion audit: 2026-11-03p
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,10 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Inline color-cell image previews use bounded background decoding and content-hash thumbnails.
+  Composer snapshots verify hashes; draft-safe close and explicit system-viewer fallback share
+  file actions. [Limits and host distinction](images-and-diagrams.md).
 
 - Agent-facing goal add/close proposals share the existing local review queue and goal store.
   Full-text F7/Y/N review, revision-bound receipts and source attribution preserve drafts,
@@ -125,7 +129,7 @@ creation does not change the implementation status recorded here.
 - Native image payloads for Codex/Claude/Cursor, composer capture/preview/remove chips, immutable
   snapshots and draft/queue/recovery/handoff references. Cursor requires advertised ACP image
   capability. UTF-8 documents and explicit attachment of pasted file paths are implemented;
-  inline raster thumbnails and verified binary document transports remain open.
+  inline cell rasters are implemented; verified binary document transports remain open.
 - Cursor image-turn native permission/choice responses. Ordinary text adapters and other native
   approval paths have not been migrated; this is not full provider interaction parity.
 - Draft-preserving automatic quota continuation, deferred retry after command screens/queued edits,
@@ -200,8 +204,8 @@ roadmap, and an audit is not implementation. Local engineering can proceed witho
    the requested control; app-side shape-selection tests do not close that host limitation.
 
 Managed worktrees and cwd search/replacement are implemented within their documented guards.
-Image/document input and explicit pasted-path attachment are implemented; inline raster thumbnails
-and binary-document transports remain open. Signing and platform expansion
+Image/document input, explicit pasted-path attachment and inline cell rasters are implemented;
+binary-document transports remain open. Signing and platform expansion
 have their own release/roadmap status. They are not silently
 included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.md),
 [workspace requirements](workspace-panes.md), [release blockers](release-blockers.md), and

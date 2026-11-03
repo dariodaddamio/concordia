@@ -24,7 +24,8 @@ approval-bound sequences and worker/main inspection; workspace isolation remains
 and [integration discovery](../quality/integrations-catalog.md) record later engineering progress.
 [Cross-worktree dependency delivery](../quality/dependency-delivery.md) adds reviewed receipts and
 retirement references. [Goal proposals](../quality/goal-proposals.md) add exact revision-bound
-local review and attribution. Verified binary transports, inline raster, typed artifacts and
+local review and attribution. [Inline cell rasters](../images-and-diagrams.md) add bounded decoding
+and explicit viewer fallback. Verified binary transports, typed artifacts and
 native/physical-host parity retain their separate contracts below.
 
 ## Baseline and scope

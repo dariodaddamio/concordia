@@ -72,6 +72,7 @@ mod questions;
 mod queue;
 mod queue_controls;
 mod queue_focus;
+mod raster;
 mod recovery;
 mod recovery_ui;
 mod related_files;
@@ -317,6 +318,7 @@ pub struct App {
     related_files: related_files::State,
     questions: questions::State,
     images: images::State,
+    raster: raster::State,
     /// Sent prompts, oldest first. In memory only: prompts may contain pasted secrets.
     history: Vec<String>,
     /// Index into `history` while browsing with the arrow keys.
@@ -766,6 +768,9 @@ impl App {
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        if self.raster.active() {
+            return;
+        }
         if worker_input::active(self) {
             return;
         }
@@ -1564,6 +1569,7 @@ impl App {
     fn on_tick(&mut self) {
         self.questions.refresh_native();
         self.poll_images();
+        self.raster.poll();
         self.tick_count = self.tick_count.wrapping_add(1);
         if self.busy {
             self.pulse_on = self.tick_count.is_multiple_of(2);
@@ -3451,6 +3457,7 @@ impl App {
             project_search: workspace_search::State::default(),
             file_action_target: None,
             images: images::State::default(),
+            raster: raster::State::default(),
             history: Vec::new(),
             hist_pos: None,
             hist_draft: String::new(),
@@ -4193,6 +4200,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         KeyEventKind::Repeat if !matches!(key.code, KeyCode::Backspace) => return false,
         _ => {}
     }
+    if raster::key(app, &key) {
+        return false;
+    }
     if worker_input::key(app, &key) {
         return false;
     }
@@ -4739,6 +4749,9 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if app.raster.active() && !worker_input::active(app) {
+        return;
+    }
     if worker_input::active(app) {
         if !modal::mouse(app, &m) {
             worker_input::mouse(app, &m);
@@ -5172,6 +5185,10 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
     if worker_input::active(app) {
         app.areas = Areas::default();
         worker_input::draw(f, app);
+    }
+    if app.raster.active() && !worker_input::active(app) {
+        app.areas = Areas::default();
+        raster::draw(f, app);
     }
     // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
     for cell in &mut f.buffer_mut().content {

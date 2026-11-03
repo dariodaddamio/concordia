@@ -1,5 +1,8 @@
 # Changelog
 
+- Image chips and image file previews open bounded inline color-cell rasters. Decode work stays
+  off the input loop; Esc preserves the draft and E explicitly opens the system viewer.
+
 - Agents can propose goal additions/closures through MCP for explicit full-text local review.
   F7 focuses goal choices without consuming the message draft. Revision-bound receipts and visible
   source attribution preserve monotonic completion and prevent replay of uncertain changes.

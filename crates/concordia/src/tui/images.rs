@@ -490,7 +490,10 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
                 return true;
             }
             let (path, document) = match attachment {
-                Attachment::Image(image) => (image.path, false),
+                Attachment::Image(image) => {
+                    app.start_raster(image.path, Some(image.sha256));
+                    return true;
+                }
                 Attachment::TextDocument(document) => {
                     if let Err(error) = document.text() {
                         app.flash(error);
@@ -617,5 +620,6 @@ mod tests {
         assert!(app.accept_pasted_files());
         assert!(!app.images.importing());
         assert_eq!(app.images.count(), 0);
+        raster::fixture_proof(&mut app, dir.path());
     }
 }
