@@ -3,6 +3,11 @@
 Build `2026-11-02t` adds opt-in M1 ranking. Ordinary `/memory recall` remains lexical.
 No provider turn, transcript copy, embedding or referenced-file crawl is needed.
 
+Candidate `2026-11-03a` corrects current-workspace alias matching for canonical goal links.
+The original t candidate passed local checks below, but CI exposed its Windows short-path
+false negative. The explicit current context now resolves before association comparison;
+historical source workspace/file paths remain lexical. Corrected-candidate validation is pending.
+
 ## Controls
 
 `/memory ranked QUERY` searches the current workspace across accounts, retaining each exact
