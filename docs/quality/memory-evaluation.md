@@ -61,7 +61,14 @@ coverage rate. Both arms keep the same twelve-hit, one-page ceiling; context evi
 
 Candidate corpus SHA-256:
 `490e6483fd9bd8c015527d6c05e3e0ee3bbc635ea1059b010447bc678423d84f`.
-Final clean-source artifact and checks are pending. No ranking weights or defaults were tuned.
+Clean source `3d20be0` reproduces all sixteen rows and all nine native-memory checks in 9.837
+seconds. Its test executable SHA-256 is
+`3a347ee0fe3baffe2024d14222beda29c2a8f5ff152c43f8c598b85844a502c6`.
+The observed process peak working set was 50,892,800 bytes; the largest retained serialized
+report pair was 5,413 bytes. The slowest ranked query took 15,434 microseconds, with at most
+196,759 successful native read bytes in a paired query. These values retain the measurement
+scope above. All-target Clippy with warnings denied passes. Corpus line endings are pinned to
+LF so its byte identity survives checkout. No ranking weights or defaults were tuned.
 
 ## Controlled model-retention experiment: prepared, not run
 

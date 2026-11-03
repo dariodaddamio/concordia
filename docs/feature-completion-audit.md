@@ -11,6 +11,11 @@ creation does not change the implementation status recorded here.
 
 ## Closed in this build
 
+- A versioned synthetic retrieval corpus and provider-free collector measure scoped relevance,
+  exact excerpt resolution, visible gaps, read cost and resource observations through existing
+  checks. [Evidence and prepared live experiment](quality/memory-evaluation.md). Model-retention
+  trials remain unrun and require an explicit provider/task budget; ranking stays opt-in.
+
 - Explicit related-chat groups retain overlapping membership and provenance. A separate discovery
   screen preserves drafts and landing selection, with cross-project context suggestions labelled.
   [Behavior and evidence](quality/related-chat-groups.md). Corpus evaluation remains open.
