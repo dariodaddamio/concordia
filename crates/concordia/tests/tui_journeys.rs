@@ -839,7 +839,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
                 .next()
                 .unwrap_or_default()
                 .trim_start()
-                .starts_with('◆')
+                .starts_with('✦')
                 && screen.contains("resize-draft-marker")
                 && screen
                     .lines()
@@ -872,7 +872,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
             .next()
             .unwrap_or_default()
             .trim_start()
-            .starts_with('◆')
+            .starts_with('✦')
             && screen
                 .lines()
                 .nth(28)
