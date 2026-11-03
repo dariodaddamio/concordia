@@ -75,6 +75,10 @@ uses its read-only quota RPC. Native execution, authentication and approvals rem
 
 ## Roadmap
 
+The [first completion wave](docs/quality/completion-wave1.md) adds project search and dependency/
+native interaction foundations. Dependency dispatch, worktree isolation and broader native approvals
+remain later phases. Verification states and limits are recorded separately in that evidence file.
+
 The [remaining-feature execution plan](docs/plans/completion-roadmap.md) breaks all open areas
 into implementation slices, parallel ownership, dependencies and observable acceptance criteria.
 Its detailed plans are proposed work; shipped status remains in the feature completion audit.

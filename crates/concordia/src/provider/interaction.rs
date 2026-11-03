@@ -404,18 +404,6 @@ impl NativeRequest {
             .unwrap_or_else(|e| e.into_inner())
             .take();
     }
-
-    #[cfg(test)]
-    pub fn channel(method: String, mut params: Value) -> (Self, oneshot::Receiver<Value>) {
-        let mut scope = InteractionConnection::new(None, Arc::new(AtomicBool::new(false)));
-        // This helper belongs only to the existing synthetic question fixture.
-        params["sessionId"] = json!("fixture");
-        let (request, rx) = scope
-            .request("fixture", json!("fixture"), method, params)
-            .expect("valid synthetic native request");
-        scope.active = Arc::new(AtomicBool::new(false));
-        (request, rx)
-    }
 }
 
 /// Kept only by the live transport. Dropping it invalidates every cloned request.

@@ -35,6 +35,9 @@ pub(super) fn reset(out: &mut impl Write) -> io::Result<()> {
 }
 
 pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
+    if app.project_search.active() {
+        return "default";
+    }
     if contains(app.areas.run_cancel, x, y) {
         return "pointer";
     }

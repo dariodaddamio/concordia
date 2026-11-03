@@ -346,6 +346,20 @@ impl State {
             )),
             parts[1],
         );
+        if parts[1].width > 0 && parts[1].height > 0 {
+            let prefix = if self.case_sensitive {
+                "Literal [case sensitive]: "
+            } else {
+                "Literal [Unicode lowercase]: "
+            };
+            let column = prefix
+                .chars()
+                .chain(self.query.chars())
+                .map(text::char_width)
+                .sum::<usize>()
+                .min(parts[1].width.saturating_sub(1) as usize) as u16;
+            frame.set_cursor_position((parts[1].x + column, parts[1].y));
+        }
         frame.render_widget(Paragraph::new(clean(&self.message)), parts[2]);
         let visible = parts[3].height as usize / 2;
         let first = self.selected.saturating_sub(visible.saturating_sub(1));

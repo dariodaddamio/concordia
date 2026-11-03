@@ -109,11 +109,10 @@ impl Connection {
                     return self.write(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}})).await;
                 }
             };
-            if !self
-                .progress
-                .as_ref()
-                .is_some_and(|tx| tx.send(TurnProgress::Interaction(request.clone())).is_ok())
-            {
+            if !self.progress.as_ref().is_some_and(|tx| {
+                tx.send(TurnProgress::Interaction(Box::new(request.clone())))
+                    .is_ok()
+            }) {
                 // A closed/missing UI cannot leave a provider awaiting an invisible grant.
                 request.respond(json!({"outcome":{"outcome":"cancelled"}}));
             }

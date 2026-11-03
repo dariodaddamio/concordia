@@ -231,6 +231,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
         "/open",
         "preview files mentioned in this chat, or /open PATH",
     ),
+    ("/search", "search project file contents"),
     ("/copy", "copy the last reply"),
     ("/doctor", "check your setup"),
     ("/update", "update Concordia"),

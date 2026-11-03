@@ -141,7 +141,7 @@ pub fn attach_images(
 
 #[derive(Debug, Clone)]
 pub enum TurnProgress {
-    Interaction(NativeRequest),
+    Interaction(Box<NativeRequest>),
     Session(String),
     Text(String),
     TextDelta(String),

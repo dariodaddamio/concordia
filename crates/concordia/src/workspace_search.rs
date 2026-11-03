@@ -71,6 +71,7 @@ pub struct SearchHit {
 pub struct VerifiedHit {
     pub hit: SearchHit,
     pub text: String,
+    pub modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,6 +380,7 @@ pub fn verify_hit(
         &request.query,
         request.case_sensitive,
     )?;
+    let before = std::fs::metadata(&hit.path).map_err(|_| "search result is unavailable")?;
     let bytes = read_file(
         &request.root,
         &hit.path,
@@ -386,6 +388,13 @@ pub fn verify_hit(
         Instant::now(),
         MAX_FILE_BYTES + 1,
     )?;
+    let after = std::fs::metadata(&hit.path).map_err(|_| "search result is unavailable")?;
+    if before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+        || after.len() != bytes.len() as u64
+    {
+        return Err("search result changed during verification".into());
+    }
     let hash: [u8; 32] = Sha256::digest(&bytes).into();
     if hash != hit.hash {
         return Err("search result is stale; run the search again".into());
@@ -409,6 +418,7 @@ pub fn verify_hit(
     Ok(VerifiedHit {
         hit: hit.clone(),
         text,
+        modified: before.modified().ok(),
     })
 }
 

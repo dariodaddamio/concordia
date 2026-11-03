@@ -29,7 +29,9 @@ impl State {
         !self.questions.is_empty()
     }
     pub fn clear(&mut self) {
-        self.native.take();
+        if let Some(request) = self.native.take() {
+            request.invalidate();
+        }
         self.native_choices.clear();
         self.questions.clear();
         self.focused = false;
@@ -263,6 +265,15 @@ fn parse(text: &str) -> Vec<Question> {
 }
 /// `index` past the last choice is the note row: the note is sent on its own.
 fn choose(app: &mut App, index: usize) {
+    if app.questions.native.as_ref().is_some_and(|request| {
+        !app.native_owner
+            .as_ref()
+            .is_some_and(|owner| request.is_owned_by(owner))
+    }) {
+        app.questions.cancel_native();
+        app.flash("native request is no longer active");
+        return;
+    }
     let s = &mut app.questions;
     let Some(q) = s.questions.get(s.current) else {
         return;
@@ -298,7 +309,11 @@ fn choose(app: &mut App, index: usize) {
             let answers:Vec<_>=s.native_choices.iter().enumerate().map(|(q,i)|serde_json::json!({"questionId":native.params["questions"][q]["id"],"selectedOptionIds":[native.params["questions"][q]["options"][*i]["id"]]})).collect();
             serde_json::json!({"outcome":{"outcome":"answered","answers":answers}})
         };
-        native.respond(result);
+        if let Some(owner) = app.native_owner.as_ref() {
+            let _ = native.respond_owned(owner, result);
+        } else {
+            native.invalidate();
+        }
         s.clear();
         return;
     }
@@ -574,10 +589,25 @@ mod tests {
     fn native_permission_digit_shortcuts_still_answer_the_exact_request() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(dir.path().into(), dir.path().into());
-        let (request, mut rx) = crate::provider::turn::NativeRequest::channel(
-            "session/request_permission".into(),
-            serde_json::json!({"toolCall":{"title":"Read synthetic file?"},"options":[{"name":"Allow once","optionId":"allow-once"},{"name":"Reject","optionId":"reject"}]}),
+        let owner = crate::provider::interaction::InteractionOwner {
+            conversation_id: app.deleg.d.conversation_id().to_owned(),
+            workspace: dir.path().into(),
+            execution_cwd: dir.path().into(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Cursor,
+            account: "fixture".into(),
+            home: Some(dir.path().into()),
+        };
+        app.native_owner = Some(owner.clone());
+        let mut connection = crate::provider::interaction::InteractionConnection::new(
+            Some(owner),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
+        let (request, mut rx) = connection.request(
+            "fixture-session", serde_json::json!(1), "session/request_permission".into(),
+            serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read synthetic file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"allow-once"},{"name":"Reject","kind":"reject_once","optionId":"reject"}]}),
+        ).unwrap();
         app.questions.offer_native(request, true);
         assert!(handle_key(
             &mut app,
@@ -589,6 +619,20 @@ mod tests {
         );
         assert!(!app.questions.waiting());
         assert!(app.queue.items.is_empty());
+
+        // A queued request from the prior attempt must never acquire the new attempt's UI.
+        let (stale, mut stale_rx) = connection.request(
+            "fixture-session", serde_json::json!(2), "session/request_permission".into(),
+            serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"allow-once"}]}),
+        ).unwrap();
+        app.busy = true;
+        app.native_owner.as_mut().unwrap().attempt_id = uuid::Uuid::new_v4().to_string();
+        app.apply_progress(TurnProgress::Interaction(Box::new(stale)));
+        assert!(!app.questions.waiting());
+        assert!(matches!(
+            stale_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
     }
 
     #[test]

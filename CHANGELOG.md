@@ -1,6 +1,16 @@
 # Changelog
 
 ### Changed (`2026-10-21d`)
+
+### Added (`2026-11-02k`)
+- Read-only project content search (`/search`, or Ctrl+F in the file browser), with literal/case
+  controls, bounded cancellable scans, exact source hashes and draft-preserving input ownership.
+- Worker dependency graph and recovery foundation. Metadata validation/readiness does not dispatch
+  dependencies; interrupted work remains paused and only exact successful run receipts satisfy edges.
+- Typed native interaction/capability foundation; existing Cursor ACP requests retain native option
+  IDs/scopes and bind responses to their conversation, run, attempt and live connection. Cancelling
+  or completing a turn invalidates its pending UI requests. Other adapters and worker approvals remain open.
+
 - Compact tool rows foreground the command instead of PowerShell launcher paths, retain complete expanded output, and show output line counts. Completed reasoning is collapsed to one preview line.
 - Terminal titles use the terminal API, including the Windows console path, and follow the generated session title.
 - Usage-limit continuation defaults to manual (`/continue ACCOUNT`), with opt-in automatic handoff through configured accounts. Attempts are bounded, native session ids stay account-local, drafts and queued work are preserved, and uncertain tool results stop automatic handoff.

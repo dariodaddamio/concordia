@@ -6,7 +6,7 @@ use crate::context::{plan_continuity, ContinuityRequest, PackMessage, PackRole};
 use crate::identity::{format_identity_label, inspect_provider};
 use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
 use crate::provider::turn::{
-    plan_provider_turn, run_provider_turn_with_progress, ProviderTurnRequest, RunningTurn,
+    plan_provider_turn, run_provider_turn_with_owner, ProviderTurnRequest, RunningTurn,
     TurnOutcome, TurnProgress,
 };
 use crate::sessions::{
@@ -89,6 +89,7 @@ mod usage_style;
 mod ux_tests;
 mod workers;
 mod workspace;
+mod workspace_search;
 
 use editor::Editor;
 use palette::Palette;
@@ -291,6 +292,8 @@ impl Picker {
 
 pub struct App {
     continuation: continuation::State,
+    native_owner: Option<crate::provider::interaction::InteractionOwner>,
+    project_search: workspace_search::State,
     continuation_target: Option<String>,
     state_root: PathBuf,
     cwd: PathBuf,
@@ -738,6 +741,10 @@ impl App {
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        if self.project_search.active() {
+            self.project_search.paste(text);
+            return;
+        }
         // Paste can arrive as one Event::Paste or as a buffered burst split into overflow
         // chunks. Route every chunk here so a modal never edits the prompt or queue editor.
         if self.activity.detail.is_some() {
@@ -1025,8 +1032,18 @@ impl App {
     fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
             TurnProgress::Interaction(request) => {
+                if self.cancel_requested
+                    || !self.busy
+                    || !self
+                        .native_owner
+                        .as_ref()
+                        .is_some_and(|owner| request.is_owned_by(owner))
+                {
+                    request.invalidate();
+                    return;
+                }
                 self.questions
-                    .offer_native(request, self.editor.text().is_empty());
+                    .offer_native(*request, self.editor.text().is_empty());
                 self.pause_queue();
             }
             TurnProgress::Session(id) => {
@@ -1441,6 +1458,7 @@ impl App {
         self.poll_file_jobs();
         self.poll_session_history();
         self.poll_memory();
+        self.poll_project_search();
         self.workspace.poll();
         if let Some(notice) = self.workspace.take_notice() {
             self.flash(notice);
@@ -2617,6 +2635,10 @@ impl App {
             self.push_system("/exit is now Ctrl+C twice");
             return true;
         }
+        if line.trim() == "/search" {
+            self.open_project_search();
+            return true;
+        }
         if line.trim() == "/open" {
             self.open_related_files();
             return true;
@@ -2813,6 +2835,8 @@ impl App {
         };
         let (outcome, lines) = dispatch_slash(cmd, &ctx);
         if is_new {
+            self.project_search.close();
+            self.native_owner = None;
             self.deleg.change_conversation();
             self.keep.turn_recovery_notice = false;
             self.continuation.invalidate();
@@ -3131,6 +3155,8 @@ impl App {
     }
 
     fn request_cancel(&mut self) {
+        self.questions.cancel_native();
+        self.native_owner = None;
         if self.cancel_requested {
             return;
         }
@@ -3204,6 +3230,8 @@ impl App {
             chatref: chatref::ChatRef::default(),
             related_files,
             questions: questions::State::default(),
+            native_owner: None,
+            project_search: workspace_search::State::default(),
             images: images::State::default(),
             history: Vec::new(),
             hist_pos: None,
@@ -3478,7 +3506,7 @@ pub async fn run_chat_tui() -> Result<()> {
                             if let Some(burst) = key_burst.take_pending() {
                                 dispatch_key_burst(&mut app, burst, &turn_tx);
                             }
-                            if !questions::paste(&mut app, &s) {
+                            if app.project_search.active() || !questions::paste(&mut app, &s) {
                                 app.paste_text(&s)
                             }
                         }
@@ -3519,6 +3547,32 @@ pub async fn run_chat_tui() -> Result<()> {
                 let account = app.account.clone();
                 let model = app.model.clone();
                 let trust = app.trust;
+                let launch_home = app.home_path.clone();
+                let owner = crate::provider::interaction::InteractionOwner {
+                    conversation_id: app.deleg.d.conversation_id().to_owned(),
+                    workspace: cwd.clone(),
+                    execution_cwd: cwd.clone(),
+                    run_id: app.continuation.run_id().to_owned(),
+                    attempt_id: uuid::Uuid::new_v4().to_string(),
+                    provider,
+                    account: account.clone(),
+                    home: app.home_path.clone(),
+                };
+                let owner = match owner.validate_for(provider, &cwd, app.home_path.as_deref()) {
+                    Ok(owner) => owner,
+                    Err(error) => {
+                        app.on_turn_done(
+                            TurnOutcome {
+                                stderr_tail: format!("native interaction owner: {error}"),
+                                ..Default::default()
+                            },
+                            &turn_tx,
+                        );
+                        continue;
+                    }
+                };
+                app.questions.cancel_native();
+                app.native_owner = Some(owner.clone());
                 let session = app.native_session_id.clone();
                 let prior_prov = app.prior_provider;
                 let prior_home = app.prior_home.clone();
@@ -3553,13 +3607,7 @@ pub async fn run_chat_tui() -> Result<()> {
                 app.live_thinking.clear();
                 app.phase = Phase::Waiting;
                 tokio::spawn(async move {
-                    let home = get_account(&state_root, &account)
-                        .and_then(|a| a.home_path)
-                        .or_else(|| {
-                            get_use_selection(&state_root)
-                                .and_then(|s| s.home_path)
-                                .map(PathBuf::from)
-                        });
+                    let home = launch_home;
                     let home_str = home.as_ref().map(|p| p.to_string_lossy().into_owned());
                     let binding = home.as_ref().and_then(|h| {
                         crate::native_memory::Binding::new(
@@ -3712,8 +3760,13 @@ pub async fn run_chat_tui() -> Result<()> {
                         });
                         return;
                     }
-                    match run_provider_turn_with_progress(&req, Some(handle_tx), Some(progress_tx))
-                        .await
+                    match run_provider_turn_with_owner(
+                        &req,
+                        owner,
+                        Some(handle_tx),
+                        Some(progress_tx),
+                    )
+                    .await
                     {
                         Ok(outcome) => {
                             let _ = done_tx.send(outcome);
@@ -3807,7 +3860,7 @@ fn dispatch_key_burst(
 ) -> bool {
     if burst.text {
         let text = burst.text_content.as_deref().unwrap_or_default();
-        if questions::paste(app, text) {
+        if !app.project_search.active() && questions::paste(app, text) {
             return false;
         }
         app.paste_text_chunk(
@@ -3835,7 +3888,11 @@ fn dispatch_key_event(
     let palette_action = matches!(key.code, KeyCode::Enter | KeyCode::Tab)
         && !app.palette_entries().is_empty()
         && !key_burst.active();
-    if input::BurstBuffer::is_candidate(&key) && app.picker.is_none() && !palette_action {
+    if input::BurstBuffer::is_candidate(&key)
+        && app.picker.is_none()
+        && !app.project_search.active()
+        && !palette_action
+    {
         if let Some(burst) = key_burst.push(key, now) {
             return dispatch_key_burst(app, burst, turn_tx);
         }
@@ -3859,6 +3916,32 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         KeyEventKind::Release => return false,
         KeyEventKind::Repeat if !matches!(key.code, KeyCode::Backspace) => return false,
         _ => {}
+    }
+    if app.project_search.active() {
+        if (matches!(key.code, KeyCode::Char('v' | 'V'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT))
+            || (key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            match clipboard::get_text() {
+                Ok(text) => app.project_search.paste(&text),
+                Err(error) => app.project_search.notice(&format!("paste failed: {error}")),
+            }
+            return false;
+        }
+        let action = app.project_search.key(key);
+        app.apply_search_action(action);
+        return false;
+    }
+    if key.code == KeyCode::Char('f')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Files)
+    {
+        app.open_project_search();
+        return false;
     }
     if landing::visible(app) && landing::handle_key(app, key) {
         return false;
@@ -4310,6 +4393,9 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if app.project_search.active() {
+        return;
+    }
     if modal::mouse(app, &m) {
         return;
     }
@@ -4698,6 +4784,10 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         chatref::draw(f, chunks[1], chunks[2], app);
         draw_footer(f, chunks[3], app);
         workers::draw(f, strip, chunks[1], app);
+    }
+    if app.project_search.active() {
+        app.areas = Areas::default();
+        app.project_search.draw(f, f.area());
     }
     // Cover every widget, including provider-controlled titles, menus and detail panes.
     // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
