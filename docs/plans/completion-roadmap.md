@@ -7,6 +7,7 @@ audits. It does not mark these features implemented or authorize provider usage 
 Progress: [wave one](../quality/completion-wave1.md) implements D1/P0/search W1;
 [wave two](../quality/completion-wave2.md) connects approved shared-workspace dependencies to
 normal dispatch and paused recovery. Other phases below remain planned unless evidence says otherwise.
+The [goal/source slice](../quality/goal-source-associations.md) records M0 implementation separately.
 
 ## Baseline and scope
 

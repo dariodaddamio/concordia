@@ -18,6 +18,8 @@ const EXCERPT_BYTES: usize = 8192;
 
 #[path = "cursor_history.rs"]
 mod cursor_history;
+#[path = "memory_relations.rs"]
+pub mod relations;
 #[path = "memory_retrieval.rs"]
 pub mod retrieval;
 
@@ -490,6 +492,22 @@ pub fn context_measurement(
     Ok(measurement)
 }
 
+/// Verify source identity and all retained record hashes without retaining conversation text.
+pub fn verify_source(root: &Path, id: &str) -> Result<Summary, String> {
+    let index = load(root, id)?;
+    let mut source = open_index_source(root, &index)?;
+    for span in &index.messages {
+        let raw = read_at(&mut source, span.start, span.len)?;
+        if digest(&raw) != span.sha256 {
+            return Err("native source changed since indexing".into());
+        }
+    }
+    if index.binding.provider != ProviderKind::Cursor {
+        let _ = open_index_source(root, &index)?;
+    }
+    Ok(summary(id, &index))
+}
+
 /// Recover a known completed worker's display result from its immutable native pointer.
 pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
     let index = load(root, id)?;
@@ -870,6 +888,35 @@ fn load(root: &Path, id: &str) -> Result<SourceIndex, String> {
         {
             return Err("invalid whole-history page metadata".into());
         }
+    }
+    let record_limit = if index.history.is_some() {
+        TAIL_BYTES as usize
+    } else {
+        LINE_BYTES
+    };
+    let mut previous_end = 0;
+    let mut total_bytes = 0u64;
+    for span in &index.messages {
+        let end = span
+            .start
+            .checked_add(span.len as u64)
+            .ok_or("native source range overflow")?;
+        total_bytes = total_bytes
+            .checked_add(span.len as u64)
+            .ok_or("native source byte budget overflow")?;
+        if span.len > record_limit
+            || end > index.source_len
+            || span.start < previous_end
+            || total_bytes > TAIL_BYTES
+            || !valid_id(&span.sha256)
+            || index
+                .history
+                .as_ref()
+                .is_some_and(|page| span.start < page.start || end > page.end)
+        {
+            return Err("invalid native source ranges or byte budget".into());
+        }
+        previous_end = end;
     }
     Ok(index)
 }

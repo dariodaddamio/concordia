@@ -1,5 +1,12 @@
 # Changelog
 
+### Added (`2026-11-02n`)
+- Explicit goal/source associations: `/memory goals`, `/memory goal-link GOAL SOURCE`,
+  `/memory goal-sources GOAL` and `/memory goal-unlink GOAL SOURCE`. Links retain source identities
+  and provenance without copying conversation bodies. Read-only MCP goal discovery uses the same service.
+- Goal and relationship pagination binds later pages to the returned revision. Concurrent changes
+  require restarting the listing; stale native pointers and corrupt metadata fail visibly.
+
 ### Added (`2026-11-02m`)
 - `/delegate after ID[,ID] ACCOUNT TASK` approves a bounded task with exact prerequisite runs.
   Successful same-workspace prerequisites release it through the existing durable worker queue;

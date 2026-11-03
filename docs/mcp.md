@@ -5,7 +5,7 @@ bounded map and shows that map with the submitted prompt. Recording is opt-in th
 `[threads] enabled = true`. A provider can retrieve more with `concordia thread read <id>`.
 
 `concordia mcp` serves JSON-RPC over newline-delimited stdin/stdout. It exposes `threads`,
-`thread_map`, `thread_read`, `native_read`, `usage`, and `delegate`. Read tools stay local;
+`thread_map`, `thread_read`, `native_read`, `usage`, `goals`, and `delegate`. Read tools stay local;
 `native_read` resolves revision-checked native-session pointers without transcript recording.
 `delegate` writes a proposal; the user must approve it in the TUI before any worker starts.
 It is available only when delegation protocol is enabled.
@@ -27,3 +27,10 @@ and `max_bytes` (1..8192, default 4096). Without `message`, it returns range met
 index with `concordia chat index SESSION --account ACCOUNT --provider codex|claude`; handoffs can
 supply index IDs automatically. Stale/unavailable sources produce an error, never another session.
 See [native memory](native-memory.md) for source validation, budgets and Cursor limitations.
+
+`goals` reads the existing goal store in pages of ten, with bounded display text. Supply the
+returned `next_offset` and `revision` for a later page; changed state requires a fresh listing.
+With `goal` and an exact `workspace`, it reads confirmed goal/source association metadata instead.
+Metadata listings launch no provider or native replay and do not claim that a source is currently
+available; use `native_read` for revision-checked readback. This tool cannot add/close goals or
+attach/detach sources. The seven-tool schema is kept below 3,000 bytes; MCP registration remains opt-in.

@@ -41,6 +41,7 @@ impl State {
 impl App {
     pub(super) fn memory_command(&mut self, argument: &str) {
         if argument.is_empty() {
+            self.push_system("Goals: /memory goals · /memory goal-link GOAL SOURCE · /memory goal-sources GOAL · /memory goal-unlink GOAL SOURCE. Associations are explicit; source readback stays revision-checked.");
             self.push_system("Memory: /memory recall TEXT · /memory recall-account ACCOUNT TEXT · /memory recall-source INDEX TEXT · /memory sources INDEX · /memory next INDEX · /memory excerpt INDEX --message N · /memory lineage INDEX · /memory link PARENT CHILD · /memory detach PARENT CHILD. Search suggestions never become links automatically. /memory index SESSION --account ID --scope whole starts a whole-history scan.");
             return;
         }
@@ -68,7 +69,9 @@ impl App {
                 })
             } else {
                 let args: Vec<String> = argument.split_whitespace().map(str::to_owned).collect();
-                if args.first().is_some_and(|s| s == "next") && args.len() == 2 {
+                if args.first().is_some_and(|operation| matches!(operation.as_str(), "goals" | "goal-sources" | "goal-link" | "goal-unlink")) {
+                    crate::native_memory::relations::command(&root, &args, &workspace)
+                } else if args.first().is_some_and(|s| s == "next") && args.len() == 2 {
                     crate::native_memory::history_from_pointer(&root, &args[1]).and_then(|s| serde_json::to_string_pretty(&s).map_err(|e| e.to_string()))
                 } else {
                     crate::chat_cli::run(&root, &args).map_err(|(e, _)| e)

@@ -12,6 +12,7 @@ pub mod doctor;
 pub mod file_document;
 pub mod file_links;
 pub mod file_open;
+pub mod goals;
 pub mod harness;
 pub mod host;
 pub mod identity;

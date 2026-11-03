@@ -1,5 +1,18 @@
 # Native source pointers and unfinished work
 
+## Goals and source relationships
+
+`/memory goals` lists existing goals and stable IDs. `/memory goal-link GOAL SOURCE` confirms an
+association with a verified native source pointer in the current workspace. `/memory goal-sources
+GOAL` lists its associations; `/memory goal-unlink GOAL SOURCE` detaches one without deleting the
+goal, source or earlier provenance. Closing a goal keeps its associations.
+
+The same commands are available through `concordia chat` using its current directory as workspace.
+Later pages use `OFFSET REVISION` from the preceding response. A changed revision requires a new
+listing. Goal text previews indicate truncation. Source metadata is not a current availability
+claim: use exact native source readback to verify the original. MCP exposes reads only.
+See [bounds and evidence](quality/goal-source-associations.md).
+
 `/context` shows the policy for the selected account/home. `/context rollover 80` enables
 between-turn proactive rollover at 80% of Codex's reported context window (allowed range 50–95).
 `/context rollover off` disables it. The reader accepts native `event_msg/token_count` records only

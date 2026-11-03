@@ -279,6 +279,127 @@ fn cli_and_mcp_read_the_same_revision_and_reject_stale_sources() {
     let mut invalid = request.clone();
     invalid["params"]["arguments"]["offset"] = json!("0");
     assert_eq!(read(&invalid)["result"]["isError"], true);
+
+    // Goal associations share the old goal store and never copy native conversation bodies.
+    let goals: Vec<_> = (0..12)
+        .map(|index| concordia::goals::Goal {
+            id: format!("g-{index}"),
+            text: format!("Goal fixture {index}"),
+            done: false,
+            added_at: "now".into(),
+            closed_at: None,
+        })
+        .collect();
+    concordia::goals::save_goals(dir.path(), &goals).unwrap();
+    let goal_bytes = std::fs::read(dir.path().join("goals.json")).unwrap();
+    let relation =
+        native_memory::relations::attach(dir.path(), dir.path(), "g-0", &summary.id).unwrap();
+    let relation_path = dir.path().join(".ao/native-memory/relations.json");
+    let relation_bytes = std::fs::read(&relation_path).unwrap();
+    assert_eq!(
+        native_memory::relations::attach(dir.path(), dir.path(), "g-0", &summary.id).unwrap(),
+        relation
+    );
+    assert_eq!(std::fs::read(&relation_path).unwrap(), relation_bytes);
+    assert_eq!(
+        std::fs::read(dir.path().join("goals.json")).unwrap(),
+        goal_bytes
+    );
+    assert!(!String::from_utf8_lossy(&relation_bytes).contains("exact original"));
+    assert!(!String::from_utf8_lossy(&relation_bytes).contains("Goal fixture"));
+    std::thread::scope(|scope| {
+        for goal in &goals[1..] {
+            let id = &summary.id;
+            let root = dir.path();
+            scope
+                .spawn(move || native_memory::relations::attach(root, root, &goal.id, id).unwrap());
+        }
+    });
+    let page = native_memory::relations::list(dir.path(), Some(dir.path()), None, 0, None).unwrap();
+    assert_eq!(page["relations"].as_array().unwrap().len(), 10);
+    assert_eq!(page["next_offset"], 10);
+    let revision = page["revision"].as_str().unwrap();
+    let tail =
+        native_memory::relations::list(dir.path(), Some(dir.path()), None, 10, Some(revision))
+            .unwrap();
+    assert_eq!(tail["relations"].as_array().unwrap().len(), 2);
+    assert!(native_memory::relations::list(dir.path(), Some(dir.path()), None, 10, None).is_err());
+    native_memory::relations::detach(dir.path(), dir.path(), "g-0", &summary.id).unwrap();
+    assert!(
+        native_memory::relations::list(dir.path(), Some(dir.path()), None, 10, Some(revision))
+            .is_err()
+    );
+    assert!(std::fs::read_to_string(&relation_path)
+        .unwrap()
+        .contains(&relation));
+    assert_eq!(
+        std::fs::read(dir.path().join("goals.json")).unwrap(),
+        goal_bytes
+    );
+    let goal_request = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"goals","arguments":{}}});
+    assert_eq!(read(&goal_request)["result"]["isError"], false);
+    let mut invalid_goal = goal_request.clone();
+    invalid_goal["params"]["arguments"]["offset"] = json!(1);
+    assert_eq!(read(&invalid_goal)["result"]["isError"], true);
+    let cli_goals = Command::new(env!("CARGO_BIN_EXE_concordia"))
+        .env("CONCORDIA_STATE_DIR", dir.path())
+        .current_dir(dir.path())
+        .args(["chat", "goal-sources", "g-1"])
+        .output()
+        .unwrap();
+    assert!(
+        cli_goals.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_goals.stderr)
+    );
+    assert!(String::from_utf8_lossy(&cli_goals.stdout).contains(&summary.id));
+    let second_home = dir.path().join("second-fixture-home");
+    std::fs::create_dir_all(second_home.join("sessions")).unwrap();
+    std::fs::copy(
+        &path,
+        second_home
+            .join("sessions")
+            .join(format!("{session}.jsonl")),
+    )
+    .unwrap();
+    concordia::store::upsert_stored_account(
+        dir.path(),
+        StoredAccount {
+            id: "second-fixture".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(second_home.display().to_string()),
+            label: "Second fixture".into(),
+            created_at: "0".into(),
+        },
+    )
+    .unwrap();
+    let second =
+        native_memory::index_session(dir.path(), ProviderKind::Codex, "second-fixture", session)
+            .unwrap();
+    assert_ne!(
+        second.id, summary.id,
+        "equal native session ids in different homes must remain distinct"
+    );
+    native_memory::relations::attach(dir.path(), dir.path(), "g-1", &second.id).unwrap();
+    let paired =
+        native_memory::relations::list(dir.path(), Some(dir.path()), Some("g-1"), 0, None).unwrap();
+    assert_eq!(paired["relations"].as_array().unwrap().len(), 2);
+    native_memory::relations::detach(dir.path(), dir.path(), "g-1", &summary.id).unwrap();
+    let retained =
+        native_memory::relations::list(dir.path(), Some(dir.path()), Some("g-1"), 0, None).unwrap();
+    assert_eq!(retained["relations"][0]["source"], second.id);
+    let before_corruption = std::fs::read(&relation_path).unwrap();
+    std::fs::write(
+        &relation_path,
+        br#"{"version":99,"relations":[],"changes":[]}"#,
+    )
+    .unwrap();
+    let corrupt_bytes = std::fs::read(&relation_path).unwrap();
+    assert!(native_memory::relations::attach(dir.path(), dir.path(), "g-1", &summary.id).is_err());
+    assert_eq!(std::fs::read(&relation_path).unwrap(), corrupt_bytes);
+    std::fs::write(&relation_path, &before_corruption).unwrap();
     std::fs::write(&path, "{}").unwrap();
     assert_eq!(read(&request)["result"]["isError"], true);
+    assert!(native_memory::relations::attach(dir.path(), dir.path(), "g-0", &summary.id).is_err());
+    assert_eq!(std::fs::read(&relation_path).unwrap(), before_corruption);
 }
