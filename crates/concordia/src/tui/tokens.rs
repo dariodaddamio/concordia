@@ -119,6 +119,7 @@ pub fn lines(
             )));
         }
         let sections: [Section; 8] = [
+            ("By provider", Box::new(|e: &Entry| e.provider.clone())),
             (
                 "By origin",
                 Box::new(|e: &Entry| match e.attribution.as_ref().map(|a| a.origin) {
@@ -154,7 +155,6 @@ pub fn lines(
                         .unwrap_or_else(|| "legacy / unknown outcome".into())
                 }),
             ),
-            ("By provider", Box::new(|e: &Entry| e.provider.clone())),
             (
                 "By model",
                 Box::new(|e: &Entry| e.model.clone().unwrap_or_else(|| "not reported".into())),
