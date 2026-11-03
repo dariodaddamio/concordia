@@ -93,6 +93,7 @@ mod tests {
     use super::*;
     #[test]
     fn automatic_discovery_excludes_provider_homes_credentials_and_build_outputs() {
+        let _environment = crate::config::env_guard();
         for path in [
             "src/.env",
             ".env.local",
