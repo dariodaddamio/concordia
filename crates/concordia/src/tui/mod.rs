@@ -295,6 +295,7 @@ pub struct App {
     native_owner: Option<crate::provider::interaction::InteractionOwner>,
     native_usage_model: Option<String>,
     native_usage_session: Option<String>,
+    native_accounting_owner: Option<crate::provider::interaction::InteractionOwner>,
     project_search: workspace_search::State,
     continuation_target: Option<String>,
     state_root: PathBuf,
@@ -1152,10 +1153,11 @@ impl App {
         usage: &crate::provider::stream_cards::TurnUsage,
         outcome: &TurnOutcome,
     ) {
-        let provider = self
-            .native_owner
+        let owner = self
+            .native_accounting_owner
             .as_ref()
-            .map_or(self.provider, |owner| owner.provider);
+            .or(self.native_owner.as_ref());
+        let provider = owner.map_or(self.provider, |owner| owner.provider);
         let (new_input, cached_input, output) = crate::token_log::split(provider, usage);
         let entry = crate::token_log::Entry {
             at: std::time::SystemTime::now()
@@ -1163,23 +1165,18 @@ impl App {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             provider: provider.as_str().to_string(),
-            account: self
-                .native_owner
-                .as_ref()
-                .map_or_else(|| self.account.clone(), |owner| owner.account.clone()),
-            model: if self.native_owner.is_some() {
+            account: owner.map_or_else(|| self.account.clone(), |owner| owner.account.clone()),
+            model: if owner.is_some() {
                 self.native_usage_model.clone()
             } else {
                 (!self.model.is_empty() && self.model != "?").then(|| self.model.clone())
             },
-            project: self
-                .native_owner
-                .as_ref()
+            project: owner
                 .map_or(self.cwd.as_path(), |owner| owner.execution_cwd.as_path())
                 .to_string_lossy()
                 .into_owned(),
             chat: outcome.session_id.clone().or_else(|| {
-                if self.native_owner.is_some() {
+                if owner.is_some() {
                     self.native_usage_session.clone()
                 } else {
                     self.native_session_id.clone()
@@ -1189,7 +1186,7 @@ impl App {
             cached_input,
             output,
             cost_usd: usage.cost_usd,
-            attribution: self.native_owner.as_ref().map(|owner| {
+            attribution: owner.map(|owner| {
                 let (status, complete) = crate::token_log::attempt_outcome(
                     outcome.exit_code,
                     outcome.cancelled,
@@ -1218,7 +1215,10 @@ impl App {
         self.submitted_prompt = None;
         let elapsed = self.turn_started.map(|t| t.elapsed());
         let usage = std::mem::take(&mut self.turn_usage);
-        if !usage.is_empty() || self.native_owner.is_some() {
+        if !usage.is_empty()
+            || self.native_owner.is_some()
+            || self.native_accounting_owner.is_some()
+        {
             self.record_tokens(&usage, &outcome);
         }
         self.session_input = self.session_input.saturating_add(usage.input.unwrap_or(0));
@@ -3236,6 +3236,7 @@ impl App {
             cancelled: true,
             ..Default::default()
         });
+        self.native_accounting_owner = None;
         self.busy = false;
         self.pulse_on = false;
         self.cancel_handle = None;
@@ -3274,6 +3275,7 @@ impl App {
             native_owner: None,
             native_usage_model: None,
             native_usage_session: None,
+            native_accounting_owner: None,
             project_search: workspace_search::State::default(),
             images: images::State::default(),
             history: Vec::new(),
@@ -3617,6 +3619,7 @@ pub async fn run_chat_tui() -> Result<()> {
                 };
                 app.questions.cancel_native();
                 app.native_owner = Some(owner.clone());
+                app.native_accounting_owner = Some(owner.clone());
                 app.native_usage_model = (!model.is_empty() && model != "?").then(|| model.clone());
                 app.native_usage_session = app.native_session_id.clone();
                 let session = app.native_session_id.clone();

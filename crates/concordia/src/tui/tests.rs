@@ -3313,6 +3313,7 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     h.app.provider = ProviderKind::Claude;
     h.app.account = "different-focused-account".into();
     let owner = h.app.native_owner.clone().unwrap();
+    h.app.native_accounting_owner = Some(owner.clone());
     let (tx, _rx) = mpsc::unbounded_channel();
     h.app.turn_usage = TurnUsage {
         input: Some(200),
@@ -3340,7 +3341,13 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     assert!(h.app.native_owner.is_none());
     let mut cancelled_owner = owner;
     cancelled_owner.attempt_id = uuid::Uuid::new_v4().to_string();
-    h.app.native_owner = Some(cancelled_owner);
+    h.app.native_owner = Some(cancelled_owner.clone());
+    h.app.native_accounting_owner = Some(cancelled_owner);
+    h.app.request_cancel();
+    assert!(
+        h.app.native_owner.is_none(),
+        "cancellation invalidates the live interaction owner"
+    );
     h.app.on_turn_done(
         TurnOutcome {
             cancelled: true,
@@ -3361,6 +3368,7 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     assert_eq!(cancelled.account, "owner-account");
     let attribution = cancelled.attribution.as_ref().unwrap();
     assert!(!attribution.input_known && !attribution.output_known && !attribution.complete);
+    assert!(h.app.native_accounting_owner.is_none());
 }
 
 #[test]
