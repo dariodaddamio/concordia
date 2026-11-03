@@ -90,6 +90,8 @@ pub struct StoredAccount {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrchestratorSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_action: Option<crate::file_open::FileAction>,
     #[serde(default = "default_trust")]
     pub trust: TrustMode,
     #[serde(default = "default_child_trust")]
@@ -137,6 +139,7 @@ fn default_child_trust() -> ChildTrust {
 impl Default for OrchestratorSettings {
     fn default() -> Self {
         Self {
+            file_action: None,
             trust: TrustMode::Workspace,
             child_trust: ChildTrust::Inherit,
             workers: Vec::new(),
@@ -378,6 +381,12 @@ pub fn modify_store<T>(
 
 pub fn get_settings(root: &Path) -> OrchestratorSettings {
     load_store(root).settings
+}
+pub fn set_file_action(root: &Path, action: crate::file_open::FileAction) -> Result<()> {
+    modify_store(root, |store| {
+        store.settings.file_action = Some(action);
+        Ok(())
+    })
 }
 
 pub fn set_continuation_automatic(root: &Path, automatic: bool) -> Result<()> {

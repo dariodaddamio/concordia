@@ -48,6 +48,13 @@ pub struct RecoveryLease {
 }
 
 impl RecoveryLease {
+    pub fn record_id(&self) -> String {
+        self.directory
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
     pub fn workers_directory(&self) -> PathBuf {
         self.directory.join("worker-runs")
     }

@@ -6,6 +6,125 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tokio::process::{Child, Command};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileAction {
+    #[default]
+    Preview,
+    Split,
+    Editor,
+}
+impl FileAction {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "preview" => Some(Self::Preview),
+            "split" => Some(Self::Split),
+            "editor" => Some(Self::Editor),
+            _ => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Preview => "Preview here",
+            Self::Split => "Split off",
+            Self::Editor => "Open in editor",
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EditorLaunch {
+    #[default]
+    Terminal,
+    Gui,
+}
+#[derive(Debug)]
+pub enum ResolvedAction {
+    Preview(ResolvedFile),
+    Launch { plan: LaunchPlan, detached: bool },
+}
+
+/// One resolver for links, browser/search rows and structured artifacts. No shell association.
+pub fn resolve_action(
+    action: FileAction,
+    file: &ResolvedFile,
+    cwd: &Path,
+    host: Option<&Host>,
+    editor: Option<(&EditorSpec, EditorLaunch)>,
+    concordia: &Path,
+) -> Result<ResolvedAction, String> {
+    if crate::workspace_paths::sensitive(&file.path) {
+        return Err("File is excluded by workspace policy".into());
+    }
+    let metadata = std::fs::symlink_metadata(&file.path).map_err(|error| error.to_string())?;
+    if !metadata.is_file()
+        || crate::workspaces::linked(&metadata)
+        || file
+            .path
+            .canonicalize()
+            .map_err(|error| error.to_string())?
+            != file.path
+    {
+        return Err("Selected file changed identity; select it again".into());
+    }
+    match action {
+        FileAction::Preview => Ok(ResolvedAction::Preview(file.clone())),
+        FileAction::Split => {
+            let host = host.ok_or("Split off requires an available terminal host")?;
+            let mut plan = preview_plan(
+                host,
+                &[concordia.as_os_str().to_owned(), "file-edit".into()],
+                &file.path,
+                cwd,
+            )?;
+            plan.args.extend([
+                "--line".into(),
+                file.line.unwrap_or(1).to_string().into(),
+                "--column".into(),
+                file.column.unwrap_or(1).to_string().into(),
+            ]);
+            Ok(ResolvedAction::Launch {
+                plan,
+                detached: matches!(host, Host::Standalone { .. }),
+            })
+        }
+        FileAction::Editor => {
+            let (editor, kind) =
+                editor.ok_or("Configure an editor executable before opening this file")?;
+            let program = which::which(&editor.program)
+                .map_err(|_| "Configured editor executable was not found")?;
+            if crate::provider::launch::is_batch_shim(&program.to_string_lossy()) {
+                return Err("Select the editor's native executable; batch/shell editor launchers are unsupported".into());
+            }
+            let editor = EditorSpec {
+                program,
+                args: editor.args.clone(),
+            };
+            if kind == EditorLaunch::Gui {
+                let mut args = editor_arguments(&editor, file).into_iter();
+                let program = PathBuf::from(args.next().ok_or("Editor program missing")?);
+                Ok(ResolvedAction::Launch {
+                    plan: LaunchPlan {
+                        program,
+                        args: args.collect(),
+                        cwd: cwd.to_owned(),
+                    },
+                    detached: true,
+                })
+            } else {
+                Ok(ResolvedAction::Launch {
+                    plan: editor_plan(
+                        host.ok_or("Terminal editor requires an available terminal host")?,
+                        &editor,
+                        file,
+                        cwd,
+                    ),
+                    detached: host.is_some_and(|host| matches!(host, Host::Standalone { .. })),
+                })
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorSpec {
     /// Executable path/name is one argv element, never a shell command string.
@@ -50,6 +169,9 @@ pub fn editor_plan(
     file: &ResolvedFile,
     cwd: &Path,
 ) -> LaunchPlan {
+    host_plan(host, cwd, editor_arguments(editor, file))
+}
+fn editor_arguments(editor: &EditorSpec, file: &ResolvedFile) -> Vec<OsString> {
     let mut editor_argv = vec![editor.program.as_os_str().to_owned()];
     let mut has_file = false;
     for arg in &editor.args {
@@ -68,7 +190,7 @@ pub fn editor_plan(
     if !has_file {
         editor_argv.push(file.path.as_os_str().to_owned());
     }
-    host_plan(host, cwd, editor_argv)
+    editor_argv
 }
 
 /// Build a plan for Concordia's bounded Markdown preview command. `preview_argv` must contain the
@@ -268,7 +390,70 @@ mod tests {
             [
                 OsString::from(r"C:\app\concordia.exe"),
                 OsString::from("preview"),
-                md.into_os_string()
+                md.clone().into_os_string()
+            ]
+        );
+        let resolved = ResolvedFile {
+            path: md.canonicalize().unwrap(),
+            line: Some(8),
+            column: Some(3),
+        };
+        assert!(matches!(
+            resolve_action(
+                FileAction::Preview,
+                &resolved,
+                dir.path(),
+                None,
+                None,
+                Path::new("concordia")
+            )
+            .unwrap(),
+            ResolvedAction::Preview(_)
+        ));
+        assert!(resolve_action(
+            FileAction::Split,
+            &resolved,
+            dir.path(),
+            None,
+            None,
+            Path::new("concordia")
+        )
+        .is_err());
+        let ResolvedAction::Launch { plan, detached } = resolve_action(
+            FileAction::Split,
+            &resolved,
+            dir.path(),
+            Some(&host),
+            None,
+            Path::new("concordia"),
+        )
+        .unwrap() else {
+            panic!("split plan expected")
+        };
+        assert!(!detached && plan.args.iter().any(|arg| arg == "file-edit"));
+        assert!(plan
+            .args
+            .ends_with(&["--line".into(), "8".into(), "--column".into(), "3".into()]));
+        let native = std::env::current_exe().unwrap();
+        let editor = EditorSpec::new(&native, ["--goto", "{file}:{line}:{column}"]);
+        let ResolvedAction::Launch { plan, detached } = resolve_action(
+            FileAction::Editor,
+            &resolved,
+            dir.path(),
+            None,
+            Some((&editor, EditorLaunch::Gui)),
+            &native,
+        )
+        .unwrap() else {
+            panic!("GUI plan expected")
+        };
+        assert!(detached);
+        assert_eq!(plan.program, native);
+        assert_eq!(
+            plan.args,
+            vec![
+                OsString::from("--goto"),
+                OsString::from(format!("{}:8:3", resolved.path.display()))
             ]
         );
     }

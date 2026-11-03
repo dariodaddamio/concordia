@@ -41,3 +41,7 @@ Existing search checks exercise selected Unicode replacement, preservation of BO
 preflight, pane blocking, ownership conflicts, cancellation, duplicate-plan refusal, receipt
 readback without mutation and forged ranges. UI checks prove previewing does not save and only
 the explicit confirmation emits an apply action. No real provider task is needed.
+
+Combined source `08aba04`, build `2026-11-03h`, passes all 983 enabled checks, all-target
+Clippy and release smoke. Immutable candidate: 20,061,696 bytes, SHA-256
+`c84526bee08fab60d89ca60d837a0248ccc2f6aa452d1706814e4e29a1275e2e`.

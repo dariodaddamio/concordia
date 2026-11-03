@@ -240,6 +240,7 @@ enum PickerKind {
     Agents,
     Recovery,
     Files,
+    FileActions,
     Resume,
     Trust,
     Use,
@@ -297,6 +298,7 @@ pub struct App {
     scopes: workspace_scope::State,
     managed_workspaces: managed_workspaces::State,
     project_search: workspace_search::State,
+    file_action_target: Option<(crate::file_links::ResolvedFile, PathBuf)>,
     continuation_target: Option<String>,
     state_root: PathBuf,
     cwd: PathBuf,
@@ -2385,6 +2387,7 @@ impl App {
                     self.preview_related_file(index);
                 }
             }
+            PickerKind::FileActions => self.choose_file_action(&id),
             PickerKind::Agents => {
                 if let Some(index) = id
                     .strip_prefix("native-agent:")
@@ -3417,6 +3420,7 @@ impl App {
             scopes: workspace_scope::State::default(),
             managed_workspaces: managed_workspaces::State::default(),
             project_search: workspace_search::State::default(),
+            file_action_target: None,
             images: images::State::default(),
             history: Vec::new(),
             hist_pos: None,
@@ -3536,6 +3540,11 @@ fn now_stamp() -> String {
 
 pub fn run_file_preview(path: &Path) -> Result<()> {
     preview::run(path)
+}
+#[path = "file_editor.rs"]
+mod file_editor;
+pub fn run_file_editor(arguments: &[String]) -> Result<()> {
+    file_editor::run(arguments)
 }
 
 pub async fn run_chat_tui() -> Result<()> {
@@ -4169,6 +4178,47 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     {
         app.open_project_search();
         return false;
+    }
+    if key.code == KeyCode::F(4)
+        && app
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Files)
+    {
+        let index = app.picker.as_ref().and_then(|picker| {
+            picker.state.selected().and_then(|index| {
+                picker
+                    .filtered()
+                    .get(index)
+                    .and_then(|row| row.id.strip_prefix("file:"))
+                    .and_then(|id| id.parse::<usize>().ok())
+            })
+        });
+        if let Some(entry) = index
+            .and_then(|index| app.related_files.entries.get(index))
+            .filter(|entry| !entry.directory)
+            .cloned()
+        {
+            app.show_file_actions(entry.candidate, app.cwd.clone());
+        }
+        return false;
+    }
+    if key.code == KeyCode::F(4) && app.picker.is_none() {
+        if let Some(file) = app.workspace.selected_file() {
+            let target = file.path.to_string_lossy().into_owned();
+            app.show_file_actions(
+                crate::file_links::Candidate {
+                    display: target.clone(),
+                    range: 0..target.len(),
+                    target,
+                    line: file.line,
+                    column: file.column,
+                    markdown: false,
+                },
+                app.cwd.clone(),
+            );
+            return false;
+        }
     }
     if landing::visible(app) && landing::handle_key(app, key) {
         return false;
@@ -4867,10 +4917,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                                 .find(|c| crate::file_links::resolve(c, &app.cwd).is_ok())
                                 .or(fallback)
                             {
-                                app.open_file_candidate(
-                                    candidate,
-                                    m.modifiers.contains(KeyModifiers::ALT),
-                                );
+                                if m.modifiers.contains(KeyModifiers::ALT) {
+                                    app.show_file_actions(candidate, app.cwd.clone());
+                                } else {
+                                    app.open_file_candidate(candidate, false);
+                                }
                             } else if let Some(url) = row
                                 .web_links
                                 .iter()

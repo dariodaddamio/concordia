@@ -217,6 +217,12 @@ responses retain Worked for and a local stopped timestamp, including when token 
 
 ## Images, diagrams and update history (`2026-11-01e`)
 
+File actions now share a resolver. F4 on a file-browser row or focused pane, or Alt-click on a
+transcript file link, offers Preview here, Split off and Open in editor. Always choices persist
+in Concordia-owned settings. `[ui].file_action = "preview" | "split" | "editor"` supplies a default.
+`[editor].launch = "terminal"` preserves existing behavior; explicit `"gui"` opens a configured
+native executable directly. See [file actions and independent recovery](quality/file-actions.md).
+
 `/attach` opens the image chooser; `/attach PATH` imports a snapshot; `/attach clear` removes draft
 images. Ctrl+V reads clipboard images in the ordinary composer, with text paste as fallback.
 Chips preview in the system viewer and have X removal controls. Draft/queue recovery stores a

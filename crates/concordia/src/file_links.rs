@@ -278,6 +278,19 @@ pub fn exists_cached(candidate: &Candidate, cwd: &Path) -> bool {
 }
 
 fn normalized_local_path(target: &str) -> &str {
+    // Canonical Windows drive paths carry this prefix. Do not unwrap UNC/device namespaces.
+    let target = target
+        .strip_prefix(r"\\?\")
+        .or_else(|| target.strip_prefix("//?/"))
+        .filter(|path| {
+            path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && path.as_bytes().get(1) == Some(&b':')
+                && path
+                    .as_bytes()
+                    .get(2)
+                    .is_some_and(|byte| matches!(byte, b'/' | b'\\'))
+        })
+        .unwrap_or(target);
     if target.starts_with('/')
         && target
             .as_bytes()
@@ -537,6 +550,25 @@ mod tests {
         let resolved = resolve(&link, dir.path()).unwrap();
         assert_eq!(resolved.path, path.canonicalize().unwrap());
         assert_eq!(resolved.line, Some(1));
+        let canonical = Candidate {
+            target: resolved.path.to_string_lossy().into_owned(),
+            ..link.clone()
+        };
+        assert_eq!(resolve(&canonical, dir.path()).unwrap().path, resolved.path);
+        for target in [
+            r"\\?\UNC\server\share\file.txt",
+            r"\\.\C:\file.txt",
+            r"\\?\C:relative.txt",
+        ] {
+            assert!(resolve(
+                &Candidate {
+                    target: target.into(),
+                    ..link.clone()
+                },
+                dir.path()
+            )
+            .is_err());
+        }
     }
 
     #[test]

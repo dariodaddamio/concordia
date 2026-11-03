@@ -839,7 +839,9 @@ impl Session {
         };
         session.send("\x1b[1;1R");
         session.until("startup", |s| {
-            s.screen().contains(if args.first() == Some(&"preview") {
+            s.screen().contains(if args.first() == Some(&"file-edit") {
+                "Ctrl+Q close"
+            } else if args.first() == Some(&"preview") {
                 "read-only"
             } else {
                 "concordia"
@@ -1703,7 +1705,9 @@ fn explicit_file_open_passes_exact_path_to_a_fake_terminal_and_preserves_draft()
     .unwrap();
     std::fs::write(
         dir.path().join("config.toml"),
-        "[ui]\ntips=false\n[editor]\nprogram='synthetic-editor'\nargs=['+{line}','--','{file}']\n",
+        format!(
+            "[ui]\ntips=false\n[editor]\nprogram='{FAKE}'\nargs=['+{{line}}','--','{{file}}']\n"
+        ),
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
@@ -1713,17 +1717,45 @@ fn explicit_file_open_passes_exact_path_to_a_fake_terminal_and_preserves_draft()
     });
     let args: Vec<String> =
         serde_json::from_slice(&std::fs::read(s.root.join("file-launch.json")).unwrap()).unwrap();
-    assert!(args.contains(&"synthetic-editor".into()));
+    assert!(args
+        .iter()
+        .any(|arg| arg.ends_with("concordia-fake-provider.exe")));
     assert!(args.contains(&"+7".into()));
     assert!(
         args.iter().any(|arg| arg.ends_with("hello world.rs")),
         "{args:?}"
     );
     assert!(s.prompts().is_empty());
+    s.submit("/open hello world.rs");
+    s.until("file action source pane", |s| {
+        s.screen().contains("Raw · edit")
+    });
+    s.send("\x1b[14~");
+    s.until("shared file actions", |s| {
+        s.screen().contains("File actions")
+            && s.screen().contains("Split off")
+            && s.screen().contains("Open in editor")
+    });
+    s.send("\x1b");
+    s.send("\x1b");
     s.paste("draft after file launch");
     s.until("chat remains usable", |s| {
         s.draft() == "draft after file launch"
     });
+    s.send("\x1b[17~");
+    s.send("\x1b[14~");
+    s.until("file choices with main draft", |s| {
+        s.screen().contains("File actions")
+    });
+    s.send("\x1b[B");
+    s.enter();
+    s.until("independent editor launch arguments", |s| {
+        std::fs::read_to_string(s.root.join("file-launch.json"))
+            .is_ok_and(|body| body.contains("file-edit"))
+    });
+    assert_eq!(s.draft(), "draft after file launch");
+    assert!(s.prompts().is_empty());
+    s.send("\x1b");
     s.exit();
 }
 
@@ -1912,6 +1944,69 @@ fn formatted_defaults_raw_edits_save_and_dirty_close_work_in_real_terminal() {
     s.until("closed", |s| !s.screen().contains("LOCAL_EDIT"));
     assert!(s.prompts().is_empty());
     s.exit();
+    let work = dir.path().join("workspace");
+    let mut standalone = Session::launch_args(dir.path(), &work, &["file-edit", "edit.md"]);
+    standalone.until("independent formatted editor", |s| {
+        s.screen().contains("EXTERNAL_CHANGE")
+    });
+    standalone.send("\x1bv");
+    standalone.until("independent raw editor", |s| {
+        s.screen().contains("Ctrl+S save")
+    });
+    standalone.send("\x01");
+    standalone.paste("STANDALONE_SAVED\r\n");
+    standalone.send("\x13");
+    standalone.until("standalone native save", |_| {
+        std::fs::read_to_string(&path).is_ok_and(|text| text == "STANDALONE_SAVED\r\n")
+    });
+    standalone.until("standalone acknowledged", |s| {
+        !s.screen().contains("* edit.md") && !s.screen().contains("Saving")
+    });
+    standalone.send("\x01");
+    standalone.paste("STANDALONE_UNSAVED\r\n");
+    let roots = std::fs::read_dir(dir.path().join("file-editors/pane-recovery"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(roots.len(), 1);
+    let records = std::fs::read_dir(&roots[0])
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    let id = records[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    standalone.until("independent owned recovery", |_| {
+        std::fs::read_to_string(records[0].join("files.json"))
+            .is_ok_and(|text| text.contains("STANDALONE_UNSAVED"))
+    });
+    standalone.child.kill().unwrap();
+    standalone.child.wait().unwrap();
+    drop(standalone);
+    let mut restored = Session::launch_args(
+        dir.path(),
+        &work,
+        &["file-edit", "edit.md", "--recover", &id],
+    );
+    restored.until("independent recovered edits", |s| {
+        s.screen().contains("STANDALONE_UNSAVED") && s.screen().contains("* edit.md")
+    });
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "STANDALONE_SAVED\r\n"
+    );
+    restored.send("\x11");
+    restored.until("independent dirty quit", |s| s.screen().contains("Unsaved"));
+    restored.send("d");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while restored.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "Standalone editor did not exit");
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert!(restored.prompts().is_empty());
 }
 
 #[test]
