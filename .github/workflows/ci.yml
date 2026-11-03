@@ -24,6 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Windows signing policy rejection checks
+        shell: pwsh
+        run: ./scripts/test-windows-signing.ps1
+
       # rust-toolchain.toml pins the compiler (and clippy/rustfmt) so lints cannot drift.
       - name: Install pinned toolchain
         shell: pwsh

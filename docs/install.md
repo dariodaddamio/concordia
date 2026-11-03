@@ -172,7 +172,8 @@ the release; TLS to GitHub does that.
   (60 per hour per IP). Wait, or use route 5 with the release page.
 - **Execution policy errors.** The one-liner runs in memory and needs no policy change. For a saved
   script, use `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`.
-- **Antivirus blocks `concordia.exe`.** The exe is unsigned for now. Add an exception for
-  `%LOCALAPPDATA%\concordia\bin`, or install from source.
+- **Antivirus blocks `concordia.exe`.** Stop installation and report the release version,
+  detection name and SHA-256 to the maintainer. Keep protection enabled. A detected artifact
+  blocks release until the detection is resolved; see [Windows signing](windows-signing.md).
 - **Corporate proxy.** Windows PowerShell uses the system proxy for `Invoke-WebRequest`. If GitHub is
   blocked, use the release zip from a machine that can reach it.
