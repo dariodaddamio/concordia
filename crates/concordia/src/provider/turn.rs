@@ -6,6 +6,8 @@ use crate::provider::codex::{
 };
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
 use crate::provider::enforcement;
+use crate::provider::interaction::InteractionOwner;
+pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
 use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
@@ -151,39 +153,6 @@ pub enum TurnProgress {
     Usage(TurnUsage),
     /// Concordia's own explanation of how it changed the turn (for example, read-only enforcement).
     Notice(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct NativeRequest {
-    pub method: String,
-    pub params: serde_json::Value,
-    response: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<serde_json::Value>>>>,
-}
-impl NativeRequest {
-    pub fn channel(
-        method: String,
-        params: serde_json::Value,
-    ) -> (Self, tokio::sync::oneshot::Receiver<serde_json::Value>) {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        (
-            Self {
-                method,
-                params,
-                response: Arc::new(std::sync::Mutex::new(Some(tx))),
-            },
-            rx,
-        )
-    }
-    pub fn respond(&self, value: serde_json::Value) {
-        if let Some(tx) = self
-            .response
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            let _ = tx.send(value);
-        }
-    }
 }
 
 /// Why this turn will run read-only instead of with the trust it asked for, if it will.
@@ -380,6 +349,28 @@ pub async fn run_provider_turn_with_progress(
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
+    run_provider_turn_inner(req, None, on_started, on_progress).await
+}
+
+/// App-owned turns bind native input before spawning, without changing request/transport defaults.
+pub async fn run_provider_turn_with_owner(
+    req: &ProviderTurnRequest<'_>,
+    owner: InteractionOwner,
+    on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
+    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+) -> Result<TurnOutcome> {
+    let owner = owner
+        .validate_for(req.provider, req.cwd, req.home_path)
+        .map_err(anyhow::Error::msg)?;
+    run_provider_turn_inner(req, Some(owner), on_started, on_progress).await
+}
+
+async fn run_provider_turn_inner(
+    req: &ProviderTurnRequest<'_>,
+    owner: Option<InteractionOwner>,
+    on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
+    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+) -> Result<TurnOutcome> {
     let timing = Instant::now();
     let mut session_guard = req
         .native_session_id
@@ -392,7 +383,7 @@ pub async fn run_provider_turn_with_progress(
         let _ = tx.send(TurnProgress::Notice(notice));
     }
     if req.provider == ProviderKind::Cursor && !req.images.is_empty() {
-        return acp::run(req, &plan, on_started, on_progress).await;
+        return acp::run(req, &plan, owner, on_started, on_progress).await;
     }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
     // it explicitly. If that does not work the turn runs unbound, exactly as before.
