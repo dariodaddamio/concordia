@@ -1575,6 +1575,27 @@ fn crash_restores_the_unsaved_upper_editor_separately_and_holds_dispatch() {
     s.until("edit committed", |s| {
         s.queue() == ["saved queued item\nunsaved upper edit"]
     });
+    let registry = concordia::workspaces::load(dir.path()).unwrap();
+    let uncertain = registry
+        .reservations
+        .iter()
+        .find(|entry| entry.phase == concordia::workspaces::Phase::ReconcileRequired)
+        .unwrap();
+    s.send("\x1b[1;5B"); // focus the independent draft to issue an explicit local command
+    s.send("\x01\x08");
+    s.until("draft cleared for reconciliation command", |s| {
+        s.draft().is_empty()
+    });
+    s.submit(&format!("/scope stopped {}", uncertain.run));
+    s.until("stopped process acknowledged", |s| {
+        s.screen().contains("Stopped-process acknowledgment saved")
+    });
+    assert_eq!(
+        s.prompts().len(),
+        1,
+        "acknowledgment must not replay the interrupted turn"
+    );
+    s.paste("independent draft");
     s.send("\x12");
     s.until("recovered edited item sent", |s| {
         s.prompts() == ["[wait] first", "saved queued item\nunsaved upper edit"]
