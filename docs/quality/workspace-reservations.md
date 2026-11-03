@@ -6,9 +6,12 @@ native tools can write outside declarations. Managed Git worktrees and their lif
 
 ## User controls
 
-- Ordinary main turns and workers reserve the whole canonical execution folder for writes.
+- Ordinary foreground chats record their workspace ownership without blocking another foreground
+  chat in the same folder. This applies across instances and providers. Worker admission continues
+  to coordinate intersecting write claims.
 - `/scope set read:src write:notes.txt` sets declarations for future main tasks in this pane;
-  `/scope default` restores whole-folder admission. The current task retains its approved scope.
+  `/scope default` restores concurrent foreground admission. Explicit path scopes retain conflict
+  checks. The current task retains its approved scope.
 - `/delegate scoped ACCOUNT read:src write:"notes file.txt" -- TASK` approves explicit worker
   declarations. Paths are relative, with no globs or shell evaluation. Read paths must exist;
   a missing write leaf is allowed only beneath an existing directory. Directory claims cover subtrees.
@@ -19,14 +22,16 @@ native tools can write outside declarations. Managed Git worktrees and their lif
   prove native process ownership for retirement. It never retries a provider turn.
 
 Read/read and disjoint claims can coexist. A write intersecting another read or write waits
-for workers and pauses main dispatch before provider launch. Internal file saves hold the same
+for workers and pauses explicitly scoped main dispatch before provider launch. Default foreground
+chats may proceed concurrently; their own uncertain previous attempts still require reconciliation.
+Internal file saves hold the same
 registry lock across ownership checking and compare-before-replace; a refusal keeps the buffer.
 The native provider retains its own trust, approval and filesystem-access rules. Explicit
 declarations are included as task intent; they grant no native permission.
 
 ## Persistence and recovery
 
-`workspace-registry.json` is version 1, OS-locked and atomically replaced. It holds metadata,
+`workspace-registry.json` is version 2, OS-locked and atomically replaced. It holds metadata,
 not file contents: canonical execution/owner folder, native directory/file identities,
 conversation/run/attempt UUIDs and declarations. Worker ledger v5 and unfinished-request v3
 capture those bindings; older supported records remain readable and paused. Unknown or corrupt

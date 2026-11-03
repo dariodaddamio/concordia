@@ -125,6 +125,7 @@ enum Drag {
 /// Screen rectangles from the last draw, for mouse hit-testing.
 #[derive(Default, Clone, Copy)]
 struct Areas {
+    header_email: Option<Rect>,
     transcript: Rect,
     input: Rect,
     bottom_button: Rect,
@@ -310,6 +311,8 @@ pub struct App {
     cwd: PathBuf,
     account_names: std::collections::BTreeMap<String, String>,
     account_email: Option<String>,
+    header_email_revealed: bool,
+    header_email_pressed: bool,
     messages: Vec<ChatLine>,
     editor: Editor,
     /// The visible prompt for the active turn; cancellation never inserts it into the editor.
@@ -452,6 +455,8 @@ impl App {
                     != sel.home_path
             {
                 self.session_ui.invalidate();
+                self.header_email_revealed = false;
+                self.header_email_pressed = false;
             }
             self.provider = sel.provider;
             self.account = sel.account;
@@ -466,12 +471,17 @@ impl App {
                 })
                 .unwrap_or_else(|| "?".into());
         }
-        self.account_email = self
+        let email = self
             .home_path
             .as_ref()
             .and_then(|h| inspect_provider(self.provider, h).login)
             .filter(|login| login.contains('@'))
             .map(|email| email.chars().filter(|c| !c.is_control()).collect());
+        if self.account_email != email {
+            self.header_email_revealed = false;
+            self.header_email_pressed = false;
+        }
+        self.account_email = email;
         self.trust = get_settings(&self.state_root).trust;
         self.refresh_usage();
     }
@@ -530,11 +540,14 @@ impl App {
 
     /// Header (account) plus one line per limit window, as a single message.
     fn usage_block_text(&self, snap: &crate::usage::UsageSnapshot) -> String {
-        let details = format!(
+        let mut details = format!(
             "{}\nCredit spend: not reported separately\n\nSubscription limits\n{}",
             snap.credits_text(),
             snap.detail.trim()
         );
+        if self.provider == ProviderKind::Codex {
+            details.push_str("\nCredit balance details: https://chatgpt.com/codex/settings/usage");
+        }
         let body = details.trim();
         format!("{} - limits\n{}", self.account_label(), body)
     }
@@ -3463,6 +3476,8 @@ impl App {
             cwd,
             account_names: Default::default(),
             account_email: None,
+            header_email_revealed: false,
+            header_email_pressed: false,
             messages: vec![ChatLine {
                 role: MsgRole::System,
                 text: "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts."
@@ -4800,6 +4815,24 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     if modal::mouse(app, &m) {
         return;
     }
+    let email_hit = app
+        .areas
+        .header_email
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.header_email_pressed = email_hit;
+        if email_hit {
+            return;
+        }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_email_pressed)
+    {
+        if email_hit {
+            app.header_email_revealed = !app.header_email_revealed;
+        }
+        return;
+    }
     if chatref::handle_mouse(app, m) {
         return;
     }
@@ -5403,42 +5436,56 @@ fn provider_color(p: ProviderKind) -> Color {
     }
 }
 
-fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
+    app.areas.header_email = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
-    let accent = if app.busy && app.pulse_on {
-        Color::Cyan
-    } else if app.busy {
-        Color::Blue
-    } else {
-        Color::Indexed(75)
-    };
     let model = if app.model == "?" {
         "model ?".to_string()
     } else {
         app.model.clone()
     };
-    let email = app.account_email.as_deref().unwrap_or("email unavailable");
+    let email = if app.header_email_revealed {
+        app.account_email.as_deref().unwrap_or("email unavailable")
+    } else if app.account_email.is_some() {
+        "email · click to show"
+    } else {
+        "email unavailable"
+    };
     let account = app.account_label();
     let right = String::new();
     let available = area.width as usize;
-    let identity_width = Line::from(format!(" {account}   {email}")).width();
-    let brand = format!("concordia {}   ", short_stamp());
+    let brand = if area.width >= 75 {
+        format!(" concordia {}   ", short_stamp())
+    } else {
+        " concordia  ".into()
+    };
     let model = format!("  {model}");
-    let show_brand = 3 + brand.len() + identity_width + model.len() <= available;
-    let mut left = vec![Span::styled(
-        " ✦ ",
-        bar.fg(accent).add_modifier(Modifier::BOLD),
-    )];
-    if show_brand {
-        left.push(Span::styled(brand, bar.fg(Color::DarkGray)));
-    }
+    let mut left = vec![Span::styled(brand, bar.fg(Color::Indexed(75)))];
     left.push(Span::styled(
         format!(" {account} "),
         bar.bg(provider_color(app.provider))
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     ));
-    left.push(Span::styled(format!("  {email}"), bar));
+    let email_x = left.iter().map(Span::width).sum::<usize>();
+    let email_text = format!("  {email}");
+    let email_text = if email_x + Line::from(email_text.clone()).width() <= available {
+        email_text
+    } else {
+        "  email".into()
+    };
+    let email_width = Line::from(email_text.clone()).width();
+    if email_x + email_width <= available {
+        if app.account_email.is_some() {
+            app.areas.header_email = Some(Rect::new(
+                area.x + email_x as u16,
+                area.y,
+                email_width as u16,
+                1,
+            ));
+        }
+        left.push(Span::styled(email_text, bar));
+    }
     if left.iter().map(Span::width).sum::<usize>() + model.len() <= available {
         left.push(Span::styled(model, bar.fg(Color::Gray)));
     }

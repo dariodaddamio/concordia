@@ -839,7 +839,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
                 .next()
                 .unwrap_or_default()
                 .trim_start()
-                .starts_with('✦')
+                .starts_with("concordia")
                 && screen.contains("resize-draft-marker")
                 && screen
                     .lines()
@@ -872,7 +872,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
             .next()
             .unwrap_or_default()
             .trim_start()
-            .starts_with('✦')
+            .starts_with("concordia")
             && screen
                 .lines()
                 .nth(28)
@@ -1657,29 +1657,57 @@ fn provider_failure_pauses_queue_and_preserves_a_newer_draft() {
 #[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn two_panes_keep_live_drafts_and_recovery_files_separate() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    let mut first = Session::launch(dir.path());
-    first.paste("draft from first pane");
-    first.until("first draft saved", |s| {
-        s.draft() == "draft from first pane"
-    });
-    let mut second = Session::launch(dir.path());
-    assert!(!second.screen().contains("draft from first pane"));
-    assert_eq!(second.draft(), "");
-    second.send("\x01");
-    second.send("\x08");
-    second.paste("draft from second pane");
-    second.until("second draft saved", |s| {
-        s.draft() == "draft from second pane"
-    });
-    assert!(first.screen().contains("draft from first pane"));
-    assert!(!first.screen().contains("draft from second pane"));
-    assert_eq!(first.draft(), "draft from first pane");
-    assert_eq!(second.draft(), "draft from second pane");
-    assert!(first.prompts().is_empty());
-    assert!(second.prompts().is_empty());
-    eprintln!("PASS: active panes have separate draft recovery");
+    for (first_provider, second_provider) in [
+        (ProviderKind::Codex, ProviderKind::Codex),
+        (ProviderKind::Claude, ProviderKind::Claude),
+        (ProviderKind::Cursor, ProviderKind::Cursor),
+        (ProviderKind::Codex, ProviderKind::Claude),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        setup(dir.path(), first_provider);
+        let mut first = Session::launch(dir.path());
+        first.paste("draft from first pane");
+        first.until("first draft saved", |s| {
+            s.draft() == "draft from first pane"
+        });
+        if second_provider != first_provider {
+            setup(dir.path(), second_provider);
+        }
+        let mut second = Session::launch(dir.path());
+        assert!(!second.screen().contains("draft from first pane"));
+        assert_eq!(second.draft(), "");
+        second.send("\x01");
+        second.send("\x08");
+        second.paste("draft from second pane");
+        second.until("second draft saved", |s| {
+            s.draft() == "draft from second pane"
+        });
+        assert!(first.screen().contains("draft from first pane"));
+        assert!(!first.screen().contains("draft from second pane"));
+        assert_eq!(first.draft(), "draft from first pane");
+        assert_eq!(second.draft(), "draft from second pane");
+        assert!(first.prompts().is_empty());
+        assert!(second.prompts().is_empty());
+        first.send("\x01\x08");
+        first.submit("[wait] concurrent first pane");
+        first.until("first provider is running", |s| s.prompts().len() == 1);
+        second.send("\x01\x08");
+        second.submit("[wait] concurrent second pane");
+        second.until("both panes dispatched to the same provider", |s| {
+            s.prompts().len() == 2
+        });
+        assert!(!second.screen().contains("Workspace admission:"));
+        first.release();
+        first.until("first concurrent reply", |s| {
+            s.screen()
+                .contains("FAKE REPLY: [wait] concurrent first pane")
+        });
+        second.until("second concurrent reply", |s| {
+            s.screen()
+                .contains("FAKE REPLY: [wait] concurrent second pane")
+        });
+        eprintln!("PASS: active panes have separate draft recovery");
+    }
 }
 
 #[test]
@@ -2450,6 +2478,28 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
+    s.until("header email is private by default", |s| {
+        let screen = s.screen();
+        let header = screen.lines().next().unwrap_or_default();
+        header.contains("click to show") && !header.contains("member@example.invalid")
+    });
+    let x = s.screen().lines().next().unwrap().find("email").unwrap() + 1;
+    s.send(&format!("\x1b[<0;{x};1M\x1b[<0;{x};1m"));
+    s.until("click reveals header email", |s| {
+        s.screen()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .contains("member@example.invalid")
+    });
+    s.send(&format!("\x1b[<0;{x};1M\x1b[<0;{x};1m"));
+    s.until("second click hides header email", |s| {
+        !s.screen()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .contains("member@example.invalid")
+    });
     s.paste("/use");
     s.until("complete command reveals actions", |s| {
         s.screen().contains("/use options") && s.screen().contains("/use add")

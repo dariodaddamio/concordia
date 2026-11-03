@@ -15,6 +15,11 @@ missing native balance reads `Credits: not reported`; the usage view also states
 is not reported separately. App title glyphs describe activity. The graphical Windows Terminal tab
 icon belongs to the host profile and is independent of Concordia's title text.
 
+The header email is hidden by default. Click its label to show or hide it; changing accounts
+resets disclosure. The app name/version has no duplicate animated activity glyph. The usage view
+links to the provider dashboard when more credit-balance detail is needed; absent native amounts
+remain explicitly unreported.
+
 ## Non-negotiables
 
 - One input for chat and orchestrator commands (`/use`, `/config`, ...).

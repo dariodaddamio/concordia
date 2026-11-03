@@ -1,6 +1,6 @@
 # Images and diagrams in Concordia
 
-Build: `2026-11-03t`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
+Build: `2026-11-03u`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
 
 ## Attach an image
 
