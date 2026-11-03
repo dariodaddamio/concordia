@@ -268,6 +268,17 @@ fn up_with_an_empty_draft_focuses_the_panel_and_arrows_select() {
     assert_eq!(h.app.queue.sel, 0);
     h.press(KeyCode::Down);
     assert_eq!(h.app.queue.sel, 1);
+    h.press(KeyCode::Down);
+    assert!(h.app.queue.focused);
+    assert_eq!(h.app.queue.sel, 2);
+    h.press(KeyCode::Down);
+    assert!(
+        !h.app.queue.focused,
+        "Down past the last item returns to the composer"
+    );
+    assert!(h.app.editor.text().is_empty());
+    h.press(KeyCode::Up);
+    assert!(h.app.queue.focused);
     h.press(KeyCode::Esc);
     assert!(!h.app.queue.focused);
     assert!(

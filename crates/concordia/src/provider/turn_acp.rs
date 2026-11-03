@@ -12,6 +12,7 @@ struct Connection {
     bytes: usize,
     session_id: Option<String>,
     interactions: InteractionConnection,
+    prompting: bool,
 }
 impl Connection {
     fn emit(&self, event: TurnProgress) {
@@ -75,12 +76,17 @@ impl Connection {
     }
     async fn request(&mut self, value: &Value) -> Result<()> {
         let method = value["method"].as_str().unwrap_or("");
-        let interactive = matches!(method, "session/request_permission" | "cursor/ask_question");
+        let interactive = matches!(
+            method,
+            "session/request_permission" | "cursor/ask_question" | "cursor/create_plan"
+        );
         if value
             .pointer("/params/sessionId")
             .and_then(Value::as_str)
             .is_some_and(|id| Some(id) != self.session_id.as_deref())
             || interactive
+                && (method == "session/request_permission"
+                    || value["params"].get("sessionId").is_some())
                 && value
                     .pointer("/params/sessionId")
                     .and_then(Value::as_str)
@@ -92,6 +98,9 @@ impl Connection {
             return self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32602,"message":"Session identity mismatch"}})).await;
         }
         if interactive {
+            if !self.prompting {
+                return self.write(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}})).await;
+            }
             let Some(session) = self.session_id.as_deref() else {
                 return self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32602,"message":"Session identity is unavailable"}})).await;
             };
@@ -254,16 +263,19 @@ pub(super) async fn run(
         bytes: 0,
         session_id: req.native_session_id.map(str::to_owned),
         interactions: InteractionConnection::new(owner, handle.cancel_flag.clone()),
+        prompting: false,
     };
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
         conn.interactions.initialized_cursor(&init);
-        anyhow::ensure!(init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
+        anyhow::ensure!(init["protocolVersion"] == 1, "Installed Cursor ACP did not negotiate protocol version 1");
+        anyhow::ensure!(req.images.is_empty() || init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
         let (method,params)=if let Some(id)=req.native_session_id{
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
             ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":[]}))
         }else{("session/new",json!({"cwd":plan.cwd,"mcpServers":[]}))};
         let session=tokio::time::timeout(Duration::from_secs(12),conn.rpc(2,method,params)).await??;
+        anyhow::ensure!(!session.get("sessionId").is_some_and(|id| req.native_session_id.is_some_and(|expected| id.as_str()!=Some(expected))), "Cursor ACP loaded a different native session; prompt withheld");
         let sid=req.native_session_id.map(str::to_owned).or_else(||session["sessionId"].as_str().map(str::to_owned)).context("Cursor ACP returned no session id")?;
         conn.out.session_id=Some(sid.clone());conn.session_id=Some(sid.clone());conn.emit(TurnProgress::Session(sid.clone()));
         // Honor the final plan after locked-code enforcement, rather than the requested trust.
@@ -272,6 +284,7 @@ pub(super) async fn run(
         if let Some(model)=req.model.filter(|m|!m.is_empty()&&*m!="auto"){
             tokio::time::timeout(Duration::from_secs(12),conn.rpc(4,"session/set_model",json!({"sessionId":sid,"modelId":model}))).await??;
         }
+        conn.prompting = true;
         let result=conn.rpc(5,"session/prompt",json!({"sessionId":sid,"prompt":content})).await?;
         if result["stopReason"]=="cancelled"{conn.out.cancelled=true;}
         Ok::<(),anyhow::Error>(())

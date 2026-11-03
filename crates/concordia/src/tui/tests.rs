@@ -1148,10 +1148,7 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         assert!(s.contains(needle), "palette missing {needle:?}:\n{s}");
     }
     assert!(
-        s.contains(&format!(
-            "commands · {}",
-            crate::commands::SLASH_COMMANDS.len()
-        )),
+        s.contains(&format!("commands · {}", palette::matching("/").len())),
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);
@@ -1205,10 +1202,8 @@ fn arrows_move_the_selection_and_tab_completes_it() {
     h.type_str("/");
     h.key_up(); // wraps to the last command
     assert_eq!(h.app.editor.text(), "/");
-    assert_eq!(h.app.palette.selected, SLASH_COMMANDS_LEN - 1);
+    assert_eq!(h.app.palette.selected, palette::matching("/").len() - 1);
 }
-
-const SLASH_COMMANDS_LEN: usize = crate::commands::SLASH_COMMANDS.len();
 
 #[test]
 fn enter_completes_a_partial_command_and_runs_it_once_complete() {
@@ -1548,11 +1543,13 @@ fn unified_diff_cards_show_counts_and_review_colours() {
     use ratatui::style::{Color, Modifier};
 
     let mut h = Harness::new(100, 24);
+    std::fs::create_dir_all(h._dir.path().join("src")).unwrap();
+    std::fs::write(h._dir.path().join("src/lib.rs"), "new\nextra\n").unwrap();
     h.app.push_card(StreamCard {
         id: "edit".into(),
         title: "edit".into(),
         detail: Some(
-            "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1,2 @@\n-old\n+new\n+extra".into(),
+            "File: src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1,2 @@\n-old\n+new\n+extra".into(),
         ),
         status: CardStatus::Done,
     });
@@ -1593,6 +1590,19 @@ fn unified_diff_cards_show_counts_and_review_colours() {
         .unwrap();
     assert_eq!(header.style.fg, Some(Color::DarkGray));
     assert!(header.style.add_modifier.contains(Modifier::DIM));
+    h.app.activity.open(h.app.messages.len() - 1);
+    h.draw();
+    let (target, _) = h.app.activity.file_targets.first().unwrap().clone();
+    assert_eq!(pointer::shape(&h.app, target.x, target.y), "pointer");
+    h.click(target.x, target.y);
+    assert!(h.app.activity.detail.is_none());
+    assert!(h
+        .app
+        .last_file_open
+        .as_ref()
+        .unwrap()
+        .path
+        .ends_with("src/lib.rs"));
 }
 
 #[test]
@@ -1631,7 +1641,10 @@ fn a_running_turn_shows_a_spinner_and_how_to_cancel() {
         s.contains("Codex · starting the turn") && s.contains("[ Esc ]"),
         "{s}"
     );
-    assert!(SPINNER.iter().any(|f| s.contains(f)), "{s}");
+    assert!(
+        h.app.phase.frames().iter().any(|frame| s.contains(frame)),
+        "{s}"
+    );
 }
 
 #[test]
@@ -3879,10 +3892,15 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     h.app.phase = Phase::Thinking;
     assert_eq!(
         h.app.window_title(),
-        "\u{2726} Fix parser \u{b7} Thinking \u{b7} Concordia"
+        "\u{25c8} Fix parser \u{b7} Thinking \u{b7} Concordia"
     );
     h.app.phase = Phase::Writing;
     assert!(h.app.window_title().starts_with("\u{270e} Fix parser"));
+    h.app.phase = Phase::Tool("Read".into());
+    assert!(h.app.window_title().contains("Read file"));
+    assert_eq!(h.app.phase.frame(0), "▤");
+    h.app.phase = Phase::Tool("apply_patch".into());
+    assert_eq!(h.app.phase.frame(0), "✎");
     h.app.cancel_requested = true;
     assert!(h.app.window_title().contains("Stopping"));
 }

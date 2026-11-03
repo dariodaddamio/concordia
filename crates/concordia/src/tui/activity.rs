@@ -38,6 +38,8 @@ pub(super) struct Activity {
     pub render_width: usize,
     pub render_selected: usize,
     pub render_dirty: bool,
+    pub file_targets: Vec<(ratatui::layout::Rect, crate::file_links::Candidate)>,
+    pub pressed_file: Option<crate::file_links::Candidate>,
     searched_query: Option<String>,
     search_dirty: bool,
 }
@@ -164,6 +166,8 @@ impl Activity {
         }
     }
     pub fn open(&mut self, message: usize) {
+        self.file_targets.clear();
+        self.pressed_file = None;
         self.detail = Some(message);
         self.query.clear();
         self.query_cursor = 0;

@@ -75,6 +75,7 @@ fn submit(d: &mut Delegates, account: &str, task: &str, cwd: &Path, trust: Trust
             task: task.into(),
             origin: Origin::User,
             spec: JobSpec {
+                native_input: Default::default(),
                 model: None,
                 home: None,
                 cwd: cwd.to_path_buf(),
@@ -240,6 +241,7 @@ async fn a_delegate_runs_in_the_background_with_a_fresh_session_and_a_labelled_r
         task: task.into(),
         origin: Origin::User,
         spec: JobSpec {
+            native_input: Default::default(),
             model: None,
             home: Some(home.clone()),
             cwd: cwd.clone(),
@@ -378,6 +380,7 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
                 task: "bounded task [quota]".into(),
                 origin: Origin::User,
                 spec: JobSpec {
+                    native_input: Default::default(),
                     model: Some("model-a".into()),
                     home: Some(env.path("worker-one")),
                     cwd: cwd.clone(),

@@ -11,6 +11,12 @@ creation does not change the implementation status recorded here.
 
 ## Closed in this build
 
+- Worker-owned native input, opt-in Cursor ACP text and explicit native plan decisions now use
+  exact live request ownership. Edit cards, file detection, activity icons, agent inspection,
+  queue return and quota/credit cache fixes are implemented in the current candidate.
+  [Scope and verification](quality/native-worker-input.md). Codex/Claude interactive execution,
+  live parity and the broader workspace/provider roadmap remain separate work.
+
 - A versioned synthetic retrieval corpus and provider-free collector measure scoped relevance,
   exact excerpt resolution, visible gaps, read cost and resource observations through existing
   checks. [Evidence and prepared live experiment](quality/memory-evaluation.md). Model-retention

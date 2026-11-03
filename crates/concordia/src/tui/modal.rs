@@ -5,6 +5,7 @@ use super::*;
 pub(super) enum Target {
     Picker,
     Activity,
+    WorkerInput,
 }
 
 pub(super) fn draw_close(f: &mut Frame, popup: Rect, app: &mut App, target: Target) {
@@ -38,6 +39,7 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
             app.modal_close_pressed = None;
             if hit == Some(pressed) {
                 match pressed {
+                    Target::WorkerInput => app.deleg.input = None,
                     Target::Picker => app.dismiss_picker(),
                     Target::Activity => {
                         app.activity.detail = None;

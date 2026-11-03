@@ -308,6 +308,14 @@ fn classify_item_event(typ: &str, ev: &serde_json::Value) -> Vec<StreamPart> {
         })
         .collect::<Vec<_>>()
         .join("\n");
+        let title = if item_type == "file_change" {
+            if let Some(rendered) = item.get("changes").and_then(super::edit_display::changes) {
+                detail = rendered;
+            }
+            "Edit".to_string()
+        } else {
+            title
+        };
         if let Some(output) = item.get("aggregated_output").or_else(|| item.get("output")) {
             let output = format_provider_value(output);
             if !output.is_empty() {
@@ -648,7 +656,8 @@ pub fn compact_detail(raw: &str, max: usize) -> String {
     format!("{truncated}…")
 }
 
-pub fn upsert_card(cards: &mut Vec<StreamCard>, next: StreamCard) {
+pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
+    super::edit_display::normalize(&mut next);
     if let Some(prev) = cards.iter_mut().find(|c| c.id == next.id) {
         let is_result_update = next.title == "result";
         if !next.title.is_empty() && (!is_result_update || prev.title.is_empty()) {
@@ -694,23 +703,70 @@ pub fn format_card_line(card: &StreamCard) -> String {
         CardStatus::Done => "✓",
     };
     match &card.detail {
-        Some(d) if !d.is_empty() => format!("│ {mark} {}  {}", card.title, card_preview(d)),
-        _ => format!("│ {mark} {}", card.title),
+        Some(d) if !d.is_empty() => {
+            format!("│ {mark} {}  {}", tool_label(&card.title), card_preview(d))
+        }
+        _ => format!("│ {mark} {}", tool_label(&card.title)),
+    }
+}
+
+pub fn tool_label(name: &str) -> String {
+    match name.to_ascii_lowercase().as_str() {
+        "shell" | "shell_command" | "command_execution" | "exec_command" | "bash"
+        | "shelltoolcall" => "Run command".into(),
+        "read" | "read_file" | "readtoolcall" => "Read file".into(),
+        "edit" | "apply_patch" | "str_replace" | "edittoolcall" => "Edit file".into(),
+        "write" | "write_file" | "writetoolcall" => "Write file".into(),
+        "grep" | "rg" | "glob" | "search" | "searchtoolcall" => "Search files".into(),
+        "web_search" | "web_search_call" | "websearch" => "Search web".into(),
+        "webfetch" | "fetch" => "Read web page".into(),
+        "spawn_agent" => "Start agent".into(),
+        "wait_agent" | "wait" => "Wait for agents".into(),
+        _ => name
+            .strip_prefix("mcp__")
+            .map(|s| s.replace("__", " / "))
+            .unwrap_or_else(|| name.to_owned()),
+    }
+}
+
+pub fn tool_icon(name: &str) -> &'static str {
+    let label = tool_label(name).to_ascii_lowercase();
+    if label.contains("edit") || label.contains("write") || label.contains("patch") {
+        "✎"
+    } else if label.contains("search") || label.contains("grep") || label.contains("glob") {
+        "⌕"
+    } else if label.contains("read") || label.contains("file") {
+        "▤"
+    } else if label.contains("agent") || label.contains("task") {
+        "⑂"
+    } else {
+        "›"
     }
 }
 
 /// Compact presentation only: the original arguments and output remain on the card.
 fn card_preview(detail: &str) -> String {
-    if detail.lines().any(|line| line.starts_with("@@")) {
-        let added = detail
+    let reported = detail
+        .split_once("\nNative tool input and output:")
+        .map_or(detail, |(reported, _)| reported);
+    let reported = reported
+        .split_once("\nOutput: ")
+        .map_or(reported, |(reported, _)| reported);
+    if reported.lines().any(|line| line.starts_with("@@")) {
+        let added = reported
             .lines()
             .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
             .count();
-        let removed = detail
+        let removed = reported
             .lines()
             .filter(|line| line.starts_with('-') && !line.starts_with("---"))
             .count();
-        return format!("+{added} -{removed}");
+        let paths = reported
+            .lines()
+            .filter_map(|line| line.strip_prefix("File: "))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("{paths}  +{added} -{removed}").trim().to_owned();
     }
     let first = detail
         .lines()
@@ -1067,9 +1123,28 @@ mod tests {
             panic!("{parts:?}")
         };
         let detail = card.detail.as_deref().unwrap();
+        assert_eq!(card.title, "Edit");
+        let row = format_card_line(card);
+        assert!(row.contains("+1 -1"), "{row}");
+        assert!(row.contains("src/"), "{row}");
         for expected in ["src/雪.rs", "old line", "new line", "@@ -1 +1 @@"] {
             assert!(detail.contains(expected), "missing {expected}: {detail}");
         }
+        let mut edits = Vec::new();
+        let input = serde_json::json!({"file_path":"src/parser.rs","old_string":"one\ntwo","new_string":"three"}).to_string();
+        upsert_card(
+            &mut edits,
+            StreamCard {
+                id: "replacement".into(),
+                title: "Edit".into(),
+                detail: Some(input.clone()),
+                status: CardStatus::Running,
+            },
+        );
+        assert!(format_card_line(&edits[0]).contains("src/parser.rs  +1 -2"));
+        let rendered = edits[0].detail.as_deref().unwrap();
+        assert!(rendered.contains("-one\n-two\n+three"));
+        assert!(rendered.contains(&input));
     }
 
     #[test]

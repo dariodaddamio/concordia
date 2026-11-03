@@ -11,6 +11,7 @@ fn dependency_state(state: WorkerState) -> schedule::RunState {
         WorkerState::Starting
         | WorkerState::Thinking
         | WorkerState::Tool
+        | WorkerState::WaitingInput
         | WorkerState::Writing => schedule::RunState::Running,
         WorkerState::Done => schedule::RunState::Succeeded,
         WorkerState::Failed => schedule::RunState::Failed,
@@ -47,7 +48,7 @@ mod tests {
         let id = d.push_test_job(
             "synthetic",
             ProviderKind::Codex,
-            WorkerState::Tool,
+            WorkerState::WaitingInput,
             "unconfirmed action",
             0,
         );
@@ -253,7 +254,7 @@ mod tests {
         drop(restored);
         let mut corrupt: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(corrupt["version"], 6);
+        assert_eq!(corrupt["version"], 7);
         corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
         let bytes = serde_json::to_vec(&corrupt).unwrap();
         std::fs::write(&path, &bytes).unwrap();
@@ -355,7 +356,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1..=6)
+            if !matches!(ledger.version, 1..=7)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -432,6 +433,7 @@ impl Delegates {
                     WorkerState::Paused
                 };
                 jobs.push(Job {
+                    input:input::State::default(),
                     run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, routing:saved.routing, route_history:saved.route_history,
                     workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None, preparation_cancel:Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
@@ -518,7 +520,7 @@ impl Delegates {
             })
             .collect();
         let bytes = serde_json::to_vec(&Ledger {
-            version: 6,
+            version: 7,
             owner: recovery.owner.clone(),
             workspace: recovery.workspace.clone(),
             conversation: self.conversation_id.clone(),
@@ -677,6 +679,8 @@ impl Delegates {
         // A confirmed terminal quota error before any work is safe to reroute. Any tool or partial
         // answer, cancellation, or unconfirmed exit requires reconciliation instead.
         if job.cancel_requested
+            || job.spec.native_input != crate::native_input::Mode::Standard
+            || job.input.observed()
             || out.cancelled
             || out.exit_code.is_none()
             || !(out.failed || out.exit_code != Some(0))

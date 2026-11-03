@@ -185,6 +185,16 @@ fn tool_list() -> Value {
             "inputSchema": {"type":"object","properties":{}}
         },
         {
+            "name":"memory",
+            "description":"Search original chats, file facts or confirmed groups. Read-only; use native_read for exact excerpts.",
+            "inputSchema":{"type":"object","additionalProperties":false,"properties":{
+                "action":{"enum":["recall","ranked","files","groups","members"]},
+                "query":{"type":"string"},"workspace":{"type":"string"},"source":{"type":"string"},
+                "account":{"type":"string"},"goal":{"type":"string"},"file":{"type":"string"},
+                "group":{"type":"string"},"offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
+            },"required":["action"]}
+        },
+        {
             "name": "goals",
             "description": "Read goals or confirmed goal/source metadata. Later pages require the returned revision. No mutations.",
             "inputSchema": {"type":"object","properties":{
@@ -255,6 +265,97 @@ fn tool_goals(root: &Path, args: &Value) -> Result<String, String> {
     serde_json::to_string(&value).map_err(|e| e.to_string())
 }
 
+fn tool_memory(root: &Path, args: &Value) -> Result<String, String> {
+    let object = args.as_object().ok_or("memory needs an object")?;
+    let action = str_arg(args, "action").ok_or("memory needs an action")?;
+    let allowed: &[&str] = match action {
+        "recall" => &["action", "query", "workspace", "source", "account"],
+        "ranked" => &[
+            "action",
+            "query",
+            "workspace",
+            "source",
+            "account",
+            "goal",
+            "file",
+        ],
+        "files" => &["action", "source", "offset", "revision"],
+        "groups" => &["action", "workspace", "offset", "revision"],
+        "members" => &["action", "group", "offset", "revision"],
+        _ => return Err("unsupported read-only memory action".into()),
+    };
+    for (key, value) in object {
+        if !allowed.contains(&key.as_str())
+            || if key == "offset" {
+                !value.is_u64()
+            } else {
+                !value.is_string()
+            }
+        {
+            return Err("unsupported or mistyped memory argument".into());
+        }
+    }
+    let required = |key| {
+        str_arg(args, key)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("memory {action} needs {key}"))
+    };
+    let offset = uint_arg(args, "offset").unwrap_or(0);
+    let revision = str_arg(args, "revision");
+    let value = match action {
+        "recall" => serde_json::to_value(crate::native_memory::retrieval::recall(
+            root,
+            required("query")?,
+            str_arg(args, "source"),
+            str_arg(args, "account"),
+            str_arg(args, "workspace").map(Path::new),
+        )?)
+        .map_err(|error| error.to_string())?,
+        "ranked" => serde_json::to_value(crate::native_memory::rank::recall(
+            root,
+            crate::native_memory::rank::Request {
+                text: required("query")?,
+                source: str_arg(args, "source"),
+                account: str_arg(args, "account"),
+                workspace: str_arg(args, "workspace").map(Path::new),
+                goal: str_arg(args, "goal"),
+                file: str_arg(args, "file"),
+                from: None,
+                at: None,
+            },
+        )?)
+        .map_err(|error| error.to_string())?,
+        "groups" => crate::native_memory::relations::groups::list(
+            root,
+            Path::new(required("workspace")?),
+            offset,
+            revision,
+        )?,
+        "members" => crate::native_memory::relations::groups::members(
+            root,
+            required("group")?,
+            offset,
+            revision,
+        )?,
+        "files" => {
+            let mut argv = vec!["file-facts".into(), required("source")?.to_owned()];
+            if offset != 0 || revision.is_some() {
+                argv.extend([
+                    offset.to_string(),
+                    revision.ok_or("file cursor requires revision")?.to_owned(),
+                ]);
+            }
+            crate::native_memory::files::command(root, &argv)?
+        }
+        _ => unreachable!(),
+    };
+    let text = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+    if text.chars().count() > MAX_RESULT_CHARS {
+        return Err("memory result exceeds response budget; narrow the query with source, account or workspace".into());
+    }
+    Ok(text)
+}
+
 /// Err is a protocol error (unknown tool, bad params shape); tool failures are `isError` results.
 fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
     let name = params
@@ -274,6 +375,7 @@ fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
         "thread_read" => tool_thread_read(state_root, &args),
         "native_read" => tool_native_read(state_root, &args),
         "usage" => Ok(tool_usage(state_root)),
+        "memory" => tool_memory(state_root, &args),
         "goals" => tool_goals(state_root, &args),
         "delegate" => tool_delegate(state_root, &args),
         other => return Err(format!("unknown tool: {other}")),
@@ -645,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_exactly_the_seven_tools_with_terse_schemas() {
+    fn tools_list_has_exactly_the_eight_tools_with_terse_schemas() {
         let d = tempfile::tempdir().unwrap();
         let r = call(d.path(), rpc(1, "tools/list", Value::Null));
         let tools = r["result"]["tools"].as_array().unwrap();
@@ -658,19 +760,38 @@ mod tests {
                 "thread_read",
                 "native_read",
                 "usage",
+                "memory",
                 "goals",
                 "delegate"
             ]
         );
         let size = serde_json::to_string(tools).unwrap().len();
         assert!(
-            size < 3000,
+            size < 4000,
             "tool list costs tokens every turn: {size} bytes"
         );
         for t in tools {
             assert!(t["description"].as_str().unwrap().len() < 120);
             assert_eq!(t["inputSchema"]["type"], "object");
         }
+        assert!(tool(d.path(), "memory", json!({"action":"group-link"})).1);
+        assert!(
+            tool(
+                d.path(),
+                "memory",
+                json!({"action":"recall","query":"needle","offset":1})
+            )
+            .1
+        );
+        let (result, error) = tool(
+            d.path(),
+            "memory",
+            json!({"action":"recall","query":"needle"}),
+        );
+        assert!(!error, "{result}");
+        let report: Value = serde_json::from_str(&result).unwrap();
+        assert!(report["hits"].is_array());
+        assert!(report["incomplete"].is_boolean());
     }
 
     #[test]

@@ -1,5 +1,15 @@
 # Changelog
 
+- Worker-owned native input review and opt-in Cursor ACP text/plan decisions preserve main drafts,
+  native scopes and exact run/attempt ownership. Recovery pauses unresolved requests.
+- Edit cards show reported paths and readable additions/removals, with file navigation; JSON
+  Windows paths and extensionless references resolve correctly. Tool labels and activity icons
+  describe the operation, and Ctrl+G opens a persistent-results agent inspector at the side.
+- Fix Down returning from the queue, idle quota refresh and worker quota invalidation. Preserve
+  live Codex credit balances separately from subscription limits through cache/restart.
+- Read-only MCP memory discovery replaces intricate user commands for agents. The bare slash menu
+  focuses on everyday controls; advanced commands remain available by prefix.
+
 ### Validation
 - A versioned synthetic retrieval corpus compares lexical and opt-in ranking through existing
   native-memory checks. `scripts/evaluate-memory.ps1` records exact source/test/corpus identity,

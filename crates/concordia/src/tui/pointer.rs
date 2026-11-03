@@ -60,6 +60,15 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
     {
         return "pointer";
     }
+    if app.activity.detail.is_some()
+        && app
+            .activity
+            .file_targets
+            .iter()
+            .any(|(rect, _)| contains(*rect, x, y))
+    {
+        return "pointer";
+    }
     if app.picker.is_some() || app.activity.detail.is_some() || workers::overlay_open(app) {
         return "default";
     }

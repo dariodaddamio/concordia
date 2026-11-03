@@ -37,6 +37,7 @@ pub(super) struct Panel {
     /// The focused worker row (Alt+Up/Down or a click). Esc cancels it; Enter opens it.
     pub selected: Option<u32>,
     viewer: Option<Viewer>,
+    pub(super) input: Option<super::worker_input::Review>,
     confirms: VecDeque<Confirm>,
     /// Screen rows from the last draw, for clicks.
     rects: Vec<(Rect, u32)>,
@@ -68,6 +69,7 @@ struct Viewer {
 
 impl Panel {
     pub(super) fn change_conversation(&mut self) {
+        self.input = None;
         self.recovery_notice = false;
         self.d.new_conversation();
         self.generation = self.generation.wrapping_add(1);
@@ -119,6 +121,7 @@ fn icon_of(state: WorkerState, tick: u64) -> (&'static str, Color) {
     }
     match state {
         WorkerState::Queued => ("\u{25cc}", Color::DarkGray),
+        WorkerState::WaitingInput => ("?", Color::Yellow),
         WorkerState::Done => ("\u{2713}", Color::Green),
         WorkerState::Failed => ("\u{2717}", Color::Red),
         _ => ("-", Color::DarkGray),
@@ -352,7 +355,7 @@ fn draw_confirm(f: &mut Frame, over: Rect, app: &App, c: &Confirm) {
     );
 }
 
-fn wrap_plain(s: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_plain(s: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for raw in s.lines() {
@@ -384,6 +387,19 @@ pub(super) fn viewer_text(j: &Job) -> String {
         j.source_id.as_deref().unwrap_or("unavailable")
     );
     let mut t = String::new();
+    t.push_str(&format!(
+        "task: {}\nresult: {}\n",
+        one_line(&j.task),
+        if j.collected {
+            "sent to main agent"
+        } else {
+            "available to inspect"
+        }
+    ));
+    t.push_str("\noutput (untrusted data - shown, never executed):\n");
+    let out = j.final_text();
+    t.push_str(if out.is_empty() { "(none yet)" } else { &out });
+    t.push_str("\n\nDetails:\n");
     t.push_str(&identity);
     t.push_str(&j.usage_summary());
     t.push('\n');
@@ -413,9 +429,6 @@ pub(super) fn viewer_text(j: &Job) -> String {
         t.push_str(&format_card_line(c));
         t.push('\n');
     }
-    t.push_str("\noutput (untrusted data - shown, never executed):\n");
-    let out = j.final_text();
-    t.push_str(if out.is_empty() { "(none yet)" } else { &out });
     if let Some(e) = &j.error {
         t.push_str(&format!("\n\nerror:\n{e}"));
     }
@@ -423,6 +436,7 @@ pub(super) fn viewer_text(j: &Job) -> String {
 }
 
 fn draw_viewer(f: &mut Frame, over: Rect, app: &mut App, now: Instant) {
+    let over = super::native_agents::panel_area(over);
     let Some(v) = app.deleg.viewer.as_ref() else {
         return;
     };
@@ -656,6 +670,15 @@ impl App {
         self.push_system(result.unwrap_or_else(|e| format!("worker recovery: {e}")));
     }
     pub(super) fn inspect_worker(&mut self, id: u32) {
+        if self
+            .deleg
+            .d
+            .get(id)
+            .is_some_and(|job| !job.native_inputs().is_empty())
+        {
+            super::worker_input::open(self, id);
+            return;
+        }
         if self.deleg.d.get(id).is_some() {
             self.deleg.viewer = Some(Viewer {
                 job: id,
@@ -759,6 +782,9 @@ impl App {
             .owners
             .retain(|id, _| self.deleg.d.get(*id).is_some());
         for id in finished {
+            if let Some(job) = self.deleg.d.get(id) {
+                self.usage_fetcher.invalidate(&job.account);
+            }
             if !self.deleg.owns(id) {
                 self.flash(format!(
                     "worker #{id} finished for an earlier conversation; Ctrl+G inspects it"
@@ -1037,6 +1063,12 @@ impl App {
         );
         let trust = worker_trust(self.trust, settings.child_trust);
         let queued_behind = self.deleg.d.running_for(&account).map(|j| j.id);
+        let native_input = crate::native_input::for_home(
+            &self.state_root,
+            acct.provider,
+            &account,
+            home.as_deref(),
+        )?;
         let id = self.deleg.d.submit_workspace(
             Submit {
                 account: account.clone(),
@@ -1044,6 +1076,7 @@ impl App {
                 task: task.to_string(),
                 origin,
                 spec: JobSpec {
+                    native_input,
                     model: model.flatten(),
                     home,
                     cwd: self.cwd.clone(),

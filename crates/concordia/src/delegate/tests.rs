@@ -206,6 +206,7 @@ fn worker_context_is_bounded_and_never_carries_a_session() {
 
 fn bare_job(id: u32, account: &str, state: WorkerState) -> Job {
     Job {
+        input: input::State::default(),
         run_id: uuid::Uuid::new_v4().to_string(),
         conversation_id: uuid::Uuid::new_v4().to_string(),
         source_id: None,
@@ -241,6 +242,7 @@ fn bare_job(id: u32, account: &str, state: WorkerState) -> Job {
         cancel_requested: false,
         announced: false,
         spec: JobSpec {
+            native_input: Default::default(),
             model: None,
             home: None,
             cwd: PathBuf::from("."),
@@ -362,6 +364,7 @@ fn one_turn_per_worker_with_a_bounded_queue_and_cancel() {
         task: "approved dependent".into(),
         origin: Origin::User,
         spec: JobSpec {
+            native_input: Default::default(),
             cwd: root.path().into(),
             ..bare_job(0, name, WorkerState::Queued).spec
         },
@@ -407,6 +410,55 @@ fn one_turn_per_worker_with_a_bounded_queue_and_cancel() {
     assert_eq!(restored.get(waiting).unwrap().state, WorkerState::Paused);
     restored.poll(now);
     assert!(!restored.any_active());
+    // Pending input has a separate app bound and holds each worker without reserving main input.
+    let mut inputs = Delegates::default();
+    let mut connections = Vec::new();
+    let mut responses = Vec::new();
+    for number in 0..4 {
+        let id = inputs.push_test_job(
+            &format!("input-{number}"),
+            ProviderKind::Cursor,
+            WorkerState::Thinking,
+            "",
+            0,
+        );
+        let owner = inputs.test_native_owner(id, root.path());
+        let mut connection = crate::provider::interaction::InteractionConnection::new(
+            Some(owner),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        for request_id in 0..if number < 3 { 8 } else { 1 } {
+            let (request, mut rx) = connection.request("fixture-session", serde_json::json!(request_id), "session/request_permission".into(),
+                serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"allow"}]})).unwrap();
+            inputs.test_native_input(id, request);
+            if number < 3 {
+                responses.push(rx);
+            } else {
+                assert_eq!(
+                    rx.try_recv().unwrap(),
+                    serde_json::json!({"outcome":{"outcome":"cancelled"}})
+                );
+            }
+        }
+        assert_eq!(
+            inputs.get(id).unwrap().native_inputs().len(),
+            if number < 3 { 8 } else { 0 }
+        );
+        connections.push(connection);
+    }
+    assert_eq!(
+        inputs
+            .jobs
+            .iter()
+            .map(|job| job.native_inputs().len())
+            .sum::<usize>(),
+        24
+    );
+    inputs.cancel_all(now);
+    assert!(responses.iter_mut().all(|rx| matches!(
+        rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    )));
 }
 
 #[test]

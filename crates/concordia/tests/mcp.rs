@@ -88,6 +88,7 @@ fn a_client_can_initialize_list_tools_and_call_them() {
             "thread_read",
             "native_read",
             "usage",
+            "memory",
             "goals",
             "delegate"
         ]
