@@ -6,7 +6,7 @@ use crate::context::{plan_continuity, ContinuityRequest, PackMessage, PackRole};
 use crate::identity::{format_identity_label, inspect_provider};
 use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
 use crate::provider::turn::{
-    plan_provider_turn, run_provider_turn_with_progress, ProviderTurnRequest, RunningTurn,
+    plan_provider_turn, run_provider_turn_with_owner, ProviderTurnRequest, RunningTurn,
     TurnOutcome, TurnProgress,
 };
 use crate::sessions::{
@@ -20,17 +20,19 @@ use crate::store::{
 use crate::update::{
     reexec_into, start_check, start_update, Job, JobKind, JobResult, UpdateOutcome, UpdatePreview,
 };
-use crate::usage::{picker_row, usage_rows_for_accounts, usage_tone, UsageFetcher, UsageTone};
+use crate::usage::{usage_rows_for_accounts, usage_tone, UsageFetcher, UsageTone};
 use crate::version::short_stamp;
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
-    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
+    EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
@@ -50,33 +52,44 @@ mod chatref;
 mod clipboard;
 mod compat_ui;
 mod continuation;
+mod diagrams;
 mod editor;
 mod files;
+mod images;
 mod input;
 mod input_stream;
 mod landing;
 mod markdown;
+mod modal;
 mod native_agents;
 mod palette;
 mod persist;
+mod pointer;
 mod preview;
+mod questions;
 mod queue;
 mod queue_controls;
 mod queue_focus;
 mod recovery;
 mod recovery_ui;
+mod related_files;
 mod session_ui;
 #[cfg(test)]
 mod session_ui_tests;
 mod stats_ui;
+mod syntax;
 mod text;
 mod tips;
 mod token_line;
 mod tokens;
 mod transcript;
+mod turn_checkpoint;
 mod usage_style;
+#[cfg(test)]
+mod ux_tests;
 mod workers;
 mod workspace;
+mod workspace_search;
 
 use editor::Editor;
 use palette::Palette;
@@ -108,6 +121,10 @@ enum Drag {
 struct Areas {
     transcript: Rect,
     input: Rect,
+    bottom_button: Rect,
+    run_cancel: Rect,
+    pinned_card: Option<(Rect, usize)>,
+    modal_close: Option<(Rect, modal::Target)>,
     /// Columns available for prompt text (inner width minus the `> ` prefix).
     input_text_w: usize,
     /// Slash-command suggestions (empty rect when closed); rows start one below `y`.
@@ -164,15 +181,6 @@ enum Phase {
 }
 
 impl Phase {
-    fn label(&self) -> String {
-        match self {
-            Phase::Waiting => "waiting for the model".into(),
-            Phase::Thinking => "thinking".into(),
-            Phase::Tool(name) => format!("running {name}"),
-            Phase::Writing => "writing".into(),
-        }
-    }
-
     fn color(&self) -> Color {
         match self {
             Phase::Waiting => Color::Cyan,
@@ -233,6 +241,7 @@ enum PickerKind {
     Tokens,
     Agents,
     Recovery,
+    Files,
     Resume,
     Trust,
     Use,
@@ -242,6 +251,7 @@ enum PickerKind {
     Model,
     Usage,
     Continuation,
+    HandoffSettings,
     ResumeDeleteConfirm,
     Update,
 }
@@ -282,9 +292,13 @@ impl Picker {
 
 pub struct App {
     continuation: continuation::State,
+    native_owner: Option<crate::provider::interaction::InteractionOwner>,
+    project_search: workspace_search::State,
     continuation_target: Option<String>,
     state_root: PathBuf,
     cwd: PathBuf,
+    account_names: std::collections::BTreeMap<String, String>,
+    account_email: Option<String>,
     messages: Vec<ChatLine>,
     editor: Editor,
     /// The visible prompt for the active turn; cancellation never inserts it into the editor.
@@ -293,16 +307,23 @@ pub struct App {
     activity: activity::Activity,
     palette: Palette,
     chatref: chatref::ChatRef,
+    related_files: related_files::State,
+    questions: questions::State,
+    images: images::State,
     /// Sent prompts, oldest first. In memory only: prompts may contain pasted secrets.
     history: Vec<String>,
     /// Index into `history` while browsing with the arrow keys.
     hist_pos: Option<usize>,
     /// What was in the prompt before browsing started, restored by Down past the newest entry.
     hist_draft: String,
+    /// Two unsent buffers, toggled at the prompt's vertical boundaries.
+    parked_draft: Option<String>,
+    fresh_draft: bool,
     /// Set by the first idle Ctrl+C; a second one inside QUIT_WINDOW exits.
     quit_armed: Option<Instant>,
     /// First visible prompt row when the prompt is taller than its box.
     input_scroll: usize,
+    input_scroll_anchor: Option<(u64, usize, usize, usize)>,
     view: TranscriptView,
     areas: Areas,
     drag: Drag,
@@ -312,6 +333,7 @@ pub struct App {
     #[cfg(test)]
     last_file_open: Option<crate::file_links::ResolvedFile>,
     clicks: ClickTracker,
+    modal_close_pressed: Option<modal::Target>,
     /// Transient footer message (e.g. "copied 120 chars").
     flash: Option<(String, Instant)>,
     busy: bool,
@@ -337,6 +359,8 @@ pub struct App {
     update_rows: usize,
     update_view: usize,
     cancel_handle: Option<Arc<RunningTurn>>,
+    preparing_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    native_sources: Vec<crate::native_memory::Binding>,
     prior_provider: ProviderKind,
     prior_home: Option<String>,
     need_context_pack: bool,
@@ -362,7 +386,7 @@ pub struct App {
     streamed_text_committed: bool,
     live_thinking: String,
     phase: Phase,
-    /// A background `/update` or `/update check`; the UI stays live while it runs.
+    /// A background update preview or install; the UI stays live while it runs.
     job: Option<Job>,
     /// `NO_COLOR` is set: draw with the terminal's own colours only.
     no_color: bool,
@@ -395,6 +419,7 @@ pub struct App {
 
 impl App {
     fn refresh_binding(&mut self) {
+        self.account_names = crate::store::load_store(&self.state_root).account_nicknames;
         if let Some(sel) = get_use_selection(&self.state_root) {
             if self.account != sel.account
                 || self.provider != sel.provider
@@ -419,6 +444,12 @@ impl App {
                 })
                 .unwrap_or_else(|| "?".into());
         }
+        self.account_email = self
+            .home_path
+            .as_ref()
+            .and_then(|h| inspect_provider(self.provider, h).login)
+            .filter(|login| login.contains('@'))
+            .map(|email| email.chars().filter(|c| !c.is_control()).collect());
         self.trust = get_settings(&self.state_root).trust;
         self.refresh_usage();
     }
@@ -502,39 +533,112 @@ impl App {
     }
 
     fn account_label(&self) -> String {
-        display_account_name(self.provider, &self.account)
+        self.named_account(self.provider, &self.account)
+    }
+
+    fn named_account(&self, provider: ProviderKind, account: &str) -> String {
+        let default = display_account_name(provider, account);
+        self.account_names
+            .get(account)
+            .map(|name| format!("{name} ({default})"))
+            .unwrap_or(default)
     }
 
     fn window_title(&self) -> String {
-        let base = format!(
-            "concordia · {} · {} · {}",
-            self.account_label(),
-            if self.model.is_empty() {
-                "?"
+        let (icon, status) = if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
+            ("\u{21bb}", "Updating")
+        } else if self.cancel_requested && self.busy {
+            ("\u{25a0}", "Stopping")
+        } else if self.busy {
+            match self.phase {
+                Phase::Waiting => ("\u{25cc}", "Waiting"),
+                Phase::Thinking => ("\u{2726}", "Thinking"),
+                Phase::Tool(_) => ("\u{2699}", "Running tool"),
+                Phase::Writing => ("\u{270e}", "Writing"),
+            }
+        } else if self.continuation.waiting() {
+            ("!", "Usage limit")
+        } else {
+            ("\u{25c7}", "Idle")
+        };
+        let project = self
+            .cwd
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "New chat".into());
+        let title = self.session_ui.title.as_deref().unwrap_or(&project);
+        let title: String = title.chars().filter(|c| !c.is_control()).take(72).collect();
+        format!("{icon} {title} \u{b7} {status} \u{b7} Concordia")
+    }
+
+    fn run_status_label(&self) -> String {
+        if self.cancel_requested {
+            return if self.queue.force_pending {
+                "Stopping to send the queued message…".into()
             } else {
-                &self.model
-            },
-            short_stamp()
-        );
-        self.session_ui
-            .title
-            .as_ref()
-            .map(|title| format!("{title} · {base}"))
-            .unwrap_or(base)
+                "Stopping this turn…".into()
+            };
+        }
+        match &self.phase {
+            Phase::Waiting if self.cancel_requested => "Stopping this turn…".into(),
+            Phase::Waiting if self.live_cards.is_empty() => {
+                format!("{} · starting the turn", self.account_label())
+            }
+            Phase::Waiting => "Reviewing the latest tool results".into(),
+            Phase::Thinking => "Working through the next step".into(),
+            Phase::Writing => "Putting the answer together".into(),
+            Phase::Tool(name) => self
+                .live_cards
+                .iter()
+                .rev()
+                .find(|c| c.status == CardStatus::Running)
+                .map(crate::provider::stream_cards::format_card_line)
+                .unwrap_or_else(|| format!("Running {name}")),
+        }
     }
 
     /// Suggestions for the prompt as typed (empty when closed, dismissed, or not a slash prompt).
     fn palette_entries(&self) -> Vec<palette::Entry> {
+        if self.editor.text().starts_with("/open ") || self.editor.text().starts_with("/preview ") {
+            return Vec::new();
+        }
         // Not while a recalled prompt is on screen: up/down must keep walking history.
         if self.palette.dismissed || self.picker.is_some() || self.hist_pos.is_some() {
             return Vec::new();
         }
-        palette::matching_with(&self.editor.text(), &self.user_cmds)
+        let input = self.editor.text();
+        let lower = input.to_ascii_lowercase();
+        if palette::has_argument_menu(&input) {
+            let accounts = if lower.starts_with("/use") || lower.starts_with("/workers") {
+                accounts_with_auth(&self.state_root)
+                    .into_iter()
+                    .map(|a| (a.account.clone(), a.label))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let models = if lower.starts_with("/model") {
+                self.home_path
+                    .as_deref()
+                    .map(|h| list_models(self.provider, h))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            return palette::matching_arguments(&input, &accounts, &models);
+        }
+        palette::matching_with(&input, &self.user_cmds)
     }
 
     /// Put the chosen command in the prompt.
     fn complete_palette(&mut self, entry: palette::Entry) {
-        self.editor.set_text(entry.command);
+        let complete_branch = self.editor.text().eq_ignore_ascii_case(&entry.command)
+            && palette::is_branch(&entry.command);
+        self.editor.set_text(&if complete_branch {
+            format!("{} ", entry.command)
+        } else {
+            entry.command
+        });
         self.palette.reset();
     }
 
@@ -542,7 +646,7 @@ impl App {
     fn tab_complete_slash(&mut self) {
         let entries = self.palette_entries();
         if let Some(e) = entries.get(self.palette.selected.min(entries.len().saturating_sub(1))) {
-            let e = *e;
+            let e = e.clone();
             self.complete_palette(e);
         }
     }
@@ -553,30 +657,53 @@ impl App {
     }
 
     fn history_prev(&mut self) {
+        if self.hist_pos.is_none() && self.fresh_draft {
+            let draft = self
+                .parked_draft
+                .replace(self.editor.text())
+                .unwrap_or_default();
+            self.restore_composer(&draft);
+            self.fresh_draft = false;
+            return;
+        }
         if self.history.is_empty() {
             return;
         }
         let pos = match self.hist_pos {
             None => {
-                self.hist_draft = self.editor.text();
+                self.hist_draft = self.composer_value();
                 self.history.len() - 1
             }
             Some(0) => 0,
             Some(i) => i - 1,
         };
         self.hist_pos = Some(pos);
-        self.editor.set_text(&self.history[pos].clone());
+        self.restore_composer(&self.history[pos].clone());
     }
 
     fn history_next(&mut self) {
-        let Some(i) = self.hist_pos else { return };
+        let Some(i) = self.hist_pos else {
+            if !self.fresh_draft
+                && (!self.editor.text().is_empty()
+                    || self.parked_draft.as_ref().is_some_and(|s| !s.is_empty()))
+            {
+                let next = self
+                    .parked_draft
+                    .replace(self.editor.text())
+                    .unwrap_or_default();
+                self.restore_composer(&next);
+                self.fresh_draft = true;
+                self.flash("Fresh prompt; Up on the first row returns to your draft");
+            }
+            return;
+        };
         if i + 1 < self.history.len() {
             self.hist_pos = Some(i + 1);
-            self.editor.set_text(&self.history[i + 1].clone());
+            self.restore_composer(&self.history[i + 1].clone());
         } else {
             self.hist_pos = None;
             let draft = std::mem::take(&mut self.hist_draft);
-            self.editor.set_text(&draft);
+            self.restore_composer(&draft);
         }
     }
 
@@ -592,6 +719,15 @@ impl App {
     }
 
     fn paste_clipboard(&mut self) {
+        if !cfg!(test)
+            && clipboard::has_image()
+            && self.picker.is_none()
+            && self.workspace.focused.is_none()
+            && self.queue.edit.is_none()
+        {
+            self.start_image_import(None, true);
+            return;
+        }
         match clipboard::get_text() {
             Ok(t) if !t.is_empty() => self.paste_text(&t),
             Ok(_) => {}
@@ -605,6 +741,10 @@ impl App {
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        if self.project_search.active() {
+            self.project_search.paste(text);
+            return;
+        }
         // Paste can arrive as one Event::Paste or as a buffered burst split into overflow
         // chunks. Route every chunk here so a modal never edits the prompt or queue editor.
         if self.activity.detail.is_some() {
@@ -612,9 +752,8 @@ impl App {
             return;
         }
         if let Some(picker) = self.picker.as_mut() {
-            let clean: String = text
+            let clean: String = text::normalize_newlines(text)
                 .chars()
-                .filter(|c| *c != '\r')
                 .flat_map(|c| if c == '\t' { vec![' '; 4] } else { vec![c] })
                 .collect();
             picker.filter.push_str(&clean);
@@ -625,11 +764,18 @@ impl App {
             return;
         }
         if self.workspace.focused.is_some() {
+            if workspace::paste(self, text) {
+                return;
+            }
             self.flash("read-only file pane; Esc returns to chat before pasting");
+            return;
+        }
+        if landing::handle_paste(self, text) {
             return;
         }
         self.view.clear_selection();
         self.palette.reset();
+        self.questions.focused = false;
         self.editor.insert_paste_chunk(text, continues);
     }
 
@@ -678,10 +824,16 @@ impl App {
         }
     }
 
-    fn write_clipboard(&mut self, text: &str) {
+    fn write_clipboard(&mut self, text: &str) -> bool {
         match clipboard::set_text(text) {
-            Ok(()) => self.flash(format!("copied {} chars", text.chars().count())),
-            Err(e) => self.flash(e),
+            Ok(()) => {
+                self.flash(format!("copied {} chars", text.chars().count()));
+                true
+            }
+            Err(e) => {
+                self.flash(e);
+                false
+            }
         }
     }
 
@@ -694,11 +846,7 @@ impl App {
                 .flatten()
         });
         match text {
-            Some(t) => {
-                self.write_clipboard(&t);
-                self.clear_selections();
-                true
-            }
+            Some(t) => self.write_clipboard(&t),
             None => {
                 self.flash("nothing to copy — drag to select, or /copy for the last reply");
                 false
@@ -707,8 +855,11 @@ impl App {
     }
 
     fn cut(&mut self) {
-        if let Some(t) = self.editor.cut() {
-            self.write_clipboard(&t);
+        if let Some(t) = self.editor.selected_text() {
+            if self.write_clipboard(&t) {
+                self.editor.cut();
+                self.flash(format!("cut {} chars", t.chars().count()));
+            }
         }
     }
 
@@ -776,6 +927,7 @@ impl App {
     }
 
     fn push_user(&mut self, text: String) {
+        self.related_files.invalidate();
         self.log_user(&text);
         self.messages.push(ChatLine {
             role: MsgRole::User,
@@ -786,7 +938,7 @@ impl App {
     }
 
     fn reply_meta(&self) -> (ProviderKind, String) {
-        let mut label = format!("{} \u{b7} {}", provider_name(self.provider), self.account);
+        let mut label = self.account_label();
         if !self.model.is_empty() && self.model != "?" {
             label.push_str(&format!(" \u{b7} {}", self.model));
         }
@@ -803,6 +955,7 @@ impl App {
     }
 
     fn push_assistant(&mut self, text: String) {
+        self.related_files.invalidate();
         let ev = self.log_who(crate::threads::ThreadEvent::with_text("assistant", &text));
         self.log_event(ev);
         let meta = Some(self.reply_meta());
@@ -815,6 +968,28 @@ impl App {
     }
 
     fn push_card(&mut self, card: StreamCard) {
+        let name = card.title.to_ascii_lowercase();
+        if !self.queue.force_pending
+            && (name.contains("request_user_input") || name.contains("askuserquestion"))
+        {
+            if let Some(detail) = &card.detail {
+                self.questions.offer_tool(detail);
+            }
+        }
+        self.related_files.invalidate();
+        let turn_start = self
+            .messages
+            .iter()
+            .rposition(|m| m.role == MsgRole::User)
+            .unwrap_or(0);
+        let existing_index = (turn_start..self.messages.len()).rev().find(|&i| {
+            let m = &self.messages[i];
+            m.role == MsgRole::Card
+                && m.card.as_ref().map(|c| c.id.as_str()) == Some(card.id.as_str())
+        });
+        if existing_index.is_some_and(|i| self.messages[i].card.as_ref() == Some(&card)) {
+            return;
+        }
         if card.status != CardStatus::Running {
             let status = if card.status == CardStatus::Error {
                 "error"
@@ -829,16 +1004,6 @@ impl App {
             self.log_event(ev);
         }
         let text = format_card_line(&card);
-        let turn_start = self
-            .messages
-            .iter()
-            .rposition(|m| m.role == MsgRole::User)
-            .unwrap_or(0);
-        let existing_index = (turn_start..self.messages.len()).rev().find(|&i| {
-            let m = &self.messages[i];
-            m.role == MsgRole::Card
-                && m.card.as_ref().map(|c| c.id.as_str()) == Some(card.id.as_str())
-        });
         if let Some(i) = existing_index {
             let existing = &mut self.messages[i];
             existing.card = Some(card);
@@ -866,8 +1031,25 @@ impl App {
 
     fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
+            TurnProgress::Interaction(request) => {
+                if self.cancel_requested
+                    || !self.busy
+                    || !self
+                        .native_owner
+                        .as_ref()
+                        .is_some_and(|owner| request.is_owned_by(owner))
+                {
+                    request.invalidate();
+                    return;
+                }
+                self.questions
+                    .offer_native(*request, self.editor.text().is_empty());
+                self.pause_queue();
+            }
             TurnProgress::Session(id) => {
                 self.native_session_id = Some(id);
+                self.remember_native_source();
+                self.save_turn_checkpoint(false);
                 self.persist_session_title();
             }
             TurnProgress::Thinking(t) => {
@@ -922,7 +1104,7 @@ impl App {
             TurnProgress::Usage(u) => {
                 fn add(a: &mut Option<u64>, b: Option<u64>) {
                     if let Some(b) = b {
-                        *a = Some(a.unwrap_or(0) + b);
+                        *a = Some(a.unwrap_or(0).saturating_add(b));
                     }
                 }
                 let t = &mut self.turn_usage;
@@ -1001,8 +1183,10 @@ impl App {
         if !usage.is_empty() {
             self.record_tokens(&usage);
         }
-        self.session_input += usage.input.unwrap_or(0);
-        self.session_output += usage.output.unwrap_or(0);
+        self.session_input = self.session_input.saturating_add(usage.input.unwrap_or(0));
+        self.session_output = self
+            .session_output
+            .saturating_add(usage.output.unwrap_or(0));
         self.session_cost += usage.cost_usd.unwrap_or(0.0);
         // Events only: never the prompt or the reply.
         crate::logging::info(&format!(
@@ -1098,13 +1282,30 @@ impl App {
             });
         }
         let has_reply = !text.is_empty() || self.streamed_text_committed;
+        if has_reply && !failed && !outcome.cancelled {
+            self.questions.offer(&scan_text);
+        }
         if !text.is_empty() {
             self.push_assistant(text);
         } else if !had_cards && !failed && !outcome.cancelled && !self.streamed_text_committed {
             self.push_system("(no text in provider stream)");
         }
-        if has_reply && !outcome.cancelled && token_line::ui_token_line_enabled() {
-            let line = token_line::format_line(&usage, elapsed);
+        if has_reply || had_cards {
+            let tokens = if token_line::ui_token_line_enabled() {
+                token_line::format_line(&usage, None)
+            } else {
+                String::new()
+            };
+            let line = format!(
+                "Worked for {} · stopped {}{}",
+                crate::delegate::fmt_elapsed(elapsed.unwrap_or_default()),
+                crate::usage::local_time_label(),
+                if tokens.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {tokens}")
+                }
+            );
             if !line.is_empty() {
                 self.messages.push(ChatLine {
                     role: MsgRole::Meta,
@@ -1127,6 +1328,15 @@ impl App {
                 None => "provider could not run".to_string(),
             });
             let tail = outcome.stderr_tail.trim();
+            if tail.contains("apply_patch verification failed") {
+                self.push_card(StreamCard {
+                    id: format!("provider-diagnostics:{}", self.messages.len()),
+                    title: "Provider diagnostics: patch verification failed".into(),
+                    detail: Some(format!("These are tool diagnostics retained by the provider; they may predate its exit. They do not establish why the process stopped.\n\n{tail}")),
+                    status: CardStatus::Error,
+                });
+                self.push_system("A patch did not match the current file. Inspect the diagnostics and current files before retrying; completed edits remain in the workspace.");
+            }
             let lines: Vec<&str> = tail.lines().collect();
             let said: Vec<String> = self
                 .messages
@@ -1139,7 +1349,11 @@ impl App {
             for l in lines.iter().skip(lines.len().saturating_sub(6)) {
                 let t = l.trim();
                 // Skip CLI chatter and anything already reported above.
-                if t.is_empty() || is_cli_noise(t) || said.iter().any(|s| s == t) {
+                if tail.contains("apply_patch verification failed")
+                    || t.is_empty()
+                    || is_cli_noise(t)
+                    || said.iter().any(|s| s == t)
+                {
                     continue;
                 }
                 self.push_system(format!("  {}", l.trim_end()));
@@ -1228,6 +1442,7 @@ impl App {
     }
 
     fn on_tick(&mut self) {
+        self.poll_images();
         self.tick_count = self.tick_count.wrapping_add(1);
         if self.busy {
             self.pulse_on = self.tick_count.is_multiple_of(2);
@@ -1242,7 +1457,45 @@ impl App {
         self.persist_tick();
         self.poll_file_jobs();
         self.poll_session_history();
+        self.poll_memory();
+        self.poll_project_search();
         self.workspace.poll();
+        if let Some(notice) = self.workspace.take_notice() {
+            self.flash(notice);
+        }
+        if self.workspace.file_quit_requested() {
+            self.should_quit = true;
+        }
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Files)
+        {
+            self.request_related_files();
+        }
+        if self.related_files.poll()
+            && self
+                .picker
+                .as_ref()
+                .is_some_and(|p| p.kind == PickerKind::Files)
+        {
+            let old = self.picker.take().unwrap();
+            let selected = old
+                .state
+                .selected()
+                .and_then(|i| old.filtered().get(i).map(|r| r.label.clone()));
+            self.build_related_files_picker();
+            if let Some(picker) = &mut self.picker {
+                picker.filter = old.filter;
+                picker.state = old.state;
+                if let Some(label) = selected {
+                    if let Some(i) = picker.filtered().iter().position(|r| r.label == label) {
+                        picker.state.select(Some(i));
+                    }
+                }
+                picker.select_clamp();
+            }
+        }
         self.poll_pending_login();
         self.poll_job();
         landing::poll(self);
@@ -1252,6 +1505,7 @@ impl App {
         if self.usage_fetcher.poll() {
             self.refresh_usage();
             self.update_usage_block();
+            self.update_usage_picker();
         }
     }
 
@@ -1447,6 +1701,11 @@ impl App {
     }
 
     fn open_use_picker(&mut self) {
+        self.request_account_usage();
+        self.build_use_picker();
+    }
+
+    fn build_use_picker(&mut self) {
         let ready = accounts_with_auth(&self.state_root);
         let duplicates = crate::accounts::duplicate_groups(&self.state_root);
         let mut rows = Vec::new();
@@ -1456,10 +1715,13 @@ impl App {
             };
             let idn = inspect_provider(a.provider, home);
             let usage = self.usage_fetcher.snapshot(a.provider, &a.account, home);
-            let urow = picker_row(&a.account, a.provider, &usage);
+            let mut urow = crate::usage::profiled_picker_row(&a.account, a.provider, &usage, &idn);
+            urow.label =
+                urow.label
+                    .replacen(&display_account_name(a.provider, &a.account), &a.label, 1);
             self.picker_tones
                 .insert(format!("use:{}", a.account), urow.tone);
-            let mut detail = format_identity_label(&idn);
+            let mut detail = urow.detail;
             if let Some(other) = duplicates
                 .iter()
                 .find(|g| g.iter().any(|x| x.account == a.account))
@@ -1473,6 +1735,13 @@ impl App {
                 // told apart at a glance.
                 label: urow.label,
                 detail,
+            });
+        }
+        if self.continuation.waiting() {
+            rows.push(PickerRow {
+                id: "use-continue".into(),
+                label: "continue unfinished request".into(),
+                detail: "review the request and choose a target".into(),
             });
         }
         rows.push(PickerRow {
@@ -1493,26 +1762,63 @@ impl App {
         }
         rows.push(PickerRow {
             id: "use-continuation".into(),
-            label: "usage limit handoff".into(),
+            label: "limit handoff (save default)".into(),
             detail: if self.continuation.automatic() {
                 "continue on another account automatically (Enter toggles to pause)".into()
             } else {
                 "pause at a usage limit (Enter toggles to continue)".into()
             },
         });
+        rows.push(PickerRow {
+            id: "use-handoff".into(),
+            label: "next provider for this session".into(),
+            detail: self.handoff_description(),
+        });
         self.show_picker(PickerKind::Use, "accounts".into(), rows, true);
     }
 
+    fn show_unfinished_request(&mut self) {
+        if let Some(prompt) = self.continuation.pending_text() {
+            let text = format!("Unfinished request (not sent):\n{prompt}");
+            if !self
+                .messages
+                .last()
+                .is_some_and(|message| message.role == MsgRole::System && message.text == text)
+            {
+                self.push_system(text);
+            }
+            self.open_continuation_picker();
+        } else {
+            self.flash("no unfinished request to continue");
+        }
+    }
+
     fn open_continuation_picker(&mut self) {
-        let rows = accounts_with_auth(&self.state_root)
+        let mut rows = accounts_with_auth(&self.state_root)
             .into_iter()
-            .filter(|a| a.account != self.account && a.home_path.is_some())
+            .filter(|a| {
+                (a.account != self.account || self.continuation.same_account_allowed())
+                    && a.home_path.is_some()
+            })
             .map(|a| PickerRow {
                 id: format!("continue:{}", a.account),
-                label: display_account_name(a.provider, &a.account),
+                label: a.label,
                 detail: "continue the paused request on this account".into(),
             })
             .collect::<Vec<_>>();
+        if let Some(home) = &self.home_path {
+            rows.extend(
+                crate::catalog::list_models(self.provider, home)
+                    .into_iter()
+                    .filter(|model| model != &self.model)
+                    .map(|model| PickerRow {
+                        id: format!("continue:{} {model}", self.account),
+                        label: format!("{} \u{2192} {model}", self.account_label()),
+                        detail: "continue on another model; account-wide quota may still apply"
+                            .into(),
+                    }),
+            );
+        }
         if rows.is_empty() {
             self.push_system("usage limit reached; /use add another account to continue");
         } else {
@@ -1557,7 +1863,7 @@ impl App {
                     .unwrap_or_default();
                 PickerRow {
                     id: format!("rmpick:{}", r.id),
-                    label: format!("{}  {who}", display_account_name(r.provider, &r.id)),
+                    label: format!("{}  {who}", self.named_account(r.provider, &r.id)),
                     detail: what.into(),
                 }
             })
@@ -1722,6 +2028,38 @@ impl App {
     }
 
     fn open_usage_picker(&mut self) {
+        self.request_account_usage();
+        self.build_usage_picker();
+    }
+
+    fn request_account_usage(&mut self) {
+        for account in accounts_with_auth(&self.state_root) {
+            if let Some(home) = account.home_path {
+                self.usage_fetcher
+                    .snapshot_refresh(account.provider, &account.account, &home);
+            }
+        }
+    }
+
+    fn update_usage_picker(&mut self) {
+        let Some(old) = self.picker.take() else {
+            return;
+        };
+        match old.kind {
+            PickerKind::Use => self.build_use_picker(),
+            PickerKind::Usage => self.build_usage_picker(),
+            _ => {
+                self.picker = Some(old);
+                return;
+            }
+        }
+        if let Some(picker) = &mut self.picker {
+            picker.filter = old.filter;
+            picker.state = old.state;
+        }
+    }
+
+    fn build_usage_picker(&mut self) {
         let ready = accounts_with_auth(&self.state_root);
         let accounts: Vec<_> = ready
             .into_iter()
@@ -1741,7 +2079,17 @@ impl App {
                     self.picker_tones.insert(format!("usage:{}", r.id), r.tone);
                     PickerRow {
                         id: format!("usage:{}", r.id),
-                        label: r.label,
+                        label: self
+                            .account_names
+                            .get(&r.id)
+                            .map(|name| {
+                                let default = get_account(&self.state_root, &r.id)
+                                    .map(|a| display_account_name(a.provider, &r.id))
+                                    .unwrap_or_else(|| r.id.clone());
+                                r.label
+                                    .replacen(&default, &format!("{name} ({default})"), 1)
+                            })
+                            .unwrap_or(r.label),
                         detail: r.detail,
                     }
                 })
@@ -1811,9 +2159,14 @@ impl App {
         };
         use crate::update::PreviewLine as P;
         self.update_preview = Some(crate::update::UpdatePreview {
+            history: Vec::new(),
+            history_expanded: false,
             lines: vec![
                 P::Title(format!("{} Updating Concordia", spinner(self.tick_count))),
-                P::Field("Elapsed", format!("{}s", job.started.elapsed().as_secs())),
+                P::Field(
+                    "Elapsed",
+                    crate::delegate::fmt_elapsed(job.started.elapsed()),
+                ),
                 P::Field("Step", step),
                 P::Blank,
                 P::Text("Messages are paused until Concordia restarts on the new build.".into()),
@@ -1900,6 +2253,14 @@ impl App {
             return;
         }
         match kind {
+            PickerKind::Files => {
+                if let Some(index) = id
+                    .strip_prefix("file:")
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    self.preview_related_file(index);
+                }
+            }
             PickerKind::Agents => {
                 if let Some(index) = id
                     .strip_prefix("native-agent:")
@@ -1985,6 +2346,14 @@ impl App {
                 }
             }
             PickerKind::Use => {
+                if id == "use-handoff" {
+                    self.open_handoff_settings();
+                    return;
+                }
+                if id == "use-continue" {
+                    self.show_unfinished_request();
+                    return;
+                }
                 if id == "use-add" {
                     self.open_add_provider_picker();
                     return;
@@ -1994,6 +2363,15 @@ impl App {
                     return;
                 }
                 if id == "use-continuation" {
+                    let next = !self.continuation.automatic();
+                    if let Err(error) =
+                        crate::store::set_continuation_automatic(&self.state_root, next)
+                    {
+                        self.push_system(format!(
+                            "could not save usage handoff preference: {error}"
+                        ));
+                        return;
+                    }
                     let automatic = self.continuation.toggle_automatic();
                     self.push_system(if automatic {
                         "usage handoff → automatic"
@@ -2118,6 +2496,11 @@ impl App {
                     }
                 }
             }
+            PickerKind::HandoffSettings => {
+                if let Some(value) = id.strip_prefix("handoff:") {
+                    self.set_session_handoff(value);
+                }
+            }
             PickerKind::ResumeDeleteConfirm => {
                 if let Some(id) = id.strip_prefix("resume-delete:") {
                     match crate::threads::resolve_prefix(&self.state_root, id) {
@@ -2136,6 +2519,48 @@ impl App {
 
     fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if ["/delegate fallback", "/delegate recover", "/delegate retry"]
+            .iter()
+            .any(|p| trimmed == *p || trimmed.starts_with(&format!("{p} ")))
+        {
+            landing::close(self);
+            self.push_command(line);
+            self.worker_recovery_command(trimmed.strip_prefix("/delegate ").unwrap_or_default());
+            return true;
+        }
+        if trimmed == "/context" || trimmed.starts_with("/context ") {
+            landing::close(self);
+            self.push_command(line);
+            let result = self
+                .home_path
+                .as_ref()
+                .ok_or_else(|| "account home is unavailable".to_string())
+                .and_then(|h| {
+                    crate::native_memory::Binding::new(
+                        self.provider,
+                        &self.account,
+                        h,
+                        self.native_session_id
+                            .as_deref()
+                            .unwrap_or("context-policy"),
+                    )
+                })
+                .and_then(|b| {
+                    crate::capacity::set(
+                        &self.state_root,
+                        &b,
+                        trimmed.strip_prefix("/context").unwrap_or_default().trim(),
+                    )
+                });
+            self.push_system(result.unwrap_or_else(|e| format!("context policy: {e}")));
+            return true;
+        }
+        if trimmed == "/memory" || trimmed.starts_with("/memory ") {
+            landing::close(self);
+            self.push_command(line);
+            self.memory_command(trimmed.strip_prefix("/memory").unwrap_or_default().trim());
+            return true;
+        }
         if trimmed == "/trust" || trimmed.starts_with("/trust ") {
             self.push_command(line);
             self.push_system("/trust is now /mode");
@@ -2168,11 +2593,32 @@ impl App {
             }
             return true;
         }
+        if trimmed == "/use rename" || trimmed.starts_with("/use rename ") {
+            let args = trimmed
+                .strip_prefix("/use rename")
+                .unwrap_or_default()
+                .trim();
+            let (account, name) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+            if account.is_empty() {
+                self.push_system("usage: /use rename ACCOUNT NICKNAME (omit nickname to reset)");
+            } else {
+                match crate::accounts::set_nickname(&self.state_root, account, name) {
+                    Ok(()) => {
+                        self.account_names =
+                            crate::store::load_store(&self.state_root).account_nicknames;
+                        self.flash("account nickname saved");
+                    }
+                    Err(error) => self.push_system(format!("nickname: {error}")),
+                }
+            }
+            return true;
+        }
         if trimmed == "/preview" || trimmed.starts_with("/preview ") {
             self.push_command(line);
-            self.push_system("/preview is now /open");
             if let Some(reference) = trimmed.strip_prefix("/preview ") {
-                self.file_command(reference, false);
+                self.file_command(reference, false, true);
+            } else {
+                self.push_system("usage: /preview FILE");
             }
             return true;
         }
@@ -2182,9 +2628,6 @@ impl App {
                 trimmed
             ));
         }
-        if trimmed == "/update check" {
-            self.push_system("/update check is now /update");
-        }
         // /workers, /queue, /edit, /close, /split, /stats and /recover keep working unlisted
         // until the screens that replace them exist.
         if trimmed == "/exit" || trimmed == "/quit" || trimmed == "/q" {
@@ -2192,20 +2635,24 @@ impl App {
             self.push_system("/exit is now Ctrl+C twice");
             return true;
         }
-        if matches!(line.trim(), "/open" | "/preview" | "/edit") {
+        if line.trim() == "/search" {
+            self.open_project_search();
+            return true;
+        }
+        if line.trim() == "/open" {
+            self.open_related_files();
+            return true;
+        }
+        if matches!(line.trim(), "/preview" | "/edit") {
             self.push_system("usage: /open FILE");
             return true;
         }
         if let Some(reference) = line.trim().strip_prefix("/open ") {
-            self.file_command(reference, false);
-            return true;
-        }
-        if let Some(reference) = line.trim().strip_prefix("/preview ") {
-            self.file_command(reference, false);
+            self.file_command(reference, false, false);
             return true;
         }
         if let Some(reference) = line.trim().strip_prefix("/edit ") {
-            self.file_command(reference, true);
+            self.file_command(reference, true, false);
             return true;
         }
         if line.trim() == "/close" || line.trim().starts_with("/close ") {
@@ -2221,7 +2668,11 @@ impl App {
             };
             match id {
                 Some(id) if self.workspace.close(id) => {
-                    self.flash(format!("closed file pane #{id}"))
+                    if self.workspace.panes.iter().any(|p| p.id == id) {
+                        self.flash("Unsaved file: S saves, D discards, Esc cancels");
+                    } else {
+                        self.flash(format!("closed file pane #{id}"));
+                    }
                 }
                 _ => self.flash("usage: /close PANE_ID (or /close with a file pane focused)"),
             }
@@ -2273,10 +2724,61 @@ impl App {
                     | SlashCommand::Resume
                     | SlashCommand::Use
                     | SlashCommand::UseRemove(_)
+                    | SlashCommand::UseAccount(_)
+                    | SlashCommand::ModelSet(_)
                     | SlashCommand::Model
             )
         {
             self.push_system("finish or cancel the current turn before switching conversation, provider or model");
+            return true;
+        }
+        if let SlashCommand::UseAccount(account) = &cmd {
+            let normalized = crate::accounts::normalize_account_id(account);
+            if !accounts_with_auth(&self.state_root)
+                .iter()
+                .any(|a| a.account == normalized)
+            {
+                self.push_system(
+                    "account is not connected; /use lists accounts and /use add connects one",
+                );
+                return true;
+            }
+            self.show_picker(
+                PickerKind::Use,
+                "accounts".into(),
+                vec![PickerRow {
+                    id: format!("use:{normalized}"),
+                    label: normalized,
+                    detail: String::new(),
+                }],
+                false,
+            );
+            self.apply_picker_selection(None);
+            return true;
+        }
+        if let SlashCommand::ModelSet(model) = &cmd {
+            let models = self
+                .home_path
+                .as_deref()
+                .map(|h| list_models(self.provider, h))
+                .unwrap_or_default();
+            if model != &self.model && !models.contains(model) {
+                self.push_system(
+                    "model is not in this account's local catalog; /model lists available models",
+                );
+                return true;
+            }
+            self.show_picker(
+                PickerKind::Model,
+                "model".into(),
+                vec![PickerRow {
+                    id: format!("model:{model}"),
+                    label: model.clone(),
+                    detail: String::new(),
+                }],
+                false,
+            );
+            self.apply_picker_selection(None);
             return true;
         }
         if let SlashCommand::UseRemove(named) = &cmd {
@@ -2318,6 +2820,11 @@ impl App {
             self.toggle_stats();
             return true;
         }
+        let is_new = matches!(cmd, SlashCommand::New);
+        if is_new && !self.save_turn_checkpoint(true) {
+            self.keep.turn_recovery_notice = true;
+            return true;
+        }
         let ctx = CommandContext {
             state_root: &self.state_root,
             cwd: &self.cwd,
@@ -2326,14 +2833,20 @@ impl App {
             trust: self.trust,
             split_vertical,
         };
-        let is_new = matches!(cmd, SlashCommand::New);
         let (outcome, lines) = dispatch_slash(cmd, &ctx);
         if is_new {
+            self.project_search.close();
+            self.native_owner = None;
+            self.deleg.change_conversation();
+            self.keep.turn_recovery_notice = false;
             self.continuation.invalidate();
+            self.native_sources.clear();
             self.native_agents = native_agents::State::default();
             self.session_ui.invalidate();
             self.session_ui.title = None;
             self.messages.clear();
+            self.related_files.reset();
+            self.questions.clear();
             self.activity = activity::Activity::default();
             self.expanded_activity = false;
             self.view.follow_tail();
@@ -2373,13 +2886,26 @@ impl App {
             CommandOutcome::ShowUsageRefresh => self.show_usage(true),
             CommandOutcome::OpenUsage => self.open_usage_picker(),
             CommandOutcome::CopyLastReply => match self.last_assistant_text() {
-                Some(t) => self.write_clipboard(&t),
+                Some(t) => {
+                    self.write_clipboard(&t);
+                }
                 None => self.flash("nothing to copy yet"),
             },
-            CommandOutcome::UpdateCheck | CommandOutcome::Update => self.open_update_preview(),
+            CommandOutcome::Update => self.open_update_preview(),
             CommandOutcome::Ok => {}
         }
         true
+    }
+
+    fn update_running(&self) -> bool {
+        self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update)
+    }
+
+    fn update_blocked_by_work(&self) -> bool {
+        self.busy
+            || self.deleg.d.any_active()
+            || self.deleg.has_pending_prompt()
+            || self.workspace.has_unsaved()
     }
 
     fn start_job(&mut self, kind: JobKind) {
@@ -2387,8 +2913,8 @@ impl App {
             self.push_system("an update is already running - Esc cancels it");
             return;
         }
-        if kind == JobKind::Update && self.busy {
-            self.push_system("update deferred - cancel the running turn first (Esc)");
+        if kind == JobKind::Update && self.update_blocked_by_work() {
+            self.push_system("Cannot update while work or unsaved file edits remain. Finish or cancel chat/workers and save or close edited files, then press Enter again. The update has not been queued.");
             return;
         }
         crate::logging::info(&format!("job-start {kind:?}"));
@@ -2449,17 +2975,54 @@ impl App {
                 self.push_system(format!("update failed - {e:#}"));
             }
             JobResult::Check(Ok(preview)) => {
+                self.footer_left = if preview.install_available {
+                    "Enter installs · ↑↓ scroll · Esc close"
+                } else {
+                    "↑↓ scroll · Esc close"
+                }
+                .into();
                 self.update_preview = Some(preview);
-                self.footer_left = "↑↓ scroll · Esc close".into();
             }
-            JobResult::Check(Err(e)) => self.push_system(format!("update check failed - {e:#}")),
+            JobResult::Check(Err(e)) => {
+                let message = format!("update check failed - {e:#}");
+                if self
+                    .picker
+                    .as_ref()
+                    .is_some_and(|p| p.kind == PickerKind::Update)
+                {
+                    self.update_preview = Some(UpdatePreview {
+                        history: Vec::new(),
+                        history_expanded: false,
+                        lines: vec![
+                            crate::update::PreviewLine::Text(message),
+                            crate::update::PreviewLine::Hint("Esc returns to your chat".into()),
+                        ],
+                        install_available: false,
+                        release_url: None,
+                    });
+                    self.footer_left = "Esc close".into();
+                } else {
+                    self.push_system(message);
+                }
+            }
         }
     }
 
     fn submit_input(&mut self, turn_tx: &mpsc::UnboundedSender<String>) {
-        let original_prompt = self.editor.text();
-        let line = original_prompt.trim().to_string();
-        if line.is_empty() {
+        if self.images.height() > self.images.draft.len() {
+            self.flash("Wait for the image to finish attaching");
+            return;
+        }
+        let original_prompt = self.composer_value();
+        let mut line = self.editor.text();
+        // Commands retain their forgiving whitespace handling; prompts retain formatting.
+        if line.trim_start().starts_with('/') && !line.contains('\n') {
+            line = line.trim().to_owned();
+        }
+        if line.trim().is_empty() && !self.images.draft.is_empty() {
+            line = "Describe the attached image.".into();
+        }
+        if line.trim().is_empty() {
             return;
         }
         let user_prompt = crate::user_commands::expand(&self.user_cmds, &line);
@@ -2478,12 +3041,21 @@ impl App {
             self.push_system("an update is in progress - Esc cancels it, or wait for it to finish");
             return;
         }
-        self.remember_prompt(&line);
+        let dispatch = if line.starts_with('/') && user_prompt.is_none() {
+            line.clone()
+        } else {
+            crate::attachments::Message {
+                text: line.clone(),
+                images: std::mem::take(&mut self.images.draft),
+            }
+            .encode()
+        };
+        self.remember_prompt(&dispatch);
         self.editor.clear();
         self.clear_selections();
         self.persist_draft_now();
         let was_busy = self.busy;
-        self.run_line(line, turn_tx);
+        self.run_line(dispatch, turn_tx);
         if !was_busy && self.busy && self.submitted_prompt.is_some() {
             self.submitted_prompt = Some(original_prompt);
         }
@@ -2492,11 +3064,27 @@ impl App {
     /// Run a prompt that has left the box: a slash command, or a turn. Typed prompts and queued
     /// ones both come through here, so trust mode, account and provider apply at send time.
     fn run_line(&mut self, line: String, turn_tx: &mpsc::UnboundedSender<String>) {
+        let original_line = line;
+        let incoming = crate::attachments::Message::decode(&original_line);
+        let line = incoming.text.clone();
+        if let Some(arg) = line
+            .strip_prefix("/attach")
+            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
+        {
+            self.image_command(arg);
+            return;
+        }
+        if !line.starts_with('/') {
+            self.questions.clear();
+        }
         if let Some(arg) = line
             .strip_prefix("/continue")
             .filter(|arg| arg.is_empty() || arg.starts_with(' '))
         {
-            self.push_system("/continue is now the account choice in /use");
+            if arg.trim().is_empty() {
+                self.show_unfinished_request();
+                return;
+            }
             if self
                 .picker
                 .as_ref()
@@ -2511,7 +3099,6 @@ impl App {
             .strip_prefix("/continuation")
             .filter(|arg| arg.is_empty() || arg.starts_with(' '))
         {
-            self.push_system("/continuation is now the usage handoff row in /use");
             self.continuation_command(arg.trim());
             return;
         }
@@ -2531,28 +3118,54 @@ impl App {
             self.flush_delegate_prompt(turn_tx);
             return;
         }
-        self.submitted_prompt = Some(line.clone());
-        self.continuation.begin(&self.account, &line);
-        self.last_sent = Some(line.clone());
+        let handoff = self.continuation.dispatch_request().is_some();
+        let request = self
+            .continuation
+            .dispatch_request()
+            .unwrap_or(&original_line)
+            .to_owned();
+        self.submitted_prompt = Some(request.clone());
+        self.continuation
+            .begin(&self.account, &self.model, &original_line);
+        self.last_sent = Some(request.clone());
         self.ensure_session_title(&line);
+        if !self.save_turn_checkpoint(false) {
+            self.restore_composer(&request);
+            self.submitted_prompt = None;
+            self.persist_draft_now();
+            return;
+        }
         let refs = self.expand_chat_refs(&send);
-        self.push_user(line.clone());
+        if !handoff {
+            self.push_user(incoming.display());
+        }
         send = self.show_chat_refs(refs);
         self.turn_started = Some(Instant::now());
         self.phase = Phase::Waiting;
         self.live_thinking.clear();
         self.busy = true;
         self.pulse_on = true;
-        let _ = turn_tx.send(send);
+        let _ = turn_tx.send(
+            crate::attachments::Message {
+                text: send,
+                images: incoming.images,
+            }
+            .encode(),
+        );
     }
 
     fn request_cancel(&mut self) {
+        self.questions.cancel_native();
+        self.native_owner = None;
         if self.cancel_requested {
             return;
         }
         self.cancel_requested |= self.submitted_prompt.is_some();
         self.submitted_prompt = None;
         self.pause_queue();
+        if let Some(cancel) = &self.preparing_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if let Some(h) = &self.cancel_handle {
             h.cancel();
             self.push_system("cancelling...");
@@ -2592,6 +3205,7 @@ impl App {
 
 impl App {
     fn new(state_root: PathBuf, cwd: PathBuf) -> App {
+        let related_files = related_files::State::new(&state_root, &cwd);
         let state_root_for_usage = state_root.clone();
         let state_root_for_cmds = state_root.clone();
         App {
@@ -2599,6 +3213,8 @@ impl App {
             continuation_target: None,
             state_root,
             cwd,
+            account_names: Default::default(),
+            account_email: None,
             messages: vec![ChatLine {
                 role: MsgRole::System,
                 text: "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts."
@@ -2612,11 +3228,19 @@ impl App {
             activity: activity::Activity::default(),
             palette: Palette::default(),
             chatref: chatref::ChatRef::default(),
+            related_files,
+            questions: questions::State::default(),
+            native_owner: None,
+            project_search: workspace_search::State::default(),
+            images: images::State::default(),
             history: Vec::new(),
             hist_pos: None,
             hist_draft: String::new(),
+            parked_draft: None,
+            fresh_draft: false,
             quit_armed: None,
             input_scroll: 0,
+            input_scroll_anchor: None,
             view: TranscriptView::default(),
             areas: Areas::default(),
             drag: Drag::None,
@@ -2626,6 +3250,7 @@ impl App {
             #[cfg(test)]
             last_file_open: None,
             clicks: ClickTracker::default(),
+            modal_close_pressed: None,
             flash: None,
             busy: false,
             pulse_on: false,
@@ -2648,6 +3273,8 @@ impl App {
             update_rows: 0,
             update_view: 0,
             cancel_handle: None,
+            preparing_cancel: None,
+            native_sources: Vec::new(),
             prior_provider: ProviderKind::Codex,
             prior_home: None,
             need_context_pack: false,
@@ -2766,7 +3393,12 @@ pub async fn run_chat_tui() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     // Mouse capture replaces the terminal's own selection (concordia draws its own); bracketed paste
     // delivers pasted newlines as text instead of Enter presses. Both are best-effort.
-    let _ = execute!(stdout, EnableMouseCapture, EnableBracketedPaste);
+    let _ = execute!(
+        stdout,
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        EnableFocusChange
+    );
     // A panic must not leave the terminal in raw/mouse-reporting mode.
     let default_hook = std::panic::take_hook();
     let panic_restore = terminal_restore.0.clone();
@@ -2798,18 +3430,25 @@ pub async fn run_chat_tui() -> Result<()> {
     );
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
     let mut terminal_input = input_stream::InputStream::spawn()?;
 
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = Instant::now();
     let mut key_burst = input::BurstBuffer::default();
+    let mut mouse_pointer = pointer::Pointer::default();
 
     let mut previous_title = String::new();
     let input_result = (|| -> Result<()> {
         loop {
             // Drain pending paste chunks before repainting the growing prompt.
             if !key_burst.active() || !terminal_input.poll(Duration::ZERO)? {
-                terminal.draw(|f| draw_ui(f, &mut app))?;
+                execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+                let drawn = terminal.draw(|f| draw_ui(f, &mut app)).map(|_| ());
+                let ended = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
+                drawn?;
+                ended?;
+                mouse_pointer.refresh(&app)?;
             }
             let title = app.window_title();
             if title != previous_title {
@@ -2817,7 +3456,12 @@ pub async fn run_chat_tui() -> Result<()> {
                 previous_title = title;
             }
 
-            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            let mut timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            // Input already wakes immediately. Provider channels used to wait for the
+            // 200 ms animation tick; drain them at interactive latency during live turns.
+            if app.busy || app.deleg.d.any_active() {
+                timeout = timeout.min(Duration::from_millis(33));
+            }
             if terminal_input.poll(timeout)? {
                 // Drain a burst (mouse drags, pastes) before redrawing; bounded so a flood can't
                 // starve the turn/progress channels below.
@@ -2855,13 +3499,23 @@ pub async fn run_chat_tui() -> Result<()> {
                             if let Some(burst) = key_burst.take_pending() {
                                 dispatch_key_burst(&mut app, burst, &turn_tx);
                             }
+                            mouse_pointer.update(&app, m.column, m.row)?;
                             handle_mouse(&mut app, m)
                         }
                         Event::Paste(s) => {
                             if let Some(burst) = key_burst.take_pending() {
                                 dispatch_key_burst(&mut app, burst, &turn_tx);
                             }
-                            app.paste_text(&s)
+                            if app.project_search.active() || !questions::paste(&mut app, &s) {
+                                app.paste_text(&s)
+                            }
+                        }
+                        Event::FocusGained | Event::Resize(..) => {
+                            // The host may have invalidated visible cells while our diff buffer
+                            // still describes the old screen (tab switches and resizes).
+                            // Query the current size: queued resize events may already be stale.
+                            terminal.autoresize()?;
+                            terminal.clear()?;
                         }
                         _ => {}
                     }
@@ -2881,6 +3535,9 @@ pub async fn run_chat_tui() -> Result<()> {
             // A finished turn can wait here for an inline queue edit to be committed.
             app.queue_advance(&turn_tx);
             while let Ok(prompt) = turn_rx.try_recv() {
+                let incoming = crate::attachments::Message::decode(&prompt);
+                let prompt = incoming.text;
+                let image_inputs = incoming.images;
                 if app.discard_cancelled_pending_turn() {
                     continue;
                 }
@@ -2890,9 +3547,41 @@ pub async fn run_chat_tui() -> Result<()> {
                 let account = app.account.clone();
                 let model = app.model.clone();
                 let trust = app.trust;
+                let launch_home = app.home_path.clone();
+                let owner = crate::provider::interaction::InteractionOwner {
+                    conversation_id: app.deleg.d.conversation_id().to_owned(),
+                    workspace: cwd.clone(),
+                    execution_cwd: cwd.clone(),
+                    run_id: app.continuation.run_id().to_owned(),
+                    attempt_id: uuid::Uuid::new_v4().to_string(),
+                    provider,
+                    account: account.clone(),
+                    home: app.home_path.clone(),
+                };
+                let owner = match owner.validate_for(provider, &cwd, app.home_path.as_deref()) {
+                    Ok(owner) => owner,
+                    Err(error) => {
+                        app.on_turn_done(
+                            TurnOutcome {
+                                stderr_tail: format!("native interaction owner: {error}"),
+                                ..Default::default()
+                            },
+                            &turn_tx,
+                        );
+                        continue;
+                    }
+                };
+                app.questions.cancel_native();
+                app.native_owner = Some(owner.clone());
                 let session = app.native_session_id.clone();
                 let prior_prov = app.prior_provider;
                 let prior_home = app.prior_home.clone();
+                // This dispatch carries any pending switch; later turns resume the new session.
+                app.prior_provider = app.provider;
+                app.prior_home = app
+                    .home_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned());
                 let pack_msgs = app.pack_messages();
                 // Drop the just-typed user message from pack (already in prompt).
                 let pack_msgs: Vec<_> = if pack_msgs
@@ -2904,6 +3593,9 @@ pub async fn run_chat_tui() -> Result<()> {
                 } else {
                     pack_msgs
                 };
+                let native_sources = app.native_sources.clone();
+                let preparing_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                app.preparing_cancel = Some(preparing_cancel.clone());
                 let need_pack_hint = app.need_context_pack;
                 let thread_id = app.thread_id().map(str::to_string);
                 let done_tx = done_tx.clone();
@@ -2915,14 +3607,61 @@ pub async fn run_chat_tui() -> Result<()> {
                 app.live_thinking.clear();
                 app.phase = Phase::Waiting;
                 tokio::spawn(async move {
-                    let home = get_account(&state_root, &account)
-                        .and_then(|a| a.home_path)
-                        .or_else(|| {
-                            get_use_selection(&state_root)
-                                .and_then(|s| s.home_path)
-                                .map(PathBuf::from)
-                        });
+                    let home = launch_home;
                     let home_str = home.as_ref().map(|p| p.to_string_lossy().into_owned());
+                    let binding = home.as_ref().and_then(|h| {
+                        crate::native_memory::Binding::new(
+                            provider,
+                            &account,
+                            h,
+                            session.as_deref().unwrap_or("context-policy"),
+                        )
+                        .ok()
+                    });
+                    let policy = match binding
+                        .as_ref()
+                        .map(|b| crate::capacity::load(&state_root, b))
+                        .transpose()
+                    {
+                        Ok(p) => p.unwrap_or_default(),
+                        Err(error) => {
+                            let _ = done_tx.send(TurnOutcome {
+                                stderr_tail: format!("invalid context policy: {error}"),
+                                ..Default::default()
+                            });
+                            return;
+                        }
+                    };
+                    let mut rollover = false;
+                    if policy.rollover_percent.is_some() && session.is_some() {
+                        if let Some(binding) = binding {
+                            let root = state_root.clone();
+                            let selected_model = model.clone();
+                            let measured = tokio::task::spawn_blocking(move || {
+                                crate::native_memory::context_measurement(
+                                    &root,
+                                    &binding,
+                                    &selected_model,
+                                )
+                            })
+                            .await;
+                            match measured {
+                                Ok(Ok(measurement)) => {
+                                    rollover = policy.rollover(measurement);
+                                    let notice = measurement.map_or("native context capacity unknown; proactive rollover skipped".into(), |m| format!("Native context: {} / {} tokens{}", m.used, m.window, if rollover { "; starting a fresh session before this turn" } else { "" }));
+                                    let _ = progress_tx.send(TurnProgress::Notice(notice));
+                                }
+                                _ => {
+                                    let _ = progress_tx.send(TurnProgress::Notice("native context measurement unavailable; proactive rollover skipped".into()));
+                                }
+                            }
+                        }
+                    }
+                    let need_pack_hint = need_pack_hint || rollover;
+                    if rollover && native_sources.is_empty() {
+                        let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: no original source binding is available".into(), ..Default::default() });
+                        return;
+                    }
                     // Pack only after an explicit switch (need_pack_hint). Planner clears
                     // session id on cross-home/provider; omits pack when native resume applies.
                     let decision = plan_continuity(&ContinuityRequest {
@@ -2930,23 +3669,74 @@ pub async fn run_chat_tui() -> Result<()> {
                         to_provider: provider,
                         from_home: prior_home.as_deref().or(home_str.as_deref()),
                         to_home: home_str.as_deref(),
-                        session_id: session.as_deref(),
+                        session_id: if rollover { None } else { session.as_deref() },
                         messages: &pack_msgs,
                         thread_id: thread_id.as_deref(),
                         include_pack_if_needed: need_pack_hint,
                     });
                     let session_out = if decision.native_resume {
-                        decision.session_id.clone().or(session.clone())
+                        decision.session_id.clone().or_else(|| {
+                            if rollover {
+                                None
+                            } else {
+                                session.clone()
+                            }
+                        })
                     } else {
                         // Never leak a foreign / cross-home session id.
                         None
                     };
-                    let prefix = if need_pack_hint {
+                    let mut prefix = if need_pack_hint {
                         decision.pack.as_ref().map(|p| p.text.clone())
                     } else {
                         None
                     };
+                    if need_pack_hint && !decision.native_resume && !native_sources.is_empty() {
+                        let memory_root = state_root.clone();
+                        let indexed = tokio::task::spawn_blocking(move || {
+                            crate::native_memory::handoff_prefix(&memory_root, &native_sources)
+                        })
+                        .await;
+                        match indexed {
+                            Ok((sources, notices)) => {
+                                if rollover && (sources.is_empty() || !notices.is_empty()) {
+                                    let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: original native sources could not all be verified".into(), ..Default::default() });
+                                    return;
+                                }
+                                for notice in notices {
+                                    let _ = progress_tx.send(TurnProgress::Notice(notice));
+                                }
+                                if !sources.is_empty() {
+                                    prefix
+                                        .get_or_insert_with(String::new)
+                                        .push_str(&format!("\n{sources}"));
+                                }
+                            }
+                            Err(error) => {
+                                if rollover {
+                                    let _ = done_tx.send(TurnOutcome {
+                                        stderr_tail: format!(
+                                            "proactive source preparation failed: {error}"
+                                        ),
+                                        ..Default::default()
+                                    });
+                                    return;
+                                }
+                                let _ = progress_tx.send(TurnProgress::Notice(format!(
+                                    "native source indexing unavailable: {error}"
+                                )));
+                            }
+                        }
+                    }
+                    if preparing_cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = done_tx.send(TurnOutcome {
+                            cancelled: true,
+                            ..Default::default()
+                        });
+                        return;
+                    }
                     let req = ProviderTurnRequest {
+                        images: &image_inputs,
                         provider,
                         prompt: &prompt,
                         cwd: &cwd,
@@ -2959,6 +3749,8 @@ pub async fn run_chat_tui() -> Result<()> {
                         native_session_id: session_out.as_deref(),
                         trust,
                         context_prefix: prefix.as_deref(),
+                        local_time: Some(crate::prompt_time::now()),
+                        compaction: policy.compaction,
                     };
                     // Validate plan even if spawn fails (argv safety).
                     if let Err(e) = plan_provider_turn(&req) {
@@ -2968,8 +3760,13 @@ pub async fn run_chat_tui() -> Result<()> {
                         });
                         return;
                     }
-                    match run_provider_turn_with_progress(&req, Some(handle_tx), Some(progress_tx))
-                        .await
+                    match run_provider_turn_with_owner(
+                        &req,
+                        owner,
+                        Some(handle_tx),
+                        Some(progress_tx),
+                    )
+                    .await
                     {
                         Ok(outcome) => {
                             let _ = done_tx.send(outcome);
@@ -2985,6 +3782,7 @@ pub async fn run_chat_tui() -> Result<()> {
             }
 
             app.poll_delegates();
+            app.flush_delegate_prompt(&turn_tx);
             while let Ok(ev) = progress_rx.try_recv() {
                 app.apply_progress(ev);
             }
@@ -2995,7 +3793,6 @@ pub async fn run_chat_tui() -> Result<()> {
                 while let Ok(ev) = progress_rx.try_recv() {
                     app.apply_progress(ev);
                 }
-                app.cancel_requested = false;
                 app.on_turn_done(outcome, &turn_tx);
             }
 
@@ -3012,11 +3809,15 @@ pub async fn run_chat_tui() -> Result<()> {
     })();
 
     app.persist_draft_now();
+    let _ = app.workspace.flush_file_recovery();
     handle_rx.close();
     while let Ok(handle) = handle_rx.try_recv() {
         handle.cancel();
     }
     // Leaving mid-turn must not orphan the provider (it would keep running and spending).
+    if let Some(cancel) = app.preparing_cancel.take() {
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     if let Some(h) = app.cancel_handle.take() {
         h.cancel();
     }
@@ -3025,6 +3826,10 @@ pub async fn run_chat_tui() -> Result<()> {
     let cwd = app.cwd.clone();
     let _ = std::panic::take_hook(); // drop our hook; default behavior resumes
     drop(terminal_input);
+    // Clear only on normal shutdown. The panic hook has already returned to the
+    // primary screen to print diagnostics; unwinding must preserve those messages.
+    let _ = terminal.clear();
+    let _ = execute!(terminal.backend_mut(), crossterm::cursor::MoveTo(0, 0));
     terminal_restore.restore();
     terminal.show_cursor()?;
     input_result?;
@@ -3054,6 +3859,10 @@ fn dispatch_key_burst(
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
     if burst.text {
+        let text = burst.text_content.as_deref().unwrap_or_default();
+        if !app.project_search.active() && questions::paste(app, text) {
+            return false;
+        }
         app.paste_text_chunk(
             burst.text_content.as_deref().unwrap_or_default(),
             burst.continues_paste,
@@ -3079,7 +3888,11 @@ fn dispatch_key_event(
     let palette_action = matches!(key.code, KeyCode::Enter | KeyCode::Tab)
         && !app.palette_entries().is_empty()
         && !key_burst.active();
-    if input::BurstBuffer::is_candidate(&key) && app.picker.is_none() && !palette_action {
+    if input::BurstBuffer::is_candidate(&key)
+        && app.picker.is_none()
+        && !app.project_search.active()
+        && !palette_action
+    {
         if let Some(burst) = key_burst.push(key, now) {
             return dispatch_key_burst(app, burst, turn_tx);
         }
@@ -3104,6 +3917,32 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         KeyEventKind::Repeat if !matches!(key.code, KeyCode::Backspace) => return false,
         _ => {}
     }
+    if app.project_search.active() {
+        if (matches!(key.code, KeyCode::Char('v' | 'V'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT))
+            || (key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            match clipboard::get_text() {
+                Ok(text) => app.project_search.paste(&text),
+                Err(error) => app.project_search.notice(&format!("paste failed: {error}")),
+            }
+            return false;
+        }
+        let action = app.project_search.key(key);
+        app.apply_search_action(action);
+        return false;
+    }
+    if key.code == KeyCode::Char('f')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Files)
+    {
+        app.open_project_search();
+        return false;
+    }
     if landing::visible(app) && landing::handle_key(app, key) {
         return false;
     }
@@ -3112,7 +3951,28 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
             let visible = app.update_view.max(1);
             let last = app.update_rows.saturating_sub(visible);
             match key.code {
+                KeyCode::Char('h' | 'H')
+                    if picker.kind == PickerKind::Update
+                        && !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    if let Some(preview) = app.update_preview.as_mut() {
+                        preview.history_expanded = !preview.history_expanded;
+                        picker.state.select(Some(0));
+                    }
+                }
                 KeyCode::Esc => app.dismiss_picker(),
+                KeyCode::Enter
+                    if picker.kind == PickerKind::Update
+                        && app.job.is_none()
+                        && app
+                            .update_preview
+                            .as_ref()
+                            .is_some_and(|p| !p.install_available) =>
+                {
+                    app.dismiss_picker();
+                }
                 KeyCode::Enter
                     if app
                         .update_preview
@@ -3122,8 +3982,6 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                     app.start_job(JobKind::Update);
                     if app.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
                         app.update_progress();
-                    } else {
-                        app.dismiss_picker();
                     }
                 }
                 KeyCode::Char('o') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3205,6 +4063,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('o' | 'O'))
     {
         app.expanded_activity = !app.expanded_activity;
+        app.activity.collapsed.clear();
         app.flash(if app.expanded_activity {
             "full activity - Ctrl+O collapses"
         } else {
@@ -3248,10 +4107,21 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         }
         return false;
     }
-    if queue_controls::handle_key(app, &key)
-        || queue_focus::handle_key(app, &key)
-        || queue::handle_key(app, &key)
+    if questions::handle_key(app, &key) {
+        return false;
+    }
+    if queue_focus::handle_key(app, &key) {
+        app.workspace.focused = None;
+        return false;
+    }
+    if app.workspace.focused.is_some()
+        && !app.queue.focused
+        && app.queue.edit.is_none()
+        && workspace::handle_key(app, &key)
     {
+        return false;
+    }
+    if queue_controls::handle_key(app, &key) || queue::handle_key(app, &key) {
         app.workspace.focused = None;
         return false;
     }
@@ -3271,7 +4141,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     let entries = app.palette_entries();
     if !entries.is_empty() && !ctrl && !alt {
         app.palette.clamp(entries.len());
-        let chosen = entries[app.palette.selected];
+        let chosen = entries[app.palette.selected].clone();
         match key.code {
             KeyCode::Up | KeyCode::BackTab => {
                 app.palette.up(entries.len());
@@ -3336,7 +4206,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                 app.request_cancel();
                 false
             } else if app.quit_armed.is_some_and(|t| t.elapsed() <= QUIT_WINDOW) {
-                true
+                app.workspace.request_file_exit()
             } else {
                 app.quit_armed = Some(Instant::now());
                 app.flash("press Ctrl+C again to exit");
@@ -3428,6 +4298,14 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
             app.editor.move_right(shift);
             false
         }
+        KeyCode::PageUp if alt => {
+            app.scroll_input(-(app.areas.input.height.max(1) as isize));
+            false
+        }
+        KeyCode::PageDown if alt => {
+            app.scroll_input(app.areas.input.height.max(1) as isize);
+            false
+        }
         KeyCode::Home if ctrl => {
             app.editor.move_to(0, shift);
             false
@@ -3457,7 +4335,12 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         }
         KeyCode::Down => {
             let last_row = app.editor.layout(tw).len() - 1;
-            if !shift && app.hist_pos.is_some() && app.editor.cursor_pos(tw).0 == last_row {
+            if !shift
+                && !ctrl
+                && !alt
+                && app.editor.selection().is_none()
+                && app.editor.cursor_pos(tw).0 == last_row
+            {
                 app.history_next();
             } else {
                 app.editor.down(tw, shift);
@@ -3510,6 +4393,15 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if app.project_search.active() {
+        return;
+    }
+    if modal::mouse(app, &m) {
+        return;
+    }
+    if chatref::handle_mouse(app, m) {
+        return;
+    }
     if landing::visible(app) && landing::handle_mouse(app, m) {
         return;
     }
@@ -3524,6 +4416,33 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 app.activity.follow_match = false;
             }
             _ => {}
+        }
+        return;
+    }
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Files)
+    {
+        if let Some(index) = app
+            .related_files
+            .targets
+            .iter()
+            .find(|(rect, _)| contains(*rect, m.column, m.row))
+            .map(|(_, index)| *index)
+        {
+            if m.kind == MouseEventKind::Down(MouseButton::Left) {
+                app.picker.as_mut().unwrap().state.select(Some(index));
+                app.related_files.pressed = Some(index);
+            }
+            if m.kind == MouseEventKind::Up(MouseButton::Left)
+                && app.related_files.pressed.take() == Some(index)
+            {
+                app.apply_picker_selection(None);
+            }
+        }
+        if matches!(m.kind, MouseEventKind::Drag(_) | MouseEventKind::Up(_)) {
+            app.related_files.pressed = None;
         }
         return;
     }
@@ -3546,6 +4465,9 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         }
         return;
     }
+    if images::mouse(app, &m) || questions::mouse(app, &m) {
+        return;
+    }
     if workers::handle_mouse(app, &m) || queue::handle_mouse(app, &m) {
         app.workspace.focused = None;
         return;
@@ -3558,6 +4480,23 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             app.file_click = None;
+            if let Some((_, id)) = app.areas.pinned_card.filter(|(r, _)| contains(*r, x, y)) {
+                app.activity.toggle_card(id, app.expanded_activity);
+                app.view.clear_selection();
+                app.drag = Drag::None;
+                return;
+            }
+            if contains(app.areas.run_cancel, x, y) {
+                app.request_cancel();
+                return;
+            }
+            if contains(app.areas.bottom_button, x, y) {
+                app.view.follow_tail();
+                app.view.clear_selection();
+                app.drag = Drag::None;
+                app.workspace.focused = None;
+                return;
+            }
             let clicks = app.clicks.register(x, y, Instant::now());
             let pal = app.areas.palette;
             if pal.height > 0 && contains(pal, x, y) {
@@ -3569,7 +4508,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                     .saturating_sub(visible.saturating_sub(1));
                 let row = (y.saturating_sub(pal.y + 1)) as usize;
                 if let Some(e) = entries.get(first + row) {
-                    let e = *e;
+                    let e = e.clone();
                     app.complete_palette(e);
                 }
                 return;
@@ -3578,7 +4517,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 if x.saturating_sub(t.x) < 2 {
                     if let Some(i) = app.view.identity_at((y - t.y) as usize) {
                         if app.messages.get(i).is_some_and(|m| m.role == MsgRole::Card) {
-                            app.activity.toggle(i);
+                            app.activity.toggle_card(i, app.expanded_activity);
                             app.drag = Drag::None;
                             return;
                         }
@@ -3606,6 +4545,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                     }
                 }
             } else if contains(app.areas.input, x, y) {
+                app.questions.focused = false;
                 app.view.clear_selection();
                 app.drag = Drag::Input;
                 let idx = input_index_at(app, x, y);
@@ -3669,6 +4609,13 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                                     candidate,
                                     m.modifiers.contains(KeyModifiers::ALT),
                                 );
+                            } else if let Some(url) = row
+                                .web_links
+                                .iter()
+                                .find(|(a, b, _)| *a <= head.col && head.col < *b)
+                                .map(|(_, _, url)| url.clone())
+                            {
+                                app.open_web_link(url);
                             }
                         }
                     }
@@ -3685,13 +4632,15 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 app.paste_clipboard();
             }
         }
+        MouseEventKind::ScrollUp if contains(app.areas.input, x, y) => app.scroll_input(-3),
+        MouseEventKind::ScrollDown if contains(app.areas.input, x, y) => app.scroll_input(3),
         MouseEventKind::ScrollUp => app.view.scroll_up(3),
         MouseEventKind::ScrollDown => app.view.scroll_down(3),
         _ => {}
     }
 }
 
-/// Best-effort terminal reset for the panic hook (normal exit restores through the backend).
+/// Restores terminal modes on normal exit and unwinding.
 struct TerminalRestoreGuard(Arc<std::sync::atomic::AtomicBool>);
 
 impl TerminalRestoreGuard {
@@ -3714,14 +4663,21 @@ impl Drop for TerminalRestoreGuard {
 
 fn restore_terminal() {
     let mut out = stdout();
+    // Each command is independent. In particular, keyboard enhancement is unsupported on
+    // Windows; batching it with screen restoration aborts cleanup before leaving the TUI.
+    let _ = execute!(out, EndSynchronizedUpdate);
+    let _ = execute!(out, PopKeyboardEnhancementFlags);
+    let _ = execute!(out, DisableBracketedPaste);
+    let _ = execute!(out, DisableFocusChange);
+    let _ = execute!(out, DisableMouseCapture);
+    let _ = pointer::reset(&mut out);
+    let _ = execute!(out, crossterm::style::ResetColor);
     let _ = execute!(
         out,
-        PopKeyboardEnhancementFlags,
-        DisableBracketedPaste,
-        DisableMouseCapture,
-        LeaveAlternateScreen,
-        crossterm::cursor::Show
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset)
     );
+    let _ = execute!(out, LeaveAlternateScreen);
+    let _ = execute!(out, crossterm::cursor::Show);
     let _ = disable_raw_mode();
 }
 
@@ -3731,71 +4687,120 @@ fn write_osc_title(title: &str) -> io::Result<()> {
 }
 
 fn draw_ui(f: &mut Frame, app: &mut App) {
-    let chat_area = workspace::draw(f, app);
-    // The prompt box grows with its content (up to MAX_INPUT_ROWS), so size it first.
-    let text_w = (chat_area.width as usize)
-        .saturating_sub(2 + PROMPT_W)
-        .max(1);
-    let input_rows = app.editor.layout(text_w).len().clamp(1, MAX_INPUT_ROWS);
-    let mut chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    app.areas.run_cancel = Rect::default();
+    app.areas.pinned_card = None;
+    app.areas.modal_close = None;
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+    {
+        // A page owns the screen; preserve the workspace without drawing through it.
+        app.areas = Areas::default();
+        let page = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(input_rows as u16 + 2),
+            Constraint::Min(1),
+            Constraint::Length(3),
             Constraint::Length(1),
         ])
-        .split(chat_area)
-        .to_vec();
-    // The queue panel sits right above the prompt, the worker rows above it (each is nothing
-    // when empty).
-    let queue_area = queue::carve(&mut chunks[1], app);
-    let strip = workers::carve(&mut chunks[1], app);
+        .split(f.area());
+        f.render_widget(Clear, f.area());
+        draw_header(f, page[0], app);
+        draw_picker(f, page[1], app);
+        draw_input(f, page[2], app);
+        draw_footer(f, page[3], app);
+    } else {
+        let chat_area = workspace::draw(f, app);
+        // The prompt box grows with its content (up to MAX_INPUT_ROWS), so size it first.
+        let text_w = (chat_area.width as usize)
+            .saturating_sub(2 + PROMPT_W)
+            .max(1);
+        let input_rows = app.editor.layout(text_w).len().clamp(1, MAX_INPUT_ROWS);
+        let mut chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(input_rows as u16 + 2 + app.images.height() as u16),
+                Constraint::Length(1),
+            ])
+            .split(chat_area)
+            .to_vec();
+        // The queue panel sits right above the prompt, the worker rows above it (each is nothing
+        // when empty).
+        let queue_area = queue::carve(&mut chunks[1], app);
+        let strip = workers::carve(&mut chunks[1], app);
+        let question_area = questions::carve(&mut chunks[1], app);
+        let run_status = if app.busy && app.picker.is_none() && app.activity.detail.is_none() {
+            chunks[1].height = chunks[1].height.saturating_sub(1);
+            Rect::new(chunks[1].x, chunks[1].bottom(), chunks[1].width, 1)
+        } else {
+            Rect::default()
+        };
 
-    if let Some(warning) = &app.usage_warning {
-        let text = warning.replace(" | ", "\n");
-        let height = text
-            .lines()
-            .count()
-            .min(2)
-            .min(chunks[1].height.saturating_sub(3) as usize) as u16;
-        if height > 0 {
-            let area = Rect {
-                height,
-                ..chunks[1]
-            };
-            chunks[1].y += height;
-            chunks[1].height -= height;
-            f.render_widget(
-                Paragraph::new(text).alignment(Alignment::Right).style(
-                    Style::default()
-                        .fg(if app.usage_tone == UsageTone::Bad {
-                            Color::Red
-                        } else {
-                            Color::Yellow
-                        })
-                        .add_modifier(Modifier::BOLD),
-                ),
-                area,
-            );
+        if let Some(warning) = &app.usage_warning {
+            let text = warning.replace(" | ", "\n");
+            let height = text
+                .lines()
+                .count()
+                .min(2)
+                .min(chunks[1].height.saturating_sub(3) as usize) as u16;
+            if height > 0 {
+                let area = Rect {
+                    height,
+                    ..chunks[1]
+                };
+                chunks[1].y += height;
+                chunks[1].height -= height;
+                f.render_widget(
+                    Paragraph::new(text).alignment(Alignment::Right).style(
+                        Style::default()
+                            .fg(if app.usage_tone == UsageTone::Bad {
+                                Color::Red
+                            } else {
+                                Color::Yellow
+                            })
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    area,
+                );
+            }
+        }
+
+        draw_header(f, chunks[0], app);
+        if landing::visible(app) {
+            landing::draw(f, chunks[1], app);
+        } else {
+            draw_transcript(f, chunks[1], app);
+        }
+        draw_input(f, chunks[2], app);
+        draw_run_status(f, run_status, app);
+        questions::draw(f, question_area, app);
+        queue::draw(f, queue_area, app);
+        if app.picker.is_some() {
+            draw_picker(f, chunks[1], app);
+        }
+        draw_palette(f, chunks[1], chunks[2], app);
+        chatref::draw(f, chunks[1], chunks[2], app);
+        draw_footer(f, chunks[3], app);
+        workers::draw(f, strip, chunks[1], app);
+    }
+    if app.project_search.active() {
+        app.areas = Areas::default();
+        app.project_search.draw(f, f.area());
+    }
+    // Cover every widget, including provider-controlled titles, menus and detail panes.
+    // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
+    for cell in &mut f.buffer_mut().content {
+        if cell.symbol().chars().any(char::is_control) {
+            let clean: String = cell
+                .symbol()
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            cell.set_symbol(&clean);
         }
     }
-
-    draw_header(f, chunks[0], app);
-    if landing::visible(app) {
-        landing::draw(f, chunks[1], app);
-    } else {
-        draw_transcript(f, chunks[1], app);
-    }
-    draw_input(f, chunks[2], app);
-    queue::draw(f, queue_area, app);
-    if app.picker.is_some() {
-        draw_picker(f, chunks[1], app);
-    }
-    draw_palette(f, chunks[1], chunks[2], app);
-    chatref::draw(f, chunks[1], chunks[2], app);
-    draw_footer(f, chunks[3], app);
-    workers::draw(f, strip, chunks[1], app);
     if app.no_color {
         // Keep bold/reverse/italic (they carry meaning); drop every colour.
         for cell in f.buffer_mut().content.iter_mut() {
@@ -3854,7 +4859,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(e.help, Style::default().fg(Color::Indexed(245))),
+                Span::styled(e.help.clone(), Style::default().fg(Color::Indexed(245))),
                 Span::styled(
                     if e.custom { "  custom" } else { "" },
                     Style::default().fg(Color::DarkGray),
@@ -3868,8 +4873,13 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                 .borders(Borders::ALL)
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(if entries.len() > shown {
-                    format!(" commands · {} ", entries.len())
+                .title(if palette::has_argument_menu(&app.editor.text()) {
+                    format!(
+                        " {} options ",
+                        app.editor.text().split_whitespace().next().unwrap_or("/")
+                    )
+                } else if entries.len() > shown {
+                    format!(" commands \u{b7} {} ", entries.len())
                 } else {
                     " commands ".to_string()
                 }),
@@ -3891,8 +4901,63 @@ const SPINNER: [&str; 10] = [
     "\u{2807}", "\u{280f}",
 ];
 
+/// Omit unused leading units from the live timer beside the run status.
+fn run_elapsed(seconds: u64) -> String {
+    crate::delegate::fmt_elapsed(Duration::from_secs(seconds))
+}
+
 fn spinner(tick: u64) -> &'static str {
     SPINNER[(tick as usize) % SPINNER.len()]
+}
+
+fn draw_run_status(f: &mut Frame, area: Rect, app: &mut App) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let key = Style::default()
+        .fg(Color::White)
+        .bg(Color::Indexed(238))
+        .add_modifier(Modifier::BOLD);
+    let right = format!(
+        " \u{b7} {} \u{b7} ",
+        run_elapsed(app.turn_started.map_or(0, |t| t.elapsed().as_secs()))
+    );
+    let label = if area.width < 60 {
+        match app.phase {
+            Phase::Waiting => "Starting".into(),
+            Phase::Thinking => "Thinking".into(),
+            Phase::Tool(_) => "Running a tool".into(),
+            Phase::Writing => "Writing the reply".into(),
+        }
+    } else {
+        app.run_status_label()
+    };
+    let room = (area.width as usize).saturating_sub(Line::from(right.clone()).width() + 18);
+    let mut status = String::new();
+    let mut width = 0;
+    for c in label.chars() {
+        let n = text::char_width(c);
+        if width + n > room {
+            break;
+        }
+        status.push(c);
+        width += n;
+    }
+    let prefix = format!(" {} {status}", app.phase.frame(app.tick_count));
+    let x =
+        area.x + (Line::from(prefix.clone()).width() + Line::from(right.clone()).width()) as u16;
+    if x + 7 <= area.right() {
+        app.areas.run_cancel = Rect::new(x, area.y, 7, 1);
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(app.phase.color())),
+            Span::styled(right, Style::default().fg(Color::DarkGray)),
+            Span::styled("[ Esc ]", key),
+            Span::raw(" cancel"),
+        ])),
+        area,
+    );
 }
 
 /// A quiet colour cue per provider, so the active account is recognisable at a glance.
@@ -3918,31 +4983,36 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     } else {
         app.model.clone()
     };
-    let mut left = vec![
-        Span::styled(" \u{25c6} ", bar.fg(accent).add_modifier(Modifier::BOLD)),
-        Span::styled("concordia", bar.add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {}", short_stamp()), bar.fg(Color::DarkGray)),
-        Span::styled("   ", bar),
-        Span::styled(
-            format!(" {} ", app.account_label()),
-            Style::default()
-                .bg(provider_color(app.provider))
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("  {model}"), bar.fg(Color::Gray)),
-    ];
-    if app.native_agents.count() > 0 {
-        left.push(Span::styled(
-            format!("  /agents {}", app.native_agents.count()),
-            bar.fg(Color::Cyan),
-        ));
+    let email = app.account_email.as_deref().unwrap_or("email unavailable");
+    let account = app.account_label();
+    let right = format!(" {} ", app.usage_summary);
+    let available = (area.width as usize).saturating_sub(Line::from(right.clone()).width());
+    let identity_width = Line::from(format!(" {account}   {email}")).width();
+    let brand = format!("concordia {}   ", short_stamp());
+    let model = format!("  {model}");
+    let show_brand = 3 + brand.len() + identity_width + model.len() <= available;
+    let mut left = vec![Span::styled(
+        " \u{25c6} ",
+        bar.fg(accent).add_modifier(Modifier::BOLD),
+    )];
+    if show_brand {
+        left.push(Span::styled(brand, bar.fg(Color::DarkGray)));
     }
-    if let Some(chip) = app.session_chip.as_deref() {
-        left.push(Span::styled(
-            format!("  \u{25b8} {chip}"),
-            bar.fg(Color::DarkGray),
-        ));
+    left.push(Span::styled(
+        format!(" {account} "),
+        bar.bg(provider_color(app.provider))
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    ));
+    left.push(Span::styled(format!("  {email}"), bar));
+    if left.iter().map(Span::width).sum::<usize>() + model.len() <= available {
+        left.push(Span::styled(model, bar.fg(Color::Gray)));
+    }
+    if app.native_agents.count() > 0 {
+        let agents = format!("  /agents {}", app.native_agents.count());
+        if left.iter().map(Span::width).sum::<usize>() + agents.len() <= available {
+            left.push(Span::styled(agents, bar.fg(Color::Cyan)));
+        }
     }
     let usage_color = match app.usage_tone {
         UsageTone::Ok => Color::Green,
@@ -3950,8 +5020,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         UsageTone::Bad => Color::Red,
         UsageTone::Mute => Color::DarkGray,
     };
-    let right = format!(" {} ", app.usage_summary);
-    let used: usize = left.iter().map(|s| s.content.chars().count()).sum();
+    let used: usize = left.iter().map(Span::width).sum();
     let pad = (area.width as usize).saturating_sub(used + right.chars().count());
     left.push(Span::styled(" ".repeat(pad), bar));
     left.push(Span::styled(right, bar.fg(usage_color)));
@@ -3971,6 +5040,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         style: Style::default(),
         text: "\n",
         markdown: false,
+        linkify: true,
         runs: &[],
     };
     let live_thought = if app.expanded_activity {
@@ -3983,7 +5053,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(idx, m)| match m.role {
-            MsgRole::Card if app.expanded_activity || app.activity.expanded.contains(&idx) => m
+            MsgRole::Card if app.activity.is_expanded(idx, app.expanded_activity) => m
                 .card
                 .as_ref()
                 .map(|c| format!("{}\n{}", c.title, c.detail.as_deref().unwrap_or("")))
@@ -4020,11 +5090,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     for (i, m) in app.messages.iter().enumerate() {
         let (mut gutter, gutter_style, style) = match m.role {
             MsgRole::User => (
-                "> ",
+                "You › ",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(Color::Indexed(117))
+                    .bg(Color::Indexed(235))
                     .add_modifier(Modifier::BOLD),
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default().bg(Color::Indexed(235)),
             ),
             MsgRole::Assistant => (
                 "\u{25cf} ",
@@ -4088,7 +5159,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             ),
         };
         if m.role == MsgRole::Card {
-            gutter = if app.expanded_activity || app.activity.expanded.contains(&i) {
+            gutter = if app.activity.is_expanded(i, app.expanded_activity) {
                 "▾ "
             } else {
                 "▸ "
@@ -4116,7 +5187,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             gutter_style,
             style,
             text: displayed[i].as_deref().unwrap_or(&m.text),
-            markdown: m.role == MsgRole::Assistant,
+            markdown: m.role == MsgRole::Assistant
+                || m.role == MsgRole::User && m.text.contains("[Image: "),
+            linkify: m.role != MsgRole::Meta,
             runs: &msg_runs[i],
         });
         let next_is_card = app
@@ -4149,6 +5222,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::ITALIC),
             text: &live_thought,
             markdown: false,
+            linkify: true,
             runs: &[],
         });
     }
@@ -4161,6 +5235,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             style: Style::default(),
             text: &app.live_text,
             markdown: true,
+            linkify: true,
             runs: &[],
         });
     }
@@ -4174,12 +5249,71 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::DIM | Modifier::ITALIC),
             text: tip,
             markdown: false,
+            linkify: false,
             runs: &[],
         });
+    }
+    if app.view.link_root.as_deref() != Some(app.cwd.as_path()) {
+        app.view.link_root = Some(app.cwd.clone());
     }
     app.view
         .rebuild(&blocks, inner.width as usize, inner.height as usize);
     f.render_widget(Paragraph::new(app.view.lines()).block(block), area);
+    // Paint the complete user block, including blank and trailing cells. Line styling alone
+    // leaves empty paragraph rows at the terminal's default background.
+    for (row, index) in app.view.visible().enumerate() {
+        if app.view.rows[index]
+            .identity
+            .and_then(|i| app.messages.get(i))
+            .is_some_and(|m| m.role == MsgRole::User)
+            && !app.no_color
+        {
+            f.buffer_mut().set_style(
+                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+                Style::default().bg(Color::Indexed(235)),
+            );
+        }
+    }
+
+    // Keep the expanded card's control reachable after its original header scrolls away.
+    let first = app.view.visible().start;
+    if inner.height > 1 && inner.width > 0 {
+        if let Some(id) = app
+            .view
+            .rows
+            .get(first)
+            .and_then(|r| r.identity)
+            .filter(|&id| {
+                app.activity.is_expanded(id, app.expanded_activity)
+                    && first
+                        .checked_sub(1)
+                        .and_then(|i| app.view.rows.get(i))
+                        .is_some_and(|r| r.identity == Some(id))
+            })
+        {
+            if let Some(card) = app.messages.get(id).and_then(|m| m.card.as_ref()) {
+                let rect = Rect::new(inner.x, inner.y, inner.width, 1);
+                f.render_widget(Clear, rect);
+                f.render_widget(
+                    Paragraph::new(format!(
+                        "\u{25be} Collapse \u{b7} {}",
+                        crate::provider::stream_cards::format_card_line(card)
+                            .trim_start_matches('│')
+                            .trim()
+                    ))
+                    .style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .bg(Color::Indexed(235))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    rect,
+                );
+                app.areas.pinned_card = Some((rect, id));
+            }
+        }
+    }
+
     if let Some(i) = app.activity.detail {
         if let Some(card) = app.messages.get(i).and_then(|m| m.card.as_ref()) {
             let title = card.title.as_str();
@@ -4243,6 +5377,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 },
                 inner,
             );
+            modal::draw_close(f, popup, app, modal::Target::Activity);
         }
     }
 }
@@ -4393,8 +5528,17 @@ fn update_rows(line: &crate::update::PreviewLine, width: usize) -> Vec<Line<'sta
             value.clone(),
             Style::default(),
         ),
-        P::Title(t) => (String::new(), bold, t.clone(), bold),
-        P::Kind(k) => (" ".to_string(), bold, k.clone(), bold),
+        P::Title(t) => (String::new(), bold, t.clone(), bold.fg(Color::Cyan)),
+        P::Kind(k) => {
+            let color = if k.eq_ignore_ascii_case("Fixed") {
+                Color::Indexed(107)
+            } else if k.eq_ignore_ascii_case("Removed") || k.eq_ignore_ascii_case("Deprecated") {
+                Color::Indexed(179)
+            } else {
+                Color::Indexed(75)
+            };
+            (" ".to_owned(), bold, k.clone(), bold.fg(color))
+        }
         P::Bullet(b) => (" · ".to_string(), dim, b.clone(), Style::default()),
         P::Text(t) => (String::new(), dim, t.clone(), Style::default()),
         P::Hint(h) => (String::new(), dim, h.clone(), dim),
@@ -4418,35 +5562,97 @@ fn update_rows(line: &crate::update::PreviewLine, width: usize) -> Vec<Line<'sta
         .collect()
 }
 
+fn update_action_rows(blocked: bool, width: usize) -> Vec<Line<'static>> {
+    use crate::update::PreviewLine as P;
+    let (caption, explanation, exit, color) = if blocked {
+        (
+            " Update blocked: work pending ",
+            "Finish chat/workers and save or close edited files, then press Enter again.",
+            "Esc returns to your task. No update is queued.",
+            Color::Yellow,
+        )
+    } else {
+        (
+            if width < 40 {
+                " Enter  Install + restart "
+            } else {
+                " Enter  Install + restart this tab "
+            },
+            "Installs, saves your draft and queue, then restarts this tab.",
+            "Other tabs keep running. Esc closes without updating.",
+            Color::Green,
+        )
+    };
+    let action_style = Style::default()
+        .fg(Color::Black)
+        .bg(color)
+        .add_modifier(Modifier::BOLD);
+    let mut rows = update_rows(&P::Title(caption.into()), width);
+    for row in &mut rows {
+        row.style = action_style;
+        for span in &mut row.spans {
+            span.style = action_style;
+        }
+    }
+    rows.extend(update_rows(&P::Text(explanation.into()), width));
+    rows.extend(update_rows(&P::Text(exit.into()), width));
+    rows.push(Line::default());
+    rows
+}
+
 fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
+    let update_blocked = app.update_blocked_by_work();
+    let update_lines = app.update_preview.as_ref().map(|p| p.visible_lines());
     let Some(picker) = app.picker.as_mut() else {
         return;
     };
     if matches!(picker.kind, PickerKind::Update | PickerKind::Tokens) {
-        let width = area.width.saturating_sub(4).min(100);
+        let is_page = picker.kind == PickerKind::Update;
+        let width = if is_page {
+            area.width
+        } else {
+            area.width.saturating_sub(4).min(100)
+        };
         let inner = width.saturating_sub(4) as usize;
         let loading = [crate::update::PreviewLine::Text(
             "checking for updates…".into(),
         )];
-        let lines = app
-            .update_preview
-            .as_ref()
-            .map(|p| p.lines.as_slice())
-            .unwrap_or(&loading);
+        let lines = update_lines.as_deref().unwrap_or(&loading);
         let rows: Vec<Line> = lines
             .iter()
             .flat_map(|line| update_rows(line, inner.max(10)))
             .collect();
+        let mut actions = if picker.kind == PickerKind::Update
+            && app
+                .update_preview
+                .as_ref()
+                .is_some_and(|p| p.install_available)
+        {
+            update_action_rows(update_blocked, inner.max(10))
+        } else {
+            Vec::new()
+        };
         // As tall as its content, up to 24 rows or the space there is.
-        let height = (rows.len() as u16 + 2).min(area.height.min(24)).max(3);
+        let height = if is_page {
+            area.height
+        } else {
+            ((rows.len() + actions.len()) as u16 + 2)
+                .min(area.height.min(24))
+                .max(3)
+        };
         let popup = Rect {
-            x: area.x + 2,
+            x: if is_page { area.x } else { area.x + 2 },
             y: area.y,
             width,
             height,
         };
         f.render_widget(Clear, popup);
-        let view = popup.height.saturating_sub(2) as usize;
+        // Keep one changelog row available even in a very short terminal.
+        actions.truncate(popup.height.saturating_sub(3) as usize);
+        let view = popup
+            .height
+            .saturating_sub(2)
+            .saturating_sub(actions.len() as u16) as usize;
         // Scrolling reads these, so it always matches what was last drawn.
         app.update_rows = rows.len();
         app.update_view = view;
@@ -4455,18 +5661,40 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .selected()
             .unwrap_or(0)
             .min(rows.len().saturating_sub(view));
-        let visible: Vec<Line> = rows.into_iter().skip(offset).take(view).collect();
+        let visible: Vec<Line> = actions
+            .into_iter()
+            .chain(rows.into_iter().skip(offset).take(view))
+            .collect();
         let block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" {} ", picker.title))
             .padding(ratatui::widgets::Padding::horizontal(1));
         f.render_widget(Paragraph::new(visible).block(block), popup);
+        modal::draw_close(f, popup, app, modal::Target::Picker);
         return;
     }
-    let height = (picker.filtered().len().min(10) as u16)
+    let width = area.width.saturating_sub(4).max(20);
+    let row_width = width.saturating_sub(6).max(1) as usize;
+    let height = (picker
+        .filtered()
+        .iter()
+        .map(|r| {
+            if r.label.contains('\n') {
+                r.label
+                    .lines()
+                    .map(|line| {
+                        text::wrap_ranges(&line.chars().collect::<Vec<_>>(), row_width).len()
+                    })
+                    .sum::<usize>()
+                    + usize::from(!r.detail.is_empty())
+            } else {
+                1
+            }
+        })
+        .sum::<usize>()
+        .min(24) as u16)
         .saturating_add(2)
         .max(5);
-    let width = area.width.saturating_sub(4).max(20);
     let popup = Rect {
         x: area.x + 2,
         y: area.y + area.height.saturating_sub(height),
@@ -4474,10 +5702,23 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         height: height.min(area.height),
     };
     f.render_widget(Clear, popup);
-    let title = if picker.filter.is_empty() {
-        picker.title.clone()
+    let heading = if picker.kind == PickerKind::Files {
+        let filter_width = if picker.filter.is_empty() {
+            0
+        } else {
+            picker.filter.chars().map(text::char_width).sum::<usize>() + 11
+        };
+        related_files::heading(
+            app.related_files.base.as_deref().unwrap_or(&app.cwd),
+            (width as usize).saturating_sub(7 + filter_width),
+        )
     } else {
-        format!("{} · filter: {}", picker.title, picker.filter)
+        picker.title.clone()
+    };
+    let title = if picker.filter.is_empty() {
+        heading
+    } else {
+        format!("{} · filter: {}", heading, picker.filter)
     };
     let tones = &app.picker_tones;
     let items: Vec<ListItem> = picker
@@ -4491,6 +5732,26 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 Some(UsageTone::Mute) => Style::default().fg(Color::DarkGray),
                 None => Style::default(),
             };
+            if r.label.contains('\n') {
+                let mut lines = Vec::new();
+                for line in r.label.lines() {
+                    let chars: Vec<_> = line.chars().collect();
+                    for (start, end) in text::wrap_ranges(&chars, row_width) {
+                        let part: String = chars[start..end].iter().collect();
+                        lines.push(Line::from(
+                            usage_style::picker_spans(&part)
+                                .unwrap_or_else(|| vec![Span::styled(part, label_style)]),
+                        ));
+                    }
+                }
+                if !r.detail.is_empty() {
+                    lines.push(Line::styled(
+                        r.detail.clone(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+                return ListItem::new(lines);
+            }
             let (head, current) = match r.label.split_once(" \u{b7} current") {
                 Some((h, _)) => (h.to_string(), true),
                 None => (r.label.clone(), false),
@@ -4513,7 +5774,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .padding(ratatui::widgets::Padding::horizontal(1))
+                .title(title),
+        )
         .highlight_style(
             Style::default()
                 .fg(Color::Cyan)
@@ -4521,9 +5787,44 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         )
         .highlight_symbol("> ");
     f.render_stateful_widget(list, popup, &mut picker.state);
+    app.related_files.targets.clear();
+    if picker.kind == PickerKind::Files {
+        let offset = picker.state.offset();
+        for (row, index) in (offset..picker.filtered().len())
+            .take(popup.height.saturating_sub(2) as usize)
+            .enumerate()
+        {
+            app.related_files.targets.push((
+                Rect {
+                    x: popup.x + 2,
+                    y: popup.y + 1 + row as u16,
+                    width: popup.width.saturating_sub(4),
+                    height: 1,
+                },
+                index,
+            ));
+        }
+    }
+    modal::draw_close(f, popup, app, modal::Target::Picker);
 }
 
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
+    if modal::draw_input(f, area, app) {
+        return;
+    }
+    let area = images::draw(f, area, app);
+    const BOTTOM_LABEL: &str = " [ Bottom ] ";
+    app.areas.bottom_button = if app.view.scroll > 0 && area.width >= BOTTOM_LABEL.len() as u16 + 2
+    {
+        Rect::new(
+            area.x + (area.width - BOTTOM_LABEL.len() as u16) / 2,
+            area.y,
+            BOTTOM_LABEL.len() as u16,
+            1,
+        )
+    } else {
+        Rect::default()
+    };
     // Sending waits for the restart, so the box itself says so, not only the footer.
     let updating = app
         .job
@@ -4537,47 +5838,23 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         Color::Indexed(240)
     };
-    let title = if let Some(secs) = updating {
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(spinner(app.tick_count), Style::default().fg(Color::Cyan)),
-            Span::styled(
-                " updating Concordia",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" \u{b7} {secs}s \u{b7} Esc to cancel "),
-                Style::default().fg(Color::Gray),
-            ),
-        ])
-    } else if app.busy {
-        let color = app.phase.color();
-        let secs = app.turn_started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(app.phase.frame(app.tick_count), Style::default().fg(color)),
-            Span::styled(
-                format!(" {}", app.phase.label()),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" \u{b7} {secs}s \u{b7} Esc to cancel "),
-                Style::default().fg(Color::Gray),
-            ),
-        ])
-    } else {
+    let title = {
         Line::from(Span::styled(
-            " message ",
+            if updating.is_some() {
+                " message (paused) "
+            } else if app.workspace.focused.is_some() {
+                " message · Esc returns from file "
+            } else {
+                " message "
+            },
             Style::default().fg(Color::DarkGray),
         ))
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(Style::default().fg(border))
-        .title(title);
+        .border_style(Style::default().fg(border));
+    let block = block.title(title);
     let inner = block.inner(area);
     let text_w = (inner.width as usize).saturating_sub(PROMPT_W).max(1);
     app.areas.input = inner;
@@ -4586,10 +5863,14 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let rows = app.editor.layout(text_w);
     let (cur_row, cur_col) = app.editor.cursor_pos(text_w);
     let h = (inner.height as usize).max(1);
-    // Keep the caret row visible; never scroll past the last row.
-    if cur_row < app.input_scroll {
+    let anchor = (app.editor.revision(), cur_row, cur_col, text_w);
+    if app.input_scroll_anchor.is_some_and(|old| old != anchor) {
+        app.input_scroll_anchor = None;
+    }
+    // Wheel scrolling is independent of the caret until an edit/navigation/resize.
+    if app.input_scroll_anchor.is_none() && cur_row < app.input_scroll {
         app.input_scroll = cur_row;
-    } else if cur_row >= app.input_scroll + h {
+    } else if app.input_scroll_anchor.is_none() && cur_row >= app.input_scroll + h {
         app.input_scroll = cur_row + 1 - h;
     }
     app.input_scroll = app.input_scroll.min(rows.len().saturating_sub(h));
@@ -4617,6 +5898,8 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
                 spans.push(Span::styled(
                     if updating.is_some() {
                         "Messages are paused until Concordia restarts on the new build"
+                    } else if app.workspace.focused.is_some() {
+                        "File pane has focus. Esc returns to chat."
                     } else {
                         "Message Concordia...  (/ for commands)"
                     },
@@ -4638,12 +5921,24 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), area);
+    if app.areas.bottom_button.width > 0 {
+        f.render_widget(
+            Paragraph::new(BOTTOM_LABEL).style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            app.areas.bottom_button,
+        );
+    }
 
     // Real terminal caret (blinks natively, works with IME); hidden while a picker is open.
     if app.picker.is_none()
         && app.activity.detail.is_none()
         && !app.queue.focused
         && app.workspace.focused.is_none()
+        && cur_row >= app.input_scroll
+        && cur_row < app.input_scroll + h
     {
         let x = inner.x + (PROMPT_W + cur_col).min(inner.width.saturating_sub(1) as usize) as u16;
         let y = inner.y + (cur_row - app.input_scroll) as u16;
@@ -4692,6 +5987,16 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         )
     } else if let Some(m) = flash {
         (m, Style::default().fg(Color::Indexed(179)))
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+        && app.job.is_some()
+    {
+        (
+            "\u{2191}\u{2193} scroll \u{b7} Esc cancels",
+            Style::default().fg(Color::DarkGray),
+        )
     } else if let Some(job) = &app.job {
         let what = match job.kind {
             JobKind::Update => "updating",
@@ -4700,13 +6005,45 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         let line = job.status();
         let shown: String = line.chars().take(60).collect();
         job_line = format!(
-            "{} {what} \u{b7} {}s{}{} \u{b7} Esc cancels",
+            "{} {what} \u{b7} {}{}{} \u{b7} Esc cancels",
             spinner(app.tick_count),
-            job.started.elapsed().as_secs(),
+            crate::delegate::fmt_elapsed(job.started.elapsed()),
             if shown.is_empty() { "" } else { " \u{b7} " },
             shown
         );
         (job_line.as_str(), Style::default().fg(Color::Cyan))
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+        && app
+            .update_preview
+            .as_ref()
+            .is_some_and(|p| p.install_available)
+    {
+        if app.update_blocked_by_work() {
+            (
+                "Update blocked: task running · Esc returns to task",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (
+                "Enter installs and restarts this tab · ↑↓ scroll · Esc close",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+        && app.job.is_none()
+        && app.update_preview.is_some()
+    {
+        ("Enter / Esc close", Style::default().fg(Color::DarkGray))
     } else if !app.palette_entries().is_empty() {
         (
             "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",
@@ -4724,6 +6061,11 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             app.footer_left.as_str(),
             Style::default().fg(Color::DarkGray),
         )
+    };
+    let left = if app.workspace.focused.is_some() && app.picker.is_none() {
+        "File pane · Esc chat · F6 change focus · Ctrl+S save"
+    } else {
+        left
     };
     let focus_hint = queue_focus::focus_hint(app).map(|hint| format!("{left} · {hint}"));
     let left = focus_hint.as_deref().unwrap_or(left);
@@ -4783,6 +6125,7 @@ fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
             .add_modifier(Modifier::BOLD),
         text: label,
         markdown: false,
+        linkify: false,
         runs: &[],
     }
 }
@@ -4834,14 +6177,6 @@ fn parse_mode(s: &str) -> Option<TrustMode> {
     }
 }
 
-fn provider_name(p: ProviderKind) -> &'static str {
-    match p {
-        ProviderKind::Codex => "Codex",
-        ProviderKind::Claude => "Claude",
-        ProviderKind::Cursor => "Cursor",
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Level {
     Info,
@@ -4875,6 +6210,7 @@ fn level_of(text: &str) -> Level {
         || t.starts_with("mode \u{2192}")
         || t.starts_with("trust \u{2192}")
         || t.starts_with("copied")
+        || t.starts_with("cut ")
         || t.contains("up to date")
     {
         Level::Ok

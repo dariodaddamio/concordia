@@ -202,7 +202,11 @@ fn panel_sits_directly_above_the_prompt_at_every_width() {
         h.queue(&"x".repeat(100));
         let scr = h.screen();
         let r1 = h.row_with("queued 1: alpha").expect("row 1");
-        assert_eq!(scr[r1 + 1].trim(), "queued 2: bravo", "w={w}");
+        assert!(
+            scr[r1 + 1].trim().starts_with("queued 2: bravo")
+                && scr[r1 + 1].contains("[ Send now ]"),
+            "w={w}"
+        );
         assert!(
             scr[r1 + 2].contains(&format!("queued 3: {}...", "x".repeat(60))) || w < 80,
             "w={w}: {:?}",
@@ -238,7 +242,7 @@ fn a_tiny_terminal_never_panics_and_keeps_the_prompt() {
     for i in 0..6 {
         h.queue(&format!("item {i}"));
     }
-    assert!(h.row_with("waiting").is_some());
+    assert!(h.row_with("Starting").is_some());
 }
 
 // ---- panel keys --------------------------------------------------------------------------
@@ -798,4 +802,45 @@ fn history_persistence_can_be_turned_off() {
     .unwrap();
     h.relaunch();
     assert!(h.app.history.is_empty());
+}
+
+#[test]
+fn pasted_line_endings_and_spacing_survive_send_queue_and_queue_edit() {
+    for newline in ["\n", "\r\n", "\r"] {
+        let raw = format!("    first  {newline}{newline}      second{newline}");
+        let expected = "    first  \n\n      second\n";
+        let mut h = H::new(100, 30);
+        h.app.paste_text(&raw);
+        assert_eq!(h.app.editor.text(), expected);
+        h.press(KeyCode::Enter);
+        assert_eq!(h.sent(), vec![expected.to_string()]);
+        assert!(h
+            .app
+            .messages
+            .iter()
+            .any(|m| m.role == MsgRole::User && m.text == expected));
+        h.app.paste_text(&raw);
+        h.press(KeyCode::Tab);
+        assert_eq!(h.items(), vec![expected]);
+        h.press(KeyCode::Up);
+        h.press(KeyCode::Enter);
+        h.key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        h.app.paste_text(&raw);
+        h.press(KeyCode::Enter);
+        assert_eq!(h.items(), vec![expected]);
+        h.finish_ok();
+        assert_eq!(h.sent(), vec![expected.to_string()]);
+    }
+}
+
+#[test]
+fn pasting_after_an_explicit_newline_keeps_the_separate_line() {
+    let mut h = H::new(100, 30);
+    h.app.editor.insert_str("before");
+    h.key(KeyCode::Enter, KeyModifiers::SHIFT);
+    h.app.paste_text("    after\r\r      detail  ");
+    let expected = "before\n    after\n\n      detail  ";
+    assert_eq!(h.app.editor.text(), expected);
+    h.press(KeyCode::Enter);
+    assert_eq!(h.sent(), vec![expected.to_string()]);
 }

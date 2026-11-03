@@ -31,7 +31,7 @@ pub fn compact(n: u64) -> String {
     if n < 999_500 {
         return format!("{}k", (n + 500) / 1000);
     }
-    one_decimal((n + 50_000) / 100_000, "M")
+    one_decimal(n / 100_000 + u64::from(n % 100_000 >= 50_000), "M")
 }
 
 fn elapsed_text(d: Duration) -> String {
@@ -39,8 +39,7 @@ fn elapsed_text(d: Duration) -> String {
     if secs < 60.0 {
         format!("{secs:.1}s")
     } else {
-        let s = d.as_secs();
-        format!("{}m {:02}s", s / 60, s % 60)
+        crate::delegate::fmt_elapsed(d)
     }
 }
 

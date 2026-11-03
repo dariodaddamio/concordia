@@ -539,16 +539,16 @@ mod tests {
             store.path(),
             dir.path(),
             "claude",
-            Some("C:/Users/dario/.claude-a"),
+            Some("C:/Users/fixture-user/.claude-a"),
             &revision(),
             "denied-live-probe",
         );
-        let other = Path::new("C:/Users/dario/.claude-b");
+        let other = Path::new("C:/Users/fixture-user/.claude-b");
         assert!(matches!(
             gate_in(store.path(), dir.path(), ProviderKind::Claude, Some(other)),
             Gate::ReadOnly(_)
         ));
-        let same = Path::new("C:\\Users\\dario\\.claude-a");
+        let same = Path::new("C:\\Users\\fixture-user\\.claude-a");
         assert_eq!(
             gate_in(store.path(), dir.path(), ProviderKind::Claude, Some(same)),
             Gate::Open,

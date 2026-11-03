@@ -30,6 +30,8 @@ pub struct Connection {
     pub manifest_sha256: String,
     pub skill: Option<String>,
     pub entries: Vec<Entry>,
+    #[serde(default)]
+    pub has_pinned_decisions: bool,
 }
 
 /// Who the entry belongs to; refreshes the stored record when the manifest changed.
@@ -178,6 +180,32 @@ fn same_target(a: &Entry, b: &Entry) -> bool {
 
 /// Store `entry` under `identity`, replacing an earlier entry for the same provider, home and project.
 pub fn record(store: &Path, identity: &Identity<'_>, entry: Entry) -> Result<(), String> {
+    let pins = !identity.manifest_path.starts_with("command:")
+        && super::pinned::manifest_at(Path::new(identity.manifest_path), identity.manifest_sha256)
+            .is_ok_and(|m| !m.pinned_decisions.is_empty());
+    record_with_pins(store, identity, entry, pins)
+}
+
+pub fn record_with_pins(
+    store: &Path,
+    identity: &Identity<'_>,
+    entry: Entry,
+    has_pins: bool,
+) -> Result<(), String> {
+    if has_pins {
+        if identity.manifest_path.starts_with("command:") {
+            return Err(
+                "pinned decisions require an explicitly connected file-backed manifest".into(),
+            );
+        }
+        let manifest = super::pinned::manifest_at(
+            Path::new(identity.manifest_path),
+            identity.manifest_sha256,
+        )?;
+        if manifest.pinned_decisions.is_empty() {
+            return Err("pinned decisions changed during connection".into());
+        }
+    }
     let mut all = load(store)?;
     let at = match all.iter().position(|c| c.name == identity.name) {
         Some(at) => at,
@@ -189,6 +217,7 @@ pub fn record(store: &Path, identity: &Identity<'_>, entry: Entry) -> Result<(),
                 manifest_sha256: String::new(),
                 skill: None,
                 entries: Vec::new(),
+                has_pinned_decisions: false,
             });
             all.len() - 1
         }
@@ -198,6 +227,7 @@ pub fn record(store: &Path, identity: &Identity<'_>, entry: Entry) -> Result<(),
     connection.manifest_path = identity.manifest_path.into();
     connection.manifest_sha256 = identity.manifest_sha256.into();
     connection.skill = identity.skill.map(str::to_string);
+    connection.has_pinned_decisions = has_pins;
     connection.entries.retain(|e| !same_target(e, &entry));
     connection.entries.push(entry);
     save(store, all)

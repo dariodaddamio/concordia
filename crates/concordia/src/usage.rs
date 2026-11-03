@@ -19,6 +19,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// How long a fetched Claude reading is trusted before it is refreshed in the background.
 pub const USAGE_TTL_SECS: u64 = 120;
+/// Supported native read-only RPC; exposed for isolated process integration checks.
+pub async fn read_codex_limits(bin: &str, home: &Path) -> Result<String, String> {
+    crate::usage_codex::fetch_with(bin, home).await
+}
 /// A hung `claude -p "/usage"` is killed (with its process tree) after this long.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -40,6 +44,7 @@ impl UsageWindow {
     fn expired_at(&self, now: Option<WallTime>) -> bool {
         self.resets.as_deref().is_some_and(|r| {
             r.starts_with("already reset")
+                || r.starts_with("reset at ")
                 || now
                     .zip(parse_wall(r, now))
                     .is_some_and(|(now, then)| minutes_until(now, then) <= 0)
@@ -60,7 +65,15 @@ impl UsageWindow {
     /// `5h 59% left (41% used)`
     fn used_left(&self) -> String {
         if self.expired() {
-            return format!("{} reset since last read", self.label);
+            return format!(
+                "{} · {} · current usage unavailable (last reading {}% used)",
+                self.label,
+                self.resets
+                    .as_deref()
+                    .map(reset_phrase)
+                    .unwrap_or_else(|| "reset time unavailable".into()),
+                self.used_i()
+            );
         }
         format!(
             "{} {}% left ({}% used)",
@@ -69,10 +82,27 @@ impl UsageWindow {
             self.used_i()
         )
     }
+
+    fn picker_text(&self) -> String {
+        let mut text = self.used_left();
+        if !self.expired() {
+            text.push_str(" · ");
+            text.push_str(
+                &self
+                    .resets
+                    .as_deref()
+                    .map(reset_phrase)
+                    .unwrap_or_else(|| "reset time unavailable".into()),
+            );
+        }
+        text
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct UsageSnapshot {
+    /// Subscription tier reported by the provider, never inferred from account names.
+    pub plan: Option<String>,
     /// Short, for the footer: `5h 59% left · 7d 41% left`.
     pub summary: String,
     /// Multi-line, one line per window with a text bar.
@@ -87,6 +117,7 @@ impl UsageSnapshot {
     /// A snapshot with no numbers, only an explanation.
     pub fn no_data(summary: impl Into<String>, detail: impl Into<String>) -> Self {
         UsageSnapshot {
+            plan: None,
             summary: summary.into(),
             detail: detail.into(),
             primary_pct: None,
@@ -102,18 +133,9 @@ impl UsageSnapshot {
         if self.windows.is_empty() {
             return self.summary.clone();
         }
-        let mut parts: Vec<String> = self.windows.iter().map(UsageWindow::used_left).collect();
+        let mut parts: Vec<String> = self.windows.iter().map(UsageWindow::picker_text).collect();
         if self.limit_hit {
             parts.insert(0, "LIMIT HIT".into());
-        }
-        // An expired window already says so; the phrase is for the next reset still ahead.
-        if let Some(r) = self
-            .windows
-            .iter()
-            .filter(|w| !w.expired())
-            .find_map(|w| w.resets.as_deref())
-        {
-            parts.push(reset_phrase(r));
         }
         parts.join(" · ")
     }
@@ -139,13 +161,16 @@ pub fn reset_phrase(r: &str) -> String {
 
 fn reset_phrase_at(r: &str, now: Option<WallTime>) -> String {
     let r = r.trim();
+    if r.starts_with("reset at ") {
+        return r.into();
+    }
     if r.starts_with("already reset") {
-        return "reset since last read".to_string();
+        return "reset time unavailable".to_string();
     }
     if let Some((now, then)) = now.zip(parse_wall(r, now)) {
         let minutes = minutes_until(now, then);
         return match minutes {
-            ..=0 => "reset since last read".to_string(),
+            ..=0 => format!("reset at {}", format_wall(then)),
             1..=59 => format!("resets in {minutes}m"),
             60..=1439 if minutes % 60 == 0 => format!("resets in {}h", minutes / 60),
             60..=1439 => format!("resets in {}h {}m", minutes / 60, minutes % 60),
@@ -246,6 +271,13 @@ fn format_wall(w: WallTime) -> String {
     }
 }
 
+pub(crate) fn local_time_label() -> String {
+    local_now()
+        .or_else(system_now)
+        .map(format_wall)
+        .unwrap_or_else(|| format!("Unix {}", unix_now()))
+}
+
 /// Signed minutes from `now` to `then`, taking whichever year puts them closest.
 fn minutes_until(now: WallTime, then: WallTime) -> i64 {
     const DAYS_BEFORE: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -323,7 +355,7 @@ fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
         .iter()
         .map(|w| {
             if w.expired() {
-                return format!("{}  reset since last read · current usage unknown", w.label);
+                return w.used_left();
             }
             let mut line = format!(
                 "{:<width$}  {:>3}% left · {:>3}% used",
@@ -383,6 +415,7 @@ fn snapshot_from_windows(
         .filter(|w| !w.expired())
         .map(|w| w.used_pct);
     UsageSnapshot {
+        plan: None,
         summary: parts.join(" · "),
         detail: lines.join("\n"),
         primary_pct,
@@ -396,16 +429,22 @@ fn snapshot_from_windows(
 struct CodexRateLimits {
     primary: Option<RateWindow>,
     secondary: Option<RateWindow>,
+    #[serde(alias = "planType")]
     plan_type: Option<String>,
+    #[serde(alias = "limitId")]
     limit_id: Option<String>,
+    #[serde(alias = "rateLimitReachedType")]
     rate_limit_reached_type: Option<String>,
     credits: Option<Credits>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RateWindow {
+    #[serde(alias = "usedPercent")]
     used_percent: Option<f64>,
+    #[serde(alias = "windowDurationMins")]
     window_minutes: Option<u32>,
+    #[serde(alias = "resetsAt")]
     resets_at: Option<i64>,
 }
 
@@ -494,7 +533,8 @@ pub fn usage_rows_for_accounts(
     let mut rest = Vec::new();
     for (id, provider, home) in accounts {
         let snap = fetcher.snapshot(*provider, id, home);
-        let row = picker_row(id, *provider, &snap);
+        let identity = crate::identity::inspect_provider(*provider, home);
+        let row = profiled_picker_row(id, *provider, &snap, &identity);
         if id == current_account {
             rows.push(row);
         } else {
@@ -511,10 +551,26 @@ pub fn picker_row(
     provider: crate::store::ProviderKind,
     snap: &UsageSnapshot,
 ) -> UsageRow {
-    let label = crate::accounts::display_account_name(provider, id);
+    let mut label = crate::accounts::display_account_name(provider, id);
+    if provider == crate::store::ProviderKind::Cursor && !snap.windows.is_empty() {
+        label.push_str(" · monthly limits");
+    }
     UsageRow {
         id: id.to_string(),
-        label: format!("{label}  {}", snap.used_left_text()),
+        label: if snap.windows.is_empty() {
+            format!("{label}  {}", snap.used_left_text())
+        } else {
+            let windows = snap
+                .windows
+                .iter()
+                .map(UsageWindow::picker_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{label}{}\n{windows}",
+                if snap.limit_hit { " · LIMIT HIT" } else { "" }
+            )
+        },
         detail: if snap.windows.is_empty() {
             snap.detail.clone()
         } else {
@@ -522,6 +578,58 @@ pub fn picker_row(
         },
         tone: usage_tone(snap),
     }
+}
+
+/// Keep public account metadata above each account's vertical limits.
+pub fn profiled_picker_row(
+    id: &str,
+    provider: crate::store::ProviderKind,
+    snap: &UsageSnapshot,
+    identity: &crate::identity::ProviderIdentity,
+) -> UsageRow {
+    let mut row = picker_row(id, provider, snap);
+    if !snap.windows.is_empty() {
+        row.detail = snap.detail.lines().last().unwrap_or_default().to_owned();
+    }
+    let email = identity
+        .login
+        .as_deref()
+        .filter(|s| s.contains('@'))
+        .unwrap_or("not reported");
+    let plan = identity
+        .plan
+        .as_deref()
+        .or(snap.plan.as_deref())
+        .filter(|p| !p.trim().is_empty() && *p != "unknown")
+        .unwrap_or("not reported");
+    let plan = match plan.to_ascii_lowercase().as_str() {
+        "free" => "Free",
+        "plus" => "Plus",
+        "pro" => "Pro",
+        "max" => "Max",
+        "team" => "Team",
+        "business" => "Business",
+        "enterprise" => "Enterprise",
+        "edu" => "Education",
+        "individual" => "Individual",
+        _ => plan,
+    };
+    let head = crate::accounts::display_account_name(provider, id);
+    let limits = row
+        .label
+        .split_once('\n')
+        .map(|(_, limits)| limits.to_string())
+        .unwrap_or_else(|| snap.used_left_text());
+    let mut label = format!("{head} \u{b7} Email: {email} \u{b7} Plan: {plan}");
+    if let Some(team) = &identity.team {
+        label.push_str(&format!("\nWorkspace: {team}"));
+    }
+    if !limits.is_empty() {
+        label.push('\n');
+        label.push_str(&limits);
+    }
+    row.label = label;
+    row
 }
 
 pub fn usage_tone(snap: &UsageSnapshot) -> UsageTone {
@@ -607,12 +715,20 @@ pub fn parse_claude_usage(text: &str) -> Option<UsageSnapshot> {
 /// plan go into the note. Unrecognised text gives `None`.
 pub fn parse_cursor_usage(text: &str) -> Option<UsageSnapshot> {
     let (windows, note) = parse_cursor_windows(text)?;
-    Some(snapshot_from_windows(
+    let mut snapshot = snapshot_from_windows(
         windows,
         None,
         Vec::new(),
         &cursor_source(&note, "from agent /usage"),
-    ))
+    );
+    snapshot.plan = cursor_plan(&note);
+    Some(snapshot)
+}
+
+fn cursor_plan(note: &str) -> Option<String> {
+    note.strip_prefix("Cursor ")
+        .map(|p| p.split(',').next().unwrap_or(p).trim().to_string())
+        .filter(|p| !p.is_empty())
 }
 
 fn cursor_source(note: &str, tail: &str) -> String {
@@ -674,8 +790,8 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
     if windows.is_empty() {
         return None;
     }
-    if let Some(w) = windows.iter_mut().find(|w| w.label == "Included") {
-        w.resets = reset;
+    for w in &mut windows {
+        w.resets = reset.clone();
     }
     let mut note = Vec::new();
     if let Some(p) = plan.filter(|p| !p.is_empty()) {
@@ -937,6 +1053,7 @@ pub struct UsageFetcher {
     state_root: PathBuf,
     runner: UsageRunner,
     cursor_runner: UsageRunner,
+    codex_runner: UsageRunner,
     tx: Sender<Fetched>,
     rx: Receiver<Fetched>,
     entries: HashMap<UsageIdentity, Entry>,
@@ -953,6 +1070,7 @@ impl UsageFetcher {
             state_root,
             runner,
             cursor_runner: default_cursor_runner(),
+            codex_runner: Arc::new(crate::usage_codex::fetch),
             tx,
             rx,
             entries: HashMap::new(),
@@ -962,6 +1080,10 @@ impl UsageFetcher {
     /// Replace how Cursor's `/usage` text is obtained (tests).
     pub fn with_cursor_runner(mut self, runner: UsageRunner) -> Self {
         self.cursor_runner = runner;
+        self
+    }
+    pub fn with_codex_runner(mut self, runner: UsageRunner) -> Self {
+        self.codex_runner = runner;
         self
     }
 
@@ -974,7 +1096,9 @@ impl UsageFetcher {
         home: &Path,
     ) -> UsageSnapshot {
         match provider {
-            crate::store::ProviderKind::Codex => read_codex_usage(home),
+            crate::store::ProviderKind::Codex => {
+                self.fetched_snapshot(provider, account, home, false)
+            }
             p => self.fetched_snapshot(p, account, home, false),
         }
     }
@@ -987,7 +1111,9 @@ impl UsageFetcher {
         home: &Path,
     ) -> UsageSnapshot {
         match provider {
-            crate::store::ProviderKind::Codex => read_codex_usage(home),
+            crate::store::ProviderKind::Codex => {
+                self.fetched_snapshot(provider, account, home, true)
+            }
             p => self.fetched_snapshot(p, account, home, true),
         }
     }
@@ -1001,6 +1127,7 @@ impl UsageFetcher {
         force: bool,
     ) -> UsageSnapshot {
         let cursor = provider == crate::store::ProviderKind::Cursor;
+        let codex = provider == crate::store::ProviderKind::Codex;
         let now = unix_now();
         let root = self.state_root.clone();
         let identity = UsageIdentity::new(provider, account, home);
@@ -1043,6 +1170,7 @@ impl UsageFetcher {
         } else {
             None
         };
+        let refresh_error = e.error.clone();
         if start {
             self.spawn(provider, identity.clone(), home.to_path_buf());
         }
@@ -1057,8 +1185,18 @@ impl UsageFetcher {
                     c.windows,
                     None,
                     Vec::new(),
-                    &cursor_source(&c.note, &age_note),
+                    &if codex {
+                        format!("Codex live limits · {age_note}")
+                    } else {
+                        cursor_source(&c.note, &age_note)
+                    },
                 );
+                if cursor {
+                    snap.plan = cursor_plan(&c.note);
+                }
+                if codex {
+                    snap.plan = (!c.note.is_empty()).then_some(c.note);
+                }
                 // A reading that is a few minutes old says so right in the footer.
                 if age >= USAGE_TTL_SECS && !snap.windows.is_empty() {
                     snap.summary
@@ -1070,6 +1208,34 @@ impl UsageFetcher {
                         "\n{state}; the displayed values are the last successful reading"
                     ));
                 }
+                if let Some(error) = refresh_error {
+                    snap.detail.push_str(&format!(
+                        "\nRefresh unavailable: {error}. /usage tries again."
+                    ));
+                }
+                snap
+            }
+            Err(reason) if codex => {
+                let mut snap = read_codex_usage(home);
+                if snap.windows.is_empty() {
+                    return if let Some(reason) = reason {
+                        UsageSnapshot::no_data("live limits unavailable", format!("Live refresh unavailable: {reason}. No recorded quota windows; /usage tries again."))
+                    } else {
+                        UsageSnapshot::no_data("reading live limits", "Requesting current quota windows; no recorded limits are available yet.")
+                    };
+                }
+                let note = if let Some(ref reason) = reason {
+                    format!("Live refresh unavailable: {reason}. Showing native recorded data.")
+                } else {
+                    "Reading live limits… Showing native recorded data until the response arrives."
+                        .into()
+                };
+                snap.detail.push_str(&format!("\n{note}"));
+                snap.summary.push_str(if reason.is_none() {
+                    " · refreshing"
+                } else {
+                    " · recorded"
+                });
                 snap
             }
             Err(None) if cursor => cursor_waiting(),
@@ -1097,8 +1263,11 @@ impl UsageFetcher {
 
     fn spawn(&self, provider: crate::store::ProviderKind, identity: UsageIdentity, home: PathBuf) {
         let cursor = provider == crate::store::ProviderKind::Cursor;
+        let codex = provider == crate::store::ProviderKind::Codex;
         let runner = Arc::clone(if cursor {
             &self.cursor_runner
+        } else if codex {
+            &self.codex_runner
         } else {
             &self.runner
         });
@@ -1106,7 +1275,12 @@ impl UsageFetcher {
         let root = self.state_root.clone();
         std::thread::spawn(move || {
             let result = runner(&home).and_then(|text| {
-                let (windows, note) = if cursor {
+                let (windows, note) = if codex {
+                    parse_rate_limits_blob(&text).map(|limits| {
+                        let snap = format_limits(&limits, "Codex live limits");
+                        (snap.windows, snap.plan.unwrap_or_default())
+                    })
+                } else if cursor {
                     parse_cursor_windows(&text)
                 } else {
                     parse_claude_usage(&text).map(|s| (s.windows, String::new()))
@@ -1316,18 +1490,22 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
             if let Some(pct) = w.used_percent {
                 // The numbers are from the last chat. If the window has reset since, the old
                 // percentage no longer applies.
-                let reset_since = w.resets_at.is_some_and(|r| r > 0 && r <= unix_now() as i64);
                 windows.push(UsageWindow {
                     label: w
                         .window_minutes
                         .map(format_window)
                         .unwrap_or_else(|| fallback.into()),
                     used_pct: pct,
-                    resets: if reset_since {
-                        Some("already reset (chat to refresh)".to_string())
-                    } else {
-                        w.resets_at.and_then(format_reset_unix)
-                    },
+                    resets: w.resets_at.map(|r| {
+                        if r > 0 && r <= unix_now() as i64 {
+                            format!(
+                                "reset at {}",
+                                format_reset_unix(r).unwrap_or_else(|| format!("Unix {r}"))
+                            )
+                        } else {
+                            format_reset_unix(r).unwrap_or_else(|| "time unavailable".into())
+                        }
+                    }),
                 });
             }
         }
@@ -1354,7 +1532,9 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
             extras.push(id.clone());
         }
     }
-    snapshot_from_windows(windows, limit_kind, extras, source)
+    let mut snapshot = snapshot_from_windows(windows, limit_kind, extras, source);
+    snapshot.plan = u.plan_type.clone().filter(|p| p != "unknown");
+    snapshot
 }
 
 fn format_window(minutes: u32) -> String {
@@ -1503,11 +1683,11 @@ pub fn low_limit_warning(
         return None;
     }
     let freshness = if provider == crate::store::ProviderKind::Codex {
-        "last reported"
+        "updates after a Codex response"
     } else if snapshot.summary.contains("cached") || snapshot.summary.contains(" old") {
-        "cached"
+        "saved reading; check /usage for refresh status"
     } else {
-        "last checked"
+        "checked by the provider"
     };
     Some(format!("{} · {freshness}", windows.join(" | ")))
 }
@@ -1535,9 +1715,9 @@ mod tests {
             ("Oct 30, 1:45pm", "resets in 45m"),
             ("1:45pm", "resets in 45m"),
             ("Nov 6, 9am", "resets Nov 6, 9am"),
-            ("Oct 29, 4:19am", "reset since last read"),
-            ("4:19am", "reset since last read"),
-            ("already reset (chat to refresh)", "reset since last read"),
+            ("Oct 29, 4:19am", "reset at Oct 29, 4:19am"),
+            ("4:19am", "reset at Oct 30, 4:19am"),
+            ("already reset (chat to refresh)", "reset time unavailable"),
         ] {
             assert_eq!(reset_phrase_at(reset, now), phrase, "{reset}");
         }
@@ -1575,7 +1755,7 @@ mod tests {
         TEST_NOW.with(|n| n.set(None));
         assert_eq!(
             text,
-            "5h reset since last read · 7d 79% left (21% used) · resets Nov 6, 9am"
+            "5h · reset at Oct 29, 4:19am · current usage unavailable (last reading 64% used) · 7d 79% left (21% used) · resets Nov 6, 9am"
         );
     }
 
@@ -1688,7 +1868,10 @@ mod tests {
         assert_eq!(s.summary, "5h 93% left · 7d 87% left");
         assert!(s
             .used_left_text()
-            .starts_with("5h 93% left (7% used) · 7d 87% left (13% used) · resets Oct 15"));
+            .starts_with("5h 93% left (7% used) · resets Oct 15"));
+        assert!(s
+            .used_left_text()
+            .contains("7d 87% left (13% used) · resets Oct 21"));
         assert_eq!(usage_tone(&s), UsageTone::Ok);
     }
 
@@ -1754,6 +1937,37 @@ mod tests {
     }
 
     #[test]
+    fn every_forced_codex_read_fetches_new_limits_and_labels_pending_cached_values() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let runner: UsageRunner = Arc::new(move |_| {
+            let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(serde_json::json!({"rate_limits":{"planType":"pro","primary":{"usedPercent":n*10,"windowDurationMins":300,"resetsAt":1900000000i64}}}).to_string())
+        });
+        let mut fetcher = UsageFetcher::with_runner(root.path().into(), fake_runner(SAMPLE))
+            .with_codex_runner(runner);
+        let initial = fetcher.snapshot_refresh(ProviderKind::Codex, "synthetic", root.path());
+        assert_eq!(initial.summary, "reading live limits");
+        assert!(!initial.detail.contains("chat once"));
+        wait_for(&mut fetcher);
+        let first = fetcher.snapshot(ProviderKind::Codex, "synthetic", root.path());
+        assert_eq!(first.primary_pct, Some(10.0));
+        assert_eq!(first.plan.as_deref(), Some("pro"));
+        let pending = fetcher.snapshot_refresh(ProviderKind::Codex, "synthetic", root.path());
+        assert!(pending.detail.contains("refreshing"));
+        wait_for(&mut fetcher);
+        assert_eq!(
+            fetcher
+                .snapshot(ProviderKind::Codex, "synthetic", root.path())
+                .primary_pct,
+            Some(20.0)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn claude_fetch_is_async_cached_and_reused() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
@@ -1814,6 +2028,7 @@ mod tests {
     #[test]
     fn parses_the_cursor_usage_sample() {
         let s = parse_cursor_usage(CURSOR_SAMPLE).expect("parsed");
+        assert_eq!(s.plan.as_deref(), Some("Pro"));
         let got: Vec<_> = s
             .windows
             .iter()
@@ -1821,12 +2036,21 @@ mod tests {
             .collect();
         assert_eq!(got, [("Included", 27.0), ("Auto", 21.0), ("API", 79.0)]);
         assert_eq!(s.windows[0].resets.as_deref(), Some("Nov 6"));
+        assert!(s
+            .windows
+            .iter()
+            .all(|w| w.resets.as_deref() == Some("Nov 6")));
+        assert!(picker_row("cursor", crate::store::ProviderKind::Cursor, &s)
+            .label
+            .contains("monthly limits"));
         assert_eq!(
             s.summary,
             "Included 73% left · Auto 79% left · API 21% left"
         );
         assert!(s.used_left_text().contains("Included 73% left (27% used)"));
-        assert!(s.used_left_text().ends_with("resets Nov 6"));
+        assert!(s
+            .used_left_text()
+            .contains("Included 73% left (27% used) · resets Nov 6"));
         assert!(
             s.detail.contains("Cursor Pro, on-demand off"),
             "{}",
@@ -1869,6 +2093,7 @@ mod tests {
         wait_for(&mut f);
         let s = f.snapshot(ProviderKind::Cursor, "cursor", &home);
         assert!(s.summary.starts_with("Included 73% left"));
+        assert_eq!(s.plan.as_deref(), Some("Pro"));
         assert!(UsageIdentity::new(ProviderKind::Cursor, "cursor", &home)
             .cache_path(root.path())
             .is_file());
@@ -1879,6 +2104,12 @@ mod tests {
             .snapshot(ProviderKind::Cursor, "cursor", &home)
             .summary
             .starts_with("Included 73% left"));
+        assert_eq!(
+            g.snapshot(ProviderKind::Cursor, "cursor", &home)
+                .plan
+                .as_deref(),
+            Some("Pro")
+        );
         // No cache + failure (timeout, login, layout): the old plain message.
         let bad: UsageRunner = Arc::new(|_| Err("timed out after 15s".into()));
         let mut h = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(bad);
@@ -1988,7 +2219,7 @@ mod tests {
             .resets
             .as_deref()
             .unwrap()
-            .contains("already reset"));
+            .contains("reset at"));
         assert_eq!(
             snap.windows[1].used_pct, 40.0,
             "a window still running keeps its reading"
@@ -2177,5 +2408,46 @@ mod tests {
             "{}",
             after.detail
         );
+    }
+}
+
+#[cfg(test)]
+mod profile_row_tests {
+    use super::*;
+    #[test]
+    fn account_email_plan_and_workspace_are_separate_from_limits() {
+        let identity = crate::identity::ProviderIdentity {
+            provider: crate::store::ProviderKind::Claude,
+            home_path: "fixture".into(),
+            login: Some("member@example.invalid".into()),
+            team: Some("Fixture Team".into()),
+            plan: Some("pro".into()),
+            model: None,
+            logged_in: true,
+        };
+        let mut snapshot = UsageSnapshot::no_data("checking limits", "");
+        snapshot.windows.push(UsageWindow {
+            label: "5h".into(),
+            used_pct: 20.0,
+            resets: None,
+        });
+        let row = profiled_picker_row("claude", identity.provider, &snapshot, &identity);
+        assert_eq!(
+            row.label.lines().next().unwrap(),
+            "Claude \u{b7} Email: member@example.invalid \u{b7} Plan: Pro"
+        );
+        assert!(row.label.contains(
+            "Email: member@example.invalid \u{b7} Plan: Pro\nWorkspace: Fixture Team\n5h"
+        ));
+        let missing = crate::identity::ProviderIdentity {
+            login: None,
+            plan: None,
+            team: None,
+            ..identity
+        };
+        let row = profiled_picker_row("claude", missing.provider, &snapshot, &missing);
+        assert!(row
+            .label
+            .contains("Email: not reported \u{b7} Plan: not reported"));
     }
 }

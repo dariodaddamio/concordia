@@ -542,7 +542,13 @@ pub fn resolve_provider_bin(kind: ProviderKind) -> Option<PathBuf> {
 pub fn probe_version(program: &Path) -> Result<String, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
-    let mut child = Command::new(program)
+    let native = crate::provider::npm::codex(&program.to_string_lossy());
+    let mut command = Command::new(native.as_ref().map_or(program, |n| n.program.as_path()));
+    if let Some(native) = native {
+        command.envs(native.env);
+    }
+    crate::process_ui::background_std(&mut command);
+    let mut child = command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

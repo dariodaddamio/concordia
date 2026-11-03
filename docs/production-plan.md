@@ -1,18 +1,18 @@
 # Production readiness work plan
 
-The earlier scoped production pass below is historical. Current priorities and the evidence
-ledger are [PLAN.md](../PLAN.md) and [e2e-status.md](e2e-status.md); the new internal workspace
-contract is [workspace-panes.md](workspace-panes.md). The local installation is `2026-10-21b`;
-see the current evidence ledger for validation. Live host/provider verification remains separate.
-Earlier references to separate-terminal opening now apply to `/edit`; `/open` and `/preview`
-use internal read-only panes.
+Current priorities are local memory management and orchestration, with the source-of-truth
+roadmap in [PLAN.md](../PLAN.md) and acceptance in [context-handoff-plan.md](context-handoff-plan.md).
+The README separates shipped continuity/delegation from the planned native-pointer memory
+manager. Use `concordia --version` for the installed artifact. The scoped pass below is historical;
+its build stamps and counts are historical evidence, not the current release status. Native
+provider and physical-host verification remain separate gates.
 
 Baseline: installed build `2026-10-16b`, 591 enabled tests. Those checks are not an exhaustive
 audit of every command or state. Preserve all existing uncommitted work.
 
-The primary user combines a university/education subscription with personal subscriptions.
-Concordia should make their own accounts, CLI chats and supported tools easier to access while
-remaining a thin native orchestrator. Provider entitlements, authentication, approvals and
+Users can connect personal, team or education accounts when their subscriptions support the
+provider CLI. Concordia coordinates those accounts, memory continuity and worker tasks while
+preserving native provider execution. Provider entitlements, authentication, approvals and
 session formats remain authoritative. Never imply that an education subscription includes a
 provider CLI unless that account actually supports it. No inferred free capacity or automatic
 cross-account replay. Cross-account transcript reading and context sharing must be explicit.

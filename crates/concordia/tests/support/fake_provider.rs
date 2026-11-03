@@ -15,8 +15,157 @@ fn hex(s: &str) -> String {
     s.bytes().map(|b| format!("{b:02x}")).collect()
 }
 
+fn fake_acp() {
+    use std::io::BufRead;
+    let root = std::env::current_dir().unwrap();
+    let fixture: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("acp-fixture.json"))
+            .expect("ACP fake requires an explicit fixture"),
+    )
+    .unwrap();
+    if fixture["history"].is_array() {
+        std::fs::write(
+            root.join("acp-environment.json"),
+            serde_json::json!({
+                "config_dir":std::env::var("CURSOR_CONFIG_DIR").ok(),
+                "api_key_present":std::env::var_os("CURSOR_API_KEY").is_some(),
+                "auth_token_present":std::env::var_os("CURSOR_AUTH_TOKEN").is_some(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    let emit = |value: serde_json::Value| {
+        println!("{value}");
+        std::io::stdout().flush().unwrap();
+    };
+    let finish = |session_id: &str| {
+        emit(
+            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session_id,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Native image received"}}}}),
+        );
+        emit(serde_json::json!({"jsonrpc":"2.0","id":5,"result":{"stopReason":"end_turn"}}));
+    };
+    let mut session_id = "image-session".to_owned();
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let mut journal = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(root.join("acp-calls.jsonl"))
+            .unwrap();
+        writeln!(journal, "{line}").unwrap();
+        if value["id"] == 100 && value.get("method").is_none() {
+            finish(&session_id);
+            continue;
+        }
+        let result = match value["method"].as_str().unwrap_or("") {
+            "initialize" => {
+                serde_json::json!({"protocolVersion":1,"agentCapabilities":{"loadSession":fixture["load_session"]!=false,"promptCapabilities":{"image":fixture["image"]!=false}}})
+            }
+            "session/new" => serde_json::json!({"sessionId":session_id}),
+            "session/load" => {
+                session_id = value["params"]["sessionId"].as_str().unwrap().to_owned();
+                if let Some(history) = fixture["history"].as_array() {
+                    for entry in history {
+                        let update = if entry["role"] == "user" {
+                            "user_message_chunk"
+                        } else {
+                            "agent_message_chunk"
+                        };
+                        let replay_session = if fixture["wrong_history_session"] == true {
+                            "another-session"
+                        } else {
+                            &session_id
+                        };
+                        emit(
+                            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":replay_session,"update":{"sessionUpdate":update,"messageId":entry["id"],"content":{"type":"text","text":entry["text"]}}}}),
+                        );
+                    }
+                }
+                if fixture["history_tool_request"] == true {
+                    emit(
+                        serde_json::json!({"jsonrpc":"2.0","id":100,"method":"terminal/create","params":{"sessionId":session_id,"command":"must-not-run"}}),
+                    );
+                    continue;
+                }
+                serde_json::json!({})
+            }
+            "session/set_mode" | "session/set_model" => serde_json::json!({}),
+            "session/prompt" => {
+                if fixture["quota"] == true {
+                    emit(
+                        serde_json::json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":429,"message":"UsageLimitExceeded"}}),
+                    );
+                    continue;
+                }
+                if fixture["permission"] == true {
+                    emit(
+                        serde_json::json!({"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"title":"Read attached image","toolCallId":"image-read"},"options":[{"optionId":"yes","name":"Allow once","kind":"allow_once"},{"optionId":"no","name":"Decline","kind":"reject_once"}]}}),
+                    );
+                } else {
+                    finish(&session_id);
+                }
+                continue;
+            }
+            _ => panic!("unexpected ACP method"),
+        };
+        emit(serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":result}));
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "acp") {
+        fake_acp();
+        return;
+    }
+    if args.first().is_some_and(|a| a == "app-server") {
+        use std::io::BufRead;
+        let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
+        let fixture: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(home.join("rpc-fixture.json")).unwrap_or_default(),
+        )
+        .unwrap_or(serde_json::Value::Null);
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let mut journal = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(home.join("rpc-calls.jsonl"))
+                .unwrap();
+            writeln!(journal, "{line}").unwrap();
+            match request["method"].as_str().unwrap_or("") {
+                "initialize" => println!(
+                    "{}",
+                    serde_json::json!({"id":request["id"],"result":{"userAgent":"synthetic"}})
+                ),
+                "initialized" => continue,
+                "account/rateLimits/read" => {
+                    if fixture["mode"] == "closed" {
+                        return;
+                    }
+                    if fixture["mode"] == "flood" {
+                        println!("{}", "x".repeat(600 * 1024));
+                        return;
+                    }
+                    if fixture["mode"] == "error" {
+                        println!(
+                            "{}",
+                            serde_json::json!({"id":request["id"],"error":{"code":-1,"message":"synthetic auth required"}})
+                        );
+                    } else {
+                        println!(
+                            "{}",
+                            serde_json::json!({"id":request["id"],"result":fixture})
+                        );
+                    }
+                }
+                _ => panic!("quota probe attempted a forbidden RPC"),
+            }
+            std::io::stdout().flush().unwrap();
+        }
+        return;
+    }
     if matches!(args.first().map(String::as_str), Some("cli" | "start")) {
         if let Ok(path) = std::env::var("FAKE_FILE_LAUNCH_JOURNAL") {
             std::fs::write(path, serde_json::to_vec(&args).unwrap()).unwrap();
@@ -199,7 +348,26 @@ fn interaction(args: &[String]) {
     } else {
         "cursor"
     };
-    let prompt = args.last().cloned().unwrap_or_default();
+    let mut prompt = args.last().cloned().unwrap_or_default();
+    let mut image_count = args.iter().filter(|a| *a == "--image").count();
+    if args
+        .windows(2)
+        .any(|v| v == ["--input-format", "stream-json"])
+    {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input).unwrap();
+        let input: serde_json::Value = serde_json::from_str(&input).unwrap();
+        let content = input["message"]["content"].as_array().unwrap();
+        prompt = content
+            .iter()
+            .filter_map(|c| c["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        image_count = content.iter().filter(|c| c["type"] == "image").count();
+    } else if prompt == "-" {
+        prompt.clear();
+        std::io::stdin().read_to_string(&mut prompt).unwrap();
+    }
     let journal = |kind: &str| {
         if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
             if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -210,7 +378,7 @@ fn interaction(args: &[String]) {
                 let _ = writeln!(
                     file,
                     "{}",
-                    json!({"kind":kind,"provider":provider,"prompt":prompt,"args":args,"home":std::env::var(if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" }).ok()})
+                    json!({"kind":kind,"provider":provider,"prompt":prompt,"image_count":image_count,"args":args,"home":std::env::var(if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" }).ok()})
                 );
             }
         }
@@ -220,9 +388,26 @@ fn interaction(args: &[String]) {
         let _ = std::io::stdout().flush();
     };
     journal("start");
+    if prompt.contains("[context]")
+        && provider == "codex"
+        && !prompt.contains("Continue the interrupted request in this new native session")
+    {
+        emit(json!({"type":"thread.started","thread_id":"capacity-source-session"}));
+        emit(
+            json!({"type":"turn.failed","error":{"code":"context_length_exceeded","message":"Synthetic input capacity exhausted"}}),
+        );
+        journal("limited");
+        std::process::exit(1);
+    }
     if prompt.contains("[quota]") && provider == "codex" {
         emit(json!({"type":"thread.started","thread_id":"quota-source-session"}));
-        emit(json!({"type":"turn.failed","error":{"message":"You've hit your usage limit"}}));
+        if prompt.contains("[coded-limit]") {
+            emit(
+                json!({"type":"turn.failed","error":{"code":-32000,"codexErrorInfo":"usageLimitExceeded","message":"Request cannot be completed"}}),
+            );
+        } else {
+            emit(json!({"type":"turn.failed","error":{"message":"You've hit your usage limit"}}));
+        }
         journal("limited");
         std::process::exit(1);
     }
@@ -231,6 +416,18 @@ fn interaction(args: &[String]) {
         "checking the requested changes. ".repeat(30)
     );
     let command = format!("synthetic-command {} command-tail", "argument ".repeat(15));
+    let tool_output = if prompt.contains("[long-tool]") {
+        format!(
+            "tool-output-start\n{}\ntool-output-end",
+            (0..120)
+                .map(|i| format!("synthetic output line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    } else {
+        "tool-output-start\ntool-output-end".into()
+    };
+
     match provider {
         "codex" => {
             emit(
@@ -278,7 +475,17 @@ fn interaction(args: &[String]) {
         eprintln!("fake provider: deliberate interaction failure");
         std::process::exit(3);
     }
-    let reply = format!("FAKE REPLY: {prompt}");
+    // Keep the raw provider prompt in the journal, but echo the user's text in the reply.
+    let reply = if concordia::prompt_time::strip_header(&prompt).trim() == "[mermaid]" {
+        "```mermaid\nflowchart LR\n A[Prompt] --> B[Provider]\n```".into()
+    } else if concordia::prompt_time::strip_header(&prompt).trim() == "[choices]" {
+        "Which approach do you prefer?\n1. Small patch\n2. Full refactor".into()
+    } else {
+        format!(
+            "FAKE REPLY: {}",
+            concordia::prompt_time::strip_header(&prompt)
+        )
+    };
     if provider == "codex" && prompt.contains("[agents]") {
         emit(
             json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"wait-child","tool":"wait","sender_thread_id":"parent","receiver_thread_ids":["child-reviewer"],"agents_states":{"child-reviewer":{"status":"completed","message":"GRAPH_REVIEW_FINISHED"}},"status":"completed"}}),
@@ -287,7 +494,7 @@ fn interaction(args: &[String]) {
     match provider {
         "codex" => {
             emit(
-                json!({"type":"item.completed","item":{"type":"command_execution","id":"tool","command":command,"aggregated_output":"tool-output-start\ntool-output-end"}}),
+                json!({"type":"item.completed","item":{"type":"command_execution","id":"tool","command":command,"aggregated_output":tool_output}}),
             );
             emit(
                 json!({"type":"item.completed","item":{"type":"agent_message","id":"reply","text":reply}}),
@@ -296,7 +503,7 @@ fn interaction(args: &[String]) {
         }
         "claude" => {
             emit(
-                json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool","content":"tool-output-start\ntool-output-end"}]}}),
+                json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool","content":tool_output}]}}),
             );
             emit(json!({"type":"assistant","message":{"content":[{"type":"text","text":reply}]}}));
             emit(
@@ -305,7 +512,7 @@ fn interaction(args: &[String]) {
         }
         _ => {
             emit(
-                json!({"type":"tool_call","subtype":"completed","call_id":"tool","tool_call":{"shellToolCall":{"args":{"command":command},"result":{"success":{"output":"tool-output-start\ntool-output-end"}}}}}),
+                json!({"type":"tool_call","subtype":"completed","call_id":"tool","tool_call":{"shellToolCall":{"args":{"command":command},"result":{"success":{"output":tool_output}}}}}),
             );
             emit(json!({"type":"assistant","message":{"content":[{"type":"text","text":reply}]}}));
             emit(json!({"type":"result","subtype":"success","result":reply}));

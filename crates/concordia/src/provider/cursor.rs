@@ -123,6 +123,7 @@ pub fn extract_uuid(text: &str) -> Option<String> {
 pub async fn create_chat(command: &str, env: &[(String, String)], cwd: &str) -> Option<String> {
     use std::process::Stdio;
     let mut cmd = tokio::process::Command::new(command);
+    crate::process_ui::background(&mut cmd);
     cmd.arg("create-chat")
         .current_dir(cwd)
         .stdin(Stdio::null())

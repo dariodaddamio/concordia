@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1018" height="658" viewBox="0 0 1018 658" role="img" aria-label="concordia — slash palette">
-<title>concordia — slash palette</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1018" height="658" viewBox="0 0 1018 658" role="img" aria-label="concordia — command options">
+<title>concordia — command options</title>
 <defs><clipPath id="win"><rect width="1018" height="658" rx="12"/></clipPath></defs>
 <g clip-path="url(#win)">
 <rect width="1018" height="658" fill="#14161b"/>
@@ -7,20 +7,24 @@
 <circle cx="20" cy="18" r="6" fill="#ff5f57"/>
 <circle cx="40" cy="18" r="6" fill="#febc2e"/>
 <circle cx="60" cy="18" r="6" fill="#28c840"/>
-<text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia — slash palette</text>
+<text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia — command options</text>
 <rect x="14" y="36" width="243" height="19" fill="#303030"/>
 <rect x="257" y="36" width="81" height="19" fill="#87d787"/>
 <rect x="338" y="36" width="666" height="19" fill="#303030"/>
 <rect x="302" y="245" width="54" height="19" fill="#303030"/>
 <rect x="59" y="302" width="234" height="19" fill="#303030"/>
 <rect x="59" y="321" width="54" height="19" fill="#303030"/>
-<rect x="32" y="359" width="720" height="19" fill="#444444"/>
+<rect x="95" y="340" width="36" height="19" fill="#303030"/>
+<rect x="59" y="397" width="333" height="19" fill="#303030"/>
+<rect x="59" y="416" width="153" height="19" fill="#303030"/>
+<rect x="59" y="435" width="9" height="19" fill="#303030"/>
+<rect x="32" y="473" width="693" height="19" fill="#444444"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
 <text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">◆</text>
-<text x="41" y="50" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">concordia</text>
-<text x="131" y="50" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#666666">2026-10-21d</text>
+<text x="41" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#666666">concordia 2026-11-01b</text>
 <text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
-<text x="356" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
+<text x="356" y="50" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">member@example.invalid</text>
+<text x="572" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
 <text x="770" y="50" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#666666">5h 59% left · 7d 41% left</text>
 <text x="23" y="69" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#5fafff">| i</text>
 <text x="59" y="69" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
@@ -28,7 +32,7 @@
 <text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">interrupts.</text>
 <text x="23" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">&gt;</text>
 <text x="41" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">Add a /doctor check for duplicate accounts and show me the diff</text>
-<text x="23" y="145" textLength="279" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex · codex-3 · gpt-5.1-codex</text>
+<text x="23" y="145" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3 · gpt-5.1-codex</text>
 <text x="23" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
 <text x="41" y="164" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">│ ✓ shell  rg -n duplicate src</text>
 <text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">▸</text>
@@ -50,55 +54,42 @@
 <text x="41" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
 <text x="59" y="335" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
 <text x="122" y="335" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">prints a warning per group, naming both accounts and the fix</text>
-<text x="23" y="354" textLength="738" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ commands · 43 ─────────────────────────────────────────────────────────────────╮</text>
-<text x="23" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="32" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">&gt;</text>
-<text x="50" y="373" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use</text>
-<text x="275" y="373" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" font-weight="700">switch account or provider</text>
-<text x="752" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="392" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use add</text>
-<text x="275" y="392" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">connect a new account</text>
-<text x="752" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="411" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use remove</text>
-<text x="275" y="411" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">remove an account</text>
-<text x="752" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="430" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/mode</text>
-<text x="275" y="430" textLength="360" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">permission mode: plan, ask, auto or full</text>
-<text x="752" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="449" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/continuation</text>
-<text x="275" y="449" textLength="306" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">usage handoff: manual or automatic</text>
-<text x="752" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="468" textLength="180" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/continuation manual</text>
-<text x="275" y="468" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">pause at a usage limit</text>
-<text x="752" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="41" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
+<text x="59" y="354" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the</text>
+<text x="95" y="354" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use</text>
+<text x="140" y="354" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">picker marks each side with</text>
+<text x="392" y="354" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-style="italic">same login as ...</text>
+<text x="59" y="392" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">rust</text>
+<text x="59" y="411" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">for group in duplicate_groups(root) {</text>
+<text x="95" y="430" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">warn(&amp;group);</text>
+<text x="59" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">}</text>
+<text x="23" y="468" textLength="711" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ /use options ───────────────────────────────────────────────────────────────╮</text>
 <text x="23" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="487" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/continuation automatic</text>
-<text x="275" y="487" textLength="477" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">continue through configured accounts at a usage limit</text>
-<text x="752" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="32" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">&gt;</text>
+<text x="50" y="487" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use</text>
+<text x="167" y="487" textLength="558" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" font-weight="700">ACCOUNT | add PROVIDER | remove ACCOUNT - Enter opens accounts</text>
+<text x="725" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="506" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/continue</text>
-<text x="275" y="506" textLength="459" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">continue a usage-limited request: /continue ACCOUNT</text>
-<text x="752" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="506" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use add</text>
+<text x="167" y="506" textLength="513" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">connect a provider account - Enter opens provider choices</text>
+<text x="725" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="525" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/model</text>
-<text x="275" y="525" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">choose the model</text>
-<text x="752" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="50" y="525" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use remove</text>
+<text x="167" y="525" textLength="423" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">remove an account - Enter opens removal choices</text>
+<text x="725" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
 <text x="23" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="544" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/usage</text>
-<text x="275" y="544" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">limits for this account</text>
-<text x="752" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="563" textLength="738" lengthAdjust="spacingAndGlyphs" fill="#666666">╰────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="50" y="544" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use rename</text>
+<text x="167" y="544" textLength="549" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">ACCOUNT NICKNAME - rename for display; omit nickname to reset</text>
+<text x="725" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
+<text x="23" y="563" textLength="711" lengthAdjust="spacingAndGlyphs" fill="#666666">╰─────────────────────────────────────────────────────────────────────────────╯</text>
 <text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">╭</text>
 <text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
-<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="104" y="582" textLength="351" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────</text>
+<text x="464" y="582" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">[ Bottom ]</text>
+<text x="563" y="582" textLength="441" lengthAdjust="spacingAndGlyphs" fill="#585858">────────────────────────────────────────────────╮</text>
 <text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
 <text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
-<text x="41" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">/</text>
+<text x="41" y="601" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">/use</text>
 <text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
 <text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#585858">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
 <text x="23" y="639" textLength="432" lengthAdjust="spacingAndGlyphs" fill="#666666">↑↓ select · Tab complete · Enter run · Esc close</text>

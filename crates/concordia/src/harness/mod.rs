@@ -8,6 +8,7 @@
 pub mod adapter;
 pub mod command;
 pub mod connections;
+pub mod pinned;
 pub mod run;
 pub mod verify;
 
@@ -44,6 +45,7 @@ pub struct Manifest {
     /// Directory the manifest came from; relative programs and the skill resolve against it.
     pub dir: PathBuf,
     pub skill: Option<PathBuf>,
+    pub pinned_decisions: Vec<String>,
     pub providers: BTreeMap<String, ProviderCommands>,
     pub tools: Vec<Tool>,
 }
@@ -132,7 +134,14 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
     let obj = root.as_object().ok_or("manifest must be a JSON object")?;
     check_fields(
         obj,
-        &["name", "version", "skill", "providers", "tools"],
+        &[
+            "name",
+            "version",
+            "skill",
+            "providers",
+            "tools",
+            "pinned_decisions",
+        ],
         "manifest",
     )?;
     let name = obj
@@ -149,6 +158,22 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
                 .ok_or("version must be a short string")?
                 .to_string(),
         ),
+    };
+    let pinned_decisions = match obj.get("pinned_decisions") {
+        None => Vec::new(),
+        Some(value) => {
+            let items = value
+                .as_array()
+                .ok_or("pinned_decisions must be an array of exact strings")?;
+            if items.len() > 16 {
+                return Err("pinned_decisions is limited to 16 entries".into());
+            }
+            let texts: Vec<String> = items.iter().map(|item| item.as_str().filter(|s| !s.trim().is_empty() && !s.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\t'))).map(str::to_owned).ok_or("pinned_decisions entries must be nonempty text without terminal controls")).collect::<Result<_, _>>()?;
+            if texts.iter().map(String::len).sum::<usize>() > 4096 {
+                return Err("pinned_decisions is limited to 4096 UTF-8 bytes".into());
+            }
+            texts
+        }
     };
     let skill = match obj.get("skill") {
         None => None,
@@ -280,6 +305,7 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
         version,
         dir: dir.to_path_buf(),
         skill,
+        pinned_decisions,
         providers,
         tools,
     })

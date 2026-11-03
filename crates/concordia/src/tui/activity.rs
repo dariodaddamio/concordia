@@ -26,6 +26,7 @@ pub(super) struct Match {
 #[derive(Default, Clone)]
 pub(super) struct Activity {
     pub expanded: HashSet<usize>,
+    pub collapsed: HashSet<usize>,
     pub detail: Option<usize>,
     pub query: String,
     pub query_cursor: usize,
@@ -142,6 +143,21 @@ impl Activity {
             self.invalidate_search();
         }
     }
+    pub fn is_expanded(&self, message: usize, all: bool) -> bool {
+        !self.collapsed.contains(&message) && (all || self.expanded.contains(&message))
+    }
+
+    pub fn toggle_card(&mut self, message: usize, all: bool) {
+        if all {
+            if !self.collapsed.remove(&message) {
+                self.collapsed.insert(message);
+            }
+        } else {
+            self.collapsed.remove(&message);
+            self.toggle(message);
+        }
+    }
+
     pub fn toggle(&mut self, message: usize) {
         if !self.expanded.remove(&message) {
             self.expanded.insert(message);

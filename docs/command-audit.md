@@ -53,13 +53,13 @@ remain accepted only as migration routes and print where their behavior moved.
 | `/open` | File side pane; Esc or X closes it. |
 | `/copy` | Copies the last assistant reply. |
 | `/doctor` | Setup, version and configuration diagnostics. |
-| `/update` | Background update preview; Enter confirms an available build, Esc closes, and `/update check` opens the same screen. |
+| `/update` | A fresh update page hides the workspace; Enter confirms an available build and Esc returns to chat. `/update check` is removed. |
 
 Additional TUI intercepts in `tui/mod.rs::handle_slash` do not pass through the parser:
 
 | Command family | Behavior and evidence |
 | --- | --- |
-| Removed command routes | `/trust`, `/continuation`, `/continue`, `/threads`, `/preview`, `/config`, `/version`, `/agents`, `/usage all`, `/usage refresh` and `/exit` print one line naming their replacement and route to it. `/update check` opens the update preview. `/workers`, `/queue`, `/edit`, `/close`, `/split`, `/stats` and `/recover` are unlisted but still work, until the screens that replace them exist. |
+| Removed command routes | `/trust`, `/continuation`, `/continue`, `/threads`, `/preview`, `/config`, `/version`, `/agents`, `/usage all`, `/usage refresh` and `/exit` print one line naming their replacement and route to it. `/update check` is rejected; use `/update` then Enter to install. `/workers`, `/queue`, `/edit`, `/close`, `/split`, `/stats` and `/recover` are unlisted but still work, until the screens that replace them exist. |
 | `/queue`, `/queue resume`, `/queue clear`, queue controls | Lists, resumes or clears queued prompts. `queue_controls` and TUI tests cover busy/cancel/edit blocking and state changes. |
 | `/recover`, `/recover legacy`, `/recover retry` | Workspace draft/queue recovery, explicit legacy import, retry local persistence. Recovery TUI tests cover selected missing/corrupt/retry states. |
 | `/stats` | Toggles local process counters; special-cased after the parser returns unknown. TUI tests cover the toggle. |

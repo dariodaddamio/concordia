@@ -365,13 +365,12 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
                     && p.get("role").and_then(|t| t.as_str()) == Some("user")
                 {
                     if let Some(arr) = p.get("content").and_then(|c| c.as_array()) {
-                        let text: String = arr
+                        let joined = arr
                             .iter()
                             .filter_map(|c| c.get("text").and_then(|t| t.as_str()))
                             .collect::<Vec<_>>()
-                            .join(" ")
-                            .trim()
-                            .to_string();
+                            .join(" ");
+                        let text = crate::prompt_time::strip_header(&joined).trim().to_string();
                         if !text.starts_with("# AGENTS.md")
                             && !crate::session_titles::title_from_prompt(&text).is_empty()
                         {
@@ -411,10 +410,13 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
             if v.get("isMeta").and_then(|m| m.as_bool()).unwrap_or(false) {
                 continue;
             }
-            if let Some(text) = claude_user_text(&v).filter(|text| {
-                !text.starts_with("# AGENTS.md")
-                    && !crate::session_titles::title_from_prompt(text).is_empty()
-            }) {
+            if let Some(text) = claude_user_text(&v)
+                .map(|text| crate::prompt_time::strip_header(&text).to_string())
+                .filter(|text| {
+                    !text.starts_with("# AGENTS.md")
+                        && !crate::session_titles::title_from_prompt(text).is_empty()
+                })
+            {
                 preview = Some(text);
             }
         }
@@ -509,7 +511,10 @@ fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<Sess
         if let Ok(hist) = read_file_capped(&hist_path, 32 * 1024) {
             if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&hist) {
                 for item in &items {
-                    if let Some(t) = item.as_str().map(str::trim) {
+                    if let Some(t) = item
+                        .as_str()
+                        .map(|t| crate::prompt_time::strip_header(t).trim())
+                    {
                         if !t.is_empty() && !t.starts_with('/') {
                             preview = Some(bounded_text(t, 512));
                             break;

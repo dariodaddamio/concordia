@@ -57,6 +57,40 @@ pub fn active_query(text: &str) -> Option<(usize, String)> {
     Some((start, q.to_string()))
 }
 
+pub(super) fn reference_query(text: &str) -> Option<(usize, String)> {
+    for prefix in ["/open ", "/preview "] {
+        if let Some(query) = text.strip_prefix(prefix).filter(|q| !q.contains('\n')) {
+            return Some((
+                prefix.len(),
+                query.trim_matches(['"', '`']).replace('\\', "/"),
+            ));
+        }
+    }
+    if let Some(query) = active_query(text) {
+        return Some(query);
+    }
+    let start = text.rfind('@')?;
+    if !opens_word(text[..start].chars().last()) || text[..start].ends_with('\\') {
+        return None;
+    }
+    let query = &text[start + 1..];
+    let quoted = query.starts_with(['`', '"']);
+    if quoted && query.ends_with(char::is_whitespace) {
+        return None;
+    }
+    let query = query.trim_matches(['`', '"']);
+    if query.is_empty()
+        || query.chars().any(|c| {
+            (!quoted && c.is_whitespace())
+                || c.is_control()
+                || matches!(c, '@' | '`' | '"' | '<' | '>')
+        })
+    {
+        return None;
+    }
+    Some((start, query.replace('\\', "/")))
+}
+
 /// Threads whose id starts with the query or whose title contains it, newest first.
 pub fn filter<'a>(all: &'a [ThreadMeta], query: &str) -> Vec<&'a ThreadMeta> {
     let q = query.to_lowercase();
@@ -130,10 +164,13 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
             .unwrap_or(chars.len());
         let run: String = chars[i + 1..end].iter().collect();
         // `@abcd.example` reads as a domain, not a reference.
-        let domainish = chars.get(end) == Some(&'.')
-            && chars
-                .get(end + 1)
-                .is_some_and(|c| c.is_ascii_alphanumeric());
+        let domainish = (matches!(chars.get(end), Some('/' | '\\'))
+            || (chars.get(end) == Some(&':')
+                && chars.get(end + 1).is_some_and(char::is_ascii_digit)))
+            || chars.get(end) == Some(&'.')
+                && chars
+                    .get(end + 1)
+                    .is_some_and(|c| c.is_ascii_alphanumeric());
         if !looks_like_id(&run) || domainish {
             out.push(c);
             i += 1;
@@ -207,6 +244,8 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
         i = end + skip;
     }
     ex.sent = out.trim_end().to_string();
+    let mut seen = std::collections::HashSet::new();
+    ex.notices.retain(|notice| seen.insert(notice.clone()));
     ex
 }
 
@@ -224,13 +263,23 @@ pub struct ChatRef {
     dismissed_for: Option<String>,
     empty_shown_once: bool,
     showing_empty: bool,
+    targets: Vec<(Rect, usize)>,
+    pressed: Option<usize>,
+    last_keys: Vec<String>,
+    selection_touched: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Reference {
+    Chat(usize),
+    File(usize),
 }
 
 /// What the overlay shows right now.
 enum View {
     Hidden,
     Empty,
-    Rows(Vec<usize>),
+    Rows(Vec<Reference>),
 }
 
 impl App {
@@ -239,12 +288,13 @@ impl App {
         let query = if self.palette.dismissed
             || self.picker.is_some()
             || self.hist_pos.is_some()
+            || self.workspace.focused.is_some()
             || !self.palette_entries().is_empty()
             || self.chatref.dismissed_for.as_deref() == Some(text.as_str())
         {
             None
         } else {
-            active_query(&text)
+            reference_query(&text)
         };
         let Some((_, q)) = query else {
             self.chatref.loaded = None;
@@ -252,36 +302,126 @@ impl App {
             self.chatref.last_query = None;
             return View::Hidden;
         };
-        let stale = self.chatref.loaded.is_none_or(|t| t.elapsed() > LIST_TTL);
-        if stale {
+        self.request_related_files();
+        if self.chatref.loaded.is_none_or(|t| t.elapsed() > LIST_TTL) {
             self.chatref.list = threads::list(&self.state_root);
-            self.chatref.loaded = Some(Instant::now());
-        }
-        if self.chatref.list.is_empty() {
-            if !self.chatref.empty_shown_once || self.chatref.showing_empty {
-                self.chatref.empty_shown_once = true;
-                self.chatref.showing_empty = true;
-                return View::Empty;
+            if let Some(current) = self.thread_id().map(str::to_owned) {
+                self.chatref.list.retain(|meta| meta.id != current);
             }
-            return View::Hidden;
+            self.chatref.loaded = Some(Instant::now());
         }
         if self.chatref.last_query.as_deref() != Some(q.as_str()) {
             self.chatref.selected = 0;
+            self.chatref.last_keys.clear();
+            self.chatref.selection_touched = false;
             self.chatref.last_query = Some(q.clone());
         }
-        let rows: Vec<usize> = self
-            .chatref
-            .list
+        let mut rows: Vec<_> = self
+            .related_files
+            .entries
             .iter()
             .enumerate()
-            .filter(|(_, m)| filter(std::slice::from_ref(*m), &q).len() == 1)
-            .map(|(i, _)| i)
+            .filter(|(_, file)| {
+                file.label.to_lowercase().contains(&q.to_lowercase())
+                    || file
+                        .candidate
+                        .target
+                        .replace('\\', "/")
+                        .to_lowercase()
+                        .contains(&q.to_lowercase())
+            })
+            .map(|(i, _)| Reference::File(i))
             .collect();
-        if rows.is_empty() {
-            return View::Hidden;
+        rows.sort_by_key(|r| {
+            if let Reference::File(i) = r {
+                if self.related_files.entries[*i]
+                    .label
+                    .trim_end_matches('/')
+                    .eq_ignore_ascii_case(&q)
+                {
+                    0
+                } else {
+                    1
+                }
+            } else {
+                1
+            }
+        });
+        if !text.starts_with("/open ") && !text.starts_with("/preview ") {
+            rows.extend(
+                self.chatref
+                    .list
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| filter(std::slice::from_ref(*m), &q).len() == 1)
+                    .map(|(i, _)| Reference::Chat(i)),
+            );
         }
+        if rows.is_empty() {
+            self.chatref.empty_shown_once = true;
+            self.chatref.showing_empty = true;
+            return View::Empty;
+        }
+        let keys: Vec<_> = rows
+            .iter()
+            .map(|entry| match entry {
+                Reference::Chat(i) => format!("chat:{}", self.chatref.list[*i].id),
+                Reference::File(i) => {
+                    format!("file:{}", self.related_files.entries[*i].candidate.target)
+                }
+            })
+            .collect();
+        if let Some(key) = self
+            .chatref
+            .last_keys
+            .get(self.chatref.selected)
+            .filter(|_| self.chatref.selection_touched)
+        {
+            if let Some(index) = keys.iter().position(|candidate| candidate == key) {
+                self.chatref.selected = index;
+            }
+        }
+        self.chatref.last_keys = keys;
         self.chatref.selected = self.chatref.selected.min(rows.len() - 1);
         View::Rows(rows)
+    }
+
+    fn complete_reference(&mut self, entry: Reference) {
+        match entry {
+            Reference::Chat(index) => self.complete_chat_ref(index),
+            Reference::File(index) => {
+                let text = self.editor.text();
+                let Some((start, _)) = reference_query(&text) else {
+                    return;
+                };
+                if let Some(file) = self.related_files.entries.get(index) {
+                    if text.starts_with("/open ") || text.starts_with("/preview ") {
+                        let name = if file.label.contains(char::is_whitespace) {
+                            format!("\"{}\"", file.label)
+                        } else {
+                            file.label.clone()
+                        };
+                        self.editor.set_text(&format!("{}{name}", &text[..start]));
+                        return;
+                    }
+                    let reference =
+                        if file.label.contains(char::is_whitespace) || looks_like_id(&file.label) {
+                            if file.directory {
+                                format!("@`{}", file.label)
+                            } else {
+                                format!("@`{}`", file.label)
+                            }
+                        } else {
+                            format!("@{}", file.label)
+                        };
+                    self.editor.set_text(&format!(
+                        "{}{reference}{}",
+                        &text[..start],
+                        if file.directory { "" } else { " " }
+                    ));
+                }
+            }
+        }
     }
 
     /// Put the chosen thread's id in the prompt in place of the `@query`.
@@ -326,24 +466,46 @@ impl App {
 
 /// Navigation keys while the list is open. True when the key was used.
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
-    if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::ALT) {
+    let preview = key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('p' | 'P'));
+    if (key.modifiers.contains(KeyModifiers::CONTROL) && !preview)
+        || key.modifiers.contains(KeyModifiers::ALT)
+    {
         return false;
     }
     let View::Rows(rows) = app.chat_view() else {
         return false;
     };
     let n = rows.len();
+    if preview {
+        if let Reference::File(index) = rows[app.chatref.selected] {
+            app.preview_related_file(index);
+        }
+        return true;
+    }
     match key.code {
         KeyCode::Up | KeyCode::BackTab => {
+            app.chatref.selection_touched = true;
             app.chatref.selected = (app.chatref.selected + n - 1) % n;
             true
         }
         KeyCode::Down => {
+            app.chatref.selection_touched = true;
             app.chatref.selected = (app.chatref.selected + 1) % n;
             true
         }
+        KeyCode::Enter
+            if app.editor.text().starts_with("/open ")
+                || app.editor.text().starts_with("/preview ") =>
+        {
+            if let Reference::File(index) = rows[app.chatref.selected] {
+                app.editor.clear();
+                app.preview_related_file(index);
+            }
+            true
+        }
         KeyCode::Tab | KeyCode::Enter => {
-            app.complete_chat_ref(rows[app.chatref.selected]);
+            app.complete_reference(rows[app.chatref.selected]);
             true
         }
         KeyCode::Esc => {
@@ -367,22 +529,46 @@ fn clip(s: &str, max: usize) -> String {
 
 /// The list, floating just above the prompt box like the slash palette.
 pub(super) fn draw(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
+    app.chatref.targets.clear();
     let view = app.chat_view();
+    let references = if let View::Rows(rows) = &view {
+        rows.clone()
+    } else {
+        Vec::new()
+    };
     let (items, title, selected): (Vec<ListItem>, String, Option<usize>) = match view {
         View::Hidden => return,
         View::Empty => (
             vec![ListItem::new(Span::styled(
-                EMPTY_NOTICE,
+                if app.thread_id().is_some() {
+                    "No matching files/chats. /open browses workspace files and folders."
+                } else {
+                    "No matching files. /open browses folders, recent files and workspace files."
+                },
                 Style::default().fg(Color::Indexed(245)),
             ))],
-            " chats ".to_string(),
+            " files / chats ".to_string(),
             None,
         ),
         View::Rows(rows) => {
             let width = (f.area().width.saturating_sub(4) as usize).clamp(30, 90);
             let items = rows
                 .iter()
-                .map(|&i| {
+                .map(|entry| {
+                    let i = match *entry {
+                        Reference::File(index) => {
+                            let file = &app.related_files.entries[index];
+                            return ListItem::new(Line::from(vec![
+                                Span::styled("file  ", Style::default().fg(Color::Cyan)),
+                                Span::raw(clip(&file.label, width.saturating_sub(24))),
+                                Span::styled(
+                                    "  Ctrl+P preview",
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                            ]));
+                        }
+                        Reference::Chat(index) => index,
+                    };
                     let m = &app.chatref.list[i];
                     let id = short_id(&app.chatref.list, &m.id);
                     let tail = format!(
@@ -414,7 +600,7 @@ pub(super) fn draw(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
             let shown = items.len();
             (
                 items,
-                format!(" chats \u{b7} {shown} \u{b7} Tab/Enter completes "),
+                format!(" files/chats \u{b7} {shown} \u{b7} Tab/Enter completes "),
                 Some(app.chatref.selected),
             )
         }
@@ -447,6 +633,67 @@ pub(super) fn draw(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
     let mut state = ListState::default();
     state.select(selected);
     f.render_stateful_widget(list, rect, &mut state);
+    for (row, index) in (state.offset()..references.len())
+        .take(rect.height.saturating_sub(2) as usize)
+        .enumerate()
+    {
+        app.chatref.targets.push((
+            Rect {
+                x: rect.x + 1,
+                y: rect.y + 1 + row as u16,
+                width: rect.width.saturating_sub(2),
+                height: 1,
+            },
+            index,
+        ));
+    }
+}
+
+pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
+    app.chatref
+        .targets
+        .iter()
+        .any(|(rect, _)| contains(*rect, x, y))
+}
+
+pub(super) fn handle_mouse(app: &mut App, mouse: MouseEvent) -> bool {
+    if app.chatref.targets.is_empty() {
+        return false;
+    }
+    let hit = app
+        .chatref
+        .targets
+        .iter()
+        .find(|(rect, _)| contains(*rect, mouse.column, mouse.row))
+        .map(|(_, index)| *index);
+    if let Some(index) = hit {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                app.chatref.selection_touched = true;
+                app.chatref.pressed = Some(index);
+                app.chatref.selected = index;
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if app.chatref.pressed.take() == Some(index) {
+                    if let View::Rows(rows) = app.chat_view() {
+                        if let Some(entry) = rows.get(index).copied() {
+                            match entry {
+                                Reference::File(i) => app.preview_related_file(i),
+                                _ => app.complete_reference(entry),
+                            }
+                        }
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => app.chatref.pressed = None,
+            _ => {}
+        }
+        return true;
+    }
+    if matches!(mouse.kind, MouseEventKind::Up(_) | MouseEventKind::Drag(_)) {
+        app.chatref.pressed = None;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -752,21 +999,16 @@ mod tests {
     fn with_no_recorded_chats_the_list_says_how_to_enable_them_once() {
         let mut r = Rig::new();
         r.type_str("@");
-        assert!(r
-            .draw()
-            .contains("no recorded chats - enable [threads] in config.toml"));
+        assert!(r.draw().contains("/open"));
         r.type_str("a");
-        assert!(
-            r.draw().contains("no recorded chats"),
-            "stays while the token is open"
-        );
+        assert!(r.draw().contains("/open"), "stays while the token is open");
         r.app.editor.clear();
         r.key(KeyCode::Char('x'));
         r.app.editor.clear();
         r.type_str("@");
         assert!(
-            !r.draw().contains("no recorded chats"),
-            "only once per session"
+            r.draw().contains("/open"),
+            "file guidance is available whenever the list opens"
         );
     }
 
@@ -795,5 +1037,184 @@ mod tests {
             .iter()
             .any(|m| m.role == MsgRole::System && m.text.contains("@deadbeef: no recorded chat")));
         assert!(r.app.messages.iter().all(|m| m.role != MsgRole::Meta));
+    }
+    #[test]
+    fn file_paths_with_hex_prefixes_are_never_expanded_as_chats_and_notices_are_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(dir.path(), C, "chat", "reply");
+        let input = "@c0ffee00/src/code.rs @c0ffee00\\src\\code.rs @c0ffee00:12 @c0ffee00.rs";
+        let expanded = expand(dir.path(), input, 1600);
+        assert_eq!(expanded.sent, input);
+        assert!(expanded.maps.is_empty() && expanded.notices.is_empty());
+        assert_eq!(
+            expand(dir.path(), "@deadbeef @deadbeef", 1600)
+                .notices
+                .len(),
+            1
+        );
+    }
+
+    fn wait_for_files(r: &mut Rig) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            r.app.request_related_files();
+            r.app.on_tick();
+            if !r.app.related_files.loading() {
+                // A source changed while an earlier scan was in flight: request its successor.
+                r.app.request_related_files();
+                if !r.app.related_files.loading() {
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        r.draw();
+    }
+
+    #[test]
+    fn current_chat_files_complete_and_preview_without_dispatch_or_draft_loss() {
+        let mut r = Rig::new();
+        std::fs::create_dir(r.dir.path().join("src")).unwrap();
+        std::fs::write(r.dir.path().join("src/code.rs"), "fn main() {}").unwrap();
+        std::fs::write(
+            r.dir.path().join("notes with spaces.md"),
+            "# Notes\n**Preview text**",
+        )
+        .unwrap();
+        r.app
+            .push_user("Inspect src/code.rs:1 and [notes](<notes with spaces.md>)".into());
+        wait_for_files(&mut r);
+        assert_eq!(
+            r.app
+                .related_files
+                .entries
+                .iter()
+                .filter(|e| e.origin == "chat")
+                .count(),
+            2
+        );
+        r.app.editor.set_text("review @src/");
+        let screen = r.draw();
+        assert!(
+            screen.contains("src/code.rs") && screen.contains("Ctrl+P preview"),
+            "{screen}"
+        );
+        crate::tui::handle_key(
+            &mut r.app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &r.tx,
+        );
+        assert_eq!(r.app.editor.text(), "review @src/");
+        assert_eq!(r.app.workspace.panes.len(), 1);
+        assert!(r.rx.try_recv().is_err());
+        r.key(KeyCode::Esc);
+        r.key(KeyCode::Tab);
+        assert_eq!(r.app.editor.text(), "review @src/code.rs ");
+        r.app.editor.set_text("review @notes");
+        r.key(KeyCode::Tab);
+        assert_eq!(r.app.editor.text(), "review @`notes with spaces.md` ");
+        assert!(r.rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn file_picker_deduplicates_and_new_conversation_clears_its_index() {
+        let mut r = Rig::new();
+        std::fs::write(r.dir.path().join("file.md"), "# File").unwrap();
+        r.app.push_user("file.md file.md:2 [same](file.md)".into());
+        r.app.handle_slash("/open");
+        wait_for_files(&mut r);
+        let picker = r.app.picker.as_ref().unwrap();
+        assert_eq!(picker.kind, PickerKind::Files);
+        assert_eq!(
+            picker.rows.iter().filter(|r| r.label == "file.md").count(),
+            1
+        );
+        r.app.apply_picker_selection(None);
+        assert_eq!(r.app.workspace.panes.len(), 1);
+        assert!(r.rx.try_recv().is_err());
+        r.app.workspace.focused = None;
+        r.app.handle_slash("/new");
+        assert!(r.app.related_files.entries.is_empty());
+        r.app.handle_slash("/open");
+        wait_for_files(&mut r);
+        assert!(r
+            .app
+            .picker
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .any(|row| row.label == "file.md"));
+    }
+    #[test]
+    fn deleted_suggested_file_is_unavailable_without_opening_a_same_named_file_elsewhere() {
+        let mut r = Rig::new();
+        std::fs::write(r.dir.path().join("target.md"), "original").unwrap();
+        std::fs::create_dir(r.dir.path().join("other")).unwrap();
+        std::fs::write(r.dir.path().join("other/target.md"), "unrelated").unwrap();
+        r.app.push_card(StreamCard {
+            id: "read".into(),
+            title: "Read".into(),
+            detail: Some("target.md".into()),
+            status: CardStatus::Done,
+        });
+        wait_for_files(&mut r);
+        assert_eq!(
+            r.app
+                .related_files
+                .entries
+                .iter()
+                .filter(|e| e.origin == "chat")
+                .count(),
+            1
+        );
+        std::fs::remove_file(r.dir.path().join("target.md")).unwrap();
+        r.app.preview_related_file(0);
+        assert!(r.app.workspace.panes.is_empty());
+        assert!(r.app.flash.as_ref().unwrap().0.contains("unavailable"));
+        assert!(r.rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn adding_file_suggestions_keeps_the_selected_chat_identity() {
+        let mut r = Rig::new();
+        seed(r.dir.path(), C, "fixture chat", "reply");
+        r.app.editor.set_text("@");
+        r.draw();
+        assert!(
+            matches!(r.app.chat_view(), View::Rows(ref rows) if matches!(rows[r.app.chatref.selected], Reference::Chat(_)))
+        );
+        r.key(KeyCode::Down); // Explicit selection must survive a later discovery result.
+        std::fs::write(r.dir.path().join("new.md"), "new file").unwrap();
+        r.app.push_user("new.md".into());
+        wait_for_files(&mut r);
+        assert_eq!(
+            r.app
+                .related_files
+                .entries
+                .iter()
+                .filter(|e| e.origin == "chat")
+                .count(),
+            1
+        );
+        assert!(
+            matches!(r.app.chat_view(), View::Rows(ref rows) if matches!(rows[r.app.chatref.selected], Reference::Chat(_)))
+        );
+        r.key(KeyCode::Tab);
+        assert_eq!(r.app.editor.text(), "@c0ffee00 ");
+        assert!(r.rx.try_recv().is_err());
+    }
+    #[test]
+    fn current_conversation_is_not_offered_as_its_own_related_chat() {
+        let mut r = Rig::new();
+        seed(r.dir.path(), C, "current chat", "reply");
+        seed(r.dir.path(), A, "other chat", "reply");
+        r.app.thread = Some(ThreadLog::open(r.dir.path(), C));
+        r.app.editor.set_text("@");
+        let screen = r.draw();
+        assert!(screen.contains("other chat"));
+        assert!(!screen.contains("current chat"));
+        assert!(r.app.chatref.list.iter().all(|meta| meta.id != C));
     }
 }

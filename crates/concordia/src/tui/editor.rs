@@ -237,7 +237,7 @@ impl Editor {
 
     // ---- editing ---------------------------------------------------------------------
 
-    /// Insert at the cursor, replacing any selection. `\r` is dropped, tabs become 4 spaces.
+    /// Insert at the cursor, replacing any selection. Normalize line endings; tabs become 4 spaces.
     pub fn insert_str(&mut self, s: &str) {
         let single = s.chars().count() == 1 && s != "\n" && s != "\r";
         self.edit(single.then_some(Burst::Insert), |e| e.insert_raw(s));
@@ -252,9 +252,8 @@ impl Editor {
 
     fn insert_raw(&mut self, s: &str) {
         self.delete_selection();
-        let clean: Vec<char> = s
+        let clean: Vec<char> = super::text::normalize_newlines(s)
             .chars()
-            .filter(|c| *c != '\r')
             .flat_map(|c| if c == '\t' { vec![' '; 4] } else { vec![c] })
             .collect();
         let n = clean.len();

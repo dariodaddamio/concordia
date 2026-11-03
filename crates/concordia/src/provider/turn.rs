@@ -6,9 +6,13 @@ use crate::provider::codex::{
 };
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
 use crate::provider::enforcement;
+use crate::provider::interaction::InteractionOwner;
+pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
 use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
+#[path = "turn_acp.rs"]
+mod acp;
 use crate::store::{ProviderKind, TrustMode};
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
@@ -16,7 +20,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex, Notify};
@@ -33,8 +37,17 @@ const LINE_MAX: usize = 1024 * 1024;
 /// Raw stream kept for the Codex fallback parse.
 const RAW_MAX: usize = 4 * 1024 * 1024;
 
+/// A native history-write failure is not evidence of quota exhaustion or a deleted rollout.
+pub fn thread_recording_failed(provider: ProviderKind, stderr: &str) -> bool {
+    provider == ProviderKind::Codex
+        && stderr.contains("failed to record rollout items")
+        && stderr.contains("thread ")
+        && stderr.contains(" not found")
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderTurnRequest<'a> {
+    pub images: &'a [crate::attachments::Image],
     pub provider: ProviderKind,
     pub prompt: &'a str,
     pub cwd: &'a Path,
@@ -43,6 +56,10 @@ pub struct ProviderTurnRequest<'a> {
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
     pub context_prefix: Option<&'a str>,
+    /// When set, the prompt opens with this time and the relative times it mentions resolved
+    /// (`prompt_time::header`). Every user and worker turn sets it; `None` sends the text as is.
+    pub local_time: Option<crate::prompt_time::LocalTime>,
+    pub compaction: crate::capacity::Compaction,
 }
 
 #[derive(Debug, Clone)]
@@ -72,8 +89,59 @@ pub struct TurnOutcome {
     pub stderr_tail: String,
 }
 
+/// Apply native image inputs after normal launch planning; payloads never pass through a shell.
+pub fn attach_images(
+    launch: &mut super::launch::Launch,
+    provider: ProviderKind,
+    images: &[crate::attachments::Image],
+    prompt: &str,
+) -> Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        images.len() <= crate::attachments::MAX_IMAGES,
+        "at most four images per message"
+    );
+    anyhow::ensure!(
+        !super::launch::is_batch_shim(&launch.program),
+        "native image inputs require a native executable; custom batch launchers are unsupported"
+    );
+    match provider {
+        ProviderKind::Codex => {
+            for image in images {
+                image.data().map_err(anyhow::Error::msg)?;
+                let at = launch.args.len().saturating_sub(1);
+                launch.args.splice(
+                    at..at,
+                    ["--image".into(), image.path.to_string_lossy().into_owned()],
+                );
+            }
+        }
+        ProviderKind::Claude => {
+            if launch.args.last().is_some_and(|arg| arg == prompt) {
+                launch.args.pop();
+            }
+            launch
+                .args
+                .extend(["--input-format".into(), "stream-json".into()]);
+            let mut content = vec![serde_json::json!({"type":"text","text":prompt})];
+            for image in images {
+                content.push(image.claude().map_err(anyhow::Error::msg)?);
+            }
+            launch.stdin = Some(format!(
+                "{}\n",
+                serde_json::json!({"type":"user","message":{"role":"user","content":content},"parent_tool_use_id":null})
+            ));
+        }
+        ProviderKind::Cursor => anyhow::bail!("Cursor image input requires ACP"),
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub enum TurnProgress {
+    Interaction(Box<NativeRequest>),
     Session(String),
     Text(String),
     TextDelta(String),
@@ -102,6 +170,7 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         ..req.clone()
     };
     let mut plan = plan_provider_turn_raw(req)?;
+    crate::capacity::apply(&mut plan, &req.compaction).map_err(anyhow::Error::msg)?;
     // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
     crate::provider::compat::degrade_planned(&mut plan, req.trust);
     // That fallback can drop the plan switch (Claude to manual, Cursor without --mode plan).
@@ -113,10 +182,29 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
 }
 
 fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
-    let prompt = match req.context_prefix {
+    let mut prompt = match req.context_prefix {
         Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{}", req.prompt),
         _ => req.prompt.to_string(),
     };
+    if req
+        .native_session_id
+        .is_none_or(|session| session.trim().is_empty())
+    {
+        let pinned = crate::harness::pinned::for_new_session(
+            &crate::store::default_store_root(),
+            req.provider,
+            req.home_path,
+            req.cwd,
+        )
+        .map_err(anyhow::Error::msg)?;
+        if !pinned.is_empty() {
+            prompt = format!("{pinned}\n{prompt}");
+        }
+    }
+    if let Some(now) = &req.local_time {
+        // Relative times are read from what the user wrote, not from the context pack.
+        prompt = format!("{}\n{prompt}", crate::prompt_time::header(req.prompt, now));
+    }
     match req.provider {
         ProviderKind::Codex => {
             let plan = plan_turn_argv(&CodexReq {
@@ -261,6 +349,29 @@ pub async fn run_provider_turn_with_progress(
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
+    run_provider_turn_inner(req, None, on_started, on_progress).await
+}
+
+/// App-owned turns bind native input before spawning, without changing request/transport defaults.
+pub async fn run_provider_turn_with_owner(
+    req: &ProviderTurnRequest<'_>,
+    owner: InteractionOwner,
+    on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
+    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+) -> Result<TurnOutcome> {
+    let owner = owner
+        .validate_for(req.provider, req.cwd, req.home_path)
+        .map_err(anyhow::Error::msg)?;
+    run_provider_turn_inner(req, Some(owner), on_started, on_progress).await
+}
+
+async fn run_provider_turn_inner(
+    req: &ProviderTurnRequest<'_>,
+    owner: Option<InteractionOwner>,
+    on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
+    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+) -> Result<TurnOutcome> {
+    let timing = Instant::now();
     let mut session_guard = req
         .native_session_id
         .map(|id| {
@@ -270,6 +381,9 @@ pub async fn run_provider_turn_with_progress(
     let mut plan = plan_provider_turn(req)?;
     if let (Some(tx), Some(notice)) = (&on_progress, enforcement_notice(req)) {
         let _ = tx.send(TurnProgress::Notice(notice));
+    }
+    if req.provider == ProviderKind::Cursor && !req.images.is_empty() {
+        return acp::run(req, &plan, owner, on_started, on_progress).await;
     }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
     // it explicitly. If that does not work the turn runs unbound, exactly as before.
@@ -287,10 +401,12 @@ pub async fn run_provider_turn_with_progress(
     }
     let plain_output =
         super::compat::caps_for(plan.provider).is_some_and(|caps| caps.known && !caps.stream_json);
-    let launch = prepare(&plan)?;
+    let mut launch = prepare(&plan)?;
+    attach_images(&mut launch, plan.provider, req.images, &plan.prompt)?;
     let handle = Arc::new(RunningTurn::new());
 
     let mut cmd = Command::new(&launch.program);
+    crate::process_ui::background(&mut cmd);
     cmd.args(&launch.args)
         .current_dir(&plan.cwd)
         .stdin(if launch.stdin.is_some() {
@@ -305,9 +421,12 @@ pub async fn run_provider_turn_with_progress(
         cmd.env(k, v);
     }
     // Do not echo argv here: it contains the whole prompt.
+    let setup_ms = timing.elapsed().as_millis();
+    let spawning = Instant::now();
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawn {}", launch.program))?;
+    let spawn_ms = spawning.elapsed().as_millis();
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     // Counted in the footer stats (when on) until this turn ends.
     let _stats_guard = crate::sysstats::register(child.id().unwrap_or(0));
@@ -354,6 +473,10 @@ pub async fn run_provider_turn_with_progress(
         ProviderKind::Codex => None,
     };
     let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));
+    let mut completed_events = CompletedEvents::default();
+    let mut first_event_ms = None;
+    let mut parse_time = Duration::ZERO;
+    let mut events = 0_u64;
     loop {
         if handle.cancel_flag.load(Ordering::SeqCst) {
             out.cancelled = true;
@@ -371,6 +494,11 @@ pub async fn run_provider_turn_with_progress(
         };
         match next {
             Ok(Some(line)) => {
+                first_event_ms.get_or_insert_with(|| timing.elapsed().as_millis());
+                let parsing = Instant::now();
+                if !plain_output && completed_events.repeated(&line) {
+                    continue;
+                }
                 if let Some(failed) = terminal_failure(&line) {
                     out.failed = failed;
                 }
@@ -410,6 +538,8 @@ pub async fn run_provider_turn_with_progress(
                         crate::provider::stream_cards::upsert_card(&mut out.cards, card);
                     }
                 }
+                parse_time += parsing.elapsed();
+                events += 1;
             }
             Ok(None) | Err(_) => break,
         }
@@ -461,12 +591,18 @@ pub async fn run_provider_turn_with_progress(
             out.session_id = chunk.session_id;
         }
     }
+    crate::logging::info(&format!(
+        "provider-timing provider={} setup_ms={setup_ms} spawn_ms={spawn_ms} first_event_ms={} parse_us={} events={events} total_ms={}",
+        plan.provider.as_str(), first_event_ms.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into()),
+        parse_time.as_micros(), timing.elapsed().as_millis()
+    ));
     Ok(out)
 }
 
 fn terminal_failure(line: &str) -> Option<bool> {
     let event: serde_json::Value = serde_json::from_str(line).ok()?;
     match event.get("type")?.as_str()? {
+        "error" if crate::provider::stream_cards::classify_codex_event(&event).iter().any(|part|matches!(part,StreamPart::Error(text) if crate::provider::stream_cards::usage_exhausted(text))) => Some(true),
         "turn.failed" => Some(true),
         "turn.completed" => Some(false),
         "result" => Some(
@@ -477,6 +613,93 @@ fn terminal_failure(line: &str) -> Option<bool> {
                     .is_some_and(|s| s.starts_with("error")),
         ),
         _ => None,
+    }
+}
+
+/// Replayed complete snapshots with explicit event/message identity are safe to omit.
+/// Deltas and text without identity must retain repetition. This cache belongs to one turn.
+#[derive(Default)]
+struct CompletedEvents {
+    entries: VecDeque<(String, String)>,
+    bytes: usize,
+}
+
+impl CompletedEvents {
+    fn repeated(&mut self, line: &str) -> bool {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        let kind = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let id = match kind {
+            // This runner owns one turn, so terminal events have an implicit per-run identity.
+            "turn.completed" | "turn.failed" | "result" => Some("terminal"),
+            "item.completed" => event.pointer("/item/id").and_then(|v| v.as_str()),
+            "assistant" if event.get("timestamp_ms").is_none() => event
+                .pointer("/message/id")
+                .or_else(|| event.get("uuid"))
+                .and_then(|v| v.as_str()),
+            _ => None,
+        };
+        let Some(id) = id.filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        let key = format!("{kind}:{id}");
+        let body = event.to_string();
+        if self
+            .entries
+            .iter()
+            .any(|(old_key, old_body)| old_key == &key && old_body == &body)
+        {
+            return true;
+        }
+        const MAX_BYTES: usize = 4 * 1024 * 1024;
+        while !self.entries.is_empty()
+            && (self.entries.len() >= 128 || self.bytes + key.len() + body.len() > MAX_BYTES)
+        {
+            let (key, body) = self.entries.pop_front().unwrap();
+            self.bytes -= key.len() + body.len();
+        }
+        if key.len() + body.len() <= MAX_BYTES {
+            self.bytes += key.len() + body.len();
+            self.entries.push_back((key, body));
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    #[test]
+    fn duplicate_complete_snapshots_are_omitted_but_distinct_messages_and_deltas_survive() {
+        let mut events = CompletedEvents::default();
+        for kind in ["codex", "claude"] {
+            let snapshot = if kind == "codex" {
+                r#"{"type":"item.completed","item":{"id":"one","type":"agent_message","text":"done"}}"#
+            } else {
+                r#"{"type":"assistant","message":{"id":"one","content":[{"type":"text","text":"done"}]}}"#
+            };
+            assert!(!events.repeated(snapshot));
+            assert!(events.repeated(snapshot));
+            assert!(!events.repeated(&snapshot.replace(r#""id":"one""#, r#""id":"two""#)));
+        }
+        for snapshot in [
+            r#"{"type":"turn.completed","usage":{"input_tokens":123}}"#,
+            r#"{"type":"result","session_id":"fixture","usage":{"input_tokens":123}}"#,
+        ] {
+            assert!(!events.repeated(snapshot));
+            assert!(events.repeated(snapshot));
+        }
+        for snapshot in [
+            r#"{"type":"assistant","timestamp_ms":1,"message":{"id":"one","content":[{"type":"text","text":"l"}]}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"l"}}}"#,
+            "plain repeated text",
+        ] {
+            assert!(!events.repeated(snapshot));
+            assert!(!events.repeated(snapshot));
+        }
+        assert!(!CompletedEvents::default()
+            .repeated(r#"{"type":"item.completed","item":{"id":"one","text":"done"}}"#));
     }
 }
 
@@ -651,8 +874,52 @@ mod reader_tests {
 mod gate_tests {
     use super::*;
 
+    #[test]
+    fn a_stamped_prompt_opens_with_the_time_then_the_pack_then_the_prompt() {
+        let cwd = std::env::temp_dir();
+        let now = crate::prompt_time::LocalTime {
+            year: 2026,
+            month: 10,
+            day: 30,
+            hour: 14,
+            minute: 5,
+            zone: "local",
+        };
+        let req = ProviderTurnRequest {
+            images: &[],
+            provider: ProviderKind::Codex,
+            prompt: "what broke yesterday?",
+            cwd: &cwd,
+            home_path: None,
+            model: None,
+            native_session_id: None,
+            trust: TrustMode::Workspace,
+            context_prefix: Some("<concordia_context>last week</concordia_context>"),
+            local_time: Some(now),
+            compaction: Default::default(),
+        };
+        let plan = plan_provider_turn(&req).unwrap();
+        // "last week" in the pack is not the user's words, so it is not resolved.
+        assert_eq!(
+            plan.prompt,
+            "[Fri Oct 30 2026, 2:05pm local]\n\"yesterday\" = Thu Oct 29 2026\n\
+             <concordia_context>last week</concordia_context>\nwhat broke yesterday?"
+        );
+        assert_eq!(plan.argv.last(), Some(&plan.prompt));
+        let plain = plan_provider_turn(&ProviderTurnRequest {
+            images: &[],
+            local_time: None,
+            compaction: Default::default(),
+            context_prefix: None,
+            ..req
+        })
+        .unwrap();
+        assert_eq!(plain.prompt, "what broke yesterday?");
+    }
+
     fn claude_argv(cwd: &Path, trust: TrustMode) -> Vec<String> {
         let req = ProviderTurnRequest {
+            images: &[],
             provider: ProviderKind::Claude,
             prompt: "edit it",
             cwd,
@@ -661,6 +928,8 @@ mod gate_tests {
             native_session_id: None,
             trust,
             context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
         };
         plan_provider_turn(&req).unwrap().argv
     }
@@ -691,6 +960,7 @@ mod gate_tests {
         let dir = tempfile::tempdir().unwrap();
         locked(dir.path());
         let req = ProviderTurnRequest {
+            images: &[],
             provider: ProviderKind::Cursor,
             prompt: "x",
             cwd: dir.path(),
@@ -699,11 +969,14 @@ mod gate_tests {
             native_session_id: None,
             trust: TrustMode::Workspace,
             context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
         };
         let notice = enforcement_notice(&req).expect("a lowered turn must explain itself");
         assert!(notice.contains("cursor") && notice.contains("read-only"));
         let plain = tempfile::tempdir().unwrap();
         let req = ProviderTurnRequest {
+            images: &[],
             cwd: plain.path(),
             ..req
         };
@@ -726,6 +999,7 @@ mod gate_tests {
             },
         );
         let req = ProviderTurnRequest {
+            images: &[],
             provider: ProviderKind::Cursor,
             prompt: "edit it",
             cwd: dir.path(),
@@ -734,6 +1008,8 @@ mod gate_tests {
             native_session_id: None,
             trust: TrustMode::Full,
             context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
         };
         let result = plan_provider_turn(&req);
         set_caps(

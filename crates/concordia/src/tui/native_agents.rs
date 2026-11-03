@@ -65,7 +65,13 @@ impl App {
                 .take(64)
                 .map(|job| PickerRow {
                     id: format!("worker-agent:{}", job.id),
-                    label: format!("worker {} · {}", job.label(), job.state.label()),
+                    label: format!(
+                        "#{} {} · {} · {}",
+                        job.id,
+                        job.label(),
+                        job.model.as_deref().unwrap_or("default"),
+                        job.state.label()
+                    ),
                     detail: job
                         .task
                         .lines()

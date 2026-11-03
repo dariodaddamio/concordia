@@ -39,6 +39,7 @@ pub struct Block<'a> {
     pub text: &'a str,
     /// Render the text as markdown (assistant replies).
     pub markdown: bool,
+    pub linkify: bool,
     /// Extra inline styles per line (plain blocks only), e.g. the coloured `/usage` block.
     pub runs: &'a [LineRun],
 }
@@ -56,6 +57,7 @@ pub struct Row {
     /// Inline style runs `(start, end, style)` in chars of `text`, applied over `style`.
     pub runs: Vec<(usize, usize, Style)>,
     pub links: Vec<(usize, usize, crate::file_links::Candidate)>,
+    pub web_links: Vec<(usize, usize, String)>,
 }
 
 impl Row {
@@ -80,6 +82,8 @@ struct BlockKey {
     style: Style,
     text: String,
     markdown: bool,
+    linkify: bool,
+    diagram_revision: Option<u64>,
     runs: Vec<LineRun>,
 }
 
@@ -92,6 +96,8 @@ impl BlockKey {
             style: b.style,
             text: b.text.to_string(),
             markdown: b.markdown,
+            linkify: b.linkify,
+            diagram_revision: None,
             runs: b.runs.to_vec(),
         }
     }
@@ -99,6 +105,10 @@ impl BlockKey {
     fn matches(&self, b: &Block) -> bool {
         self.identity == b.identity
             && self.markdown == b.markdown
+            && self.linkify == b.linkify
+            && self
+                .diagram_revision
+                .is_none_or(|revision| revision == super::diagrams::revision())
             && self.style == b.style
             && self.gutter_style == b.gutter_style
             && self.gutter == b.gutter
@@ -121,6 +131,9 @@ pub struct TranscriptView {
     height: usize,
     first: usize,
     row_blocks: Vec<(Option<usize>, usize)>,
+    /// Directory that relative file references resolve against. When set, only references that
+    /// name an existing file are underlined and clickable.
+    pub link_root: Option<std::path::PathBuf>,
 }
 
 impl TranscriptView {
@@ -149,16 +162,39 @@ impl TranscriptView {
             .zip(blocks)
             .take_while(|((key, _), b)| key.matches(b))
             .count();
+        let mut reusable = Vec::new();
         if keep < self.keys.len() {
             let cut = self.keys[keep].1;
-            self.rows.truncate(cut);
+            let old_keys = self.keys.split_off(keep);
+            let old_rows = self.rows.split_off(cut);
+            let end = old_rows.len() + cut;
+            let mut old_rows = old_rows.into_iter();
+            for (index, (key, start)) in old_keys.iter().enumerate() {
+                let stop = old_keys.get(index + 1).map(|k| k.1).unwrap_or(end);
+                reusable.push((
+                    key.clone(),
+                    old_rows.by_ref().take(stop - start).collect::<Vec<_>>(),
+                ));
+            }
             self.row_blocks.truncate(cut);
-            self.keys.truncate(keep);
         }
+        let mut reusable = reusable.into_iter();
         for b in &blocks[keep..] {
             let start = self.rows.len();
-            self.keys.push((BlockKey::of(b), self.rows.len()));
-            wrap_block(b, width, &mut self.rows);
+            let key = match reusable.next().filter(|(key, _)| key.matches(b)) {
+                Some((key, rows)) => {
+                    self.rows.extend(rows);
+                    key
+                }
+                None => {
+                    let revision = super::diagrams::revision();
+                    let pending = wrap_block(b, width, self.link_root.as_deref(), &mut self.rows);
+                    let mut key = BlockKey::of(b);
+                    key.diagram_revision = pending.then_some(revision);
+                    key
+                }
+            };
+            self.keys.push((key, start));
             for row in &self.rows[start..] {
                 self.row_blocks.push((b.identity, row.source_offset));
             }
@@ -368,7 +404,7 @@ impl TranscriptView {
                     spans.push(Span::styled(r.gutter.clone(), r.gutter_style));
                 }
                 spans.extend(row_spans(r, self.row_selection(i)));
-                Line::from(spans)
+                Line::from(spans).style(r.style)
             })
             .collect()
     }
@@ -418,30 +454,58 @@ fn row_spans(r: &Row, selection: Option<(usize, usize)>) -> Vec<Span<'static>> {
 
 /// Wrap one block into display rows. The gutter glyph appears once, on the block's first row;
 /// every other row gets blank space of the same width, plus any indent the line asks for.
-fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
+fn wrap_block(
+    b: &Block,
+    width: usize,
+    link_root: Option<&std::path::Path>,
+    rows: &mut Vec<Row>,
+) -> bool {
     let gw = b.gutter.chars().count();
-    let diff = !b.markdown && is_diff(b.text);
+    let (clean, offsets) = super::text::terminal_text(b.text);
+    let diff = !b.markdown && is_diff(&clean);
+    let mut pending = false;
     let lines: Vec<markdown::MdLine> = if b.markdown {
-        markdown::render(b.text)
+        let (lines, is_pending) =
+            markdown::render_width_state(&clean, width.saturating_sub(gw).max(1));
+        pending = is_pending;
+        lines
     } else {
+        let mut source_start = 0;
+        let mut clean_start = 0;
+        let clean_chars: Vec<char> = clean.chars().collect();
         b.text
-            .lines()
+            .split_terminator('\n')
             .enumerate()
-            .map(|(i, l)| markdown::MdLine {
-                text: l.to_string(),
-                runs: b
-                    .runs
-                    .iter()
-                    .filter(|r| r.0 == i)
-                    .map(|r| (r.1, r.2, r.3))
-                    .collect(),
-                indent: 0,
-                hang: 0,
-                base: if diff {
-                    diff_line_style(l)
-                } else {
-                    Style::default()
-                },
+            .map(|(i, l)| {
+                let end = source_start + l.chars().count();
+                let start = source_start;
+                let base = clean_start;
+                clean_start = offsets[(end + 1).min(offsets.len() - 1)];
+                source_start = end + 1;
+                let text: String = clean_chars[base..offsets[end]].iter().collect();
+                markdown::MdLine {
+                    text,
+                    runs: b
+                        .runs
+                        .iter()
+                        .filter(|r| r.0 == i)
+                        .map(|r| {
+                            (
+                                offsets[(start + r.1).min(end)] - base,
+                                offsets[(start + r.2).min(end)] - base,
+                                r.3,
+                            )
+                        })
+                        .collect(),
+                    indent: 0,
+                    hang: 0,
+                    base: if diff {
+                        diff_line_style(l)
+                    } else {
+                        Style::default()
+                    },
+                    links: Vec::new(),
+                }
             })
             .collect()
     };
@@ -449,16 +513,44 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
     let mut source_offset = 0usize;
     for ml in lines {
         let chars: Vec<char> = ml.text.chars().collect();
-        let links: Vec<_> = crate::file_links::candidates(&ml.text)
-            .into_iter()
-            .map(|candidate| {
-                (
-                    ml.text[..candidate.range.start].chars().count(),
-                    ml.text[..candidate.range.end].chars().count(),
-                    candidate,
-                )
-            })
-            .collect();
+        let mut links: Vec<_> = if b.linkify {
+            crate::file_links::candidates(&ml.text)
+        } else {
+            Vec::new()
+        }
+        .into_iter()
+        .map(|candidate| {
+            (
+                ml.text[..candidate.range.start].chars().count(),
+                ml.text[..candidate.range.end].chars().count(),
+                candidate,
+            )
+        })
+        .collect();
+        if let Some(root) = link_root {
+            // Prose before a filename also forms path-shaped candidates ("I edited main.rs"), so
+            // keep only references that exist, and the longest one where they overlap.
+            links.retain(|(_, _, c)| c.markdown || crate::file_links::exists_cached(c, root));
+            links.sort_by_key(|(a, z, _)| (std::cmp::Reverse(z - a), *a));
+            let mut kept: Vec<(usize, usize, crate::file_links::Candidate)> = Vec::new();
+            for link in links {
+                if !kept.iter().any(|(a, z, _)| link.0 < *z && *a < link.1) {
+                    kept.push(link);
+                }
+            }
+            kept.sort_by_key(|(a, z, _)| (*a, *z));
+            links = kept;
+        }
+        let mut web_links = Vec::new();
+        for (a, b, target) in &ml.links {
+            links.retain(|(x, y, _)| !(*x < *b && *a < *y));
+            if markdown::web_target(target) {
+                web_links.push((*a, *b, target.clone()));
+            } else if let Some(mut candidate) = crate::file_links::explicit_reference(target) {
+                candidate.display = chars[*a..*b].iter().collect();
+                links.push((*a, *b, candidate));
+            }
+        }
         let first_w = width.saturating_sub(gw + ml.indent).max(1);
         let rest_w = width.saturating_sub(gw + ml.indent + ml.hang).max(1);
         for (i, (s, e)) in wrap_ranges_hang(&chars, first_w, rest_w)
@@ -509,10 +601,18 @@ fn wrap_block(b: &Block, width: usize, rows: &mut Vec<Row>) {
                 joins_prev: i > 0,
                 runs,
                 links: row_links,
+                web_links: web_links
+                    .iter()
+                    .filter_map(|(a, b, url)| {
+                        let (a, b) = ((*a).max(s), (*b).min(e));
+                        (a < b).then(|| (a - s, b - s, url.clone()))
+                    })
+                    .collect(),
             });
         }
         source_offset += ml.text.chars().count() + 1;
     }
+    pending
 }
 
 #[cfg(test)]
@@ -527,6 +627,7 @@ mod tests {
             style: Style::default(),
             text,
             markdown: false,
+            linkify: true,
             runs: &[],
         }
     }
@@ -846,6 +947,7 @@ mod tests {
             style: Style::default(),
             text: "card",
             markdown: false,
+            linkify: true,
             runs: &[],
         };
         v.rebuild(&[a], 40, 10);
@@ -857,6 +959,7 @@ mod tests {
             style: red,
             text: "card",
             markdown: false,
+            linkify: true,
             runs: &[],
         };
         v.rebuild(&[b], 40, 10);
@@ -867,6 +970,7 @@ mod tests {
         Block {
             identity: None,
             markdown: true,
+            linkify: true,
             ..blk(gutter, text)
         }
     }
@@ -948,5 +1052,83 @@ mod tests {
         assert!(reversed.iter().any(|(t, r)| t.trim() == "here" && !*r));
         // Copy gives the visible text, without markdown markers.
         assert_eq!(v.selected_text().as_deref(), Some("see code"));
+    }
+}
+
+#[cfg(test)]
+mod diagram_cache_tests {
+    use super::*;
+    #[test]
+    fn long_diagram_history_settles_and_later_block_changes_do_not_restart_it() {
+        let mut texts: Vec<_> = (0..40)
+            .map(|i| format!("```mermaid\nflowchart LR\n A[Node{i}] --> B[Done{i}]\n```"))
+            .collect();
+        let mut view = TranscriptView::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let blocks: Vec<_> = texts
+                .iter()
+                .enumerate()
+                .map(|(id, text)| Block {
+                    identity: Some(id),
+                    gutter: "",
+                    gutter_style: Style::default(),
+                    style: Style::default(),
+                    text,
+                    markdown: true,
+                    linkify: false,
+                    runs: &[],
+                })
+                .collect();
+            view.rebuild(&blocks, 90, 40);
+            if view
+                .keys
+                .iter()
+                .all(|(key, _)| key.diagram_revision.is_none())
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "diagram history kept rendering"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let before = view
+            .rows
+            .iter()
+            .map(|r| r.text.iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(before.contains("Node0") && before.contains("Node39"));
+        assert!(!before.contains("Rendering Mermaid") && !before.contains("flowchart LR"));
+        texts[0] = "Earlier message edited".into();
+        let blocks: Vec<_> = texts
+            .iter()
+            .enumerate()
+            .map(|(id, text)| Block {
+                identity: Some(id),
+                gutter: "",
+                gutter_style: Style::default(),
+                style: Style::default(),
+                text,
+                markdown: true,
+                linkify: false,
+                runs: &[],
+            })
+            .collect();
+        view.rebuild(&blocks, 90, 40);
+        assert!(view
+            .keys
+            .iter()
+            .all(|(key, _)| key.diagram_revision.is_none()));
+        let after = view
+            .rows
+            .iter()
+            .map(|r| r.text.iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(after.contains("Node1") && after.contains("Node39"));
+        assert!(!after.contains("Rendering Mermaid") && !after.contains("flowchart LR"));
     }
 }

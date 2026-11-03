@@ -27,6 +27,37 @@ pub struct ResolvedFile {
     pub column: Option<u32>,
 }
 
+/// Markdown syntax and label ranges in bytes, shared by discovery and display.
+pub(crate) struct MarkdownLink {
+    pub syntax: Range<usize>,
+    pub label: Range<usize>,
+    pub target: String,
+}
+
+pub(crate) fn markdown_links(text: &str) -> Vec<MarkdownLink> {
+    let text = &text[..char_boundary_at_or_before(text, MAX_TEXT_BYTES)];
+    let mut links = Vec::new();
+    let mut cursor = 0;
+    while let Some(open) = text[cursor..].find('[').map(|n| n + cursor) {
+        let Some(mid) = text[open + 1..].find("](").map(|n| n + open + 1) else {
+            break;
+        };
+        let Some(close) = markdown_destination_end(text, mid + 2) else {
+            cursor = mid + 2;
+            continue;
+        };
+        if mid > open + 1 && (open == 0 || !text[..open].ends_with(['\\', '!'])) {
+            links.push(MarkdownLink {
+                syntax: open..close + 1,
+                label: open + 1..mid,
+                target: decode_markdown_target(text[mid + 2..close].trim()),
+            });
+        }
+        cursor = close + 1;
+    }
+    links
+}
+
 /// Find path-shaped references without touching the filesystem or interpreting them as commands.
 /// Markdown destinations support `[label](target)`, including `<targets with spaces>`.
 pub fn candidates(text: &str) -> Vec<Candidate> {
@@ -36,37 +67,21 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
 
     // Markdown links have an unambiguous destination, so record them first and suppress their
     // syntax from the plain-path pass. Keep only the visible label clickable.
-    let mut cursor = 0;
-    while let Some(open) = bounded[cursor..].find('[').map(|n| n + cursor) {
-        let Some(mid_rel) = bounded[open + 1..].find("](") else {
-            break;
-        };
-        let mid = open + 1 + mid_rel;
-        let Some(close) = markdown_destination_end(bounded, mid + 2) else {
-            cursor = mid + 2;
-            continue;
-        };
-        let label = &bounded[open + 1..mid];
-        let raw_target = bounded[mid + 2..close].trim();
-        let target = decode_markdown_target(raw_target);
-        if let Some((path, line, column)) = split_reference(&target) {
-            if is_local_path(&path) && valid_position(line, column) {
-                let label_start = open + 1;
-                let label_end = mid;
-                if !label.is_empty() {
-                    out.push(Candidate {
-                        display: label.to_owned(),
-                        range: label_start..label_end,
-                        target: path,
-                        line,
-                        column,
-                        markdown: true,
-                    });
-                }
+    for link in markdown_links(bounded) {
+        let label = &bounded[link.label.clone()];
+        if let Some((path, line, column)) = split_reference(&link.target) {
+            if is_local_path(&path) && valid_position(line, column) && !label.is_empty() {
+                out.push(Candidate {
+                    display: label.to_owned(),
+                    range: link.label,
+                    target: path,
+                    line,
+                    column,
+                    markdown: true,
+                });
             }
         }
-        masked[open..=close].fill(true);
-        cursor = close + 1;
+        masked[link.syntax].fill(true);
     }
 
     // Inline code is a strong signal that whitespace belongs to the path. Produce every bounded
@@ -177,8 +192,8 @@ pub fn explicit_reference(text: &str) -> Option<Candidate> {
     })
 }
 
-/// Resolve one candidate against the supplied working directory. This is intentionally called
-/// only after an explicit click; it does not search for a same-named file elsewhere.
+/// Resolve one candidate for explicit navigation or bounded active-chat reference discovery.
+/// It does not search for a same-named file elsewhere or read the file contents.
 pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String> {
     if !is_local_path(&candidate.target)
         || candidate.target.len() > MAX_PATH_BYTES
@@ -186,7 +201,12 @@ pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String
     {
         return Err("not a supported local file reference".into());
     }
-    let raw = PathBuf::from(&candidate.target);
+    // Chat renderers commonly spell an absolute Windows Markdown destination `/C:/...`.
+    // Strip only that extra slash; preserve drive-relative, UNC and ordinary rooted paths.
+    let target = candidate.target.as_str();
+    #[cfg(windows)]
+    let target = normalized_local_path(target);
+    let raw = PathBuf::from(target);
     let path = if raw.is_absolute() {
         raw
     } else {
@@ -201,6 +221,55 @@ pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String
         line: candidate.line,
         column: candidate.column,
     })
+}
+
+/// Whether `candidate` names an existing file, remembered briefly so redraws do not stat the
+/// same prose again. Rendering uses this to underline only references that open.
+pub fn exists_cached(candidate: &Candidate, cwd: &Path) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    type Cache = HashMap<(PathBuf, String), (bool, Instant)>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    const FRESH: Duration = Duration::from_secs(10);
+    let key = (cwd.to_path_buf(), candidate.target.clone());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((exists, at)) = cache.lock().ok().and_then(|c| c.get(&key).copied()) {
+        if at.elapsed() < FRESH {
+            return exists;
+        }
+    }
+    let probe = Candidate {
+        line: None,
+        column: None,
+        ..candidate.clone()
+    };
+    let exists = valid_position(candidate.line, candidate.column) && resolve(&probe, cwd).is_ok();
+    if let Ok(mut c) = cache.lock() {
+        if c.len() > 4096 {
+            c.clear();
+        }
+        c.insert(key, (exists, Instant::now()));
+    }
+    exists
+}
+
+fn normalized_local_path(target: &str) -> &str {
+    if target.starts_with('/')
+        && target
+            .as_bytes()
+            .get(1)
+            .is_some_and(u8::is_ascii_alphabetic)
+        && target.as_bytes().get(2) == Some(&b':')
+        && target
+            .as_bytes()
+            .get(3)
+            .is_some_and(|b| matches!(*b, b'/' | b'\\'))
+    {
+        &target[1..]
+    } else {
+        target
+    }
 }
 
 /// Return the candidate covering an explicitly clicked byte offset, if any.
@@ -286,7 +355,8 @@ fn add_reference_candidate(
     range: Range<usize>,
     markdown: bool,
 ) {
-    if let Some((path, line, column)) = split_reference(raw) {
+    let target = raw.strip_prefix('@').unwrap_or(raw);
+    if let Some((path, line, column)) = split_reference(target) {
         if is_local_path(&path) {
             out.push(Candidate {
                 display: raw.to_owned(),
@@ -333,7 +403,7 @@ fn valid_position(line: Option<u32>, column: Option<u32>) -> bool {
 }
 
 fn is_local_path(path: &str) -> bool {
-    let p = path.trim();
+    let p = normalized_local_path(path.trim());
     !p.is_empty()
         && !p.starts_with("//")
         && !p.starts_with("\\\\")
@@ -359,6 +429,37 @@ fn has_extension(s: &str) -> bool {
     let s = s.trim_end_matches(|c: char| ".,;!?)]}".contains(c));
     let path = split_reference(s).map(|p| p.0).unwrap_or_default();
     let leaf = path.rsplit(['/', '\\']).next().unwrap_or(&path);
+    // Bare decimal measurements are prose (12.3k tokens, 8.2s), not filenames.
+    // Explicit paths such as ./8.2s remain addressable.
+    if !path.contains(['/', '\\']) {
+        let bare = leaf.trim_start_matches(['$', '\u{20ac}', '\u{a3}']);
+        if let Some((whole, fraction)) = bare.split_once('.') {
+            let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
+            let unit = &fraction[digits..];
+            if !whole.is_empty()
+                && whole.bytes().all(|c| c.is_ascii_digit())
+                && digits > 0
+                && matches!(
+                    unit,
+                    "" | "k"
+                        | "K"
+                        | "M"
+                        | "s"
+                        | "ms"
+                        | "us"
+                        | "ns"
+                        | "m"
+                        | "h"
+                        | "KB"
+                        | "MB"
+                        | "GB"
+                        | "%"
+                )
+            {
+                return false;
+            }
+        }
+    }
     leaf.rfind('.').is_some_and(|i| {
         i > 0 && i + 1 < leaf.len() && leaf[i + 1..].chars().all(|c| c.is_ascii_alphanumeric())
     })
@@ -395,6 +496,22 @@ fn char_boundary_at_or_before(s: &str, mut i: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn absolute_windows_markdown_link_accepts_chat_leading_slash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview.md");
+        std::fs::write(&path, "# Exact file").unwrap();
+        let source = format!(
+            "[preview](/{}:1)",
+            path.to_string_lossy().replace('\\', "/")
+        );
+        let link = candidates(&source).into_iter().next().unwrap();
+        let resolved = resolve(&link, dir.path()).unwrap();
+        assert_eq!(resolved.path, path.canonicalize().unwrap());
+        assert_eq!(resolved.line, Some(1));
+    }
 
     #[test]
     fn markdown_label_keeps_spaces_unicode_and_position_reference() {

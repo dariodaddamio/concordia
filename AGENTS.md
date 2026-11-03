@@ -1,11 +1,15 @@
 # Agent implementation instructions
 
-Read PLAN.md before work. Concordia is a thin local orchestrator that drives the Codex, Claude Code and
-Cursor CLIs from one terminal app. The product is the Rust crate in `crates/concordia`.
+Read PLAN.md before work. Concordia is a local memory-management and orchestration layer for the
+Codex, Claude Code and Cursor CLIs. The product is the Rust crate in `crates/concordia`.
+Memory/session continuity, source retrieval, routing and worker coordination are core scope.
 
 State the task, the paths you will touch, your assumptions and observable acceptance criteria
-before implementing. Do not broaden scope to replace provider tools, context management,
-authentication, or terminal rendering.
+before implementing. Preserve native provider tools and authentication. Memory management may
+index provider-owned session sources and coordinate handoff; it must preserve explicit identities,
+bounded reads, source freshness and existing logs. Distinguish implemented behavior from the target
+design in docs/context-handoff-plan.md. Do not introduce a hosted memory backend or silently change
+provider compaction policy.
 
 Delegation is allowed for scoped work: assign disjoint ownership and return evidence. Do not spawn
 agents recursively merely because a slot is available. Research does not authorize live provider

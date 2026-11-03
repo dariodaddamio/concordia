@@ -138,10 +138,14 @@ may have separate usage or plan policies that were not read.
 
 ## Context sharing without infringing, and with few tokens
 
-Sharing context between providers needs no credentials and no provider data:
+Sharing context does not collect credentials. The current engineering data flow is:
 
-- The context pack is built **locally from Concordia's own recorded conversation**, never from
-  provider-internal files, and is only sent to the provider the user switches to.
+- The compact map is built locally from Concordia conversation events. Native-source indexes
+  separately store metadata, identities and byte-range hashes for user-owned Codex/Claude session
+  files. Handoffs can carry these pointer IDs; exact excerpts are read on demand and may then be
+  included in a user-started provider turn. Native originals are not rewritten, and credential files
+  are excluded. See [native memory](native-memory.md). This updates implementation facts, not the
+  dated legal assessments above.
 - It is bounded (character budget), shown to the user with an estimated size, and only attached
   after an explicit switch. No model is called to summarise it.
 - Provider sessions stay provider-native; Concordia binds to an explicit session id and never guesses.

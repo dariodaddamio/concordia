@@ -172,21 +172,21 @@ impl WindowsVt {
                             return Ok(());
                         }
                     }
-                    if last_resize.elapsed() >= RESIZE_POLL_INTERVAL {
-                        last_resize = Instant::now();
-                        if let Ok(size) = crossterm::terminal::size() {
-                            if previous_size != Some(size) {
-                                previous_size = Some(size);
-                                if sender
-                                    .send(super::Message::Event(
-                                        Event::Resize(size.0, size.1),
-                                        Instant::now(),
-                                    ))
-                                    .is_err()
-                                {
-                                    return Ok(());
-                                }
-                            }
+                }
+            }
+            if last_resize.elapsed() >= RESIZE_POLL_INTERVAL {
+                last_resize = Instant::now();
+                if let Ok(size) = crossterm::terminal::size() {
+                    if previous_size != Some(size) {
+                        previous_size = Some(size);
+                        if sender
+                            .send(super::Message::Event(
+                                Event::Resize(size.0, size.1),
+                                Instant::now(),
+                            ))
+                            .is_err()
+                        {
+                            return Ok(());
                         }
                     }
                 }
@@ -325,6 +325,14 @@ struct VtParser {
 
 impl VtParser {
     fn push(&mut self, byte: u8) -> io::Result<Option<Event>> {
+        // Esc followed immediately by a new terminal sequence is two inputs. Keep the
+        // second ESC pending, or the paste opener becomes literal "[200~" draft text.
+        if byte == b'\x1b' && self.event.as_slice() == b"\x1b" {
+            return Ok(Some(Event::Key(KeyEvent::new(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+            ))));
+        }
         // An unframed LF is ConPTY's Ctrl+Enter paste newline. Inside bracketed paste the
         // incomplete event buffer is nonempty, so the byte remains part of Event::Paste data.
         if byte == b'\n' && self.event.is_empty() {
@@ -376,20 +384,26 @@ impl VtParser {
     }
 }
 
-fn normalize_event(event: Event) -> Event {
+pub(super) fn normalize_event(event: Event) -> Event {
     match event {
-        Event::Key(key)
-            if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL =>
+        Event::Key(mut key)
+            if matches!(key.code, KeyCode::Char('h' | 'w'))
+                && key.modifiers == KeyModifiers::CONTROL =>
         {
-            Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            // Windows hosts encode word-backspace as BS (Ctrl+H) or Ctrl+W;
+            // ordinary Backspace is DEL. Keep the word-editing intent.
+            key.code = KeyCode::Backspace;
+            Event::Key(key)
         }
         // ConPTY encodes LF in its VT byte stream. Preserve the same text meaning as the
         // Crossterm INPUT_RECORD backend, where pasted LF arrives as Ctrl+Enter.
-        Event::Key(key)
+        Event::Key(mut key)
             if (key.code == KeyCode::Char('\n') && key.modifiers.is_empty())
                 || (key.code == KeyCode::Char('j') && key.modifiers == KeyModifiers::CONTROL) =>
         {
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+            key.code = KeyCode::Enter;
+            key.modifiers = KeyModifiers::CONTROL;
+            Event::Key(key)
         }
         event => event,
     }
@@ -445,14 +459,46 @@ mod tests {
     }
 
     #[test]
-    fn backspace_control_byte_matches_console_backspace() {
+    fn word_backspace_encodings_keep_the_control_modifier() {
         assert_eq!(
             parse(b"\x08"),
+            [Event::Key(KeyEvent::new(
+                KeyCode::Backspace,
+                KeyModifiers::CONTROL
+            ))]
+        );
+        assert_eq!(parse(b"\x17"), parse(b"\x08"));
+        assert_eq!(
+            parse(b"\x7f"),
             [Event::Key(KeyEvent::new(
                 KeyCode::Backspace,
                 KeyModifiers::NONE
             ))]
         );
+    }
+
+    #[test]
+    fn normalizing_console_keys_preserves_release_events() {
+        use crossterm::event::KeyEventKind;
+        for (input, output) in [
+            ('h', KeyCode::Backspace),
+            ('w', KeyCode::Backspace),
+            ('j', KeyCode::Enter),
+        ] {
+            let key = KeyEvent::new_with_kind(
+                KeyCode::Char(input),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Release,
+            );
+            assert_eq!(
+                normalize_event(Event::Key(key)),
+                Event::Key(KeyEvent::new_with_kind(
+                    output,
+                    KeyModifiers::CONTROL,
+                    KeyEventKind::Release
+                ))
+            );
+        }
     }
 
     #[test]
@@ -462,6 +508,24 @@ mod tests {
         assert_eq!(
             parser.quiet().unwrap(),
             Some(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)))
+        );
+    }
+
+    #[test]
+    fn escape_immediately_before_paste_or_arrow_keeps_the_second_sequence() {
+        assert_eq!(
+            parse(b"\x1b\x1b[200~ plus\x1b[201~"),
+            vec![
+                Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                Event::Paste(" plus".into()),
+            ]
+        );
+        assert_eq!(
+            parse(b"\x1b\x1b[A"),
+            vec![
+                Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            ]
         );
     }
 

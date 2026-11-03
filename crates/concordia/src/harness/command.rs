@@ -222,7 +222,12 @@ pub fn connect_in(
     let manifest_path_text = manifest_path.to_string_lossy().into_owned();
     let who = identity(manifest, &manifest_path_text, sha, &skill);
     let mut entry = entry;
-    if let Err(e) = connections::record(store, &who, entry.clone()) {
+    if let Err(e) = connections::record_with_pins(
+        store,
+        &who,
+        entry.clone(),
+        !manifest.pinned_decisions.is_empty(),
+    ) {
         entry.connect_note = format!("{}; {e}", entry.connect_note);
     }
     entry
@@ -268,7 +273,12 @@ pub fn verify_in(
             .as_ref()
             .map(|s| s.to_string_lossy().into_owned());
         let who = identity(manifest, &manifest_path_text, sha, &skill);
-        let _ = connections::record(store, &who, entry_for(ctx, true, "ok".into()));
+        let _ = connections::record_with_pins(
+            store,
+            &who,
+            entry_for(ctx, true, "ok".into()),
+            !manifest.pinned_decisions.is_empty(),
+        );
     }
     let _ = connections::set_verify(
         store,

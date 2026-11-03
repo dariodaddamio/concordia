@@ -55,7 +55,7 @@ fn cancel_leaves_editor_empty_and_late_result_keeps_new_draft() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         app.editor.set_text("  retry with spacing  ");
         app.submit_input(&tx);
-        assert_eq!(rx.try_recv().unwrap(), "retry with spacing");
+        assert_eq!(rx.try_recv().unwrap(), "  retry with spacing  ");
 
         app.busy = true;
         handle_key(&mut app, KeyEvent::new(code, modifiers), &tx);

@@ -40,7 +40,7 @@ the same index 0-15 in a 256-colour palette, so a terminal with only 16 colours 
 
 | State | Colour (ANSI-256) | Colour (16-colour fallback) | Animation frames (width-1 braille) | Label text | Border and title | Elapsed timer |
 | --- | --- | --- | --- | --- | --- | --- |
-| waiting | 6 | Cyan | 10 frames, U+280B U+2819 U+2839 U+2838 U+283C U+2834 U+2826 U+2827 U+2807 U+280F | `waiting for the model` | border in state colour; title: frame, bold label | shown |
+| waiting | 6 | Cyan | 10 frames, U+280B U+2819 U+2839 U+2838 U+283C U+2834 U+2826 U+2827 U+2807 U+280F | `awaiting provider output` | border in state colour; title: frame, bold label | shown |
 | thinking | 5 | Magenta | 8 frames, U+2801 to U+2808 (dot patterns that rise and fall) | `thinking` | as waiting | shown |
 | tool | 3 | Yellow | 8 frames, U+28FE U+28FD U+28FB U+28BF U+287F U+28DF U+28EF U+28F7 | `running <tool name>` | as waiting | shown |
 | writing | 2 | Green | 12 frames, U+2809 to U+2834 and back (a wave) | `writing` | as waiting | shown |
@@ -125,7 +125,7 @@ enum Phase {
 impl Phase {
     fn label(&self) -> String {
         match self {
-            Phase::Waiting => "waiting for the model".into(),
+            Phase::Waiting => "awaiting provider output".into(),
             Phase::Thinking => "thinking".into(),
             Phase::Tool(name) => format!("running {name}"),
             Phase::Writing => "writing".into(),
@@ -248,3 +248,17 @@ render(frame):
   both light and dark terminals. Check it on each theme you ship.
 - **Predictable timing.** The timer counts real time, so a slow provider looks slow rather than
   frozen.
+
+
+## Live status and elapsed time (2026-10-31)
+
+The main prompt names the account while waiting: `Codex: awaiting first output` before any tool
+card, or `Codex: awaiting next output` after a tool completes. These labels describe observable
+output rather than assuming that an unreported provider is thinking or connected. Reasoning,
+running tools and answer text still drive their own phase labels.
+
+The timer immediately to the right is elapsed wall-clock time for the whole turn, always in
+only necessary leading units, for example `8m 20s` or `1h 02m 03s`. It resets for a new turn, not for each phase.
+It is not billed usage, a countdown or an estimate of remaining work.
+
+The [UI glossary](ui-glossary.md) documents animations, account nicknames, active email and file/chat reference controls.

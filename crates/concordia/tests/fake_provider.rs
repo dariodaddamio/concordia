@@ -106,6 +106,7 @@ fn fixture(name: &str) -> PathBuf {
 
 fn req<'a>(prompt: &'a str, cwd: &'a Path, home: Option<&'a Path>) -> ProviderTurnRequest<'a> {
     ProviderTurnRequest {
+        images: &[],
         provider: ProviderKind::Codex,
         prompt,
         cwd,
@@ -114,6 +115,8 @@ fn req<'a>(prompt: &'a str, cwd: &'a Path, home: Option<&'a Path>) -> ProviderTu
         native_session_id: None,
         trust: TrustMode::Workspace,
         context_prefix: None,
+        local_time: None,
+        compaction: Default::default(),
     }
 }
 
@@ -506,6 +509,7 @@ fn req_for<'a>(
     session: Option<&'a str>,
 ) -> ProviderTurnRequest<'a> {
     ProviderTurnRequest {
+        images: &[],
         provider,
         prompt,
         cwd,
@@ -514,6 +518,8 @@ fn req_for<'a>(
         native_session_id: session,
         trust: TrustMode::Workspace,
         context_prefix: None,
+        local_time: None,
+        compaction: Default::default(),
     }
 }
 

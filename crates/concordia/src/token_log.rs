@@ -30,7 +30,9 @@ pub struct Entry {
 
 impl Entry {
     pub fn total(&self) -> u64 {
-        self.new_input + self.cached_input + self.output
+        self.new_input
+            .saturating_add(self.cached_input)
+            .saturating_add(self.output)
     }
 }
 
@@ -52,12 +54,15 @@ fn path(state_root: &Path) -> PathBuf {
 /// Append one turn. A failure is the caller's to report; it never stops a turn.
 pub fn record(state_root: &Path, entry: &Entry) -> std::io::Result<()> {
     std::fs::create_dir_all(state_root)?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path(state_root))?;
-    let line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
-    writeln!(file, "{line}")
+    let mut line = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
+    line.push(b'\n');
+    crate::state_io::with_lock(&state_root.join("token-log.lock"), || {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path(state_root))?;
+        file.write_all(&line)
+    })
 }
 
 /// Every recorded turn; a damaged line is skipped, not fatal.
@@ -83,17 +88,19 @@ pub struct Totals {
 
 impl Totals {
     pub fn add(&mut self, e: &Entry) {
-        self.turns += 1;
-        self.new_input += e.new_input;
-        self.cached_input += e.cached_input;
-        self.output += e.output;
+        self.turns = self.turns.saturating_add(1);
+        self.new_input = self.new_input.saturating_add(e.new_input);
+        self.cached_input = self.cached_input.saturating_add(e.cached_input);
+        self.output = self.output.saturating_add(e.output);
         if let Some(c) = e.cost_usd {
             self.cost_usd = Some(self.cost_usd.unwrap_or(0.0) + c);
         }
     }
 
     pub fn total(&self) -> u64 {
-        self.new_input + self.cached_input + self.output
+        self.new_input
+            .saturating_add(self.cached_input)
+            .saturating_add(self.output)
     }
 }
 
