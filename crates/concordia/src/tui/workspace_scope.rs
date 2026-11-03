@@ -130,10 +130,25 @@ impl App {
 
     pub(super) fn scope_command(&mut self, argument: &str) {
         let result = if argument.is_empty() {
-            Ok(match &self.scopes.task {
-                Some((run, request)) => format!("Current run {run}: {}\n/scope set read:PATH write:PATH changes future turns; /scope default reserves the whole folder. /scope leases inspects owners. Claims coordinate scheduler admission and do not sandbox native tools.", request.describe()),
-                None => "Unscoped turns reserve the whole execution folder. /scope set read:PATH write:PATH declares future scope; quote paths with spaces. /scope leases inspects owners. These claims do not sandbox native tools.".into(),
-            })
+            let future = if self.scopes.defaults.is_empty() {
+                "Write:./ (whole execution folder)".into()
+            } else {
+                self.scopes
+                    .defaults
+                    .iter()
+                    .map(|declaration| {
+                        format!("{:?}:{}", declaration.access, declaration.path.display())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let current = self
+                .scopes
+                .task
+                .as_ref()
+                .map(|(run, request)| format!("Current run {run}: {}\n", request.describe()))
+                .unwrap_or_default();
+            Ok(format!("{current}Future main scope: {future}\n/scope set read:PATH write:PATH changes future turns; quote paths with spaces. /scope default reserves the whole folder. /scope leases inspects owners. Claims coordinate scheduler admission and do not sandbox native tools."))
         } else if argument == "default" {
             self.scopes.defaults.clear();
             Ok("Future main turns reserve the whole execution folder; current task scope is unchanged".into())
