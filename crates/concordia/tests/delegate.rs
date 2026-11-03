@@ -321,6 +321,238 @@ async fn a_delegate_runs_in_the_background_with_a_fresh_session_and_a_labelled_r
         WorkerState::Cancelled
     );
     assert_eq!(std::fs::read_to_string(&out).unwrap(), receipt);
+
+    // Cross-worktree results remain blocked until their exact delivery is accepted.
+    std::fs::write(&source_path, &raw).unwrap();
+    let hooks = env.path("empty-git-hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let git = |directory: &Path, args: &[&str]| {
+        let mut command = std::process::Command::new(which::which("git").unwrap());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let output = command
+            .current_dir(directory)
+            .args([
+                "-c",
+                &format!("core.hooksPath={}", hooks.display()),
+                "-c",
+                &format!("init.templateDir={}", hooks.display()),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgSign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&cwd, &["init", "-b", "main"]);
+    git(
+        &cwd,
+        &["commit", "--allow-empty", "-m", "synthetic dependency base"],
+    );
+    let flag = std::sync::atomic::AtomicBool::new(false);
+    let managed =
+        concordia::managed_workspaces::create(env.dir.path(), &cwd, "HEAD", &flag).unwrap();
+    let ledger = env.path("pane-recovery/dependency-fixture/pane-fixture/worker-runs");
+    let mut isolated = Delegates::default();
+    isolated
+        .attach_recovery(&ledger, &cwd, env.dir.path())
+        .unwrap();
+    let managed_parent = isolated
+        .submit_workspace(
+            request("managed prerequisite"),
+            Instant::now(),
+            &[],
+            &[],
+            Some(&managed.id),
+        )
+        .unwrap();
+    until(&mut isolated, 20, |d| {
+        d.get(managed_parent).unwrap().state.is_finished()
+    })
+    .await;
+    assert_eq!(
+        isolated.get(managed_parent).unwrap().state,
+        WorkerState::Done
+    );
+    // This native fixture commit is explicitly authored here, not by the scheduler.
+    std::fs::write(
+        managed.execution.join("worker-result.rs"),
+        "committed fixture result\n",
+    )
+    .unwrap();
+    git(&managed.execution, &["add", "worker-result.rs"]);
+    git(
+        &managed.execution,
+        &["commit", "-m", "synthetic prerequisite result"],
+    );
+    let result_only = isolated
+        .submit_after(
+            request("result-only consumer"),
+            Instant::now(),
+            &[managed_parent],
+        )
+        .unwrap();
+    assert!(matches!(
+        isolated.dependency_status(result_only).unwrap(),
+        concordia::delegate::schedule::Readiness::IntegrationRequired { .. }
+    ));
+    let before_review = std::fs::read_to_string(&out).unwrap();
+    isolated.poll(Instant::now());
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), before_review);
+    let input = isolated.delivery_request(result_only).unwrap();
+    let reviewed = concordia::delegate::delivery::review(env.dir.path(), &input, &flag).unwrap();
+    use concordia::delegate::delivery::Mode;
+    assert!(reviewed.receipt(Mode::Integrated).is_err());
+    let accepted = reviewed.receipt(Mode::ResultOnly).unwrap();
+    let mut corrupt = accepted.clone();
+    corrupt.hash = "0".repeat(64);
+    assert!(isolated.accept_delivery(result_only, corrupt).is_err());
+    std::fs::write(
+        managed.execution.join("pending.txt"),
+        "not part of this review",
+    )
+    .unwrap();
+    let changed = concordia::delegate::delivery::review(env.dir.path(), &input, &flag)
+        .unwrap()
+        .receipt(Mode::ResultOnly)
+        .unwrap();
+    assert_ne!(changed.hash, accepted.hash);
+    std::fs::remove_file(managed.execution.join("pending.txt")).unwrap();
+    isolated.accept_delivery(result_only, accepted).unwrap();
+    let saved = std::fs::read_to_string(ledger.join("workers.json")).unwrap();
+    assert!(saved.contains("\"delivery\"") && saved.contains("result_only"));
+    assert!(!saved.contains("verified prerequisite reply"));
+    until(&mut isolated, 20, |d| {
+        d.get(result_only).unwrap().state.is_finished()
+    })
+    .await;
+    assert_eq!(
+        isolated.get(result_only).unwrap().state,
+        WorkerState::Done,
+        "{:?}",
+        isolated.get(result_only).unwrap().error
+    );
+    assert!(
+        !cwd.join("worker-result.rs").exists(),
+        "result-only delivery must never integrate edits"
+    );
+    let delivered = std::fs::read_to_string(&out).unwrap();
+    let prompt = delivered
+        .lines()
+        .filter_map(|line| line.strip_prefix("ARG:"))
+        .map(unhex)
+        .next_back()
+        .unwrap();
+    assert!(
+        prompt.contains("result-only")
+            && prompt.contains("does not deliver or integrate")
+            && prompt.contains("verified prerequisite reply")
+    );
+
+    let integrated = isolated
+        .submit_after(
+            request("integrated consumer"),
+            Instant::now(),
+            &[managed_parent],
+        )
+        .unwrap();
+    use concordia::managed_workspaces::lifecycle::{self, Action};
+    let retirement =
+        lifecycle::preview(env.dir.path(), &cwd, &managed.id, Action::Retire, &flag).unwrap();
+    assert!(retirement
+        .blockers
+        .iter()
+        .any(|blocker| blocker.contains("dependency run")));
+    let integration =
+        lifecycle::preview(env.dir.path(), &cwd, &managed.id, Action::Integrate, &flag).unwrap();
+    assert!(
+        integration.blockers.is_empty(),
+        "{:?}",
+        integration.blockers
+    );
+    lifecycle::execute(
+        env.dir.path(),
+        &cwd,
+        &managed.id,
+        Action::Integrate,
+        &integration.receipt,
+        &flag,
+    )
+    .unwrap();
+    assert!(cwd.join("worker-result.rs").exists());
+    let integrated_input = isolated.delivery_request(integrated).unwrap();
+    let integrated_receipt =
+        concordia::delegate::delivery::review(env.dir.path(), &integrated_input, &flag)
+            .unwrap()
+            .receipt(Mode::Integrated)
+            .unwrap();
+    isolated
+        .accept_delivery(integrated, integrated_receipt)
+        .unwrap();
+    until(&mut isolated, 20, |d| {
+        d.get(integrated).unwrap().state.is_finished()
+    })
+    .await;
+    assert_eq!(
+        isolated.get(integrated).unwrap().state,
+        WorkerState::Done,
+        "{:?}",
+        isolated.get(integrated).unwrap().error
+    );
+
+    let stale_delivery = isolated
+        .submit_after(
+            request("must pause on changed workspace"),
+            Instant::now(),
+            &[managed_parent],
+        )
+        .unwrap();
+    let stale_input = isolated.delivery_request(stale_delivery).unwrap();
+    let stale_receipt = concordia::delegate::delivery::review(env.dir.path(), &stale_input, &flag)
+        .unwrap()
+        .receipt(Mode::ResultOnly)
+        .unwrap();
+    isolated
+        .accept_delivery(stale_delivery, stale_receipt)
+        .unwrap();
+    std::fs::write(
+        managed.execution.join("changed-after-acceptance.txt"),
+        "changed workspace",
+    )
+    .unwrap();
+    let no_launch = std::fs::read_to_string(&out).unwrap();
+    until(&mut isolated, 20, |d| {
+        d.get(stale_delivery).unwrap().state.is_finished()
+    })
+    .await;
+    assert_eq!(
+        isolated.get(stale_delivery).unwrap().state,
+        WorkerState::Paused
+    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), no_launch);
+    drop(isolated);
+    let mut resumed = Delegates::default();
+    resumed
+        .attach_recovery(&ledger, &cwd, env.dir.path())
+        .unwrap();
+    resumed.poll(Instant::now());
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        no_launch,
+        "recovery cannot replay delivery or launch a task"
+    );
 }
 
 #[tokio::test]

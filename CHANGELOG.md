@@ -1,5 +1,9 @@
 # Changelog
 
+- Managed cross-worktree dependencies wait for explicit delivery review. Owners can accept only
+  the verified result text or a matching completed integration receipt. Changed source/head/status
+  evidence pauses dispatch, and pending dependants prevent premature worktree retirement.
+
 - F10 opens a read-only integrations catalog without consuming the composer draft. Connected
   manifests show revision status, provider/home/project bindings and namespaced tools. Agents
   discover the same catalog through a bounded, paginated MCP tool without executing adapters.

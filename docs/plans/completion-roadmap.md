@@ -22,8 +22,9 @@ approval-bound sequences and worker/main inspection; workspace isolation remains
 [capacity provenance](../quality/capacity-provenance.md), [project replacement](../quality/project-replacement.md),
 [file actions](../quality/file-actions.md), [text documents and pasted paths](../images-and-diagrams.md)
 and [integration discovery](../quality/integrations-catalog.md) record later engineering progress.
-Verified binary transports, inline raster, typed artifacts, cross-worktree dependency delivery,
-goal-change proposals and native/physical-host parity retain their separate contracts below.
+[Cross-worktree dependency delivery](../quality/dependency-delivery.md) adds reviewed receipts and
+retirement references. Verified binary transports, inline raster, typed artifacts, goal-change
+proposals and native/physical-host parity retain their separate contracts below.
 
 ## Baseline and scope
 

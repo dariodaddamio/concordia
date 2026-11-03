@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03m
+# Feature completion audit: 2026-11-03n
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,9 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Managed cross-worktree dependencies wait for explicit result-only or already-integrated
+  receipts, with source/repository revalidation and retirement references. [Scope](quality/dependency-delivery.md).
 
 - Ordered text-document snapshots and explicit F9 pasted-path attachment preserve drafts/queues
   and exact native text data. [Input scope](images-and-diagrams.md). Binary transports remain unavailable.
@@ -83,7 +86,7 @@ creation does not change the implementation status recorded here.
   `/delegate after ID[,ID] ACCOUNT TASK` binds exact runs; `/delegate graph` explains readiness.
   Failed prerequisites block dependants, stale results pause and restart dispatches nothing.
   See [second-wave evidence](quality/completion-wave2.md). Cross-worktree dependency integration
-  and native confinement remain open.
+  is now receipt-bound; native filesystem confinement remains a separate capability.
 
 - First completion wave adds bounded read-only project search plus dependency/recovery and native
   interaction contract foundations. See [scope and verification](quality/completion-wave1.md).

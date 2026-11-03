@@ -3007,6 +3007,11 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
         .unwrap()
         .records
         .remove(0);
+    let native_sources = dir.path().join("profile/.codex/sessions");
+    std::fs::create_dir_all(&native_sources).unwrap();
+    std::fs::write(native_sources.join("99999999-2222-3333-4444-555555555555.jsonl"), format!("{}\n{}\n",
+        serde_json::json!({"type":"session_meta","payload":{"id":"99999999-2222-3333-4444-555555555555"}}),
+        serde_json::json!({"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"Verified managed prerequisite source"}]}}))).unwrap();
     std::fs::remove_file(dir.path().join("gate")).unwrap();
     s.submit(&format!(
         "/delegate worktree {} codex Inspect managed workspace [wait]",
@@ -3052,7 +3057,7 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     assert!(returned["prompt"]
         .as_str()
         .unwrap()
-        .contains("edits have not been integrated"));
+        .contains("delivery does not integrate"));
     assert_eq!(
         Path::new(returned["cwd"].as_str().unwrap())
             .canonicalize()
@@ -3062,6 +3067,40 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     s.send("\x01\x08");
     s.until("draft cleared for native input configuration", |s| {
         s.draft().is_empty()
+    });
+    s.submit("/delegate after 2 codex Wait for reviewed managed results");
+    s.until(
+        "cross-worktree dependency waits for explicit delivery",
+        |s| s.screen().contains("integration_required"),
+    );
+    assert_eq!(
+        s.journal()
+            .iter()
+            .filter(|entry| entry["kind"] == "start")
+            .count(),
+        4
+    );
+    s.submit("/delegate delivery 3");
+    s.until("exact managed dependency review displayed", |s| {
+        s.screen().contains("Accept results only") && s.screen().contains("result-only")
+    });
+    s.submit(&format!(
+        "/delegate delivery 3 result-only {}",
+        "0".repeat(64)
+    ));
+    s.until("stale or wrong delivery receipt rejected", |s| {
+        s.screen().contains("obtain a fresh receipt")
+    });
+    assert_eq!(
+        s.journal()
+            .iter()
+            .filter(|entry| entry["kind"] == "start")
+            .count(),
+        4
+    );
+    s.submit("/delegate stop codex");
+    s.until("waiting dependency cancelled without execution", |s| {
+        s.screen().contains("stopped") || s.screen().contains("cancelled")
     });
     use concordia::managed_workspaces::lifecycle::{self, Action};
     let flag = std::sync::atomic::AtomicBool::new(false);

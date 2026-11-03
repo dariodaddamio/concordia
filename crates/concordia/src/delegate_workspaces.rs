@@ -149,7 +149,7 @@ impl Job {
     pub(super) fn workspace_delivery_notice(&self) -> Option<String> {
         let request = self.workspace.as_ref()?;
         let managed = request.binding.managed.as_ref()?;
-        Some(format!("Managed worktree {}: {}\nResult only: edits have not been integrated into the owner's workspace. Task completion does not authorize integration or retirement.", managed.id, request.binding.execution.display()))
+        Some(format!("Managed worktree {}: {}\nResult only: delivery does not integrate edits into the owner's workspace. Inspect an explicit integration receipt to establish the current tree. Task completion does not authorize integration or retirement.", managed.id, request.binding.execution.display()))
     }
 
     pub fn workspace_summary(&self) -> String {
