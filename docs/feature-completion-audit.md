@@ -5,6 +5,10 @@ improvements are implemented. The complete
 memory-management/orchestration roadmap remains unfinished. This audit does not mark planned
 features complete because their UI exists or because a synthetic demonstration passes.
 
+The [remaining-feature execution plan](plans/completion-roadmap.md) covers every open area below,
+including implementation order, parallel ownership and provider/host/release evidence. Plan
+creation does not change the implementation status recorded here.
+
 ## Closed in this build
 
 - Session handoff selection through `/use` or `/continuation`: pause and choose, automatic
