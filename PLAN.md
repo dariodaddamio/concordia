@@ -75,6 +75,10 @@ uses its read-only quota RPC. Native execution, authentication and approvals rem
 
 ## Roadmap
 
+The [remaining-feature execution plan](docs/plans/completion-roadmap.md) breaks all open areas
+into implementation slices, parallel ownership, dependencies and observable acceptance criteria.
+Its detailed plans are proposed work; shipped status remains in the feature completion audit.
+
 Worker models, bounded automatic result return and remaining orchestration gaps:
 [orchestration and latency](docs/orchestration-and-latency.md).
 

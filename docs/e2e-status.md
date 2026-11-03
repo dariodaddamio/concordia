@@ -1,6 +1,29 @@
 # Everyday E2E status (MVP A)
 
-## Current record, 2026-11-02i
+## Current record, 2026-11-02j
+
+Runtime source is `c6d3b7c`, installed build `2026-11-02j`, SHA-256
+`381E68F6AAB89F3F93E877475283B742B3F09B3923CBD13BC48A31E58E417DE1`.
+All 960 enabled local tests pass, including 862 library tests. All 48 Windows ConPTY journeys
+pass against that exact installed binary in 281.02 seconds; its hash is unchanged afterward.
+Formatting, all-target clippy with warnings denied, release build, release smoke, installed
+everyday smoke, cargo-deny and OSS gates pass. Remote CI run `41546832324` passed both jobs;
+the Windows job includes all 48 terminal journeys, release smoke and OSS gates.
+
+Enter now closes a finished update screen when no update is available, retaining the draft.
+Unused Syntect YAML/plist import dependencies are removed. Bincode retains one documented
+maintenance-advisory exception for embedded assets; other advisory checks remain enabled.
+The reviewed artifact budget is 20 MiB and this binary measures 16.55 MiB. Privacy exceptions
+recognize exact public product identifiers only in listed files; isolated rejection checks
+confirm personal paths and identifiers in unlisted files are still rejected.
+
+Provider turns used fixtures. Everyday smoke included a read-only native usage check. No new
+live-provider turn, Defender scan, signing, release rehearsal or publication is claimed by this
+record. Separate signing work remains outside the source candidate. Existing windows retain
+their loaded binary until reopened. The documentation-only remaining-feature plan does not
+change this runtime evidence or mark future features complete.
+
+## Previous record, 2026-11-02i
 
 The installed memory/orchestration feature build is `2026-11-02i`, SHA-256
 `EC9A4AA15F804DF770D2D486934F5C2B5407C0656BB075E1215FA429B2748554`.
