@@ -956,6 +956,35 @@ impl Session {
         std::fs::write(self.root.join("gate"), "continue").unwrap();
     }
 
+    fn acknowledge_stopped_scope(&mut self) {
+        let draft = self.draft();
+        let prompts = self.prompts().len();
+        let registry = concordia::workspaces::load(&self.root).unwrap();
+        let run = registry
+            .reservations
+            .iter()
+            .find(|entry| entry.phase == concordia::workspaces::Phase::ReconcileRequired)
+            .unwrap()
+            .run
+            .clone();
+        self.send("\x1b[1;5B");
+        self.send("\x01\x08");
+        self.until("draft cleared for reconciliation command", |s| {
+            s.draft().is_empty()
+        });
+        self.submit(&format!("/scope stopped {run}"));
+        self.until("stopped process acknowledged", |s| {
+            s.screen().contains("Stopped-process acknowledgment saved")
+        });
+        assert_eq!(
+            self.prompts().len(),
+            prompts,
+            "acknowledgment never replays a turn"
+        );
+        self.paste(&draft);
+        self.until("independent draft restored", |s| s.draft() == draft);
+    }
+
     fn exit(&mut self) {
         self.send("\x01"); // clear the draft before native cancel/quit keys
         self.send("\x08");
@@ -1457,6 +1486,7 @@ fn explicit_queue_resume_preserves_the_recovered_draft() {
         s.screen().contains("Ctrl+R resumes")
     });
     assert_eq!(s.prompts().len(), 1);
+    s.acknowledge_stopped_scope();
     s.send("\x12"); // Ctrl+R
     s.until("one resumed prompt", |s| s.prompts().len() == 2);
     s.until("followup complete", |s| {
@@ -1575,6 +1605,7 @@ fn crash_restores_the_unsaved_upper_editor_separately_and_holds_dispatch() {
     s.until("edit committed", |s| {
         s.queue() == ["saved queued item\nunsaved upper edit"]
     });
+    s.acknowledge_stopped_scope();
     s.send("\x12");
     s.until("recovered edited item sent", |s| {
         s.prompts() == ["[wait] first", "saved queued item\nunsaved upper edit"]
@@ -2484,6 +2515,19 @@ fn worker_crash_recovery_preserves_request_and_pauses_without_reexecution() {
         1
     );
     assert!(ledgers().iter().any(|l| l.contains("Paused")));
+    let registry = || concordia::workspaces::load(dir.path()).unwrap();
+    assert_eq!(
+        registry().reservations[0].phase,
+        concordia::workspaces::Phase::ReconcileRequired
+    );
+    s.submit("/delegate scope stopped 1");
+    s.until("stopped worker acknowledged without replay", |_| {
+        registry().reservations[0].phase == concordia::workspaces::Phase::Released
+    });
+    assert_eq!(
+        s.journal().iter().filter(|e| e["kind"] == "start").count(),
+        1
+    );
     s.exit();
 }
 
@@ -2583,7 +2627,11 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     s.until("automatic returns enabled", |s| {
         s.screen().contains("Worker returns: auto")
     });
-    s.submit("/delegate codex Implement scoped parser [wait]");
+    s.submit("/scope set write:main.txt");
+    s.until("main scope configured", |s| {
+        s.screen().contains("Future main scope")
+    });
+    s.submit("/delegate scoped codex write:worker.txt -- Implement scoped parser [wait]");
     s.until("native worker running", |s| {
         s.journal()
             .iter()
@@ -2603,6 +2651,14 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     let starts: Vec<_> = journal.iter().filter(|e| e["kind"] == "start").collect();
     assert_eq!(starts.len(), 2);
     assert_eq!(starts[0]["provider"], "codex");
+    assert!(starts[0]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("Write:worker.txt"));
+    assert!(starts[1]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("Write:main.txt"));
     let args = starts[0]["args"].as_array().unwrap();
     assert!(args
         .windows(2)

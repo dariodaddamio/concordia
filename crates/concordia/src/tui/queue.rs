@@ -731,6 +731,16 @@ impl App {
         if self.cancel_requested {
             outcome.cancelled = true;
         }
+        let scope_closed = self.finish_main_scope(&outcome);
+        if !scope_closed {
+            // A failed admission must not consume an explicitly selected queue item.
+            self.queue.force_pending = false;
+            self.queue.advance = false;
+            self.pause_queue();
+        }
+        if !scope_closed && !outcome.cancelled && (outcome.failed || outcome.exit_code != Some(0)) {
+            self.continuation.pause_for_workspace_reconciliation();
+        }
         let turn_closed = outcome.cancelled || (!outcome.failed && outcome.exit_code == Some(0));
         self.preparing_cancel = None;
         if let Some(session) = outcome.session_id.as_ref() {
@@ -743,14 +753,14 @@ impl App {
         self.cancel_handle = None;
         self.questions.cancel_native();
         self.native_owner = None;
-        let automatic_target = if self.queue.force_pending {
+        let automatic_target = if self.queue.force_pending || !scope_closed {
             None
         } else {
             self.prepare_usage_continuation(&outcome)
         };
         self.finalize_turn(outcome);
         self.native_accounting_owner = None;
-        self.save_turn_checkpoint(turn_closed);
+        self.save_turn_checkpoint(turn_closed && scope_closed);
         if self.questions.waiting() {
             self.pause_queue();
             self.queue.advance = false;

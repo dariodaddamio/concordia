@@ -84,6 +84,8 @@ impl State {
             .map(|prompt| turn_checkpoint::Checkpoint {
                 version: 2,
                 routing: self.routing.clone(),
+                scope: None,
+                conversation: None,
                 run_id: self.run_id.clone(),
                 workspace,
                 context_rollovers: self.context_rollovers,
@@ -132,6 +134,13 @@ impl State {
         self.prompt = None;
         self.recovered = false;
         self.errors.clear();
+    }
+
+    pub(super) fn pause_for_workspace_reconciliation(&mut self) {
+        self.pending = self.prompt.clone();
+        self.blocked = true;
+        self.recovered = true;
+        self.deferred = false;
     }
 
     pub fn waiting(&self) -> bool {
@@ -586,10 +595,7 @@ impl App {
             return;
         }
         let previous_provider = self.provider;
-        let previous_home = self
-            .home_path
-            .as_ref()
-            .map(|h| h.to_string_lossy().into_owned());
+        let previous_home = self.continuity_home();
         let trust = self.trust;
         if let Err(error) = select_account(&self.state_root, target) {
             self.push_system(format!("continuation account unavailable: {error}"));

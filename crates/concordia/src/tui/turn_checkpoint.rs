@@ -15,6 +15,10 @@ pub(super) struct Checkpoint {
     pub reason: String,
     #[serde(default)]
     pub routing: Option<crate::routing::Approved>,
+    #[serde(default)]
+    pub scope: Option<crate::workspaces::Request>,
+    #[serde(default)]
+    pub conversation: Option<String>,
 }
 
 impl App {
@@ -57,7 +61,7 @@ impl App {
                 return false;
             }
         };
-        let checkpoint = if closed {
+        let mut checkpoint = if closed {
             None
         } else {
             self.continuation.checkpoint(
@@ -66,6 +70,13 @@ impl App {
                 self.cwd.clone(),
             )
         };
+        if let Some(checkpoint) = &mut checkpoint {
+            checkpoint.scope = self.scopes.snapshot(&checkpoint.run_id);
+            if checkpoint.scope.is_some() {
+                checkpoint.version = 3;
+                checkpoint.conversation = Some(self.deleg.d.conversation_id().into());
+            }
+        }
         if let Err(error) = lease.save_turn(checkpoint.as_ref()) {
             self.keep.turn_recovery_notice = true;
             self.push_system(format!(
@@ -82,7 +93,17 @@ impl App {
         self.keep.turn_recovery_notice = matches!(&result, Some(Ok(Some(_))) | Some(Err(_)));
         match result {
             Some(Ok(Some(checkpoint))) => {
-                if !matches!(checkpoint.version, 1 | 2)
+                if !matches!(checkpoint.version, 1..=3)
+                    || checkpoint
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| !scope.structurally_valid())
+                    || checkpoint.version == 3
+                        && (checkpoint.scope.is_none()
+                            || checkpoint.conversation.as_ref().is_none_or(|id| {
+                                !uuid::Uuid::parse_str(id)
+                                    .is_ok_and(|parsed| parsed.to_string() == *id)
+                            }))
                     || checkpoint
                         .routing
                         .as_ref()
@@ -101,10 +122,24 @@ impl App {
                     return;
                 }
                 self.native_sources = checkpoint.sources.clone();
+                if let Err(error) =
+                    self.restore_main_scope(&checkpoint.run_id, checkpoint.scope.clone())
+                {
+                    self.push_system(format!(
+                        "workspace recovery unavailable: {error}; original checkpoint kept"
+                    ));
+                    return;
+                }
                 self.native_session_id = None;
                 self.session_ui.invalidate();
                 self.session_ui.title = checkpoint.title.clone();
                 self.deleg.change_conversation();
+                if let Some(conversation) = &checkpoint.conversation {
+                    if let Err(error) = self.deleg.d.restore_conversation_identity(conversation) {
+                        self.push_system(error);
+                        return;
+                    }
+                }
                 self.messages.clear();
                 self.related_files.reset();
                 self.questions.clear();
@@ -160,12 +195,51 @@ mod tests {
             app.restore_state();
             app.run_line("Finish the parser fix".into(), &tx);
             rx.try_recv().unwrap();
+            let owner = crate::provider::interaction::InteractionOwner {
+                conversation_id: app.deleg.d.conversation_id().into(),
+                workspace: dir.path().into(),
+                execution_cwd: dir.path().into(),
+                run_id: app.continuation.run_id().into(),
+                attempt_id: uuid::Uuid::new_v4().to_string(),
+                provider: ProviderKind::Codex,
+                account: "fixture".into(),
+                home: Some(home.clone()),
+            }
+            .validate_for(ProviderKind::Codex, dir.path(), Some(&home))
+            .unwrap();
+            app.reserve_main_scope(&owner).unwrap();
+            app.scope_invocation_flag()
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut blocked = App::new(dir.path().into(), dir.path().into());
+            blocked.refresh_binding();
+            blocked.run_line("Keep this blocked request".into(), &tx);
+            rx.try_recv().unwrap();
+            let mut conflicting_owner = owner.clone();
+            conflicting_owner.conversation_id = blocked.deleg.d.conversation_id().into();
+            conflicting_owner.run_id = blocked.continuation.run_id().into();
+            conflicting_owner.attempt_id = uuid::Uuid::new_v4().to_string();
+            assert!(blocked.reserve_main_scope(&conflicting_owner).is_err());
+            blocked.on_turn_done(
+                TurnOutcome {
+                    failed: true,
+                    ..Default::default()
+                },
+                &tx,
+            );
+            assert!(
+                blocked.continuation.waiting(),
+                "admission conflict retains an explicit continuation request"
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "admission conflict cannot automatically retry"
+            );
             app.apply_progress(TurnProgress::Session("explicit-original-session".into()));
             app.editor.set_text("newer unsent draft");
             app.queue.items.push("later work".into());
             app.persist_draft_now();
             let snapshot = app.keep.lease.as_ref().unwrap().turn().unwrap().unwrap();
-            assert_eq!(snapshot.version, 2);
+            assert_eq!(snapshot.version, 3);
             assert!(snapshot.routing.as_ref().unwrap().valid());
             assert_eq!(
                 app.keep
@@ -197,6 +271,19 @@ mod tests {
             "restart does not assume old native writer is gone"
         );
         assert!(app.queue.paused && !app.queue.advance);
+        assert_eq!(
+            crate::workspaces::load(dir.path()).unwrap().reservations[0].phase,
+            crate::workspaces::Phase::ReconcileRequired
+        );
+        app.run_line("/scope stopped".into(), &tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "stopped acknowledgment never replays a turn"
+        );
+        assert_eq!(
+            crate::workspaces::load(dir.path()).unwrap().reservations[0].phase,
+            crate::workspaces::Phase::Released
+        );
         app.run_line("/continue fixture".into(), &tx);
         assert!(
             rx.try_recv().is_err(),

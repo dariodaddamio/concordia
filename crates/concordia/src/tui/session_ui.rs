@@ -198,7 +198,10 @@ impl App {
         let checkpoint_cleared = self.save_turn_checkpoint(true);
         self.need_context_pack = false;
         self.prior_provider = provider;
-        self.prior_home = Some(home.to_string_lossy().into_owned());
+        self.prior_home = home
+            .canonicalize()
+            .ok()
+            .map(|home| home.to_string_lossy().into_owned());
         self.project_search.close();
         self.native_owner = None;
         self.deleg.change_conversation();

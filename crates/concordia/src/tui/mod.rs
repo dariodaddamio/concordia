@@ -89,6 +89,7 @@ mod usage_style;
 mod ux_tests;
 mod workers;
 mod workspace;
+mod workspace_scope;
 mod workspace_search;
 
 use editor::Editor;
@@ -296,6 +297,7 @@ pub struct App {
     native_usage_model: Option<String>,
     native_usage_session: Option<String>,
     native_accounting_owner: Option<crate::provider::interaction::InteractionOwner>,
+    scopes: workspace_scope::State,
     project_search: workspace_search::State,
     continuation_target: Option<String>,
     state_root: PathBuf,
@@ -422,6 +424,12 @@ pub struct App {
 }
 
 impl App {
+    fn continuity_home(&self) -> Option<String> {
+        self.home_path
+            .as_ref()
+            .and_then(|home| home.canonicalize().ok())
+            .map(|home| home.to_string_lossy().into_owned())
+    }
     fn refresh_binding(&mut self) {
         self.account_names = crate::store::load_store(&self.state_root).account_nicknames;
         if let Some(sel) = get_use_selection(&self.state_root) {
@@ -2471,7 +2479,7 @@ impl App {
                         self.model
                     ));
                     self.prior_provider = self.provider;
-                    self.prior_home = new_home;
+                    self.prior_home = self.continuity_home();
                 }
             }
             PickerKind::Model => {
@@ -2523,7 +2531,7 @@ impl App {
                         self.push_system(format!("{} · ~{} tok", pack.labeled, pack.est_tokens));
                     }
                     self.prior_provider = self.provider;
-                    self.prior_home = new_home;
+                    self.prior_home = self.continuity_home();
                     self.push_system(format!("using {} · {}", self.account_label(), self.model));
                 }
             }
@@ -3136,6 +3144,13 @@ impl App {
             return;
         }
         if let Some(arg) = line
+            .strip_prefix("/scope")
+            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
+        {
+            self.scope_command(arg.trim());
+            return;
+        }
+        if let Some(arg) = line
             .strip_prefix("/continuation")
             .filter(|arg| arg.is_empty() || arg.starts_with(' '))
         {
@@ -3168,6 +3183,14 @@ impl App {
         self.continuation
             .begin(&self.account, &self.model, &original_line);
         self.freeze_continuation_routes();
+        if let Err(error) = self.bind_main_scope() {
+            self.push_system(format!(
+                "workspace scope not approved: {error}; request kept"
+            ));
+            self.restore_composer(&request);
+            self.submitted_prompt = None;
+            return;
+        }
         self.last_sent = Some(request.clone());
         self.ensure_session_title(&line);
         if !self.save_turn_checkpoint(false) {
@@ -3276,6 +3299,7 @@ impl App {
             native_usage_model: None,
             native_usage_session: None,
             native_accounting_owner: None,
+            scopes: workspace_scope::State::default(),
             project_search: workspace_search::State::default(),
             images: images::State::default(),
             history: Vec::new(),
@@ -3428,10 +3452,7 @@ pub async fn run_chat_tui() -> Result<()> {
     }
     landing::open(&mut app);
     app.prior_provider = app.provider;
-    app.prior_home = app
-        .home_path
-        .as_ref()
-        .map(|p| p.to_string_lossy().into_owned());
+    app.prior_home = app.continuity_home();
 
     enable_raw_mode()?;
     let terminal_restore = TerminalRestoreGuard::new();
@@ -3593,7 +3614,6 @@ pub async fn run_chat_tui() -> Result<()> {
                 let account = app.account.clone();
                 let model = app.model.clone();
                 let trust = app.trust;
-                let launch_home = app.home_path.clone();
                 let owner = crate::provider::interaction::InteractionOwner {
                     conversation_id: app.deleg.d.conversation_id().to_owned(),
                     workspace: cwd.clone(),
@@ -3617,9 +3637,28 @@ pub async fn run_chat_tui() -> Result<()> {
                         continue;
                     }
                 };
+                if let Err(error) = app.reserve_main_scope(&owner) {
+                    app.on_turn_done(
+                        TurnOutcome {
+                            failed: true,
+                            stderr_tail: format!("Workspace admission: {error}"),
+                            ..Default::default()
+                        },
+                        &turn_tx,
+                    );
+                    continue;
+                }
+                let cwd = owner.execution_cwd.clone();
+                let launch_home = owner.home.clone();
                 app.questions.cancel_native();
                 app.native_owner = Some(owner.clone());
                 app.native_accounting_owner = Some(owner.clone());
+                let scope_invoked = app.scope_invocation_flag();
+                let scope_intent = app
+                    .scopes
+                    .snapshot(&owner.run_id)
+                    .filter(|request| !request.whole_workspace_write())
+                    .map(|request| request.describe());
                 app.native_usage_model = (!model.is_empty() && model != "?").then(|| model.clone());
                 app.native_usage_session = app.native_session_id.clone();
                 let session = app.native_session_id.clone();
@@ -3627,10 +3666,10 @@ pub async fn run_chat_tui() -> Result<()> {
                 let prior_home = app.prior_home.clone();
                 // This dispatch carries any pending switch; later turns resume the new session.
                 app.prior_provider = app.provider;
-                app.prior_home = app
-                    .home_path
+                app.prior_home = owner
+                    .home
                     .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned());
+                    .map(|home| home.to_string_lossy().into_owned());
                 let pack_msgs = app.pack_messages();
                 // Drop the just-typed user message from pack (already in prompt).
                 let pack_msgs: Vec<_> = if pack_msgs
@@ -3784,6 +3823,9 @@ pub async fn run_chat_tui() -> Result<()> {
                         });
                         return;
                     }
+                    if let Some(scope) = scope_intent {
+                        prefix.get_or_insert_with(String::new).push_str(&format!("\n[User-declared cooperative workspace scope]\n{scope}\nFollow these declared paths. Scheduler reservations grant no additional native permissions."));
+                    }
                     let req = ProviderTurnRequest {
                         images: &image_inputs,
                         provider,
@@ -3809,6 +3851,7 @@ pub async fn run_chat_tui() -> Result<()> {
                         });
                         return;
                     }
+                    scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
                     match run_provider_turn_with_owner(
                         &req,
                         owner,
