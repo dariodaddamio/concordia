@@ -1,5 +1,8 @@
 # Remaining feature implementation plan
 
+Current implementation/capability disposition: [2026-11-03s campaign map](../quality/overnight-roadmap-disposition.md).
+The planning baseline and proposed designs below are historical; shipped contracts are linked there.
+
 Status: planned, 2026-11-02. Baseline: committed build `2026-11-02j` (`c6d3b7c`).
 This is the execution plan for the remaining features, prepared through three parallel source
 audits. It does not mark these features implemented or authorize provider usage or publication.

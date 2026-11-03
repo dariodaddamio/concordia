@@ -1,9 +1,9 @@
-# Feature completion audit: 2026-11-03r
+# Feature completion audit: 2026-11-03s
 
-Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
-improvements are implemented. The complete
-memory-management/orchestration roadmap remains unfinished. This audit does not mark planned
-features complete because their UI exists or because a synthetic demonstration passes.
+The supported local roadmap slices and the additional UX requests are implemented within their
+documented capabilities. The [current disposition](quality/overnight-roadmap-disposition.md) maps
+every area to shipped contracts and separates unavailable native interfaces, live/physical-host
+evidence and release gates. Those remaining gates are not claimed complete by fixture results.
 
 The [remaining-feature execution plan](plans/completion-roadmap.md) covers every open area below,
 including implementation order, parallel ownership and provider/host/release evidence. Plan
@@ -62,11 +62,12 @@ creation does not change the implementation status recorded here.
 
 - Explicit related-chat groups retain overlapping membership and provenance. A separate discovery
   screen preserves drafts and landing selection, with cross-project context suggestions labelled.
-  [Behavior and evidence](quality/related-chat-groups.md). Corpus evaluation remains open.
+  [Behavior and evidence](quality/related-chat-groups.md). Synthetic corpus evidence is recorded;
+  live model-retention experiments remain separately budgeted.
 
 - Opt-in ranking explains verified goal/handoff/file/text/time signals with exact native
   pointers. Historical file facts never read the referenced files or claim an edit completed.
-  [Behavior and evidence](quality/memory-ranking.md). Corpus evaluation remains open;
+  [Behavior and evidence](quality/memory-ranking.md). Synthetic corpus evidence is recorded;
   lexical recall remains the default.
 
 - Explicit managed Git worktrees bind a clean committed base, repository, owner/execution
@@ -169,9 +170,9 @@ creation does not change the implementation status recorded here.
   activity typing searches output. The original draft stays in the editor and returns on close.
 - The pinned expanded-tool collapse control uses the same command/argument preview and output
   count as the compact card, so scrolling retains the command subject rather than only `shell`.
-- Explicit GIF/PNG/JPEG/WebP references use the system viewer, preserving the draft and leaving
-  text previews internal. Viewer launchers are bounded/reaped, and arguments do not pass through
-  a command shell. Tests replace the external opener; physical viewer behavior is not certified.
+- Explicit PNG/JPEG/WebP references use inline cell previews; GIF and explicit viewer fallback
+  preserve the draft. Text previews stay internal. Viewer launchers use argument arrays.
+  Tests replace the external opener; physical viewer behavior is not certified.
 
 Implementation: `tui/modal.rs`, `tui/mod.rs`, `tui/pointer.rs`, `tui/files.rs`.
 Interaction evidence is in `tui/tests.rs` and the isolated `tui_journeys.rs` modal journey.
@@ -189,15 +190,16 @@ This is fixture/automated evidence, not a claim to have tested every possible re
 
 ## Core roadmap status after the memory/orchestration implementation
 
-These items are not a completed feature set. Repeated UI polishing did not finish the core
-roadmap, and an audit is not implementation. Local engineering can proceed without owner input.
+The [current area-by-area disposition](quality/overnight-roadmap-disposition.md) is authoritative
+for the implemented campaign. The remaining boundaries below are explicit capability/evidence gates.
 
 1. Whole-history native indexing is implemented with immutable bounded pages and stable snapshot
    ordinals. Oversized/malformed records remain explicit gaps; recent indexing remains the default.
 2. Cursor readback uses supported, capability-checked ACP replay and exact session/account binding.
    Bounds and fixture evidence do not establish parity for every installed Cursor version.
 3. Bounded lexical retrieval and explicit/observed lineage are implemented. Suggestions remain
-   separate from confirmed relationships; richer goal/file relationship ranking remains open.
+   separate from confirmed relationships. Explainable goal/file ranking, explicit related groups
+   and synthetic retrieval evaluation are implemented with their recorded limits.
 4. Optional Codex proactive rollover and process-local Codex/Claude compaction controls are
    implemented. Claude/Cursor proactive capacity remains unknown; live validation remains open.
 5. Worker UUIDs, pane-owned ledgers, paused crash recovery, exact result pointers, delivery
@@ -218,9 +220,9 @@ included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.
 
 ## What the owner can unblock
 
-- Local memory/orchestration implementations and their fixture evidence are recorded in
-  [the implementation ledger](quality/memory-orchestration-progress.md). Cwd replacement and
-  broader workspace ownership/isolation features remain engineering work, not permission blockers.
+- Local implementation and evidence are mapped in the
+  [campaign disposition](quality/overnight-roadmap-disposition.md), including cwd replacement,
+  managed workspace lifecycle and cross-worktree dependency delivery.
 - Live provider/auth/approval parity needs an explicit provider/task scope and usage budget under
   `AGENTS.md`. No model turns have been used to clear this gate.
 - Unsupported proactive capacity requires verified native signals for installed versions.

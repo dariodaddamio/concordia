@@ -1,5 +1,8 @@
 # Changelog
 
+- GIF links retain the explicit system-viewer fallback. A read-only candidate evidence collector
+  binds executable hashes, build source, environment and bounded check receipts without publishing.
+
 - Native Codex questions can accept bounded text replies in foreground and worker review when
   offered by the protocol. F8 focuses the reply; paste and multiline input preserve the composer.
   Exact request ownership and native secret-input refusal remain enforced.

@@ -1,5 +1,9 @@
 # Provider, host and release validation plan
 
+Current implementation/evidence map: [campaign disposition](../quality/overnight-roadmap-disposition.md).
+The baseline below predates the integrated signing policy and candidate collector. Publication,
+live-provider and physical-host qualification remain separate gates.
+
 Status: planned, 2026-11-02. Owner: integration/release lane. Baseline: `c6d3b7c`.
 Scope: produce evidence for supported behavior and an exact distributable candidate. This plan
 does not run real provider turns, provision signing, submit binaries or publish a release.

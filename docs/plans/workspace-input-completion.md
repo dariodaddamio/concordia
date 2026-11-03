@@ -1,5 +1,8 @@
 # Workspace, input and integration completion plan
 
+Current status: [campaign disposition](../quality/overnight-roadmap-disposition.md). The original
+baseline table below predates the shipped input, raster, artifact and integration slices.
+
 Planning baseline: `c6d3b7c`, inspected 2026-11-02. This document describes future slices; it
 does not claim they are implemented. Scope is local Windows workspace operations, richer
 attachments, host presentation, artifact discovery and native integration management. Provider

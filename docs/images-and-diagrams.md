@@ -41,6 +41,7 @@ draft; E explicitly opens the system viewer. The preview uses ordinary true-colo
 half-block glyphs and normal frame clipping/redraw, without a terminal image escape protocol.
 No-color mode gives a text fallback. This is a terminal-resolution preview, not pixel-perfect
 rendering or evidence of physical-host image protocol support.
+GIF links retain the existing system-viewer action; the inline decoder does not enable GIF.
 
 One background decoder handles PNG/JPEG/WebP files up to 4 MiB, 4096 pixels per edge,
 16 megapixels and 64 MiB decoded output. Decoder allocation limits are 96 MiB; upstream defines
