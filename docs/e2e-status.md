@@ -1,5 +1,16 @@
 # Everyday E2E status (MVP A)
 
+## Corrected goal ranking, 2026-11-03a
+
+Source `bde80f8` fixes canonical goal-link matching when the explicitly selected workspace arrives
+through a Windows short path or directory alias. All 983 enabled checks, all-target Clippy,
+release smoke, portable everyday smoke and GitHub CI pass. All 48 installed ConPTY journeys pass
+in 310.81 seconds. CI also passes the journey that exposed the short-path mismatch.
+
+PR 29 was merged and the exact validated binary installed. Build a: 18,793,984 bytes; SHA-256
+`56C47AE8E83C4EE3639A24D74B23E8DF254CC653B49551C7EA42E57679AD54D7`.
+No real model turn was run; everyday smoke uses the existing read-only quota RPC.
+
 ## Historical file facts and ranking, 2026-11-02t
 
 Production source `0374dde` passes all 983 enabled checks, all-target Clippy with warnings denied,

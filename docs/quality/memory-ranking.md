@@ -3,10 +3,13 @@
 Build `2026-11-02t` adds opt-in M1 ranking. Ordinary `/memory recall` remains lexical.
 No provider turn, transcript copy, embedding or referenced-file crawl is needed.
 
-Candidate `2026-11-03a` corrects current-workspace alias matching for canonical goal links.
+Build `2026-11-03a` corrects current-workspace alias matching for canonical goal links.
 The original t candidate passed local checks below, but CI exposed its Windows short-path
 false negative. The explicit current context now resolves before association comparison;
-historical source workspace/file paths remain lexical. Corrected-candidate validation is pending.
+historical source workspace/file paths remain lexical. Corrected source `bde80f8` passes all 983
+enabled checks, all-target Clippy, release smoke, portable everyday smoke and green CI. All
+48 installed ConPTY journeys pass in 310.81 seconds. Release/installed build a is 18,793,984 bytes,
+SHA-256 `56C47AE8E83C4EE3639A24D74B23E8DF254CC653B49551C7EA42E57679AD54D7`.
 
 ## Controls
 

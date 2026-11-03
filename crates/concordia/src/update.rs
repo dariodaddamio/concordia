@@ -266,7 +266,15 @@ pub fn start_check(cwd: PathBuf) -> Job {
 
 /// Run `cmd`, relaying its latest output line as progress, and kill its whole process tree if the
 /// job is cancelled. Returns `(success, exit code, last lines of output)`.
-pub fn run_child_with_cancel(mut cmd: Command, ctl: &JobControl) -> Result<(bool, i32, String)> {
+pub fn run_child_with_cancel(cmd: Command, ctl: &JobControl) -> Result<(bool, i32, String)> {
+    run_child_with_format(cmd, ctl, false)
+}
+
+fn run_child_with_format(
+    mut cmd: Command,
+    ctl: &JobControl,
+    cargo_json: bool,
+) -> Result<(bool, i32, String)> {
     crate::process_ui::background_std(&mut cmd);
     use std::collections::VecDeque;
     use std::io::{BufRead, BufReader};
@@ -298,7 +306,25 @@ pub fn run_child_with_cancel(mut cmd: Command, ctl: &JobControl) -> Result<(bool
         readers.push(std::thread::spawn(move || {
             for line in BufReader::new(stream).lines().map_while(|l| l.ok()) {
                 if !line.trim().is_empty() {
-                    ctl.say(&line);
+                    if cargo_json {
+                        match serde_json::from_str::<serde_json::Value>(&line) {
+                            Ok(record) => {
+                                if let Some(message) = record
+                                    .pointer("/message/rendered")
+                                    .and_then(|value| value.as_str())
+                                {
+                                    ctl.say(message);
+                                } else if record["reason"] == "build-finished"
+                                    && record["success"] == true
+                                {
+                                    ctl.say("Release build finished");
+                                }
+                            }
+                            Err(_) => ctl.say(&line),
+                        }
+                    } else {
+                        ctl.say(&line);
+                    }
                     if let Ok(mut t) = tail.lock() {
                         if t.len() == 40 {
                             t.pop_front();
@@ -729,11 +755,11 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
         "no source checkout found: run /update inside the repository once, or run `concordia install` from a build in it",
     )?;
 
+    let expected_source = source_version(&root)?;
     let cargo = which::which("cargo").context("cargo not on PATH")?;
     // Prefer default target/; if this process is that release exe (locked), build aside.
     let default_built = root.join("target").join("release").join("concordia.exe");
     let aside_dir = root.join("target").join("concordia-update");
-    let aside_built = aside_dir.join("release").join("concordia.exe");
     let running_default = env::current_exe()
         .ok()
         .and_then(|p| fs::canonicalize(p).ok())
@@ -759,13 +785,20 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
             }
         }
     };
-    let built = if built.is_file() {
-        built
-    } else if aside_built.is_file() {
-        aside_built
-    } else {
-        bail!("missing built binary at {}", default_built.display());
-    };
+    anyhow::ensure!(
+        built.is_file(),
+        "Cargo-reported executable is missing: {}",
+        built.display()
+    );
+    anyhow::ensure!(
+        source_version(&root)? == expected_source,
+        "source build identity changed during update; retry the build"
+    );
+    let expected_version = format!("concordia {} ({})", expected_source.0, expected_source.1);
+    anyhow::ensure!(
+        verify_binary(&built)? == expected_version,
+        "rebuilt executable does not match the selected source version; existing install kept"
+    );
 
     let install_path = install_binary(&built)?;
     record_source_root(&root);
@@ -785,14 +818,14 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
 /// build. This is what stops `concordia` from silently resolving to a stale copy.
 pub fn install_binary(built: &Path) -> Result<PathBuf> {
     // Never install something that does not run.
-    verify_binary(built)?;
+    let expected_version = verify_binary(built)?;
     let built_len = fs::metadata(built)?.len();
 
     let bin_dir = install_bin_dir();
     fs::create_dir_all(&bin_dir).with_context(|| format!("mkdir {}", bin_dir.display()))?;
     let dest = bin_dir.join(PRIMARY_SLOT);
 
-    swap_in(built, &dest, built_len)?;
+    swap_in(built, &dest, built_len, &expected_version)?;
     sweep_leftovers(&bin_dir);
     persist_concordia_exe_env(&dest);
     Ok(dest)
@@ -807,7 +840,7 @@ fn unique_tag() -> String {
 }
 
 /// Replace `dest` with a copy of `built`, tolerating `dest` being a running executable.
-fn swap_in(built: &Path, dest: &Path, built_len: u64) -> Result<()> {
+fn swap_in(built: &Path, dest: &Path, built_len: u64, expected_version: &str) -> Result<()> {
     let dir = dest.parent().context("install path has no parent")?;
     let tag = unique_tag();
     let staged = dir.join(format!("{PRIMARY_SLOT}.new-{tag}"));
@@ -820,6 +853,10 @@ fn swap_in(built: &Path, dest: &Path, built_len: u64) -> Result<()> {
         bail!("copy to {} was incomplete", staged.display());
     }
 
+    if !verify_binary(&staged).is_ok_and(|version| version == expected_version) {
+        let _ = fs::remove_file(&staged);
+        bail!("staged executable changed version or failed verification; existing install kept");
+    }
     let had_old = dest.exists();
     if had_old {
         if let Err(e) = fs::rename(dest, &aside) {
@@ -1035,20 +1072,60 @@ fn run_cargo_build(
     ctl: &JobControl,
 ) -> Result<(PathBuf, String)> {
     let mut cmd = Command::new(cargo);
-    cmd.args(["build", "-p", "concordia", "--release"])
-        .current_dir(root);
+    cmd.args([
+        "build",
+        "-p",
+        "concordia",
+        "--release",
+        "--bin",
+        "concordia",
+        "--message-format=json",
+    ])
+    .current_dir(root);
     if let Some(dir) = target_dir {
         cmd.arg("--target-dir").arg(dir);
     }
-    let (ok, code, log_tail) = run_child_with_cancel(cmd, ctl)?;
+    let (ok, code, log_tail) = run_child_with_format(cmd, ctl, true)?;
     if !ok {
         bail!("cargo build failed ({code})\n{log_tail}");
     }
-    let built = match target_dir {
-        Some(dir) => dir.join("release").join("concordia.exe"),
-        None => root.join("target").join("release").join("concordia.exe"),
-    };
-    Ok((built, log_tail))
+    let built = cargo_executable(root, &log_tail)?;
+    let display = log_tail
+        .lines()
+        .filter_map(
+            |line| match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(record) => record
+                    .pointer("/message/rendered")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned),
+                Err(_) => Some(line.to_owned()),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok((built, display))
+}
+
+fn cargo_executable(root: &Path, log: &str) -> Result<PathBuf> {
+    let manifest = fs::canonicalize(root.join("crates/concordia/Cargo.toml"))?;
+    log.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| {
+            record["reason"] == "compiler-artifact"
+                && record["target"]["name"] == "concordia"
+                && record["target"]["kind"]
+                    .as_array()
+                    .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
+                && record["profile"]["test"] == false
+                && record["manifest_path"]
+                    .as_str()
+                    .and_then(|path| fs::canonicalize(path).ok())
+                    .as_ref()
+                    == Some(&manifest)
+        })
+        .filter_map(|record| record["executable"].as_str().map(PathBuf::from))
+        .rfind(|path| path.is_absolute())
+        .context("Cargo did not report the built Concordia executable; existing install kept")
 }
 
 fn persist_concordia_exe_env(path: &Path) {
@@ -1177,6 +1254,20 @@ mod tests {
             .join("release")
             .join("concordia.exe");
         assert!(source_root_of_exe(&loose).is_none());
+        let configured = other.path().join("custom-output/release/concordia.exe");
+        let artifact = serde_json::json!({"reason":"compiler-artifact", "target":{"name":"concordia","kind":["bin"]},
+            "profile":{"test":false},"manifest_path":d.path().join("crates/concordia/Cargo.toml"),"executable":configured});
+        assert_eq!(
+            cargo_executable(d.path(), &artifact.to_string()).unwrap(),
+            configured
+        );
+        assert!(cargo_executable(d.path(), "Finished release build").is_err());
+        let mut wrong = artifact.clone();
+        wrong["target"]["kind"] = serde_json::json!(["lib"]);
+        assert!(cargo_executable(d.path(), &wrong.to_string()).is_err());
+        wrong = artifact.clone();
+        wrong["manifest_path"] = serde_json::json!(other.path().join("Cargo.toml"));
+        assert!(cargo_executable(d.path(), &wrong.to_string()).is_err());
     }
 
     #[test]
