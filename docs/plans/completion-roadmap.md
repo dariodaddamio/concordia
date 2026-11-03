@@ -10,6 +10,8 @@ normal dispatch and paused recovery. Other phases below remain planned unless ev
 The [goal/source slice](../quality/goal-source-associations.md) records M0 implementation separately.
 The [accounting slice](../quality/worker-accounting.md) records U1 and bounded main/worker views;
 external native usage import remains separate.
+The [routing slice](../quality/routing-policies.md) connects local eligibility, ordered overrides,
+approval-bound sequences and worker/main inspection; workspace isolation remains separate.
 
 ## Baseline and scope
 

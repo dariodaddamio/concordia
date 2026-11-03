@@ -44,6 +44,8 @@ pub enum SlashCommand {
         task: String,
     },
     DelegateGraph,
+    DelegateRoutes(Option<u32>),
+    DelegatePolicy(String),
     DelegateStop(Option<String>),
     DelegateUse(Option<String>),
     DelegateCollect,
@@ -120,6 +122,7 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
             | "collect"
             | "returns"
             | "graph"
+            | "routes"
     );
     if ((cmd == "workers" || cmd == "worker") || control) && tail.split_whitespace().count() > 1 {
         return Some(SlashCommand::Invalid(cmd.into()));
@@ -140,6 +143,14 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
             "use" | "send" => SlashCommand::DelegateUse(second),
             "collect" => SlashCommand::DelegateCollect,
             "graph" => SlashCommand::DelegateGraph,
+            "routes" => match second {
+                None => SlashCommand::DelegateRoutes(None),
+                Some(id) => match id.parse::<u32>() {
+                    Ok(id) if id > 0 => SlashCommand::DelegateRoutes(Some(id)),
+                    _ => SlashCommand::Invalid("delegate routes [ID]".into()),
+                },
+            },
+            "policy" => SlashCommand::DelegatePolicy(tail.to_owned()),
             "returns" => match second.as_deref() {
                 Some("auto") => SlashCommand::DelegateReturns(Some(true)),
                 Some("manual") => SlashCommand::DelegateReturns(Some(false)),
@@ -419,6 +430,8 @@ pub fn dispatch_slash(
         | SlashCommand::Delegate { .. }
         | SlashCommand::DelegateAfter { .. }
         | SlashCommand::DelegateGraph
+        | SlashCommand::DelegateRoutes(_)
+        | SlashCommand::DelegatePolicy(_)
         | SlashCommand::DelegateStop(_)
         | SlashCommand::DelegateUse(_)
         | SlashCommand::DelegateCollect
@@ -557,6 +570,15 @@ mod update_tests {
         assert_eq!(c("/delegate"), SlashCommand::DelegateHelp);
         assert_eq!(c("/delegate help"), SlashCommand::DelegateHelp);
         assert_eq!(c("/delegate graph"), SlashCommand::DelegateGraph);
+        assert_eq!(c("/delegate routes"), SlashCommand::DelegateRoutes(None));
+        assert_eq!(
+            c("/delegate routes 7"),
+            SlashCommand::DelegateRoutes(Some(7))
+        );
+        assert_eq!(
+            c("/delegate policy set primary:Native-Model backup"),
+            SlashCommand::DelegatePolicy("set primary:Native-Model backup".into())
+        );
         assert_eq!(
             c("/delegate after 1,2   Codex-2   Preserve  exact\nTASK"),
             SlashCommand::DelegateAfter {
@@ -570,6 +592,9 @@ mod update_tests {
             "/delegate after 0 codex task",
             "/delegate after 1,,2 codex task",
             "/delegate graph typo",
+            "/delegate routes 0",
+            "/delegate routes invalid",
+            "/delegate routes 1 2",
         ] {
             assert!(matches!(c(invalid), SlashCommand::Invalid(_)));
         }

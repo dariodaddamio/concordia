@@ -122,6 +122,28 @@ impl Delegates {
 }
 
 impl Job {
+    pub fn routing_summary(&self) -> String {
+        let Some(policy) = &self.routing else {
+            return "Routing: legacy policy unavailable; no automatic replay".into();
+        };
+        format!(
+            "Routing policy {} approved for {}\n{}\n{}",
+            policy.revision,
+            policy.owner,
+            policy
+                .targets
+                .iter()
+                .map(|row| format!(
+                    "{} / {}",
+                    row.target.account,
+                    row.target.model.as_deref().unwrap_or("native default")
+                ))
+                .collect::<Vec<_>>()
+                .join(" -> "),
+            self.route_history.join("\n")
+        )
+    }
+
     pub fn usage_summary(&self) -> String {
         if self.attempt_records.is_empty() {
             return "Usage: legacy attribution unavailable".into();

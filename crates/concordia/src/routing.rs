@@ -6,6 +6,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+#[path = "routing_policy.rs"]
+mod policy;
+pub use policy::{load_policies, policy_command, worker_targets, Approved, Policies};
+
 pub const MAX_CANDIDATES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +53,8 @@ pub enum Reason {
     UnknownCapacity,
     CachedQuotaExhausted,
     StaleQuota,
+    BindingChanged,
+    NotWorker,
 }
 
 impl Reason {
@@ -68,6 +74,8 @@ impl Reason {
             Self::UnknownCapacity => "capacity unknown; no native probe",
             Self::CachedQuotaExhausted => "cached quota exhausted; availability not verified",
             Self::StaleQuota => "cached quota observation is stale",
+            Self::BindingChanged => "account/home/login binding changed since approval",
+            Self::NotWorker => "account is not enrolled as a worker",
         }
     }
 }
@@ -112,6 +120,34 @@ pub struct Context {
     pub running: BTreeSet<String>,
     pub queued: BTreeMap<String, usize>,
     pub queue_limit: usize,
+    pub allow_same_target: bool,
+    pub workers: Option<BTreeSet<String>>,
+}
+
+impl Context {
+    pub fn new(
+        purpose: Purpose,
+        account: &str,
+        provider: ProviderKind,
+        home: Option<PathBuf>,
+        model: Option<String>,
+    ) -> Self {
+        Self {
+            purpose,
+            owner_account: account.into(),
+            previous_provider: provider,
+            previous_home: home,
+            previous_account: account.into(),
+            previous_model: model,
+            attempted_accounts: BTreeSet::new(),
+            attempted_pairs: BTreeSet::new(),
+            running: BTreeSet::new(),
+            queued: BTreeMap::new(),
+            queue_limit: crate::delegate::MAX_QUEUED_PER_WORKER,
+            allow_same_target: false,
+            workers: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +169,13 @@ pub struct Decision {
 
 pub fn evaluate(candidate: Candidate, context: &Context) -> Evaluated {
     let mut blocked = Vec::new();
+    if context
+        .workers
+        .as_ref()
+        .is_some_and(|workers| !workers.contains(&candidate.target.account))
+    {
+        blocked.push(Reason::NotWorker);
+    }
     if !candidate.registered {
         blocked.push(Reason::MissingAccount);
     }
@@ -145,11 +188,13 @@ pub fn evaluate(candidate: Candidate, context: &Context) -> Evaluated {
     if candidate.orchestrator && context.purpose != Purpose::MainContinuation {
         blocked.push(Reason::Orchestrator);
     }
-    let same_account_model_change = context.purpose == Purpose::MainContinuation
-        && candidate.target.account == context.previous_account
+    let same_account_model_change = matches!(
+        context.purpose,
+        Purpose::MainContinuation | Purpose::WorkerFailover
+    ) && candidate.target.account == context.previous_account
         && candidate.target.model.is_some()
         && candidate.target.model != context.previous_model;
-    if !same_account_model_change {
+    if !same_account_model_change && !context.allow_same_target {
         if candidate.same_home {
             blocked.push(Reason::SameHome);
         }
@@ -254,9 +299,7 @@ pub fn capture(root: &Path, targets: &[Target], context: &Context) -> Decision {
                 && login == previous_login,
             orchestrator: target.account == context.owner_account,
             attempted: (context.attempted_accounts.contains(&target.account)
-                && !(context.purpose == Purpose::MainContinuation
-                    && target.account == context.previous_account
-                    && target.model.is_some()))
+                && target.model.is_none())
                 || target.model.as_ref().is_some_and(|model| {
                     context
                         .attempted_pairs
@@ -287,6 +330,50 @@ pub fn capture(root: &Path, targets: &[Target], context: &Context) -> Decision {
 }
 
 impl Decision {
+    pub fn summary(&self) -> String {
+        let selected = self
+            .selected()
+            .map(|row| {
+                format!(
+                    "{} / {}",
+                    row.candidate.target.account,
+                    row.candidate
+                        .target
+                        .model
+                        .as_deref()
+                        .unwrap_or("native default")
+                )
+            })
+            .unwrap_or_else(|| "none".into());
+        let mut lines = vec![format!(
+            "Routing selected {selected}; capacity remains unknown."
+        )];
+        for row in &self.candidates {
+            if !row.eligible {
+                lines.push(format!(
+                    "Skipped {} / {}: {}",
+                    row.candidate.target.account,
+                    row.candidate
+                        .target
+                        .model
+                        .as_deref()
+                        .unwrap_or("native default"),
+                    row.blocked
+                        .iter()
+                        .map(Reason::label)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
+        }
+        lines
+            .join("\n")
+            .chars()
+            .filter(|ch| !ch.is_control() || *ch == '\n')
+            .take(8000)
+            .collect()
+    }
+
     pub fn selected(&self) -> Option<&Evaluated> {
         if self.purpose == Purpose::Worker {
             self.candidates
@@ -332,8 +419,26 @@ impl Decision {
                 if row.eligible { "eligible" } else { "skipped" },
                 reasons.join("; ")
             ));
+            lines.push(format!(
+                "  home {} | quota observation {} | {}",
+                row.candidate.home_id.as_deref().unwrap_or("unknown"),
+                row.candidate
+                    .quota
+                    .observed_at
+                    .map(|at| at.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                row.candidate.quota.source
+            ));
         }
         lines
+            .into_iter()
+            .map(|line| {
+                line.chars()
+                    .filter(|ch| !ch.is_control())
+                    .take(2000)
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -345,6 +450,13 @@ pub fn validate_launch(
     home: Option<&Path>,
     model: Option<&str>,
 ) -> Result<(), String> {
+    if !crate::store::get_settings(root)
+        .workers
+        .iter()
+        .any(|worker| normalize_account_id(worker) == normalize_account_id(account))
+    {
+        return Err("account is no longer enrolled as a worker".into());
+    }
     let native = get_account(root, account).ok_or("account unavailable before launch")?;
     let captured = home
         .and_then(|home| home.canonicalize().ok())

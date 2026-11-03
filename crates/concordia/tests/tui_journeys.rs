@@ -461,6 +461,26 @@ fn a_session_selected_provider_continues_without_changing_the_saved_default() {
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
     let mut s = Session::launch(dir.path());
+    let config_before = std::fs::read(dir.path().join("config.toml")).unwrap();
+    s.submit("/continuation policy set claude");
+    s.until("ordered local policy saved without a provider turn", |s| {
+        s.screen().contains("Routing policy saved")
+    });
+    s.submit("/continuation routes");
+    s.until("route eligibility visible", |s| {
+        s.screen()
+            .contains("Local routing snapshot MainContinuation")
+    });
+    assert!(s.prompts().is_empty());
+    assert_eq!(
+        std::fs::read(dir.path().join("config.toml")).unwrap(),
+        config_before
+    );
+    s.submit("/delegate routes");
+    s.until("worker route inspection makes no provider turn", |s| {
+        s.screen().contains("Local routing snapshot Worker")
+    });
+    assert!(s.prompts().is_empty());
     s.submit("/continuation");
     s.until("session policy screen", |s| {
         s.screen().contains("next provider at a usage limit")

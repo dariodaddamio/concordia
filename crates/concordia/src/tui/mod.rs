@@ -3167,6 +3167,7 @@ impl App {
         self.submitted_prompt = Some(request.clone());
         self.continuation
             .begin(&self.account, &self.model, &original_line);
+        self.freeze_continuation_routes();
         self.last_sent = Some(request.clone());
         self.ensure_session_title(&line);
         if !self.save_turn_checkpoint(false) {

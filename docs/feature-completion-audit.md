@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-02o
+# Feature completion audit: 2026-11-02p
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,11 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Local routing evaluation, ordered persisted account/model overrides and inspection share the
+  worker/main launch rules. Task approval freezes sequences and identity bindings; changed bindings
+  pause dispatch, and failover reasons survive recovery. No capacity probe or retry-budget increase
+  is introduced. See [routing evidence and limits](quality/routing-policies.md).
 
 - Main and worker attempts share attributable, idempotent usage recording, including failover,
   cancelled/failed attempts and accounting-only crash reconciliation. The token screen and landing
