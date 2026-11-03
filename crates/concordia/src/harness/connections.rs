@@ -142,14 +142,48 @@ fn path_key(path: &Path) -> String {
 
 /// Every connection. Missing file: none. A damaged file is an error, so it is never overwritten.
 pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
+    use std::io::Read;
     let path = file(store);
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if !metadata.is_file() || crate::workspaces::linked(&metadata) => {
+            return Err("harness connections must be a regular owned file".into())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("harness connections metadata unavailable: {error}")),
+        Ok(_) => {}
+    }
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("harness connections are unreadable ({e})")),
     };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && !crate::workspaces::linked(&metadata))
+    {
+        return Err("harness connections must be a regular file".into());
+    }
+    let mut text = String::new();
+    file.take(2 * 1024 * 1024 + 1)
+        .read_to_string(&mut text)
+        .map_err(|_| "harness connections are unreadable")?;
+    if text.len() > 2 * 1024 * 1024 {
+        return Err("harness connections exceed the 2 MiB read bound; original retained".into());
+    }
     serde_json::from_str::<File>(&text)
-        .map(|f| f.connections)
+        .and_then(|f| {
+            if f.version != 1
+                || f.connections.len() > 512
+                || f.connections
+                    .iter()
+                    .any(|connection| connection.entries.len() > 256)
+            {
+                return Err(serde::de::Error::custom(
+                    "unsupported connection version or metadata bounds",
+                ));
+            }
+            Ok(f.connections)
+        })
         .map_err(|e| {
             format!(
                 "harness connections are unreadable ({e}); fix or delete {}",
@@ -159,12 +193,22 @@ pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
 }
 
 fn save(store: &Path, connections: Vec<Connection>) -> Result<(), String> {
+    if connections.len() > 512
+        || connections
+            .iter()
+            .any(|connection| connection.entries.len() > 256)
+    {
+        return Err("harness connection metadata bounds reached; original retained".into());
+    }
     let path = file(store);
     let body = serde_json::to_vec_pretty(&File {
         version: 1,
         connections,
     })
     .map_err(|e| e.to_string())?;
+    if body.len() > 2 * 1024 * 1024 {
+        return Err("harness connections exceed the 2 MiB save bound; original retained".into());
+    }
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("could not save harness connections: {e}"))?;
     }
@@ -306,6 +350,73 @@ mod tests {
     fn nothing_stored_means_an_empty_list() {
         let store = tempfile::tempdir().unwrap();
         assert!(load(store.path()).unwrap().is_empty());
+        let manifest = store.path().join("harness.json");
+        let text = serde_json::json!({"name":"catalog-fixture","providers":{"codex":{"connect":["must-never-run"]}},"tools":(0..12).map(|number| serde_json::json!({"name":format!("tool-{number}"),"description":"Untrusted manifest description","argv":["must-never-run"]})).collect::<Vec<_>>()}).to_string();
+        fs::write(&manifest, &text).unwrap();
+        let sha = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let manifest_path = manifest.display().to_string();
+        record(
+            store.path(),
+            &Identity {
+                name: "catalog-fixture",
+                version: None,
+                manifest_path: &manifest_path,
+                manifest_sha256: &sha,
+                skill: None,
+            },
+            entry("codex", None, true),
+        )
+        .unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let catalog = super::super::catalog::inspect(store.path(), &cancel).unwrap();
+        assert_eq!(catalog.integrations.len(), 1);
+        assert_eq!(catalog.integrations[0].tools.len(), 12);
+        assert!(catalog.integrations[0].tools[0].name.ends_with("::tool-0"));
+        assert!(catalog.integrations[0].status.contains("revision verified"));
+        let id = &catalog.integrations[0].id;
+        let page: serde_json::Value = serde_json::from_str(
+            &super::super::catalog::tool(store.path(), Some(id), 0, None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(page["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(page["next_offset"], 8);
+        assert!(super::super::catalog::tool(store.path(), Some(id), 8, None).is_err());
+        assert!(
+            super::super::catalog::tool(store.path(), Some(id), 8, Some("wrong-revision")).is_err()
+        );
+        let last: serde_json::Value = serde_json::from_str(
+            &super::super::catalog::tool(store.path(), Some(id), 8, Some(&sha)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(last["tools"].as_array().unwrap().len(), 4);
+        fs::write(&manifest, "changed after connection").unwrap();
+        let stale = super::super::catalog::inspect(store.path(), &cancel).unwrap();
+        assert!(stale.integrations[0].tools.is_empty());
+        assert!(stale.integrations[0].status.contains("revision changed"));
+        record(
+            store.path(),
+            &Identity {
+                name: "command-fixture",
+                version: None,
+                manifest_path: "command:must-never-run",
+                manifest_sha256: "unverified",
+                skill: None,
+            },
+            entry("codex", None, true),
+        )
+        .unwrap();
+        let command = super::super::catalog::inspect(store.path(), &cancel).unwrap();
+        assert!(command
+            .integrations
+            .iter()
+            .any(|integration| integration.name == "command-fixture"
+                && integration.tools.is_empty()
+                && integration.status.contains("never executes")));
+        assert!(!super::super::catalog::rows(&command).is_empty());
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(super::super::catalog::inspect(store.path(), &cancel).is_err());
+        fs::write(file(store.path()), vec![b' '; 2 * 1024 * 1024 + 1]).unwrap();
+        assert!(load(store.path()).unwrap_err().contains("2 MiB"));
     }
 
     #[test]

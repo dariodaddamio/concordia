@@ -171,7 +171,7 @@ fn sync_text_block_checked(
     write: bool,
     validate: &dyn Fn(&str) -> Result<(), String>,
 ) -> Outcome {
-    let (old, existed) = match fs::read(file) {
+    let (old, existed) = match read_configuration(file) {
         Ok(b) => match String::from_utf8(b) {
             Ok(s) => (s, true),
             Err(_) => return Outcome::Blocked(format!("{} is not UTF-8", name_of(file))),
@@ -220,6 +220,11 @@ fn name_of(p: &Path) -> String {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if bytes.len() > 1024 * 1024 {
+        return Err(std::io::Error::other(
+            "native configuration exceeds the 1 MiB write bound; original retained",
+        ));
+    }
     let tmp = path.with_extension(format!("concordia-tmp-{}", std::process::id()));
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path).inspect_err(|_| {
@@ -318,6 +323,26 @@ fn entry_json(exe: &Path, state_root: &Path) -> serde_json::Value {
     })
 }
 
+fn read_configuration(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || crate::workspaces::linked(&metadata) {
+        return Err(std::io::Error::other(
+            "native configuration must be a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(std::io::Error::other(
+            "native configuration exceeds the 1 MiB inspection bound; left unchanged",
+        ));
+    }
+    Ok(bytes)
+}
+
 /// An entry we wrote: stdio, args exactly ["mcp"]. Anything else under our name is the user's.
 fn is_ours(entry: &serde_json::Value) -> bool {
     entry.get("args") == Some(&serde_json::json!(["mcp"]))
@@ -335,7 +360,7 @@ fn sync_claude_json(
     write: bool,
 ) -> Outcome {
     let file = home.join(".claude.json");
-    let mut root = match fs::read(&file) {
+    let mut root = match read_configuration(&file) {
         Ok(b) => match serde_json::from_slice::<serde_json::Value>(&b) {
             Ok(v) if v.is_object() => v,
             _ => return Outcome::Blocked(".claude.json is not a JSON object; left alone".into()),
@@ -403,7 +428,7 @@ fn toml_str(s: &str) -> String {
 
 fn sync_codex_toml(home: &Path, want: bool, exe: &Path, state_root: &Path, write: bool) -> Outcome {
     let file = home.join("config.toml");
-    let text = match fs::read(&file) {
+    let text = match read_configuration(&file) {
         Ok(b) => match String::from_utf8(b) {
             Ok(s) => s,
             Err(_) => return Outcome::Blocked("config.toml is not UTF-8; left alone".into()),

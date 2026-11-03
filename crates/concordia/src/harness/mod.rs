@@ -6,6 +6,7 @@
 //! never interpreted as shell syntax.
 
 pub mod adapter;
+pub mod catalog;
 pub mod command;
 pub mod connections;
 pub mod pinned;

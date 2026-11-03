@@ -2664,7 +2664,62 @@ fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
         serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/preview space.rs\n@@\n-before\n+synthetic replacement\n*** End Patch"}})
     );
     std::fs::write(folder.join("memory.jsonl"), source).unwrap();
+    let manifest = dir.path().join("workspace/harness.json");
+    let manifest_text = serde_json::json!({"name":"ui-catalog","providers":{"codex":{"connect":["must-never-run"]}},"tools":[{"name":"ui-search","description":"Discover fixture tools without running them","argv":["must-never-run"]}]}).to_string();
+    std::fs::write(&manifest, &manifest_text).unwrap();
+    let manifest_path = manifest.display().to_string();
+    let manifest_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(manifest_text.as_bytes()))
+    };
+    concordia::harness::connections::record(
+        dir.path(),
+        &concordia::harness::connections::Identity {
+            name: "ui-catalog",
+            version: None,
+            manifest_path: &manifest_path,
+            manifest_sha256: &manifest_sha,
+            skill: None,
+        },
+        concordia::harness::connections::Entry {
+            provider: "codex".into(),
+            home: None,
+            project: dir.path().join("workspace").display().to_string(),
+            connect_ok: true,
+            connect_note: String::new(),
+            verify: "not-run".into(),
+            verify_note: String::new(),
+            at: 0,
+        },
+    )
+    .unwrap();
     let mut s = Session::launch(dir.path());
+    s.paste("UNSENT_INTEGRATION_DRAFT");
+    s.until(
+        "integration draft is persisted before opening the catalog",
+        |s| s.draft() == "UNSENT_INTEGRATION_DRAFT",
+    );
+    s.send("\x1b[21~");
+    s.until("integration catalog shows verified namespaced tools", |s| {
+        let screen = s.screen();
+        screen.contains("Integrations and agent tools")
+            && screen.contains("ui-search")
+            && screen.contains("revision verified")
+    });
+    assert_eq!(s.draft(), "UNSENT_INTEGRATION_DRAFT");
+    assert!(s.prompts().is_empty());
+    s.send("\x1b");
+    s.until(
+        "integration catalog closes without consuming the draft",
+        |s| {
+            s.draft() == "UNSENT_INTEGRATION_DRAFT"
+                && !s.screen().contains("Integrations and agent tools")
+        },
+    );
+    s.send("\x01\x08");
+    s.until("clear synthetic draft before source lookup", |s| {
+        s.draft().is_empty()
+    });
     s.submit("/memory recall-account codex MEMORY_NEEDLE");
     s.until("verified lexical result", |s| {
         s.screen().contains("MEMORY_NEEDLE exact original")

@@ -1,5 +1,9 @@
 # Changelog
 
+- F10 opens a read-only integrations catalog without consuming the composer draft. Connected
+  manifests show revision status, provider/home/project bindings and namespaced tools. Agents
+  discover the same catalog through a bounded, paginated MCP tool without executing adapters.
+
 - The usage screen offers a separate, paginated native-source coverage view with verified
   counter records and metadata-only checkpoints. Overlapping native snapshots are excluded from
   Concordia totals. Recorded totals now separate attempts, outcomes and full workspace paths.

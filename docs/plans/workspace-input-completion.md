@@ -20,6 +20,10 @@ physical evidence remains a separate W5 gate.
 and I3: ordered versioned snapshots, exact UTF-8 data, queue/recovery retention, and an explicit
 F9 import offer that preserves pasted text. I4 binary transports remain unavailable.
 
+[Integration discovery](../quality/integrations-catalog.md) implements the first I6 catalog
+slice, shared between F10 and agent MCP discovery. It executes no integration commands;
+explicit setup/removal remains with the existing Harness/native configuration owners.
+
 | Surface | Source evidence | Status and boundary |
 | --- | --- | --- |
 | File discovery | `tui/related_files.rs`, `file_links.rs` | Chat/recent/workspace references, ignored-path-aware traversal, canonical deduplication and directory browsing exist. Discovery does not search file contents. |
