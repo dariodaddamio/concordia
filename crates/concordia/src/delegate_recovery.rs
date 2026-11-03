@@ -5,6 +5,20 @@ use std::io::Read;
 
 const LEDGER_BYTES: u64 = 8 * 1024 * 1024;
 
+fn dependency_state(state: WorkerState) -> schedule::RunState {
+    match state {
+        WorkerState::Queued => schedule::RunState::Pending,
+        WorkerState::Starting
+        | WorkerState::Thinking
+        | WorkerState::Tool
+        | WorkerState::Writing => schedule::RunState::Running,
+        WorkerState::Done => schedule::RunState::Succeeded,
+        WorkerState::Failed => schedule::RunState::Failed,
+        WorkerState::Cancelled => schedule::RunState::Cancelled,
+        WorkerState::Paused => schedule::RunState::PausedRecovery,
+    }
+}
+
 pub(super) struct Recovery {
     pub state_root: PathBuf,
     path: PathBuf,
@@ -103,6 +117,144 @@ mod tests {
         assert_eq!(d.get(id).unwrap().state, WorkerState::Paused);
         assert!(!d.any_active());
     }
+
+    #[test]
+    fn dependency_proposals_persist_pause_and_never_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let recovery = dir.path().join("pane");
+        let mut d = Delegates::default();
+        d.attach_recovery(&recovery, dir.path(), dir.path())
+            .unwrap();
+        let parent = d.push_test_job(
+            "synthetic",
+            ProviderKind::Codex,
+            WorkerState::Done,
+            "done",
+            0,
+        );
+        d.get_mut(parent).unwrap().spec.cwd = dir.path().into();
+        let run = d.get(parent).unwrap().run_id.clone();
+        d.save_recovery().unwrap();
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let task = schedule::Task::new(
+            task_id.clone(),
+            d.conversation_id.clone(),
+            uuid::Uuid::new_v4().to_string(),
+            vec![schedule::Prerequisite {
+                task_id: run.clone(),
+                run_id: run.clone(),
+            }],
+        )
+        .unwrap();
+        d.add_dependency_task(task).unwrap();
+        assert_eq!(
+            d.dependency_graph().readiness(&task_id).unwrap(),
+            schedule::Readiness::Ready
+        );
+        assert!(d.set_dependencies(&run, Vec::new()).is_err());
+        assert_eq!(d.jobs.len(), 1);
+        // Viewer pruning cannot discard a successful prerequisite that is still referenced.
+        d.jobs.clear();
+        d.save_recovery().unwrap();
+        assert_eq!(d.dependency_graph().tasks().len(), 2);
+        drop(d);
+        let mut restored = Delegates::default();
+        assert_eq!(
+            restored
+                .attach_recovery(&recovery, dir.path(), dir.path())
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            restored.dependency_graph().readiness(&task_id).unwrap(),
+            schedule::Readiness::PausedRecovery
+        );
+        assert_eq!(
+            restored.dependency_graph().tasks()[0].state(),
+            schedule::RunState::Succeeded
+        );
+        assert!(restored.poll(Instant::now()).is_empty());
+        assert!(!restored.any_active());
+    }
+
+    #[test]
+    fn dependency_mutations_roll_back_on_write_failure_and_reject_foreign_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let recovery = dir.path().join("pane");
+        let mut d = Delegates::default();
+        d.attach_recovery(&recovery, dir.path(), dir.path())
+            .unwrap();
+        let task = |conversation| {
+            schedule::Task::new(
+                uuid::Uuid::new_v4().to_string(),
+                conversation,
+                uuid::Uuid::new_v4().to_string(),
+                Vec::new(),
+            )
+            .unwrap()
+        };
+        assert!(d
+            .add_dependency_task(task(uuid::Uuid::new_v4().to_string()))
+            .is_err());
+        std::fs::create_dir(recovery.join("workers.json")).unwrap();
+        let before = d.dependency_graph().clone();
+        assert!(d
+            .add_dependency_task(task(d.conversation_id.clone()))
+            .is_err());
+        assert_eq!(d.dependency_graph(), &before);
+    }
+
+    #[test]
+    fn legacy_ledgers_migrate_without_replay_and_invalid_graphs_keep_original_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let recovery = dir.path().join("pane");
+        let mut d = Delegates::default();
+        d.attach_recovery(&recovery, dir.path(), dir.path())
+            .unwrap();
+        let id = d.push_test_job(
+            "synthetic",
+            ProviderKind::Codex,
+            WorkerState::Tool,
+            "in progress",
+            0,
+        );
+        d.get_mut(id).unwrap().spec.cwd = dir.path().into();
+        d.save_recovery().unwrap();
+        drop(d);
+        let path = recovery.join("workers.json");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy["version"] = serde_json::json!(1);
+        legacy.as_object_mut().unwrap().remove("schedule");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let mut restored = Delegates::default();
+        restored
+            .attach_recovery(&recovery, dir.path(), dir.path())
+            .unwrap();
+        assert_eq!(restored.get(id).unwrap().state, WorkerState::Paused);
+        assert_eq!(
+            restored.dependency_graph().tasks()[0].state(),
+            schedule::RunState::PausedRecovery
+        );
+        drop(restored);
+        let mut corrupt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(corrupt["version"], 2);
+        corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
+        let bytes = serde_json::to_vec(&corrupt).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(Delegates::default()
+            .attach_recovery(&recovery, dir.path(), dir.path())
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        corrupt["version"] = serde_json::json!(99);
+        let bytes = serde_json::to_vec(&corrupt).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(Delegates::default()
+            .attach_recovery(&recovery, dir.path(), dir.path())
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -112,6 +264,8 @@ struct Ledger {
     workspace: PathBuf,
     conversation: String,
     jobs: Vec<SavedJob>,
+    #[serde(default)]
+    schedule: Option<schedule::Graph>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -171,6 +325,7 @@ impl Delegates {
             return Err("worker recovery exceeds 8 MiB".into());
         }
         let mut jobs = Vec::new();
+        let mut graph = schedule::Graph::default();
         let owner;
         let mut conversation = self.conversation_id.clone();
         if bytes.is_empty() {
@@ -178,7 +333,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if ledger.version != 1
+            if !matches!(ledger.version, 1 | 2)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -188,6 +343,16 @@ impl Delegates {
             }
             owner = ledger.owner;
             conversation = ledger.conversation;
+            if ledger.version == 2 {
+                graph = ledger
+                    .schedule
+                    .ok_or("worker dependency graph missing; original kept")?;
+                graph.validate()?;
+            } else if ledger.schedule.is_some() {
+                return Err(
+                    "legacy ledger contains unexpected dependency metadata; original kept".into(),
+                );
+            }
             let mut ids = std::collections::HashSet::new();
             let mut runs = std::collections::HashSet::new();
             for saved in ledger.jobs {
@@ -205,6 +370,14 @@ impl Delegates {
                 {
                     return Err(
                         "invalid worker run identity or request bounds; original kept".into(),
+                    );
+                }
+                let run_state = dependency_state(saved.state);
+                if ledger.version == 1 {
+                    graph.observe_run(&saved.conversation, &saved.run_id, run_state)?;
+                } else if !graph.matches_run(&saved.conversation, &saved.run_id, run_state) {
+                    return Err(
+                        "worker dependency receipt does not match its run; original kept".into(),
                     );
                 }
                 let now = Instant::now();
@@ -228,6 +401,8 @@ impl Delegates {
         }
         self.next_id = jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
         self.jobs = jobs;
+        graph.pause_interrupted();
+        self.schedule = graph;
         self.conversation_id = conversation;
         self.recovery = Some(Recovery {
             state_root: state_root.into(),
@@ -242,10 +417,26 @@ impl Delegates {
     }
 
     pub(super) fn save_recovery(&mut self) -> Result<(), String> {
+        // Build a validated snapshot before touching either durable state or the accepted graph.
+        let mut graph = self.schedule.clone();
+        graph.retain_receipts(&self.jobs.iter().map(|j| j.run_id.as_str()).collect());
+        for job in &self.jobs {
+            graph.observe_run(
+                &job.conversation_id,
+                &job.run_id,
+                dependency_state(job.state),
+            )?;
+        }
+        graph.validate()?;
         let Some(recovery) = self.recovery.as_mut() else {
+            self.schedule = graph;
             return Ok(());
         };
-        if self.jobs.is_empty() && recovery.last.is_empty() && !recovery.path.exists() {
+        if self.jobs.is_empty()
+            && graph.tasks().is_empty()
+            && recovery.last.is_empty()
+            && !recovery.path.exists()
+        {
             return Ok(());
         }
         let jobs = self
@@ -269,11 +460,12 @@ impl Delegates {
             })
             .collect();
         let bytes = serde_json::to_vec(&Ledger {
-            version: 1,
+            version: 2,
             owner: recovery.owner.clone(),
             workspace: recovery.workspace.clone(),
             conversation: self.conversation_id.clone(),
             jobs,
+            schedule: Some(graph.clone()),
         })
         .map_err(|e| e.to_string())?;
         if bytes.len() as u64 > LEDGER_BYTES || self.jobs.len() > 64 {
@@ -282,6 +474,59 @@ impl Delegates {
         if bytes != recovery.last {
             crate::state_io::write_atomic(&recovery.path, &bytes).map_err(|e| e.to_string())?;
             recovery.last = bytes;
+        }
+        self.schedule = graph;
+        Ok(())
+    }
+
+    /// Descriptive metadata only: readiness never authorizes or dispatches a provider turn.
+    pub fn dependency_graph(&self) -> &schedule::Graph {
+        &self.schedule
+    }
+
+    /// Register a proposed task without adding it to the provider execution queue.
+    pub fn add_dependency_task(&mut self, task: schedule::Task) -> Result<(), String> {
+        if self.recovery.is_none() {
+            return Err("dependency metadata requires durable worker ownership".into());
+        }
+        if task.conversation_id() != self.conversation_id {
+            return Err("dependency task belongs to another conversation".into());
+        }
+        let before = self.schedule.clone();
+        self.schedule.insert(task)?;
+        if let Err(error) = self.save_recovery() {
+            self.schedule = before;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Update proposed edges atomically under the same owner lease as worker recovery.
+    pub fn set_dependencies(
+        &mut self,
+        task_id: &str,
+        prerequisites: Vec<schedule::Prerequisite>,
+    ) -> Result<(), String> {
+        if self.recovery.is_none() {
+            return Err("dependency metadata requires durable worker ownership".into());
+        }
+        let task = self
+            .schedule
+            .tasks()
+            .iter()
+            .find(|task| task.task_id() == task_id)
+            .ok_or("unknown dependency task")?;
+        if self.jobs.iter().any(|job| job.run_id == task.run_id()) {
+            return Err("existing worker submissions do not support dependencies; register a metadata-only proposal".into());
+        }
+        if task.conversation_id() != self.conversation_id {
+            return Err("dependency task belongs to another conversation".into());
+        }
+        let before = self.schedule.clone();
+        self.schedule.set_prerequisites(task_id, prerequisites)?;
+        if let Err(error) = self.save_recovery() {
+            self.schedule = before;
+            return Err(error);
         }
         Ok(())
     }

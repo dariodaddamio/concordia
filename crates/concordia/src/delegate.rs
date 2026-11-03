@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 #[path = "delegate_recovery.rs"]
 mod recovery;
+pub mod schedule;
 
 pub const MAX_WORKERS: usize = 3;
 /// Jobs waiting behind a busy worker (per worker).
@@ -353,6 +354,7 @@ pub struct Delegates {
     conversation_id: String,
     recovery: Option<recovery::Recovery>,
     recovery_error: Option<String>,
+    schedule: schedule::Graph,
 }
 
 impl Default for Delegates {
@@ -366,6 +368,7 @@ impl Default for Delegates {
             conversation_id: uuid::Uuid::new_v4().to_string(),
             recovery: None,
             recovery_error: None,
+            schedule: schedule::Graph::default(),
         }
     }
 }
@@ -380,6 +383,11 @@ fn cap_chars(s: &str, max: usize) -> String {
 }
 
 impl Delegates {
+    /// Explicit owner identity for metadata proposals; never inferred from focused UI state.
+    pub fn conversation_id(&self) -> &str {
+        &self.conversation_id
+    }
+
     pub fn get(&self, id: u32) -> Option<&Job> {
         self.jobs.iter().find(|j| j.id == id)
     }
