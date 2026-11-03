@@ -4108,10 +4108,31 @@ fn active_email_and_nickname_are_visible_in_header_without_a_picker() {
         let screen = h.screen();
         let header = screen.lines().next().unwrap();
         assert!(header.contains("Work (Codex)"), "{header}");
-        assert!(header.contains("member@example.invalid"), "{header}");
+        assert!(!header.contains("member@example.invalid"), "{header}");
+        assert!(header.contains("click to show"), "{header}");
         let usage = screen.lines().nth(1).unwrap();
         assert!(usage.contains("Credits: 12.5 balance"), "{usage}");
         assert!(usage.contains("Subscription: 5h 80% left"), "{usage}");
+        let email = h.app.areas.header_email.unwrap();
+        h.down(email.x, email.y);
+        h.up(email.x, email.y);
+        h.draw();
+        assert!(h
+            .screen()
+            .lines()
+            .next()
+            .unwrap()
+            .contains("member@example.invalid"));
+        let email = h.app.areas.header_email.unwrap();
+        h.down(email.x, email.y);
+        h.up(email.x, email.y);
+        h.draw();
+        assert!(!h
+            .screen()
+            .lines()
+            .next()
+            .unwrap()
+            .contains("member@example.invalid"));
     }
 }
 

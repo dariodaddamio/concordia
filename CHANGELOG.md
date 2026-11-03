@@ -1,9 +1,21 @@
 # Changelog
 
+### Changed (`2026-11-03u`)
+
+- Header emails are hidden until clicked and can be hidden again; account changes reset disclosure.
+  The redundant animated header icon is removed. Foreground chats can run concurrently in the
+  same workspace, with the same or different providers. Explicit scheduler scopes and per-run
+  recovery checks remain enforced. Native Codex usage prefers its current per-limit bucket and
+  links to the provider dashboard for credit details that the native response omits.
+
+### Fixed (`2026-11-03t`)
+
 - Image attachments now show a thumbnail above the editable composer automatically, with a
   monochrome fallback and a click target for the enlarged view. Credits have their own persistent
   header row beside subscription limits; missing balances and separately unavailable credit spend
   are stated explicitly. App branding and update activity use the new geometric glyphs.
+
+## Earlier implementation notes
 
 - GIF links retain the explicit system-viewer fallback. A read-only candidate evidence collector
   binds executable hashes, build source, environment and bounded check receipts without publishing.

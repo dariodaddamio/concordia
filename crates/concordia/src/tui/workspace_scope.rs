@@ -70,7 +70,24 @@ impl App {
         }
         let request =
             workspaces::for_attempt(&self.state_root, &request, &owner.run_id, &owner.attempt_id)?;
-        match workspaces::reserve(&self.state_root, &request, &owner.run_id, &owner.conversation_id, &owner.attempt_id)? {
+        let admission = if request.whole_workspace_write() && request.binding.managed.is_none() {
+            workspaces::reserve_interactive(
+                &self.state_root,
+                &request,
+                &owner.run_id,
+                &owner.conversation_id,
+                &owner.attempt_id,
+            )?
+        } else {
+            workspaces::reserve(
+                &self.state_root,
+                &request,
+                &owner.run_id,
+                &owner.conversation_id,
+                &owner.attempt_id,
+            )?
+        };
+        match admission {
             Admission::Reserved => {
                 self.scopes.task = Some((owner.run_id.clone(), request));
                 self.scopes.active = Some((owner.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false))));
@@ -148,10 +165,10 @@ impl App {
                 .as_ref()
                 .map(|(run, request)| format!("Current run {run}: {}\n", request.describe()))
                 .unwrap_or_default();
-            Ok(format!("{current}Future main scope: {future}\n/scope set read:PATH write:PATH changes future turns; quote paths with spaces. /scope default reserves the whole folder. /scope leases inspects owners. Claims coordinate scheduler admission and do not sandbox native tools."))
+            Ok(format!("{current}Future main scope: {future}\n/scope set read:PATH write:PATH changes future turns; quote paths with spaces. /scope default allows concurrent foreground chats. /scope leases inspects owners. Explicit scopes coordinate scheduler admission and do not sandbox native tools."))
         } else if argument == "default" {
             self.scopes.defaults.clear();
-            Ok("Future main turns reserve the whole execution folder; current task scope is unchanged".into())
+            Ok("Future main turns allow concurrent chats in the execution folder; current task scope is unchanged".into())
         } else if let Some(declarations) = argument.strip_prefix("set ") {
             workspaces::parse_declarations(declarations, false).and_then(|(declarations, _)| {
                 let request = Request::shared(&self.cwd, &declarations)?;

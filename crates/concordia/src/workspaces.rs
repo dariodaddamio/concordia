@@ -702,6 +702,27 @@ pub fn reserve(
     conversation: &str,
     attempt: &str,
 ) -> Result<Admission, String> {
+    reserve_mode(root, request, run, conversation, attempt, false)
+}
+
+pub(crate) fn reserve_interactive(
+    root: &Path,
+    request: &Request,
+    run: &str,
+    conversation: &str,
+    attempt: &str,
+) -> Result<Admission, String> {
+    reserve_mode(root, request, run, conversation, attempt, true)
+}
+
+fn reserve_mode(
+    root: &Path,
+    request: &Request,
+    run: &str,
+    conversation: &str,
+    attempt: &str,
+    advisory: bool,
+) -> Result<Admission, String> {
     if !uuid_valid(run) || !uuid_valid(conversation) || !uuid_valid(attempt) {
         return Err("workspace reservation needs exact run/conversation/attempt UUIDs".into());
     }
@@ -725,11 +746,9 @@ pub fn reserve(
                 return Ok(Admission::ReconcileRequired);
             }
         }
-        for other in registry
-            .reservations
-            .iter()
-            .filter(|reservation| reservation.run != run && reservation.phase != Phase::Released)
-        {
+        for other in registry.reservations.iter().filter(|reservation| {
+            !advisory && reservation.run != run && reservation.phase != Phase::Released
+        }) {
             for claim in &request.claims {
                 if other
                     .request

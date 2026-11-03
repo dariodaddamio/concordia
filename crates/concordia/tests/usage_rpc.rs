@@ -5,9 +5,9 @@ const BIN: &str = env!("CARGO_BIN_EXE_concordia-fake-provider");
 async fn native_limits_reader_binds_home_and_only_uses_initialize_and_quota_read() {
     for percent in [13, 72] {
         let dir = tempfile::tempdir().unwrap();
-        let limits = serde_json::json!({"planType":"pro","primary":{"usedPercent":percent,"windowDurationMins":300,"resetsAt":1900000000i64}});
+        let limits = serde_json::json!({"planType":"pro","credits":{"hasCredits":true,"balance":"12.5"},"primary":{"usedPercent":percent,"windowDurationMins":300,"resetsAt":1900000000i64}});
         let result = if percent == 72 {
-            serde_json::json!({"rateLimits":null,"rateLimitsByLimitId":{"codex":limits}})
+            serde_json::json!({"rateLimits":{"credits":{"hasCredits":true,"balance":null}},"rateLimitsByLimitId":{"codex":limits}})
         } else {
             serde_json::json!({"rateLimits":limits})
         };
@@ -15,6 +15,7 @@ async fn native_limits_reader_binds_home_and_only_uses_initialize_and_quota_read
         let result = read_codex_limits(BIN, dir.path()).await.unwrap();
         let value: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(value["rate_limits"]["primary"]["usedPercent"], percent);
+        assert_eq!(value["rate_limits"]["credits"]["balance"], "12.5");
         let calls = std::fs::read_to_string(dir.path().join("rpc-calls.jsonl")).unwrap();
         let methods: Vec<_> = calls
             .lines()

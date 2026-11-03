@@ -72,7 +72,7 @@ pub(crate) async fn fetch_with(bin: &str, home: &Path) -> Result<String, String>
         receive(&mut lines,1).await?;
         input.write_all(b"{\"method\":\"initialized\"}\n{\"id\":2,\"method\":\"account/rateLimits/read\"}\n").await.map_err(|_| "usage request failed")?;
         let result = receive(&mut lines,2).await?;
-        let limits = result.get("rateLimits").filter(|v| v.is_object()).or_else(||result.get("rateLimitsByLimitId").and_then(|m| m.get("codex")).filter(|v|v.is_object())).ok_or("Codex returned no quota windows")?;
+        let limits = result.get("rateLimitsByLimitId").and_then(|m| m.get("codex")).filter(|v|v.is_object()).or_else(||result.get("rateLimits").filter(|v| v.is_object())).ok_or("Codex returned no quota windows")?;
         Ok(json!({"rate_limits":limits}).to_string())
     }).await.unwrap_or_else(|_|Err("live usage read timed out".into()));
     crate::provider::turn::kill_process_tree(pid);

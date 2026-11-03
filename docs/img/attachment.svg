@@ -8,9 +8,9 @@
 <circle cx="40" cy="18" r="6" fill="#febc2e"/>
 <circle cx="60" cy="18" r="6" fill="#28c840"/>
 <text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia · attachment preview</text>
-<rect x="14" y="36" width="243" height="19" fill="#303030"/>
-<rect x="257" y="36" width="81" height="19" fill="#87d787"/>
-<rect x="338" y="36" width="666" height="19" fill="#303030"/>
+<rect x="14" y="36" width="225" height="19" fill="#303030"/>
+<rect x="239" y="36" width="81" height="19" fill="#87d787"/>
+<rect x="320" y="36" width="684" height="19" fill="#303030"/>
 <rect x="14" y="55" width="990" height="19" fill="#303030"/>
 <rect x="302" y="74" width="54" height="19" fill="#303030"/>
 <rect x="59" y="131" width="234" height="19" fill="#303030"/>
@@ -44,11 +44,10 @@
 <rect x="14" y="492" width="234" height="19" fill="#191d27"/>
 <rect x="14" y="511" width="234" height="19" fill="#191d27"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
-<text x="23" y="50" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff" font-weight="700">✦</text>
-<text x="41" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#666666">concordia 2026-11-03t</text>
-<text x="266" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
-<text x="356" y="50" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">member@example.invalid</text>
-<text x="572" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
+<text x="23" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-03u</text>
+<text x="248" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
+<text x="338" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">email · click to show</text>
+<text x="545" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
 <text x="23" y="69" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Credits: 12.5 balance  │</text>
 <text x="257" y="69" textLength="351" lengthAdjust="spacingAndGlyphs" fill="#666666">Subscription: 5h 59% left · 7d 41% left</text>
 <text x="41" y="88" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">I added a</text>
