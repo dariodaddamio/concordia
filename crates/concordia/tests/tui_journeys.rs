@@ -2905,7 +2905,7 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
         s.screen().contains("waiting for native input")
     });
     s.paste("preserve plan draft");
-    s.send("\x1b[1;3B\x1b[19~");
+    s.send("\x1b[1;3A\x1b[19~"); // Move from the previous completed worker to the new active worker.
     s.until("full plan visible", |s| {
         s.screen().contains("Edit only the requested function")
     });
