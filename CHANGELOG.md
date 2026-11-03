@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (`2026-11-03c`)
+- Source updates install the executable reported by Cargo for the selected Concordia manifest,
+  including custom target directories. Missing artifact evidence or a mismatched source version
+  retains the existing install. A staged install is verified again before replacing the old binary.
+
 ### Fixed (`2026-11-03a`)
 - Goal-aware ranking resolves the explicitly selected current workspace before comparing its
   stored canonical association. Windows short paths and directory aliases retain confirmed-goal

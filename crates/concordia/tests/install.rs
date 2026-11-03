@@ -225,7 +225,11 @@ fn update_rebuilds_and_installs_from_any_directory_once_the_checkout_is_recorded
                 .arg("--version")
                 .output()
                 .unwrap();
-            assert!(String::from_utf8_lossy(&out.stdout).starts_with("concordia "));
+            assert!(String::from_utf8_lossy(&out.stdout).starts_with(&format!(
+                "concordia {} ({})",
+                concordia::version::VERSION,
+                concordia::version::BUILD_STAMP
+            )));
         }
         UpdateOutcome::UpToDate(m) => panic!("a source update always installs: {m}"),
     }
