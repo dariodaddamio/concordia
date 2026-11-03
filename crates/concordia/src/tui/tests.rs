@@ -3886,7 +3886,7 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     h.app.cwd = PathBuf::from("C:/work/fixture-project");
     assert_eq!(
         h.app.window_title(),
-        "\u{25c7} fixture-project \u{b7} Idle \u{b7} Concordia"
+        "✦ fixture-project \u{b7} Idle \u{b7} Concordia"
     );
     h.app.session_ui.title = Some("Fix parser".into());
     h.app.busy = true;
