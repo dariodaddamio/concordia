@@ -76,7 +76,8 @@ uses its read-only quota RPC. Native execution, authentication and approvals rem
 ## Roadmap
 
 Opt-in [explainable memory ranking](docs/quality/memory-ranking.md) adds historical file facts
-and verified goal/handoff context. Related-chat groups and retrieval evaluation remain separate work.
+and verified goal/handoff context. [Related-chat groups](docs/quality/related-chat-groups.md) add
+explicit overlapping membership and a separate discovery screen. Retrieval evaluation remains open.
 
 Cooperative workspace declarations and cross-pane reservations now guard main/worker admission
 and internal saves. [Workspace ownership](docs/quality/workspace-reservations.md) explains commands,

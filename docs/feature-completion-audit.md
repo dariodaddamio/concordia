@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-02t
+# Feature completion audit: 2026-11-02u
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -11,10 +11,14 @@ creation does not change the implementation status recorded here.
 
 ## Closed in this build
 
+- Explicit related-chat groups retain overlapping membership and provenance. A separate discovery
+  screen preserves drafts and landing selection, with cross-project context suggestions labelled.
+  [Behavior and evidence](quality/related-chat-groups.md). Corpus evaluation remains open.
+
 - Opt-in ranking explains verified goal/handoff/file/text/time signals with exact native
   pointers. Historical file facts never read the referenced files or claim an edit completed.
-  [Behavior and evidence](quality/memory-ranking.md). Related-chat groups and corpus evaluation
-  remain open; lexical recall remains the default.
+  [Behavior and evidence](quality/memory-ranking.md). Corpus evaluation remains open;
+  lexical recall remains the default.
 
 - Explicit managed Git worktrees bind a clean committed base, repository, owner/execution
   directories and worker dispatch. Interrupted creation is retained and explicitly reconciled;

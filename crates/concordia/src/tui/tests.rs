@@ -3521,6 +3521,7 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         PickerKind::Resume,
         PickerKind::Files,
         PickerKind::Tokens,
+        PickerKind::Related,
         PickerKind::Update,
     ] {
         let mut h = Harness::new(100, 28);
@@ -3535,7 +3536,10 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
             }],
             true,
         );
-        if matches!(kind, PickerKind::Tokens | PickerKind::Update) {
+        if matches!(
+            kind,
+            PickerKind::Tokens | PickerKind::Update | PickerKind::Related
+        ) {
             h.app.update_preview = Some(update_preview(false, 0));
         }
         h.draw();
@@ -3557,6 +3561,32 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         assert_eq!(h.app.editor.text(), "keep this draft");
         assert!(!h.app.busy);
     }
+    // A read that finishes after dismissal or a conversation change cannot repaint the UI.
+    let mut h = Harness::new(100, 28);
+    h.app.editor.set_text("preserve related-work draft");
+    let before = h.app.messages.len();
+    h.app.memory_command("groups");
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Related);
+    h.app.dismiss_picker();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.app.session_ui.memory_reading() && Instant::now() < deadline {
+        h.app.poll_memory();
+        std::thread::yield_now();
+    }
+    assert!(!h.app.session_ui.memory_reading());
+    assert!(h.app.picker.is_none());
+    assert_eq!(h.app.messages.len(), before);
+    assert_eq!(h.app.editor.text(), "preserve related-work draft");
+    h.app.memory_command("groups");
+    h.app.session_ui.invalidate();
+    h.app.dismiss_picker();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.app.session_ui.memory_reading() && Instant::now() < deadline {
+        h.app.poll_memory();
+        std::thread::yield_now();
+    }
+    assert!(!h.app.session_ui.memory_reading());
+    assert_eq!(h.app.messages.len(), before);
 }
 
 #[test]

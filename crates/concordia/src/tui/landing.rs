@@ -80,20 +80,7 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
 /// The project identity, or for a git worktree its main repository: a worktree's
 /// `.git` is a file reading `gitdir: <repo>/.git/worktrees/<name>`.
 fn project_root(folder: &Path) -> PathBuf {
-    let main = std::fs::read_to_string(folder.join(".git"))
-        .ok()
-        .and_then(|text| {
-            let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
-            let gitdir = if gitdir.is_absolute() {
-                gitdir
-            } else {
-                folder.join(gitdir)
-            };
-            let dot_git = gitdir.parent()?.parent()?;
-            (dot_git.file_name()? == ".git").then(|| dot_git.parent().map(Path::to_path_buf))?
-        });
-    let root = main.as_deref().unwrap_or(folder);
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+    crate::native_memory::relations::groups::project_root(folder)
 }
 
 use crate::goals::read_goals;
@@ -224,7 +211,9 @@ impl Landing {
         match (&self.mode, self.pane) {
             (Mode::AddGoal(_), _) => "Enter save · Esc cancel",
             (Mode::ConfirmDone, _) => "Enter mark done · Esc keep",
-            (Mode::Browse, Pane::Chats) => "Enter open chat · Tab goals · Esc chat",
+            (Mode::Browse, Pane::Chats) => {
+                "Enter open chat · F6 related work · Tab goals · Esc chat"
+            }
             (Mode::Browse, Pane::Goals) => "a add goal · Enter mark done · Tab chats · Esc chat",
         }
     }
@@ -421,6 +410,10 @@ fn set_pane(app: &mut App, pane: Pane) {
 /// Keys while the page shows. `false` leaves the key to the rest of the interface (Ctrl
 /// shortcuts, and a printable key after it has closed the page and joined the input).
 pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.code == KeyCode::F(6) {
+        app.memory_command("groups");
+        return true;
+    }
     // Slash completion owns its keys even while the landing lists stay visible.
     if app
         .landing

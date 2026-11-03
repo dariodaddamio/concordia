@@ -1,5 +1,15 @@
 # Changelog
 
+### Added (`2026-11-02u`)
+- Explicit related-chat groups: `/memory group-create SOURCE`, `groups`, `group-members GROUP`,
+  `group-link GROUP SOURCE` and `group-unlink GROUP SOURCE`. Overlapping membership retains
+  exact native source identities and detach provenance; stale members remain visibly unavailable.
+- F6 on the landing page opens related work while preserving its selection and the draft.
+  `/memory related-file`, `related-goal`, `related-at` and `related-from` show evidence-backed
+  suggestions separately from confirmed groups. Context-link discovery can label cross-project scope.
+- Relationship store v2 reads earlier goal associations unchanged and serializes group and goal
+  changes under the same lock. Group discovery never starts Cursor native replay implicitly.
+
 ### Added (`2026-11-02t`)
 - Opt-in `/memory ranked` search explains verified goal, handoff, historical-file, literal-text
   and native-time signals. Context controls include `ranked-file`, `ranked-goal`, `ranked-from`,

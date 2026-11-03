@@ -2542,6 +2542,16 @@ fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
     s.until("confirmed goal ranks with visible reason", |s| {
         s.screen().contains("Confirmed goal +10000")
     });
+    s.submit(&format!("/memory group-create {source_id}"));
+    s.until("explicit group created", |s| {
+        s.screen().contains("created") && s.screen().contains("true")
+    });
+    s.submit("/memory groups");
+    s.until("confirmed related-work view", |s| {
+        s.screen().contains("Confirmed related-chat groups")
+            && s.screen().contains("/memory group-members")
+    });
+    s.send("\x1b");
     s.paste("2 finish all requested features");
     s.until("number remains ordinary draft text", |s| {
         s.draft() == "2 finish all requested features"

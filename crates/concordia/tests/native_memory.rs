@@ -388,6 +388,99 @@ fn cli_and_mcp_read_the_same_revision_and_reject_stale_sources() {
     let retained =
         native_memory::relations::list(dir.path(), Some(dir.path()), Some("g-1"), 0, None).unwrap();
     assert_eq!(retained["relations"][0]["source"], second.id);
+    // Explicit groups overlap; membership never substitutes equal session IDs across homes.
+    let legacy: Value = serde_json::from_slice(&std::fs::read(&relation_path).unwrap()).unwrap();
+    assert_eq!(legacy["version"], 1);
+    let first_group =
+        native_memory::relations::groups::create(dir.path(), dir.path(), &summary.id).unwrap();
+    let second_group =
+        native_memory::relations::groups::create(dir.path(), dir.path(), &summary.id).unwrap();
+    assert_ne!(first_group, second_group);
+    for group in [&first_group, &second_group] {
+        native_memory::relations::groups::set_member(dir.path(), group, &second.id, true).unwrap();
+        let members =
+            native_memory::relations::groups::members(dir.path(), group, 0, None).unwrap();
+        assert_eq!(members["rows"].as_array().unwrap().len(), 2);
+        assert!(members["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["status"] == "verified"));
+    }
+    let snapshot = std::fs::read(&relation_path).unwrap();
+    native_memory::relations::groups::set_member(dir.path(), &first_group, &second.id, true)
+        .unwrap();
+    assert_eq!(std::fs::read(&relation_path).unwrap(), snapshot);
+    native_memory::relations::groups::set_member(dir.path(), &first_group, &summary.id, false)
+        .unwrap();
+    assert_eq!(
+        native_memory::relations::groups::members(dir.path(), &first_group, 0, None).unwrap()
+            ["rows"][0]["source"],
+        second.id
+    );
+    assert_eq!(
+        native_memory::relations::groups::members(dir.path(), &second_group, 0, None).unwrap()
+            ["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for _ in 0..8 {
+        native_memory::relations::groups::create(dir.path(), dir.path(), &summary.id).unwrap();
+    }
+    let group_page =
+        native_memory::relations::groups::list(dir.path(), dir.path(), 0, None).unwrap();
+    assert_eq!(group_page["rows"].as_array().unwrap().len(), 8);
+    assert_eq!(group_page["next_offset"], 8);
+    assert!(serde_json::to_vec_pretty(&group_page).unwrap().len() <= 28_000);
+    assert!(native_memory::relations::groups::list(dir.path(), dir.path(), 8, None).is_err());
+    assert_eq!(
+        native_memory::relations::groups::list(
+            dir.path(),
+            dir.path(),
+            8,
+            group_page["revision"].as_str()
+        )
+        .unwrap()["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let worktree = dir.path().join("linked-fixture");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!(
+            "gitdir: {}",
+            dir.path().join(".git/worktrees/fixture").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        native_memory::relations::groups::list(dir.path(), &worktree, 0, None).unwrap(),
+        group_page
+    );
+    native_memory::relations::groups::set_member(dir.path(), &first_group, &second.id, false)
+        .unwrap();
+    assert!(native_memory::relations::groups::list(
+        dir.path(),
+        dir.path(),
+        8,
+        group_page["revision"].as_str()
+    )
+    .is_err());
+    // Goal associations and old goal bytes survive the version-2 write unchanged.
+    assert_eq!(
+        native_memory::relations::list(dir.path(), Some(dir.path()), Some("g-1"), 0, None).unwrap()
+            ["relations"][0]["source"],
+        second.id
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("goals.json")).unwrap(),
+        goal_bytes
+    );
     let before_corruption = std::fs::read(&relation_path).unwrap();
     std::fs::write(
         &relation_path,
@@ -399,6 +492,20 @@ fn cli_and_mcp_read_the_same_revision_and_reject_stale_sources() {
     assert_eq!(std::fs::read(&relation_path).unwrap(), corrupt_bytes);
     std::fs::write(&relation_path, &before_corruption).unwrap();
     std::fs::write(&path, "{}").unwrap();
+    let stale_group =
+        native_memory::relations::groups::members(dir.path(), &second_group, 0, None).unwrap();
+    assert!(stale_group["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["source"] == summary.id && row["status"] == "unavailable"));
+    assert!(native_memory::relations::groups::set_member(
+        dir.path(),
+        &first_group,
+        &summary.id,
+        true
+    )
+    .is_err());
     assert_eq!(read(&request)["result"]["isError"], true);
     assert!(native_memory::relations::attach(dir.path(), dir.path(), "g-0", &summary.id).is_err());
     assert_eq!(std::fs::read(&relation_path).unwrap(), before_corruption);
