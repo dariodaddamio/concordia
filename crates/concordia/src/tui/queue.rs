@@ -732,6 +732,12 @@ impl App {
             outcome.cancelled = true;
         }
         let scope_closed = self.finish_main_scope(&outcome);
+        if !scope_closed {
+            // A failed admission must not consume an explicitly selected queue item.
+            self.queue.force_pending = false;
+            self.queue.advance = false;
+            self.pause_queue();
+        }
         if !scope_closed && !outcome.cancelled && (outcome.failed || outcome.exit_code != Some(0)) {
             self.continuation.pause_for_workspace_reconciliation();
         }
