@@ -1,10 +1,79 @@
 # Native source pointers and unfinished work
 
+`/context` shows the policy for the selected account/home. `/context rollover 80` enables
+between-turn proactive rollover at 80% of Codex's reported context window (allowed range 50–95).
+`/context rollover off` disables it. The reader accepts native `event_msg/token_count` records only
+when `last_token_usage.total_tokens`, `model_context_window` and the selected native `turn_context`
+model are present. Cumulative billed usage is ignored. Compaction/model changes invalidate prior
+measurements; missing, changing or unsupported signals stay unknown. This is a tested native-log
+adapter, not a guarantee that every CLI version writes these records. Claude/Cursor proactive
+capacity is unavailable until a supported, verified signal exists.
+
+An enabled rollover starts a fresh native session before the next submitted turn, carries the
+bounded continuity pack, verifies original source pointers, preserves native pinned-decision
+delivery, and checks cancellation before provider launch. No in-flight task is interrupted or
+replayed. Failed source verification stops the launch. The usual explicit capacity-error recovery
+remains separate. The threshold is a policy against the last native measurement; it cannot predict
+the token size of the next prompt, tools or native compaction performed by another process.
+
+`/context compact tokens N` sets Codex's documented `model_auto_compact_token_limit` for future
+Concordia turns through `-c`; `/context compact automatic-off` sets Claude's documented
+`DISABLE_AUTO_COMPACT=1` in that child process only. Unsupported provider/control combinations are
+rejected. `/context compact native` restores inherited native behavior. Defaults remain native.
+No provider config or authentication files are edited. Policy lives under Concordia state and is
+bound to the canonical account home. These controls have fixture validation; no real model turns
+were run. Sources: [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
+[Claude environment variables](https://code.claude.com/docs/en/env-vars).
+
+`/memory` opens its command guide. `/memory recall TEXT` searches this workspace across at most
+eight recent native source windows; `/memory recall-account ACCOUNT TEXT` restricts discovery.
+Search never spends inference tokens. Results carry exact index/message references and are
+labelled lexical suggestions. Twelve hits, eight source windows (8 MiB each), and the existing
+native discovery budgets bound one request. Incomplete scans are explicit; no claim of exhaustive
+recall is made. Broad discovery skips Cursor replay; explicitly indexed Cursor pages are searchable.
+
+CLI `chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR]` returns JSON. `--source`
+searches any verified recent or whole-history page. `/memory recall-source INDEX TEXT` exposes the
+same page search in the TUI. Advance a whole-history page with `/memory next INDEX`, then search
+the returned page. `/memory index SESSION --account ID --scope whole` starts the scan. Exact excerpts use `/memory excerpt INDEX
+--message N`; continue UTF-8 chunks using `next_offset`. Source changes withhold results.
+
+`/memory link PARENT CHILD` confirms a relationship between two verified index pointers;
+`/memory detach PARENT CHILD` removes it. `/memory lineage INDEX` shows confirmed links separately
+from observed Concordia context handoffs. Observed handoffs store explicit account/home/session and
+workspace identities only, verify both sources on readback, and never claim provider-native ancestry.
+No transcript bodies or search queries are stored by retrieval or lineage. New conversations discard
+late display results; background reads remain bounded. Cross-workspace discovery is available through
+the CLI without `--workspace`.
+
 Build `2026-10-31s` adds a bounded pointer index for Codex and Claude JSONL sessions. It works
-with Concordia transcript recording off. Cursor still exposes session metadata only; unsupported
-native readback reports unavailable rather than guessing a source.
+with Concordia transcript recording off. Build `2026-11-02f` also reads Cursor histories through
+the provider's supported ACP history replay; unsupported capabilities report unavailable rather
+than guessing a source or database format.
 
 ## Identity and exact readback
+
+Build `2026-11-02e` adds forward whole-history scans. Existing recent-window indexes and pointers
+remain compatible. Each operation reads a bounded page and persists ranges/hashes, not text:
+
+```text
+concordia chat index SESSION --account ACCOUNT --provider codex --scope whole
+concordia chat index SESSION --account ACCOUNT --provider codex --scope whole --cursor PREVIOUS_INDEX
+concordia chat sources INDEX --from-message NEXT_ORDINAL --limit 20
+```
+
+Follow `history.next_cursor` until it is null. Each scan page contains at most 128 records and
+8 MiB of source bytes; continuation also verifies the preceding page. The initial source length
+stays fixed during pagination, so appends cannot shift ordinals or silently extend the scan.
+`history.complete` is true only at the snapshot end with no skipped records. Oversized records
+that exceed a scan page and malformed JSON are explicitly counted in `skipped_records`;
+these scans do not claim complete readback. Cursors still advance across oversized records.
+Whole-history records up to 8 MiB can be read through the same bounded UTF-8 excerpt API.
+
+`native_read` accepts `from_message` and `limit` for range listings. `{ "id": INDEX, "history": true }`
+starts whole-history indexing from a recent pointer, or follows the next page from a history pointer.
+Message ordinals are global within that history snapshot; each returned page names its first ordinal.
+No provider process or inference call is used for these Codex/Claude file operations.
 
 Every saved index binds the provider, registered account, canonical home, explicit native session,
 relative session-file path, OS file identity, captured file length, SHA-256 of a bounded header,
@@ -40,6 +109,30 @@ provider previously wrote into that session; it is not a redacted summary.
 
 ## Handoff and restart
 
+### Cursor protocol sources
+
+Cursor pointers use `native_protocol: "acp/session.load"` and `file: "acp-history"`. Their bytes
+are the provider's original replay notifications, not a claim to read an undocumented local
+JSONL file. The selected account's canonical config home is passed through documented
+`CURSOR_CONFIG_DIR`; inherited API-key/token variables are removed. Concordia neither copies
+credentials nor starts login. The provider remains responsible for its own authentication.
+
+The reader requires native `loadSession` capability and existing exact session/workspace metadata.
+It sends only `initialize` and `session/load`, with no new session, model prompt, mode change or
+MCP server supplied by Concordia. Tool/client requests are rejected. A tracked process guard,
+25-second replay timeout, 1 MiB frame bound and 16 MiB wire budget bound the read; larger replays
+report unavailable instead of returning an incomplete history as complete. No replay body is
+persisted. Fresh replay revalidates pointer prefixes/ranges; changed content fails stale.
+
+`chat index|sources|excerpt`, MCP native reads, `chat read`, and resume scrollback share this
+transport. UI display keeps its existing 200-message/1 MiB text budget and sanitizes terminal
+controls. Unsupported native versions, missing workspace metadata and authentication errors
+remain explicit. Fixture validation does not establish live-provider compatibility for every version.
+
+Sources: [Cursor ACP](https://cursor.com/docs/cli/acp),
+[Cursor config homes](https://cursor.com/docs/cli/reference/configuration),
+[ACP load/replay contract](https://agentclientprotocol.com/protocol/v1/session-setup).
+
 After a switch/continuation, a cancellable preparation step indexes up to three distinct recent
 native sources. The next provider receives a bounded directory of pointer IDs and readback
 instructions alongside the existing map and original request. Native session/tool/approval state
@@ -68,9 +161,9 @@ request and source directory. A second capacity failure pauses for explicit choi
 edits/modals/jobs and unfinished/error tool states still block automatic continuation. A pending
 cancel wins even if the provider's failure arrived first.
 
-This is reactive capacity-error recovery. Preemptive near-capacity rollover and verified per-version
-compaction controls remain planned. Cumulative billed tokens are never treated as context size;
-unknown capacity stays unknown, and provider compaction settings are not changed.
+This reactive capacity-error recovery is separate from the opt-in between-turn `/context` policy
+described above. Cumulative billed tokens are never treated as context size; unknown capacity stays
+unknown. Native compaction defaults are preserved unless explicitly overridden per process.
 
 ## Pinned decisions
 

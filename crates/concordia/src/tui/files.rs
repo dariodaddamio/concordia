@@ -246,3 +246,43 @@ fn file_plan(
     };
     Ok(file_open::editor_plan(&host, &editor, file, cwd))
 }
+
+impl App {
+    pub(super) fn open_project_search(&mut self) {
+        match self
+            .project_search
+            .open(&self.cwd, self.deleg.d.conversation_id())
+        {
+            Ok(()) => {
+                self.picker = None;
+            }
+            Err(error) => self.flash(error),
+        }
+    }
+
+    pub(super) fn poll_project_search(&mut self) {
+        if let Some(action) = self
+            .project_search
+            .poll(&self.cwd, self.deleg.d.conversation_id())
+        {
+            self.apply_search_action(action);
+        }
+    }
+
+    pub(super) fn apply_search_action(&mut self, action: workspace_search::Action) {
+        match action {
+            workspace_search::Action::Close => self.project_search.close(),
+            workspace_search::Action::Open(verified) => {
+                let path = verified.hit.path.clone();
+                match self.workspace.open_verified(verified) {
+                    Ok(()) => {
+                        self.related_files.remember(&path);
+                        self.project_search.close();
+                    }
+                    Err(error) => self.project_search.notice(&error),
+                }
+            }
+            _ => {}
+        }
+    }
+}

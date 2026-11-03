@@ -4,14 +4,14 @@ Concordia is a working private Windows build. It is not ready to advertise as a 
 complete context manager/orchestrator. A limited public preview has a smaller product scope,
 but still needs the concrete gates below. This document does not authorize publication.
 
-## Confirmed gate failures
+## CI repairs and candidate requirements
 
 | Gate | Current evidence | Needed before release |
 | --- | --- | --- |
-| Dependency advisories | `cargo deny check advisories` fails on bincode 1.3.3 and yaml-rust 0.4.5 through syntect; both are unmaintained advisories. | Replace/update the affected paths or explicitly review an appropriate policy decision. No ignore was added. |
-| Artifact size | The installed 2026-11-02a release artifact is 16.02 MiB; `scripts/smoke-ci.ps1` enforces 6 MiB and fails. | Reduce the artifact or deliberately review the distribution budget against the new features. Do not silently loosen the gate. Re-run on the exact candidate. |
-| Privacy preflight | `scripts/verify-oss-gates.ps1` flags functional namespace references in `crates/concordia/Cargo.toml`, `src/harness/adapter.rs`, `scripts/install.ps1` and `scripts/test-install.ps1`. | Finalize public repository/package identifiers and reconcile intentional public metadata with the privacy policy. These hits do not themselves establish leaked credentials. |
-| Source snapshot | Extensive modified and untracked source remains local. CI checks out committed source; publishing existing HEAD would omit current implementation. | Review and commit a complete candidate, including new modules/tests, then run gates on that exact snapshot. Preserve unrelated work. |
+| Dependency advisories | Unused Syntect YAML/plist import features are removed. Bincode remains under one reviewed maintenance-advisory exception for embedded assets. | Keep all other advisory checks enabled; remove the exception when the upstream dump format migrates. See [dependency review](quality/dependency-security.md). |
+| Artifact size | The 2026-11-02i remote release measured 16.56 MiB. The old 6 MiB limit predates native Mermaid, syntax assets, image support and memory orchestration. | The deliberately revised distribution budget is 20 MiB, about 21% headroom above that measured artifact. `smoke-ci.ps1` compares exact bytes and fails above it. This is a distribution decision, not a performance or memory claim. Re-run on the exact candidate. |
+| Privacy preflight | Public repository/package identifiers are now exempt only as exact identifiers in listed metadata/adapter/installer files. A private-project reference in the implementation ledger was removed. | Continue scanning the remaining contents of those files and every other tracked text file. New identifiers require an explicit review. |
+| Source snapshot | Core memory/orchestration work is committed in the stacked PR; separate signing work remains in another worktree. | CI must pass on the exact committed candidate. Do not include unrelated signing changes or claim them as shipped. |
 
 The privacy script scans tracked files only; new files also need the final privacy/secrets review.
 No credential files were read or copied for this audit. Evidence: ignored
@@ -50,11 +50,12 @@ request recovery, explicit quota/capacity-error recovery, selectable worker mode
 supervisor/worker result handback, Markdown/files, native images and local Mermaid.
 Image paste and internal editing are no longer unimplemented blockers.
 
-Still open: whole-history indexing/pagination, related-chat retrieval and verified lineage,
-Cursor exact native readback, proactive context/compaction policy, durable worker ownership
-across restart, task dependencies, file/worktree isolation, worker quota failover, combined
-worker usage/cost accounting and native interactive approval parity. General tool/plugin
-integration and unified file-open choices also remain unfinished. See the
+Whole-history indexing/pagination, bounded lexical retrieval and confirmed/observed lineage,
+Cursor ACP readback, optional Codex proactive rollover, native compaction controls, durable worker
+ownership and bounded worker quota failover are implemented with fixture evidence. Still open:
+richer goal/file ranking, task dependencies, file/worktree isolation, combined worker usage/cost
+accounting and native interactive approval parity. Claude/Cursor proactive capacity remains unknown.
+General tool/plugin integration and unified file-open choices also remain unfinished. See the
 [feature audit](feature-completion-audit.md), [orchestration](orchestration-and-latency.md)
 and [workspace requirements](workspace-panes.md).
 

@@ -23,6 +23,18 @@ fn fake_acp() {
             .expect("ACP fake requires an explicit fixture"),
     )
     .unwrap();
+    if fixture["history"].is_array() {
+        std::fs::write(
+            root.join("acp-environment.json"),
+            serde_json::json!({
+                "config_dir":std::env::var("CURSOR_CONFIG_DIR").ok(),
+                "api_key_present":std::env::var_os("CURSOR_API_KEY").is_some(),
+                "auth_token_present":std::env::var_os("CURSOR_AUTH_TOKEN").is_some(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
     let emit = |value: serde_json::Value| {
         println!("{value}");
         std::io::stdout().flush().unwrap();
@@ -48,11 +60,34 @@ fn fake_acp() {
         }
         let result = match value["method"].as_str().unwrap_or("") {
             "initialize" => {
-                serde_json::json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":fixture["image"]!=false}}})
+                serde_json::json!({"protocolVersion":1,"agentCapabilities":{"loadSession":fixture["load_session"]!=false,"promptCapabilities":{"image":fixture["image"]!=false}}})
             }
             "session/new" => serde_json::json!({"sessionId":session_id}),
             "session/load" => {
                 session_id = value["params"]["sessionId"].as_str().unwrap().to_owned();
+                if let Some(history) = fixture["history"].as_array() {
+                    for entry in history {
+                        let update = if entry["role"] == "user" {
+                            "user_message_chunk"
+                        } else {
+                            "agent_message_chunk"
+                        };
+                        let replay_session = if fixture["wrong_history_session"] == true {
+                            "another-session"
+                        } else {
+                            &session_id
+                        };
+                        emit(
+                            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":replay_session,"update":{"sessionUpdate":update,"messageId":entry["id"],"content":{"type":"text","text":entry["text"]}}}}),
+                        );
+                    }
+                }
+                if fixture["history_tool_request"] == true {
+                    emit(
+                        serde_json::json!({"jsonrpc":"2.0","id":100,"method":"terminal/create","params":{"sessionId":session_id,"command":"must-not-run"}}),
+                    );
+                    continue;
+                }
                 serde_json::json!({})
             }
             "session/set_mode" | "session/set_model" => serde_json::json!({}),

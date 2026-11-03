@@ -6,6 +6,8 @@ use crate::provider::codex::{
 };
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
 use crate::provider::enforcement;
+use crate::provider::interaction::InteractionOwner;
+pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
 use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
@@ -57,6 +59,7 @@ pub struct ProviderTurnRequest<'a> {
     /// When set, the prompt opens with this time and the relative times it mentions resolved
     /// (`prompt_time::header`). Every user and worker turn sets it; `None` sends the text as is.
     pub local_time: Option<crate::prompt_time::LocalTime>,
+    pub compaction: crate::capacity::Compaction,
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +141,7 @@ pub fn attach_images(
 
 #[derive(Debug, Clone)]
 pub enum TurnProgress {
-    Interaction(NativeRequest),
+    Interaction(Box<NativeRequest>),
     Session(String),
     Text(String),
     TextDelta(String),
@@ -150,39 +153,6 @@ pub enum TurnProgress {
     Usage(TurnUsage),
     /// Concordia's own explanation of how it changed the turn (for example, read-only enforcement).
     Notice(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct NativeRequest {
-    pub method: String,
-    pub params: serde_json::Value,
-    response: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<serde_json::Value>>>>,
-}
-impl NativeRequest {
-    pub fn channel(
-        method: String,
-        params: serde_json::Value,
-    ) -> (Self, tokio::sync::oneshot::Receiver<serde_json::Value>) {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        (
-            Self {
-                method,
-                params,
-                response: Arc::new(std::sync::Mutex::new(Some(tx))),
-            },
-            rx,
-        )
-    }
-    pub fn respond(&self, value: serde_json::Value) {
-        if let Some(tx) = self
-            .response
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            let _ = tx.send(value);
-        }
-    }
 }
 
 /// Why this turn will run read-only instead of with the trust it asked for, if it will.
@@ -200,6 +170,7 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         ..req.clone()
     };
     let mut plan = plan_provider_turn_raw(req)?;
+    crate::capacity::apply(&mut plan, &req.compaction).map_err(anyhow::Error::msg)?;
     // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
     crate::provider::compat::degrade_planned(&mut plan, req.trust);
     // That fallback can drop the plan switch (Claude to manual, Cursor without --mode plan).
@@ -378,6 +349,28 @@ pub async fn run_provider_turn_with_progress(
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
+    run_provider_turn_inner(req, None, on_started, on_progress).await
+}
+
+/// App-owned turns bind native input before spawning, without changing request/transport defaults.
+pub async fn run_provider_turn_with_owner(
+    req: &ProviderTurnRequest<'_>,
+    owner: InteractionOwner,
+    on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
+    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+) -> Result<TurnOutcome> {
+    let owner = owner
+        .validate_for(req.provider, req.cwd, req.home_path)
+        .map_err(anyhow::Error::msg)?;
+    run_provider_turn_inner(req, Some(owner), on_started, on_progress).await
+}
+
+async fn run_provider_turn_inner(
+    req: &ProviderTurnRequest<'_>,
+    owner: Option<InteractionOwner>,
+    on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
+    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+) -> Result<TurnOutcome> {
     let timing = Instant::now();
     let mut session_guard = req
         .native_session_id
@@ -390,7 +383,7 @@ pub async fn run_provider_turn_with_progress(
         let _ = tx.send(TurnProgress::Notice(notice));
     }
     if req.provider == ProviderKind::Cursor && !req.images.is_empty() {
-        return acp::run(req, &plan, on_started, on_progress).await;
+        return acp::run(req, &plan, owner, on_started, on_progress).await;
     }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
     // it explicitly. If that does not work the turn runs unbound, exactly as before.
@@ -903,6 +896,7 @@ mod gate_tests {
             trust: TrustMode::Workspace,
             context_prefix: Some("<concordia_context>last week</concordia_context>"),
             local_time: Some(now),
+            compaction: Default::default(),
         };
         let plan = plan_provider_turn(&req).unwrap();
         // "last week" in the pack is not the user's words, so it is not resolved.
@@ -915,6 +909,7 @@ mod gate_tests {
         let plain = plan_provider_turn(&ProviderTurnRequest {
             images: &[],
             local_time: None,
+            compaction: Default::default(),
             context_prefix: None,
             ..req
         })
@@ -934,6 +929,7 @@ mod gate_tests {
             trust,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         plan_provider_turn(&req).unwrap().argv
     }
@@ -974,6 +970,7 @@ mod gate_tests {
             trust: TrustMode::Workspace,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         let notice = enforcement_notice(&req).expect("a lowered turn must explain itself");
         assert!(notice.contains("cursor") && notice.contains("read-only"));
@@ -1012,6 +1009,7 @@ mod gate_tests {
             trust: TrustMode::Full,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         let result = plan_provider_turn(&req);
         set_caps(

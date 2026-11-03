@@ -6,7 +6,7 @@ use crate::context::{plan_continuity, ContinuityRequest, PackMessage, PackRole};
 use crate::identity::{format_identity_label, inspect_provider};
 use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
 use crate::provider::turn::{
-    plan_provider_turn, run_provider_turn_with_progress, ProviderTurnRequest, RunningTurn,
+    plan_provider_turn, run_provider_turn_with_owner, ProviderTurnRequest, RunningTurn,
     TurnOutcome, TurnProgress,
 };
 use crate::sessions::{
@@ -89,6 +89,7 @@ mod usage_style;
 mod ux_tests;
 mod workers;
 mod workspace;
+mod workspace_search;
 
 use editor::Editor;
 use palette::Palette;
@@ -291,6 +292,8 @@ impl Picker {
 
 pub struct App {
     continuation: continuation::State,
+    native_owner: Option<crate::provider::interaction::InteractionOwner>,
+    project_search: workspace_search::State,
     continuation_target: Option<String>,
     state_root: PathBuf,
     cwd: PathBuf,
@@ -738,6 +741,10 @@ impl App {
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        if self.project_search.active() {
+            self.project_search.paste(text);
+            return;
+        }
         // Paste can arrive as one Event::Paste or as a buffered burst split into overflow
         // chunks. Route every chunk here so a modal never edits the prompt or queue editor.
         if self.activity.detail.is_some() {
@@ -1025,8 +1032,18 @@ impl App {
     fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
             TurnProgress::Interaction(request) => {
+                if self.cancel_requested
+                    || !self.busy
+                    || !self
+                        .native_owner
+                        .as_ref()
+                        .is_some_and(|owner| request.is_owned_by(owner))
+                {
+                    request.invalidate();
+                    return;
+                }
                 self.questions
-                    .offer_native(request, self.editor.text().is_empty());
+                    .offer_native(*request, self.editor.text().is_empty());
                 self.pause_queue();
             }
             TurnProgress::Session(id) => {
@@ -1440,6 +1457,8 @@ impl App {
         self.persist_tick();
         self.poll_file_jobs();
         self.poll_session_history();
+        self.poll_memory();
+        self.poll_project_search();
         self.workspace.poll();
         if let Some(notice) = self.workspace.take_notice() {
             self.flash(notice);
@@ -2500,6 +2519,48 @@ impl App {
 
     fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if ["/delegate fallback", "/delegate recover", "/delegate retry"]
+            .iter()
+            .any(|p| trimmed == *p || trimmed.starts_with(&format!("{p} ")))
+        {
+            landing::close(self);
+            self.push_command(line);
+            self.worker_recovery_command(trimmed.strip_prefix("/delegate ").unwrap_or_default());
+            return true;
+        }
+        if trimmed == "/context" || trimmed.starts_with("/context ") {
+            landing::close(self);
+            self.push_command(line);
+            let result = self
+                .home_path
+                .as_ref()
+                .ok_or_else(|| "account home is unavailable".to_string())
+                .and_then(|h| {
+                    crate::native_memory::Binding::new(
+                        self.provider,
+                        &self.account,
+                        h,
+                        self.native_session_id
+                            .as_deref()
+                            .unwrap_or("context-policy"),
+                    )
+                })
+                .and_then(|b| {
+                    crate::capacity::set(
+                        &self.state_root,
+                        &b,
+                        trimmed.strip_prefix("/context").unwrap_or_default().trim(),
+                    )
+                });
+            self.push_system(result.unwrap_or_else(|e| format!("context policy: {e}")));
+            return true;
+        }
+        if trimmed == "/memory" || trimmed.starts_with("/memory ") {
+            landing::close(self);
+            self.push_command(line);
+            self.memory_command(trimmed.strip_prefix("/memory").unwrap_or_default().trim());
+            return true;
+        }
         if trimmed == "/trust" || trimmed.starts_with("/trust ") {
             self.push_command(line);
             self.push_system("/trust is now /mode");
@@ -2572,6 +2633,10 @@ impl App {
         if trimmed == "/exit" || trimmed == "/quit" || trimmed == "/q" {
             self.push_command(line);
             self.push_system("/exit is now Ctrl+C twice");
+            return true;
+        }
+        if line.trim() == "/search" {
+            self.open_project_search();
             return true;
         }
         if line.trim() == "/open" {
@@ -2770,6 +2835,8 @@ impl App {
         };
         let (outcome, lines) = dispatch_slash(cmd, &ctx);
         if is_new {
+            self.project_search.close();
+            self.native_owner = None;
             self.deleg.change_conversation();
             self.keep.turn_recovery_notice = false;
             self.continuation.invalidate();
@@ -3088,6 +3155,8 @@ impl App {
     }
 
     fn request_cancel(&mut self) {
+        self.questions.cancel_native();
+        self.native_owner = None;
         if self.cancel_requested {
             return;
         }
@@ -3161,6 +3230,8 @@ impl App {
             chatref: chatref::ChatRef::default(),
             related_files,
             questions: questions::State::default(),
+            native_owner: None,
+            project_search: workspace_search::State::default(),
             images: images::State::default(),
             history: Vec::new(),
             hist_pos: None,
@@ -3435,7 +3506,7 @@ pub async fn run_chat_tui() -> Result<()> {
                             if let Some(burst) = key_burst.take_pending() {
                                 dispatch_key_burst(&mut app, burst, &turn_tx);
                             }
-                            if !questions::paste(&mut app, &s) {
+                            if app.project_search.active() || !questions::paste(&mut app, &s) {
                                 app.paste_text(&s)
                             }
                         }
@@ -3476,6 +3547,32 @@ pub async fn run_chat_tui() -> Result<()> {
                 let account = app.account.clone();
                 let model = app.model.clone();
                 let trust = app.trust;
+                let launch_home = app.home_path.clone();
+                let owner = crate::provider::interaction::InteractionOwner {
+                    conversation_id: app.deleg.d.conversation_id().to_owned(),
+                    workspace: cwd.clone(),
+                    execution_cwd: cwd.clone(),
+                    run_id: app.continuation.run_id().to_owned(),
+                    attempt_id: uuid::Uuid::new_v4().to_string(),
+                    provider,
+                    account: account.clone(),
+                    home: app.home_path.clone(),
+                };
+                let owner = match owner.validate_for(provider, &cwd, app.home_path.as_deref()) {
+                    Ok(owner) => owner,
+                    Err(error) => {
+                        app.on_turn_done(
+                            TurnOutcome {
+                                stderr_tail: format!("native interaction owner: {error}"),
+                                ..Default::default()
+                            },
+                            &turn_tx,
+                        );
+                        continue;
+                    }
+                };
+                app.questions.cancel_native();
+                app.native_owner = Some(owner.clone());
                 let session = app.native_session_id.clone();
                 let prior_prov = app.prior_provider;
                 let prior_home = app.prior_home.clone();
@@ -3510,14 +3607,61 @@ pub async fn run_chat_tui() -> Result<()> {
                 app.live_thinking.clear();
                 app.phase = Phase::Waiting;
                 tokio::spawn(async move {
-                    let home = get_account(&state_root, &account)
-                        .and_then(|a| a.home_path)
-                        .or_else(|| {
-                            get_use_selection(&state_root)
-                                .and_then(|s| s.home_path)
-                                .map(PathBuf::from)
-                        });
+                    let home = launch_home;
                     let home_str = home.as_ref().map(|p| p.to_string_lossy().into_owned());
+                    let binding = home.as_ref().and_then(|h| {
+                        crate::native_memory::Binding::new(
+                            provider,
+                            &account,
+                            h,
+                            session.as_deref().unwrap_or("context-policy"),
+                        )
+                        .ok()
+                    });
+                    let policy = match binding
+                        .as_ref()
+                        .map(|b| crate::capacity::load(&state_root, b))
+                        .transpose()
+                    {
+                        Ok(p) => p.unwrap_or_default(),
+                        Err(error) => {
+                            let _ = done_tx.send(TurnOutcome {
+                                stderr_tail: format!("invalid context policy: {error}"),
+                                ..Default::default()
+                            });
+                            return;
+                        }
+                    };
+                    let mut rollover = false;
+                    if policy.rollover_percent.is_some() && session.is_some() {
+                        if let Some(binding) = binding {
+                            let root = state_root.clone();
+                            let selected_model = model.clone();
+                            let measured = tokio::task::spawn_blocking(move || {
+                                crate::native_memory::context_measurement(
+                                    &root,
+                                    &binding,
+                                    &selected_model,
+                                )
+                            })
+                            .await;
+                            match measured {
+                                Ok(Ok(measurement)) => {
+                                    rollover = policy.rollover(measurement);
+                                    let notice = measurement.map_or("native context capacity unknown; proactive rollover skipped".into(), |m| format!("Native context: {} / {} tokens{}", m.used, m.window, if rollover { "; starting a fresh session before this turn" } else { "" }));
+                                    let _ = progress_tx.send(TurnProgress::Notice(notice));
+                                }
+                                _ => {
+                                    let _ = progress_tx.send(TurnProgress::Notice("native context measurement unavailable; proactive rollover skipped".into()));
+                                }
+                            }
+                        }
+                    }
+                    let need_pack_hint = need_pack_hint || rollover;
+                    if rollover && native_sources.is_empty() {
+                        let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: no original source binding is available".into(), ..Default::default() });
+                        return;
+                    }
                     // Pack only after an explicit switch (need_pack_hint). Planner clears
                     // session id on cross-home/provider; omits pack when native resume applies.
                     let decision = plan_continuity(&ContinuityRequest {
@@ -3525,13 +3669,19 @@ pub async fn run_chat_tui() -> Result<()> {
                         to_provider: provider,
                         from_home: prior_home.as_deref().or(home_str.as_deref()),
                         to_home: home_str.as_deref(),
-                        session_id: session.as_deref(),
+                        session_id: if rollover { None } else { session.as_deref() },
                         messages: &pack_msgs,
                         thread_id: thread_id.as_deref(),
                         include_pack_if_needed: need_pack_hint,
                     });
                     let session_out = if decision.native_resume {
-                        decision.session_id.clone().or(session.clone())
+                        decision.session_id.clone().or_else(|| {
+                            if rollover {
+                                None
+                            } else {
+                                session.clone()
+                            }
+                        })
                     } else {
                         // Never leak a foreign / cross-home session id.
                         None
@@ -3549,6 +3699,10 @@ pub async fn run_chat_tui() -> Result<()> {
                         .await;
                         match indexed {
                             Ok((sources, notices)) => {
+                                if rollover && (sources.is_empty() || !notices.is_empty()) {
+                                    let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: original native sources could not all be verified".into(), ..Default::default() });
+                                    return;
+                                }
                                 for notice in notices {
                                     let _ = progress_tx.send(TurnProgress::Notice(notice));
                                 }
@@ -3559,6 +3713,15 @@ pub async fn run_chat_tui() -> Result<()> {
                                 }
                             }
                             Err(error) => {
+                                if rollover {
+                                    let _ = done_tx.send(TurnOutcome {
+                                        stderr_tail: format!(
+                                            "proactive source preparation failed: {error}"
+                                        ),
+                                        ..Default::default()
+                                    });
+                                    return;
+                                }
                                 let _ = progress_tx.send(TurnProgress::Notice(format!(
                                     "native source indexing unavailable: {error}"
                                 )));
@@ -3587,6 +3750,7 @@ pub async fn run_chat_tui() -> Result<()> {
                         trust,
                         context_prefix: prefix.as_deref(),
                         local_time: Some(crate::prompt_time::now()),
+                        compaction: policy.compaction,
                     };
                     // Validate plan even if spawn fails (argv safety).
                     if let Err(e) = plan_provider_turn(&req) {
@@ -3596,8 +3760,13 @@ pub async fn run_chat_tui() -> Result<()> {
                         });
                         return;
                     }
-                    match run_provider_turn_with_progress(&req, Some(handle_tx), Some(progress_tx))
-                        .await
+                    match run_provider_turn_with_owner(
+                        &req,
+                        owner,
+                        Some(handle_tx),
+                        Some(progress_tx),
+                    )
+                    .await
                     {
                         Ok(outcome) => {
                             let _ = done_tx.send(outcome);
@@ -3691,7 +3860,7 @@ fn dispatch_key_burst(
 ) -> bool {
     if burst.text {
         let text = burst.text_content.as_deref().unwrap_or_default();
-        if questions::paste(app, text) {
+        if !app.project_search.active() && questions::paste(app, text) {
             return false;
         }
         app.paste_text_chunk(
@@ -3719,7 +3888,11 @@ fn dispatch_key_event(
     let palette_action = matches!(key.code, KeyCode::Enter | KeyCode::Tab)
         && !app.palette_entries().is_empty()
         && !key_burst.active();
-    if input::BurstBuffer::is_candidate(&key) && app.picker.is_none() && !palette_action {
+    if input::BurstBuffer::is_candidate(&key)
+        && app.picker.is_none()
+        && !app.project_search.active()
+        && !palette_action
+    {
         if let Some(burst) = key_burst.push(key, now) {
             return dispatch_key_burst(app, burst, turn_tx);
         }
@@ -3744,6 +3917,32 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         KeyEventKind::Repeat if !matches!(key.code, KeyCode::Backspace) => return false,
         _ => {}
     }
+    if app.project_search.active() {
+        if (matches!(key.code, KeyCode::Char('v' | 'V'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT))
+            || (key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            match clipboard::get_text() {
+                Ok(text) => app.project_search.paste(&text),
+                Err(error) => app.project_search.notice(&format!("paste failed: {error}")),
+            }
+            return false;
+        }
+        let action = app.project_search.key(key);
+        app.apply_search_action(action);
+        return false;
+    }
+    if key.code == KeyCode::Char('f')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Files)
+    {
+        app.open_project_search();
+        return false;
+    }
     if landing::visible(app) && landing::handle_key(app, key) {
         return false;
     }
@@ -3764,6 +3963,16 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                     }
                 }
                 KeyCode::Esc => app.dismiss_picker(),
+                KeyCode::Enter
+                    if picker.kind == PickerKind::Update
+                        && app.job.is_none()
+                        && app
+                            .update_preview
+                            .as_ref()
+                            .is_some_and(|p| !p.install_available) =>
+                {
+                    app.dismiss_picker();
+                }
                 KeyCode::Enter
                     if app
                         .update_preview
@@ -4184,6 +4393,9 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if app.project_search.active() {
+        return;
+    }
     if modal::mouse(app, &m) {
         return;
     }
@@ -4572,6 +4784,10 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         chatref::draw(f, chunks[1], chunks[2], app);
         draw_footer(f, chunks[3], app);
         workers::draw(f, strip, chunks[1], app);
+    }
+    if app.project_search.active() {
+        app.areas = Areas::default();
+        app.project_search.draw(f, f.area());
     }
     // Cover every widget, including provider-controlled titles, menus and detail panes.
     // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
@@ -5820,6 +6036,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )
         }
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+        && app.job.is_none()
+        && app.update_preview.is_some()
+    {
+        ("Enter / Esc close", Style::default().fg(Color::DarkGray))
     } else if !app.palette_entries().is_empty() {
         (
             "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",

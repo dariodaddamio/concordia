@@ -100,3 +100,16 @@ The owner chose the labels **Preview here**, **Split off** (a new terminal), and
 Internal preview/editing and the existing terminal-editor `/edit` route are implemented. A unified
 three-choice preference, direct GUI editor launch and a dedicated Concordia editor process remain
 workspace work; they are not closed by the image/diagram build.
+
+## Project content search
+
+Use `/search`, or Ctrl+F while the `/open` file browser is visible, to search UTF-8 project file
+contents. The search surface owns its query separately from the chat draft. Enter scans or opens a
+selected result; Esc closes it. Case controls and completeness/limit reasons are shown on screen.
+File-pane Ctrl+F remains in-file search. Existing queues and running provider turns are preserved.
+
+Scans exclude sensitive/provider paths, ignored/build directories and paths escaping the root.
+Results retain original byte offsets and hashes. Opening verifies the exact source on a background
+worker and displays the verified snapshot; changed results must be searched again. An already-open
+file must be closed before a search snapshot can open, preserving unsaved pane buffers. Replacement
+and regex search are future phases. See [first-wave evidence](quality/completion-wave1.md).

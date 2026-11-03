@@ -1,11 +1,21 @@
-# Feature completion audit: 2026-11-02d
+# Feature completion audit: 2026-11-02k
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
 memory-management/orchestration roadmap remains unfinished. This audit does not mark planned
 features complete because their UI exists or because a synthetic demonstration passes.
 
+The [remaining-feature execution plan](plans/completion-roadmap.md) covers every open area below,
+including implementation order, parallel ownership and provider/host/release evidence. Plan
+creation does not change the implementation status recorded here.
+
 ## Closed in this build
+
+- First completion wave adds bounded read-only project search plus dependency/recovery and native
+  interaction contract foundations. See [scope and verification](quality/completion-wave1.md).
+  These foundations do not complete dependency dispatch, workspace isolation, native worker
+  approvals or provider parity. Existing Cursor ACP permissions/questions now bind to the exact
+  conversation/run/attempt/connection, with native options preserved.
 
 - Session handoff selection through `/use` or `/continuation`: pause and choose, automatic
   selection, or a preferred connected account. Session choices preserve the saved default;
@@ -23,8 +33,8 @@ features complete because their UI exists or because a synthetic demonstration p
 
 - Native Windows text clipboard, accurate/failure-safe cuts and faster active-output polling.
 - Per-worker native models, batched result collection and opt-in automatic handback, bound to
-  the launching conversation and using normal dispatch/recovery. Persistent job state,
-  dependency scheduling, isolation and worker quota failover remain open. See
+  the launching conversation and using normal dispatch/recovery. Persistent worker state and
+  bounded quota failover are now implemented; dependency scheduling and isolation remain open. See
   [orchestration and latency](orchestration-and-latency.md).
 - Stable completed-diagram rendering in long histories and inspectable patch-failure diagnostics.
 
@@ -84,22 +94,22 @@ reload/change indication, independent input scrolling, update/install controls a
 The latest run evidence and its concurrency conditions belong in [E2E status](e2e-status.md).
 This is fixture/automated evidence, not a claim to have tested every possible real-provider event.
 
-## Open core roadmap
+## Core roadmap status after the memory/orchestration implementation
 
 These items are not a completed feature set. Repeated UI polishing did not finish the core
 roadmap, and an audit is not implementation. Local engineering can proceed without owner input.
 
-1. Whole-history native indexing and complete bounded pagination. Current Codex/Claude indexes
-   retain a recent window (last 8 MiB, up to 128 events); that is not every historical event.
-2. Cursor exact native readback. The current adapter exposes metadata; it has no supported exact
-   conversation-source reader. A verified source format or supported export path is required.
-3. Related-chat retrieval and richer verified lineage/goals. Current source chains and connected
-   file-backed Harness pins are first slices; lexical chat search is not confirmed ancestry.
-4. Proactive context rollover and per-version compaction policy. Current rollover reacts once
-   to a recognized terminal error. Unknown capacity remains unknown and provider compaction
-   settings are not changed. Verified native signals/controls remain an acceptance prerequisite.
-5. Durable worker/run ownership across restart and uncertain-completion reconciliation. Current
-   unfinished-request recovery does not establish resumed ownership of every background worker.
+1. Whole-history native indexing is implemented with immutable bounded pages and stable snapshot
+   ordinals. Oversized/malformed records remain explicit gaps; recent indexing remains the default.
+2. Cursor readback uses supported, capability-checked ACP replay and exact session/account binding.
+   Bounds and fixture evidence do not establish parity for every installed Cursor version.
+3. Bounded lexical retrieval and explicit/observed lineage are implemented. Suggestions remain
+   separate from confirmed relationships; richer goal/file relationship ranking remains open.
+4. Optional Codex proactive rollover and process-local Codex/Claude compaction controls are
+   implemented. Claude/Cursor proactive capacity remains unknown; live validation remains open.
+5. Worker UUIDs, pane-owned ledgers, paused crash recovery, exact result pointers, delivery
+   reservations and bounded quota failover are implemented. Uncertain work requires explicit
+   reconciliation; no process, tool or result is automatically replayed at restart.
 6. Live provider/auth/approval parity and public-release gates. Real provider model turns remain
    prohibited without an explicit scope and budget. Synthetic fixtures do not clear these gates.
 7. Visible custom pointer shapes in the installed WezTerm 2024 host. Its parser does not support
@@ -114,13 +124,13 @@ included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.
 
 ## What the owner can unblock
 
-- No input is needed for local indexing/pagination, synthetic related-chat evaluation, durable
-  worker ownership, or cwd replacement implementation. Their unfinished status is engineering
-  work, not a permission blocker.
+- Local memory/orchestration implementations and their fixture evidence are recorded in
+  [the implementation ledger](quality/memory-orchestration-progress.md). Cwd replacement and
+  broader dependency/isolation features remain engineering work, not permission blockers.
 - Live provider/auth/approval parity needs an explicit provider/task scope and usage budget under
   `AGENTS.md`. No model turns have been used to clear this gate.
-- Cursor exact readback and proactive rollover require verified native source formats or signals
-  for installed versions. Unknown signals must remain unknown; documentation/read-only inspection
+- Unsupported proactive capacity requires verified native signals for installed versions.
+  Unknown signals must remain unknown; documentation/read-only inspection
   can continue without asking the owner to research them.
 - Visible pointer shapes require a terminal host that supports the requested control. The
   installed WezTerm 2024 build does not; demo cursor overlays do not change this.

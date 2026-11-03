@@ -194,6 +194,94 @@ async fn a_delegate_runs_in_the_background_with_a_fresh_session_and_a_labelled_r
 }
 
 #[tokio::test]
+async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes() {
+    let mut env = Env::new();
+    env.set("CONCORDIA_CLAUDE_BIN", FAKE);
+    env.set("FAKE_PROVIDER_MODE", "interaction");
+    let journal = env.path("journal.jsonl");
+    env.set("FAKE_PROVIDER_JOURNAL", &journal);
+    env.set("CONCORDIA_CODEX_HOME_BASE", env.path("empty-profile"));
+    let cwd = env.path("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    for (account, provider, marker) in [
+        ("worker-one", ProviderKind::Codex, "auth.json"),
+        ("worker-two", ProviderKind::Claude, ".credentials.json"),
+    ] {
+        let home = env.path(account);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(marker), "synthetic-login-existence-marker").unwrap();
+        concordia::store::upsert_stored_account(
+            env.dir.path(),
+            concordia::store::StoredAccount {
+                id: account.into(),
+                provider,
+                home_path: Some(home.display().to_string()),
+                label: account.into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+    }
+    concordia::store::modify_store(env.dir.path(), |s| {
+        s.settings.workers = vec!["worker-one".into(), "worker-two".into()];
+        s.settings.delegate_quota_failover = true;
+        Ok(())
+    })
+    .unwrap();
+    let recovery = env.path("pane/worker-runs");
+    let mut d = Delegates::default();
+    d.attach_recovery(&recovery, &cwd, env.dir.path()).unwrap();
+    let id = d
+        .submit(
+            Submit {
+                account: "worker-one".into(),
+                provider: ProviderKind::Codex,
+                task: "bounded task [quota]".into(),
+                origin: Origin::User,
+                spec: JobSpec {
+                    model: None,
+                    home: Some(env.path("worker-one")),
+                    cwd: cwd.clone(),
+                    prompt: "bounded task [quota]".into(),
+                    prefix: None,
+                    trust: TrustMode::Ask,
+                },
+            },
+            Instant::now(),
+        )
+        .unwrap();
+    let run = d.get(id).unwrap().run_id.clone();
+    until(&mut d, 20, |d| d.get(id).unwrap().state.is_finished()).await;
+    assert_eq!(
+        d.get(id).unwrap().state,
+        WorkerState::Done,
+        "{:?}",
+        d.get(id).unwrap().error
+    );
+    assert_eq!(d.get(id).unwrap().account, "worker-two");
+    assert_eq!(d.get(id).unwrap().trust, TrustMode::Ask);
+    d.reserve_delivery(&[id]).unwrap();
+    let before = std::fs::read_to_string(&journal).unwrap();
+    assert_eq!(
+        before
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"start\""))
+            .count(),
+        2
+    );
+    drop(d);
+    let mut restored = Delegates::default();
+    restored
+        .attach_recovery(&recovery, &cwd, env.dir.path())
+        .unwrap();
+    assert_eq!(restored.get(id).unwrap().run_id, run);
+    assert!(restored.get(id).unwrap().collected);
+    assert!(restored.get(id).unwrap().text.is_empty());
+    restored.poll(Instant::now());
+    assert_eq!(std::fs::read_to_string(journal).unwrap(), before);
+}
+
+#[tokio::test]
 async fn a_failing_worker_reports_why() {
     let mut env = Env::new();
     env.set("FAKE_PROVIDER_MODE", "fail");

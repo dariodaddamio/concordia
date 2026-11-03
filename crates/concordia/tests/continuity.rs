@@ -38,6 +38,7 @@ fn foreign_session_id_never_in_cross_home_argv() {
         trust: TrustMode::Workspace,
         context_prefix: decision.pack.as_ref().map(|p| p.text.as_str()),
         local_time: None,
+        compaction: Default::default(),
     })
     .unwrap();
     assert!(
@@ -80,6 +81,7 @@ fn native_resume_omits_pack_and_keeps_session_in_argv() {
         trust: TrustMode::Workspace,
         context_prefix: None,
         local_time: None,
+        compaction: Default::default(),
     })
     .unwrap();
     assert!(plan

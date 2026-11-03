@@ -1,5 +1,35 @@
 # Delegation (orchestrator and workers)
 
+Build `2026-11-02i` persists worker request/identity/state under the pane's recovery lease, with
+an additional worker OS lock. UUIDs bind owner, conversation and run; workspace, exact account home,
+model, attempts, native session and revision-checked result pointers are retained. The ledger is
+atomic and bounded to 8 MiB/64 runs; finished history retains its existing pruning bound.
+It stores delegated requests but no copied native replies, thinking, tools or context packs.
+Storage failure stops new dispatch and result delivery. Recovery also offers abandoned panes
+whose only remaining work is worker metadata.
+
+Restart never relaunches queued or interrupted workers. Those records reopen paused; tools may have
+run before the crash, and the previous provider process may still exist. Inspect its native session
+and workspace first. `/delegate recover ID` reads a known completed result from its exact recorded
+pointer in the background. Changed, missing or unsupported sources are unavailable. A result
+without a durably recorded successful completion remains paused even when some text exists.
+`/delegate retry ID reconciled` explicitly starts a fresh task through normal account/trust checks.
+Native approvals do not transfer. Recovered results need explicit `/delegate use`; ownership is
+never inferred from the currently focused conversation.
+
+Result delivery is reserved durably before dispatch. A crash in that window can leave a reservation
+without confirmed delivery; inspect main-request recovery before explicitly sending it again.
+Automatic duplicate delivery is suppressed. This is at-most-once automatic dispatch, not a claim
+of exactly-once provider execution.
+
+`/delegate fallback on` opts into quota failover; `off` disables it. Eligibility follows configured
+worker order and native model settings, requires a free logged-in account and valid configured
+model, excludes the current orchestrator and same-home/login target, and preserves trust mode.
+At most four distinct accounts are attempted. Only explicit terminal quota errors with a confirmed
+exit, no tools and no partial answer can reroute. Crash, cancellation, connection failure, unknown
+exit and uncertain completion stop automatic retry. Fake-provider checks do not establish live
+provider/auth/approval parity.
+
 One of your accounts is the **orchestrator**: the conversation you type into. Up to three other
 accounts can be **workers**. You hand a worker one task; it runs in the background, in the same
 folder, as a separate turn of that account's own CLI. You see it live under the transcript and

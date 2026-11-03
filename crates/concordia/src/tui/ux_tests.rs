@@ -435,3 +435,36 @@ fn run_status_sits_below_transcript_and_user_rows_have_background_and_completion
     ui.draw();
     assert!(ui.app.areas.bottom_button.width > 0);
 }
+
+#[test]
+fn project_search_owns_keys_and_pastes_without_submitting_or_changing_draft() {
+    let mut ui = Ui::new();
+    ui.app.editor.set_text("unfinished chat draft");
+    ui.app.busy = true;
+    ui.app.open_project_search();
+    assert!(ui.app.project_search.active());
+    ui.app.paste_text("needle");
+    clipboard::set_text("clipboard").unwrap();
+    handle_key(
+        &mut ui.app,
+        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+        &ui.tx,
+    );
+    assert!(ui.draw().contains("needleclipboard"));
+    handle_key(
+        &mut ui.app,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &ui.tx,
+    );
+    let _ = ui.draw();
+    assert_eq!(ui.app.editor.text(), "unfinished chat draft");
+    assert!(ui.rx.try_recv().is_err());
+    handle_key(
+        &mut ui.app,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        &ui.tx,
+    );
+    assert!(!ui.app.project_search.active());
+    assert_eq!(ui.app.editor.text(), "unfinished chat draft");
+    assert!(ui.app.busy);
+}

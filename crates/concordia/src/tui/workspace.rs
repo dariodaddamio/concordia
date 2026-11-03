@@ -171,6 +171,49 @@ impl Workspace {
     }
 
     pub fn open(&mut self, file: file_links::ResolvedFile) -> Result<(), String> {
+        self.open_content(file, None)
+    }
+
+    pub fn open_verified(
+        &mut self,
+        verified: crate::workspace_search::VerifiedHit,
+    ) -> Result<(), String> {
+        if self.panes.iter().any(|pane| pane.path == verified.hit.path) {
+            return Err(
+                "file is already open; close its pane before opening a search snapshot".into(),
+            );
+        }
+        let prefix = verified
+            .text
+            .get(..verified.hit.range.start)
+            .ok_or("search result byte location is invalid")?;
+        let line_prefix = prefix.rsplit('\n').next().unwrap_or(prefix);
+        let display_column = line_prefix
+            .chars()
+            .map(crate::file_document::display_width)
+            .sum::<usize>();
+        let file = file_links::ResolvedFile {
+            path: verified.hit.path,
+            line: Some(verified.hit.line),
+            column: Some(display_column.saturating_add(1) as u32),
+        };
+        let stamp = Stamp {
+            len: verified.text.len() as u64,
+            modified: verified.modified,
+        };
+        self.open_content(file, Some((verified.text, stamp)))?;
+        // Search locations refer to raw source lines, not formatted Markdown/JSON rows.
+        if let Some(pane) = self.panes.last_mut() {
+            pane.formatted_mode = false;
+        }
+        Ok(())
+    }
+
+    fn open_content(
+        &mut self,
+        file: file_links::ResolvedFile,
+        text: Option<(String, Stamp)>,
+    ) -> Result<(), String> {
         edit::prepare_open(self)?;
         if let Some(pane) = self.panes.iter_mut().find(|p| p.path == file.path) {
             if pane.area.width > 0 {
@@ -204,7 +247,20 @@ impl Workspace {
         let path = file.path.clone();
         let job = std::thread::Builder::new()
             .name("concordia-file-read".into())
-            .spawn(move || read_snapshot(&path))
+            .spawn(move || {
+                if let Some((text, stamp)) = text {
+                    let lines = display_lines(&text)?;
+                    let colors = syntax::highlight(&path, &text);
+                    Ok(Snapshot {
+                        lines,
+                        stamp,
+                        text,
+                        colors,
+                    })
+                } else {
+                    read_snapshot(&path)
+                }
+            })
             .map_err(|e| format!("file read: {e}"))?;
         self.jobs.push((id, job));
         self.panes.push(Pane {

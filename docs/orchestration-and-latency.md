@@ -41,14 +41,15 @@ preserve the unsent composer. `/delegate returns auto` opts into collecting when
 main agent are idle, no command/job/queue edit is open, queued user work is absent, and no quota
 handoff waits. `/delegate returns manual` disables it. Automatic handbacks consume a main-agent
 turn. Result dispatch uses normal checkpoints/context/quota recovery and labels output as
-untrusted data. Delivery is marked once per job within the current app run. Opening another
+untrusted data. Delivery is reserved durably before dispatch. Opening another
 conversation prevents old workers from posting/automatically returning into it; Ctrl+G retains
 inspection. Native approvals are never transferred. Orchestrator proposals still require approval;
 worker output cannot spawn further workers.
 
-This is a bounded supervisor/worker loop, not the finished orchestration roadmap. Persistent job
-ledgers across restarts, task dependencies, file ownership enforcement/worktree isolation,
-automatic worker quota failover and consolidated worker usage/cost accounting remain open.
+This is a bounded supervisor/worker loop. Pane-owned worker ledgers, paused restart recovery and
+opt-in bounded quota failover are implemented; see [recovery controls and limits](delegation.md).
+Task dependencies, file ownership enforcement/worktree isolation and consolidated worker usage/cost
+accounting remain open.
 Background workers cannot yet answer native interactive requests through a dedicated UI.
 A stronger planner plus cheaper workers can improve economics when tasks are independent and
 reviews stay short. Extra worker context, reviews and retries can also increase total usage;

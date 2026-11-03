@@ -1,5 +1,6 @@
 //! Native Cursor image inputs over ACP with explicit sessions and real permission responses.
 use super::*;
+use crate::provider::interaction::InteractionConnection;
 use crate::provider::CardStatus;
 use serde_json::{json, Value};
 struct Connection {
@@ -10,6 +11,7 @@ struct Connection {
     out: TurnOutcome,
     bytes: usize,
     session_id: Option<String>,
+    interactions: InteractionConnection,
 }
 impl Connection {
     fn emit(&self, event: TurnProgress) {
@@ -72,29 +74,60 @@ impl Connection {
         }
     }
     async fn request(&mut self, value: &Value) -> Result<()> {
+        let method = value["method"].as_str().unwrap_or("");
+        let interactive = matches!(method, "session/request_permission" | "cursor/ask_question");
         if value
             .pointer("/params/sessionId")
             .and_then(Value::as_str)
             .is_some_and(|id| Some(id) != self.session_id.as_deref())
-            || value["method"] == "session/request_permission"
+            || interactive
                 && value
                     .pointer("/params/sessionId")
                     .and_then(Value::as_str)
                     .is_none()
         {
+            self.emit(TurnProgress::Notice(
+                "Native request rejected: session identity mismatch".into(),
+            ));
             return self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32602,"message":"Session identity mismatch"}})).await;
         }
-        let method = value["method"].as_str().unwrap_or("");
-        if matches!(method, "session/request_permission" | "cursor/ask_question") {
-            let (request, rx) = NativeRequest::channel(method.into(), value["params"].clone());
-            self.emit(TurnProgress::Interaction(request));
+        if interactive {
+            let Some(session) = self.session_id.as_deref() else {
+                return self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32602,"message":"Session identity is unavailable"}})).await;
+            };
+            let (request, rx) = match self.interactions.request(
+                session,
+                value["id"].clone(),
+                method.into(),
+                value["params"].clone(),
+            ) {
+                Ok(request) => request,
+                Err(reason) => {
+                    self.emit(TurnProgress::Notice(format!(
+                        "Unsupported native request: {reason}"
+                    )));
+                    return self.write(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}})).await;
+                }
+            };
+            if !self.progress.as_ref().is_some_and(|tx| {
+                tx.send(TurnProgress::Interaction(Box::new(request.clone())))
+                    .is_ok()
+            }) {
+                // A closed/missing UI cannot leave a provider awaiting an invisible grant.
+                request.respond(json!({"outcome":{"outcome":"cancelled"}}));
+            }
             let answer = tokio::select! {
                 _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
                 answer=rx=>answer.unwrap_or_else(|_|json!({"outcome":{"outcome":"cancelled"}})),
             };
+            request.invalidate();
+            anyhow::ensure!(!self.handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
             self.write(json!({"jsonrpc":"2.0","id":value["id"],"result":answer}))
                 .await
         } else {
+            self.emit(TurnProgress::Notice(
+                "Unsupported native interaction method".into(),
+            ));
             self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32601,"message":"Client capability is not supported"}})).await
         }
     }
@@ -155,6 +188,7 @@ impl Connection {
 pub(super) async fn run(
     req: &ProviderTurnRequest<'_>,
     plan: &PlannedTurn,
+    owner: Option<InteractionOwner>,
     started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
@@ -219,9 +253,11 @@ pub(super) async fn run(
         out: TurnOutcome::default(),
         bytes: 0,
         session_id: req.native_session_id.map(str::to_owned),
+        interactions: InteractionConnection::new(owner, handle.cancel_flag.clone()),
     };
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
+        conn.interactions.initialized_cursor(&init);
         anyhow::ensure!(init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
         let (method,params)=if let Some(id)=req.native_session_id{
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");

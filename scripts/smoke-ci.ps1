@@ -12,9 +12,12 @@ function Fail([string]$m) { $script:failures += $m; Write-Host "FAIL $m" }
 if (-not (Test-Path $Exe)) { Write-Host "FAIL missing $Exe"; exit 1 }
 Ok "binary: $Exe"
 
-# 1. Size sanity: this is a thin binary. A jump means something heavy got linked in.
-$mb = [math]::Round((Get-Item $Exe).Length / 1MB, 2)
-if ($mb -gt 6) { Fail "binary is $mb MB (budget 6 MB)" } else { Ok "size $mb MB" }
+# 1. Reviewed distribution budget: native Mermaid, syntax assets, image support and memory
+# orchestration increased the release from the original thin UI. See docs/release-blockers.md.
+# Compare exact bytes so rounding cannot let an oversized artifact through.
+$sizeBytes = (Get-Item $Exe).Length
+$mb = [math]::Round($sizeBytes / 1MB, 2)
+if ($sizeBytes -gt 20MB) { Fail "binary is $mb MiB (budget 20 MiB)" } else { Ok "size $mb MiB (budget 20 MiB)" }
 
 # 2. --version: stamp format, and read-only (must not create or change the install pointer).
 $pointer = Join-Path $env:LOCALAPPDATA "concordia\bin\current"

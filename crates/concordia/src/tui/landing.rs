@@ -403,6 +403,7 @@ pub(super) fn visible(app: &App) -> bool {
     app.landing.is_some()
         && !app.continuation.waiting()
         && !app.keep.turn_recovery_notice
+        && !app.deleg.has_recovery_notice()
         && app.picker.is_none()
         && !app
             .messages

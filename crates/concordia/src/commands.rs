@@ -220,12 +220,18 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/usage", "limits for every account"),
     ("/new", "start a fresh chat"),
     ("/resume", "continue an earlier chat"),
+    ("/memory", "search original chats and inspect source links"),
+    (
+        "/context",
+        "inspect context rollover and native compaction policy",
+    ),
     ("/delegate", "run tasks on worker accounts"),
     ("/harness", "connect and run harness tools"),
     (
         "/open",
         "preview files mentioned in this chat, or /open PATH",
     ),
+    ("/search", "search project file contents"),
     ("/copy", "copy the last reply"),
     ("/doctor", "check your setup"),
     ("/update", "update Concordia"),

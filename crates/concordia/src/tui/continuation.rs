@@ -22,6 +22,10 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
     pub fn new(root: &Path) -> Self {
         let config = crate::config::for_root(root).continuation;
         Self {

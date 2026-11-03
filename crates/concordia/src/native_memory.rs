@@ -16,6 +16,47 @@ const MAX_MESSAGES: usize = 128;
 const INDEX_BYTES: u64 = 256 * 1024;
 const EXCERPT_BYTES: usize = 8192;
 
+#[path = "cursor_history.rs"]
+mod cursor_history;
+#[path = "memory_retrieval.rs"]
+pub mod retrieval;
+
+enum Source {
+    File(File),
+    Replay(std::io::Cursor<Vec<u8>>),
+}
+
+impl Read for Source {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::File(file) => file.read(buffer),
+            Self::Replay(replay) => replay.read(buffer),
+        }
+    }
+}
+impl Seek for Source {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::File(file) => file.seek(position),
+            Self::Replay(replay) => replay.seek(position),
+        }
+    }
+}
+impl Source {
+    fn len(&self) -> Result<u64, String> {
+        match self {
+            Self::File(file) => file.metadata().map(|m| m.len()).map_err(|e| e.to_string()),
+            Self::Replay(replay) => Ok(replay.get_ref().len() as u64),
+        }
+    }
+    fn identity(&self) -> Result<String, String> {
+        match self {
+            Self::File(file) => identity(file),
+            Self::Replay(_) => Ok("cursor-acp-v1".into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Binding {
     pub provider: ProviderKind,
@@ -43,6 +84,22 @@ pub struct SourceIndex {
     pub anchor_sha256: String,
     pub messages: Vec<Span>,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistoryPage>,
+}
+
+/// An immutable page in a forward scan. The cursor is this page's content-addressed index id.
+/// Only byte ranges and hashes are persisted; appends never extend an in-flight snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryPage {
+    pub start: u64,
+    pub end: u64,
+    pub next: Option<u64>,
+    pub message_base: usize,
+    pub skipped_records: usize,
+    pub skip_prefix: bool,
+    pub parent: Option<String>,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +112,21 @@ pub struct Summary {
     pub session_id: String,
     pub messages: usize,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistorySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_protocol: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistorySummary {
+    pub first_message: usize,
+    pub scanned_through: u64,
+    pub snapshot_bytes: u64,
+    pub next_cursor: Option<String>,
+    pub skipped_records: usize,
+    pub complete: bool,
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,12 +184,7 @@ impl Binding {
         })
     }
 
-    fn verify(&self, root: &Path) -> Result<PathBuf, String> {
-        if self.provider == ProviderKind::Cursor {
-            return Err(
-                "Cursor native transcript indexing is not supported; no source was invented".into(),
-            );
-        }
+    fn account_home(&self, root: &Path) -> Result<PathBuf, String> {
         let account = accounts::get_account(root, &self.account)
             .ok_or("native source account is unavailable")?;
         let home = account
@@ -128,7 +195,11 @@ impl Binding {
         {
             return Err("native source binding changed; refusing another account/home".into());
         }
-        let home = normalize_home(home)?;
+        normalize_home(home)
+    }
+
+    fn verify(&self, root: &Path) -> Result<PathBuf, String> {
+        let home = self.account_home(root)?;
         let source_root = fs::canonicalize(home.join(match self.provider {
             ProviderKind::Codex => "sessions",
             _ => "projects",
@@ -160,7 +231,7 @@ fn open_source(path: &Path, allowed: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-fn read_at(file: &mut File, offset: u64, len: usize) -> Result<Vec<u8>, String> {
+fn read_at(file: &mut Source, offset: u64, len: usize) -> Result<Vec<u8>, String> {
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
     let mut bytes = vec![0; len];
@@ -217,6 +288,23 @@ fn identity(_: &File) -> Result<String, String> {
 }
 
 fn message_role(value: &Value, provider: ProviderKind, session: &str) -> Option<(String, bool)> {
+    if provider == ProviderKind::Cursor {
+        if value["method"] != "session/update"
+            || value.pointer("/params/sessionId").and_then(Value::as_str) != Some(session)
+        {
+            return None;
+        }
+        let role = match value
+            .pointer("/params/update/sessionUpdate")
+            .and_then(Value::as_str)?
+        {
+            "user_message_chunk" => "user",
+            "agent_message_chunk" => "assistant",
+            "tool_call" | "tool_call_update" => "tool",
+            _ => return None,
+        };
+        return Some((role.into(), false));
+    }
     if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
         if id != session {
             return None;
@@ -287,6 +375,172 @@ fn message_role(value: &Value, provider: ProviderKind, session: &str) -> Option<
     }
 }
 
+/// Display text from the same validated native Cursor replay used by exact pointers.
+/// Text is returned in memory only; the caller applies its own transcript/display budget.
+pub fn cursor_text(root: &Path, binding: &Binding) -> Result<Vec<(String, String)>, String> {
+    if binding.provider != ProviderKind::Cursor {
+        return Err("Cursor history requires a Cursor binding".into());
+    }
+    let source = cursor_history::open(root, binding)?;
+    let Source::Replay(replay) = source else {
+        return Err("invalid Cursor history transport".into());
+    };
+    let mut messages: Vec<(String, String)> = Vec::new();
+    let mut previous = None;
+    for raw in replay.get_ref().split(|b| *b == b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(raw) else {
+            continue;
+        };
+        let Some((role, _)) = message_role(&value, ProviderKind::Cursor, &binding.session_id)
+        else {
+            continue;
+        };
+        if !matches!(role.as_str(), "user" | "assistant") {
+            continue;
+        }
+        let Some(text) = value
+            .pointer("/params/update/content/text")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let key = value
+            .pointer("/params/update/messageId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(|id| (role.clone(), id.to_owned()));
+        if key.is_some() && key == previous {
+            if let Some((_, content)) = messages.last_mut() {
+                content.push_str(text);
+            }
+        } else {
+            messages.push((role, text.into()));
+        }
+        previous = key;
+    }
+    Ok(messages)
+}
+
+/// Last native Codex context measurement, not cumulative billed usage. Unsupported formats and
+/// measurements invalidated by model changes/compaction remain unknown. No provider process runs.
+pub fn context_measurement(
+    root: &Path,
+    binding: &Binding,
+    model: &str,
+) -> Result<Option<crate::capacity::Measurement>, String> {
+    if binding.provider != ProviderKind::Codex {
+        return Ok(None);
+    }
+    let (mut file, index) = open_bound(root, binding)?;
+    let start = index.source_len.saturating_sub(TAIL_BYTES);
+    let bytes = read_at(&mut file, start, (index.source_len - start) as usize)?;
+    let begin = if start > 0 {
+        bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |n| n + 1)
+    } else {
+        0
+    };
+    let mut measurement = None;
+    let mut native_model = None;
+    for raw in bytes[begin..].split(|b| *b == b'\n') {
+        if raw.len() > LINE_BYTES {
+            measurement = None;
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(raw) else {
+            continue;
+        };
+        if v["type"] == "compacted" {
+            measurement = None;
+        }
+        if v["type"] == "turn_context" {
+            let next = v
+                .pointer("/payload/model")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if native_model != next {
+                measurement = None;
+            }
+            native_model = next;
+        }
+        if v["type"] == "event_msg" && v["payload"]["type"] == "token_count" {
+            measurement = v
+                .pointer("/payload/info/last_token_usage/total_tokens")
+                .and_then(Value::as_u64)
+                .zip(
+                    v.pointer("/payload/info/model_context_window")
+                        .and_then(Value::as_u64),
+                )
+                .filter(|(_, window)| *window > 0)
+                .map(|(used, window)| crate::capacity::Measurement { used, window });
+        }
+    }
+    if native_model.as_deref() != Some(model) || model == "?" {
+        return Ok(None);
+    }
+    let (mut check, current) = open_bound(root, binding)?;
+    if current.file_identity != index.file_identity
+        || current.source_len != index.source_len
+        || digest(&read_at(&mut check, start, bytes.len())?) != digest(&bytes)
+    {
+        return Err("native context source changed during measurement".into());
+    }
+    Ok(measurement)
+}
+
+/// Recover a known completed worker's display result from its immutable native pointer.
+pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
+    let index = load(root, id)?;
+    let mut source = open_index_source(root, &index)?;
+    let mut text = String::new();
+    for span in index.messages.iter().filter(|m| m.role == "assistant") {
+        let raw = read_at(&mut source, span.start, span.len)?;
+        if digest(&raw) != span.sha256 {
+            return Err("worker source changed since completion".into());
+        }
+        let value: Value = serde_json::from_slice(&raw).map_err(|_| "invalid worker source")?;
+        let payload = match index.binding.provider {
+            ProviderKind::Codex => &value["payload"],
+            ProviderKind::Claude => &value["message"],
+            ProviderKind::Cursor => &value["params"]["update"],
+        };
+        let content = &payload["content"];
+        let rendered = if let Some(blocks) = content.as_array() {
+            blocks
+                .iter()
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            content
+                .as_str()
+                .or_else(|| content["text"].as_str())
+                .or_else(|| payload["message"].as_str())
+                .unwrap_or("")
+                .to_owned()
+        };
+        if text.len() + rendered.len() > 1024 * 1024 {
+            return Err("worker result exceeds display budget; inspect exact source chunks".into());
+        }
+        text.push_str(&rendered);
+        if index.binding.provider != ProviderKind::Cursor {
+            text.push('\n');
+        }
+    }
+    let _ = open_index_source(root, &index)?;
+    if text.trim().is_empty() {
+        return Err("no assistant result in the recorded source window".into());
+    }
+    let suffix = if index.truncated {
+        "\n[Bounded native window; inspect older source pages for omitted history.]"
+    } else {
+        ""
+    };
+    Ok(format!("{}{suffix}", crate::chat_cli::terminal_safe(&text)))
+}
+
 pub fn index_session(
     root: &Path,
     provider: ProviderKind,
@@ -302,42 +556,8 @@ pub fn index_session(
 }
 
 pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
-    let allowed = binding.verify(root)?;
-    let (_, path) = sessions::find_native_record(
-        root,
-        &binding.account,
-        Some(binding.provider),
-        &binding.session_id,
-    )?
-    .ok_or("explicit native session was not found")?;
-    let canonical = fs::canonicalize(&path).map_err(|_| "native source unavailable")?;
-    let relative_file = canonical
-        .strip_prefix(&allowed)
-        .map_err(|_| "native source escapes its bound session tree")?
-        .to_path_buf();
-    let mut file = open_source(&canonical, &allowed)?;
-    let file_identity = identity(&file)?;
-    let source_len = file.metadata().map_err(|e| e.to_string())?.len();
-    let anchor_len = source_len.min(HEAD_BYTES);
-    let head = read_at(&mut file, 0, anchor_len as usize)?;
-    let owns_session = head
-        .split(|b| *b == b'\n')
-        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
-        .any(|v| {
-            if binding.provider == ProviderKind::Codex {
-                v.get("type").and_then(Value::as_str) == Some("session_meta")
-                    && v.pointer("/payload/id").and_then(Value::as_str)
-                        == Some(binding.session_id.as_str())
-            } else {
-                v.get("sessionId").and_then(Value::as_str) == Some(binding.session_id.as_str())
-            }
-        });
-    if !owns_session {
-        return Err(
-            "native source does not confirm the exact session identity in its bounded header"
-                .into(),
-        );
-    }
+    let (mut file, mut index) = open_bound(root, binding)?;
+    let source_len = index.source_len;
     let start = source_len.saturating_sub(TAIL_BYTES);
     let bytes = read_at(&mut file, start, (source_len - start) as usize)?;
     let skip = if start > 0 && read_at(&mut file, start - 1, 1)? != b"\n" {
@@ -387,7 +607,74 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
         truncated = true;
         messages.drain(..messages.len() - MAX_MESSAGES);
     }
-    let mut index = SourceIndex {
+    index.messages = messages;
+    index.truncated = truncated;
+    save_index(root, &mut file, index)
+}
+
+fn open_bound(root: &Path, binding: &Binding) -> Result<(Source, SourceIndex), String> {
+    if binding.provider == ProviderKind::Cursor {
+        let home = binding.account_home(root)?;
+        let mut source = cursor_history::open(root, binding)?;
+        let source_len = source.len()?;
+        let anchor_len = source_len.min(HEAD_BYTES);
+        let head = read_at(&mut source, 0, anchor_len as usize)?;
+        return Ok((
+            source,
+            SourceIndex {
+                version: 1,
+                binding: Binding {
+                    home,
+                    ..binding.clone()
+                },
+                relative_file: "acp-history".into(),
+                file_identity: "cursor-acp-v1".into(),
+                source_len,
+                anchor_len,
+                anchor_sha256: digest(&head),
+                messages: Vec::new(),
+                truncated: false,
+                history: None,
+            },
+        ));
+    }
+    let allowed = binding.verify(root)?;
+    let (_, path) = sessions::find_native_record(
+        root,
+        &binding.account,
+        Some(binding.provider),
+        &binding.session_id,
+    )?
+    .ok_or("explicit native session was not found")?;
+    let canonical = fs::canonicalize(&path).map_err(|_| "native source unavailable")?;
+    let relative_file = canonical
+        .strip_prefix(&allowed)
+        .map_err(|_| "native source escapes its bound session tree")?
+        .to_path_buf();
+    let mut file = Source::File(open_source(&canonical, &allowed)?);
+    let file_identity = file.identity()?;
+    let source_len = file.len()?;
+    let anchor_len = source_len.min(HEAD_BYTES);
+    let head = read_at(&mut file, 0, anchor_len as usize)?;
+    let owns_session = head
+        .split(|b| *b == b'\n')
+        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+        .any(|v| {
+            if binding.provider == ProviderKind::Codex {
+                v.get("type").and_then(Value::as_str) == Some("session_meta")
+                    && v.pointer("/payload/id").and_then(Value::as_str)
+                        == Some(binding.session_id.as_str())
+            } else {
+                v.get("sessionId").and_then(Value::as_str) == Some(binding.session_id.as_str())
+            }
+        });
+    if !owns_session {
+        return Err(
+            "native source does not confirm the exact session identity in its bounded header"
+                .into(),
+        );
+    }
+    let index = SourceIndex {
         version: 1,
         binding: binding.clone(),
         relative_file,
@@ -395,13 +682,21 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
         source_len,
         anchor_len,
         anchor_sha256: digest(&head),
-        messages,
-        truncated,
+        messages: Vec::new(),
+        truncated: false,
+        history: None,
     };
+    Ok((file, index))
+}
+
+fn save_index(root: &Path, file: &mut Source, mut index: SourceIndex) -> Result<Summary, String> {
+    let source_len = index.source_len;
+    let anchor_len = index.anchor_len;
+    let binding = &index.binding;
     index.binding.home = normalize_home(&binding.home)?;
-    if identity(&file)? != index.file_identity
-        || file.metadata().map_err(|e| e.to_string())?.len() < source_len
-        || digest(&read_at(&mut file, 0, anchor_len as usize)?) != index.anchor_sha256
+    if file.identity()? != index.file_identity
+        || file.len()? < source_len
+        || digest(&read_at(file, 0, anchor_len as usize)?) != index.anchor_sha256
     {
         return Err("native source changed while indexing; retry explicitly".into());
     }
@@ -425,7 +720,124 @@ fn summary(id: &str, index: &SourceIndex) -> Summary {
         session_id: index.binding.session_id.clone(),
         messages: index.messages.len(),
         truncated: index.truncated,
+        history: index.history.as_ref().map(|page| HistorySummary {
+            first_message: page.message_base + 1,
+            scanned_through: page.end,
+            snapshot_bytes: index.source_len,
+            next_cursor: page.next.map(|_| id.to_owned()),
+            skipped_records: page.skipped_records,
+            complete: page.next.is_none() && page.skipped_records == 0,
+            parent: page.parent.clone(),
+        }),
+        native_protocol: (index.binding.provider == ProviderKind::Cursor)
+            .then(|| "acp/session.load".into()),
     }
+}
+
+/// Scan one bounded page from the beginning of a native history, or continue an immutable
+/// cursor. Each call reads at most two 8 MiB pages plus the bounded identity header.
+pub fn index_history(
+    root: &Path,
+    binding: &Binding,
+    after: Option<&str>,
+) -> Result<Summary, String> {
+    let (mut file, mut index) = open_bound(root, binding)?;
+    let mut start = 0;
+    let mut message_base = 0;
+    let mut skipped_records = 0;
+    let mut skip_prefix = false;
+    if let Some(cursor) = after {
+        let previous = load(root, cursor)?;
+        let page = previous
+            .history
+            .as_ref()
+            .ok_or("cursor is not a whole-history page")?;
+        if previous.binding != index.binding
+            || previous.file_identity != index.file_identity
+            || previous.relative_file != index.relative_file
+        {
+            return Err("whole-history cursor belongs to another native source".into());
+        }
+        if index.source_len < previous.source_len
+            || digest(&read_at(&mut file, 0, previous.anchor_len as usize)?)
+                != previous.anchor_sha256
+            || digest(&read_at(
+                &mut file,
+                page.start,
+                (page.end - page.start) as usize,
+            )?) != page.sha256
+        {
+            return Err("whole-history cursor is stale: its source changed".into());
+        }
+        start = page
+            .next
+            .ok_or("whole-history snapshot already scanned; start a new index for appended data")?;
+        message_base = page.message_base + previous.messages.len();
+        if message_base > usize::MAX - MAX_MESSAGES - 1 {
+            return Err("whole-history ordinal exceeds the supported range".into());
+        }
+        skipped_records = page.skipped_records;
+        skip_prefix = page.skip_prefix;
+        // Preserve the original header and length when the live log has appended new records.
+        index.source_len = previous.source_len;
+        index.anchor_len = previous.anchor_len;
+        index.anchor_sha256 = previous.anchor_sha256;
+    }
+    let len = (index.source_len - start).min(TAIL_BYTES) as usize;
+    let bytes = read_at(&mut file, start, len)?;
+    let at_end = start + len as u64 == index.source_len;
+    let mut consumed = 0;
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        if skip_prefix {
+            consumed += line.len();
+            skip_prefix = !line.ends_with(b"\n");
+            continue;
+        }
+        if !line.ends_with(b"\n") && !at_end {
+            if consumed == 0 {
+                // A single oversized record must not trap the cursor at the same offset.
+                skipped_records += 1;
+                consumed += line.len();
+                skip_prefix = true;
+            }
+            break;
+        }
+        if index.messages.len() == MAX_MESSAGES {
+            break;
+        }
+        if let Ok(value) = serde_json::from_slice::<Value>(line) {
+            if let Some((role, _)) = message_role(&value, binding.provider, &binding.session_id) {
+                index.messages.push(Span {
+                    start: start + consumed as u64,
+                    len: line.len(),
+                    sha256: digest(line),
+                    role,
+                });
+            }
+        } else if !line.iter().all(u8::is_ascii_whitespace) {
+            skipped_records += 1;
+        }
+        consumed += line.len();
+    }
+    let end = start + consumed as u64;
+    index.history = Some(HistoryPage {
+        start,
+        end,
+        next: (end < index.source_len).then_some(end),
+        message_base,
+        skipped_records,
+        skip_prefix,
+        parent: after.map(str::to_owned),
+        sha256: digest(&bytes[..consumed]),
+    });
+    index.truncated = end < index.source_len || skipped_records > 0;
+    save_index(root, &mut file, index)
+}
+
+/// Expand an exact source pointer into whole-history pages without guessing a session or home.
+pub fn history_from_pointer(root: &Path, id: &str) -> Result<Summary, String> {
+    let index = load(root, id)?;
+    index_history(root, &index.binding, index.history.as_ref().map(|_| id))
 }
 
 fn load(root: &Path, id: &str) -> Result<SourceIndex, String> {
@@ -446,15 +858,78 @@ fn load(root: &Path, id: &str) -> Result<SourceIndex, String> {
     if index.version != 1 || index.messages.len() > MAX_MESSAGES || index.anchor_len > HEAD_BYTES {
         return Err("unsupported native pointer index".into());
     }
+    if let Some(page) = &index.history {
+        if page.start > page.end
+            || page.end > index.source_len
+            || page.end - page.start > TAIL_BYTES
+            || page.next != (page.end < index.source_len).then_some(page.end)
+            || page.next.is_some_and(|next| next <= page.start)
+            || page.message_base > usize::MAX - MAX_MESSAGES - 1
+            || !valid_id(&page.sha256)
+            || page.parent.as_ref().is_some_and(|id| !valid_id(id))
+        {
+            return Err("invalid whole-history page metadata".into());
+        }
+    }
     Ok(index)
 }
 
 pub fn describe(root: &Path, id: &str) -> Result<Value, String> {
+    describe_page(root, id, None, 20)
+}
+
+pub fn describe_page(
+    root: &Path,
+    id: &str,
+    from_message: Option<usize>,
+    limit: usize,
+) -> Result<Value, String> {
+    if !(1..=50).contains(&limit) {
+        return Err("native source page limit must be 1..50".into());
+    }
     let index = load(root, id)?;
-    index.binding.verify(root)?;
+    let _file = open_index_source(root, &index)?;
+    let first = index.history.as_ref().map_or(1, |p| p.message_base + 1);
+    let start = from_message
+        .unwrap_or(first)
+        .checked_sub(first)
+        .filter(|start| *start <= index.messages.len())
+        .ok_or("message is outside this index page")?;
+    let end = (start + limit).min(index.messages.len());
     Ok(
-        json!({"source":summary(id, &index),"next_unlisted_message":(index.messages.len() > 20).then_some(21),"messages":index.messages.iter().take(20).enumerate().map(|(i, m)| json!({"message":i+1,"role":m.role,"byte_start":m.start,"bytes":m.len,"sha256":m.sha256})).collect::<Vec<_>>()}),
+        json!({"source":summary(id, &index),"next_unlisted_message":(end < index.messages.len()).then_some(first+end),
+        "messages":index.messages.iter().enumerate().skip(start).take(limit).map(|(i,m)|json!({"message":first+i,"role":m.role,"byte_start":m.start,"bytes":m.len,"sha256":m.sha256})).collect::<Vec<_>>()}),
     )
+}
+
+fn open_index_source(root: &Path, index: &SourceIndex) -> Result<Source, String> {
+    if index.relative_file.is_absolute()
+        || index
+            .relative_file
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("unsafe native source path in pointer".into());
+    }
+    let mut file = if index.binding.provider == ProviderKind::Cursor {
+        index.binding.account_home(root)?;
+        if index.relative_file != Path::new("acp-history") {
+            return Err("invalid Cursor protocol source".into());
+        }
+        cursor_history::open(root, &index.binding)?
+    } else {
+        let allowed = index.binding.verify(root)?;
+        Source::File(open_source(&allowed.join(&index.relative_file), &allowed)?)
+    };
+    if file.identity()? != index.file_identity || file.len()? < index.source_len {
+        return Err(
+            "native source is stale: replaced or truncated; index this session again".into(),
+        );
+    }
+    if digest(&read_at(&mut file, 0, index.anchor_len as usize)?) != index.anchor_sha256 {
+        return Err("native source is stale: its original header changed".into());
+    }
+    Ok(file)
 }
 
 pub fn read(
@@ -468,20 +943,18 @@ pub fn read(
         return Err("native excerpt max_bytes must be 1..8192".into());
     }
     let index = load(root, id)?;
-    let allowed = index.binding.verify(root)?;
-    if index.relative_file.is_absolute()
-        || index
-            .relative_file
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
-    {
-        return Err("unsafe native source path in pointer".into());
-    }
+    let mut file = open_index_source(root, &index)?;
+    let first = index.history.as_ref().map_or(1, |p| p.message_base + 1);
     let span = message
-        .checked_sub(1)
+        .checked_sub(first)
         .and_then(|i| index.messages.get(i))
         .ok_or("native message ordinal is outside the indexed range")?;
-    if span.len > LINE_BYTES
+    let record_limit = if index.history.is_some() {
+        TAIL_BYTES as usize
+    } else {
+        LINE_BYTES
+    };
+    if span.len > record_limit
         || span
             .start
             .checked_add(span.len as u64)
@@ -489,23 +962,13 @@ pub fn read(
     {
         return Err("invalid native source range".into());
     }
-    let mut file = open_source(&allowed.join(&index.relative_file), &allowed)?;
-    if identity(&file)? != index.file_identity
-        || file.metadata().map_err(|e| e.to_string())?.len() < index.source_len
-    {
-        return Err(
-            "native source is stale: replaced or truncated; index this session again".into(),
-        );
-    }
-    if digest(&read_at(&mut file, 0, index.anchor_len as usize)?) != index.anchor_sha256 {
-        return Err("native source is stale: its original header changed".into());
-    }
     let bytes = read_at(&mut file, span.start, span.len)?;
     if digest(&bytes) != span.sha256 {
         return Err("native source is stale: indexed message changed or was compacted".into());
     }
-    if identity(&open_source(&allowed.join(&index.relative_file), &allowed)?)?
-        != index.file_identity
+    // Re-open files to detect replacement, but do not issue a second Cursor replay in one read.
+    if index.binding.provider != ProviderKind::Cursor
+        && open_index_source(root, &index)?.identity()? != index.file_identity
     {
         return Err("native source replaced during read".into());
     }
@@ -535,7 +998,7 @@ pub fn read(
 /// CLI and MCP share the same validated, bounded operations.
 pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
     let Some(operation) = args.first().map(String::as_str) else {
-        return Err("usage: chat index SESSION --account ID --provider codex|claude | chat excerpt INDEX [--message N --offset N --max-bytes N] | chat sources INDEX".into());
+        return Err("usage: chat index SESSION --account ID --provider codex|claude|cursor [--scope recent|whole --cursor INDEX] | chat excerpt INDEX [--message N --offset N --max-bytes N] | chat sources INDEX [--from-message N --limit N]".into());
     };
     let positional = args
         .get(1)
@@ -557,9 +1020,9 @@ pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
             .unwrap_or(Ok(default))
     };
     let allowed = match operation {
-        "index" => &["--account", "--provider"][..],
+        "index" => &["--account", "--provider", "--scope", "--cursor"][..],
         "excerpt" => &["--message", "--offset", "--max-bytes"][..],
-        "sources" => &[][..],
+        "sources" => &["--from-message", "--limit"][..],
         _ => return Err("unknown native source operation".into()),
     };
     if options.keys().any(|key| !allowed.contains(key)) {
@@ -573,15 +1036,42 @@ pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
                     .ok_or("index requires --provider")?,
             )
             .ok_or("invalid native provider")?;
-            serde_json::to_value(index_session(
-                root,
-                provider,
-                options.get("--account").ok_or("index requires --account")?,
-                positional,
-            )?)
-            .map_err(|e| e.to_string())?
+            let account = *options.get("--account").ok_or("index requires --account")?;
+            let indexed = match options.get("--scope").copied().unwrap_or("recent") {
+                "recent" if !options.contains_key("--cursor") => {
+                    index_session(root, provider, account, positional)?
+                }
+                "whole" => {
+                    let def =
+                        accounts::get_account(root, account).ok_or("unknown native account")?;
+                    if def.provider != provider {
+                        return Err("native account/provider mismatch".into());
+                    }
+                    let binding = Binding::new(
+                        provider,
+                        account,
+                        &def.home_path.ok_or("native account has no home")?,
+                        positional,
+                    )?;
+                    index_history(root, &binding, options.get("--cursor").copied())?
+                }
+                _ => {
+                    return Err(
+                        "index --scope must be recent or whole; --cursor requires whole".into(),
+                    )
+                }
+            };
+            serde_json::to_value(indexed).map_err(|e| e.to_string())?
         }
-        "sources" => describe(root, positional)?,
+        "sources" => describe_page(
+            root,
+            positional,
+            options
+                .get("--from-message")
+                .map(|_| number("--from-message", 1))
+                .transpose()?,
+            number("--limit", 20)?,
+        )?,
         "excerpt" => serde_json::to_value(read(
             root,
             positional,
@@ -649,6 +1139,248 @@ mod tests {
             .write_all(bytes)
             .unwrap();
     }
+    #[test]
+    fn native_context_uses_last_request_and_invalidates_after_compaction_or_model_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture");
+        let binding = Binding::new(
+            ProviderKind::Codex,
+            "fixture",
+            &dir.path().join("fixture"),
+            &session,
+        )
+        .unwrap();
+        let context =
+            json!({"type":"turn_context","payload":{"model":"fixture-model"}}).to_string() + "\n";
+        append(&path, context.as_bytes());
+        let count = json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":9999999},"last_token_usage":{"total_tokens":80},"model_context_window":100}}}).to_string() + "\n";
+        append(&path, count.as_bytes());
+        assert_eq!(
+            context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
+            Some(crate::capacity::Measurement {
+                used: 80,
+                window: 100
+            })
+        );
+        assert_eq!(
+            context_measurement(dir.path(), &binding, "other-model").unwrap(),
+            None
+        );
+        append(&path, b"{\"type\":\"compacted\",\"payload\":{}}\n");
+        assert_eq!(
+            context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
+            None
+        );
+        append(&path, count.as_bytes());
+        append(
+            &path,
+            b"{\"type\":\"turn_context\",\"payload\":{\"model\":\"other-model\"}}\n",
+        );
+        assert_eq!(
+            context_measurement(dir.path(), &binding, "other-model").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn retrieval_separates_exact_hits_from_verified_links_and_rejects_stale_sources() {
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, session) = fixture(provider, dir.path(), "fixture");
+            append(&path, message(provider, "distinctive needle 雪").as_bytes());
+            let parent = index_session(dir.path(), provider, "fixture", &session).unwrap();
+            let report = retrieval::recall(
+                dir.path(),
+                "needle",
+                Some(&parent.id),
+                Some("fixture"),
+                None,
+            )
+            .unwrap();
+            assert_eq!(report.hits.len(), 1);
+            let hit = &report.hits[0];
+            assert!(hit.relationship.starts_with("lexical suggestion"));
+            assert!(read(dir.path(), &hit.source.id, hit.message, 0, 8192)
+                .unwrap()
+                .raw
+                .contains("needle"));
+            assert!(
+                retrieval::recall(dir.path(), "needle", Some(&parent.id), Some("other"), None)
+                    .is_err()
+            );
+            append(&path, message(provider, "later record").as_bytes());
+            let child = index_session(dir.path(), provider, "fixture", &session).unwrap();
+            retrieval::link(dir.path(), &parent.id, &child.id, "user-confirmed").unwrap();
+            assert_eq!(
+                retrieval::links(dir.path(), &parent.id).unwrap()["links"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            retrieval::detach(dir.path(), &parent.id, &child.id).unwrap();
+            assert!(retrieval::links(dir.path(), &parent.id).unwrap()["links"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            let stored =
+                fs::read_to_string(directory(dir.path()).join(format!("{}.json", parent.id)))
+                    .unwrap();
+            assert!(!stored.contains("needle"));
+            let bytes = fs::read(&path).unwrap();
+            fs::write(
+                &path,
+                String::from_utf8(bytes)
+                    .unwrap()
+                    .replace("needle", "edited"),
+            )
+            .unwrap();
+            assert!(retrieval::recall(dir.path(), "needle", Some(&parent.id), None, None).is_err());
+        }
+    }
+
+    #[test]
+    fn whole_history_pages_reach_every_record_and_keep_snapshot_ordinals_after_append() {
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, session) = fixture(provider, dir.path(), "fixture");
+            let expected: Vec<_> = (0..400)
+                .map(|i| message(provider, &format!("history token {i} 雪")))
+                .collect();
+            append(&path, expected.join("").as_bytes());
+            let binding =
+                Binding::new(provider, "fixture", &dir.path().join("fixture"), &session).unwrap();
+            let mut page = index_history(dir.path(), &binding, None).unwrap();
+            assert_eq!(page.history.as_ref().unwrap().first_message, 1);
+            append(
+                &path,
+                message(provider, "appended after the snapshot").as_bytes(),
+            );
+            let mut ordinal = 1;
+            loop {
+                let listing = describe_page(dir.path(), &page.id, Some(ordinal), 50).unwrap();
+                assert_eq!(listing["messages"][0]["message"], ordinal);
+                assert_eq!(
+                    listing["next_unlisted_message"].is_u64(),
+                    page.messages > 50
+                );
+                let stored =
+                    fs::read_to_string(directory(dir.path()).join(format!("{}.json", page.id)))
+                        .unwrap();
+                assert!(!stored.contains("history token"));
+                for _ in 0..page.messages {
+                    assert_eq!(
+                        read(dir.path(), &page.id, ordinal, 0, 8192).unwrap().raw,
+                        expected[ordinal - 1]
+                    );
+                    ordinal += 1;
+                }
+                if page.history.as_ref().unwrap().next_cursor.is_none() {
+                    break;
+                }
+                page = index_history(dir.path(), &binding, Some(&page.id)).unwrap();
+            }
+            assert_eq!(ordinal, 401);
+            assert!(page.history.as_ref().unwrap().complete);
+            assert!(index_history(dir.path(), &binding, Some(&page.id)).is_err());
+        }
+    }
+
+    #[test]
+    fn whole_history_scan_crosses_the_old_tail_bound_and_reports_oversized_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture");
+        append(
+            &path,
+            message(ProviderKind::Codex, "oldest original").as_bytes(),
+        );
+        append(
+            &path,
+            message(ProviderKind::Codex, &"x".repeat(TAIL_BYTES as usize + 1000)).as_bytes(),
+        );
+        append(
+            &path,
+            message(ProviderKind::Codex, "newest original").as_bytes(),
+        );
+        let binding = Binding::new(
+            ProviderKind::Codex,
+            "fixture",
+            &dir.path().join("fixture"),
+            &session,
+        )
+        .unwrap();
+        let first = index_history(dir.path(), &binding, None).unwrap();
+        assert!(read(dir.path(), &first.id, 1, 0, 8192)
+            .unwrap()
+            .raw
+            .contains("oldest original"));
+        let mut page = first;
+        let mut count = 0;
+        while page.history.as_ref().unwrap().next_cursor.is_some() {
+            let previous = page.history.as_ref().unwrap().scanned_through;
+            page = index_history(dir.path(), &binding, Some(&page.id)).unwrap();
+            assert!(page.history.as_ref().unwrap().scanned_through > previous);
+            count += 1;
+            assert!(count < 5, "cursor must make bounded forward progress");
+        }
+        let history = page.history.as_ref().unwrap();
+        assert_eq!(history.skipped_records, 1);
+        assert!(
+            !history.complete,
+            "an oversized source event must not be called complete"
+        );
+        assert!(read(dir.path(), &page.id, history.first_message, 0, 8192)
+            .unwrap()
+            .raw
+            .contains("newest original"));
+    }
+
+    #[test]
+    fn history_cursors_reject_other_accounts_and_rewrites_past_the_identity_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture");
+        let (other, _) = fixture(ProviderKind::Codex, dir.path(), "other");
+        for i in 0..200 {
+            append(
+                &path,
+                message(ProviderKind::Codex, &format!("{i}:{}", "a".repeat(1000))).as_bytes(),
+            );
+        }
+        let binding = Binding::new(
+            ProviderKind::Codex,
+            "fixture",
+            &dir.path().join("fixture"),
+            &session,
+        )
+        .unwrap();
+        let first = index_history(dir.path(), &binding, None).unwrap();
+        let second_binding = Binding::new(
+            ProviderKind::Codex,
+            "other",
+            &dir.path().join("other"),
+            &session,
+        )
+        .unwrap();
+        append(
+            &other,
+            message(ProviderKind::Codex, "other source").as_bytes(),
+        );
+        assert!(index_history(dir.path(), &second_binding, Some(&first.id))
+            .unwrap_err()
+            .contains("another native source"));
+        let index = load(dir.path(), &first.id).unwrap();
+        let span = index.messages.last().unwrap();
+        assert!(span.start > HEAD_BYTES);
+        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(span.start + span.len as u64 - 8))
+            .unwrap();
+        file.write_all(b"z").unwrap();
+        assert!(index_history(dir.path(), &binding, Some(&first.id))
+            .unwrap_err()
+            .contains("stale"));
+        assert!(read(dir.path(), &first.id, 128, 0, 8192).is_err());
+    }
+
     #[test]
     fn exact_native_readback_survives_append_and_never_copies_chat_bodies_into_the_index() {
         for provider in [ProviderKind::Codex, ProviderKind::Claude] {
@@ -872,7 +1604,7 @@ pub fn handoff_prefix(root: &Path, bindings: &[Binding]) -> (String, Vec<String>
     let instructions = if sections.is_empty() {
         "No exact source is available; do not invent earlier messages or assume tool completion. Reconcile the workspace or ask for missing information."
     } else {
-        "Use concordia chat sources INDEX to list message ordinals. Read exact UTF-8 JSONL chunks with concordia chat excerpt INDEX --message N [--offset BYTE --max-bytes 4096]; follow next_offset. Check source identity before continuing. Do not invent unavailable history."
+        "Use concordia chat sources INDEX [--from-message N] to page message ordinals. Read exact UTF-8 JSONL chunks with concordia chat excerpt INDEX --message N [--offset BYTE --max-bytes 4096]; follow next_offset. For older history use chat index SESSION --account ACCOUNT --provider PROVIDER --scope whole, following history.next_cursor with --cursor INDEX. Check source identity before continuing. Do not invent unavailable history."
     };
     (format!("[native source pointers]\n{body}\n{instructions}\nNative tool/approval state is not transferred."), notices)
 }

@@ -1,6 +1,62 @@
 # Everyday E2E status (MVP A)
 
-## Current record, 2026-11-02d
+## Candidate verification, 2026-11-02k
+
+First-wave validation tree: `e533e48` (production source `bcf7c2f`). The candidate adds read-only
+project content search plus dependency/recovery and owner-bound native interaction foundations.
+All 983 enabled tests pass, including 885 library tests. All 48 ConPTY journeys pass against the
+exact portable-installed candidate in 297.11 seconds. Candidate SHA-256:
+`87A0219A9A40CB92DAABC0765AF2EBC67D05BC6ADCBF01DB7ED65CC3CCA370A4`.
+The release and installed hashes match and remain unchanged after the journeys. Size: 16.76 MiB.
+Formatting, all-target clippy, release build, release smoke, portable everyday smoke, OSS gates
+and documentation links pass. The portable install fixture is separate from the ordinary install.
+Remote CI remains a separate PR gate; no live-provider/signing/publication evidence is claimed.
+
+[Detailed scope, migration and verification limits](quality/completion-wave1.md).
+
+## Current record, 2026-11-02j
+
+Runtime source is `c6d3b7c`, installed build `2026-11-02j`, SHA-256
+`381E68F6AAB89F3F93E877475283B742B3F09B3923CBD13BC48A31E58E417DE1`.
+All 960 enabled local tests pass, including 862 library tests. All 48 Windows ConPTY journeys
+pass against that exact installed binary in 281.02 seconds; its hash is unchanged afterward.
+Formatting, all-target clippy with warnings denied, release build, release smoke, installed
+everyday smoke, cargo-deny and OSS gates pass. Remote CI run `41546832324` passed both jobs;
+the Windows job includes all 48 terminal journeys, release smoke and OSS gates.
+
+Enter now closes a finished update screen when no update is available, retaining the draft.
+Unused Syntect YAML/plist import dependencies are removed. Bincode retains one documented
+maintenance-advisory exception for embedded assets; other advisory checks remain enabled.
+The reviewed artifact budget is 20 MiB and this binary measures 16.55 MiB. Privacy exceptions
+recognize exact public product identifiers only in listed files; isolated rejection checks
+confirm personal paths and identifiers in unlisted files are still rejected.
+
+Provider turns used fixtures. Everyday smoke included a read-only native usage check. No new
+live-provider turn, Defender scan, signing, release rehearsal or publication is claimed by this
+record. Separate signing work remains outside the source candidate. Existing windows retain
+their loaded binary until reopened. The documentation-only remaining-feature plan does not
+change this runtime evidence or mark future features complete.
+
+## Previous record, 2026-11-02i
+
+The installed memory/orchestration feature build is `2026-11-02i`, SHA-256
+`EC9A4AA15F804DF770D2D486934F5C2B5407C0656BB075E1215FA429B2748554`.
+Runtime source is `0cb942f` on `feat/memory-orchestration`, stacked on `feat/batch-b`.
+The full enabled suite (862 library tests and integrations), clippy with warnings denied,
+release build, formatting/diff checks and installed everyday smoke pass.
+
+All 48 opt-in Windows ConPTY journeys pass against the exact installed executable in one
+sequential run (276.34 seconds), with its hash unchanged afterward. They include the new memory
+search, proactive rollover and paused worker crash recovery, plus the original unattended-note
+and provider-selection regressions. Model turns use fake providers only. Defender's custom scan
+reports no threats while antivirus and real-time protection remain enabled.
+
+[Detailed evidence and limits](quality/memory-orchestration-progress.md) distinguish these local
+checks from live-provider parity. CI's dependency gate still flags inherited `syntect` maintenance
+advisories; no audit checks were disabled. Separate signing changes are excluded from this branch.
+Existing windows retain their loaded executable until reopened.
+
+## Previous record, 2026-11-02d
 
 The installed feature build is `2026-11-02d`, SHA-256
 `E363CC47480B386F5605906807987904AA8AC89121210032952B398D50B5B49E`.

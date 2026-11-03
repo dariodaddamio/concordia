@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod capacity;
 pub mod catalog;
 pub mod chat_cli;
 pub mod commands;
@@ -39,3 +40,6 @@ pub mod attachments;
 mod state_io;
 #[cfg(test)]
 pub(crate) mod test_support;
+
+pub mod workspace_paths;
+pub mod workspace_search;

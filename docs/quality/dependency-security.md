@@ -60,3 +60,19 @@ The dependency graph confirms those paths belong to syntect, which preceded this
 No advisory is ignored and no security policy is weakened. This is not a clean advisory audit;
 upgrading/replacing those syntax-highlighting dependencies remains release-gate work.
 Evidence: ignored target/dependencies-2026-11-01e.log and target/licenses-2026-11-01e-final.log.
+
+## CI dependency review, 2026-11-02j
+
+Syntect now enables only `default-syntaxes`, `default-themes` and `regex-fancy`.
+Concordia uses embedded grammars and themes; it does not import user-supplied grammar/theme
+files or serialized dumps. Disabling YAML/plist/HTML import support removes yaml-rust and its
+maintenance advisory, plus unused plist/XML dependencies, without changing highlighting.
+
+Syntect 5.3.0 is still the published release and requires Bincode 1.3.3 for embedded assets.
+[RUSTSEC-2025-0141](https://rustsec.org/advisories/RUSTSEC-2025-0141.html) is an informational
+maintenance advisory with no patched version. `deny.toml` records an exception for that exact
+advisory, reviewed against the embedded-only use. User file text goes to the syntax highlighter,
+not the dump decoder. All other maintenance, vulnerability, yanked-crate, license and source
+checks remain enabled. This accepts maintenance risk; it does not fix upstream maintenance.
+Remove the exception when Syntect provides a maintained serialization path. Re-review it before
+any external grammar/theme/dump loading is added. See [Syntect's feature graph](https://docs.rs/crate/syntect/5.3.0/features).

@@ -45,6 +45,14 @@ pub(super) struct Panel {
     generation: u64,
     owners: std::collections::BTreeMap<u32, u64>,
     auto_return_paused: bool,
+    recovery_notice: bool,
+    recoveries: Vec<RecoveryRead>,
+}
+
+struct RecoveryRead {
+    job: u32,
+    generation: u64,
+    rx: std::sync::mpsc::Receiver<Result<String, String>>,
 }
 
 struct Viewer {
@@ -56,6 +64,8 @@ struct Viewer {
 
 impl Panel {
     pub(super) fn change_conversation(&mut self) {
+        self.recovery_notice = false;
+        self.d.new_conversation();
         self.generation = self.generation.wrapping_add(1);
         self.outbox = None;
         self.auto_return_paused = false;
@@ -64,6 +74,9 @@ impl Panel {
 
     fn owns(&self, id: u32) -> bool {
         self.owners.get(&id) == Some(&self.generation)
+    }
+    pub(super) fn has_recovery_notice(&self) -> bool {
+        self.recovery_notice
     }
 
     pub(super) fn has_pending_prompt(&self) -> bool {
@@ -360,7 +373,14 @@ fn wrap_plain(s: &str, width: usize) -> Vec<String> {
 
 /// What the viewer shows for a worker: header facts, tool cards, then the untrusted output.
 pub(super) fn viewer_text(j: &Job) -> String {
+    let identity = format!(
+        "run: {} · conversation: {}\nsource: {}\n",
+        j.run_id,
+        j.conversation_id,
+        j.source_id.as_deref().unwrap_or("unavailable")
+    );
     let mut t = String::new();
+    t.push_str(&identity);
     t.push_str(&format!("task: {}\n", one_line(&j.task)));
     t.push_str(&format!(
         "model: {} | result: {}\n",
@@ -525,6 +545,46 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 }
 
 impl App {
+    pub(super) fn restore_workers(&mut self) {
+        let Some(lease) = self.keep.lease.as_ref() else {
+            return;
+        };
+        match self
+            .deleg
+            .d
+            .attach_recovery(&lease.workers_directory(), &self.cwd, &self.state_root)
+        {
+            Ok(n) => {
+                self.deleg.recovery_notice = n > 0;
+                self.deleg.owners.clear();
+                self.deleg.auto_return_paused = n > 0;
+                if n > 0 {
+                    self.push_system(format!("Recovered {n} worker run records. All automatic returns are paused. Ctrl+G inspects runs; /delegate recover ID reads a completed result from its exact source. Reconcile uncertain work before /delegate retry ID reconciled."));
+                }
+            }
+            Err(e) => self.push_system(format!("worker recovery unavailable: {e}")),
+        }
+    }
+
+    pub(super) fn worker_recovery_command(&mut self, argument: &str) {
+        let args: Vec<_> = argument.split_whitespace().collect();
+        let result: Result<String,String> = match args.as_slice() {
+            ["fallback", mode @ ("on" | "off")] => crate::store::modify_store(&self.state_root, |s| { s.settings.delegate_quota_failover = *mode == "on"; Ok(()) }).map(|_| format!("Worker quota failover {mode}. Only confirmed quota failures before tools or partial output can move to the next configured worker; at most four attempts. Uncertain/crash recovery stays paused.")).map_err(|e| e.to_string()),
+            ["retry", id, "reconciled"] => id.parse::<u32>().map_err(|_| "invalid run id".to_string()).and_then(|id| self.deleg.d.recovered_task(id)).and_then(|(account, task)| self.start_delegate(&account, &task, Origin::User)),
+            ["recover", id] => {
+                let request = id.parse::<u32>().map_err(|_| "invalid run id".to_string()).and_then(|id| self.deleg.d.recovery_source(id).map(|(root,source)| (id,root,source)));
+                request.and_then(|(id,root,source)| {
+                    if self.deleg.recoveries.len() >= 2 { return Err("worker source readers are busy".into()); }
+                    let (tx,rx) = std::sync::mpsc::channel();
+                    std::thread::Builder::new().name("worker-result-read".into()).spawn(move || { let _ = tx.send(crate::native_memory::assistant_text(&root,&source)); }).map_err(|e| e.to_string())?;
+                    self.deleg.recoveries.push(RecoveryRead { job:id, generation:self.deleg.generation, rx });
+                    Ok(format!("Reading exact native result for worker #{id}; no provider task is started"))
+                })
+            }
+            _ => Err("/delegate fallback on|off · /delegate recover ID · /delegate retry ID reconciled (inspect uncertain actions first)".into()),
+        };
+        self.push_system(result.unwrap_or_else(|e| format!("worker recovery: {e}")));
+    }
     pub(super) fn inspect_worker(&mut self, id: u32) {
         if self.deleg.d.get(id).is_some() {
             self.deleg.viewer = Some(Viewer {
@@ -567,6 +627,35 @@ impl App {
     pub(super) fn poll_delegates(&mut self) {
         let now = Instant::now();
         let finished = self.deleg.d.poll(now);
+        if let Some(error) = self.deleg.d.recovery_error() {
+            self.flash(format!("worker recovery save failed: {error}; new worker launches/returns require successful storage"));
+        }
+        let mut i = 0;
+        while i < self.deleg.recoveries.len() {
+            let result = match self.deleg.recoveries[i].rx.try_recv() {
+                Ok(r) => r,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    i += 1;
+                    continue;
+                }
+                Err(_) => Err("worker result reader stopped".into()),
+            };
+            let RecoveryRead {
+                job: id,
+                generation,
+                ..
+            } = self.deleg.recoveries.swap_remove(i);
+            if generation != self.deleg.generation {
+                continue;
+            }
+            match result {
+                Ok(text) => {
+                    let restored = self.deleg.d.restore_result(id, text.clone()).is_ok();
+                    self.push_system(format!("Worker #{id} native source:\n{text}\n{}", if restored { "Completed result available for explicit /delegate use. Automatic return remains paused." } else { "Run completion is uncertain. Inspect actions before an explicit retry." }));
+                }
+                Err(e) => self.push_system(format!("worker #{id} source unavailable: {e}")),
+            }
+        }
         self.deleg
             .owners
             .retain(|id, _| self.deleg.d.get(*id).is_some());
@@ -634,6 +723,13 @@ impl App {
         let Some((p, ids)) = self.deleg.outbox.take() else {
             return;
         };
+        if let Err(error) = self.deleg.d.reserve_delivery(&ids) {
+            self.deleg.auto_return_paused = true;
+            self.push_system(format!(
+                "worker result was not dispatched: could not reserve durable delivery: {error}"
+            ));
+            return;
+        }
         let draft = self.composer_value();
         self.cancel_requested = false;
         // Normal dispatch owns checkpoints, context, timing, quota recovery and images.
@@ -731,6 +827,10 @@ impl App {
         task: &str,
         origin: Origin,
     ) -> Result<String, String> {
+        #[cfg(not(test))]
+        if !self.deleg.d.recovery_ready() {
+            return Err("worker recovery storage is unavailable; no task was dispatched".into());
+        }
         if self.update_running() {
             return Err(
                 "Workers are paused while Concordia updates. Try again after it restarts.".into(),

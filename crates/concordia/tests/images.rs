@@ -63,6 +63,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             trust: TrustMode::Plan,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         let outcome = provider::run_provider_turn(&request, None).await.unwrap();
         assert_eq!(outcome.exit_code, Some(0));
@@ -119,6 +120,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             trust: TrustMode::Plan,
             context_prefix: None,
             local_time: None,
+            compaction: Default::default(),
         };
         let out = tokio::time::timeout(
             std::time::Duration::from_secs(15),

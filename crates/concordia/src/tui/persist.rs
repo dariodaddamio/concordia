@@ -372,6 +372,7 @@ impl super::App {
             );
         }
         self.restore_turn_checkpoint();
+        self.restore_workers();
         if let Some(lease) = self.keep.lease.clone() {
             if let Err(error) = self.workspace.set_file_recovery(lease, &self.cwd) {
                 self.keep.warning = Some(format!("File recovery unavailable: {error}"));
@@ -538,6 +539,11 @@ impl super::App {
     }
 
     pub(super) fn claim_recovery(&mut self, id: &str) -> io::Result<()> {
+        if self.deleg.d.any_active() {
+            return Err(io::Error::other(
+                "finish or cancel workers before changing recovery ownership",
+            ));
+        }
         if self.workspace.has_unsaved() {
             return Err(io::Error::other(
                 "save or close current file edits before switching recovery",
@@ -572,6 +578,7 @@ impl super::App {
         }
         self.keep.recovery_choices.clear();
         self.restore_turn_checkpoint();
+        self.restore_workers();
         self.persist_draft_now();
         self.push_system("restored selected unsent draft and queued prompts");
         Ok(())

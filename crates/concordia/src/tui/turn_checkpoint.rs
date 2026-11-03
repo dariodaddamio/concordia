@@ -26,6 +26,16 @@ impl App {
             return;
         };
         if !self.native_sources.contains(&binding) {
+            if let Some(parent) = self.native_sources.last() {
+                if let Err(error) = crate::native_memory::retrieval::observe_handoff(
+                    &self.state_root,
+                    parent,
+                    &binding,
+                    &self.cwd,
+                ) {
+                    self.flash(format!("source relationship could not be saved: {error}"));
+                }
+            }
             self.native_sources.push(binding);
             if self.native_sources.len() > 8 {
                 self.native_sources.remove(0);

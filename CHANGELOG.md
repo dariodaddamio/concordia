@@ -1,6 +1,16 @@
 # Changelog
 
 ### Changed (`2026-10-21d`)
+
+### Added (`2026-11-02k`)
+- Read-only project content search (`/search`, or Ctrl+F in the file browser), with literal/case
+  controls, bounded cancellable scans, exact source hashes and draft-preserving input ownership.
+- Worker dependency graph and recovery foundation. Metadata validation/readiness does not dispatch
+  dependencies; interrupted work remains paused and only exact successful run receipts satisfy edges.
+- Typed native interaction/capability foundation; existing Cursor ACP requests retain native option
+  IDs/scopes and bind responses to their conversation, run, attempt and live connection. Cancelling
+  or completing a turn invalidates its pending UI requests. Other adapters and worker approvals remain open.
+
 - Compact tool rows foreground the command instead of PowerShell launcher paths, retain complete expanded output, and show output line counts. Completed reasoning is collapsed to one preview line.
 - Terminal titles use the terminal API, including the Windows console path, and follow the generated session title.
 - Usage-limit continuation defaults to manual (`/continue ACCOUNT`), with opt-in automatic handoff through configured accounts. Attempts are bounded, native session ids stay account-local, drafts and queued work are preserved, and uncertain tool results stop automatic handoff.
@@ -10,6 +20,33 @@ Concordia has not had a tagged release yet, so everything is under Unreleased. E
 also bumps the build stamp shown by `concordia --version`.
 
 ## [Unreleased]
+
+### Fixed (`2026-11-02j`)
+- Enter closes a completed update screen when there is nothing to install, preserving the chat draft.
+- CI uses a reviewed 20 MiB Windows artifact budget for the current native feature set.
+- Disable unused Syntect grammar/theme import features, removing yaml-rust. Review the remaining
+  bincode maintenance advisory narrowly for embedded assets; vulnerability checks remain enforced.
+
+### Added (`2026-11-02i`)
+- Durable pane-owned worker runs with explicit UUIDs, native session/source references, paused
+  crash recovery, source inspection/reconciled retry, and reserved result delivery.
+- Opt-in bounded worker quota failover before tools or partial output. Cancellation, uncertain
+  exits and interrupted work stop automatic failover.
+
+### Added (`2026-11-02h`)
+- Per-account `/context` policy: optional Codex proactive rollover between turns from native
+  context measurements; documented process-local Codex/Claude compaction controls. Unknown
+  capacity stays unknown, and original-source verification is required for proactive handoff.
+
+### Added (`2026-11-02g`)
+- Bounded lexical native-history retrieval with exact excerpt pointers, confirmed links and
+  observed context handoffs. `/memory` performs background reads and preserves drafts.
+
+### Changed (`2026-11-02f`)
+- Cursor native readback uses capability-checked ACP session loading with exact account/session binding. Pointer excerpts, whole-history pages within the bounded replay budget, CLI chat reads and resume scrollback use the same reader. Replay sends no prompt, starts no new session, rejects tool requests, preserves native auth in the selected config home, and persists only pointer metadata. Cursor pointers explicitly identify protocol replay rather than claiming local JSONL-file provenance.
+
+### Changed (`2026-11-02e`)
+- Native source indexing can scan whole Codex/Claude histories through immutable bounded pages, with resumable identity-checked cursors, snapshot-stable ordinals, explicit malformed/oversized-record gaps, and no stored conversation bodies. CLI and MCP range listings now page beyond the first twenty records; MCP can expand a known pointer into whole-history pages.
 
 ### Fixed (`2026-11-02d`)
 - Ordinary status updates mentioning "select an option" no longer turn later feature bullets into unrelated reply choices. Conversational choices require an explicit closing question or invitation followed immediately by options; example JSON is interpreted only in question-tool cards.
