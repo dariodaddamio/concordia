@@ -272,6 +272,20 @@ impl App {
     pub(super) fn apply_search_action(&mut self, action: workspace_search::Action) {
         match action {
             workspace_search::Action::Close => self.project_search.close(),
+            workspace_search::Action::ApplyReplacement(plan) => {
+                let blocked = self.workspace.replacement_blockers();
+                self.project_search
+                    .apply_replacement(self.state_root.clone(), plan, blocked);
+            }
+            workspace_search::Action::ReconcileReplacement(id) => self
+                .project_search
+                .reconcile_replacement(self.state_root.clone(), id),
+            workspace_search::Action::ListReceipts => {
+                self.project_search.list_receipts(self.state_root.clone())
+            }
+            workspace_search::Action::ReplacementFinished(receipt) => {
+                self.workspace.replacement_finished(&receipt);
+            }
             workspace_search::Action::Open(verified) => {
                 let path = verified.hit.path.clone();
                 match self.workspace.open_verified(verified) {

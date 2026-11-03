@@ -11,6 +11,10 @@ creation does not change the implementation status recorded here.
 
 ## Closed in this build
 
+- Selected project replacement uses exact byte-bound previews, ownership/pane preflight and
+  the existing editor save path. Durable receipts support explicit reconciliation without replay.
+  [Behavior and limits](quality/project-replacement.md).
+
 - Worker-owned native input, opt-in Cursor ACP text and explicit native plan decisions now use
   exact live request ownership. Edit cards, file detection, activity icons, agent inspection,
   queue return and quota/credit cache fixes are implemented in the current candidate.

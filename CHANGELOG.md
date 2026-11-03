@@ -1,5 +1,8 @@
 # Changelog
 
+- Project search supports selected literal replacements with exact previews, conflict/ownership
+  preflight, serial editor saves and durable receipts. Ctrl+H inspects interrupted batches without replay.
+
 - Managed worktrees now support separately reviewed native merge, HEAD cherry-pick, retirement
   and branch deletion. Receipts bind exact heads, paths, conflicts, worker references and leases;
   changed state, dirty files, unique commits or uncertain execution preserve the workspace.

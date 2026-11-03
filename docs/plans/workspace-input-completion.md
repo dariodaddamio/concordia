@@ -8,6 +8,10 @@ worker worktrees and their lifecycle belong to the [orchestration plan](orchestr
 
 ## Existing behavior to retain
 
+Progress: [selected project replacement](../quality/project-replacement.md) implements W2 over
+the shipped W1 search, including exact preview approval, guarded saves and receipt inspection.
+Remaining file-opening, input, rendering and integration slices retain the boundaries below.
+
 | Surface | Source evidence | Status and boundary |
 | --- | --- | --- |
 | File discovery | `tui/related_files.rs`, `file_links.rs` | Chat/recent/workspace references, ignored-path-aware traversal, canonical deduplication and directory browsing exist. Discovery does not search file contents. |

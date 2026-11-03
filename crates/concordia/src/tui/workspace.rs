@@ -383,6 +383,46 @@ impl Workspace {
                 .ok();
         }
     }
+    pub fn replacement_blockers(&self) -> Vec<PathBuf> {
+        self.panes
+            .iter()
+            .filter(|pane| {
+                pane.loading
+                    || pane.saving
+                    || pane
+                        .document
+                        .as_ref()
+                        .is_some_and(|document| document.dirty())
+            })
+            .map(|pane| pane.path.clone())
+            .collect()
+    }
+    pub fn replacement_finished(
+        &mut self,
+        receipt: &crate::workspace_search::replacement::Receipt,
+    ) {
+        let ids = self
+            .panes
+            .iter()
+            .filter(|pane| {
+                !pane.saving
+                    && !pane
+                        .document
+                        .as_ref()
+                        .is_some_and(|document| document.dirty())
+                    && receipt.files.iter().any(|file| {
+                        crate::workspaces::same_key(
+                            &crate::workspaces::path_key(&file.path),
+                            &crate::workspaces::path_key(&pane.path),
+                        )
+                    })
+            })
+            .map(|pane| pane.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.reload(id);
+        }
+    }
     fn reload(&mut self, id: u32) -> Result<(), String> {
         if let Some(pane) = self.panes.iter_mut().find(|p| p.id == id) {
             if pane.saving || pane.document.as_ref().is_some_and(|d| d.dirty()) {
