@@ -105,7 +105,7 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
         "on" if registered.provider == ProviderKind::Cursor => Mode::CursorAcp,
         "on" if registered.provider == ProviderKind::Codex => Mode::CodexAppServer,
         "on" => return Err(
-            "native text interaction is currently available for Cursor ACP and Codex app-server"
+            "Claude native permission bridge unavailable: the documented permission MCP tool does not establish verifiable native-callback provenance distinct from model-originated tool calls. Standard Claude transport remains available; no permission bridge was installed"
                 .into(),
         ),
         "off" => Mode::Standard,

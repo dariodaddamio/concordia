@@ -395,8 +395,30 @@ pub fn context_measurement(
     binding: &Binding,
     model: &str,
 ) -> Result<Option<crate::capacity::Measurement>, String> {
+    Ok(context_observation(root, binding, model)?.measurement)
+}
+
+/// A fresh, bounded source observation with enough metadata to explain every rejection.
+/// Native conversation text is neither returned nor retained in this evidence.
+pub fn context_observation(
+    root: &Path,
+    binding: &Binding,
+    model: &str,
+) -> Result<crate::capacity::Observation, String> {
+    let mut observation = crate::capacity::Observation {
+        binding: binding.clone(),
+        requested_model: model.into(),
+        native_model: None,
+        native_turn_id: None,
+        transport: "codex-rollout-jsonl",
+        evidence_version: "last-request-v1",
+        source: None,
+        measurement: None,
+        invalidation_reason: Some(crate::capacity::unavailable_reason(binding.provider).into()),
+    };
     if binding.provider != ProviderKind::Codex {
-        return Ok(None);
+        observation.transport = "unavailable";
+        return Ok(observation);
     }
     let (mut file, index) = open_bound(root, binding)?;
     let start = index.source_len.saturating_sub(TAIL_BYTES);
@@ -409,31 +431,64 @@ pub fn context_measurement(
     } else {
         0
     };
-    let mut measurement = None;
-    let mut native_model = None;
+    let mut evidence = crate::capacity::SourceEvidence {
+        file_identity: index.file_identity.clone(),
+        source_bytes: index.source_len,
+        tail_start: start,
+        tail_sha256: digest(&bytes),
+        record_start: None,
+        record_bytes: None,
+        record_sha256: None,
+    };
+    let mut offset = start + begin as u64;
     for raw in bytes[begin..].split(|b| *b == b'\n') {
+        let record_start = offset;
+        offset = offset.saturating_add(raw.len() as u64 + 1);
+        if raw.is_empty() {
+            continue;
+        }
         if raw.len() > LINE_BYTES {
-            measurement = None;
+            observation.measurement = None;
+            observation.native_turn_id = None;
+            observation.invalidation_reason = Some("native record exceeds the read bound".into());
             continue;
         }
         let Ok(v) = serde_json::from_slice::<Value>(raw) else {
+            observation.measurement = None;
+            observation.invalidation_reason = Some("malformed or incomplete native record".into());
             continue;
         };
         if v["type"] == "compacted" {
-            measurement = None;
+            observation.measurement = None;
+            observation.invalidation_reason =
+                Some("native compaction has no refreshed last-request measurement".into());
         }
         if v["type"] == "turn_context" {
-            let next = v
-                .pointer("/payload/model")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            if native_model != next {
-                measurement = None;
-            }
-            native_model = next;
+            let bounded_id = |pointer| {
+                v.pointer(pointer)
+                    .and_then(Value::as_str)
+                    .filter(|value| {
+                        !value.is_empty()
+                            && value.len() <= 256
+                            && !value.chars().any(char::is_control)
+                    })
+                    .map(str::to_owned)
+            };
+            observation.native_model = bounded_id("/payload/model");
+            observation.native_turn_id = bounded_id("/payload/turn_id");
+            observation.measurement = None;
+            observation.invalidation_reason =
+                Some("new native turn has no fresh last-request measurement".into());
+        }
+        if v["type"] == "event_msg" && v["payload"]["type"] == "task_started" {
+            observation.measurement = None;
+            observation.native_model = None;
+            observation.native_turn_id = None;
+            observation.invalidation_reason =
+                Some("native turn started; waiting for exact turn context and usage".into());
         }
         if v["type"] == "event_msg" && v["payload"]["type"] == "token_count" {
-            measurement = v
+            observation.measurement = v
                 .pointer("/payload/info/last_token_usage/total_tokens")
                 .and_then(Value::as_u64)
                 .zip(
@@ -442,10 +497,23 @@ pub fn context_measurement(
                 )
                 .filter(|(_, window)| *window > 0)
                 .map(|(used, window)| crate::capacity::Measurement { used, window });
+            evidence.record_start = Some(record_start);
+            evidence.record_bytes = Some(raw.len());
+            evidence.record_sha256 = Some(digest(raw));
+            observation.invalidation_reason = observation.measurement.is_none()
+                .then(|| "native usage lacks valid last_token_usage/model_context_window; cumulative totals are not capacity".into());
         }
     }
-    if native_model.as_deref() != Some(model) || model == "?" {
-        return Ok(None);
+    if observation.native_model.as_deref() != Some(model) || model == "?" {
+        observation.measurement = None;
+        observation.invalidation_reason =
+            Some("native model does not match the selected model".into());
+    } else if observation.native_turn_id.is_none() {
+        observation.measurement = None;
+        observation.invalidation_reason = Some(
+            "native source does not identify the exact turn; legacy capacity remains unknown"
+                .into(),
+        );
     }
     let (mut check, current) = open_bound(root, binding)?;
     if current.file_identity != index.file_identity
@@ -454,7 +522,8 @@ pub fn context_measurement(
     {
         return Err("native context source changed during measurement".into());
     }
-    Ok(measurement)
+    observation.source = Some(evidence);
+    Ok(observation)
 }
 
 /// Verify source identity and all retained record hashes without retaining conversation text.
@@ -1163,7 +1232,7 @@ mod tests {
         )
         .unwrap();
         let context =
-            json!({"type":"turn_context","payload":{"model":"fixture-model"}}).to_string() + "\n";
+            json!({"type":"turn_context","payload":{"model":"fixture-model","turn_id":"fixture-turn-1"}}).to_string() + "\n";
         append(&path, context.as_bytes());
         let count = json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":9999999},"last_token_usage":{"total_tokens":80},"model_context_window":100}}}).to_string() + "\n";
         append(&path, count.as_bytes());
@@ -1178,6 +1247,23 @@ mod tests {
             context_measurement(dir.path(), &binding, "other-model").unwrap(),
             None
         );
+        let observed = context_observation(dir.path(), &binding, "fixture-model").unwrap();
+        assert_eq!(observed.native_turn_id.as_deref(), Some("fixture-turn-1"));
+        assert_eq!(observed.binding, binding);
+        let evidence = observed.source.unwrap();
+        assert_eq!(evidence.source_bytes, fs::metadata(&path).unwrap().len());
+        assert_eq!(
+            evidence.record_sha256.as_deref(),
+            Some(digest(count.trim_end().as_bytes()).as_str())
+        );
+        append(&path, context.as_bytes());
+        let stale = context_observation(dir.path(), &binding, "fixture-model").unwrap();
+        assert!(stale.measurement.is_none());
+        assert!(stale
+            .invalidation_reason
+            .unwrap()
+            .contains("new native turn"));
+        append(&path, count.as_bytes());
         append(&path, b"{\"type\":\"compacted\",\"payload\":{}}\n");
         assert_eq!(
             context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
@@ -1192,6 +1278,43 @@ mod tests {
             context_measurement(dir.path(), &binding, "other-model").unwrap(),
             None
         );
+        append(&path, context.as_bytes());
+        append(&path, b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":9999},\"model_context_window\":100}}}\n");
+        let cumulative = context_observation(dir.path(), &binding, "fixture-model").unwrap();
+        assert!(cumulative.measurement.is_none());
+        assert!(cumulative
+            .invalidation_reason
+            .unwrap()
+            .contains("cumulative"));
+        append(&path, count.as_bytes());
+        append(
+            &path,
+            b"{\"type\":\"turn_context\",\"payload\":{\"model\":\"fixture-model\"}}\n",
+        );
+        append(&path, count.as_bytes());
+        let legacy = context_observation(dir.path(), &binding, "fixture-model").unwrap();
+        assert!(legacy.measurement.is_none());
+        assert!(legacy.invalidation_reason.unwrap().contains("exact turn"));
+        append(&path, context.as_bytes());
+        append(&path, count.as_bytes());
+        append(&path, b"{broken\n");
+        let malformed = context_observation(dir.path(), &binding, "fixture-model").unwrap();
+        assert!(malformed.measurement.is_none());
+        assert!(malformed.invalidation_reason.unwrap().contains("malformed"));
+        for provider in [ProviderKind::Claude, ProviderKind::Cursor] {
+            let unknown = context_observation(
+                dir.path(),
+                &Binding {
+                    provider,
+                    ..binding.clone()
+                },
+                "fixture-model",
+            )
+            .unwrap();
+            assert!(unknown.measurement.is_none());
+            assert!(unknown.source.is_none());
+            assert_eq!(unknown.transport, "unavailable");
+        }
     }
 
     #[test]

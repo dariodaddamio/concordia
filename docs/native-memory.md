@@ -17,8 +17,11 @@ See [bounds and evidence](quality/goal-source-associations.md).
 between-turn proactive rollover at 80% of Codex's reported context window (allowed range 50–95).
 `/context rollover off` disables it. The reader accepts native `event_msg/token_count` records only
 when `last_token_usage.total_tokens`, `model_context_window` and the selected native `turn_context`
-model are present. Cumulative billed usage is ignored. Compaction/model changes invalidate prior
-measurements; missing, changing or unsupported signals stay unknown. This is a tested native-log
+model and exact turn id are present. Cumulative billed usage is ignored. Every new turn, including
+the same model, and compaction/model changes invalidate prior measurements. Missing, malformed,
+changing or unsupported signals stay unknown with a reason. Notices expose account/session/turn,
+model and source revision; [capacity evidence](quality/capacity-provenance.md) records the contract.
+This is a tested native-log
 adapter, not a guarantee that every CLI version writes these records. Claude/Cursor proactive
 capacity is unavailable until a supported, verified signal exists.
 

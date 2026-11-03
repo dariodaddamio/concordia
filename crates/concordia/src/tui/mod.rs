@@ -3895,7 +3895,7 @@ pub async fn run_chat_tui() -> Result<()> {
                             let root = state_root.clone();
                             let selected_model = model.clone();
                             let measured = tokio::task::spawn_blocking(move || {
-                                crate::native_memory::context_measurement(
+                                crate::native_memory::context_observation(
                                     &root,
                                     &binding,
                                     &selected_model,
@@ -3903,10 +3903,10 @@ pub async fn run_chat_tui() -> Result<()> {
                             })
                             .await;
                             match measured {
-                                Ok(Ok(measurement)) => {
-                                    rollover = policy.rollover(measurement);
-                                    let notice = measurement.map_or("native context capacity unknown; proactive rollover skipped".into(), |m| format!("Native context: {} / {} tokens{}", m.used, m.window, if rollover { "; starting a fresh session before this turn" } else { "" }));
-                                    let _ = progress_tx.send(TurnProgress::Notice(notice));
+                                Ok(Ok(observation)) => {
+                                    rollover = policy.rollover(observation.measurement);
+                                    let _ = progress_tx
+                                        .send(TurnProgress::Notice(observation.notice(rollover)));
                                 }
                                 _ => {
                                     let _ = progress_tx.send(TurnProgress::Notice("native context measurement unavailable; proactive rollover skipped".into()));

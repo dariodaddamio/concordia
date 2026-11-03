@@ -1,5 +1,9 @@
 # Changelog
 
+- Context observations include exact account/home/session/turn/model and source revision evidence.
+  Same-model new turns, malformed records and legacy records without turn ids invalidate capacity.
+  Claude permission and Claude/Cursor capacity controls explain their native-interface blockers.
+
 - Explicit UTF-8 document attachments preserve verified snapshots, mixed attachment order and
   queue/draft recovery. Pasted file paths stay text and offer an explicit F9 attach action.
 

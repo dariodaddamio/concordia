@@ -2586,7 +2586,7 @@ fn proactive_context_policy_rolls_before_dispatch_and_keeps_original_pointers() 
     let lines = [
         serde_json::json!({"type":"session_meta","payload":{"id":"proactive-session","cwd":dir.path().join("workspace")}}),
         serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"ORIGINAL_CONTEXT_SOURCE"}]}}),
-        serde_json::json!({"type":"turn_context","payload":{"model":"synthetic-model"}}),
+        serde_json::json!({"type":"turn_context","payload":{"model":"synthetic-model","turn_id":"proactive-turn-1"}}),
         serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":800},"total_token_usage":{"total_tokens":9999999},"model_context_window":1000}}}),
     ];
     std::fs::write(

@@ -31,6 +31,12 @@ stdio transport for matched CLI 0.166.0, offered command/file decisions and boun
 Native resolution invalidates pending choices. Unsupported request kinds and live parity remain
 explicit. Existing quota and verified native-source capacity measurements are retained.
 
+[Capacity provenance](../quality/capacity-provenance.md) implements the P5 observation contract
+for the existing Codex rollout reader. Same-model turn boundaries invalidate previous usage.
+Claude P4 remains unavailable because a model-callable permission MCP tool does not establish
+native-callback provenance; Claude/Cursor headless capacity remains unavailable with specific
+reasons. Those upstream capabilities require new verified evidence before activation.
+
 | Existing source | Implemented behavior | Remaining gap |
 | --- | --- | --- |
 | `src/native_memory.rs` | Provider/account/home/session bindings, immutable bounded source pages and hash-verified excerpts | Relationships need to reference these identities without creating another reader |

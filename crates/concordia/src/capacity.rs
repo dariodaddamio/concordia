@@ -44,10 +44,10 @@ fn validate(provider: ProviderKind, policy: &Policy) -> Result<(), String> {
         return Err("rollover percentage must be 50..95".into());
     }
     if policy.rollover_percent.is_some() && provider != ProviderKind::Codex {
-        return Err(
-            "proactive capacity is unavailable for this provider; native capacity remains unknown"
-                .into(),
-        );
+        return Err(format!(
+            "proactive capacity unavailable: {}",
+            unavailable_reason(provider)
+        ));
     }
     match (&policy.compaction, provider) {
         (Compaction::Native, _) | (Compaction::ClaudeAutomaticOff, ProviderKind::Claude) => Ok(()),
@@ -130,7 +130,7 @@ pub fn set(root: &Path, binding: &Binding, command: &str) -> Result<String, Stri
         )
         .map_err(|e| e.to_string())?;
     }
-    Ok(format!("Context policy for {}: proactive rollover {}; native compaction {:?}. Applies to future turns in this account/home. Capacity is unknown until its exact native session supplies a valid measurement. /context rollover off and /context compact native restore defaults. No provider configuration files are edited.", binding.account, policy.rollover_percent.map_or("off".into(), |n| format!("at {n}%")), policy.compaction))
+    Ok(format!("Context policy for {}: proactive rollover {}; native compaction {:?}. Applies to future turns in this account/home. Capacity is unknown until its exact native session supplies a valid measurement. Evidence requirement: {}. /context rollover off and /context compact native restore defaults. No provider configuration files are edited.", binding.account, policy.rollover_percent.map_or("off".into(), |n| format!("at {n}%")), policy.compaction, unavailable_reason(binding.provider)))
 }
 
 /// Apply only documented per-process controls. No credential/config mutation or trust changes.
@@ -161,6 +161,73 @@ pub fn apply(plan: &mut PlannedTurn, compaction: &Compaction) -> Result<(), Stri
 pub struct Measurement {
     pub used: u64,
     pub window: u64,
+}
+
+/// An observation is evidence for one exact source snapshot, never an account-wide cache.
+#[derive(Debug, Clone, Serialize)]
+pub struct Observation {
+    pub binding: Binding,
+    pub requested_model: String,
+    pub native_model: Option<String>,
+    pub native_turn_id: Option<String>,
+    pub transport: &'static str,
+    pub evidence_version: &'static str,
+    pub source: Option<SourceEvidence>,
+    pub measurement: Option<Measurement>,
+    pub invalidation_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceEvidence {
+    pub file_identity: String,
+    pub source_bytes: u64,
+    pub tail_start: u64,
+    pub tail_sha256: String,
+    pub record_start: Option<u64>,
+    pub record_bytes: Option<usize>,
+    pub record_sha256: Option<String>,
+}
+
+pub fn unavailable_reason(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Codex => "no fresh, exact-turn Codex rollout last_token_usage/model_context_window evidence",
+        ProviderKind::Claude => "no verified per-launch current-context/window signal for the headless Claude adapter; interactive statusline configuration is not headless evidence",
+        ProviderKind::Cursor => "no negotiated current-context/window signal from the selected Cursor transport; schema fields alone are not capability evidence",
+    }
+}
+
+impl Observation {
+    pub fn notice(&self, rollover: bool) -> String {
+        let status = self.measurement.map_or_else(
+            || {
+                format!(
+                    "Native context unknown: {}; proactive rollover skipped",
+                    self.invalidation_reason
+                        .as_deref()
+                        .unwrap_or("no verified measurement")
+                )
+            },
+            |measurement| {
+                format!(
+                    "Native context: {} / {} tokens{}",
+                    measurement.used,
+                    measurement.window,
+                    if rollover {
+                        "; starting a fresh session before this turn"
+                    } else {
+                        ""
+                    }
+                )
+            },
+        );
+        let revision = self
+            .source
+            .as_ref()
+            .map_or("unavailable", |source| &source.tail_sha256);
+        format!("{status}\nEvidence {} · {} · account {} · session {} · turn {} · model {} · source revision {}",
+            self.evidence_version, self.transport, self.binding.account, self.binding.session_id,
+            self.native_turn_id.as_deref().unwrap_or("unknown"), self.native_model.as_deref().unwrap_or("unknown"), revision)
+    }
 }
 
 impl Policy {
