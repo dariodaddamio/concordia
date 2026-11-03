@@ -932,10 +932,26 @@ impl Delegates {
                     return;
                 }
             };
+            let message = crate::attachments::Message::decode(&spec.prompt);
+            let prompt = match message.prompt_text() {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    let _ = tx.send(Event::Finished(
+                        id,
+                        Box::new(TurnOutcome {
+                            failed: true,
+                            stderr_tail: error,
+                            ..Default::default()
+                        }),
+                    ));
+                    return;
+                }
+            };
+            let images = message.images();
             let req = ProviderTurnRequest {
-                images: &[],
+                images: &images,
                 provider,
-                prompt: &spec.prompt,
+                prompt: &prompt,
                 cwd: &spec.cwd,
                 home_path: spec.home.as_deref(),
                 model: spec.model.as_deref(),

@@ -322,8 +322,7 @@ impl super::App {
     pub(super) fn draft_text(&self) -> String {
         if self.hist_pos.is_some() {
             self.hist_draft.clone()
-        } else if self.fresh_draft && self.editor.text().is_empty() && self.images.draft.is_empty()
-        {
+        } else if self.fresh_draft && self.editor.text().is_empty() && self.images.count() == 0 {
             self.parked_draft.clone().unwrap_or_default()
         } else {
             self.composer_value()

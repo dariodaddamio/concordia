@@ -1,6 +1,6 @@
 # Images and diagrams in Concordia
 
-Build: `2026-11-01f`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
+Build: `2026-11-03j`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
 
 ## Attach an image
 
@@ -36,8 +36,32 @@ native permission and choice requests with their original RPC request ids; the o
 text adapter still uses print mode. This does not establish complete native interaction parity
 for every provider or background worker.
 
-The preview chip opens a viewer; an inline raster thumbnail is not implemented. File drag/drop,
-generic document attachments and generated-artifact cards remain separate work.
+The image chip opens a viewer; an inline raster thumbnail is not implemented.
+
+## Attach a text document
+
+Use `/attach notes.md`, `/attach "path/to/document.txt"` or the file chooser for UTF-8
+`.txt`, `.md`, `.markdown` and `.json` files. Four attachments total may be mixed with images;
+documents share a 64 KiB byte budget. Binary files, sensitive paths, linked files, NUL bytes and
+invalid UTF-8 are refused. Selecting a document opens its snapshot in a read-only internal preview.
+Click a document chip to inspect that snapshot or X to remove it without changing the message.
+
+The versioned envelope records ordered metadata and content hashes, without embedding document
+bytes in draft/queue records. Existing image-only envelopes remain compatible. Dispatch verifies
+the snapshot and includes its exact UTF-8 text as labelled user document data in the native text
+prompt. Images retain their native transports. Missing/changed snapshots or unknown envelope
+versions/kinds pause explicitly before provider execution. These labels are provenance, not a
+guarantee that a model will ignore instructions contained in a document.
+
+Pasted file paths, including file drops represented by the host as quoted path text, remain
+ordinary editable message text. Eligible absolute image/document path lists offer **F9 attach
+pasted files**; nothing is read or imported until that action. Attachment import preserves the
+pasted text and is bound to the same conversation, workspace and draft revision. Later typing or
+switching conversations invalidates a pending import. Up to four paths and 16 KiB of pasted path
+text are accepted. No shell expansion, host configuration change or dropped-file execution occurs.
+
+PDF and other binary document transports remain unavailable until a native provider capability
+is verified. Generated-artifact cards and inline raster rendering remain separate work.
 
 ## Mermaid
 

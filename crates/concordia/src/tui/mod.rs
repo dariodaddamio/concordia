@@ -755,7 +755,11 @@ impl App {
 
     /// Insert pasted text into the prompt (replacing any selection).
     fn paste_text(&mut self, text: &str) {
+        let revision = self.editor.revision();
         self.paste_text_chunk(text, false);
+        if self.editor.revision() != revision {
+            self.offer_pasted_files(text);
+        }
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
@@ -3168,8 +3172,8 @@ impl App {
     }
 
     fn submit_input(&mut self, turn_tx: &mpsc::UnboundedSender<String>) {
-        if self.images.height() > self.images.draft.len() {
-            self.flash("Wait for the image to finish attaching");
+        if self.images.importing() {
+            self.flash("Wait for the attachment to finish importing");
             return;
         }
         let original_prompt = self.composer_value();
@@ -3178,8 +3182,8 @@ impl App {
         if line.trim_start().starts_with('/') && !line.contains('\n') {
             line = line.trim().to_owned();
         }
-        if line.trim().is_empty() && !self.images.draft.is_empty() {
-            line = "Describe the attached image.".into();
+        if line.trim().is_empty() && self.images.count() > 0 {
+            line = self.images.default_prompt().into();
         }
         if line.trim().is_empty() {
             return;
@@ -3205,7 +3209,8 @@ impl App {
         } else {
             crate::attachments::Message {
                 text: line.clone(),
-                images: std::mem::take(&mut self.images.draft),
+                attachments: std::mem::take(&mut self.images.draft),
+                invalid: None,
             }
             .encode()
         };
@@ -3225,6 +3230,16 @@ impl App {
     fn run_line(&mut self, line: String, turn_tx: &mpsc::UnboundedSender<String>) {
         let original_line = line;
         let incoming = crate::attachments::Message::decode(&original_line);
+        if let Err(error) = incoming.validate() {
+            self.restore_composer(&original_line);
+            self.flash(error);
+            return;
+        }
+        if incoming.text.starts_with('/') && !incoming.attachments.is_empty() {
+            self.restore_composer(&original_line);
+            self.flash("Keep attachments with a message; commands leave the draft intact");
+            return;
+        }
         let line = incoming.text.clone();
         if let Some(arg) = line
             .strip_prefix("/attach")
@@ -3330,7 +3345,8 @@ impl App {
         let _ = turn_tx.send(
             crate::attachments::Message {
                 text: send,
-                images: incoming.images,
+                attachments: incoming.attachments,
+                invalid: None,
             }
             .encode(),
         );
@@ -3728,8 +3744,21 @@ pub async fn run_chat_tui() -> Result<()> {
             app.queue_advance(&turn_tx);
             while let Ok(prompt) = turn_rx.try_recv() {
                 let incoming = crate::attachments::Message::decode(&prompt);
-                let prompt = incoming.text;
-                let image_inputs = incoming.images;
+                let prompt = match incoming.prompt_text() {
+                    Ok(prompt) => prompt,
+                    Err(error) => {
+                        app.on_turn_done(
+                            TurnOutcome {
+                                failed: true,
+                                stderr_tail: error,
+                                ..Default::default()
+                            },
+                            &turn_tx,
+                        );
+                        continue;
+                    }
+                };
+                let image_inputs = incoming.images();
                 if app.discard_cancelled_pending_turn() {
                     continue;
                 }
@@ -4167,6 +4196,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         }
         let action = app.project_search.key(key);
         app.apply_search_action(action);
+        return false;
+    }
+    if key.code == KeyCode::F(9) && app.accept_pasted_files() {
         return false;
     }
     if key.code == KeyCode::Char('f')
