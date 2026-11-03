@@ -73,7 +73,7 @@ switching conversations invalidates a pending import. Up to four paths and 16 Ki
 text are accepted. No shell expansion, host configuration change or dropped-file execution occurs.
 
 PDF and other binary document transports remain unavailable until a native provider capability
-is verified. Typed generated-artifact cards remain separate work.
+is verified. Typed local-file output records are described in [file outputs](quality/file-output-artifacts.md).
 
 ## Mermaid
 

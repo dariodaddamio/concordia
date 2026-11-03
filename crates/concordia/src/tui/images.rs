@@ -621,5 +621,6 @@ mod tests {
         assert!(!app.images.importing());
         assert_eq!(app.images.count(), 0);
         raster::fixture_proof(&mut app, dir.path());
+        artifacts::fixture_proof(&mut app, dir.path());
     }
 }

@@ -425,6 +425,12 @@ impl App {
                 detail: String::new(),
             });
         }
+        rows.push(PickerRow {
+            id: "artifact-catalog".into(),
+            label: "Reported file outputs".into(),
+            detail: "Structured native output records · inspect source and current-file actions"
+                .into(),
+        });
         self.show_picker(
             PickerKind::Files,
             format!(

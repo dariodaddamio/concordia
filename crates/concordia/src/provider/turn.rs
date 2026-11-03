@@ -143,6 +143,7 @@ pub fn attach_images(
 
 #[derive(Debug, Clone)]
 pub enum TurnProgress {
+    Artifact(Box<crate::artifacts::Record>),
     Interaction(Box<NativeRequest>),
     Session(String),
     Text(String),
@@ -512,6 +513,7 @@ async fn run_provider_turn_inner(
     };
     let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));
     let mut completed_events = CompletedEvents::default();
+    let mut artifacts = crate::artifacts::Collector::default();
     let mut first_event_ms = None;
     let mut parse_time = Duration::ZERO;
     let mut events = 0_u64;
@@ -577,6 +579,19 @@ async fn run_provider_turn_inner(
                             .ok();
                         }
                         out.session_id = Some(sid);
+                    }
+                    if !plain_output && plan.provider == ProviderKind::Codex {
+                        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
+                            if event["type"] == "item.completed" {
+                                artifacts.report(
+                                    owner.as_ref(),
+                                    out.session_id.as_deref().or(req.native_session_id),
+                                    None,
+                                    &event["item"],
+                                    &on_progress,
+                                );
+                            }
+                        }
                     }
                     if !chunk.text.is_empty() {
                         out.text.push_str(&chunk.text);

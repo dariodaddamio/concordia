@@ -25,7 +25,8 @@ and [integration discovery](../quality/integrations-catalog.md) record later eng
 [Cross-worktree dependency delivery](../quality/dependency-delivery.md) adds reviewed receipts and
 retirement references. [Goal proposals](../quality/goal-proposals.md) add exact revision-bound
 local review and attribution. [Inline cell rasters](../images-and-diagrams.md) add bounded decoding
-and explicit viewer fallback. Verified binary transports, typed artifacts and
+and explicit viewer fallback. [Typed file outputs](../quality/file-output-artifacts.md) add bounded
+native-event records and current-file actions. Verified binary transports and
 native/physical-host parity retain their separate contracts below.
 
 ## Baseline and scope

@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 mod activity;
+mod artifacts;
 mod chatref;
 mod clipboard;
 mod compat_ui;
@@ -244,6 +245,8 @@ enum PickerKind {
     Recovery,
     Files,
     FileActions,
+    Artifacts,
+    ArtifactDetail,
     Resume,
     Trust,
     Use,
@@ -364,6 +367,7 @@ pub struct App {
     picker: Option<Picker>,
     token_reads: tokens::State,
     integrations: integrations::State,
+    artifacts: artifacts::State,
     landing: Option<landing::Landing>,
     update_preview: Option<UpdatePreview>,
     /// Wrapped rows of the `/update` screen and how many fit, as last drawn.
@@ -1064,6 +1068,15 @@ impl App {
 
     fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
+            TurnProgress::Artifact(record) => {
+                if self.native_owner.as_ref() == Some(&record.owner)
+                    && record.owner.conversation_id == self.deleg.d.conversation_id()
+                {
+                    self.commit_live_thinking();
+                    self.commit_live_text();
+                    self.push_card(record.card());
+                }
+            }
             TurnProgress::Interaction(request) => {
                 if self.cancel_requested
                     || !self.busy
@@ -1628,6 +1641,7 @@ impl App {
         landing::poll(self);
         tokens::poll(self);
         integrations::poll(self);
+        artifacts::poll(self);
         self.update_progress();
         self.poll_compat();
         self.poll_proposals();
@@ -2394,6 +2408,10 @@ impl App {
         }
         match kind {
             PickerKind::Files => {
+                if id == "artifact-catalog" {
+                    artifacts::open(self);
+                    return;
+                }
                 if let Some(index) = id
                     .strip_prefix("file:")
                     .and_then(|s| s.parse::<usize>().ok())
@@ -2402,6 +2420,8 @@ impl App {
                 }
             }
             PickerKind::FileActions => self.choose_file_action(&id),
+            PickerKind::Artifacts => artifacts::choose(self, &id),
+            PickerKind::ArtifactDetail => {}
             PickerKind::Agents => {
                 if let Some(index) = id
                     .strip_prefix("native-agent:")
@@ -3495,6 +3515,7 @@ impl App {
             picker: None,
             token_reads: tokens::State::default(),
             integrations: integrations::State::default(),
+            artifacts: artifacts::State::default(),
             landing: None,
             update_preview: None,
             update_rows: 0,
@@ -4296,6 +4317,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     if integrations::handle_key(app, key) {
         return false;
     }
+    if artifacts::key(app, key) {
+        return false;
+    }
     if let Some(picker) = app.picker.as_mut() {
         if matches!(
             picker.kind,
@@ -4303,6 +4327,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                 | PickerKind::Tokens
                 | PickerKind::Related
                 | PickerKind::Integrations
+                | PickerKind::ArtifactDetail
         ) {
             let visible = app.update_view.max(1);
             let last = app.update_rows.saturating_sub(visible);
@@ -4842,6 +4867,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                     | PickerKind::Tokens
                     | PickerKind::Related
                     | PickerKind::Integrations
+                    | PickerKind::ArtifactDetail
             )
         }) {
             match m.kind {
@@ -6048,7 +6074,11 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     };
     if matches!(
         picker.kind,
-        PickerKind::Update | PickerKind::Tokens | PickerKind::Related | PickerKind::Integrations
+        PickerKind::Update
+            | PickerKind::Tokens
+            | PickerKind::Related
+            | PickerKind::Integrations
+            | PickerKind::ArtifactDetail
     ) {
         let is_page = picker.kind == PickerKind::Update;
         let width = if is_page {

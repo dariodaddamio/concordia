@@ -246,6 +246,11 @@ format/parser/dependency budget and a visible derived-text preview with original
 
 ## I5: generated-artifact cards
 
+The local-file slice is implemented in `2026-11-03q` for completed Codex structured file-change
+events, including opt-in native app-server execution. [Current scope](../quality/file-output-artifacts.md)
+records source hashes separately from current disk contents. Other native formats remain
+unavailable until their structured output contract is verified; arbitrary prose is never promoted.
+
 Add typed artifact references to the provider/card normalization boundary
 (`provider/stream_json.rs`, `provider/stream_cards.rs`, card ingestion in `tui/mod.rs`, `tui/files.rs`). First
 accept exact local-file outputs from known structured tool events; arbitrary prose stays a link

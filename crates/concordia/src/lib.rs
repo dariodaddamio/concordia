@@ -39,6 +39,7 @@ pub(crate) mod usage_codex;
 pub mod user_commands;
 pub mod version;
 
+pub mod artifacts;
 pub mod attachments;
 mod state_io;
 #[cfg(test)]

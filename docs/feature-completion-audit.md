@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03p
+# Feature completion audit: 2026-11-03q
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,10 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Completed structured Codex file outputs have typed provenance records, source-bound cards and
+  file-browser discovery. Current-file actions revalidate execution directory/path ownership;
+  arbitrary prose and unsupported tool formats remain links. [Scope](quality/file-output-artifacts.md).
 
 - Inline color-cell image previews use bounded background decoding and content-hash thumbnails.
   Composer snapshots verify hashes; draft-safe close and explicit system-viewer fallback share

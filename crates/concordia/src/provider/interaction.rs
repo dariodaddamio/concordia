@@ -13,7 +13,7 @@ const REQUESTS_PER_CONNECTION: usize = 1024;
 const PENDING_REQUESTS: usize = 8;
 type ResponseChannel = Mutex<Option<oneshot::Sender<Value>>>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InteractionOwner {
     pub conversation_id: String,
     pub workspace: PathBuf,
@@ -718,6 +718,9 @@ pub(crate) struct InteractionConnection {
 }
 
 impl InteractionConnection {
+    pub fn owner(&self) -> Option<&InteractionOwner> {
+        self.owner.as_ref()
+    }
     pub fn new(owner: Option<InteractionOwner>, cancelled: Arc<AtomicBool>) -> Self {
         Self {
             owner,
