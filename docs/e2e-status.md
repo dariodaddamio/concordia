@@ -1,5 +1,25 @@
 # Everyday E2E status (MVP A)
 
+## Workspace ownership and managed worktrees, 2026-11-02r/s
+
+Cooperative ownership source `68d533c` passed all 48 installed ConPTY journeys in 301.25 seconds,
+Clippy, release smoke and OSS gates (322 tracked text files), then green CI. The 983-check everyday
+smoke passed on the same admission/recovery code before the final scope-inspection text correction.
+Build `2026-11-02r` is the normal installed binary: 18,345,472 bytes; SHA-256
+`BC423639E0E10B98EF7B46C015BEB79816B9BEF92CD7727FDA8B726016D7F3F5`.
+
+Managed-worktree production source `656d905` passes all 983 enabled checks, Clippy, release smoke,
+portable everyday smoke, OSS gates (325 tracked text files) and green CI. All 48 installed ConPTY
+journeys pass in 305.84 seconds, including worker execution in the managed cwd, main execution
+in the original cwd, result-only provenance and preserved drafts. Candidate `2026-11-02s` is
+18,499,584 bytes; release/portable SHA-256:
+`95DD3A392587C1E363AFC029B309239A5430EDA89758423D686ADEC71E12EFBF`.
+
+Both slices use fake providers. Worktree organization and scheduler reservations do not prove
+native filesystem confinement. Integration, retirement, broader native approval parity and live
+provider evidence remain separate work. [Ownership](quality/workspace-reservations.md) and
+[managed-worktree scope](quality/managed-workspaces.md) describe the limits.
+
 ## Routing candidate, 2026-11-02p
 
 Production source `6d637dd` shares local routing decisions across main/worker dispatch, freezes

@@ -31,6 +31,8 @@ and execution folders separately and verifies the managed record before launchin
 branch, base ancestry and directory identities are checked again off-thread before a native turn.
 Cancellation during that preparation prevents provider invocation. Old nonterminal records restore
 paused, with workspace reservations retained until stopped-process reconciliation when needed.
+An explicit reconciled retry captures the original declared paths and managed execution folder
+for its new run; it does not silently fall back to shared-folder execution.
 
 Worker returns identify the managed execution folder and label edits as unintegrated result data.
 The main agent keeps its original cwd. Cross-worktree dependency dispatch remains refused until
@@ -65,8 +67,14 @@ Existing synthetic fixtures exercise real local Git creation, source-configurati
 worker scope binding, uncertain creation reconciliation without a second worktree, stale binding
 revisions, dirty-source refusal and cancellation before creation. The Windows DOS-path adaptation
 was checked against the installed Git executable; canonical metadata retains native identities.
-Terminal worker/main cwd and result-provenance validation is pending for the candidate. Full
-suite, Clippy, release/everyday smoke and installed terminal evidence must pass before merge.
+Production source `656d905` passes all 983 enabled checks, all-target Clippy with warnings denied,
+release smoke, portable everyday smoke and OSS gates (325 tracked text files). All 48 installed
+ConPTY journeys pass in 305.84 seconds, including actual managed worker cwd, original main cwd,
+result-only provenance and draft preservation. The affected journey also passes alone in 14.60
+seconds. GitHub CI is green on that source; later evidence documentation changes no production code.
+
+Release and portable-installed build `2026-11-02s`: 18,499,584 bytes; SHA-256
+`95DD3A392587C1E363AFC029B309239A5430EDA89758423D686ADEC71E12EFBF`.
 No real model turn, remote Git operation, integration or retirement is part of these fixtures.
 
 Interface references: [Git worktree](https://git-scm.com/docs/git-worktree) and

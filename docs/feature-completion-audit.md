@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-02r
+# Feature completion audit: 2026-11-02s
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -11,10 +11,15 @@ creation does not change the implementation status recorded here.
 
 ## Closed in this build
 
+- Explicit managed Git worktrees bind a clean committed base, repository, owner/execution
+  directories and worker dispatch. Interrupted creation is retained and explicitly reconciled;
+  worker returns label unintegrated edits. [Behavior and evidence](quality/managed-workspaces.md).
+  Native filesystem confinement, reviewed integration and retirement remain open.
+
 - Cooperative workspace reservations coordinate main/worker admission and internal saves across
   panes, with explicit declarations, conflict owners and retained uncertain-exit claims.
-  [Behavior and limits](quality/workspace-reservations.md). Managed worktrees and native filesystem
-  confinement remain open; scheduler claims do not enforce native write boundaries.
+  [Behavior and limits](quality/workspace-reservations.md). Scheduler claims do not enforce native
+  write boundaries; native filesystem confinement remains open.
 
 - Local routing evaluation, ordered persisted account/model overrides and inspection share the
   worker/main launch rules. Task approval freezes sequences and identity bindings; changed bindings
@@ -34,7 +39,8 @@ creation does not change the implementation status recorded here.
 - Approved shared-workspace dependencies now dispatch through the existing durable worker queue.
   `/delegate after ID[,ID] ACCOUNT TASK` binds exact runs; `/delegate graph` explains readiness.
   Failed prerequisites block dependants, stale results pause and restart dispatches nothing.
-  See [second-wave evidence](quality/completion-wave2.md). Worktree isolation remains open.
+  See [second-wave evidence](quality/completion-wave2.md). Cross-worktree dependency integration
+  and native confinement remain open.
 
 - First completion wave adds bounded read-only project search plus dependency/recovery and native
   interaction contract foundations. See [scope and verification](quality/completion-wave1.md).
@@ -60,7 +66,7 @@ creation does not change the implementation status recorded here.
 - Per-worker native models, batched result collection and opt-in automatic handback, bound to
   the launching conversation and using normal dispatch/recovery. Persistent worker state and
   bounded quota failover and approved shared-workspace dependency scheduling are implemented;
-  workspace isolation remains open. See
+  managed worktree creation is implemented; native confinement and lifecycle integration remain open. See
   [orchestration and latency](orchestration-and-latency.md).
 - Stable completed-diagram rendering in long histories and inspectable patch-failure diagnostics.
 
