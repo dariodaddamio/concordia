@@ -175,8 +175,9 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     }
     env.set("FAKE_PROVIDER_NATIVE_CODEX", "1");
     for fixture in [
-        json!({}),
+        json!({"artifact":true}),
         json!({"question":true}),
+        json!({"question":true,"freeform":true}),
         json!({"resolved":true}),
         json!({"wrong_thread":true}),
         json!({"wrong_turn":true}),
@@ -203,10 +204,21 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             .validate_for(ProviderKind::Codex, work.path(), Some(root))
             .unwrap();
         let resolved = fixture["resolved"] == true;
+        let artifact = fixture["artifact"] == true;
+        let conversation = owner.conversation_id.clone();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let answers = tokio::spawn(async move {
             let mut requests = Vec::new();
+            let mut outputs = Vec::new();
             while let Some(event) = rx.recv().await {
+                if let TurnProgress::Artifact(record) = &event {
+                    assert_eq!(record.owner, owner_for_answers);
+                    assert_eq!(record.native_session, "exact-native-thread");
+                    assert_eq!(record.native_turn.as_deref(), Some("native-turn"));
+                    assert_eq!(record.event_id, "native-output-event");
+                    assert!(record.open_current().unwrap().ends_with("native-output.md"));
+                    outputs.push(record.id.clone());
+                }
                 if let TurnProgress::Interaction(request) = event {
                     assert_eq!(
                         request.envelope().native_turn_id.as_deref(),
@@ -221,7 +233,16 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                         request
                             .respond_owned(
                                 &owner_for_answers,
-                                request.single_choices(&[choice]).unwrap(),
+                                if request.allows_text(0) {
+                                    request
+                                        .choices_with_text(
+                                            &[0],
+                                            &[Some("Synthetic free reply".into())],
+                                        )
+                                        .unwrap()
+                                } else {
+                                    request.single_choices(&[choice]).unwrap()
+                                },
                             )
                             .unwrap();
                     }
@@ -233,6 +254,11 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                     && !request.is_active()
                     && !request.was_answered()));
             }
+            assert_eq!(
+                outputs.len(),
+                usize::from(artifact),
+                "repeated native events must deduplicate"
+            );
             requests.len()
         });
         let request = ProviderTurnRequest {
@@ -262,6 +288,8 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         .unwrap()
         .unwrap();
         let offered = answers.await.unwrap();
+        let records = concordia::artifacts::read(&root.join("state"), &conversation).unwrap();
+        assert_eq!(records.len(), usize::from(artifact));
         let expected_failed = fixture["wrong_thread"] == true || fixture["closed"] == true;
         assert_eq!(out.failed, expected_failed, "{fixture}: {out:?}");
         if !expected_failed {
@@ -297,7 +325,12 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         } else if fixture["closed"] != true {
             assert_eq!(offered, 1);
             let answer = values.iter().find(|value| value["id"] == 100).unwrap();
-            if fixture["question"] == true {
+            if fixture["freeform"] == true {
+                assert_eq!(
+                    answer["result"],
+                    json!({"answers":{"route":{"answers":["user_note: Synthetic free reply"]}}})
+                );
+            } else if fixture["question"] == true {
                 assert_eq!(
                     answer["result"],
                     json!({"answers":{"route":{"answers":["Direct"]}}})

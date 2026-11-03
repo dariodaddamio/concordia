@@ -1,5 +1,8 @@
 # Orchestration, routing and accounting completion plan
 
+Current status: [campaign disposition](../quality/overnight-roadmap-disposition.md). The baseline
+and proposed design below are retained as the implementation plan, not the current shipped-status list.
+
 Status: proposed, based on source revision `c6d3b7c` (2026-11-02). This document is a plan,
 not a claim that the capabilities below have shipped. Planning changes only this file.
 

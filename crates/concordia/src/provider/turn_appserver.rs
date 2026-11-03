@@ -19,6 +19,7 @@ struct Connection {
     waiters: tokio::task::JoinSet<()>,
     deltas: HashSet<String>,
     buffered: Vec<Value>,
+    artifacts: crate::artifacts::Collector,
 }
 impl Connection {
     fn emit(&self, event: TurnProgress) {
@@ -229,6 +230,15 @@ impl Connection {
         Ok(false)
     }
     fn item(&mut self, item: &Value, completed: bool) {
+        if completed {
+            self.artifacts.report(
+                self.interactions.owner(),
+                self.thread.as_deref(),
+                self.turn.as_deref(),
+                item,
+                &self.progress,
+            );
+        }
         let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) else {
             return;
         };
@@ -474,6 +484,7 @@ pub(super) async fn run(
         waiters: tokio::task::JoinSet::new(),
         deltas: HashSet::new(),
         buffered: Vec::new(),
+        artifacts: crate::artifacts::Collector::default(),
     };
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"clientInfo":{"name":"concordia","title":"Concordia","version":crate::version::VERSION},"capabilities":{"experimentalApi":true}}))).await??;

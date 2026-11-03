@@ -139,17 +139,25 @@ impl App {
                 {
                     self.last_file_open = Some(file.clone());
                 }
-                if file.path.extension().is_some_and(|extension| {
-                    matches!(
-                        extension.to_string_lossy().to_ascii_lowercase().as_str(),
-                        "gif" | "png" | "jpg" | "jpeg" | "webp"
-                    )
-                }) {
+                if file
+                    .path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"))
+                {
                     let target = file.path.to_string_lossy();
                     self.open_host_target(
                         target.strip_prefix(r"\\?\").unwrap_or(&target).to_owned(),
                         "image",
                     );
+                    return true;
+                }
+                if file.path.extension().is_some_and(|extension| {
+                    matches!(
+                        extension.to_string_lossy().to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "webp"
+                    )
+                }) {
+                    self.start_raster(file.path, None);
                     return true;
                 }
                 let path = file.path.clone();

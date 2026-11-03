@@ -261,7 +261,7 @@ fn mime(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
         None
     }
 }
-fn read(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
     if crate::workspace_paths::sensitive(path)
         || path
             .canonicalize()

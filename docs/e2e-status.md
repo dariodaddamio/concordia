@@ -1,4 +1,32 @@
-# Everyday E2E status (MVP A)
+# Concordia verification status
+
+## Integrated roadmap candidate, 2026-11-03s
+
+Application source `1220032` passes all **983 enabled tests**, the existing read-only native
+usage smoke and **48 installed ConPTY journeys** (391.66 seconds). The normally installed
+executable matches the immutable candidate: **21,826,048 bytes**, SHA-256
+`849DB48E82624046F7922B133DC3DB614F23374B142B4737B1E43A078C1EF827`.
+Formatting, all-target Clippy, release build/smoke and OSS/privacy gates pass. Defender with
+intelligence `1.463.104.0` reports no threats for those exact bytes, with protection left enabled.
+
+The full pass includes the original UX additions, goal proposals, cross-worktree dependency
+delivery, search/replacement, file actions/editor, text/path attachments, inline PNG/JPEG/WebP
+previews, integration discovery, capacity provenance, native usage coverage, structured Codex
+file outputs and native question text replies. An initial full CI check caught a GIF fallback
+regression in the earlier raster candidate; build s restores the existing viewer action and the
+existing regression fixture/full suite pass. That failed earlier run is not successful evidence.
+
+The candidate collector verifies exact hashes/source compatibility, source/binary receipts and
+prelaunch/mismatched-receipt refusal. It writes metadata-only evidence under ignored
+`target/candidate-evidence`; logs remain in `target/final-s-*.log`. The collector/notice documentation
+can advance after the application build without changing its Rust source or executable bytes.
+The final integration PR records remote CI separately; this local record does not assert an
+unobserved remote result. [Area-by-area implementation and boundaries](quality/overnight-roadmap-disposition.md).
+
+No provider model turn, signing identity provisioning, external artifact upload, tag or release
+publication was performed. This unsigned installed candidate does not establish native/live or
+physical-host parity. Unsupported Claude permission provenance, Claude/Cursor capacity and
+binary document transports retain their explicit capability boundaries.
 
 ## Managed workspace lifecycle, 2026-11-03f
 

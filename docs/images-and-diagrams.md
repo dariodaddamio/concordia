@@ -1,13 +1,13 @@
 # Images and diagrams in Concordia
 
-Build: `2026-11-03j`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
+Build: `2026-11-03p`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
 
 ## Attach an image
 
 Use Ctrl+V when the terminal passes that key to Concordia, `/attach` to choose a file, or
 `/attach "path/to/screenshot.png"`. Relative paths resolve from Concordia's cwd; quoted absolute
 paths work. `/attach clear` removes draft attachments. A visible image chip shows the name and
-size: click it for the system image viewer, or X to remove it. Paste and file-picker helpers run
+size: click it for an inline preview, or X to remove it. Paste and file-picker helpers run
 away from the input loop and request no console window.
 
 PNG, JPEG and WebP are accepted, up to four distinct images of 4 MiB each per message. Clipboard
@@ -36,7 +36,20 @@ native permission and choice requests with their original RPC request ids; the o
 text adapter still uses print mode. This does not establish complete native interaction parity
 for every provider or background worker.
 
-The image chip opens a viewer; an inline raster thumbnail is not implemented.
+Image chips and image file links open an inline raster preview. Esc returns to the unchanged
+draft; E explicitly opens the system viewer. The preview uses ordinary true-color cells with
+half-block glyphs and normal frame clipping/redraw, without a terminal image escape protocol.
+No-color mode gives a text fallback. This is a terminal-resolution preview, not pixel-perfect
+rendering or evidence of physical-host image protocol support.
+GIF links retain the existing system-viewer action; the inline decoder does not enable GIF.
+
+One background decoder handles PNG/JPEG/WebP files up to 4 MiB, 4096 pixels per edge,
+16 megapixels and 64 MiB decoded output. Decoder allocation limits are 96 MiB; upstream defines
+that allocation limit as non-strict, while edge limits are strict. Eight content-hash thumbnails
+at at most 256×256 RGBA pixels retain at most 2 MiB. Composer previews verify the snapshot hash.
+Each open hashes bounded file bytes; unchanged cached images skip decoding. Closing cancels
+publication of the result; the bounded decode can finish off-thread and another job cannot start
+until it exits. Histories are never predecoded. Selected historical image links use the same action.
 
 ## Attach a text document
 
@@ -61,7 +74,7 @@ switching conversations invalidates a pending import. Up to four paths and 16 Ki
 text are accepted. No shell expansion, host configuration change or dropped-file execution occurs.
 
 PDF and other binary document transports remain unavailable until a native provider capability
-is verified. Generated-artifact cards and inline raster rendering remain separate work.
+is verified. Typed local-file output records are described in [file outputs](quality/file-output-artifacts.md).
 
 ## Mermaid
 

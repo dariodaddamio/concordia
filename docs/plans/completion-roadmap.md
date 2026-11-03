@@ -1,5 +1,8 @@
 # Remaining feature implementation plan
 
+Current implementation/capability disposition: [2026-11-03s campaign map](../quality/overnight-roadmap-disposition.md).
+The planning baseline and proposed designs below are historical; shipped contracts are linked there.
+
 Status: planned, 2026-11-02. Baseline: committed build `2026-11-02j` (`c6d3b7c`).
 This is the execution plan for the remaining features, prepared through three parallel source
 audits. It does not mark these features implemented or authorize provider usage or publication.
@@ -24,7 +27,9 @@ approval-bound sequences and worker/main inspection; workspace isolation remains
 and [integration discovery](../quality/integrations-catalog.md) record later engineering progress.
 [Cross-worktree dependency delivery](../quality/dependency-delivery.md) adds reviewed receipts and
 retirement references. [Goal proposals](../quality/goal-proposals.md) add exact revision-bound
-local review and attribution. Verified binary transports, inline raster, typed artifacts and
+local review and attribution. [Inline cell rasters](../images-and-diagrams.md) add bounded decoding
+and explicit viewer fallback. [Typed file outputs](../quality/file-output-artifacts.md) add bounded
+native-event records and current-file actions. Verified binary transports and
 native/physical-host parity retain their separate contracts below.
 
 ## Baseline and scope

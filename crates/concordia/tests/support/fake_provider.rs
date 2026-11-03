@@ -130,6 +130,12 @@ fn fake_appserver() {
     };
     let mut thread = "native-fixture-thread".to_owned();
     let finish = |thread: &str| {
+        if fixture["artifact"] == true {
+            std::fs::write(root.join("native-output.md"), "Synthetic native output\n").unwrap();
+            let event = json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"native-output-event","type":"fileChange","status":"completed","changes":[{"path":"native-output.md","kind":{"type":"add"},"diff":"+Synthetic native output"}]}}});
+            emit(event.clone());
+            emit(event);
+        }
         emit(
             json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":"reply","delta":"Native approval handled"}}),
         );
@@ -182,6 +188,9 @@ fn fake_appserver() {
                 let mut params = json!({"threadId":thread,"turnId":"native-turn","itemId":"command-1","command":"synthetic command","cwd":root,"availableDecisions":["accept","acceptForSession","decline","cancel"]});
                 if fixture["question"] == true {
                     params["questions"] = json!([{"id":"route","header":"Route","question":"Choose the route","isSecret":false,"isOther":false,"options":[{"label":"Direct","description":"Use direct routing"},{"label":"Review","description":"Review first"}]}]);
+                    if fixture["freeform"] == true {
+                        params["questions"][0]["options"] = Value::Null;
+                    }
                 }
                 if fixture["wrong_turn"] == true {
                     params["turnId"] = json!("foreign-turn");

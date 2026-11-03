@@ -9,10 +9,11 @@ concordia is built from open source crates. Every release ships THIRD-PARTY-LICE
 `cargo about generate about.hbs`, containing each crate's copyright notice and license text.
 Dependency licenses are enforced in CI by `cargo deny check` (see deny.toml).
 
-One dependency is not permissively licensed: `option-ext` (pulled in by `dirs`) is MPL-2.0, a
-file-level copyleft license. It is used unmodified as a library; its source is available at
-https://github.com/soc/option-ext. If it is ever vendored or modified, those files must remain
-under MPL-2.0 and be published.
+Reviewed MPL-2.0 dependencies are `option-ext` (via `dirs`) and the native Mermaid parser's
+`cssparser`, `cssparser-macros`, `dtoa-short` and `selectors`. These file-level copyleft libraries
+are used unmodified; exact source links and license texts are included in THIRD-PARTY-LICENSES.txt.
+If any are vendored or modified, those files must retain their applicable MPL notices and source
+availability obligations. The exceptions are crate-specific in deny.toml.
 
 Crossterm 0.28.1 is vendored under vendor/crossterm (MIT; see its LICENSE).
 Concordia changes src/event/sys/windows/parse.rs to ignore key-release surrogate halves,

@@ -1,5 +1,8 @@
 # Workspace, input and integration completion plan
 
+Current status: [campaign disposition](../quality/overnight-roadmap-disposition.md). The original
+baseline table below predates the shipped input, raster, artifact and integration slices.
+
 Planning baseline: `c6d3b7c`, inspected 2026-11-02. This document describes future slices; it
 does not claim they are implemented. Scope is local Windows workspace operations, richer
 attachments, host presentation, artifact discovery and native integration management. Provider
@@ -196,6 +199,10 @@ No credential-file fixtures or real credential reads are needed.
 
 ## I2: inline raster previews
 
+Implemented as bounded color-cell previews in `2026-11-03p`; see
+[current limits](../images-and-diagrams.md). Ordinary cells avoid enabling an unverified image
+protocol. The protocol-specific design below remains separate.
+
 Add `tui/raster.rs` as a bounded decode/downsample/cache service and a typed terminal presentation
 adapter. Keep original attachments unchanged; cached thumbnails are derived from verified
 snapshots, keyed by hash, viewport, scale and host capability generation. Start with composer and
@@ -241,6 +248,11 @@ pauses with the draft/checkpoint intact. Any later local conversion requires a s
 format/parser/dependency budget and a visible derived-text preview with original provenance.
 
 ## I5: generated-artifact cards
+
+The local-file slice is implemented in `2026-11-03q` for completed Codex structured file-change
+events, including opt-in native app-server execution. [Current scope](../quality/file-output-artifacts.md)
+records source hashes separately from current disk contents. Other native formats remain
+unavailable until their structured output contract is verified; arbitrary prose is never promoted.
 
 Add typed artifact references to the provider/card normalization boundary
 (`provider/stream_json.rs`, `provider/stream_cards.rs`, card ingestion in `tui/mod.rs`, `tui/files.rs`). First

@@ -5,6 +5,9 @@ pub(super) struct Review {
     job: u32,
     request: Arc<crate::provider::turn::NativeRequest>,
     answers: Vec<usize>,
+    texts: Vec<Option<String>>,
+    note: String,
+    notice: Option<String>,
     selected: usize,
     armed: bool,
     follow_selection: bool,
@@ -32,6 +35,9 @@ pub(super) fn open(app: &mut App, id: u32) {
         job: id,
         request,
         answers: Vec::new(),
+        texts: Vec::new(),
+        note: String::new(),
+        notice: None,
         selected: 0,
         armed: false,
         follow_selection: false,
@@ -47,10 +53,11 @@ fn choose(app: &mut App, option: usize) {
         return;
     };
     let questions = questions::native_questions(&review.request);
-    if questions
+    let count = questions
         .get(review.answers.len())
-        .is_none_or(|(_, options)| option >= options.len())
-    {
+        .map_or(0, |(_, options)| options.len());
+    let text_reply = review.request.allows_text(review.answers.len()) && option == count;
+    if option >= count && (!text_reply || review.note.trim().is_empty()) {
         app.deleg.input = Some(review);
         return;
     }
@@ -64,6 +71,11 @@ fn choose(app: &mut App, option: usize) {
         return;
     }
     review.answers.push(option);
+    review.texts.push(
+        (review.request.allows_text(review.answers.len() - 1) && !review.note.trim().is_empty())
+            .then(|| std::mem::take(&mut review.note)),
+    );
+    review.note.clear();
     review.pressed = None;
     review.targets.clear();
     if review.answers.len() < questions.len() {
@@ -75,7 +87,7 @@ fn choose(app: &mut App, option: usize) {
     }
     let result = review
         .request
-        .single_choices(&review.answers)
+        .choices_with_text(&review.answers, &review.texts)
         .and_then(|answer| {
             app.deleg
                 .d
@@ -88,6 +100,21 @@ fn choose(app: &mut App, option: usize) {
 }
 
 pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
+    if active(app)
+        && ((matches!(key.code, KeyCode::Char('v' | 'V'))
+            && key.modifiers.contains(KeyModifiers::CONTROL))
+            || key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT))
+    {
+        match clipboard::get_text() {
+            Ok(text) => paste(app, &text),
+            Err(error) => {
+                if let Some(review) = &mut app.deleg.input {
+                    review.notice = Some(format!("Paste failed: {error}"));
+                }
+            }
+        }
+        return true;
+    }
     if app.deleg.input.is_none()
         && key.code == KeyCode::F(8)
         && app.picker.is_none()
@@ -109,6 +136,8 @@ pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
     let count = questions::native_questions(&review.request)
         .get(review.answers.len())
         .map_or(0, |(_, options)| options.len());
+    let text_reply = review.request.allows_text(review.answers.len());
+    let options = count + usize::from(text_reply);
     match key.code {
         KeyCode::Esc => app.deleg.input = None,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -126,26 +155,77 @@ pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
             review.armed = false;
             review.scroll = (review.scroll + 10).min(review.max_scroll);
         }
-        KeyCode::Up if review.armed && count > 0 => {
-            review.selected = (review.selected + count - 1) % count;
+        KeyCode::Up if review.armed && options > 0 => {
+            review.selected = (review.selected + options - 1) % options;
             review.follow_selection = true;
         }
-        KeyCode::Down | KeyCode::Tab if review.armed && count > 0 => {
-            review.selected = (review.selected + 1) % count;
+        KeyCode::Down | KeyCode::Tab if review.armed && options > 0 => {
+            review.selected = (review.selected + 1) % options;
             review.follow_selection = true;
         }
         KeyCode::Up => review.scroll = review.scroll.saturating_sub(1),
         KeyCode::Down => review.scroll = (review.scroll + 1).min(review.max_scroll),
+        KeyCode::Enter
+            if review.armed && text_reply && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            crate::provider::interaction::append_reply(&mut review.note, "\n");
+            review.selected = count;
+            review.follow_selection = true;
+        }
         KeyCode::Enter if review.armed => {
             let selected = review.selected;
             choose(app, selected);
         }
-        KeyCode::Char(option @ '1'..='9') if review.armed && key.modifiers.is_empty() => {
+        KeyCode::Char(option @ '1'..='9')
+            if review.armed && review.selected < count && key.modifiers.is_empty() =>
+        {
             choose(app, (option as u8 - b'1') as usize)
+        }
+        KeyCode::Char(character)
+            if review.armed
+                && text_reply
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
+        {
+            if crate::provider::interaction::append_reply(&mut review.note, &character.to_string())
+            {
+                review.notice = None;
+            } else {
+                review.notice = Some("Reply exceeds 4096 bytes; existing text retained".into());
+            }
+            review.selected = count;
+            review.follow_selection = true;
+        }
+        KeyCode::Backspace if review.armed && text_reply => {
+            review.note.pop();
+            review.selected = count;
         }
         _ => {}
     }
     true
+}
+pub(super) fn paste(app: &mut App, text: &str) {
+    let Some(review) = app.deleg.input.as_mut() else {
+        return;
+    };
+    if review.armed && review.request.allows_text(review.answers.len()) {
+        if crate::provider::interaction::append_reply(
+            &mut review.note,
+            &text::normalize_newlines(text),
+        ) {
+            review.notice = None;
+            review.selected = questions::native_questions(&review.request)
+                .get(review.answers.len())
+                .map_or(0, |(_, options)| options.len());
+            review.follow_selection = true;
+        } else {
+            review.notice = Some(
+                "Reply paste exceeds 4096 bytes or contains controls; existing text retained"
+                    .into(),
+            );
+        }
+    }
 }
 
 pub(super) fn mouse(app: &mut App, event: &MouseEvent) {
@@ -257,6 +337,9 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         }
     }
     if let Some((prompt, options)) = questions.get(review.answers.len()) {
+        if let Some(notice) = &review.notice {
+            text(notice.clone(), None);
+        }
         text(
             format!(
                 "Question {} of {}: {prompt}",
@@ -277,6 +360,24 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                     index + 1
                 ),
                 Some(index),
+            );
+        }
+        if review.request.allows_text(review.answers.len()) {
+            text(
+                format!(
+                    "{} Write a reply: {}",
+                    if review.armed && review.selected == options.len() {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    if review.note.is_empty() {
+                        "type or paste; Enter submits, Shift+Enter adds a line"
+                    } else {
+                        &review.note
+                    }
+                ),
+                Some(options.len()),
             );
         }
     }

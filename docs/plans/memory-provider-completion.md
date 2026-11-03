@@ -1,5 +1,8 @@
 # Memory relationships and provider interaction completion
 
+Current status: [campaign disposition](../quality/overnight-roadmap-disposition.md), including
+implemented native text replies and explicit Claude/capacity/live-evidence boundaries.
+
 Status: planned, 2026-11-02. Baseline: `c6d3b7c` / build `2026-11-02j`.
 This plan adds relationships, evaluation and provider interaction to the existing native-source
 memory manager. It does not reopen whole-history pagination, exact readback, lexical search,

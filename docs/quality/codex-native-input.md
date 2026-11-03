@@ -26,8 +26,12 @@ Command/file approval choices preserve native decision payloads: once, session, 
 or an explicitly offered saved command/network policy. Policy choices visibly say they save a
 rule and show its native payload. Review cards retain the command, directory, reported file diff
 and native request. F8 explicitly focuses choices; opening review cannot grant permission.
-Bounded offered-choice questions preserve question IDs and answer labels. Free-form-only and
-secret-input requests are visibly unsupported; no answer or credential is invented. Unsupported
+Bounded questions preserve question IDs and answer labels. Build `2026-11-03r` also supports
+free-form-only questions and an Other reply when the native question offers it. F8 focuses
+foreground/worker input; typing/paste goes to the reply field, Shift+Enter adds a line and Enter
+submits. Offered choices can include a typed note. Replies are capped at 4096 UTF-8 bytes with
+control filtering; oversized paste retains existing text. Permission decisions never accept text.
+Secret-input requests remain visibly unsupported; no answer or credential is invented. Unsupported
 permission-profile requests, elicitation, dynamic tools and authentication callbacks receive
 errors. Native authentication remains the CLI's responsibility.
 
@@ -45,6 +49,10 @@ as complete per-turn totals. Existing verified native-source accounting and quot
 remain authoritative; unsupported measurements stay unknown.
 
 Protocol source: [official OpenAI app-server documentation](https://learn.chatgpt.com/docs/app-server).
+The native response shape is also checked against the generated installed protocol and the
+official [question types](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/request_user_input.rs)
+and [native reply handling](https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/request_user_input/mod.rs).
+Text replies use the native `user_note:` convention, not a synthetic offered-option identifier.
 Synthetic process fixtures exercise exact resume, image payloads, decline, questions, early
 events, provider resolution, foreign thread/turn rejection and premature closure. These are
 fixture results, not live-provider or physical-host approval parity. No real model turn was run.
@@ -53,3 +61,9 @@ Build `2026-11-03g` passes all 983 enabled checks and all-target Clippy. The imm
 candidate passes release smoke: 19,877,376 bytes, SHA-256
 `ab64db60582d95aa528b018687867f8720d865daf8f28c68cac8b6b4dfc29ed4`.
 Installed terminal and remote CI evidence are recorded separately when completed.
+
+Text-reply evidence: the existing native foreground/worker fixture covers mixed questions, exact
+responses, explicit focus, bounded/unarmed paste, multiline answers, unchanged main ownership
+and draft, and refused secret/malformed flags. The real fake-process fixture covers native
+free-form RPC responses. Logs: `target/native-text-r-{proof-final,process,clippy-final,release}.log`.
+These checks do not establish live native-provider parity.

@@ -1423,6 +1423,14 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
                 WorkerState::Thinking
             };
         }
+        TurnProgress::Artifact(record) => {
+            if record.owner.run_id == j.run_id && record.owner.conversation_id == j.conversation_id
+            {
+                let card = record.card();
+                j.snippet = format_card_line(&card);
+                upsert_card(&mut j.cards, card);
+            }
+        }
         TurnProgress::Error(e) => {
             j.snippet = e.clone();
             j.error = Some(e);

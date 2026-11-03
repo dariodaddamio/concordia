@@ -31,7 +31,9 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
         setup(dir.path(), provider);
         let work = dir.path().join("workspace");
         let image = work.join("diagram.png");
-        std::fs::write(&image, b"\x89PNG\r\n\x1a\nsynthetic pixels").unwrap();
+        image::RgbaImage::from_pixel(12, 8, image::Rgba([200, 40, 90, 255]))
+            .save(&image)
+            .unwrap();
         std::fs::write(
             work.join("acp-fixture.json"),
             "{\"image\":true,\"permission\":true}",
@@ -51,6 +53,29 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
         s.submit("/attach diagram.png");
         s.until("attached image chip", |s| {
             s.screen().contains("Image 1: diagram.png")
+        });
+        let preview_draft = s.draft();
+        let screen = s.screen();
+        let (y, row) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, row)| row.contains("Image 1: diagram.png"))
+            .unwrap();
+        let x = row.find("Image 1: diagram.png").unwrap();
+        s.send(&format!(
+            "\x1b[<0;{};{}M\x1b[<0;{};{}m",
+            x + 1,
+            y + 1,
+            x + 1,
+            y + 1
+        ));
+        s.until("inline raster snapshot", |s| {
+            s.screen().contains("cell preview") && s.screen().contains("12 × 8")
+        });
+        s.paste("preview must keep draft empty");
+        s.send("\x1b");
+        s.until("raster close preserves composer", |s| {
+            !s.screen().contains("cell preview") && s.draft() == preview_draft
         });
         s.paste("Inspect image pixels");
         s.enter();

@@ -16,11 +16,13 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
 
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    # Cold native codec builds plus source-update and ConPTY fixtures need a bounded larger window.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 mod activity;
+mod artifacts;
 mod chatref;
 mod clipboard;
 mod compat_ui;
@@ -72,6 +73,7 @@ mod questions;
 mod queue;
 mod queue_controls;
 mod queue_focus;
+mod raster;
 mod recovery;
 mod recovery_ui;
 mod related_files;
@@ -243,6 +245,8 @@ enum PickerKind {
     Recovery,
     Files,
     FileActions,
+    Artifacts,
+    ArtifactDetail,
     Resume,
     Trust,
     Use,
@@ -317,6 +321,7 @@ pub struct App {
     related_files: related_files::State,
     questions: questions::State,
     images: images::State,
+    raster: raster::State,
     /// Sent prompts, oldest first. In memory only: prompts may contain pasted secrets.
     history: Vec<String>,
     /// Index into `history` while browsing with the arrow keys.
@@ -362,6 +367,7 @@ pub struct App {
     picker: Option<Picker>,
     token_reads: tokens::State,
     integrations: integrations::State,
+    artifacts: artifacts::State,
     landing: Option<landing::Landing>,
     update_preview: Option<UpdatePreview>,
     /// Wrapped rows of the `/update` screen and how many fit, as last drawn.
@@ -745,6 +751,7 @@ impl App {
             && self.picker.is_none()
             && self.workspace.focused.is_none()
             && self.queue.edit.is_none()
+            && !self.questions.focused
         {
             self.start_image_import(None, true);
             return;
@@ -766,7 +773,11 @@ impl App {
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        if self.raster.active() {
+            return;
+        }
         if worker_input::active(self) {
+            worker_input::paste(self, text);
             return;
         }
         if self.project_search.active() {
@@ -1059,6 +1070,15 @@ impl App {
 
     fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
+            TurnProgress::Artifact(record) => {
+                if self.native_owner.as_ref() == Some(&record.owner)
+                    && record.owner.conversation_id == self.deleg.d.conversation_id()
+                {
+                    self.commit_live_thinking();
+                    self.commit_live_text();
+                    self.push_card(record.card());
+                }
+            }
             TurnProgress::Interaction(request) => {
                 if self.cancel_requested
                     || !self.busy
@@ -1564,6 +1584,7 @@ impl App {
     fn on_tick(&mut self) {
         self.questions.refresh_native();
         self.poll_images();
+        self.raster.poll();
         self.tick_count = self.tick_count.wrapping_add(1);
         if self.busy {
             self.pulse_on = self.tick_count.is_multiple_of(2);
@@ -1622,6 +1643,7 @@ impl App {
         landing::poll(self);
         tokens::poll(self);
         integrations::poll(self);
+        artifacts::poll(self);
         self.update_progress();
         self.poll_compat();
         self.poll_proposals();
@@ -2388,6 +2410,10 @@ impl App {
         }
         match kind {
             PickerKind::Files => {
+                if id == "artifact-catalog" {
+                    artifacts::open(self);
+                    return;
+                }
                 if let Some(index) = id
                     .strip_prefix("file:")
                     .and_then(|s| s.parse::<usize>().ok())
@@ -2396,6 +2422,8 @@ impl App {
                 }
             }
             PickerKind::FileActions => self.choose_file_action(&id),
+            PickerKind::Artifacts => artifacts::choose(self, &id),
+            PickerKind::ArtifactDetail => {}
             PickerKind::Agents => {
                 if let Some(index) = id
                     .strip_prefix("native-agent:")
@@ -3451,6 +3479,7 @@ impl App {
             project_search: workspace_search::State::default(),
             file_action_target: None,
             images: images::State::default(),
+            raster: raster::State::default(),
             history: Vec::new(),
             hist_pos: None,
             hist_draft: String::new(),
@@ -3488,6 +3517,7 @@ impl App {
             picker: None,
             token_reads: tokens::State::default(),
             integrations: integrations::State::default(),
+            artifacts: artifacts::State::default(),
             landing: None,
             update_preview: None,
             update_rows: 0,
@@ -4193,6 +4223,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         KeyEventKind::Repeat if !matches!(key.code, KeyCode::Backspace) => return false,
         _ => {}
     }
+    if raster::key(app, &key) {
+        return false;
+    }
     if worker_input::key(app, &key) {
         return false;
     }
@@ -4286,6 +4319,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     if integrations::handle_key(app, key) {
         return false;
     }
+    if artifacts::key(app, key) {
+        return false;
+    }
     if let Some(picker) = app.picker.as_mut() {
         if matches!(
             picker.kind,
@@ -4293,6 +4329,7 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                 | PickerKind::Tokens
                 | PickerKind::Related
                 | PickerKind::Integrations
+                | PickerKind::ArtifactDetail
         ) {
             let visible = app.update_view.max(1);
             let last = app.update_rows.saturating_sub(visible);
@@ -4739,6 +4776,9 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if app.raster.active() && !worker_input::active(app) {
+        return;
+    }
     if worker_input::active(app) {
         if !modal::mouse(app, &m) {
             worker_input::mouse(app, &m);
@@ -4829,6 +4869,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                     | PickerKind::Tokens
                     | PickerKind::Related
                     | PickerKind::Integrations
+                    | PickerKind::ArtifactDetail
             )
         }) {
             match m.kind {
@@ -5172,6 +5213,10 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
     if worker_input::active(app) {
         app.areas = Areas::default();
         worker_input::draw(f, app);
+    }
+    if app.raster.active() && !worker_input::active(app) {
+        app.areas = Areas::default();
+        raster::draw(f, app);
     }
     // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
     for cell in &mut f.buffer_mut().content {
@@ -6031,7 +6076,11 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     };
     if matches!(
         picker.kind,
-        PickerKind::Update | PickerKind::Tokens | PickerKind::Related | PickerKind::Integrations
+        PickerKind::Update
+            | PickerKind::Tokens
+            | PickerKind::Related
+            | PickerKind::Integrations
+            | PickerKind::ArtifactDetail
     ) {
         let is_page = picker.kind == PickerKind::Update;
         let width = if is_page {
