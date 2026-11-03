@@ -322,6 +322,11 @@ pub struct Job {
 }
 
 impl Job {
+    pub fn attempt_accounts(&self) -> impl Iterator<Item = &str> {
+        self.attempt_records
+            .iter()
+            .map(|attempt| attempt.account.as_str())
+    }
     pub fn label(&self) -> String {
         display_account_name(self.provider, &self.account)
     }

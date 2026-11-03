@@ -11,6 +11,11 @@ creation does not change the implementation status recorded here.
 
 ## Closed in this build
 
+- Opt-in Codex app-server execution now connects native command/file decisions and bounded
+  questions to foreground/worker review with exact thread/turn ownership and resolution handling.
+  [Scope and limitations](quality/codex-native-input.md). CLI 0.166.0 is the matched protocol;
+  Claude bridging, free-form native input and live parity remain separate.
+
 - Worker-owned native input, opt-in Cursor ACP text and explicit native plan decisions now use
   exact live request ownership. Edit cards, file detection, activity icons, agent inspection,
   queue return and quota/credit cache fixes are implemented in the current candidate.

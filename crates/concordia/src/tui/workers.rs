@@ -784,6 +784,9 @@ impl App {
         for id in finished {
             if let Some(job) = self.deleg.d.get(id) {
                 self.usage_fetcher.invalidate(&job.account);
+                for account in job.attempt_accounts() {
+                    self.usage_fetcher.invalidate(account);
+                }
             }
             if !self.deleg.owns(id) {
                 self.flash(format!(

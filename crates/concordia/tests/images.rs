@@ -157,4 +157,138 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             }
         }
     }
+    env.set("FAKE_PROVIDER_NATIVE_CODEX", "1");
+    for fixture in [
+        json!({}),
+        json!({"question":true}),
+        json!({"resolved":true}),
+        json!({"wrong_thread":true}),
+        json!({"wrong_turn":true}),
+        json!({"closed":true}),
+    ] {
+        use concordia::provider::interaction::InteractionOwner;
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(
+            work.path().join("appserver-fixture.json"),
+            fixture.to_string(),
+        )
+        .unwrap();
+        let owner = InteractionOwner {
+            conversation_id: uuid::Uuid::new_v4().to_string(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            workspace: work.path().to_owned(),
+            execution_cwd: work.path().to_owned(),
+            provider: ProviderKind::Codex,
+            account: "fixture-codex".into(),
+            home: Some(root.to_owned()),
+        };
+        let owner_for_answers = owner
+            .validate_for(ProviderKind::Codex, work.path(), Some(root))
+            .unwrap();
+        let resolved = fixture["resolved"] == true;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let answers = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            while let Some(event) = rx.recv().await {
+                if let TurnProgress::Interaction(request) = event {
+                    assert_eq!(
+                        request.envelope().native_turn_id.as_deref(),
+                        Some("native-turn")
+                    );
+                    if !resolved {
+                        let choice = if request.method.contains("requestUserInput") {
+                            0
+                        } else {
+                            2
+                        };
+                        request
+                            .respond_owned(
+                                &owner_for_answers,
+                                request.single_choices(&[choice]).unwrap(),
+                            )
+                            .unwrap();
+                    }
+                    requests.push(request);
+                }
+            }
+            if resolved {
+                assert!(requests.iter().all(|request| request.was_resolved()
+                    && !request.is_active()
+                    && !request.was_answered()));
+            }
+            requests.len()
+        });
+        let request = ProviderTurnRequest {
+            images: &images,
+            provider: ProviderKind::Codex,
+            prompt: "Inspect native fixture",
+            cwd: work.path(),
+            home_path: Some(root),
+            model: Some("fixture-model"),
+            native_session_id: Some("exact-native-thread"),
+            trust: TrustMode::Workspace,
+            context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
+        };
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            provider::turn::run_provider_turn_with_transport(
+                &request,
+                owner,
+                concordia::native_input::Mode::CodexAppServer,
+                None,
+                Some(tx),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let offered = answers.await.unwrap();
+        let expected_failed = fixture["wrong_thread"] == true || fixture["closed"] == true;
+        assert_eq!(out.failed, expected_failed, "{fixture}: {out:?}");
+        if !expected_failed {
+            assert_eq!(out.text, "Native approval handled");
+        }
+        let calls = std::fs::read_to_string(work.path().join("appserver-calls.jsonl")).unwrap();
+        let values: Vec<Value> = calls
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        if fixture["wrong_thread"] == true {
+            assert!(!calls.contains("turn/start"));
+            assert_eq!(offered, 0);
+            continue;
+        }
+        let turn = values
+            .iter()
+            .find(|value| value["method"] == "turn/start")
+            .unwrap();
+        assert_eq!(turn["params"]["threadId"], "exact-native-thread");
+        assert_eq!(turn["params"]["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(
+            turn["params"]["input"][1]["url"],
+            format!("data:image/png;base64,{}", image.data().unwrap())
+        );
+        if fixture["wrong_turn"] == true {
+            assert_eq!(offered, 0);
+            assert!(values
+                .iter()
+                .any(|value| value["id"] == 100 && value.get("error").is_some()));
+        } else if fixture["resolved"] == true {
+            assert!(!values.iter().any(|value| value["id"] == 100));
+        } else if fixture["closed"] != true {
+            assert_eq!(offered, 1);
+            let answer = values.iter().find(|value| value["id"] == 100).unwrap();
+            if fixture["question"] == true {
+                assert_eq!(
+                    answer["result"],
+                    json!({"answers":{"route":{"answers":["Direct"]}}})
+                );
+            } else {
+                assert_eq!(answer["result"], json!({"decision":"decline"}));
+            }
+        }
+    }
 }

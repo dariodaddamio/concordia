@@ -1,5 +1,9 @@
 # Changelog
 
+- Opt-in Codex app-server text/image turns preserve exact thread/turn ownership, native approval
+  scope and offered question answers. Pending choices queue and expire on native resolution;
+  unsupported protocols stop visibly without fallback. Native subagents use the retained inspector.
+
 - Managed worktrees now support separately reviewed native merge, HEAD cherry-pick, retirement
   and branch deletion. Receipts bind exact heads, paths, conflicts, worker references and leases;
   changed state, dirty files, unique commits or uncertain execution preserve the workspace.

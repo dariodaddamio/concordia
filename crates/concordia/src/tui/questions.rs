@@ -21,6 +21,7 @@ pub(super) struct State {
     targets: Vec<(Rect, usize)>,
     pressed: Option<usize>,
     native: Option<crate::provider::turn::NativeRequest>,
+    pending_native: std::collections::VecDeque<crate::provider::turn::NativeRequest>,
     native_choices: Vec<usize>,
     note: String,
 }
@@ -28,7 +29,19 @@ impl State {
     pub fn waiting(&self) -> bool {
         !self.questions.is_empty()
     }
+    pub fn refresh_native(&mut self) {
+        if self
+            .native
+            .as_ref()
+            .is_some_and(|request| !request.is_active())
+        {
+            self.advance_native();
+        }
+    }
     pub fn clear(&mut self) {
+        for request in self.pending_native.drain(..) {
+            request.invalidate();
+        }
         if let Some(request) = self.native.take() {
             request.invalidate();
         }
@@ -42,6 +55,17 @@ impl State {
     pub fn cancel_native(&mut self) {
         if self.native.is_some() {
             self.clear();
+        }
+    }
+    fn advance_native(&mut self) {
+        let mut pending = std::mem::take(&mut self.pending_native);
+        self.clear();
+        while let Some(request) = pending.pop_front() {
+            if request.is_active() {
+                self.offer_native(request, false);
+                self.pending_native = pending;
+                break;
+            }
         }
     }
     pub fn offer(&mut self, text: &str) {
@@ -84,13 +108,26 @@ impl State {
             .map_or(0, |q| q.options.len() + usize::from(self.native.is_none()))
     }
     pub fn offer_native(&mut self, request: crate::provider::turn::NativeRequest, focus: bool) {
+        self.refresh_native();
+        if self
+            .native
+            .as_ref()
+            .is_some_and(|current| current.is_active())
+        {
+            if self.pending_native.len() < 7 {
+                self.pending_native.push_back(request);
+            } else {
+                request.cancel();
+            }
+            return;
+        }
         self.clear();
         self.questions = native_questions(&request)
             .into_iter()
             .map(|(prompt, options)| Question { prompt, options })
             .collect();
         if self.questions.is_empty() || self.questions.iter().any(|q| q.options.is_empty()) {
-            request.respond(serde_json::json!({"outcome":{"outcome":"cancelled"}}));
+            request.cancel();
             self.clear();
             return;
         }
@@ -108,6 +145,7 @@ pub(super) fn native_questions(
     use crate::provider::interaction::{DecisionScope, NativeInteraction};
     match request.kind() {
         NativeInteraction::Permission { title, options }
+        | NativeInteraction::CodexPermission { title, options }
         | NativeInteraction::PlanApproval { title, options } => vec![(
             title.clone(),
             options
@@ -118,6 +156,7 @@ pub(super) fn native_questions(
                         option.label,
                         match option.scope {
                             DecisionScope::Once => "once",
+                            DecisionScope::Session => "this session",
                             DecisionScope::Always => "always",
                             DecisionScope::Unknown => "scope unknown",
                         }
@@ -125,19 +164,21 @@ pub(super) fn native_questions(
                 })
                 .collect(),
         )],
-        NativeInteraction::Questions(questions) => questions
-            .iter()
-            .map(|question| {
-                (
-                    question.prompt.clone(),
-                    question
-                        .options
-                        .iter()
-                        .map(|option| option.label.clone())
-                        .collect(),
-                )
-            })
-            .collect(),
+        NativeInteraction::Questions(questions) | NativeInteraction::CodexQuestions(questions) => {
+            questions
+                .iter()
+                .map(|question| {
+                    (
+                        question.prompt.clone(),
+                        question
+                            .options
+                            .iter()
+                            .map(|option| option.label.clone())
+                            .collect(),
+                    )
+                })
+                .collect()
+        }
     }
 }
 fn option(line: &str) -> Option<String> {
@@ -327,7 +368,7 @@ fn choose(app: &mut App, index: usize) {
             native.invalidate();
             Err("Native request is no longer active".into())
         };
-        s.clear();
+        s.advance_native();
         match outcome {
             Ok(label) if native.method == "cursor/create_plan" => {
                 let id = format!(
@@ -388,8 +429,8 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     match key.code {
         KeyCode::Esc => {
             if let Some(native) = app.questions.native.take() {
-                native.respond(serde_json::json!({"outcome":{"outcome":"cancelled"}}));
-                app.questions.clear();
+                native.cancel();
+                app.questions.advance_native();
             } else {
                 app.questions.focused = false;
             }
@@ -773,6 +814,45 @@ mod tests {
             let area = carve(&mut transcript, &mut app);
             assert_eq!(area.height + transcript.height, height);
         }
+        let mut connection = crate::provider::interaction::InteractionConnection::new(
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        connection.initialized_codex("0.166.0");
+        let params = serde_json::json!({"threadId":"fixture-thread","turnId":"fixture-turn","itemId":"fixture-item","availableDecisions":["accept","decline","cancel"]});
+        let (first, mut first_rx) = connection
+            .request(
+                "fixture-thread",
+                serde_json::json!(1),
+                "item/commandExecution/requestApproval".into(),
+                params.clone(),
+            )
+            .unwrap();
+        let (second, mut second_rx) = connection
+            .request(
+                "fixture-thread",
+                serde_json::json!(2),
+                "item/commandExecution/requestApproval".into(),
+                params,
+            )
+            .unwrap();
+        app.questions.offer_native(first.clone(), false);
+        app.questions.offer_native(second.clone(), false);
+        assert_eq!(
+            app.questions.native.as_ref().unwrap().envelope().request_id,
+            serde_json::json!(1)
+        );
+        assert_eq!(app.questions.pending_native.len(), 1);
+        assert!(first_rx.try_recv().is_err() && second_rx.try_recv().is_err());
+        first.resolve_native();
+        app.questions.refresh_native();
+        assert_eq!(
+            app.questions.native.as_ref().unwrap().envelope().request_id,
+            serde_json::json!(2)
+        );
+        assert!(!app.questions.focused && second.is_active());
+        app.questions.clear();
+        assert!(!second.is_active());
     }
     #[test]
     fn choices_require_a_question_and_skip_code_and_ordinary_steps() {

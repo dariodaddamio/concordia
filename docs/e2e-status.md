@@ -1,5 +1,14 @@
 # Everyday E2E status (MVP A)
 
+## Managed workspace lifecycle, 2026-11-03f
+
+Source `d52aadb`, merged as `ebfb1c5`, passes all 983 enabled checks, all 48 installed terminal
+journeys (384.02 seconds), everyday/release smoke, all-target Clippy and OSS gates. CI
+`41608679832` passes both jobs. Build f is normally installed: 19,217,408 bytes, SHA-256
+`D83D713BD23CED9AB18EDADB3BEFA769D05739B042EEAAB3B942817A5E2034E7`.
+Defender scan with intelligence `1.463.99.0` passes for that exact artifact. This unsigned local
+build is not a signed release claim. [Lifecycle scope](quality/managed-workspaces.md).
+
 ## Native worker input and activity, 2026-11-03e
 
 Production source `24e6d9d` passes all 983 enabled checks, everyday/release smoke, all-target
