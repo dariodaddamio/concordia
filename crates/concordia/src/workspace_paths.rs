@@ -444,6 +444,350 @@ mod tests {
             2,
             "reconciliation never creates another worktree"
         );
+        use crate::managed_workspaces::lifecycle::{self, Action, State};
+        let current_scope = Request::managed(&managed_state, &repository, &record.id, &[]).unwrap();
+        let live_run = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            workspaces::reserve(
+                &managed_state,
+                &current_scope,
+                &live_run,
+                &conversation,
+                &attempt
+            )
+            .unwrap(),
+            Admission::Reserved
+        );
+        let active = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(active.state, State::Active);
+        assert!(lifecycle::execute(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &active.receipt,
+            &cancel
+        )
+        .is_err());
+        workspaces::finish(&managed_state, &live_run, &attempt, true).unwrap();
+        let stale = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &cancel,
+        )
+        .unwrap();
+        std::fs::write(record.execution.join("unsaved.md"), "preserve this edit").unwrap();
+        assert!(lifecycle::execute(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &stale.receipt,
+            &cancel
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read_to_string(record.execution.join("unsaved.md")).unwrap(),
+            "preserve this edit"
+        );
+        std::fs::remove_file(record.execution.join("unsaved.md")).unwrap();
+        // A crashed native lifecycle action retains its owner scope until explicit stopped-process acknowledgement.
+        let uncertain_run = uuid::Uuid::new_v4().to_string();
+        let owner_scope = Request::shared(&repository, &[]).unwrap();
+        assert_eq!(
+            workspaces::reserve(
+                &managed_state,
+                &owner_scope,
+                &uncertain_run,
+                &conversation,
+                &attempt
+            )
+            .unwrap(),
+            Admission::Reserved
+        );
+        workspaces::finish(&managed_state, &uncertain_run, &attempt, false).unwrap();
+        let mut registry = crate::managed_workspaces::load(&managed_state).unwrap();
+        registry.records[0].phase = crate::managed_workspaces::Phase::Retained;
+        registry.records[0].operation = Some(lifecycle::Operation {
+            action: Action::Integrate,
+            owner_head: record.base.clone(),
+            worker_head: record.base.clone(),
+            expected_tree: None,
+            receipt: "ab".repeat(32),
+            finished: false,
+            runs: vec![uncertain_run.clone()],
+            conversation: conversation.clone(),
+            attempt: attempt.clone(),
+        });
+        std::fs::write(
+            managed_state.join("managed-workspaces.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        assert!(crate::managed_workspaces::reconcile(
+            &managed_state,
+            &repository,
+            &record.id,
+            &cancel
+        )
+        .is_err());
+        lifecycle::stopped(&managed_state, &repository, &record.id).unwrap();
+        crate::managed_workspaces::reconcile(&managed_state, &repository, &record.id, &cancel)
+            .unwrap();
+        assert_eq!(git(&repository, &["rev-parse", "HEAD"]).trim(), record.base);
+        let current_scope = Request::managed(&managed_state, &repository, &record.id, &[]).unwrap();
+        let mut delegates = crate::delegate::Delegates::default();
+        delegates
+            .attach_recovery(
+                &managed_state.join("pane-recovery/fixture/pane/worker-runs"),
+                &repository,
+                &managed_state,
+            )
+            .unwrap();
+        let queued = delegates.push_test_job(
+            "fixture",
+            crate::store::ProviderKind::Codex,
+            crate::delegate::WorkerState::Queued,
+            "queued metadata only",
+            0,
+        );
+        delegates.jobs.last_mut().unwrap().workspace = Some(current_scope.clone());
+        delegates.mark_collected(&[]);
+        assert!(delegates.recovery_error().is_none());
+        let pending = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &cancel,
+        )
+        .unwrap();
+        assert!(!pending.references.is_empty());
+        assert!(pending
+            .blockers
+            .iter()
+            .any(|reason| reason.contains("Queued")));
+        delegates.cancel_all(std::time::Instant::now());
+        delegates.mark_collected(&[queued]);
+        drop(delegates);
+        git(&repository, &["config", "user.name", "Fixture"]);
+        git(
+            &repository,
+            &["config", "user.email", "fixture@example.invalid"],
+        );
+        git(&repository, &["config", "commit.gpgSign", "false"]);
+        std::fs::write(repository.join(".git/info/exclude"), "build/\n").unwrap();
+        for directory in [repository.join("build"), record.execution.join("build")] {
+            std::fs::create_dir(&directory).unwrap();
+            std::fs::write(directory.join("retain.log"), "ignored local artifact").unwrap();
+        }
+        std::fs::write(record.execution.join("worker.md"), "worker result\n").unwrap();
+        git(&record.execution, &["add", "--", "worker.md"]);
+        git(
+            &record.execution,
+            &["commit", "-m", "synthetic worker result"],
+        );
+        let unique = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(unique.unique_commits, 1);
+        assert!(!unique.blockers.is_empty());
+        let before_owner_change = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Integrate,
+            &cancel,
+        )
+        .unwrap();
+        std::fs::write(repository.join("owner.md"), "independent owner result\n").unwrap();
+        git(&repository, &["add", "--", "owner.md"]);
+        git(&repository, &["commit", "-m", "synthetic owner result"]);
+        assert!(lifecycle::execute(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Integrate,
+            &before_owner_change.receipt,
+            &cancel
+        )
+        .is_err());
+        let pick = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::CherryPick,
+            &cancel,
+        )
+        .unwrap();
+        assert!(pick.blockers.is_empty(), "{pick:?}");
+        lifecycle::execute(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::CherryPick,
+            &pick.receipt,
+            &cancel,
+        )
+        .unwrap();
+        assert!(repository.join("worker.md").exists());
+        assert!(repository.join("owner.md").exists());
+        let merge = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Integrate,
+            &cancel,
+        )
+        .unwrap();
+        assert!(merge.blockers.is_empty(), "{merge:?}");
+        lifecycle::execute(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Integrate,
+            &merge.receipt,
+            &cancel,
+        )
+        .unwrap();
+        let ignored = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &cancel,
+        )
+        .unwrap();
+        assert!(
+            !ignored.blockers.is_empty(),
+            "ignored worker artifacts must prevent removal"
+        );
+        assert!(lifecycle::execute(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &ignored.receipt,
+            &cancel
+        )
+        .is_err());
+        std::fs::remove_file(record.execution.join("build/retain.log")).unwrap();
+        std::fs::remove_dir(record.execution.join("build")).unwrap();
+        let retire = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(retire.state, State::Retirable);
+        lifecycle::execute(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::Retire,
+            &retire.receipt,
+            &cancel,
+        )
+        .unwrap();
+        assert!(!record.execution.exists());
+        assert!(
+            repository.join("build/retain.log").exists(),
+            "owner's ignored artifacts stay in place"
+        );
+        assert!(
+            !git(&repository, &["branch", "--list", &record.branch]).is_empty(),
+            "retirement must retain the branch"
+        );
+        let branch = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::DeleteBranch,
+            &cancel,
+        )
+        .unwrap();
+        lifecycle::execute(
+            &managed_state,
+            &repository,
+            &record.id,
+            Action::DeleteBranch,
+            &branch.receipt,
+            &cancel,
+        )
+        .unwrap();
+        assert!(git(&repository, &["branch", "--list", &record.branch]).is_empty());
+        assert!(
+            workspaces::load(&managed_state)
+                .unwrap()
+                .reservations
+                .iter()
+                .all(|claim| claim.phase == workspaces::Phase::Released),
+            "confirmed lifecycle exits must release durable claims"
+        );
+        assert_eq!(
+            crate::managed_workspaces::load(&managed_state)
+                .unwrap()
+                .records[0]
+                .phase,
+            crate::managed_workspaces::Phase::Retired
+        );
+        let conflict =
+            crate::managed_workspaces::create(&managed_state, &repository, "HEAD", &cancel)
+                .unwrap();
+        std::fs::write(
+            conflict.execution.join("worker.md"),
+            "worker conflicting edit\n",
+        )
+        .unwrap();
+        git(&conflict.execution, &["add", "--", "worker.md"]);
+        git(
+            &conflict.execution,
+            &["commit", "-m", "synthetic conflicting worker"],
+        );
+        std::fs::write(repository.join("worker.md"), "owner conflicting edit\n").unwrap();
+        git(&repository, &["add", "--", "worker.md"]);
+        git(
+            &repository,
+            &["commit", "-m", "synthetic conflicting owner"],
+        );
+        let conflict = lifecycle::preview(
+            &managed_state,
+            &repository,
+            &conflict.id,
+            Action::Integrate,
+            &cancel,
+        )
+        .unwrap();
+        assert!(!conflict.conflicts.is_empty());
+        assert!(lifecycle::execute(
+            &managed_state,
+            &repository,
+            &conflict.record.id,
+            Action::Integrate,
+            &conflict.receipt,
+            &cancel
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read_to_string(repository.join("worker.md")).unwrap(),
+            "owner conflicting edit\n"
+        );
         std::fs::write(repository.join("unsaved.txt"), "retain this local edit").unwrap();
         assert!(
             crate::managed_workspaces::create(&managed_state, &repository, "HEAD", &cancel)
@@ -463,7 +807,7 @@ mod tests {
                 .unwrap()
                 .records
                 .len(),
-            1
+            2
         );
     }
 }
