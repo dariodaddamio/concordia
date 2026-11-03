@@ -1,5 +1,27 @@
 # Everyday E2E status (MVP A)
 
+## Related-chat groups, 2026-11-03d
+
+Production source `858b48f` (unchanged production tree after main merge `69248d1`) passes all
+983 enabled checks and portable everyday smoke in an isolated Cargo target directory. All
+48 installed ConPTY journeys pass in 313.21 seconds. An initial build attempt exhausted host
+disk space; package-scoped generated-cache cleanup and a fresh run without incremental
+compilation resolved it. The failed attempt is not counted as successful evidence.
+
+Release/portable build d: 18,916,864 bytes; SHA-256
+`91D861BD911EB32EB923800D18B7A74C36FAE06C0448FAB58273A7B5A7A11DA4`.
+Related membership remains explicit; unavailable native members remain visible. Synthetic/fake
+providers only. [Scope and limits](quality/related-chat-groups.md).
+
+## Source-update artifacts, 2026-11-03c
+
+Source `7b97d63` passes all 983 enabled checks through everyday smoke, all-target Clippy,
+release smoke, OSS gates (329 tracked text files) and GitHub CI, including its 48 terminal journeys.
+The real source-update/install suite passes all five checks with exact rebuilt-version validation.
+PR 32 was merged and verified build c installed: 18,804,224 bytes; SHA-256
+`FF76B9A4B9F6CE70058BCECD5F19D3FAE90AB00D049E33B709B24B1AD98EB2EC`.
+[Artifact selection and staging](quality/source-update-artifacts.md) describe the corrected behavior.
+
 ## Corrected goal ranking, 2026-11-03a
 
 Source `bde80f8` fixes canonical goal-link matching when the explicitly selected workspace arrives
