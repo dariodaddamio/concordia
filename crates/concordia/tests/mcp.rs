@@ -90,7 +90,8 @@ fn a_client_can_initialize_list_tools_and_call_them() {
             "usage",
             "memory",
             "goals",
-            "delegate"
+            "delegate",
+            "integrations"
         ]
     );
 
