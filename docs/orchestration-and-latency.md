@@ -50,7 +50,9 @@ This is a bounded supervisor/worker loop. Pane-owned worker ledgers, paused rest
 opt-in bounded quota failover are implemented; see [recovery controls and limits](delegation.md).
 Approved shared-workspace task dependencies are implemented with exact-run receipts and verified
 result pointers; see `/delegate after` and `/delegate graph` in the recovery controls. File ownership
-enforcement/worktree isolation and consolidated worker usage/cost accounting remain open.
+enforcement/worktree isolation and external native-session usage import remain open. New main and
+worker attempts now share [attributable accounting](quality/worker-accounting.md), with bounded
+background reads, reported-counter/cost coverage and idempotent recovery.
 Background workers cannot yet answer native interactive requests through a dedicated UI.
 A stronger planner plus cheaper workers can improve economics when tasks are independent and
 reviews stay short. Extra worker context, reviews and retries can also increase total usage;

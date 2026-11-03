@@ -57,6 +57,10 @@ mod tests {
         job.spec.prefix = Some("conversation body must not persist".into());
         job.text = "native result must not persist".into();
         job.session_id = Some("exact-native-session".into());
+        let mut attempt = Attempt::new("synthetic", ProviderKind::Codex, None, None);
+        attempt.started_at = Some(accounting::now());
+        attempt.usage.input = Some(123);
+        job.attempt_records.push(attempt);
         let run = job.run_id.clone();
         d.persist_recovery();
         let bytes = std::fs::read_to_string(recovery.join("workers.json")).unwrap();
@@ -75,6 +79,15 @@ mod tests {
         assert_eq!(restored.get(id).unwrap().state, WorkerState::Paused);
         assert!(!restored.any_active());
         assert!(restored.poll(Instant::now()).is_empty());
+        let usage = crate::token_log::load(dir.path());
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].new_input, 123);
+        assert_eq!(
+            usage[0].attribution.as_ref().unwrap().outcome,
+            "interrupted"
+        );
+        assert!(!usage[0].attribution.as_ref().unwrap().output_known);
+        assert_eq!(crate::token_log::totals(&usage).incomplete_events, 1);
         assert!(restored
             .restore_result(id, "partial output".into())
             .is_err());
@@ -89,6 +102,7 @@ mod tests {
             .attach_recovery(&recovery, &workspace, dir.path())
             .unwrap();
         assert!(restored.get(id).unwrap().collected);
+        assert_eq!(crate::token_log::load(dir.path()).len(), 1);
         drop(restored);
         assert!(Delegates::default()
             .attach_recovery(&recovery, dir.path(), dir.path())
@@ -239,7 +253,7 @@ mod tests {
         drop(restored);
         let mut corrupt: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(corrupt["version"], 2);
+        assert_eq!(corrupt["version"], 3);
         corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
         let bytes = serde_json::to_vec(&corrupt).unwrap();
         std::fs::write(&path, &bytes).unwrap();
@@ -333,7 +347,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1 | 2)
+            if !matches!(ledger.version, 1..=3)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -343,7 +357,7 @@ impl Delegates {
             }
             owner = ledger.owner;
             conversation = ledger.conversation;
-            if ledger.version == 2 {
+            if ledger.version >= 2 {
                 graph = ledger
                     .schedule
                     .ok_or("worker dependency graph missing; original kept")?;
@@ -366,6 +380,7 @@ impl Delegates {
                     || saved.task.len() > 32768
                     || saved.attempts.len() > 4
                     || saved.attempt_records.len() > 4
+                    || saved.attempt_records.iter().any(|attempt| !attempt.valid())
                     || std::fs::canonicalize(&saved.spec.cwd).ok().as_ref() != Some(&workspace)
                 {
                     return Err(
@@ -412,6 +427,9 @@ impl Delegates {
             _lock: lock,
             last: Vec::new(),
         });
+        self.reconcile_interrupted_accounting();
+        self.save_recovery()?;
+        self.flush_accounting();
         self.save_recovery()?;
         Ok(self.jobs.len())
     }
@@ -460,7 +478,7 @@ impl Delegates {
             })
             .collect();
         let bytes = serde_json::to_vec(&Ledger {
-            version: 2,
+            version: 3,
             owner: recovery.owner.clone(),
             workspace: recovery.workspace.clone(),
             conversation: self.conversation_id.clone(),
@@ -670,14 +688,12 @@ impl Delegates {
         };
         if let Some(job) = self.get_mut(id) {
             job.attempts.push(target.account.clone());
-            job.attempt_records.push(Attempt {
-                account: target.account.clone(),
-                provider: target.provider,
-                home: target.home_path.clone(),
-                model: model.clone(),
-                native_session: None,
-                source: None,
-            });
+            job.attempt_records.push(Attempt::new(
+                &target.account,
+                target.provider,
+                target.home_path.clone(),
+                model.clone(),
+            ));
             job.account = target.account;
             job.provider = target.provider;
             job.model = model.clone();

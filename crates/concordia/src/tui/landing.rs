@@ -190,6 +190,10 @@ pub struct Landing {
     tokens_24h: u64,
     tokens_all_time: u64,
     tokens_checked: Instant,
+    tokens_generation: Option<u64>,
+    tokens_ready: bool,
+    tokens_partial: bool,
+    tokens_error: Option<String>,
 }
 
 impl Landing {
@@ -286,7 +290,6 @@ pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: O
             Vec::new()
         }
     };
-    let (tokens_24h, tokens_all_time) = super::tokens::landing_totals(&app.state_root);
     let landing = Landing {
         groups,
         goals,
@@ -303,9 +306,13 @@ pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: O
         chats_area: Rect::default(),
         goals_area: Rect::default(),
         last_click: None,
-        tokens_24h,
-        tokens_all_time,
+        tokens_24h: 0,
+        tokens_all_time: 0,
         tokens_checked: Instant::now(),
+        tokens_generation: None,
+        tokens_ready: false,
+        tokens_partial: false,
+        tokens_error: None,
     };
     app.footer_left = landing.hint().into();
     app.landing = Some(landing);
@@ -353,11 +360,6 @@ pub(super) fn poll(app: &mut App) {
     let Some(landing) = app.landing.as_mut() else {
         return;
     };
-    if landing.tokens_checked.elapsed().as_secs() >= 60 {
-        (landing.tokens_24h, landing.tokens_all_time) =
-            super::tokens::landing_totals(&app.state_root);
-        landing.tokens_checked = Instant::now();
-    }
     let Some(rx) = landing.work_rx.as_ref() else {
         return;
     };
@@ -654,6 +656,52 @@ fn goal_rows(landing: &Landing) -> usize {
     }
 }
 
+pub(super) fn usage_generation(app: &App) -> Option<u64> {
+    app.landing
+        .as_ref()
+        .and_then(|landing| landing.tokens_generation)
+}
+
+pub(super) fn needs_usage(app: &App) -> bool {
+    app.landing.as_ref().is_some_and(|landing| {
+        landing.tokens_generation.is_none()
+            && (!landing.tokens_ready || landing.tokens_checked.elapsed().as_secs() >= 60)
+    })
+}
+
+pub(super) fn begin_usage(app: &mut App, generation: u64) {
+    if let Some(landing) = app.landing.as_mut() {
+        landing.tokens_generation = Some(generation);
+        landing.tokens_checked = Instant::now();
+    }
+}
+
+pub(super) fn apply_usage(
+    app: &mut App,
+    generation: u64,
+    result: Result<(u64, u64, bool), String>,
+) {
+    let Some(landing) = app
+        .landing
+        .as_mut()
+        .filter(|landing| landing.tokens_generation == Some(generation))
+    else {
+        return;
+    };
+    landing.tokens_generation = None;
+    landing.tokens_ready = true;
+    landing.tokens_checked = Instant::now();
+    match result {
+        Ok((day, total, partial)) => {
+            landing.tokens_24h = day;
+            landing.tokens_all_time = total;
+            landing.tokens_partial = partial;
+            landing.tokens_error = None;
+        }
+        Err(error) => landing.tokens_error = Some(error),
+    }
+}
+
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     if let Some(landing) = app.landing.as_ref() {
         app.footer_left = if landing.mode == Mode::Browse
@@ -722,18 +770,31 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             .borders(Borders::ALL)
             .title(" chats ")
             .border_style(border(landing.pane == Pane::Chats));
-        if landing.tokens_24h > 0 || landing.tokens_all_time > 0 {
-            block = block.title_bottom(
-                Line::styled(
-                    format!(
-                        " {} all time / {} tokens in 24 hours ",
-                        super::token_line::compact(landing.tokens_all_time),
-                        super::token_line::compact(landing.tokens_24h)
-                    ),
-                    dim,
-                )
-                .right_aligned(),
-            );
+        let usage = if !landing.tokens_ready {
+            Some(" reading usage… ".into())
+        } else if landing.tokens_error.is_some() {
+            Some(" recorded usage unavailable ".into())
+        } else if landing.tokens_24h > 0 || landing.tokens_all_time > 0 || landing.tokens_partial {
+            Some(format!(
+                " {} {} / {} tokens in 24 hours{} ",
+                super::token_line::compact(landing.tokens_all_time),
+                if landing.tokens_partial {
+                    "recorded"
+                } else {
+                    "all time"
+                },
+                super::token_line::compact(landing.tokens_24h),
+                if landing.tokens_partial {
+                    " · partial"
+                } else {
+                    ""
+                }
+            ))
+        } else {
+            None
+        };
+        if let Some(usage) = usage {
+            block = block.title_bottom(Line::styled(usage, dim).right_aligned());
         }
         let inner = block.inner(panes[0]);
         f.render_widget(block, panes[0]);

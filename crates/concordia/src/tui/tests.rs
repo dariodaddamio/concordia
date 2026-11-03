@@ -2608,6 +2608,7 @@ fn finished_reply(h: &mut Harness, usage: Option<TurnUsage>) {
     h.app
         .apply_progress(TurnProgress::Text("The answer.".into()));
     if let Some(u) = usage {
+        h.app.apply_progress(TurnProgress::Usage(u.clone()));
         h.app.apply_progress(TurnProgress::Usage(u));
     }
     h.app.busy = false;
@@ -3254,6 +3255,7 @@ fn log_turn(h: &Harness, provider: &str, parts: (u64, u64, u64)) {
             cached_input: parts.1,
             output: parts.2,
             cost_usd: None,
+            attribution: None,
         },
     )
     .unwrap();
@@ -3265,7 +3267,15 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     log_turn(&h, "cursor", (12_000, 36_000, 200));
     log_turn(&h, "codex", (500, 1_500, 100));
     tokens::open(&mut h.app);
-    h.draw();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        h.app.on_tick();
+        h.draw();
+        if h.screen().contains("24 hours   50.3k tokens") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let screen = h.screen();
     assert!(screen.contains(" tokens "), "{screen}");
     assert!(
@@ -3276,6 +3286,54 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     assert!(screen.contains("cursor") && screen.contains("codex"));
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.app.picker.is_none());
+    h.app.editor.set_text("retain this usage-view draft");
+    tokens::open(&mut h.app);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    for _ in 0..20 {
+        h.app.on_tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(h.app.picker.is_none() && h.app.update_preview.is_none());
+    assert_eq!(h.app.editor.text(), "retain this usage-view draft");
+    let execution = h.app.cwd.clone();
+    let home = execution.join("native-home");
+    std::fs::create_dir_all(&home).unwrap();
+    h.app.native_owner = Some(crate::provider::interaction::InteractionOwner {
+        conversation_id: h.app.deleg.d.conversation_id().into(),
+        workspace: execution.clone(),
+        execution_cwd: execution.clone(),
+        run_id: uuid::Uuid::new_v4().to_string(),
+        attempt_id: uuid::Uuid::new_v4().to_string(),
+        provider: ProviderKind::Codex,
+        account: "owner-account".into(),
+        home: Some(home.canonicalize().unwrap()),
+    });
+    h.app.native_usage_model = Some("captured-model".into());
+    h.app.native_usage_session = Some("captured-session".into());
+    h.app.provider = ProviderKind::Claude;
+    h.app.account = "different-focused-account".into();
+    h.app.record_tokens(
+        &TurnUsage {
+            input: Some(200),
+            cached: Some(100),
+            output: Some(30),
+            cost_usd: None,
+        },
+        &TurnOutcome {
+            exit_code: Some(0),
+            ..Default::default()
+        },
+    );
+    let usage = crate::token_log::load(&h.app.state_root);
+    let bound = usage
+        .iter()
+        .find(|entry| entry.attribution.is_some())
+        .unwrap();
+    assert_eq!(bound.provider, "codex");
+    assert_eq!(bound.account, "owner-account");
+    assert_eq!(bound.model.as_deref(), Some("captured-model"));
+    assert_eq!(bound.chat.as_deref(), Some("captured-session"));
+    assert_eq!(bound.new_input, 100);
 }
 
 #[test]
@@ -3288,7 +3346,15 @@ fn the_landing_page_shows_the_last_24_hours_of_tokens() {
         vec![landing_session("acct-x", &here, "first", 1)],
         None,
     );
-    h.draw();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        h.app.on_tick();
+        h.draw();
+        if h.screen().contains("3.3k tokens in 24 hours") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert!(
         h.screen().contains("3.3k tokens in 24 hours"),
         "{}",

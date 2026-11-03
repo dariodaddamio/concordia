@@ -2,9 +2,38 @@
 
 use super::token_line::compact;
 use super::{App, PickerKind};
-use crate::token_log::{breakdown, load, totals, Entry, Totals};
+use crate::token_log::{breakdown, totals, Entry, Totals};
 use crate::update::{PreviewLine, UpdatePreview};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+
+#[derive(Default)]
+pub(super) struct State {
+    generation: u64,
+    screen: Option<u64>,
+    next: Option<crate::token_log::Cursor>,
+    jobs: Vec<ReadJob>,
+}
+
+#[derive(Clone, Copy)]
+enum ReadKind {
+    Screen,
+    Landing,
+}
+
+struct ReadJob {
+    generation: u64,
+    conversation: String,
+    kind: ReadKind,
+    cancel: Arc<AtomicBool>,
+    rx: mpsc::Receiver<Result<Loaded, String>>,
+}
+
+enum Loaded {
+    Screen(Vec<PreviewLine>, Option<crate::token_log::Cursor>),
+    Landing(u64, u64, bool),
+}
 
 const DAY: u64 = 24 * 60 * 60;
 /// Chats beyond this many are left out of the per-chat list.
@@ -18,8 +47,9 @@ fn now() -> u64 {
 }
 
 /// Rolling 24-hour and all-time totals from the persistent Concordia log.
+#[cfg(test)]
 pub(super) fn landing_totals(state_root: &Path) -> (u64, u64) {
-    let entries = load(state_root);
+    let entries = crate::token_log::load(state_root);
     let since = now().saturating_sub(DAY);
     (
         totals(entries.iter().filter(|e| e.at >= since)).total(),
@@ -78,7 +108,24 @@ pub fn lines(
                 share(n, w.total())
             )));
         }
-        let sections: [Section; 4] = [
+        let sections: [Section; 6] = [
+            (
+                "By origin",
+                Box::new(|e: &Entry| match e.attribution.as_ref().map(|a| a.origin) {
+                    Some(crate::token_log::Origin::Main) => "main".into(),
+                    Some(crate::token_log::Origin::Worker) => "worker".into(),
+                    None => "legacy / unknown attribution".into(),
+                }),
+            ),
+            (
+                "By run",
+                Box::new(|e: &Entry| {
+                    e.attribution
+                        .as_ref()
+                        .map(|a| a.run.clone())
+                        .unwrap_or_else(|| "legacy / unknown run".into())
+                }),
+            ),
             ("By provider", Box::new(|e: &Entry| e.provider.clone())),
             (
                 "By model",
@@ -98,27 +145,48 @@ pub fn lines(
         for (title, key) in sections {
             out.push(PreviewLine::Blank);
             out.push(PreviewLine::Kind(format!("{title}, last 7 days")));
-            for (name, t) in breakdown(week.iter().copied(), key) {
+            let groups = breakdown(week.iter().copied(), key);
+            let omitted = groups.len().saturating_sub(64);
+            for (name, t) in groups.into_iter().take(64) {
                 out.push(PreviewLine::Bullet(format!("{name:<24}{}", summary(&t))));
+            }
+            if omitted > 0 {
+                out.push(PreviewLine::Text(format!(
+                    "{omitted} additional groups omitted from this view"
+                )));
             }
         }
         out.push(PreviewLine::Blank);
         out.push(PreviewLine::Kind("Largest chats, last 7 days".into()));
-        let by_chat = breakdown(week.iter().copied(), |e| {
-            e.chat.clone().unwrap_or_else(|| "(no session id)".into())
-        });
+        let by_chat = breakdown(week.iter().copied(), chat_key);
         for (id, t) in by_chat.into_iter().take(TOP_CHATS) {
-            let sample = week.iter().find(|e| e.chat.as_deref() == Some(id.as_str()));
-            let name = sample
-                .and_then(|e| chat_title(e))
-                .unwrap_or_else(|| id.chars().take(24).collect());
+            let sample = week.iter().find(|e| chat_key(e) == id);
+            let name = sample.and_then(|e| chat_title(e)).unwrap_or_else(|| {
+                sample
+                    .and_then(|e| e.chat.as_deref())
+                    .unwrap_or("no session id")
+                    .chars()
+                    .take(24)
+                    .collect()
+            });
             out.push(PreviewLine::Bullet(format!("{}  {}", summary(&t), name)));
         }
         if let Some(cost) = w.cost_usd {
             out.push(PreviewLine::Blank);
             out.push(PreviewLine::Text(format!(
-                "Reported cost, last 7 days: ${cost:.2} (providers that report it)"
+                "Provider-reported cost estimate, last 7 days: ${cost:.2} ({} of {} turns)",
+                w.reported_cost_events, w.turns
             )));
+        } else {
+            out.push(PreviewLine::Text(
+                "Cost: unknown (no native estimate reported)".into(),
+            ));
+        }
+        if w.incomplete_events > 0 {
+            out.push(PreviewLine::Text(format!("Coverage: {} turns have legacy attribution, missing counters or an incomplete outcome. Totals include reported counters only.", w.incomplete_events)));
+        }
+        if week.iter().any(|entry| entry.provider == "claude") {
+            out.push(PreviewLine::Text("Claude token counters cover the reported main loop; native subagent coverage is not inferred. Resumed-session cost is unavailable without a verified delta.".into()));
         }
     }
     out.push(PreviewLine::Blank);
@@ -126,23 +194,241 @@ pub fn lines(
     out
 }
 
-pub(super) fn open(app: &mut App) {
-    let entries = load(&app.state_root);
+fn chat_key(entry: &Entry) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        entry.provider,
+        entry.account,
+        entry
+            .attribution
+            .as_ref()
+            .and_then(|a| a.home_id.as_deref())
+            .unwrap_or("legacy-home-unknown"),
+        entry.chat.as_deref().unwrap_or("no-session")
+    )
+}
+
+pub(super) fn close(state: &mut State) {
+    state.screen = None;
+    state.next = None;
+    for job in &state.jobs {
+        if matches!(job.kind, ReadKind::Screen) {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+fn start(app: &mut App, cursor: Option<crate::token_log::Cursor>, kind: ReadKind) -> bool {
+    if app.token_reads.jobs.len() >= 2 {
+        return false;
+    }
+    app.token_reads.generation = app.token_reads.generation.wrapping_add(1);
+    let generation = app.token_reads.generation;
     let root = app.state_root.clone();
-    let lines = lines(&entries, now(), |e| {
-        let provider = crate::commands::parse_provider(&e.provider)?;
-        let home = crate::accounts::get_account(&root, &e.account)?.home_path?;
-        crate::session_titles::get(&root, provider, &e.account, &home, e.chat.as_deref()?)
+    let cancel = Arc::new(AtomicBool::new(false));
+    let job_cancel = cancel.clone();
+    let (tx, rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("concordia-usage-read".into())
+        .spawn(move || {
+            let result =
+                crate::token_log::load_page_with_cancel(&root, cursor.as_ref(), &job_cancel)
+                    .map_err(|error| error.to_string())
+                    .map(|report| match kind {
+                        ReadKind::Landing => {
+                            let since = now().saturating_sub(DAY);
+                            Loaded::Landing(
+                                totals(report.entries.iter().filter(|entry| entry.at >= since))
+                                    .total(),
+                                totals(&report.entries).total(),
+                                report.incomplete || totals(&report.entries).incomplete_events > 0,
+                            )
+                        }
+                        ReadKind::Screen => {
+                            let mut rows = lines(&report.entries, now(), |entry| {
+                                let attribution = entry.attribution.as_ref()?;
+                                let provider = crate::commands::parse_provider(&entry.provider)?;
+                                let home = crate::accounts::get_account(&root, &entry.account)?
+                                    .home_path?
+                                    .canonicalize()
+                                    .ok()?;
+                                if crate::token_log::Attribution::bound_home(Some(&home))
+                                    != attribution.home_id
+                                {
+                                    return None;
+                                }
+                                crate::session_titles::get(
+                                    &root,
+                                    provider,
+                                    &entry.account,
+                                    &home,
+                                    entry.chat.as_deref()?,
+                                )
+                            });
+                            if cursor.is_some() || report.incomplete {
+                                rows.insert(
+                                    0,
+                                    PreviewLine::Title(format!(
+                                        "Partial page totals · {} records · {} unavailable records",
+                                        report.entries.len(),
+                                        report.skipped
+                                    )),
+                                );
+                            }
+                            if report.next.is_some() {
+                                rows.push(PreviewLine::Hint(
+                                    "N next page · R first page · Esc close".into(),
+                                ));
+                            }
+                            Loaded::Screen(rows, report.next)
+                        }
+                    });
+            let _ = tx.send(result);
+        });
+    if spawned.is_err() {
+        return false;
+    }
+    match kind {
+        ReadKind::Screen => app.token_reads.screen = Some(generation),
+        ReadKind::Landing => super::landing::begin_usage(app, generation),
+    }
+    app.token_reads.jobs.push(ReadJob {
+        generation,
+        conversation: app.deleg.d.conversation_id().into(),
+        kind,
+        cancel,
+        rx,
     });
+    true
+}
+
+pub(super) fn open(app: &mut App) {
+    open_page(app, None);
+}
+
+fn open_page(app: &mut App, cursor: Option<crate::token_log::Cursor>) {
+    close(&mut app.token_reads);
+    if !start(app, cursor, ReadKind::Screen) {
+        app.flash("Usage reads are finishing; try again shortly");
+        return;
+    }
     app.update_preview = Some(UpdatePreview {
         history: Vec::new(),
         history_expanded: false,
-        lines,
+        lines: vec![PreviewLine::Title("Loading recorded usage…".into())],
         install_available: false,
         release_url: None,
     });
     app.show_picker(PickerKind::Tokens, "tokens".into(), Vec::new(), false);
     app.footer_left = "↑↓ scroll · Esc close".into();
+}
+
+pub(super) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if !app
+        .picker
+        .as_ref()
+        .is_some_and(|picker| picker.kind == PickerKind::Tokens)
+        || key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return false;
+    }
+    match key.code {
+        KeyCode::Char('n' | 'N') => {
+            if let Some(cursor) = app.token_reads.next.clone() {
+                open_page(app, Some(cursor));
+            } else {
+                app.flash("No later usage page in this snapshot");
+            }
+            true
+        }
+        KeyCode::Char('r' | 'R') => {
+            open(app);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn poll(app: &mut App) {
+    let current_landing = super::landing::usage_generation(app);
+    let current_screen = app.token_reads.screen;
+    let conversation = app.deleg.d.conversation_id().to_owned();
+    let screen_visible = app
+        .picker
+        .as_ref()
+        .is_some_and(|picker| picker.kind == PickerKind::Tokens);
+    let mut index = 0;
+    while index < app.token_reads.jobs.len() {
+        let job = &app.token_reads.jobs[index];
+        let valid = match job.kind {
+            ReadKind::Screen => {
+                screen_visible
+                    && current_screen == Some(job.generation)
+                    && job.conversation == conversation
+            }
+            ReadKind::Landing => current_landing == Some(job.generation),
+        };
+        if !valid {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        let result = match job.rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => {
+                index += 1;
+                continue;
+            }
+            Err(_) => Err("Usage reader stopped".into()),
+        };
+        let job = app.token_reads.jobs.swap_remove(index);
+        if !valid {
+            continue;
+        }
+        match (job.kind, result) {
+            (ReadKind::Landing, result) => {
+                let value = match result {
+                    Ok(Loaded::Landing(day, total, partial)) => Ok((day, total, partial)),
+                    Err(error) => Err(error),
+                    _ => Err("Usage reader returned a different view".into()),
+                };
+                super::landing::apply_usage(app, job.generation, value);
+            }
+            (ReadKind::Screen, result) => {
+                let (rows, next) = match result {
+                    Ok(Loaded::Screen(rows, next)) => (rows, next),
+                    Err(error) => (
+                        vec![
+                            PreviewLine::Title("Usage unavailable".into()),
+                            PreviewLine::Text(error),
+                            PreviewLine::Hint("R retry · Esc close".into()),
+                        ],
+                        None,
+                    ),
+                    _ => (
+                        vec![PreviewLine::Text(
+                            "Usage reader returned a different view".into(),
+                        )],
+                        None,
+                    ),
+                };
+                app.token_reads.next = next;
+                if let Some(preview) = app.update_preview.as_mut() {
+                    preview.lines = rows;
+                }
+                app.footer_left = if app.token_reads.next.is_some() {
+                    "N next page · R first page · Esc close"
+                } else {
+                    "R refresh · Esc close"
+                }
+                .into();
+            }
+        }
+    }
+    if super::landing::needs_usage(app) {
+        start(app, None, ReadKind::Landing);
+    }
 }
 
 #[cfg(test)]
@@ -161,6 +447,7 @@ mod tests {
             cached_input: parts.1,
             output: parts.2,
             cost_usd: None,
+            attribution: None,
         }
     }
 
@@ -218,6 +505,7 @@ mod persistence_tests {
             cached_input: 0,
             output,
             cost_usd: None,
+            attribution: None,
         };
         crate::token_log::record(root.path(), &make(now() - 2 * DAY, 500)).unwrap();
         crate::token_log::record(root.path(), &make(now(), 100)).unwrap();

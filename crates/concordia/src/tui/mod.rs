@@ -293,6 +293,8 @@ impl Picker {
 pub struct App {
     continuation: continuation::State,
     native_owner: Option<crate::provider::interaction::InteractionOwner>,
+    native_usage_model: Option<String>,
+    native_usage_session: Option<String>,
     project_search: workspace_search::State,
     continuation_target: Option<String>,
     state_root: PathBuf,
@@ -353,6 +355,7 @@ pub struct App {
     native_agents: native_agents::State,
     footer_left: String,
     picker: Option<Picker>,
+    token_reads: tokens::State,
     landing: Option<landing::Landing>,
     update_preview: Option<UpdatePreview>,
     /// Wrapped rows of the `/update` screen and how many fit, as last drawn.
@@ -1047,6 +1050,7 @@ impl App {
                 self.pause_queue();
             }
             TurnProgress::Session(id) => {
+                self.native_usage_session = Some(id.clone());
                 self.native_session_id = Some(id);
                 self.remember_native_source();
                 self.save_turn_checkpoint(false);
@@ -1102,18 +1106,7 @@ impl App {
                 self.push_system(e);
             }
             TurnProgress::Usage(u) => {
-                fn add(a: &mut Option<u64>, b: Option<u64>) {
-                    if let Some(b) = b {
-                        *a = Some(a.unwrap_or(0).saturating_add(b));
-                    }
-                }
-                let t = &mut self.turn_usage;
-                add(&mut t.input, u.input);
-                add(&mut t.output, u.output);
-                add(&mut t.cached, u.cached);
-                if let Some(c) = u.cost_usd {
-                    t.cost_usd = Some(t.cost_usd.unwrap_or(0.0) + c);
-                }
+                self.turn_usage.update_snapshot(&u);
             }
         }
     }
@@ -1154,25 +1147,70 @@ impl App {
     }
 
     /// Add a finished turn's tokens to the local token log.
-    fn record_tokens(&self, usage: &crate::provider::stream_cards::TurnUsage) {
-        let (new_input, cached_input, output) = crate::token_log::split(self.provider, usage);
+    fn record_tokens(
+        &mut self,
+        usage: &crate::provider::stream_cards::TurnUsage,
+        outcome: &TurnOutcome,
+    ) {
+        let provider = self
+            .native_owner
+            .as_ref()
+            .map_or(self.provider, |owner| owner.provider);
+        let (new_input, cached_input, output) = crate::token_log::split(provider, usage);
         let entry = crate::token_log::Entry {
             at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
-            provider: self.provider.as_str().to_string(),
-            account: self.account.clone(),
-            model: (!self.model.is_empty() && self.model != "?").then(|| self.model.clone()),
-            project: self.cwd.to_string_lossy().into_owned(),
-            chat: self.native_session_id.clone(),
+            provider: provider.as_str().to_string(),
+            account: self
+                .native_owner
+                .as_ref()
+                .map_or_else(|| self.account.clone(), |owner| owner.account.clone()),
+            model: if self.native_owner.is_some() {
+                self.native_usage_model.clone()
+            } else {
+                (!self.model.is_empty() && self.model != "?").then(|| self.model.clone())
+            },
+            project: self
+                .native_owner
+                .as_ref()
+                .map_or(self.cwd.as_path(), |owner| owner.execution_cwd.as_path())
+                .to_string_lossy()
+                .into_owned(),
+            chat: outcome.session_id.clone().or_else(|| {
+                if self.native_owner.is_some() {
+                    self.native_usage_session.clone()
+                } else {
+                    self.native_session_id.clone()
+                }
+            }),
             new_input,
             cached_input,
             output,
             cost_usd: usage.cost_usd,
+            attribution: self.native_owner.as_ref().map(|owner| {
+                let (status, complete) = crate::token_log::attempt_outcome(
+                    outcome.exit_code,
+                    outcome.cancelled,
+                    outcome.failed,
+                );
+                crate::token_log::Attribution::new(
+                    crate::token_log::Origin::Main,
+                    &owner.run_id,
+                    &owner.attempt_id,
+                    owner.home.as_deref(),
+                    usage,
+                    status,
+                    complete,
+                )
+            }),
         };
         if let Err(e) = crate::token_log::record(&self.state_root, &entry) {
             crate::logging::info(&format!("token log not written: {e}"));
+            self.push_system(format!(
+                "Usage could not be saved: {e}. Native usage is not assumed to be zero."
+            ));
         }
     }
 
@@ -1180,8 +1218,8 @@ impl App {
         self.submitted_prompt = None;
         let elapsed = self.turn_started.map(|t| t.elapsed());
         let usage = std::mem::take(&mut self.turn_usage);
-        if !usage.is_empty() {
-            self.record_tokens(&usage);
+        if !usage.is_empty() || self.native_owner.is_some() {
+            self.record_tokens(&usage, &outcome);
         }
         self.session_input = self.session_input.saturating_add(usage.input.unwrap_or(0));
         self.session_output = self
@@ -1499,6 +1537,7 @@ impl App {
         self.poll_pending_login();
         self.poll_job();
         landing::poll(self);
+        tokens::poll(self);
         self.update_progress();
         self.poll_compat();
         self.poll_proposals();
@@ -2193,6 +2232,7 @@ impl App {
     }
 
     fn dismiss_picker(&mut self) {
+        tokens::close(&mut self.token_reads);
         // Only the update screen owns a job: its check, or the update it started.
         if self
             .picker
@@ -3231,6 +3271,8 @@ impl App {
             related_files,
             questions: questions::State::default(),
             native_owner: None,
+            native_usage_model: None,
+            native_usage_session: None,
             project_search: workspace_search::State::default(),
             images: images::State::default(),
             history: Vec::new(),
@@ -3268,6 +3310,7 @@ impl App {
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            token_reads: tokens::State::default(),
             landing: None,
             update_preview: None,
             update_rows: 0,
@@ -3573,6 +3616,8 @@ pub async fn run_chat_tui() -> Result<()> {
                 };
                 app.questions.cancel_native();
                 app.native_owner = Some(owner.clone());
+                app.native_usage_model = (!model.is_empty() && model != "?").then(|| model.clone());
+                app.native_usage_session = app.native_session_id.clone();
                 let session = app.native_session_id.clone();
                 let prior_prov = app.prior_provider;
                 let prior_home = app.prior_home.clone();
@@ -3944,6 +3989,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         return false;
     }
     if landing::visible(app) && landing::handle_key(app, key) {
+        return false;
+    }
+    if tokens::handle_key(app, key) {
         return false;
     }
     if let Some(picker) = app.picker.as_mut() {

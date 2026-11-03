@@ -1,5 +1,15 @@
 # Changelog
 
+### Added (`2026-11-02o`)
+- Main and worker usage records bind native launch attempts to their run, account/home, model,
+  workspace and reported counters. Repeated terminal snapshots do not accumulate twice. Failed,
+  cancelled and interrupted attempts retain explicit coverage and unknown fields.
+- The token view reads bounded pages in the background, groups main/worker runs separately,
+  distinguishes equal native session IDs across accounts, and shows reported-cost coverage.
+  N advances an exact snapshot page; R refreshes. Landing totals also load in the background.
+- Worker ledger v3 preserves attempt accounting across recovery, migrating v1/v2 without replay.
+  Resumed Claude cost is unknown when a restored session total cannot be separated from this attempt.
+
 ### Added (`2026-11-02n`)
 - Explicit goal/source associations: `/memory goals`, `/memory goal-link GOAL SOURCE`,
   `/memory goal-sources GOAL` and `/memory goal-unlink GOAL SOURCE`. Links retain source identities

@@ -1,5 +1,11 @@
 # Delegation (orchestrator and workers)
 
+Build `2026-11-02o` records worker usage per native attempt, including failure, cancellation and
+interruption. `/usage` → tokens groups worker/main origins and runs, with unknown counters and
+reported-cost coverage. Worker inspection shows every attempt. Recovery reconciles accounting
+without running a provider. Ledger v3 migrates v1/v2; older v2-only executables reject v3.
+See [accounting bounds and evidence](quality/worker-accounting.md).
+
 Build `2026-11-02i` persists worker request/identity/state under the pane's recovery lease, with
 an additional worker OS lock. UUIDs bind owner, conversation and run; workspace, exact account home,
 model, attempts, native session and revision-checked result pointers are retained. The ledger is
