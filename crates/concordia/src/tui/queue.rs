@@ -742,13 +742,13 @@ impl App {
         self.pulse_on = false;
         self.cancel_handle = None;
         self.questions.cancel_native();
-        self.native_owner = None;
         let automatic_target = if self.queue.force_pending {
             None
         } else {
             self.prepare_usage_continuation(&outcome)
         };
         self.finalize_turn(outcome);
+        self.native_owner = None;
         self.save_turn_checkpoint(turn_closed);
         if self.questions.waiting() {
             self.pause_queue();

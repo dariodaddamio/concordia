@@ -3312,17 +3312,20 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     h.app.native_usage_session = Some("captured-session".into());
     h.app.provider = ProviderKind::Claude;
     h.app.account = "different-focused-account".into();
-    h.app.record_tokens(
-        &TurnUsage {
-            input: Some(200),
-            cached: Some(100),
-            output: Some(30),
-            cost_usd: None,
-        },
-        &TurnOutcome {
+    let owner = h.app.native_owner.clone().unwrap();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    h.app.turn_usage = TurnUsage {
+        input: Some(200),
+        cached: Some(100),
+        output: Some(30),
+        cost_usd: None,
+    };
+    h.app.on_turn_done(
+        TurnOutcome {
             exit_code: Some(0),
             ..Default::default()
         },
+        &tx,
     );
     let usage = crate::token_log::load(&h.app.state_root);
     let bound = usage
@@ -3334,6 +3337,30 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     assert_eq!(bound.model.as_deref(), Some("captured-model"));
     assert_eq!(bound.chat.as_deref(), Some("captured-session"));
     assert_eq!(bound.new_input, 100);
+    assert!(h.app.native_owner.is_none());
+    let mut cancelled_owner = owner;
+    cancelled_owner.attempt_id = uuid::Uuid::new_v4().to_string();
+    h.app.native_owner = Some(cancelled_owner);
+    h.app.on_turn_done(
+        TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        },
+        &tx,
+    );
+    let usage = crate::token_log::load(&h.app.state_root);
+    let cancelled = usage
+        .iter()
+        .find(|entry| {
+            entry
+                .attribution
+                .as_ref()
+                .is_some_and(|attribution| attribution.outcome == "cancelled")
+        })
+        .unwrap();
+    assert_eq!(cancelled.account, "owner-account");
+    let attribution = cancelled.attribution.as_ref().unwrap();
+    assert!(!attribution.input_known && !attribution.output_known && !attribution.complete);
 }
 
 #[test]
