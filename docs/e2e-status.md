@@ -1,5 +1,19 @@
 # Everyday E2E status (MVP A)
 
+## Candidate verification, 2026-11-02k
+
+First-wave validation tree: `e533e48` (production source `bcf7c2f`). The candidate adds read-only
+project content search plus dependency/recovery and owner-bound native interaction foundations.
+All 983 enabled tests pass, including 885 library tests. All 48 ConPTY journeys pass against the
+exact portable-installed candidate in 297.11 seconds. Candidate SHA-256:
+`87A0219A9A40CB92DAABC0765AF2EBC67D05BC6ADCBF01DB7ED65CC3CCA370A4`.
+The release and installed hashes match and remain unchanged after the journeys. Size: 16.76 MiB.
+Formatting, all-target clippy, release build, release smoke, portable everyday smoke, OSS gates
+and documentation links pass. The portable install fixture is separate from the ordinary install.
+Remote CI remains a separate PR gate; no live-provider/signing/publication evidence is claimed.
+
+[Detailed scope, migration and verification limits](quality/completion-wave1.md).
+
 ## Current record, 2026-11-02j
 
 Runtime source is `c6d3b7c`, installed build `2026-11-02j`, SHA-256

@@ -8,10 +8,10 @@ installed verification and live-provider evidence. No real provider turns are au
 
 | Lane | Scope | State |
 | --- | --- | --- |
-| Orchestration D1 | Bounded dependency graph, read-only readiness, versioned recovery persistence | Implementing |
-| Provider P0 | Owner-bound typed native interactions, tri-state capability evidence, current ACP conversion | Implementing |
-| Workspace W1 | Bounded cancellable literal project search, source revision checking and draft-preserving UI | Implementing |
-| Integration | Shared TUI/command wiring, documentation/build identity and checks | Implementing |
+| Orchestration D1 | Bounded dependency graph, read-only readiness, versioned recovery persistence | Fixture-verified |
+| Provider P0 | Owner-bound typed native interactions, tri-state capability evidence, current ACP conversion | Fixture-verified |
+| Workspace W1 | Bounded cancellable literal project search, source revision checking and draft-preserving UI | Fixture-verified |
+| Integration | Shared TUI/command wiring, documentation/build identity and checks | Fixture-verified |
 
 Three implementation agents use separate worktrees. Shared TUI dispatch, command registration,
 build identity and final integration have one owner. Preserve native tools, authentication,
@@ -49,9 +49,27 @@ newer TUI. Existing PRs remain for owner review; no remote merges are performed 
 
 ## Validation
 
-Pending implementation integration. Record exact commands, results and limitations here before
-marking any lane verified. Use existing fixtures and native checks; no new unit/integration test
-files are implied. Installed and live-provider claims require their own evidence.
+Validation tree: `e533e48`; build `2026-11-02k`. Production source is `bcf7c2f`;
+`e533e48` changes a test visibility assertion only. Baseline remains `eb9deb4`.
+
+- `cargo test -p concordia --tests --quiet`: all 983 enabled tests pass (885 library tests).
+- `cargo test -p concordia --test tui_journeys -- --ignored --test-threads=1`: all 48 pass
+  against the exact portable-installed candidate in 297.11 seconds.
+- `cargo clippy -p concordia --all-targets -- -D warnings`, formatting, diff checks,
+  `scripts/verify-oss-gates.ps1` and local documentation link checks pass.
+- Release build, `scripts/smoke-ci.ps1` and `scripts/smoke-e2e-everyday.ps1` pass. Everyday
+  smoke adds one isolated generated read-only native-usage test; it does not run a model.
+
+Candidate SHA-256: `87A0219A9A40CB92DAABC0765AF2EBC67D05BC6ADCBF01DB7ED65CC3CCA370A4`.
+The release and portable-installed executables match; the installed hash is unchanged after
+terminal journeys. Size: 16.76 MiB, within the reviewed 20 MiB budget. The portable fixture keeps
+the ordinary install separate. No live-provider, signing, release-upload or publication claim
+follows from these checks. Remote PR CI is a separate gate.
+
+Integration review verified stale-owner rejection, native option/scope preservation and launch-home
+continuity on Windows. Search regression fixtures verify independent draft/clipboard input,
+BOM/CRLF/Unicode byte locations, raw display-cell navigation, exact snapshot opening and later disk
+change detection. A short pane can scroll above the requested row while retaining cursor visibility.
 
 ## Persistence and implementation limits
 
