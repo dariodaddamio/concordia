@@ -36,6 +36,19 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     let path = root.join("sample.png");
     std::fs::write(&path, b"\x89PNG\r\n\x1a\nsynthetic image pixels").unwrap();
     let image = attachments::import(root, &path).unwrap();
+    let document_path = root.join("notes.md");
+    std::fs::write(&document_path, "Attached document bytes\r\n").unwrap();
+    let document = attachments::Document::import(root, &document_path).unwrap();
+    let payload = attachments::Message {
+        text: "Inspect these pixels".into(),
+        attachments: vec![
+            attachments::Attachment::Image(image.clone()),
+            attachments::Attachment::TextDocument(document),
+        ],
+        ..Default::default()
+    }
+    .prompt_text()
+    .unwrap();
     let images = vec![image.clone()];
     let mut env = Env(vec![]);
     for variable in [
@@ -55,7 +68,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         let request = ProviderTurnRequest {
             images: &images,
             provider: kind,
-            prompt: "Inspect these pixels",
+            prompt: &payload,
             cwd: root,
             home_path: Some(root),
             model: None,
@@ -75,6 +88,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 .collect::<String>()
         };
         if kind == ProviderKind::Codex {
+            assert!(journal.contains(&format!("ARG:{}", hex(&payload))));
             assert!(journal.contains(&format!("ARG:{}", hex("--image"))));
             assert!(journal.contains(&hex(&image.path.to_string_lossy())));
         } else {
@@ -87,6 +101,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 .map(|i| u8::from_str_radix(&raw[i..i + 2], 16).unwrap())
                 .collect();
             let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["message"]["content"][0]["text"], payload);
             assert_eq!(
                 value["message"]["content"][1]["source"]["data"],
                 image.data().unwrap()
@@ -112,7 +127,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         let request = ProviderTurnRequest {
             images: &images,
             provider: ProviderKind::Cursor,
-            prompt: "Inspect these pixels",
+            prompt: &payload,
             cwd: work.path(),
             home_path: Some(root),
             model: Some("auto"),
@@ -144,6 +159,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 .find(|v| v["method"] == "session/prompt")
                 .unwrap();
             assert_eq!(prompt["params"]["prompt"][1]["data"], image.data().unwrap());
+            assert_eq!(prompt["params"]["prompt"][0]["text"], payload);
             assert!(values.iter().any(|v| v["method"] == "session/load"
                 && v["params"]["sessionId"] == "exact-image-session"));
             assert!(values

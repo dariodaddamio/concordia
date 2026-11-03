@@ -94,6 +94,68 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
                 .any(|e| e["kind"] == "start" && e["image_count"] == 1));
         }
         assert!(!s.screen().contains("concordia-message-v1"));
+        let document = work.join("notes.md");
+        std::fs::write(
+            &document,
+            "DOCUMENT_SNAPSHOT_FIRST\r\nExact document bytes\r\n",
+        )
+        .unwrap();
+        let before = s.prompts().len();
+        s.submit("/attach notes.md");
+        s.until("document attached with exact preview", |s| {
+            s.screen().contains("Document 1: notes.md")
+                && s.screen().contains("DOCUMENT_SNAPSHOT_FIRST")
+        });
+        std::fs::write(&document, "CHANGED_AFTER_IMPORT\r\n").unwrap();
+        s.send("\x1b");
+        s.paste("Review document bytes");
+        s.enter();
+        s.until("document snapshot dispatched", |s| {
+            s.prompts().len() == before + 1 && s.screen().contains("Worked for")
+        });
+        let prompt = s.prompts().last().unwrap().clone();
+        assert!(
+            prompt.contains("DOCUMENT_SNAPSHOT_FIRST") && !prompt.contains("CHANGED_AFTER_IMPORT")
+        );
+        assert!(!s.screen().contains("concordia-message-v2"));
+        let blobs = std::fs::read_dir(dir.path().join("attachments"))
+            .unwrap()
+            .count();
+        let pasted = format!("\"{}\"", document.display());
+        s.paste(&pasted);
+        s.until("pasted paths stay text until explicit attach", |s| {
+            s.draft() == pasted && s.screen().contains("pasted file(s) too")
+        });
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("attachments"))
+                .unwrap()
+                .count(),
+            blobs
+        );
+        s.send("\x1b[20~");
+        s.until("explicit pasted-file attachment", |s| {
+            s.screen().contains("Document 1: notes.md")
+                && concordia::attachments::Message::decode(&s.draft()).text == pasted
+        });
+        assert_eq!(s.prompts().len(), before + 1);
+        let screen = s.screen();
+        let (y, row) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, row)| row.contains("Document 1: notes.md"))
+            .unwrap();
+        let at = row.rfind("[X]").unwrap();
+        let x = row[..at].chars().count() + 1;
+        s.send(&format!(
+            "\x1b[<0;{};{}M\x1b[<0;{};{}m",
+            x + 1,
+            y + 1,
+            x + 1,
+            y + 1
+        ));
+        s.until("remove attachment preserves pasted text", |s| {
+            !s.screen().contains("Document 1: notes.md") && s.draft() == pasted
+        });
         s.exit();
     }
 }

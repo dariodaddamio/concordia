@@ -277,7 +277,7 @@ pub fn exists_cached(candidate: &Candidate, cwd: &Path) -> bool {
     exists
 }
 
-fn normalized_local_path(target: &str) -> &str {
+pub(crate) fn normalized_local_path(target: &str) -> &str {
     // Canonical Windows drive paths carry this prefix. Do not unwrap UNC/device namespaces.
     let target = target
         .strip_prefix(r"\\?\")

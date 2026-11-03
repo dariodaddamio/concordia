@@ -1,5 +1,8 @@
 # Changelog
 
+- Explicit UTF-8 document attachments preserve verified snapshots, mixed attachment order and
+  queue/draft recovery. Pasted file paths stay text and offer an explicit F9 attach action.
+
 - Unified file actions offer Preview here, Split off and Open in editor, with explicit defaults
   and native GUI-editor configuration. Independent Concordia file editors reuse pane saves and
   owned crash recovery without starting a provider.

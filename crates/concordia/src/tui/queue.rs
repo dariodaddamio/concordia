@@ -405,13 +405,13 @@ fn plan_indices(q: &Queue) -> std::ops::Range<usize> {
 /// Tab: queue the typed prompt when a turn is running or others are already queued. Returns
 /// false when Tab should keep its slash-completion job.
 pub(super) fn tab(app: &mut App) -> bool {
-    if app.images.height() > app.images.draft.len() {
-        app.flash("Wait for the image to finish attaching");
+    if app.images.importing() {
+        app.flash("Wait for the attachment to finish importing");
         return true;
     }
     let mut line = app.editor.text();
-    if line.trim().is_empty() && !app.images.draft.is_empty() {
-        line = "Describe the attached image.".into();
+    if line.trim().is_empty() && app.images.count() > 0 {
+        line = app.images.default_prompt().into();
     }
     if line.trim().is_empty()
         || line.trim_start().starts_with('/')
@@ -421,7 +421,8 @@ pub(super) fn tab(app: &mut App) -> bool {
     }
     let line = crate::attachments::Message {
         text: line,
-        images: std::mem::take(&mut app.images.draft),
+        attachments: std::mem::take(&mut app.images.draft),
+        invalid: None,
     }
     .encode();
     app.editor.clear();
@@ -486,10 +487,13 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Down if app.queue.sel + 1 >= n => app.queue.unfocus(),
         KeyCode::Down => app.queue.sel += 1,
         KeyCode::Enter => {
+            let message = crate::attachments::Message::decode(&app.queue.items[app.queue.sel]);
+            if let Err(error) = message.validate() {
+                app.flash(error);
+                return true;
+            }
             let mut ed = Editor::default();
-            ed.set_text(crate::attachments::Message::text(
-                &app.queue.items[app.queue.sel],
-            ));
+            ed.set_text(&message.text);
             ed.reset_undo();
             app.queue.edit = Some(ed);
             app.queue.edit_scroll = 0;
@@ -527,8 +531,8 @@ fn edit_key(
                 app.remove_queued();
             } else {
                 let i = app.queue.sel;
-                let images = crate::attachments::Message::decode(&app.queue.items[i]).images;
-                app.queue.items[i] = crate::attachments::Message { text, images }.encode();
+                let original = crate::attachments::Message::decode(&app.queue.items[i]);
+                app.queue.items[i] = crate::attachments::Message { text, ..original }.encode();
                 app.queue_changed();
             }
         }
@@ -657,6 +661,10 @@ impl App {
         if index >= self.queue.items.len() {
             return "No queued message at that position.".into();
         }
+        if let Err(error) = crate::attachments::Message::decode(&self.queue.items[index]).validate()
+        {
+            return format!("Queued attachment remains paused: {error}");
+        }
         if self.queue.force_pending {
             return "Stopping the active turn before sending the selected message…".into();
         }
@@ -713,7 +721,7 @@ impl App {
             self.queue.advance = false;
             self.pause_queue();
             if let Some(p) = sent.filter(|_| failed && !cancelled) {
-                if self.editor.text().trim().is_empty() && self.images.draft.is_empty() {
+                if self.editor.text().trim().is_empty() && self.images.count() == 0 {
                     self.restore_composer(&p);
                     self.push_system("your prompt is back in the box");
                 }
@@ -778,6 +786,17 @@ impl App {
 
     /// Send queued prompts through the normal submit path until one starts a turn.
     pub(super) fn queue_advance(&mut self, tx: &mpsc::UnboundedSender<String>) {
+        if self.queue.force_pending || self.queue.advance {
+            if let Some(line) = self.queue.items.first() {
+                if let Err(error) = crate::attachments::Message::decode(line).validate() {
+                    self.queue.paused = true;
+                    self.queue.force_pending = false;
+                    self.queue.advance = false;
+                    self.push_system(format!("Queue paused: {error}"));
+                    return;
+                }
+            }
+        }
         if self.questions.waiting() {
             return;
         }

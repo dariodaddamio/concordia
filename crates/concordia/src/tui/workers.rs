@@ -844,7 +844,7 @@ impl App {
             || self.busy
             || self.session_ui.loading()
             || turn_tx.is_closed()
-            || self.images.height() > self.images.draft.len()
+            || self.images.importing()
         {
             return;
         }
