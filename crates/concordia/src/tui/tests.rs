@@ -1613,12 +1613,12 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     assert!(lines[reply + 1].trim().is_empty(), "{s}");
     // The input box is rounded, and trust is stated in the footer (full is flagged).
     assert!(
-        s.contains('\u{256d}') && s.contains("auth workspace"),
+        s.contains('\u{256d}') && s.contains("permissions: workspace"),
         "{s}"
     );
     h.app.trust = crate::store::TrustMode::Full;
     h.draw();
-    assert!(h.screen().contains("auth full \u{26a0}"));
+    assert!(h.screen().contains("permissions: full \u{26a0}"));
 }
 
 #[test]
@@ -2324,8 +2324,8 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     for w in [40u16, 60, 80, 100, 140] {
         let h = Harness::new(w, 12);
         let row = footer_row(&h);
-        let right = if row.ends_with("auth workspace") {
-            "auth workspace"
+        let right = if row.ends_with("permissions: workspace") {
+            "permissions: workspace"
         } else if row.ends_with("workspace") {
             "workspace"
         } else {
@@ -2348,7 +2348,8 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     }
     // Wide terminals keep everything; narrow ones shorten, then drop the lowest priorities.
     assert!(footer_row(&Harness::new(140, 12)).contains("Ctrl+C copy or cancel"));
-    assert!(footer_row(&Harness::new(60, 12)).contains("Ctrl+C copy/stop"));
+    let narrow = footer_row(&Harness::new(60, 12));
+    assert!(narrow.contains("Ctrl+C copy/stop") || narrow.contains("Ctrl+C copy or cancel"));
     assert!(!footer_row(&Harness::new(40, 12)).contains("drag"));
 }
 

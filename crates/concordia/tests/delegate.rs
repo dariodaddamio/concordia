@@ -191,6 +191,111 @@ async fn a_delegate_runs_in_the_background_with_a_fresh_session_and_a_labelled_r
     }
     assert!(!args2.is_empty());
     assert_eq!(d.get(q).unwrap().state, WorkerState::Done);
+
+    // The same executor also releases approved dependencies from verified source snapshots.
+    let state_root = env.path("");
+    env.set("CONCORDIA_STATE_DIR", &state_root);
+    env.set("CONCORDIA_CODEX_HOME_BASE", env.path("empty-profile"));
+    let home = env.path("fixture-worker");
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    std::fs::write(home.join("auth.json"), "synthetic-login-marker").unwrap();
+    concordia::store::upsert_stored_account(
+        env.dir.path(),
+        concordia::store::StoredAccount {
+            id: "fixture-worker".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(home.display().to_string()),
+            label: "Fixture worker".into(),
+            created_at: "0".into(),
+        },
+    )
+    .unwrap();
+    concordia::store::set_workers(env.dir.path(), vec!["fixture-worker".into()]).unwrap();
+    let session = "11111111-2222-3333-4444-555555555555";
+    let source_path = home.join("sessions").join(format!("{session}.jsonl"));
+    let raw = format!(
+        "{}\n{}\n",
+        serde_json::json!({"type":"session_meta","payload":{"id":session}}),
+        serde_json::json!({"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"verified prerequisite reply"}]}})
+    );
+    std::fs::write(&source_path, &raw).unwrap();
+    let mut dependency = Delegates::default();
+    dependency
+        .attach_recovery(&env.path("dependency-pane"), &cwd, env.dir.path())
+        .unwrap();
+    let request = |task: &str| Submit {
+        account: "fixture-worker".into(),
+        provider: ProviderKind::Codex,
+        task: task.into(),
+        origin: Origin::User,
+        spec: JobSpec {
+            model: None,
+            home: Some(home.clone()),
+            cwd: cwd.clone(),
+            prompt: task.into(),
+            prefix: None,
+            trust: TrustMode::Ask,
+        },
+    };
+    let parent = dependency
+        .submit(request("parent task"), Instant::now())
+        .unwrap();
+    let child = dependency
+        .submit_after(request("dependent task"), Instant::now(), &[parent])
+        .unwrap();
+    assert_eq!(dependency.get(child).unwrap().state, WorkerState::Queued);
+    until(&mut dependency, 20, |d| {
+        d.get(child).unwrap().state.is_finished()
+    })
+    .await;
+    assert_eq!(
+        dependency.get(child).unwrap().state,
+        WorkerState::Done,
+        "{:?}",
+        dependency.get(child).unwrap().error
+    );
+    let receipt = std::fs::read_to_string(&out).unwrap();
+    let args: Vec<_> = receipt
+        .lines()
+        .filter_map(|line| line.strip_prefix("ARG:"))
+        .map(unhex)
+        .collect();
+    let prompt = args.last().unwrap();
+    assert!(prompt.contains("verified prerequisite reply") && prompt.contains("UNTRUSTED DATA"));
+    assert!(prompt.contains(&dependency.get(parent).unwrap().run_id));
+    assert!(prompt.contains(dependency.get(parent).unwrap().source_id.as_ref().unwrap()));
+
+    std::fs::write(
+        &source_path,
+        raw.replace("verified prerequisite reply", "tampered prerequisite text"),
+    )
+    .unwrap();
+    let stale = dependency
+        .submit_after(request("must not launch"), Instant::now(), &[parent])
+        .unwrap();
+    until(&mut dependency, 20, |d| {
+        d.get(stale).unwrap().state.is_finished()
+    })
+    .await;
+    assert_eq!(dependency.get(stale).unwrap().state, WorkerState::Paused);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), receipt);
+    let cancelled = dependency
+        .submit_after(
+            request("cancel before verification returns"),
+            Instant::now(),
+            &[parent],
+        )
+        .unwrap();
+    assert!(dependency.cancel(cancelled, Instant::now()));
+    until(&mut dependency, 20, |d| {
+        d.get(cancelled).unwrap().state.is_finished()
+    })
+    .await;
+    assert_eq!(
+        dependency.get(cancelled).unwrap().state,
+        WorkerState::Cancelled
+    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), receipt);
 }
 
 #[tokio::test]

@@ -185,6 +185,14 @@ fn tool_list() -> Value {
             "inputSchema": {"type":"object","properties":{}}
         },
         {
+            "name": "goals",
+            "description": "Read goals or confirmed goal/source metadata. Later pages require the returned revision. No mutations.",
+            "inputSchema": {"type":"object","properties":{
+                "goal":{"type":"string"},"workspace":{"type":"string"},
+                "offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
+            }}
+        },
+        {
             "name": "delegate",
             "description": "Propose a task for another account. Only records a proposal; the user must approve it.",
             "inputSchema": {"type":"object","properties":{
@@ -215,6 +223,38 @@ fn uint_arg(args: &Value, key: &str) -> Option<usize> {
     args.get(key).and_then(Value::as_u64).map(|n| n as usize)
 }
 
+fn tool_goals(root: &Path, args: &Value) -> Result<String, String> {
+    if args.get("offset").is_some_and(|offset| !offset.is_u64())
+        || args
+            .get("revision")
+            .is_some_and(|revision| !revision.is_string())
+    {
+        return Err("goal cursor needs a nonnegative offset and string revision".into());
+    }
+    let offset = uint_arg(args, "offset").unwrap_or(0);
+    let revision = str_arg(args, "revision");
+    let value = if let Some(goal) = str_arg(args, "goal") {
+        if goal.is_empty() || goal.len() > 128 {
+            return Err("invalid goal id".into());
+        }
+        let workspace =
+            str_arg(args, "workspace").ok_or("goal/source reads need the exact workspace")?;
+        crate::native_memory::relations::list(
+            root,
+            Some(Path::new(workspace)),
+            Some(goal),
+            offset,
+            revision,
+        )?
+    } else {
+        if args.get("goal").is_some() || args.get("workspace").is_some() {
+            return Err("workspace is used only with a goal id".into());
+        }
+        crate::native_memory::relations::goals(root, offset, revision)?
+    };
+    serde_json::to_string(&value).map_err(|e| e.to_string())
+}
+
 /// Err is a protocol error (unknown tool, bad params shape); tool failures are `isError` results.
 fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
     let name = params
@@ -234,6 +274,7 @@ fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
         "thread_read" => tool_thread_read(state_root, &args),
         "native_read" => tool_native_read(state_root, &args),
         "usage" => Ok(tool_usage(state_root)),
+        "goals" => tool_goals(state_root, &args),
         "delegate" => tool_delegate(state_root, &args),
         other => return Err(format!("unknown tool: {other}")),
     };
@@ -604,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_exactly_the_six_tools_with_terse_schemas() {
+    fn tools_list_has_exactly_the_seven_tools_with_terse_schemas() {
         let d = tempfile::tempdir().unwrap();
         let r = call(d.path(), rpc(1, "tools/list", Value::Null));
         let tools = r["result"]["tools"].as_array().unwrap();
@@ -617,12 +658,13 @@ mod tests {
                 "thread_read",
                 "native_read",
                 "usage",
+                "goals",
                 "delegate"
             ]
         );
         let size = serde_json::to_string(tools).unwrap().len();
         assert!(
-            size < 2200,
+            size < 3000,
             "tool list costs tokens every turn: {size} bytes"
         );
         for t in tools {

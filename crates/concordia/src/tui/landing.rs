@@ -10,7 +10,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -97,70 +96,8 @@ fn project_root(folder: &Path) -> PathBuf {
     std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Goal {
-    pub id: String,
-    pub text: String,
-    pub done: bool,
-    pub added_at: String,
-    pub closed_at: Option<String>,
-}
-
-fn goals_path(root: &Path) -> PathBuf {
-    root.join("goals.json")
-}
-
-pub fn load_goals(root: &Path) -> Vec<Goal> {
-    read_goals(root).unwrap_or_default()
-}
-
-const MAX_GOALS_BYTES: usize = 2 * 1024 * 1024;
-
-fn read_goals(root: &Path) -> std::io::Result<Vec<Goal>> {
-    use std::io::Read;
-    let file = match std::fs::File::open(goals_path(root)) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut bytes = Vec::new();
-    file.take(MAX_GOALS_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_GOALS_BYTES {
-        return Err(std::io::Error::other(
-            "goals file exceeds the 2 MiB read limit; it was kept unchanged",
-        ));
-    }
-    serde_json::from_slice(&bytes).map_err(|_| {
-        std::io::Error::other("existing goals file is unreadable; it was kept unchanged")
-    })
-}
-
-/// Temp file plus rename, so a crash never leaves half a file.
-pub fn save_goals(root: &Path, goals: &[Goal]) -> std::io::Result<()> {
-    std::fs::create_dir_all(root)?;
-    crate::state_io::with_lock(&root.join("goals.lock"), || {
-        let mut saved = read_goals(root)?;
-        for goal in goals {
-            if let Some(existing) = saved.iter_mut().find(|g| g.id == goal.id) {
-                // Goal text is immutable and completion is monotonic. A stale pane
-                // cannot undo completion recorded by another pane.
-                if goal.done && !existing.done {
-                    *existing = goal.clone();
-                }
-            } else {
-                saved.push(goal.clone());
-            }
-        }
-        let json = serde_json::to_vec_pretty(&saved).map_err(std::io::Error::other)?;
-        if json.len() > MAX_GOALS_BYTES {
-            return Err(std::io::Error::other(
-                "goals exceed the 2 MiB save limit; original file kept",
-            ));
-        }
-        super::persist::write_atomic(&goals_path(root), &json)
-    })
-}
+use crate::goals::read_goals;
+pub use crate::goals::{load_goals, save_goals, Goal};
 
 /// One project's open work. `None` when its Harness predates `plan:open --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1120,6 +1057,17 @@ mod tests {
         }];
         save_goals(dir.path(), &goals).unwrap();
         assert_eq!(load_goals(dir.path()), goals);
+        let mut close = goals[0].clone();
+        close.done = true;
+        close.text = "must not replace the immutable text".into();
+        close.added_at = "must not replace original creation".into();
+        close.closed_at = Some("closed".into());
+        save_goals(dir.path(), &[close]).unwrap();
+        save_goals(dir.path(), &goals).unwrap();
+        let saved = load_goals(dir.path());
+        assert!(saved[0].done);
+        assert_eq!(saved[0].text, "ship");
+        assert_eq!(saved[0].added_at, "now");
     }
 
     #[test]

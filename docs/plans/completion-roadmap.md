@@ -4,6 +4,11 @@ Status: planned, 2026-11-02. Baseline: committed build `2026-11-02j` (`c6d3b7c`)
 This is the execution plan for the remaining features, prepared through three parallel source
 audits. It does not mark these features implemented or authorize provider usage or publication.
 
+Progress: [wave one](../quality/completion-wave1.md) implements D1/P0/search W1;
+[wave two](../quality/completion-wave2.md) connects approved shared-workspace dependencies to
+normal dispatch and paused recovery. Other phases below remain planned unless evidence says otherwise.
+The [goal/source slice](../quality/goal-source-associations.md) records M0 implementation separately.
+
 ## Baseline and scope
 
 The baseline passed 960 enabled local tests, all 48 installed Windows terminal journeys,

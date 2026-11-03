@@ -22,7 +22,7 @@ fn dependency_state(state: WorkerState) -> schedule::RunState {
 pub(super) struct Recovery {
     pub state_root: PathBuf,
     path: PathBuf,
-    workspace: PathBuf,
+    pub(super) workspace: PathBuf,
     owner: String,
     _lock: File,
     last: Vec<u8>,

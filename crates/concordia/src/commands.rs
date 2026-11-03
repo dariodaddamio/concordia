@@ -38,6 +38,12 @@ pub enum SlashCommand {
         target: String,
         task: String,
     },
+    DelegateAfter {
+        after: Vec<u32>,
+        target: String,
+        task: String,
+    },
+    DelegateGraph,
     DelegateStop(Option<String>),
     DelegateUse(Option<String>),
     DelegateCollect,
@@ -65,6 +71,32 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
     let tail = it.next().unwrap_or("").trim();
     let second = tail.split_whitespace().next().map(str::to_lowercase);
     let lower = first.to_lowercase();
+    if matches!(cmd, "delegate" | "delegates") && lower == "after" {
+        let (ids, rest) = tail.split_once(char::is_whitespace).unwrap_or((tail, ""));
+        let (target, task) = rest
+            .trim_start()
+            .split_once(char::is_whitespace)
+            .unwrap_or((rest, ""));
+        let target = target.trim().to_lowercase();
+        let task = task.trim().to_string();
+        let parsed: Result<Vec<u32>, _> = ids.split(',').map(str::parse).collect();
+        return Some(match parsed {
+            Ok(after)
+                if !after.is_empty()
+                    && after.len() <= 8
+                    && !after.contains(&0)
+                    && !target.is_empty()
+                    && !task.is_empty() =>
+            {
+                SlashCommand::DelegateAfter {
+                    after,
+                    target,
+                    task,
+                }
+            }
+            _ => SlashCommand::Invalid("delegate after ID[,ID] ACCOUNT TASK".into()),
+        });
+    }
     if matches!(cmd, "delegate" | "delegates") && lower == "model" {
         let args: Vec<_> = tail.split_whitespace().collect();
         return Some(if args.len() > 2 {
@@ -78,12 +110,21 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
     }
     let control = matches!(
         lower.as_str(),
-        "help" | "?" | "stop" | "cancel" | "use" | "send" | "protocol" | "collect" | "returns"
+        "help"
+            | "?"
+            | "stop"
+            | "cancel"
+            | "use"
+            | "send"
+            | "protocol"
+            | "collect"
+            | "returns"
+            | "graph"
     );
     if ((cmd == "workers" || cmd == "worker") || control) && tail.split_whitespace().count() > 1 {
         return Some(SlashCommand::Invalid(cmd.into()));
     }
-    if matches!(lower.as_str(), "help" | "?" | "collect") && !tail.is_empty() {
+    if matches!(lower.as_str(), "help" | "?" | "collect" | "graph") && !tail.is_empty() {
         return Some(SlashCommand::Invalid(cmd.into()));
     }
     match cmd {
@@ -98,6 +139,7 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
             "stop" | "cancel" => SlashCommand::DelegateStop(second),
             "use" | "send" => SlashCommand::DelegateUse(second),
             "collect" => SlashCommand::DelegateCollect,
+            "graph" => SlashCommand::DelegateGraph,
             "returns" => match second.as_deref() {
                 Some("auto") => SlashCommand::DelegateReturns(Some(true)),
                 Some("manual") => SlashCommand::DelegateReturns(Some(false)),
@@ -375,6 +417,8 @@ pub fn dispatch_slash(
         | SlashCommand::WorkersAdd(_)
         | SlashCommand::WorkersRemove(_)
         | SlashCommand::Delegate { .. }
+        | SlashCommand::DelegateAfter { .. }
+        | SlashCommand::DelegateGraph
         | SlashCommand::DelegateStop(_)
         | SlashCommand::DelegateUse(_)
         | SlashCommand::DelegateCollect
@@ -512,6 +556,23 @@ mod update_tests {
         );
         assert_eq!(c("/delegate"), SlashCommand::DelegateHelp);
         assert_eq!(c("/delegate help"), SlashCommand::DelegateHelp);
+        assert_eq!(c("/delegate graph"), SlashCommand::DelegateGraph);
+        assert_eq!(
+            c("/delegate after 1,2   Codex-2   Preserve  exact\nTASK"),
+            SlashCommand::DelegateAfter {
+                after: vec![1, 2],
+                target: "codex-2".into(),
+                task: "Preserve  exact\nTASK".into()
+            }
+        );
+        for invalid in [
+            "/delegate after",
+            "/delegate after 0 codex task",
+            "/delegate after 1,,2 codex task",
+            "/delegate graph typo",
+        ] {
+            assert!(matches!(c(invalid), SlashCommand::Invalid(_)));
+        }
         assert_eq!(
             c("/delegate stop Claude"),
             SlashCommand::DelegateStop(Some("claude".into()))

@@ -48,8 +48,9 @@ worker output cannot spawn further workers.
 
 This is a bounded supervisor/worker loop. Pane-owned worker ledgers, paused restart recovery and
 opt-in bounded quota failover are implemented; see [recovery controls and limits](delegation.md).
-Task dependencies, file ownership enforcement/worktree isolation and consolidated worker usage/cost
-accounting remain open.
+Approved shared-workspace task dependencies are implemented with exact-run receipts and verified
+result pointers; see `/delegate after` and `/delegate graph` in the recovery controls. File ownership
+enforcement/worktree isolation and consolidated worker usage/cost accounting remain open.
 Background workers cannot yet answer native interactive requests through a dedicated UI.
 A stronger planner plus cheaper workers can improve economics when tasks are independent and
 reviews stay short. Extra worker context, reviews and retries can also increase total usage;

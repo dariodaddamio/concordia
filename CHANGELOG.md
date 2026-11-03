@@ -1,5 +1,24 @@
 # Changelog
 
+### Added (`2026-11-02n`)
+- Explicit goal/source associations: `/memory goals`, `/memory goal-link GOAL SOURCE`,
+  `/memory goal-sources GOAL` and `/memory goal-unlink GOAL SOURCE`. Links retain source identities
+  and provenance without copying conversation bodies. Read-only MCP goal discovery uses the same service.
+- Goal and relationship pagination binds later pages to the returned revision. Concurrent changes
+  require restarting the listing; stale native pointers and corrupt metadata fail visibly.
+
+### Added (`2026-11-02m`)
+- `/delegate after ID[,ID] ACCOUNT TASK` approves a bounded task with exact prerequisite runs.
+  Successful same-workspace prerequisites release it through the existing durable worker queue;
+  failed/cancelled prerequisites block only their dependants. `/delegate graph` explains readiness.
+- Dependency results are verified against native source snapshots before dispatch. Missing/stale
+  sources pause visibly, and restart never replays queued dependency work automatically.
+
+### Fixed (`2026-11-02l`)
+- Filter native background notices from readable user history and session previews/titles.
+- Show selection copy controls and clearer permission labels in the footer. Retain the newer
+  focus repaint, word deletion, independent draft scrolling and draft-visible landing page.
+
 ### Changed (`2026-10-21d`)
 
 ### Added (`2026-11-02k`)

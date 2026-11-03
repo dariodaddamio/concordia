@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+#[path = "delegate_dependencies.rs"]
+mod dependencies;
 #[path = "delegate_recovery.rs"]
 mod recovery;
 pub mod schedule;
@@ -336,6 +338,8 @@ pub enum Event {
     Progress(u32, TurnProgress),
     Finished(u32, Box<TurnOutcome>),
     Source(u32, String),
+    Paused(u32, String),
+    DependencyReady(u32, String),
 }
 
 pub struct Submit {
@@ -434,8 +438,14 @@ impl Delegates {
 
     /// Queue or start a job. Refuses when the worker already has a full queue.
     pub fn submit(&mut self, s: Submit, now: Instant) -> Result<u32, String> {
+        self.submit_after(s, now, &[])
+    }
+
+    /// Explicit submission authorizes this task with these exact prerequisite runs.
+    pub fn submit_after(&mut self, s: Submit, now: Instant, after: &[u32]) -> Result<u32, String> {
+        let prerequisites = self.validate_dependencies(&s, after)?;
         let busy = self.running_for(&s.account).is_some();
-        if busy && self.queued_for(&s.account) >= MAX_QUEUED_PER_WORKER {
+        if self.queued_for(&s.account) >= MAX_QUEUED_PER_WORKER {
             return Err(format!(
                 "{} is busy and already has {MAX_QUEUED_PER_WORKER} tasks queued - /delegate stop {} first",
                 display_account_name(s.provider, &s.account),
@@ -444,8 +454,18 @@ impl Delegates {
         }
         let id = self.next_id;
         self.next_id += 1;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let previous_graph = self.schedule.clone();
+        if !prerequisites.is_empty() {
+            self.schedule.insert(schedule::Task::new(
+                run_id.clone(),
+                self.conversation_id.clone(),
+                run_id.clone(),
+                prerequisites,
+            )?)?;
+        }
         self.jobs.push(Job {
-            run_id: uuid::Uuid::new_v4().to_string(),
+            run_id,
             conversation_id: self.conversation_id.clone(),
             source_id: None,
             attempts: vec![s.account.clone()],
@@ -483,11 +503,12 @@ impl Delegates {
         });
         if let Err(error) = self.save_recovery() {
             self.jobs.pop();
+            self.schedule = previous_graph;
             return Err(format!(
                 "worker not dispatched: recovery save failed: {error}"
             ));
         }
-        if !busy {
+        if !busy && self.dependencies_ready(id) {
             self.launch(id, now);
         }
         Ok(id)
@@ -496,6 +517,16 @@ impl Delegates {
     /// Spawn the turn for a queued job (needs a tokio runtime).
     fn launch(&mut self, id: u32, now: Instant) {
         let tx = self.tx.clone();
+        if !self.dependencies_ready(id) {
+            return;
+        }
+        let dependency_sources = match self.dependency_sources(id) {
+            Ok(sources) => sources,
+            Err(error) => {
+                self.pause_dependency_job(id, error, now);
+                return;
+            }
+        };
         if self.get(id).is_some_and(|j| j.cancel_requested) {
             return;
         }
@@ -512,6 +543,52 @@ impl Delegates {
             }
             return;
         }
+        if dependency_sources.is_empty() {
+            self.launch_provider(id, now, None);
+            return;
+        }
+        let Some(root) = self.recovery.as_ref().map(|r| r.state_root.clone()) else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            self.pause_dependency_job(id, "no async runtime".into(), now);
+            return;
+        }
+        tokio::spawn(async move {
+            let verified = tokio::task::spawn_blocking(move || {
+                dependencies::verified_prefix(&root, &dependency_sources)
+            })
+            .await;
+            let event = match verified {
+                Ok(Ok(prefix)) => Event::DependencyReady(id, prefix),
+                Ok(Err(error)) => Event::Paused(id, error),
+                Err(error) => Event::Paused(id, format!("dependency reader stopped: {error}")),
+            };
+            let _ = tx.send(event);
+        });
+    }
+
+    fn launch_provider(&mut self, id: u32, now: Instant, dependency_prefix: Option<String>) {
+        if self
+            .get(id)
+            .is_none_or(|job| !matches!(job.state, WorkerState::Queued | WorkerState::Starting))
+        {
+            return;
+        }
+        if self.get(id).is_some_and(|job| job.cancel_requested) {
+            if let Some(job) = self.get_mut(id) {
+                job.state = WorkerState::Cancelled;
+                job.finished = Some(now);
+            }
+            self.persist_recovery();
+            return;
+        }
+        // Recheck registrations/models after asynchronous source verification.
+        if let Err(error) = self.dependency_sources(id) {
+            self.pause_dependency_job(id, error, now);
+            return;
+        }
+        let tx = self.tx.clone();
         let state_root = self.recovery.as_ref().map(|r| r.state_root.clone());
         let Some(job) = self.get_mut(id) else { return };
         if tokio::runtime::Handle::try_current().is_err() {
@@ -522,7 +599,10 @@ impl Delegates {
         }
         job.state = WorkerState::Starting;
         job.started = Some(now);
-        let spec = job.spec.clone();
+        let mut spec = job.spec.clone();
+        if let Some(prefix) = dependency_prefix {
+            spec.prefix = Some(format!("{}\n{prefix}", spec.prefix.unwrap_or_default()));
+        }
         let provider = job.provider;
         let account = job.account.clone();
         tokio::spawn(async move {
@@ -636,6 +716,8 @@ impl Delegates {
                         j.source_id = Some(source);
                     }
                 }
+                Event::Paused(id, error) => self.pause_dependency_job(id, error, now),
+                Event::DependencyReady(id, prefix) => self.launch_provider(id, now, Some(prefix)),
             }
             self.persist_recovery();
         }
@@ -644,6 +726,7 @@ impl Delegates {
             .jobs
             .iter()
             .filter(|j| j.state == WorkerState::Queued)
+            .filter(|j| self.dependencies_ready(j.id))
             .filter(|j| self.running_for(&j.account).is_none())
             .map(|j| (j.account.clone(), j.id))
             .fold(Vec::<(String, u32)>::new(), |mut acc, (a, id)| {
@@ -658,6 +741,7 @@ impl Delegates {
         for id in ready {
             self.launch(id, now);
         }
+        self.refresh_dependency_status();
         let mut finished = Vec::new();
         for j in self
             .jobs
@@ -673,10 +757,20 @@ impl Delegates {
     }
 
     fn prune(&mut self) {
+        let referenced: std::collections::BTreeSet<_> = self
+            .schedule
+            .tasks()
+            .iter()
+            .flat_map(|task| task.prerequisites().iter().map(|p| p.run_id.clone()))
+            .collect();
         let finished = self.jobs.iter().filter(|j| j.state.is_finished()).count();
         let mut drop_n = finished.saturating_sub(KEEP_FINISHED);
         self.jobs.retain(|j| {
-            if drop_n > 0 && j.state.is_finished() {
+            if drop_n > 0
+                && j.state.is_finished()
+                && j.state != WorkerState::Paused
+                && !referenced.contains(&j.run_id)
+            {
                 drop_n -= 1;
                 false
             } else {
@@ -1186,6 +1280,8 @@ pub fn help_lines(protocol_on: bool) -> Vec<String> {
         "  /workers add <account>        allow an account to be a worker".into(),
         "  /workers remove <account>".into(),
         "  /delegate <account|auto> <task>   start one worker turn here (own fresh session)".into(),
+        "  /delegate after ID[,ID] ACCOUNT TASK   approve a task after exact successful runs (same workspace)".into(),
+        "  /delegate graph               inspect dependency readiness and exact prerequisite runs".into(),
         "  /delegate stop [account]      cancel (kills the worker's process tree); also Esc on a selected worker".into(),
         "  /delegate use [account]       send a finished result to the orchestrator as context".into(),
         "  /delegate protocol on|off     let the orchestrator PROPOSE delegations (each needs your y)".into(),

@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-02k
+# Feature completion audit: 2026-11-02n
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -11,9 +11,18 @@ creation does not change the implementation status recorded here.
 
 ## Closed in this build
 
+- Explicit goal/source associations reuse the existing goal store, verified native pointers and
+  one bounded relationship service. CLI/TUI mutation is explicit; MCP exposes reads only.
+  See [association evidence and limits](quality/goal-source-associations.md).
+
+- Approved shared-workspace dependencies now dispatch through the existing durable worker queue.
+  `/delegate after ID[,ID] ACCOUNT TASK` binds exact runs; `/delegate graph` explains readiness.
+  Failed prerequisites block dependants, stale results pause and restart dispatches nothing.
+  See [second-wave evidence](quality/completion-wave2.md). Worktree isolation remains open.
+
 - First completion wave adds bounded read-only project search plus dependency/recovery and native
   interaction contract foundations. See [scope and verification](quality/completion-wave1.md).
-  These foundations do not complete dependency dispatch, workspace isolation, native worker
+  These first-wave foundations alone do not complete dependency dispatch, workspace isolation, native worker
   approvals or provider parity. Existing Cursor ACP permissions/questions now bind to the exact
   conversation/run/attempt/connection, with native options preserved.
 
@@ -34,7 +43,8 @@ creation does not change the implementation status recorded here.
 - Native Windows text clipboard, accurate/failure-safe cuts and faster active-output polling.
 - Per-worker native models, batched result collection and opt-in automatic handback, bound to
   the launching conversation and using normal dispatch/recovery. Persistent worker state and
-  bounded quota failover are now implemented; dependency scheduling and isolation remain open. See
+  bounded quota failover and approved shared-workspace dependency scheduling are implemented;
+  workspace isolation remains open. See
   [orchestration and latency](orchestration-and-latency.md).
 - Stable completed-diagram rendering in long histories and inspectable patch-failure diagnostics.
 
@@ -126,7 +136,7 @@ included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.
 
 - Local memory/orchestration implementations and their fixture evidence are recorded in
   [the implementation ledger](quality/memory-orchestration-progress.md). Cwd replacement and
-  broader dependency/isolation features remain engineering work, not permission blockers.
+  broader workspace ownership/isolation features remain engineering work, not permission blockers.
 - Live provider/auth/approval parity needs an explicit provider/task scope and usage budget under
   `AGENTS.md`. No model turns have been used to clear this gate.
 - Unsupported proactive capacity requires verified native signals for installed versions.

@@ -75,6 +75,10 @@ uses its read-only quota RPC. Native execution, authentication and approvals rem
 
 ## Roadmap
 
+The [second completion wave](docs/quality/completion-wave2.md) connects approved same-workspace
+dependency tasks to the existing worker queue. Worktree isolation and broader native approval
+transports remain separate phases.
+
 The [first completion wave](docs/quality/completion-wave1.md) adds project search and dependency/
 native interaction foundations. Dependency dispatch, worktree isolation and broader native approvals
 remain later phases. Verification states and limits are recorded separately in that evidence file.
