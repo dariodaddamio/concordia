@@ -6,6 +6,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+#[path = "workspace_replace.rs"]
+pub mod replacement;
 
 pub const MAX_QUERY_BYTES: usize = 1024;
 pub const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
@@ -82,7 +84,7 @@ pub enum Status {
     Error(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SearchSummary {
     pub request: SearchRequest,
     pub hits: Vec<SearchHit>,
@@ -448,6 +450,64 @@ mod tests {
             &AtomicBool::new(false),
         );
         assert_eq!(&text[expanded.hits[0].range.clone()], "İ");
+        let state = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let file = result.hits[0].path.clone();
+        let stage = || replacement::stage(&result, &[0], "replacement", &cancel).unwrap();
+        let blocked = stage();
+        assert!(
+            replacement::apply(state.path(), blocked, std::slice::from_ref(&file), &cancel)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let stale = stage();
+        std::fs::write(&file, "newer on disk").unwrap();
+        assert!(replacement::apply(state.path(), stale, &[], &cancel).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "newer on disk");
+        std::fs::write(&file, text).unwrap();
+        let declaration = crate::workspaces::Request::shared(&req.root, &[]).unwrap();
+        let run = uuid::Uuid::new_v4().to_string();
+        let attempt = uuid::Uuid::new_v4().to_string();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            crate::workspaces::reserve(state.path(), &declaration, &run, &conversation, &attempt)
+                .unwrap(),
+            crate::workspaces::Admission::Reserved
+        );
+        assert!(replacement::apply(state.path(), stage(), &[], &cancel).is_err());
+        crate::workspaces::finish(state.path(), &run, &attempt, true).unwrap();
+        let plan = stage();
+        assert!(plan.preview.contains("-ΑΒΓ\n+replacement"));
+        let receipt = replacement::apply(state.path(), plan, &[], &cancel).unwrap();
+        assert_eq!(receipt.files[0].status, "saved");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            text.replace("ΑΒΓ", "replacement")
+        );
+        let receipt_path = state
+            .path()
+            .join("project-replacements")
+            .join(format!("{}.json", receipt.id));
+        let recorded = std::fs::read(&receipt_path).unwrap();
+        assert!(!String::from_utf8_lossy(&recorded).contains("İstanbul"));
+        let reconciled = replacement::reconcile(state.path(), &receipt.id, &cancel).unwrap();
+        assert_eq!(reconciled.files[0].status, "saved bytes present");
+        assert_eq!(std::fs::read(&receipt_path).unwrap(), recorded);
+        assert_eq!(
+            replacement::list(state.path(), &req.root, &cancel)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(replacement::stage(&result, &[0], "again", &cancel).is_err());
+        std::fs::write(&file, text).unwrap();
+        let mut duplicate = stage();
+        duplicate.id = receipt.id.clone();
+        assert!(replacement::apply(state.path(), duplicate, &[], &cancel).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let mut cancelled = stage();
+        cancelled.id = uuid::Uuid::new_v4().to_string();
+        assert!(replacement::apply(state.path(), cancelled, &[], &AtomicBool::new(true)).is_err());
     }
     #[test]
     fn ignores_credentials_builds_gitignore_and_rejects_stale_results() {
@@ -496,6 +556,10 @@ mod tests {
         assert!(verify_hit(&req, &hit, &AtomicBool::new(false)).is_err());
         hit.path = req.root.join("../escape.txt");
         assert!(verify_hit(&req, &hit, &AtomicBool::new(false)).is_err());
+        let mut forged = result.clone();
+        forged.hits[0].range = std::ops::Range { start: 4, end: 2 };
+        assert!(replacement::stage(&forged, &[0], "edited", &AtomicBool::new(false)).is_err());
+        assert!(replacement::stage(&result, &[0, 0], "edited", &AtomicBool::new(false)).is_err());
     }
 
     #[test]

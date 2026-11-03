@@ -1,5 +1,8 @@
 # Changelog
 
+- Project search supports selected literal replacements with exact previews, conflict/ownership
+  preflight, serial editor saves and durable receipts. Ctrl+H inspects interrupted batches without replay.
+
 - Opt-in Codex app-server text/image turns preserve exact thread/turn ownership, native approval
   scope and offered question answers. Pending choices queue and expire on native resolution;
   unsupported protocols stop visibly without fallback. Native subagents use the retained inspector.

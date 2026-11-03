@@ -36,10 +36,17 @@ pub(super) enum Action {
     Close,
     Changed,
     Open(VerifiedHit),
+    ApplyReplacement(search::replacement::Plan),
+    ReconcileReplacement(String),
+    ListReceipts,
+    ReplacementFinished(search::replacement::Receipt),
 }
 enum Reply {
     Summary(SearchSummary),
     Verified(Result<VerifiedHit, String>),
+    Prepared(Result<search::replacement::Plan, String>),
+    Replaced(Result<search::replacement::Receipt, String>),
+    Receipts(Result<Vec<(String, String)>, String>),
 }
 struct Job {
     generation: u64,
@@ -61,6 +68,14 @@ pub(super) struct State {
     cancel: Arc<AtomicBool>,
     pending: bool,
     message: String,
+    marked: std::collections::BTreeSet<usize>,
+    replacement: Option<String>,
+    plan: Option<search::replacement::Plan>,
+    preview_scroll: usize,
+    receipt_id: Option<String>,
+    receipt_report: Option<String>,
+    receipts: Vec<(String, String)>,
+    receipt_selected: usize,
 }
 
 impl Drop for State {
@@ -108,12 +123,31 @@ impl State {
         self.generation = self.generation.wrapping_add(1);
         self.summary = None;
         self.selected = 0;
+        self.marked.clear();
+        self.replacement = None;
+        self.plan = None;
+        self.receipt_id = None;
+        self.receipt_report = None;
+        self.receipts.clear();
+        self.receipt_selected = 0;
+        self.preview_scroll = 0;
         self.pending = false;
         self.message = "Query changed; Enter starts a fresh search".into();
     }
 
     pub fn paste(&mut self, text: &str) {
         if !self.active {
+            return;
+        }
+        if let Some(value) = self.receipt_id.as_mut().or(self.replacement.as_mut()) {
+            if self.plan.is_none() && !self.pending {
+                for c in text.chars().filter(|c| !c.is_control()) {
+                    if value.len() + c.len_utf8() > 4096 {
+                        break;
+                    }
+                    value.push(c);
+                }
+            }
             return;
         }
         self.invalidate();
@@ -130,7 +164,141 @@ impl State {
         if !self.active || key.kind == KeyEventKind::Release {
             return Action::None;
         }
+        if let Some(id) = self.receipt_id.as_mut() {
+            match key.code {
+                KeyCode::Esc => self.receipt_id = None,
+                KeyCode::Enter if !self.pending => {
+                    let selected = if id.is_empty() {
+                        self.receipts
+                            .get(self.receipt_selected)
+                            .map(|row| row.0.clone())
+                            .unwrap_or_default()
+                    } else {
+                        id.clone()
+                    };
+                    return Action::ReconcileReplacement(selected);
+                }
+                KeyCode::Up => self.receipt_selected = self.receipt_selected.saturating_sub(1),
+                KeyCode::Down => {
+                    self.receipt_selected =
+                        (self.receipt_selected + 1).min(self.receipts.len().saturating_sub(1))
+                }
+                KeyCode::Backspace => {
+                    id.pop();
+                }
+                KeyCode::Char(c) if (c.is_ascii_hexdigit() || c == '-') && id.len() < 36 => {
+                    id.push(c);
+                }
+                _ => {}
+            }
+            return Action::Changed;
+        }
+        if self.replacement.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.cancel.store(true, Ordering::Relaxed);
+                    self.cancel = Arc::new(AtomicBool::new(false));
+                    self.generation = self.generation.wrapping_add(1);
+                    self.pending = false;
+                    self.plan = None;
+                    self.replacement = None;
+                    self.message = "Replacement dismissed; search results retained".into();
+                }
+                KeyCode::F(6) | KeyCode::Enter
+                    if !self.pending
+                        && (key.code == KeyCode::F(6)
+                            || key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                {
+                    if let Some(plan) = self.plan.take() {
+                        return Action::ApplyReplacement(plan);
+                    }
+                }
+                KeyCode::Enter if !self.pending && self.plan.is_none() => {
+                    self.prepare_replacement()
+                }
+                KeyCode::Up if self.plan.is_some() => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(1)
+                }
+                KeyCode::Down if self.plan.is_some() => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(1)
+                }
+                KeyCode::PageUp if self.plan.is_some() => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(10)
+                }
+                KeyCode::PageDown if self.plan.is_some() => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(10)
+                }
+                KeyCode::Backspace if !self.pending && self.plan.is_none() => {
+                    if let Some(value) = self.replacement.as_mut() {
+                        value.pop();
+                    }
+                }
+                KeyCode::Char(c)
+                    if !self.pending
+                        && self.plan.is_none()
+                        && !c.is_control()
+                        && !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    if let Some(value) = self.replacement.as_mut() {
+                        if value.len() + c.len_utf8() <= 4096 {
+                            value.push(c);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Action::Changed;
+        }
+        if self.receipt_report.is_some() {
+            match key.code {
+                KeyCode::Up => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(1);
+                    return Action::Changed;
+                }
+                KeyCode::Down => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(1);
+                    return Action::Changed;
+                }
+                _ => {}
+            }
+        }
         match key.code {
+            KeyCode::F(2) | KeyCode::Char('r')
+                if !self.pending
+                    && (key.code == KeyCode::F(2)
+                        || key.modifiers.contains(KeyModifiers::CONTROL)) =>
+            {
+                if self.marked.is_empty() {
+                    self.message = "Space marks selected matches before replacement".into();
+                } else {
+                    self.replacement = Some(String::new());
+                    self.message="Type replacement (empty deletes); Enter previews, Ctrl+Enter applies that preview".into();
+                }
+            }
+            KeyCode::F(3) | KeyCode::Char('h')
+                if !self.pending
+                    && (key.code == KeyCode::F(3)
+                        || key.modifiers.contains(KeyModifiers::CONTROL)) =>
+            {
+                self.receipt_id = Some(String::new());
+                self.message =
+                    "Choose a replacement receipt; Enter compares current hashes without writes."
+                        .into();
+                return Action::ListReceipts;
+            }
+            KeyCode::Char(' ') if !self.pending && self.summary.is_some() => {
+                if self.marked.contains(&self.selected) {
+                    self.marked.remove(&self.selected);
+                } else {
+                    self.marked.insert(self.selected);
+                }
+                self.message = format!(
+                    "{} matches selected for replacement · Ctrl+R edits replacement",
+                    self.marked.len()
+                );
+            }
             KeyCode::Esc => {
                 self.close();
                 return Action::Close;
@@ -239,6 +407,82 @@ impl State {
             Err(_) => self.message = "Search worker could not start".into(),
         }
     }
+    fn prepare_replacement(&mut self) {
+        let Some(mut summary) = self.summary.clone() else {
+            return;
+        };
+        summary.request.generation = self.generation;
+        let selected = self.marked.iter().copied().collect::<Vec<_>>();
+        let replacement = self.replacement.clone().unwrap_or_default();
+        let cancel = self.cancel.clone();
+        self.start_job("Preparing exact replacement preview…", move || {
+            Reply::Prepared(search::replacement::stage(
+                &summary,
+                &selected,
+                &replacement,
+                &cancel,
+            ))
+        });
+    }
+    fn start_job(&mut self, message: &str, work: impl FnOnce() -> Reply + Send + 'static) {
+        self.reap_stale();
+        if self.jobs.len() >= 2 {
+            self.message = "Previous operations are stopping; try shortly".into();
+            return;
+        }
+        let Some(permit) = Permit::acquire() else {
+            self.message = "Workspace jobs are busy; try shortly".into();
+            return;
+        };
+        match std::thread::Builder::new()
+            .name("concordia-project-replacement".into())
+            .spawn(move || {
+                let _permit = permit;
+                work()
+            }) {
+            Ok(handle) => {
+                self.jobs.push(Job {
+                    generation: self.generation,
+                    handle,
+                });
+                self.pending = true;
+                self.message = message.into();
+            }
+            Err(error) => self.message = error.to_string(),
+        }
+    }
+    pub fn apply_replacement(
+        &mut self,
+        state: PathBuf,
+        plan: search::replacement::Plan,
+        blocked: Vec<PathBuf>,
+    ) {
+        if plan.conversation != self.conversation
+            || plan.root != self.root
+            || plan.generation != self.generation
+        {
+            self.message = "Replacement owner changed; preview again".into();
+            return;
+        }
+        let cancel = self.cancel.clone();
+        self.start_job(
+            "Applying reviewed replacement; Esc stops before the next file",
+            move || Reply::Replaced(search::replacement::apply(&state, plan, &blocked, &cancel)),
+        );
+    }
+    pub fn reconcile_replacement(&mut self, state: PathBuf, id: String) {
+        let cancel = self.cancel.clone();
+        self.start_job("Comparing receipt hashes; no writes…", move || {
+            Reply::Replaced(search::replacement::reconcile(&state, &id, &cancel))
+        });
+    }
+    pub fn list_receipts(&mut self, state: PathBuf) {
+        let root = self.root.clone();
+        let cancel = self.cancel.clone();
+        self.start_job("Loading replacement receipts…", move || {
+            Reply::Receipts(search::replacement::list(&state, &root, &cancel))
+        });
+    }
 
     fn reap_stale(&mut self) {
         let mut i = 0;
@@ -297,6 +541,44 @@ impl State {
                 self.summary = Some(summary);
             }
             Ok(Reply::Verified(Ok(hit))) => return Some(Action::Open(hit)),
+            Ok(Reply::Prepared(Ok(plan))) => {
+                self.message = format!(
+                    "Preview {} · F6 applies exactly these changes · Esc returns",
+                    plan.id
+                );
+                self.preview_scroll = 0;
+                self.plan = Some(plan);
+            }
+            Ok(Reply::Prepared(Err(error))) | Ok(Reply::Replaced(Err(error))) => {
+                self.message = error
+            }
+            Ok(Reply::Receipts(result)) => match result {
+                Ok(rows) => {
+                    self.receipts = rows;
+                    self.receipt_selected = 0;
+                    self.message =
+                        "↑/↓ choose a receipt · Enter compares hashes · Esc returns".into();
+                }
+                Err(error) => self.message = error,
+            },
+            Ok(Reply::Replaced(Ok(receipt))) => {
+                self.message = receipt.summary();
+                self.summary = None;
+                self.marked.clear();
+                self.replacement = None;
+                self.receipt_id = None;
+                self.receipt_report = Some(format!(
+                    "{}\n{}",
+                    self.message,
+                    receipt
+                        .files
+                        .iter()
+                        .map(|file| format!("{}: {}", file.path.display(), file.status))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+                return Some(Action::ReplacementFinished(receipt));
+            }
             Ok(Reply::Verified(Err(error))) => {
                 self.message = error;
                 self.summary = None;
@@ -314,7 +596,7 @@ impl State {
         frame.render_widget(Clear, area);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Project content search · read only ");
+            .title(" Project search · selected replacement ");
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let parts = Layout::vertical([
@@ -334,33 +616,112 @@ impl State {
             .style(Style::default().fg(Color::DarkGray)),
             parts[0],
         );
+        let prefix = if self.receipt_id.is_some() {
+            "Receipt UUID (or choose below): "
+        } else if self.replacement.is_some() {
+            "Replace with: "
+        } else if self.case_sensitive {
+            "Literal [case sensitive]: "
+        } else {
+            "Literal [Unicode lowercase]: "
+        };
+        let input = self
+            .receipt_id
+            .as_deref()
+            .or(self.replacement.as_deref())
+            .unwrap_or(&self.query);
         frame.render_widget(
-            Paragraph::new(format!(
-                "Literal [{}]: {}",
-                if self.case_sensitive {
-                    "case sensitive"
-                } else {
-                    "Unicode lowercase"
-                },
-                clean(&self.query)
-            )),
+            Paragraph::new(format!("{prefix}{}", clean(input))),
             parts[1],
         );
         if parts[1].width > 0 && parts[1].height > 0 {
-            let prefix = if self.case_sensitive {
-                "Literal [case sensitive]: "
-            } else {
-                "Literal [Unicode lowercase]: "
-            };
             let column = prefix
                 .chars()
-                .chain(self.query.chars())
+                .chain(input.chars())
                 .map(text::char_width)
                 .sum::<usize>()
                 .min(parts[1].width.saturating_sub(1) as usize) as u16;
             frame.set_cursor_position((parts[1].x + column, parts[1].y));
         }
         frame.render_widget(Paragraph::new(clean(&self.message)), parts[2]);
+        if self.receipt_id.is_some() {
+            let first = self
+                .receipt_selected
+                .saturating_sub(parts[3].height.saturating_sub(1) as usize);
+            let rows = self
+                .receipts
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(parts[3].height as usize)
+                .map(|(index, (id, label))| {
+                    Line::from(format!(
+                        "{} {} · {}",
+                        if index == self.receipt_selected {
+                            ">"
+                        } else {
+                            " "
+                        },
+                        id,
+                        clean(label)
+                    ))
+                })
+                .collect::<Vec<_>>();
+            frame.render_widget(Paragraph::new(rows), parts[3]);
+            frame.render_widget(
+                Paragraph::new("↑/↓ choose receipt · Enter inspect current hashes · Esc return"),
+                parts[4],
+            );
+            return;
+        }
+        if let Some(report) = &self.receipt_report {
+            frame.render_widget(
+                Paragraph::new(
+                    text::terminal_text(
+                        &report
+                            .lines()
+                            .skip(
+                                self.preview_scroll
+                                    .min(report.lines().count().saturating_sub(1)),
+                            )
+                            .take(parts[3].height as usize)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                    .0,
+                )
+                .wrap(ratatui::widgets::Wrap { trim: false }),
+                parts[3],
+            );
+            frame.render_widget(
+                Paragraph::new("↑/↓ scroll · F3 receipts · type a new search · Esc close"),
+                parts[4],
+            );
+            return;
+        }
+        if let Some(plan) = &self.plan {
+            let lines = plan
+                .preview
+                .lines()
+                .skip(
+                    self.preview_scroll
+                        .min(plan.preview.lines().count().saturating_sub(1)),
+                )
+                .take(parts[3].height as usize)
+                .map(|line| {
+                    Line::styled(
+                        text::terminal_text(line).0,
+                        transcript::diff_line_style(line),
+                    )
+                })
+                .collect::<Vec<_>>();
+            frame.render_widget(Paragraph::new(lines), parts[3]);
+            frame.render_widget(
+                Paragraph::new("↑/↓ scroll · F6 apply this preview · Esc return"),
+                parts[4],
+            );
+            return;
+        }
         let visible = parts[3].height as usize / 2;
         let first = self.selected.saturating_sub(visible.saturating_sub(1));
         let mut lines = Vec::new();
@@ -381,7 +742,13 @@ impl State {
                 lines.push(Line::styled(
                     format!(
                         "{} {}:{}:{}",
-                        if i == self.selected { ">" } else { " " },
+                        if self.marked.contains(&i) {
+                            "✓"
+                        } else if i == self.selected {
+                            ">"
+                        } else {
+                            " "
+                        },
                         clean(&label),
                         hit.line,
                         hit.column
@@ -397,7 +764,7 @@ impl State {
         frame.render_widget(Paragraph::new(lines), parts[3]);
         frame.render_widget(
             Paragraph::new(
-                "Enter search/open · ↑/↓ choose · Tab case · Esc close (chat draft preserved)",
+                "Enter search/open · Space select · F2 replace · F3 receipts · Tab case · Esc close",
             )
             .style(Style::default().fg(Color::DarkGray)),
             parts[4],
@@ -445,6 +812,46 @@ mod tests {
         assert!(old.load(Ordering::Relaxed));
         assert!(state.generation > generation);
         assert!(!state.case_sensitive);
+        std::fs::write(dir.path().join("notes.txt"), "needle needle").unwrap();
+        state.invalidate();
+        state.query = "needle".into();
+        state.summary = Some(search::search(
+            SearchRequest::new(
+                &state.root,
+                &state.conversation,
+                state.generation,
+                "needle",
+                true,
+            )
+            .unwrap(),
+            &AtomicBool::new(false),
+        ));
+        state.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        state.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        state.paste("replacement");
+        state.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.pending {
+            state.poll(dir.path(), "conversation");
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(state.replacement.as_deref(), Some("replacement"));
+        assert!(state
+            .plan
+            .as_ref()
+            .unwrap()
+            .preview
+            .contains("-needle\n+replacement"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+            "needle needle"
+        );
+        assert!(matches!(
+            state.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
+            Action::ApplyReplacement(_)
+        ));
+        state.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(
             state.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Action::Close
