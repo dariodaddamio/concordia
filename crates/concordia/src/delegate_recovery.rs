@@ -253,7 +253,7 @@ mod tests {
         drop(restored);
         let mut corrupt: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(corrupt["version"], 3);
+        assert_eq!(corrupt["version"], 4);
         corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
         let bytes = serde_json::to_vec(&corrupt).unwrap();
         std::fs::write(&path, &bytes).unwrap();
@@ -294,6 +294,10 @@ struct SavedJob {
     state: WorkerState,
     origin: Origin,
     source: Option<String>,
+    #[serde(default)]
+    routing: Option<crate::routing::Approved>,
+    #[serde(default)]
+    route_history: Vec<String>,
     native_session: Option<String>,
     collected: bool,
     attempts: Vec<String>,
@@ -347,7 +351,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1..=3)
+            if !matches!(ledger.version, 1..=4)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -381,6 +385,15 @@ impl Delegates {
                     || saved.attempts.len() > 4
                     || saved.attempt_records.len() > 4
                     || saved.attempt_records.iter().any(|attempt| !attempt.valid())
+                    || saved.route_history.len() > 4
+                    || saved
+                        .route_history
+                        .iter()
+                        .any(|report| report.len() > 32_000)
+                    || saved
+                        .routing
+                        .as_ref()
+                        .is_some_and(|routing| !routing.valid())
                     || std::fs::canonicalize(&saved.spec.cwd).ok().as_ref() != Some(&workspace)
                 {
                     return Err(
@@ -402,7 +415,7 @@ impl Delegates {
                     WorkerState::Paused
                 };
                 jobs.push(Job {
-                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source,
+                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, routing:saved.routing, route_history:saved.route_history,
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
                     task:saved.task, model:saved.spec.model.clone(), trust:saved.spec.trust, spec:saved.spec,
                     state, origin:saved.origin, collected:saved.collected,
@@ -471,6 +484,8 @@ impl Delegates {
                 state: j.state,
                 origin: j.origin,
                 source: j.source_id.clone(),
+                routing: j.routing.clone(),
+                route_history: j.route_history.clone(),
                 native_session: j.session_id.clone(),
                 collected: j.collected,
                 attempts: j.attempts.clone(),
@@ -478,7 +493,7 @@ impl Delegates {
             })
             .collect();
         let bytes = serde_json::to_vec(&Ledger {
-            version: 3,
+            version: 4,
             owner: recovery.owner.clone(),
             workspace: recovery.workspace.clone(),
             conversation: self.conversation_id.clone(),
@@ -628,6 +643,12 @@ impl Delegates {
         let Some(job) = self.get(id) else {
             return false;
         };
+        let Some(approved) = &job.routing else {
+            return false;
+        };
+        if !approved.failover {
+            return false;
+        }
         // A confirmed terminal quota error before any work is safe to reroute. Any tool or partial
         // answer, cancellation, or unconfirmed exit requires reconciliation instead.
         if job.cancel_requested
@@ -647,45 +668,49 @@ impl Delegates {
         {
             return false;
         }
-        let current_identity = job
-            .spec
-            .home
-            .as_ref()
-            .and_then(|h| identity_key(job.provider, h));
-        let orchestrator =
-            crate::store::get_use_selection(&root).map(|s| normalize_account_id(&s.account));
-        let selection = settings
-            .workers
-            .iter()
-            .filter(|a| {
-                !job.attempts.contains(a)
-                    && self.running_for(a).is_none()
-                    && orchestrator.as_ref() != Some(a)
-            })
-            .find_map(|account| {
-                let a = get_account(&root, account)?;
-                let h = a.home_path.as_ref()?;
-                if !is_logged_in(a.provider, h)
-                    || job.spec.home.as_ref().is_some_and(|old| {
-                        std::fs::canonicalize(old).ok() == std::fs::canonicalize(h).ok()
-                    })
-                    || (current_identity.is_some()
-                        && identity_key(a.provider, h) == current_identity)
-                {
-                    return None;
-                }
-                let model = settings.worker_models.get(account).cloned();
-                if model
+        let mut context = crate::routing::Context::new(
+            crate::routing::Purpose::WorkerFailover,
+            &job.account,
+            job.provider,
+            job.spec.home.clone(),
+            job.model.clone(),
+        );
+        context.owner_account = approved.owner.clone();
+        context.workers = Some(settings.workers.iter().cloned().collect());
+        context
+            .attempted_accounts
+            .extend(job.attempts.iter().cloned());
+        context
+            .attempted_pairs
+            .extend(job.attempt_records.iter().filter_map(|attempt| {
+                attempt
+                    .model
                     .as_ref()
-                    .is_some_and(|m| !crate::catalog::list_models(a.provider, h).contains(m))
-                {
-                    return None;
-                }
-                Some((a, model))
-            });
-        let Some((target, model)) = selection else {
+                    .map(|model| (attempt.account.clone(), model.clone()))
+            }));
+        for target in &approved.targets {
+            if self.jobs.iter().any(|other| {
+                other.id != id && other.account == target.target.account && other.state.is_running()
+            }) {
+                context.running.insert(target.target.account.clone());
+            }
+        }
+        let Ok(decision) = approved.evaluate(&root, &context) else {
             return false;
         };
+        let report: String = decision.report().join("\n").chars().take(8000).collect();
+        if let Some(job) = self.get_mut(id) {
+            if job.route_history.len() < 4 {
+                job.route_history.push(report);
+            }
+        }
+        let Some(selected) = decision.selected() else {
+            return false;
+        };
+        let Some(target) = get_account(&root, &selected.candidate.target.account) else {
+            return false;
+        };
+        let model = selected.candidate.target.model.clone();
         if let Some(job) = self.get_mut(id) {
             job.attempts.push(target.account.clone());
             job.attempt_records.push(Attempt::new(

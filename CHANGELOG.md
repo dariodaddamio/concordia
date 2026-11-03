@@ -1,5 +1,15 @@
 # Changelog
 
+### Added (`2026-11-02p`)
+- Main continuation and workers share local route eligibility and explicit skipped-target reasons.
+  `/continuation routes` and `/delegate routes [ID]` inspect candidates and captured failover decisions.
+  Cached quota observations remain separate from unknown capacity; inspection makes no provider calls.
+- `/continuation policy set ACCOUNT[:MODEL] ...` and `/delegate policy set ACCOUNT[:MODEL] ...`
+  save ordered overrides for future tasks. `policy legacy` restores existing configured ordering.
+  Approved tasks retain their sequence and account/home/login bindings across policy edits and recovery.
+- Worker ledger v4 and unfinished-request v2 preserve routing snapshots, migrate earlier metadata
+  without replay, and pause changed bindings. Main/worker retry caps and manual defaults remain intact.
+
 ### Added (`2026-11-02o`)
 - Main and worker usage records bind native launch attempts to their run, account/home, model,
   workspace and reported counters. Repeated terminal snapshots do not accumulate twice. Failed,

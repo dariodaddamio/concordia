@@ -13,6 +13,8 @@ pub(super) struct Checkpoint {
     pub sources: Vec<crate::native_memory::Binding>,
     pub tried: Vec<String>,
     pub reason: String,
+    #[serde(default)]
+    pub routing: Option<crate::routing::Approved>,
 }
 
 impl App {
@@ -80,7 +82,11 @@ impl App {
         self.keep.turn_recovery_notice = matches!(&result, Some(Ok(Some(_))) | Some(Err(_)));
         match result {
             Some(Ok(Some(checkpoint))) => {
-                if checkpoint.version != 1
+                if !matches!(checkpoint.version, 1 | 2)
+                    || checkpoint
+                        .routing
+                        .as_ref()
+                        .is_some_and(|routing| !routing.valid())
                     || uuid::Uuid::parse_str(&checkpoint.run_id).is_err()
                     || checkpoint.prompt.len() > 1024 * 1024
                     || checkpoint.sources.len() > 8
@@ -129,6 +135,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("fixture-home");
         std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("auth.json"), "synthetic-login-presence-marker").unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[continuation]\naccounts=['fixture']\n",
+        )
+        .unwrap();
         crate::store::upsert_stored_account(
             dir.path(),
             crate::store::StoredAccount {
@@ -152,6 +164,9 @@ mod tests {
             app.editor.set_text("newer unsent draft");
             app.queue.items.push("later work".into());
             app.persist_draft_now();
+            let snapshot = app.keep.lease.as_ref().unwrap().turn().unwrap().unwrap();
+            assert_eq!(snapshot.version, 2);
+            assert!(snapshot.routing.as_ref().unwrap().valid());
             assert_eq!(
                 app.keep
                     .lease

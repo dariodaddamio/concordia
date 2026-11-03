@@ -357,6 +357,17 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
     })
     .unwrap();
     let recovery = env.path("pane/worker-runs");
+    std::fs::write(
+        env.path("worker-one/models_cache.json"),
+        r#"["model-a","model-b"]"#,
+    )
+    .unwrap();
+    concordia::routing::policy_command(
+        env.dir.path(),
+        true,
+        "set worker-one:model-a worker-one:model-b worker-two",
+    )
+    .unwrap();
     let mut d = Delegates::default();
     d.attach_recovery(&recovery, &cwd, env.dir.path()).unwrap();
     let id = d
@@ -367,7 +378,7 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
                 task: "bounded task [quota]".into(),
                 origin: Origin::User,
                 spec: JobSpec {
-                    model: None,
+                    model: Some("model-a".into()),
                     home: Some(env.path("worker-one")),
                     cwd: cwd.clone(),
                     prompt: "bounded task [quota]".into(),
@@ -379,6 +390,15 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
         )
         .unwrap();
     let run = d.get(id).unwrap().run_id.clone();
+    let approved = d
+        .get(id)
+        .unwrap()
+        .routing
+        .as_ref()
+        .unwrap()
+        .revision
+        .clone();
+    concordia::routing::policy_command(env.dir.path(), true, "set worker-one:model-a").unwrap();
     until(&mut d, 20, |d| d.get(id).unwrap().state.is_finished()).await;
     assert_eq!(
         d.get(id).unwrap().state,
@@ -391,7 +411,7 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
     let usage = concordia::token_log::load(env.dir.path());
     assert_eq!(
         usage.len(),
-        2,
+        3,
         "each failover attempt is accounted separately"
     );
     assert!(usage
@@ -402,6 +422,17 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
         usage[1].attribution.as_ref().unwrap().attempt
     );
     assert!(concordia::token_log::totals(&usage).incomplete_events > 0);
+    assert_eq!(
+        d.get(id).unwrap().routing.as_ref().unwrap().revision,
+        approved,
+        "changing the future-task policy cannot replace an approved failover sequence"
+    );
+    assert!(d
+        .get(id)
+        .unwrap()
+        .routing_summary()
+        .contains("already attempted"));
+    let decisions = d.get(id).unwrap().route_history.clone();
     d.reserve_delivery(&[id]).unwrap();
     let before = std::fs::read_to_string(&journal).unwrap();
     assert_eq!(
@@ -409,7 +440,7 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
             .lines()
             .filter(|l| l.contains("\"kind\":\"start\""))
             .count(),
-        2
+        3
     );
     drop(d);
     let mut restored = Delegates::default();
@@ -417,6 +448,11 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
         .attach_recovery(&recovery, &cwd, env.dir.path())
         .unwrap();
     assert_eq!(restored.get(id).unwrap().run_id, run);
+    assert_eq!(restored.get(id).unwrap().route_history, decisions);
+    assert_eq!(
+        restored.get(id).unwrap().routing.as_ref().unwrap().revision,
+        approved
+    );
     assert!(restored.get(id).unwrap().collected);
     assert!(restored.get(id).unwrap().text.is_empty());
     restored.poll(Instant::now());

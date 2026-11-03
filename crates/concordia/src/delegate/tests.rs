@@ -209,6 +209,8 @@ fn bare_job(id: u32, account: &str, state: WorkerState) -> Job {
         run_id: uuid::Uuid::new_v4().to_string(),
         conversation_id: uuid::Uuid::new_v4().to_string(),
         source_id: None,
+        routing: None,
+        route_history: Vec::new(),
         attempts: vec![],
         attempt_records: vec![],
         model: None,

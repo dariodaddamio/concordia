@@ -1,5 +1,9 @@
 # Orchestration and latency
 
+Main continuation and workers share [local routing policies](quality/routing-policies.md),
+including skipped-target reasons, ordered overrides and approval-time identity bindings.
+Inspection never probes provider capacity. Policy edits affect future tasks.
+
 Concordia runs the unmodified native provider CLIs. It does not run a second model to relay each
 reply. Standard turns start a native CLI process and consume its structured output directly;
 Cursor images use its ACP connection. Process startup, native context loading, tools, model

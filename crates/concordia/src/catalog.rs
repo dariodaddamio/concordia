@@ -5,6 +5,29 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
+fn read_local_cache(home: &Path, relative: &str) -> Option<String> {
+    use std::io::Read;
+    let root = home.canonicalize().ok()?;
+    let path = root.join(relative);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return None;
+    }
+    if !path.canonicalize().ok()?.starts_with(&root) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .ok()?
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 pub fn list_models(provider: ProviderKind, home: &Path) -> Vec<String> {
     match provider {
         ProviderKind::Codex => list_codex_models(home),
@@ -14,8 +37,7 @@ pub fn list_models(provider: ProviderKind, home: &Path) -> Vec<String> {
 }
 
 fn list_codex_models(home: &Path) -> Vec<String> {
-    let cache = home.join("models_cache.json");
-    let Ok(raw) = fs::read_to_string(&cache) else {
+    let Some(raw) = read_local_cache(home, "models_cache.json") else {
         return Vec::new();
     };
     let Ok(v) = serde_json::from_str::<Value>(&raw) else {
@@ -52,8 +74,7 @@ fn list_claude_models(home: &Path) -> Vec<String> {
         "cache/model-catalog.json",
         "cache/additionalModelOptionsCache.json",
     ] {
-        let p = home.join(rel);
-        let Ok(raw) = fs::read_to_string(&p) else {
+        let Some(raw) = read_local_cache(home, rel) else {
             continue;
         };
         let Ok(v) = serde_json::from_str::<Value>(&raw) else {
@@ -66,7 +87,7 @@ fn list_claude_models(home: &Path) -> Vec<String> {
 
 fn list_cursor_models(home: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(raw) = fs::read_to_string(home.join("cli-config.json")) {
+    if let Some(raw) = read_local_cache(home, "cli-config.json") {
         if let Ok(v) = serde_json::from_str::<Value>(&raw) {
             if let Some(id) = v
                 .get("model")

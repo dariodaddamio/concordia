@@ -1,5 +1,17 @@
 # Everyday E2E status (MVP A)
 
+## Routing candidate, 2026-11-02p
+
+Production source `6d637dd` shares local routing decisions across main/worker dispatch, freezes
+ordered policy and identity bindings at approval, and exposes skipped-target reasons. All 983
+enabled tests, all-target Clippy, release/smoke, portable everyday smoke and OSS/privacy gates pass.
+All 48 ConPTY journeys pass against the exact portable-installed candidate in 290.32 seconds.
+Release/installed SHA-256 matches and is unchanged after the journeys:
+`7E9DC3A9939E120D90E7CECCE263072FE96EDF681C1F48FADFFD5218E05CA914`.
+Size: 18,098,688 bytes (17.26 MiB). The ordinary installed build remains `2026-11-02o` during
+continued roadmap implementation. Remote CI, live native-provider evidence and publication remain
+separate gates. [Scope and evidence](quality/routing-policies.md).
+
 ## Candidate verification, 2026-11-02k
 
 First-wave validation tree: `e533e48` (production source `bcf7c2f`). The candidate adds read-only

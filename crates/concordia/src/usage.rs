@@ -992,6 +992,47 @@ struct CachedUsage {
     identity: Option<UsageIdentity>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedObservation {
+    pub observed_at: u64,
+    pub fresh: bool,
+    pub exhausted: bool,
+}
+
+/// Local, identity-bound cache inspection only. Never constructs a fetcher or starts a provider.
+pub fn peek_cached_usage(
+    root: &Path,
+    provider: crate::store::ProviderKind,
+    account: &str,
+    home: &Path,
+) -> Option<CachedObservation> {
+    use std::io::Read;
+    let identity = UsageIdentity::new(provider, account, home);
+    let file = fs::File::open(identity.cache_path(root)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 64 * 1024 {
+        return None;
+    }
+    let cached: CachedUsage = serde_json::from_slice(&bytes).ok()?;
+    let now = unix_now();
+    if cached.identity.as_ref() != Some(&identity)
+        || cached.fetched_at > now
+        || cached.windows.len() > 16
+        || cached
+            .windows
+            .iter()
+            .any(|window| !window.used_pct.is_finite() || !(0.0..=100.0).contains(&window.used_pct))
+    {
+        return None;
+    }
+    Some(CachedObservation {
+        observed_at: cached.fetched_at,
+        fresh: now.saturating_sub(cached.fetched_at) < USAGE_TTL_SECS,
+        exhausted: cached.windows.iter().any(|window| window.used_pct >= 100.0),
+    })
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)

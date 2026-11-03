@@ -47,6 +47,10 @@ pub(super) struct Panel {
     auto_return_paused: bool,
     recovery_notice: bool,
     recoveries: Vec<RecoveryRead>,
+    route_read: Option<(
+        u64,
+        std::sync::mpsc::Receiver<Result<crate::routing::Decision, String>>,
+    )>,
 }
 
 struct RecoveryRead {
@@ -383,6 +387,8 @@ pub(super) fn viewer_text(j: &Job) -> String {
     t.push_str(&identity);
     t.push_str(&j.usage_summary());
     t.push('\n');
+    t.push_str(&j.routing_summary());
+    t.push('\n');
     t.push_str(&format!("task: {}\n", one_line(&j.task)));
     t.push_str(&format!(
         "model: {} | result: {}\n",
@@ -547,6 +553,60 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 }
 
 impl App {
+    pub(super) fn worker_route_inputs(
+        &self,
+    ) -> Result<(Vec<crate::routing::Target>, crate::routing::Context), String> {
+        let settings = get_settings(&self.state_root);
+        let mut context = crate::routing::Context::new(
+            crate::routing::Purpose::Worker,
+            &self.account,
+            self.provider,
+            self.home_path.clone(),
+            Some(self.model.clone()),
+        );
+        context.workers = Some(
+            settings
+                .workers
+                .iter()
+                .map(|account| normalize_account_id(account))
+                .collect(),
+        );
+        let targets = crate::routing::worker_targets(&self.state_root)?;
+        for account in &settings.workers {
+            if self.deleg.d.running_for(account).is_some() {
+                context.running.insert(account.clone());
+            }
+            context
+                .queued
+                .insert(account.clone(), self.deleg.d.queued_for(account));
+        }
+        Ok((targets, context))
+    }
+
+    pub(super) fn inspect_routes(
+        &mut self,
+        targets: Vec<crate::routing::Target>,
+        context: crate::routing::Context,
+        approved: Option<crate::routing::Approved>,
+    ) {
+        if self.deleg.route_read.is_some() {
+            self.push_system("A local route inspection is already running.");
+            return;
+        }
+        let root = self.state_root.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.deleg.route_read = Some((self.deleg.generation, rx));
+        std::thread::spawn(move || {
+            let decision = approved
+                .map(|approved| approved.evaluate(&root, &context))
+                .unwrap_or_else(|| Ok(crate::routing::capture(&root, &targets, &context)));
+            let _ = tx.send(decision);
+        });
+        self.push_system(
+            "Reading local route facts; capacity remains unknown without a verified observation.",
+        );
+    }
+
     pub(super) fn restore_workers(&mut self) {
         let Some(lease) = self.keep.lease.as_ref() else {
             return;
@@ -627,6 +687,31 @@ impl App {
 
     /// Apply worker events and post the result of each worker that finished.
     pub(super) fn poll_delegates(&mut self) {
+        if let Some((generation, rx)) = &self.deleg.route_read {
+            match rx.try_recv() {
+                Ok(decision) => {
+                    let current = *generation == self.deleg.generation;
+                    self.deleg.route_read = None;
+                    if current {
+                        self.push_system(
+                            decision
+                                .map(|decision| decision.report().join("\n"))
+                                .unwrap_or_else(|error| error),
+                        );
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let current = *generation == self.deleg.generation;
+                    self.deleg.route_read = None;
+                    if current {
+                        self.push_system(
+                            "Local route inspection stopped; retry the inspection command.",
+                        );
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         let now = Instant::now();
         let finished = self.deleg.d.poll(now);
         if let Some(error) = self.deleg.d.recovery_error() {
@@ -860,24 +945,7 @@ impl App {
         if workers.is_empty() {
             return Err("no workers yet - /workers add <account>".into());
         }
-        let usable = |id: &str| -> bool {
-            id != orch
-                && get_account(&self.state_root, id)
-                    .and_then(|a| a.home_path.map(|h| is_logged_in(a.provider, &h)))
-                    .unwrap_or(false)
-        };
-        let account = if target == "auto" {
-            workers
-                .iter()
-                .find(|w| usable(w) && self.deleg.d.running_for(w).is_none())
-                .or_else(|| {
-                    workers
-                        .iter()
-                        .find(|w| usable(w) && self.deleg.d.queued_for(w) == 0)
-                })
-                .cloned()
-                .ok_or("no worker is free (all busy or logged out) - /workers")?
-        } else {
+        let manual = if target != "auto" {
             let t = normalize_account_id(target);
             if t == orch {
                 return Err(format!(
@@ -887,8 +955,30 @@ impl App {
             if !workers.contains(&t) {
                 return Err(format!("{t} is not a worker - /workers add {t}"));
             }
-            t
+            Some(t)
+        } else {
+            None
         };
+        let (mut targets, context) = self.worker_route_inputs()?;
+        if let Some(account) = &manual {
+            targets = vec![crate::routing::Target {
+                account: account.clone(),
+                model: settings.worker_models.get(account).cloned(),
+            }];
+        }
+        let decision = crate::routing::capture(&self.state_root, &targets, &context);
+        let selected = if manual.is_some() {
+            decision
+                .candidates
+                .iter()
+                .find(|candidate| candidate.eligible)
+        } else {
+            decision.selected()
+        };
+        let model = selected.map(|row| row.candidate.target.model.clone());
+        let account = selected
+            .map(|row| row.candidate.target.account.clone())
+            .ok_or_else(|| format!("no eligible worker; {}", decision.report().join("\n")))?;
         let acct = get_account(&self.state_root, &account).ok_or_else(|| {
             format!("account {account} no longer exists - /workers remove {account}")
         })?;
@@ -921,7 +1011,7 @@ impl App {
                 task: task.to_string(),
                 origin,
                 spec: JobSpec {
-                    model: settings.worker_models.get(&account).cloned(),
+                    model: model.flatten(),
                     home,
                     cwd: self.cwd.clone(),
                     prompt: task.to_string(),
@@ -1019,6 +1109,19 @@ impl App {
                     self.push_system("No dependency tasks in this conversation.");
                 }
                 for line in lines { self.push_system(line); }
+            }
+            SlashCommand::DelegateRoutes(Some(id)) => {
+                self.push_system(self.deleg.d.get(*id).map(|job| job.routing_summary()).unwrap_or_else(|| "Unknown worker job".into()));
+            }
+            SlashCommand::DelegateRoutes(None) => {
+                match self.worker_route_inputs() {
+                    Ok((targets, context)) => self.inspect_routes(targets, context, None),
+                    Err(error) => self.push_system(error),
+                }
+            }
+            SlashCommand::DelegatePolicy(command) => {
+                let result = crate::routing::policy_command(&self.state_root, true, command).unwrap_or_else(|error| error);
+                self.push_system(result);
             }
             SlashCommand::DelegateUse(acct) => self.delegate_use(acct.as_deref()),
             SlashCommand::DelegateCollect => self.delegate_collect(),

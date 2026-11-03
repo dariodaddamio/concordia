@@ -1,5 +1,12 @@
 # Delegation (orchestrator and workers)
 
+Build `2026-11-02p` adds shared routing explanations and saved ordered account/model policies.
+`/delegate routes` inspects current eligibility; `/delegate routes ID` shows the task's captured
+policy and recorded failover reasons. `/delegate policy set ACCOUNT[:MODEL] ...` changes future
+tasks only; `policy legacy` restores the existing worker order. Approved and queued tasks retain
+their account/home/login bindings. A changed binding pauses dispatch. Ledger v4 migrates earlier
+versions without replay. [Routing behavior and limits](quality/routing-policies.md).
+
 Build `2026-11-02o` records worker usage per native attempt, including failure, cancellation and
 interruption. `/usage` → tokens groups worker/main origins and runs, with unknown counters and
 reported-cost coverage. Worker inspection shows every attempt. Recovery reconciles accounting
