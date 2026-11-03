@@ -101,6 +101,7 @@ impl UsageWindow {
 
 #[derive(Debug, Clone)]
 pub struct UsageSnapshot {
+    pub credits: Option<Credits>,
     /// Subscription tier reported by the provider, never inferred from account names.
     pub plan: Option<String>,
     /// Short, for the footer: `5h 59% left · 7d 41% left`.
@@ -117,6 +118,7 @@ impl UsageSnapshot {
     /// A snapshot with no numbers, only an explanation.
     pub fn no_data(summary: impl Into<String>, detail: impl Into<String>) -> Self {
         UsageSnapshot {
+            credits: None,
             plan: None,
             summary: summary.into(),
             detail: detail.into(),
@@ -138,6 +140,20 @@ impl UsageSnapshot {
             parts.insert(0, "LIMIT HIT".into());
         }
         parts.join(" · ")
+    }
+
+    pub fn credits_text(&self) -> String {
+        match &self.credits {
+            Some(credits) if credits.unlimited == Some(true) => "Credits: unlimited".into(),
+            Some(credits) if credits.balance.is_some() => {
+                format!("Credits: {} balance", credits.balance.unwrap())
+            }
+            Some(credits) if credits.has_credits == Some(false) => "Credits: none available".into(),
+            Some(credits) if credits.has_credits == Some(true) => {
+                "Credits: available; balance not reported".into()
+            }
+            _ => "Credits: not reported".into(),
+        }
     }
 
     fn max_used(&self) -> Option<f64> {
@@ -415,6 +431,7 @@ fn snapshot_from_windows(
         .filter(|w| !w.expired())
         .map(|w| w.used_pct);
     UsageSnapshot {
+        credits: None,
         plan: None,
         summary: parts.join(" · "),
         detail: lines.join("\n"),
@@ -449,7 +466,7 @@ struct RateWindow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Credits {
+pub struct Credits {
     #[serde(alias = "hasCredits")]
     has_credits: Option<bool>,
     unlimited: Option<bool>,
@@ -1585,6 +1602,7 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
         }
     }
     let mut snapshot = snapshot_from_windows(windows, limit_kind, extras, source);
+    snapshot.credits = u.credits.clone();
     snapshot.plan = u.plan_type.clone().filter(|p| p != "unknown");
     snapshot
 }

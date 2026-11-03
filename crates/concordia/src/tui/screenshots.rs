@@ -375,6 +375,7 @@ fn snap(windows: &[(&str, f64, &str)]) -> crate::usage::UsageSnapshot {
         })
         .collect();
     crate::usage::UsageSnapshot {
+        credits: None,
         plan: None,
         summary: String::new(),
         detail: String::new(),
