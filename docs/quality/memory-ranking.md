@@ -58,6 +58,10 @@ retain their exact source excerpts. Ranking never writes a suggested association
 Existing Codex/Claude fixtures cover irrelevant keyword collisions, explicit goals and handoffs,
 same-named files in different roots, Unicode, timezone/calendar boundaries, deterministic ordering,
 stale sources, immutable cache preservation, pagination and paths that do not exist on disk.
-The enabled 983-test suite passes. Final candidate Clippy, installed terminal and smoke evidence
-is pending. No real model turn or claim of improved model recall is part of this evidence.
+Production source `0374dde` passes the enabled 983-test suite, all-target Clippy with warnings
+denied, release smoke, portable everyday smoke and OSS gates (328 tracked text files). All
+48 installed ConPTY journeys pass in 310.86 seconds; the focused memory journey passes alone
+in 9.32 seconds. Release/portable build `2026-11-02t` is 18,792,960 bytes with SHA-256
+`226ABF48791F5FD1DA29DD78B573308B13F8BE431B8DFD7AD2C220DE6845098C`.
+No real model turn or claim of improved model recall is part of this evidence.
 Related-chat grouping (M2) and a versioned retrieval evaluation corpus (M3) remain separate work.
