@@ -14,6 +14,13 @@ pub struct Entry {
     pub custom: bool,
 }
 
+fn everyday(command: &str) -> bool {
+    !matches!(
+        command,
+        "/memory" | "/context" | "/scope" | "/worktree" | "/harness"
+    )
+}
+
 /// Commands whose full text starts with what the user has typed. Only a single-line prompt that
 /// begins with `/` gets suggestions; everything else is ordinary chat text.
 #[cfg(test)]
@@ -30,6 +37,7 @@ pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
     let builtin = SLASH_COMMANDS
         .iter()
         .filter(|(cmd, _)| cmd.starts_with(&typed))
+        .filter(|(cmd, _)| typed != "/" || everyday(cmd))
         .map(|&(command, help)| Entry {
             command: command.to_string(),
             help: help.to_string(),
@@ -96,11 +104,18 @@ mod tests {
     #[test]
     fn a_bare_slash_lists_every_command() {
         let all = cmds("/");
-        assert_eq!(all.len(), SLASH_COMMANDS.len());
+        assert_eq!(
+            all.len(),
+            SLASH_COMMANDS
+                .iter()
+                .filter(|(cmd, _)| everyday(cmd))
+                .count()
+        );
         assert_eq!(
             all,
             SLASH_COMMANDS
                 .iter()
+                .filter(|(cmd, _)| everyday(cmd))
                 .map(|(command, _)| *command)
                 .collect::<Vec<_>>()
         );
@@ -108,6 +123,8 @@ mod tests {
 
     #[test]
     fn typing_narrows_by_prefix_case_insensitively() {
+        assert_eq!(cmds("/mem"), ["/memory"]);
+        assert!(!cmds("/").iter().any(|cmd| cmd == "/memory"));
         assert_eq!(cmds("/up"), ["/update"]);
         assert_eq!(cmds("/UP"), ["/update"]);
         assert_eq!(cmds("/use a"), Vec::<&str>::new());
@@ -146,7 +163,14 @@ go",
         .unwrap();
         let user = crate::user_commands::scan(dir.path()).commands;
         let all = matching_with("/", &user);
-        assert_eq!(all.len(), SLASH_COMMANDS.len() + 1);
+        assert_eq!(
+            all.len(),
+            SLASH_COMMANDS
+                .iter()
+                .filter(|(cmd, _)| everyday(cmd))
+                .count()
+                + 1
+        );
         let last = all.last().unwrap();
         assert_eq!(
             (last.command.as_str(), last.help.as_str(), last.custom),

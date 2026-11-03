@@ -6,7 +6,7 @@ use crate::context::{plan_continuity, ContinuityRequest, PackMessage, PackRole};
 use crate::identity::{format_identity_label, inspect_provider};
 use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
 use crate::provider::turn::{
-    plan_provider_turn, run_provider_turn_with_owner, ProviderTurnRequest, RunningTurn,
+    plan_provider_turn, run_provider_turn_with_transport, ProviderTurnRequest, RunningTurn,
     TurnOutcome, TurnProgress,
 };
 use crate::sessions::{
@@ -88,6 +88,7 @@ mod turn_checkpoint;
 mod usage_style;
 #[cfg(test)]
 mod ux_tests;
+mod worker_input;
 mod workers;
 mod workspace;
 mod workspace_scope;
@@ -195,23 +196,17 @@ impl Phase {
     /// Each phase has its own width-1 braille animation, so the state reads from motion alone.
     fn frames(&self) -> &'static [&'static str] {
         match self {
-            Phase::Waiting => &SPINNER,
-            Phase::Thinking => &[
-                "\u{2801}", "\u{2802}", "\u{2804}", "\u{2840}", "\u{2880}", "\u{2820}", "\u{2810}",
-                "\u{2808}",
-            ],
-            Phase::Tool(_) => &[
-                "\u{28fe}", "\u{28fd}", "\u{28fb}", "\u{28bf}", "\u{287f}", "\u{28df}", "\u{28ef}",
-                "\u{28f7}",
-            ],
-            Phase::Writing => &[
-                "\u{2809}", "\u{2819}", "\u{281a}", "\u{2812}", "\u{2832}", "\u{2834}", "\u{2824}",
-                "\u{2834}", "\u{2832}", "\u{2812}", "\u{281a}", "\u{2819}",
-            ],
+            Phase::Waiting => &["◌", "○", "◌", "·"],
+            Phase::Thinking => &["◇", "◈", "◆", "◈"],
+            Phase::Tool(_) => &["›", "»", "›", "·"],
+            Phase::Writing => &["▁", "▂", "▃", "▄", "▃", "▂"],
         }
     }
 
     fn frame(&self, tick: u64) -> &'static str {
+        if let Phase::Tool(name) = self {
+            return crate::provider::stream_cards::tool_icon(name);
+        }
         let f = self.frames();
         f[(tick as usize) % f.len()]
     }
@@ -560,22 +555,28 @@ impl App {
     }
 
     fn window_title(&self) -> String {
-        let (icon, status) = if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
-            ("\u{21bb}", "Updating")
-        } else if self.cancel_requested && self.busy {
-            ("\u{25a0}", "Stopping")
-        } else if self.busy {
-            match self.phase {
-                Phase::Waiting => ("\u{25cc}", "Waiting"),
-                Phase::Thinking => ("\u{2726}", "Thinking"),
-                Phase::Tool(_) => ("\u{2699}", "Running tool"),
-                Phase::Writing => ("\u{270e}", "Writing"),
-            }
-        } else if self.continuation.waiting() {
-            ("!", "Usage limit")
-        } else {
-            ("\u{25c7}", "Idle")
-        };
+        let (icon, status): (&str, String) =
+            if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
+                ("\u{21bb}", "Updating".into())
+            } else if self.cancel_requested && self.busy {
+                ("\u{25a0}", "Stopping".into())
+            } else if self.busy && self.questions.waiting() {
+                ("◇", "Waiting for you".into())
+            } else if self.busy {
+                match &self.phase {
+                    Phase::Waiting => ("◌", "Waiting".into()),
+                    Phase::Thinking => ("◈", "Thinking".into()),
+                    Phase::Tool(name) => (
+                        crate::provider::stream_cards::tool_icon(name),
+                        crate::provider::stream_cards::tool_label(name),
+                    ),
+                    Phase::Writing => ("✎", "Writing".into()),
+                }
+            } else if self.continuation.waiting() {
+                ("!", "Usage limit".into())
+            } else {
+                ("\u{25c7}", "Idle".into())
+            };
         let project = self
             .cwd
             .file_name()
@@ -756,6 +757,9 @@ impl App {
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        if worker_input::active(self) {
+            return;
+        }
         if self.project_search.active() {
             self.project_search.paste(text);
             return;
@@ -1057,8 +1061,33 @@ impl App {
                     request.invalidate();
                     return;
                 }
+                let plan = matches!(
+                    request.kind(),
+                    crate::provider::interaction::NativeInteraction::PlanApproval { .. }
+                );
+                if plan {
+                    self.push_card(StreamCard {
+                        id: format!(
+                            "native-plan:{}:{}",
+                            request.envelope().connection_id,
+                            request.envelope().request_id
+                        ),
+                        title: "Plan awaiting your review".into(),
+                        detail: Some(format!(
+                            "{}\n\n{}\n\nTasks:\n{}",
+                            request.params["overview"].as_str().unwrap_or(""),
+                            request.params["plan"].as_str().unwrap_or(""),
+                            serde_json::to_string_pretty(&request.params["todos"])
+                                .unwrap_or_default()
+                        )),
+                        status: CardStatus::Running,
+                    });
+                    if self.picker.is_none() && self.activity.detail.is_none() {
+                        self.activity.open(self.messages.len() - 1);
+                    }
+                }
                 self.questions
-                    .offer_native(*request, self.editor.text().is_empty());
+                    .offer_native(*request, !plan && self.editor.text().is_empty());
                 self.pause_queue();
             }
             TurnProgress::Session(id) => {
@@ -1552,7 +1581,9 @@ impl App {
         self.update_progress();
         self.poll_compat();
         self.poll_proposals();
-        if self.usage_fetcher.poll() {
+        // Polling alone never ages a completed cache. Re-read on a cheap UI timer so idle
+        // panes notice resets and start the fetcher's bounded TTL refresh.
+        if self.usage_fetcher.poll() || self.tick_count.is_multiple_of(50) {
             self.refresh_usage();
             self.update_usage_block();
             self.update_usage_picker();
@@ -2577,6 +2608,38 @@ impl App {
     }
 
     fn handle_slash(&mut self, line: &str) -> bool {
+        if line.trim() == "/native" || line.trim().starts_with("/native ") {
+            let parts: Vec<_> = line.split_whitespace().collect();
+            let result = match parts.as_slice() {
+                ["/native", account] | ["/native", account, "status"] => {
+                    crate::native_input::command(&self.state_root, account, "status")
+                }
+                ["/native", account, mode @ ("on" | "off")] => {
+                    let account = crate::accounts::normalize_account_id(account);
+                    if self.busy && self.account == account
+                        || self.deleg.d.running_for(&account).is_some()
+                    {
+                        Err("finish or cancel that account's active native turn before changing transport".into())
+                    } else {
+                        crate::native_input::command(&self.state_root, &account, mode)
+                    }
+                }
+                _ => Err("/native ACCOUNT on|off|status".into()),
+            };
+            self.push_system(result.unwrap_or_else(|error| format!("native input: {error}")));
+            return true;
+        }
+        if line.trim() == "/delegate input" {
+            self.flash("usage: /delegate input ID");
+            return true;
+        }
+        if let Some(id) = line.trim().strip_prefix("/delegate input ") {
+            match id.parse::<u32>() {
+                Ok(id) => worker_input::open(self, id),
+                Err(_) => self.flash("usage: /delegate input ID"),
+            }
+            return true;
+        }
         let trimmed = line.trim();
         if ["/delegate fallback", "/delegate recover", "/delegate retry"]
             .iter()
@@ -3739,6 +3802,21 @@ pub async fn run_chat_tui() -> Result<()> {
                             return;
                         }
                     };
+                    let native_input = match crate::native_input::for_home(
+                        &state_root,
+                        provider,
+                        &owner.account,
+                        owner.home.as_deref(),
+                    ) {
+                        Ok(mode) => mode,
+                        Err(error) => {
+                            let _ = done_tx.send(TurnOutcome {
+                                stderr_tail: format!("invalid native-input preference: {error}"),
+                                ..Default::default()
+                            });
+                            return;
+                        }
+                    };
                     let mut rollover = false;
                     if policy.rollover_percent.is_some() && session.is_some() {
                         if let Some(binding) = binding {
@@ -3871,9 +3949,10 @@ pub async fn run_chat_tui() -> Result<()> {
                         return;
                     }
                     scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
-                    match run_provider_turn_with_owner(
+                    match run_provider_turn_with_transport(
                         &req,
                         owner,
+                        native_input,
                         Some(handle_tx),
                         Some(progress_tx),
                     )
@@ -4027,6 +4106,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         KeyEventKind::Release => return false,
         KeyEventKind::Repeat if !matches!(key.code, KeyCode::Backspace) => return false,
         _ => {}
+    }
+    if worker_input::key(app, &key) {
+        return false;
     }
     if app.project_search.active() {
         if (matches!(key.code, KeyCode::Char('v' | 'V'))
@@ -4510,6 +4592,12 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if worker_input::active(app) {
+        if !modal::mouse(app, &m) {
+            worker_input::mouse(app, &m);
+        }
+        return;
+    }
     if app.project_search.active() {
         return;
     }
@@ -4523,6 +4611,28 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         return;
     }
     if app.activity.detail.is_some() {
+        let file = app
+            .activity
+            .file_targets
+            .iter()
+            .find(|(rect, _)| contains(*rect, m.column, m.row))
+            .map(|(_, file)| file.clone());
+        if m.kind == MouseEventKind::Down(MouseButton::Left) {
+            app.activity.pressed_file = file;
+            return;
+        }
+        if m.kind == MouseEventKind::Up(MouseButton::Left) {
+            if let Some(pressed) = app
+                .activity
+                .pressed_file
+                .take()
+                .filter(|pressed| Some(pressed) == file.as_ref())
+            {
+                app.activity.detail = None;
+                app.open_file_candidate(pressed, true);
+            }
+            return;
+        }
         match m.kind {
             MouseEventKind::ScrollUp => {
                 app.activity.detail_scroll = app.activity.detail_scroll.saturating_sub(3);
@@ -4908,6 +5018,10 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         app.project_search.draw(f, f.area());
     }
     // Cover every widget, including provider-controlled titles, menus and detail panes.
+    if worker_input::active(app) {
+        app.areas = Areas::default();
+        worker_input::draw(f, app);
+    }
     // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
     for cell in &mut f.buffer_mut().content {
         if cell.symbol().chars().any(char::is_control) {
@@ -5126,8 +5240,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if left.iter().map(Span::width).sum::<usize>() + model.len() <= available {
         left.push(Span::styled(model, bar.fg(Color::Gray)));
     }
-    if app.native_agents.count() > 0 {
-        let agents = format!("  /agents {}", app.native_agents.count());
+    let agent_count = app.native_agents.count() + app.deleg.d.jobs.len();
+    if agent_count > 0 {
+        let agents = format!("  Ctrl+G agents {agent_count}");
         if left.iter().map(Span::width).sum::<usize>() + agents.len() <= available {
             left.push(Span::styled(agents, bar.fg(Color::Cyan)));
         }
@@ -5488,6 +5603,36 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .saturating_sub(inner.height as usize);
             let scroll = (app.activity.detail_scroll as usize).min(max_scroll);
             app.activity.detail_scroll = scroll.min(u16::MAX as usize) as u16;
+            app.activity.file_targets.clear();
+            let mut row = 0;
+            for source in [title, body].into_iter().flat_map(str::lines) {
+                let count = text::wrap_ranges(&source.chars().collect::<Vec<_>>(), avail_w).len();
+                if let Some(file) = source
+                    .strip_prefix("File: ")
+                    .and_then(crate::file_links::explicit_reference)
+                {
+                    for visual in row..row + count {
+                        if let Some(line) = app.activity.render_lines.get_mut(visual) {
+                            line.style = line
+                                .style
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::UNDERLINED);
+                        }
+                        if visual >= scroll && visual < scroll + inner.height as usize {
+                            app.activity.file_targets.push((
+                                Rect::new(
+                                    inner.x,
+                                    inner.y + (visual - scroll) as u16,
+                                    inner.width,
+                                    1,
+                                ),
+                                file.clone(),
+                            ));
+                        }
+                    }
+                }
+                row += count;
+            }
             f.render_widget(
                 DetailRows {
                     lines: &app.activity.render_lines,
@@ -5719,6 +5864,15 @@ fn update_action_rows(blocked: bool, width: usize) -> Vec<Line<'static>> {
 }
 
 fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
+    let agents_panel = app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Agents);
+    let area = if agents_panel {
+        native_agents::panel_area(area)
+    } else {
+        area
+    };
     let update_blocked = app.update_blocked_by_work();
     let update_lines = app.update_preview.as_ref().map(|p| p.visible_lines());
     let Some(picker) = app.picker.as_mut() else {
@@ -5818,9 +5972,17 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .max(5);
     let popup = Rect {
         x: area.x + 2,
-        y: area.y + area.height.saturating_sub(height),
+        y: if agents_panel {
+            area.y
+        } else {
+            area.y + area.height.saturating_sub(height)
+        },
         width,
-        height: height.min(area.height),
+        height: if agents_panel {
+            area.height
+        } else {
+            height.min(area.height)
+        },
     };
     f.render_widget(Clear, popup);
     let heading = if picker.kind == PickerKind::Files {

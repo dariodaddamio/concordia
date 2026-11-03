@@ -41,7 +41,7 @@ fn fake_acp() {
     };
     let finish = |session_id: &str| {
         emit(
-            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session_id,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Native image received"}}}}),
+            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session_id,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":fixture["reply"].as_str().unwrap_or("Native image received")}}}}),
         );
         emit(serde_json::json!({"jsonrpc":"2.0","id":5,"result":{"stopReason":"end_turn"}}));
     };
@@ -98,9 +98,13 @@ fn fake_acp() {
                     );
                     continue;
                 }
-                if fixture["permission"] == true {
+                if fixture["plan"] == true {
                     emit(
-                        serde_json::json!({"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"title":"Read attached image","toolCallId":"image-read"},"options":[{"optionId":"yes","name":"Allow once","kind":"allow_once"},{"optionId":"no","name":"Decline","kind":"reject_once"}]}}),
+                        serde_json::json!({"jsonrpc":"2.0","id":100,"method":"cursor/create_plan","params":{"toolCallId":"plan-review","name":"Review worker plan","plan":"Inspect the parser.\nEdit only the requested function.\nRun the scoped check.","todos":[{"id":"inspect","content":"Inspect parser","status":"pending"}]}}),
+                    );
+                } else if fixture["permission"] == true {
+                    emit(
+                        serde_json::json!({"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"title":fixture["permission_title"].as_str().unwrap_or("Read attached image"),"toolCallId":"image-read","rawInput":{"path":"synthetic-input"}},"options":[{"optionId":"yes","name":"Allow once","kind":"allow_once"},{"optionId":"no","name":"Decline","kind":"reject_once"}]}}),
                     );
                 } else {
                     finish(&session_id);

@@ -33,4 +33,13 @@ returned `next_offset` and `revision` for a later page; changed state requires a
 With `goal` and an exact `workspace`, it reads confirmed goal/source association metadata instead.
 Metadata listings launch no provider or native replay and do not claim that a source is currently
 available; use `native_read` for revision-checked readback. This tool cannot add/close goals or
-attach/detach sources. The seven-tool schema is kept below 3,000 bytes; MCP registration remains opt-in.
+attach/detach sources. The eight-tool schema is kept below 4,000 bytes; MCP registration remains opt-in.
+
+`memory` gives agents structured read-only discovery without asking the user to type `/memory`.
+Choose `recall` (literal search), `ranked` (opt-in evidence ranking), `files` (historical file facts),
+`groups` or `members`. Search accepts `query`, optional exact `source`, `account` and `workspace`;
+ranking also accepts `goal` and `file`. Groups require `workspace`, members require `group`, and
+files require `source`. Paged metadata accepts the returned `offset` and `revision`. Native freshness,
+scope, provenance and coverage stay in the result. Oversized results are refused with narrowing
+instructions, rather than cutting through JSON or an exact source pointer. This tool cannot confirm
+relationships, change memberships, approve native requests or start a provider.

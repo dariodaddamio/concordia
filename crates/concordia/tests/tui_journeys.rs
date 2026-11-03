@@ -1988,7 +1988,7 @@ fn native_subagents_can_be_inspected_live_and_after_completion() {
     let mut s = Session::launch(dir.path());
     s.submit("[wait] [agents] inspect children");
     s.until("agent badge visible while provider waits", |s| {
-        s.screen().contains("/agents 1")
+        s.screen().contains("Ctrl+G agents 1")
     });
     s.send("\x07");
     s.until("agent browser", |s| s.screen().contains("Enter inspect"));
@@ -2829,6 +2829,96 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
             .unwrap(),
         dir.path().join("workspace").canonicalize().unwrap()
     );
+    s.send("\x01\x08");
+    s.until("draft cleared for native input configuration", |s| {
+        s.draft().is_empty()
+    });
+    s.submit("/delegate returns manual");
+    s.until("manual native result return", |s| {
+        s.screen().contains("Worker returns: manual")
+    });
+    s.submit("/workers add cursor");
+    s.until("Cursor worker enrolled", |s| {
+        s.screen().contains("worker added") && s.screen().contains("cursor")
+    });
+    std::fs::write(dir.path().join("workspace/acp-fixture.json"),
+          serde_json::json!({"image":false,"permission":true,"permission_title":"Read worker text","reply":"Native worker text received"}).to_string()).unwrap();
+    s.submit("/native cursor on");
+    s.until("native text preference saved", |s| {
+        s.screen().contains("native text input on")
+    });
+    s.submit("/delegate cursor Review native text");
+    s.until("worker waits for exact native input", |s| {
+        s.screen().contains("waiting for native input")
+    });
+    s.paste("keep this native draft");
+    s.send("\x1b[1;3B\x1b[19~"); // Select the active worker, then review without replacing the draft.
+    s.until("owner-bound native worker review", |s| {
+        s.screen().contains("native worker input") && s.screen().contains("Read worker text")
+    });
+    s.send("1");
+    s.send("\x1b");
+    s.until("closing review preserves draft and pending request", |s| {
+        s.draft() == "keep this native draft" && s.screen().contains("waiting for native input")
+    });
+    s.send("\x1b[19~");
+    s.until("worker review reopened", |s| {
+        s.screen().contains("native worker input")
+    });
+    s.send("\x1b[19~1");
+    s.until("worker receives its native decision", |s| {
+        s.screen().contains("Native worker text received")
+    });
+    assert_eq!(s.draft(), "keep this native draft");
+    assert_eq!(
+        s.journal()
+            .iter()
+            .filter(|entry| entry["kind"] == "start")
+            .count(),
+        4,
+        "native worker review must not launch a main turn or fall back to print mode"
+    );
+    let calls: Vec<Value> = std::fs::read_to_string(dir.path().join("workspace/acp-calls.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
+            .count(),
+        1
+    );
+    assert!(calls
+        .iter()
+        .any(|call| call["id"] == 100 && call["result"]["outcome"]["optionId"] == "yes"));
+    s.send("\x01\x08");
+    s.until("draft cleared for plan request", |s| s.draft().is_empty());
+    std::fs::write(
+        dir.path().join("workspace/acp-fixture.json"),
+        serde_json::json!({"image":false,"plan":true,"reply":"Worker plan rejected"}).to_string(),
+    )
+    .unwrap();
+    s.submit("/delegate cursor Propose a scoped plan");
+    s.until("worker plan pending", |s| {
+        s.screen().contains("waiting for native input")
+    });
+    s.paste("preserve plan draft");
+    s.send("\x1b[1;3B\x1b[19~");
+    s.until("full plan visible", |s| {
+        s.screen().contains("Edit only the requested function")
+    });
+    s.send("\x1b[19~2");
+    s.until("native plan rejection returned", |s| {
+        s.screen().contains("Worker plan rejected")
+    });
+    assert_eq!(s.draft(), "preserve plan draft");
+    let calls = std::fs::read_to_string(dir.path().join("workspace/acp-calls.jsonl")).unwrap();
+    assert!(calls
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .any(|call| call["id"] == 100 && call["result"]["outcome"]["outcome"] == "rejected"));
     s.exit();
 }
 

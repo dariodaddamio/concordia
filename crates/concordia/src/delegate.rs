@@ -26,6 +26,8 @@ use tokio::sync::mpsc;
 mod accounting;
 #[path = "delegate_dependencies.rs"]
 mod dependencies;
+#[path = "delegate_input.rs"]
+mod input;
 #[path = "delegate_recovery.rs"]
 mod recovery;
 pub mod schedule;
@@ -216,6 +218,7 @@ pub enum WorkerState {
     Thinking,
     Tool,
     Writing,
+    WaitingInput,
     Done,
     Failed,
     Cancelled,
@@ -234,7 +237,7 @@ impl WorkerState {
     pub fn is_running(self) -> bool {
         matches!(
             self,
-            Self::Starting | Self::Thinking | Self::Tool | Self::Writing
+            Self::Starting | Self::Thinking | Self::Tool | Self::Writing | Self::WaitingInput
         )
     }
 
@@ -245,6 +248,7 @@ impl WorkerState {
             Self::Thinking => "thinking",
             Self::Tool => "tool",
             Self::Writing => "writing",
+            Self::WaitingInput => "waiting for native input",
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -263,6 +267,8 @@ pub enum Origin {
 /// Everything needed to run the turn, captured when the user delegates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobSpec {
+    #[serde(default)]
+    pub native_input: crate::native_input::Mode,
     pub model: Option<String>,
     pub home: Option<PathBuf>,
     pub cwd: PathBuf,
@@ -273,6 +279,7 @@ pub struct JobSpec {
 }
 
 pub struct Job {
+    input: input::State,
     pub run_id: String,
     pub conversation_id: String,
     pub source_id: Option<String>,
@@ -619,6 +626,7 @@ impl Delegates {
             )?)?;
         }
         self.jobs.push(Job {
+            input: input::State::default(),
             run_id,
             conversation_id: self.conversation_id.clone(),
             source_id: None,
@@ -820,6 +828,20 @@ impl Delegates {
         }
         let provider = job.provider;
         let account = job.account.clone();
+        let native_owner = match job.bind_native_input() {
+            Ok(owner) => owner,
+            Err(error) => {
+                let _ = tx.send(Event::Finished(
+                    id,
+                    Box::new(TurnOutcome {
+                        failed: true,
+                        stderr_tail: error,
+                        ..Default::default()
+                    }),
+                ));
+                return;
+            }
+        };
         job.preparation_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let preparation_cancel = job.preparation_cancel.clone();
         let managed_binding = job
@@ -940,7 +962,26 @@ impl Delegates {
                 return;
             }
             scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
-            let run = run_provider_turn_with_progress(&req, Some(hs_tx), Some(pg_tx));
+            let run = async {
+                match native_owner {
+                    Some(owner) => {
+                        crate::provider::turn::run_provider_turn_with_transport(
+                            &req,
+                            owner,
+                            spec.native_input,
+                            Some(hs_tx),
+                            Some(pg_tx),
+                        )
+                        .await
+                    }
+                    None if spec.native_input == crate::native_input::Mode::Standard => {
+                        run_provider_turn_with_progress(&req, Some(hs_tx), Some(pg_tx)).await
+                    }
+                    None => Err(anyhow::anyhow!(
+                        "native worker input requires a verified launch owner"
+                    )),
+                }
+            };
             tokio::pin!(run);
             let outcome = loop {
                 tokio::select! {
@@ -991,15 +1032,36 @@ impl Delegates {
                         }
                     }
                 }
+                Event::Progress(id, TurnProgress::Interaction(request)) => {
+                    self.accept_native_input(id, request)
+                }
                 Event::Progress(id, p) => {
                     if let Some(j) = self.get_mut(id) {
                         apply_progress(j, p);
+                        j.refresh_native_input();
                     }
                 }
-                Event::Finished(id, out) => {
+                Event::Finished(id, mut out) => {
+                    let cancelled =
+                        out.cancelled || self.get(id).is_some_and(|job| job.cancel_requested);
+                    let unresolved = !cancelled
+                        && self.get(id).is_some_and(|job| {
+                            job.input.unresolved()
+                                || job.input.observed()
+                                    && (job
+                                        .cards
+                                        .iter()
+                                        .chain(out.cards.iter())
+                                        .any(|card| card.status == CardStatus::Running))
+                        });
+                    if unresolved {
+                        out.failed = true;
+                        out.stderr_tail.push_str("\nNative worker input ended without a confirmed response; inspect before retrying.");
+                    }
                     self.finish_worker_attempt(id, &out);
-                    let confirmed = out.exit_code.is_some()
-                        && (out.cancelled
+                    let confirmed = !unresolved
+                        && out.exit_code.is_some()
+                        && (cancelled
                             || (!out
                                 .cards
                                 .iter()
@@ -1030,6 +1092,9 @@ impl Delegates {
                 Event::DependencyReady(id, prefix) => self.launch_provider(id, now, Some(prefix)),
             }
             self.persist_recovery();
+        }
+        for job in &mut self.jobs {
+            job.refresh_native_input();
         }
         // Start the next queued job of every worker that just became free.
         let ready: Vec<u32> = self
@@ -1103,6 +1168,7 @@ impl Delegates {
                 true
             }
             s if s.is_running() => {
+                j.input.clear();
                 j.cancel_requested = true;
                 j.preparation_cancel
                     .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1165,6 +1231,26 @@ impl Delegates {
 
 #[cfg(test)]
 impl Delegates {
+    pub fn test_native_owner(
+        &mut self,
+        id: u32,
+        root: &Path,
+    ) -> crate::provider::interaction::InteractionOwner {
+        let job = self.get_mut(id).unwrap();
+        job.spec.home = Some(root.into());
+        job.spec.cwd = root.into();
+        job.attempt_records = vec![Attempt::new(
+            &job.account,
+            job.provider,
+            Some(root.into()),
+            None,
+        )];
+        job.session_id = Some("fixture-session".into());
+        job.bind_native_input().unwrap().unwrap()
+    }
+    pub fn test_native_input(&mut self, id: u32, request: crate::provider::turn::NativeRequest) {
+        self.accept_native_input(id, Box::new(request));
+    }
     /// A job already in `state`, started `secs` ago, without running anything.
     pub fn push_test_job(
         &mut self,
@@ -1179,6 +1265,7 @@ impl Delegates {
         let now = Instant::now();
         let started = now.checked_sub(Duration::from_secs(secs)).unwrap_or(now);
         self.jobs.push(Job {
+            input: input::State::default(),
             run_id: uuid::Uuid::new_v4().to_string(),
             conversation_id: self.conversation_id.clone(),
             source_id: None,
@@ -1214,6 +1301,7 @@ impl Delegates {
             cancel_requested: false,
             announced: state.is_finished(),
             spec: JobSpec {
+                native_input: Default::default(),
                 model: None,
                 home: None,
                 cwd: PathBuf::from("."),
@@ -1241,8 +1329,8 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
     }
     match p {
         TurnProgress::Interaction(request) => {
-            request.respond(serde_json::json!({"outcome":{"outcome":"cancelled"}}));
-            j.snippet="Worker needs native input; request declined because no foreground interaction owns it".into();
+            request.invalidate();
+            j.snippet = "Native input was withheld outside its worker owner queue".into();
         }
         TurnProgress::Session(id) => {
             if let Some(attempt) = j.attempt_records.last_mut() {
@@ -1308,6 +1396,13 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
 }
 
 fn apply_outcome(j: &mut Job, out: TurnOutcome, now: Instant) {
+    let unresolved_input = j.input.unresolved()
+        || j.input.observed()
+            && j.cards
+                .iter()
+                .chain(out.cards.iter())
+                .any(|card| card.status == CardStatus::Running);
+    j.input.clear();
     j.finished = Some(now);
     j.cancel = None;
     j.exit_code = out.exit_code;
@@ -1335,6 +1430,10 @@ fn apply_outcome(j: &mut Job, out: TurnOutcome, now: Instant) {
     if out.cancelled || j.cancel_requested {
         j.state = WorkerState::Cancelled;
         j.snippet = "cancelled".into();
+    } else if unresolved_input {
+        j.state = WorkerState::Paused;
+        j.error = Some("Native input ended without a confirmed response. Inspect the native session before an explicit reconciled retry.".into());
+        j.snippet = "native input uncertain; retained for inspection".into();
     } else if failed {
         j.state = WorkerState::Failed;
         let tail = out.stderr_tail.trim();

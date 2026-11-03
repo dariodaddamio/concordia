@@ -85,39 +85,10 @@ impl State {
     }
     pub fn offer_native(&mut self, request: crate::provider::turn::NativeRequest, focus: bool) {
         self.clear();
-        let params = &request.params;
-        self.questions = if request.method == "session/request_permission" {
-            vec![Question {
-                prompt: params
-                    .pointer("/toolCall/title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Allow this tool action?")
-                    .to_owned(),
-                options: params["options"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|o| o["name"].as_str().unwrap_or("Permission option").to_owned())
-                    .collect(),
-            }]
-        } else {
-            params["questions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .take(3)
-                .map(|q| Question {
-                    prompt: q["prompt"].as_str().unwrap_or("Choose a reply").to_owned(),
-                    options: q["options"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .take(9)
-                        .map(|o| o["label"].as_str().unwrap_or("Option").to_owned())
-                        .collect(),
-                })
-                .collect()
-        };
+        self.questions = native_questions(&request)
+            .into_iter()
+            .map(|(prompt, options)| Question { prompt, options })
+            .collect();
         if self.questions.is_empty() || self.questions.iter().any(|q| q.options.is_empty()) {
             request.respond(serde_json::json!({"outcome":{"outcome":"cancelled"}}));
             self.clear();
@@ -128,6 +99,45 @@ impl State {
         self.answers.clear();
         self.focused = focus;
         self.native = Some(request);
+    }
+}
+
+pub(super) fn native_questions(
+    request: &crate::provider::turn::NativeRequest,
+) -> Vec<(String, Vec<String>)> {
+    use crate::provider::interaction::{DecisionScope, NativeInteraction};
+    match request.kind() {
+        NativeInteraction::Permission { title, options }
+        | NativeInteraction::PlanApproval { title, options } => vec![(
+            title.clone(),
+            options
+                .iter()
+                .map(|option| {
+                    format!(
+                        "{} · {}",
+                        option.label,
+                        match option.scope {
+                            DecisionScope::Once => "once",
+                            DecisionScope::Always => "always",
+                            DecisionScope::Unknown => "scope unknown",
+                        }
+                    )
+                })
+                .collect(),
+        )],
+        NativeInteraction::Questions(questions) => questions
+            .iter()
+            .map(|question| {
+                (
+                    question.prompt.clone(),
+                    question
+                        .options
+                        .iter()
+                        .map(|option| option.label.clone())
+                        .collect(),
+                )
+            })
+            .collect(),
     }
 }
 fn option(line: &str) -> Option<String> {
@@ -303,18 +313,42 @@ fn choose(app: &mut App, index: usize) {
         return;
     }
     if let Some(native) = s.native.take() {
-        let result = if native.method == "session/request_permission" {
-            serde_json::json!({"outcome":{"outcome":"selected","optionId":native.params["options"][index]["optionId"]}})
-        } else {
-            let answers:Vec<_>=s.native_choices.iter().enumerate().map(|(q,i)|serde_json::json!({"questionId":native.params["questions"][q]["id"],"selectedOptionIds":[native.params["questions"][q]["options"][*i]["id"]]})).collect();
-            serde_json::json!({"outcome":{"outcome":"answered","answers":answers}})
-        };
-        if let Some(owner) = app.native_owner.as_ref() {
-            let _ = native.respond_owned(owner, result);
+        let outcome = if let (Some(owner), Ok(result)) = (
+            app.native_owner.as_ref(),
+            native.single_choices(&s.native_choices),
+        ) {
+            let label = result
+                .pointer("/outcome/outcome")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("answered")
+                .to_owned();
+            native.respond_owned(owner, result).map(|()| label)
         } else {
             native.invalidate();
-        }
+            Err("Native request is no longer active".into())
+        };
         s.clear();
+        match outcome {
+            Ok(label) if native.method == "cursor/create_plan" => {
+                let id = format!(
+                    "native-plan:{}:{}",
+                    native.envelope().connection_id,
+                    native.envelope().request_id
+                );
+                if let Some(mut card) = app
+                    .messages
+                    .iter()
+                    .find_map(|message| message.card.as_ref().filter(|card| card.id == id))
+                    .cloned()
+                {
+                    card.title = format!("Plan {label}");
+                    card.status = CardStatus::Done;
+                    app.push_card(card);
+                }
+            }
+            Err(error) => app.flash(error),
+            _ => {}
+        }
         return;
     }
     let answer = s.answers.join("\n\n");
@@ -620,6 +654,38 @@ mod tests {
         assert!(!app.questions.waiting());
         assert!(app.queue.items.is_empty());
 
+        connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
+        let (plan, mut plan_rx) = connection.request("fixture-session", serde_json::json!(10), "cursor/create_plan".into(), serde_json::json!({"toolCallId":"plan-tool","plan":"Inspect the exact parser.\nPreserve unrelated files.","todos":[]})).unwrap();
+        app.busy = true;
+        app.apply_progress(TurnProgress::Interaction(Box::new(plan)));
+        assert!(app.activity.detail.is_some());
+        assert!(!app.questions.focused);
+        assert!(app
+            .messages
+            .last()
+            .unwrap()
+            .card
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("\nPreserve unrelated files."));
+        app.activity.detail = None;
+        handle_key(&mut app, &KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
+        handle_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            plan_rx.try_recv().unwrap(),
+            serde_json::json!({"outcome":{"outcome":"rejected"}})
+        );
+        assert_eq!(
+            app.messages.last().unwrap().card.as_ref().unwrap().title,
+            "Plan rejected"
+        );
+
         // A queued request from the prior attempt must never acquire the new attempt's UI.
         let (stale, mut stale_rx) = connection.request(
             "fixture-session", serde_json::json!(2), "session/request_permission".into(),
@@ -633,6 +699,66 @@ mod tests {
             stale_rx.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Closed)
         ));
+        let main_owner = app.native_owner.clone();
+        app.editor.set_text("keep this worker-review draft");
+        let worker = app.deleg.d.push_test_job(
+            "fixture-worker",
+            ProviderKind::Cursor,
+            crate::delegate::WorkerState::Thinking,
+            "synthetic worker",
+            0,
+        );
+        let worker_owner = app.deleg.d.test_native_owner(worker, dir.path());
+        let mut worker_connection = crate::provider::interaction::InteractionConnection::new(
+            Some(worker_owner),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let (worker_request, mut worker_rx) = worker_connection.request("fixture-session", serde_json::json!(1), "session/request_permission".into(),
+            serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read worker file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"},{"name":"Reject","kind":"reject_once","optionId":"worker-reject"}]})).unwrap();
+        app.deleg.d.test_native_input(worker, worker_request);
+        assert_eq!(
+            app.deleg.d.get(worker).unwrap().state,
+            crate::delegate::WorkerState::WaitingInput
+        );
+        worker_input::open(&mut app, worker);
+        worker_input::key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            worker_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        app.paste_text("must not enter the draft");
+        worker_input::key(&mut app, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.deleg.d.get(worker).unwrap().native_inputs().len(), 1);
+        worker_input::open(&mut app, worker);
+        worker_input::key(&mut app, &KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
+        worker_input::key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            worker_rx.try_recv().unwrap(),
+            serde_json::json!({"outcome":{"outcome":"selected","optionId":"worker-allow"}})
+        );
+        assert_eq!(app.native_owner, main_owner);
+        assert_eq!(app.editor.text(), "keep this worker-review draft");
+        let (cancelled, mut cancelled_rx) = worker_connection.request("fixture-session", serde_json::json!(2), "session/request_permission".into(),
+            serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"}]})).unwrap();
+        app.deleg.d.test_native_input(worker, cancelled);
+        worker_input::open(&mut app, worker);
+        app.deleg.d.cancel(worker, Instant::now());
+        worker_input::key(&mut app, &KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
+        worker_input::key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            cancelled_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        assert_eq!(app.native_owner, main_owner);
     }
 
     #[test]

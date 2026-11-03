@@ -425,7 +425,7 @@ fn snapshot_from_windows(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CodexRateLimits {
     primary: Option<RateWindow>,
     secondary: Option<RateWindow>,
@@ -438,7 +438,7 @@ struct CodexRateLimits {
     credits: Option<Credits>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RateWindow {
     #[serde(alias = "usedPercent")]
     used_percent: Option<f64>,
@@ -448,8 +448,9 @@ struct RateWindow {
     resets_at: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Credits {
+    #[serde(alias = "hasCredits")]
     has_credits: Option<bool>,
     unlimited: Option<bool>,
     #[serde(default, deserialize_with = "optional_number")]
@@ -984,6 +985,9 @@ impl UsageIdentity {
 struct CachedUsage {
     fetched_at: u64,
     windows: Vec<UsageWindow>,
+    /// Retain credits, exact reset timestamps and limit state across asynchronous refreshes.
+    #[serde(default)]
+    codex_limits: Option<CodexRateLimits>,
     /// Plan and similar, shown after the windows (Cursor).
     #[serde(default)]
     note: String,
@@ -1232,6 +1236,9 @@ impl UsageFetcher {
                         cursor_source(&c.note, &age_note)
                     },
                 );
+                if let Some(limits) = c.codex_limits.as_ref().filter(|_| codex) {
+                    snap = format_limits(limits, &format!("Codex live limits · {age_note}"));
+                }
                 if cursor {
                     snap.plan = cursor_plan(&c.note);
                 }
@@ -1316,6 +1323,7 @@ impl UsageFetcher {
         let root = self.state_root.clone();
         std::thread::spawn(move || {
             let result = runner(&home).and_then(|text| {
+                let codex_limits = codex.then(|| parse_rate_limits_blob(&text)).flatten();
                 let (windows, note) = if codex {
                     parse_rate_limits_blob(&text).map(|limits| {
                         let snap = format_limits(&limits, "Codex live limits");
@@ -1330,6 +1338,7 @@ impl UsageFetcher {
                 Ok(CachedUsage {
                     fetched_at: unix_now(),
                     windows,
+                    codex_limits,
                     note,
                     identity: Some(identity.clone()),
                 })
@@ -1561,7 +1570,9 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
         if c.unlimited == Some(true) {
             extras.push("credits unlimited".to_string());
         } else if let Some(bal) = c.balance {
-            extras.push(format!("credits {bal}"));
+            extras.push(format!("credits balance {bal}"));
+        } else if c.has_credits == Some(false) {
+            extras.push("credits unavailable".to_string());
         } else if c.has_credits == Some(true) && windows.is_empty() {
             extras.push("credits available".to_string());
         }
@@ -1985,7 +1996,7 @@ mod tests {
         let count = calls.clone();
         let runner: UsageRunner = Arc::new(move |_| {
             let n = count.fetch_add(1, Ordering::SeqCst) + 1;
-            Ok(serde_json::json!({"rate_limits":{"planType":"pro","primary":{"usedPercent":n*10,"windowDurationMins":300,"resetsAt":1900000000i64}}}).to_string())
+            Ok(serde_json::json!({"rate_limits":{"planType":"pro","credits":{"hasCredits":true,"balance":"12.5"},"primary":{"usedPercent":n*10,"windowDurationMins":300,"resetsAt":1900000000i64}}}).to_string())
         });
         let mut fetcher = UsageFetcher::with_runner(root.path().into(), fake_runner(SAMPLE))
             .with_codex_runner(runner);
@@ -1996,6 +2007,17 @@ mod tests {
         let first = fetcher.snapshot(ProviderKind::Codex, "synthetic", root.path());
         assert_eq!(first.primary_pct, Some(10.0));
         assert_eq!(first.plan.as_deref(), Some("pro"));
+        assert!(
+            first.summary.contains("credits balance 12.5"),
+            "{}",
+            first.summary
+        );
+        assert!(first.detail.contains("credits balance 12.5"));
+        let mut restarted = UsageFetcher::with_runner(root.path().into(), fake_runner(SAMPLE));
+        assert!(restarted
+            .snapshot(ProviderKind::Codex, "synthetic", root.path())
+            .summary
+            .contains("credits balance 12.5"));
         let pending = fetcher.snapshot_refresh(ProviderKind::Codex, "synthetic", root.path());
         assert!(pending.detail.contains("refreshing"));
         wait_for(&mut fetcher);
@@ -2386,6 +2408,7 @@ mod tests {
             identity.cache_path(root.path()),
             serde_json::to_string(&CachedUsage {
                 fetched_at: unix_now().saturating_add(3600),
+                codex_limits: None,
                 windows: vec![UsageWindow {
                     label: "5h".into(),
                     used_pct: 1.0,

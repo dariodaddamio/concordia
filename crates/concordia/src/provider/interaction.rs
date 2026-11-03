@@ -161,7 +161,7 @@ pub enum NativeInteraction {
         options: Vec<NativeOption>,
     },
     Questions(Vec<NativeQuestion>),
-    /// Reserved contract: no adapter advertises or parses plan approval in this slice.
+    /// Cursor's documented blocking create_plan extension.
     PlanApproval {
         title: String,
         options: Vec<NativeOption>,
@@ -209,6 +209,52 @@ fn options(value: &Value, permission: bool) -> Result<Vec<NativeOption>, String>
 impl NativeInteraction {
     fn parse(method: &str, params: &Value) -> Result<Self, String> {
         match method {
+            "cursor/create_plan" => {
+                text(params, "toolCallId")?;
+                let plan = params["plan"]
+                    .as_str()
+                    .filter(|plan| !plan.trim().is_empty())
+                    .ok_or("native plan is empty")?;
+                if plan.len() > 128 * 1024 {
+                    return Err("native plan exceeds display budget".into());
+                }
+                let todos = params["todos"]
+                    .as_array()
+                    .ok_or("native plan needs todos")?;
+                let mut ids = HashSet::new();
+                if todos.len() > 256
+                    || todos.iter().any(|todo| {
+                        text(todo, "id").map_or(true, |id| !ids.insert(id))
+                            || text(todo, "content").is_err()
+                            || !matches!(
+                                todo["status"].as_str(),
+                                Some("pending" | "in_progress" | "completed" | "cancelled")
+                            )
+                    })
+                {
+                    return Err("native plan has invalid todos".into());
+                }
+                Ok(Self::PlanApproval {
+                    title: params["name"]
+                        .as_str()
+                        .unwrap_or("Review proposed plan")
+                        .chars()
+                        .take(256)
+                        .collect(),
+                    options: [
+                        ("accepted", "Accept this plan"),
+                        ("rejected", "Reject this plan"),
+                    ]
+                    .into_iter()
+                    .map(|(id, label)| NativeOption {
+                        id: id.into(),
+                        label: label.into(),
+                        native_kind: None,
+                        scope: DecisionScope::Once,
+                    })
+                    .collect(),
+                })
+            }
             "session/request_permission" => Ok(Self::Permission {
                 title: params
                     .pointer("/toolCall/title")
@@ -261,6 +307,10 @@ impl NativeInteraction {
         };
         if outcome["outcome"] == "cancelled" {
             return outcome.as_object().is_some_and(|object| object.len() == 1);
+        }
+        if matches!(self, Self::PlanApproval { .. }) {
+            return outcome.as_object().is_some_and(|object| object.len() == 1)
+                && matches!(outcome["outcome"].as_str(), Some("accepted" | "rejected"));
         }
         if outcome.as_object().is_none_or(|object| object.len() != 2) {
             return false;
@@ -329,6 +379,7 @@ pub struct NativeRequest {
     capability: CapabilityEvidence,
     active: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
+    answered: Arc<AtomicBool>,
     response: Arc<ResponseChannel>,
 }
 
@@ -363,6 +414,52 @@ impl NativeRequest {
         self.envelope.owner.as_ref() == Some(owner) && self.is_active()
     }
 
+    /// A response reached the live adapter; this does not establish tool completion.
+    pub fn was_answered(&self) -> bool {
+        self.answered.load(Ordering::SeqCst)
+    }
+
+    /// Encode offered native IDs once for both foreground and worker review surfaces.
+    pub fn single_choices(&self, choices: &[usize]) -> Result<Value, String> {
+        let value = match &self.kind {
+            NativeInteraction::Permission { options, .. }
+            | NativeInteraction::PlanApproval { options, .. } => {
+                if choices.len() != 1 {
+                    return Err("native decision needs one offered option".into());
+                }
+                let option = options
+                    .get(choices[0])
+                    .ok_or("native option is no longer offered")?;
+                if matches!(&self.kind, NativeInteraction::PlanApproval { .. }) {
+                    json!({"outcome":{"outcome":option.id}})
+                } else {
+                    json!({"outcome":{"outcome":"selected","optionId":option.id}})
+                }
+            }
+            NativeInteraction::Questions(questions) => {
+                if choices.len() != questions.len() {
+                    return Err("native questions need exact offered answers".into());
+                }
+                let answers = questions
+                    .iter()
+                    .zip(choices)
+                    .map(|(question, choice)| {
+                        let option = question
+                            .options
+                            .get(*choice)
+                            .ok_or("native option is no longer offered")?;
+                        Ok(json!({"questionId":question.id,"selectedOptionIds":[option.id]}))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                json!({"outcome":{"outcome":"answered","answers":answers}})
+            }
+        };
+        self.kind
+            .accepts(&value)
+            .then_some(value)
+            .ok_or_else(|| "native answer is unsupported".into())
+    }
+
     /// Reject a wrong owner without consuming the rightful owner's response channel.
     pub fn respond_owned(&self, owner: &InteractionOwner, value: Value) -> Result<(), String> {
         if self.envelope.owner.as_ref() != Some(owner) {
@@ -395,7 +492,9 @@ impl NativeRequest {
             .take()
             .ok_or("native interaction already answered")?
             .send(value)
-            .map_err(|_| "native interaction receiver is closed".into())
+            .map_err(|_| "native interaction receiver is closed".to_string())?;
+        self.answered.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn invalidate(&self) {
@@ -474,7 +573,15 @@ impl InteractionConnection {
         if session.is_empty() || session.len() > 4096 || self.cancelled.load(Ordering::SeqCst) {
             return Err("native interaction session is unavailable".into());
         }
-        if params["sessionId"].as_str() != Some(session) {
+        let extension = matches!(
+            method.as_str(),
+            "cursor/ask_question" | "cursor/create_plan"
+        );
+        let connection_bound = extension
+            && params.get("sessionId").is_none()
+            && self.capabilities.images.protocol_version == Some(1)
+            && text(&params, "toolCallId").is_ok();
+        if params["sessionId"].as_str() != Some(session) && !connection_bound {
             return Err("native interaction session identity mismatch".into());
         }
         let valid_id = match &request_id {
@@ -536,6 +643,7 @@ impl InteractionConnection {
                 capability,
                 active: self.active.clone(),
                 cancelled: self.cancelled.clone(),
+                answered: Arc::new(AtomicBool::new(false)),
                 response,
             },
             rx,
@@ -762,6 +870,39 @@ mod tests {
         let answer = json!({"outcome":{"outcome":"answered","answers":[{"questionId":"question","selectedOptionIds":["b","a"]}]}});
         request.respond(answer.clone());
         assert_eq!(rx.try_recv().unwrap(), answer);
+        scope.initialized_cursor(&json!({"protocolVersion":1}));
+        let params = json!({"toolCallId":"plan-tool","name":"Fixture plan","plan":"Inspect, then edit the parser.","todos":[]});
+        let (plan, mut reply) = scope
+            .request(
+                "native-session",
+                json!(2),
+                "cursor/create_plan".into(),
+                params.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            plan.single_choices(&[0]).unwrap(),
+            json!({"outcome":{"outcome":"accepted"}})
+        );
+        assert_eq!(
+            plan.single_choices(&[1]).unwrap(),
+            json!({"outcome":{"outcome":"rejected"}})
+        );
+        plan.respond(plan.single_choices(&[1]).unwrap());
+        assert_eq!(
+            reply.try_recv().unwrap(),
+            json!({"outcome":{"outcome":"rejected"}})
+        );
+        let mut wrong = params;
+        wrong["sessionId"] = json!("other-session");
+        assert!(scope
+            .request(
+                "native-session",
+                json!(3),
+                "cursor/create_plan".into(),
+                wrong
+            )
+            .is_err());
     }
 
     #[test]

@@ -483,7 +483,8 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Up if alt => app.move_queued(-1),
         KeyCode::Down if alt => app.move_queued(1),
         KeyCode::Up => app.queue.sel = app.queue.sel.saturating_sub(1),
-        KeyCode::Down => app.queue.sel = (app.queue.sel + 1).min(n - 1),
+        KeyCode::Down if app.queue.sel + 1 >= n => app.queue.unfocus(),
+        KeyCode::Down => app.queue.sel += 1,
         KeyCode::Enter => {
             let mut ed = Editor::default();
             ed.set_text(crate::attachments::Message::text(

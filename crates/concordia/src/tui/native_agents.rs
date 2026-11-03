@@ -1,6 +1,18 @@
 //! Read-only access to child-agent state reported by the native provider.
 use super::*;
 
+pub(super) fn panel_area(area: Rect) -> Rect {
+    if area.width < 96 {
+        return area;
+    }
+    let width = (area.width / 2).clamp(48, 86);
+    Rect {
+        x: area.x + area.width - width,
+        width,
+        ..area
+    }
+}
+
 #[derive(Default)]
 pub(super) struct State {
     cards: Vec<(String, usize)>,
@@ -38,20 +50,27 @@ impl App {
                 Some(PickerRow {
                     id: format!("native-agent:{index}"),
                     label: format!(
-                        "{} · {}",
+                        "{} · {}\n{}",
                         card.title,
                         match card.status {
                             CardStatus::Running => "running",
                             CardStatus::Done => "finished",
                             CardStatus::Error => "failed/interrupted",
-                        }
+                        },
+                        card.detail
+                            .as_deref()
+                            .unwrap_or("")
+                            .lines()
+                            .find_map(|line| line.strip_prefix("Task: "))
+                            .unwrap_or("Native agent task")
                     ),
                     detail: card
                         .detail
                         .as_deref()
                         .unwrap_or("")
                         .lines()
-                        .take(2)
+                        .filter(|line| !line.starts_with("Task: "))
+                        .take(4)
                         .collect::<Vec<_>>()
                         .join(" · "),
                 })
@@ -66,20 +85,33 @@ impl App {
                 .map(|job| PickerRow {
                     id: format!("worker-agent:{}", job.id),
                     label: format!(
-                        "#{} {} · {} · {}",
+                        "#{} {} · {} · {}\n{}",
                         job.id,
                         job.label(),
                         job.model.as_deref().unwrap_or("default"),
-                        job.state.label()
+                        job.state.label(),
+                        job.task
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take(160)
+                            .collect::<String>()
                     ),
-                    detail: job
-                        .task
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .chars()
-                        .take(120)
-                        .collect(),
+                    detail: format!(
+                        "{} · {}",
+                        job.cards
+                            .last()
+                            .map(crate::provider::stream_cards::format_card_line)
+                            .unwrap_or_else(|| job.state.label().into()),
+                        if job.collected {
+                            "Result returned to main agent"
+                        } else if job.state.is_running() {
+                            "Work in progress"
+                        } else {
+                            "Result available to inspect"
+                        }
+                    ),
                 }),
         );
         if rows.is_empty() {
@@ -88,7 +120,7 @@ impl App {
         }
         self.show_picker(
             PickerKind::Agents,
-            "agents · Enter inspect · Esc close".into(),
+            "Agents · Enter inspect · Esc close".into(),
             rows,
             true,
         );

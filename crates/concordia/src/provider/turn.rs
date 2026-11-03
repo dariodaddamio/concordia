@@ -349,7 +349,14 @@ pub async fn run_provider_turn_with_progress(
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
-    run_provider_turn_inner(req, None, on_started, on_progress).await
+    run_provider_turn_inner(
+        req,
+        None,
+        crate::native_input::Mode::Standard,
+        on_started,
+        on_progress,
+    )
+    .await
 }
 
 /// App-owned turns bind native input before spawning, without changing request/transport defaults.
@@ -359,15 +366,37 @@ pub async fn run_provider_turn_with_owner(
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
+    run_provider_turn_with_transport(
+        req,
+        owner,
+        crate::native_input::Mode::Standard,
+        on_started,
+        on_progress,
+    )
+    .await
+}
+
+pub async fn run_provider_turn_with_transport(
+    req: &ProviderTurnRequest<'_>,
+    owner: InteractionOwner,
+    mode: crate::native_input::Mode,
+    on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
+    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+) -> Result<TurnOutcome> {
     let owner = owner
         .validate_for(req.provider, req.cwd, req.home_path)
         .map_err(anyhow::Error::msg)?;
-    run_provider_turn_inner(req, Some(owner), on_started, on_progress).await
+    anyhow::ensure!(
+        mode != crate::native_input::Mode::CursorAcp || req.provider == ProviderKind::Cursor,
+        "native text transport is unsupported for this provider; no fallback was started"
+    );
+    run_provider_turn_inner(req, Some(owner), mode, on_started, on_progress).await
 }
 
 async fn run_provider_turn_inner(
     req: &ProviderTurnRequest<'_>,
     owner: Option<InteractionOwner>,
+    mode: crate::native_input::Mode,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
@@ -382,7 +411,9 @@ async fn run_provider_turn_inner(
     if let (Some(tx), Some(notice)) = (&on_progress, enforcement_notice(req)) {
         let _ = tx.send(TurnProgress::Notice(notice));
     }
-    if req.provider == ProviderKind::Cursor && !req.images.is_empty() {
+    if req.provider == ProviderKind::Cursor
+        && (!req.images.is_empty() || mode == crate::native_input::Mode::CursorAcp)
+    {
         return acp::run(req, &plan, owner, on_started, on_progress).await;
     }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume

@@ -84,6 +84,28 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
         masked[link.syntax].fill(true);
     }
 
+    // Native tool arguments quote JSON paths, including escaped Windows separators and spaces.
+    // Decode the complete string instead of attempting to open its JSON spelling on disk.
+    let mut quoted = 0;
+    while let Some(start) = bounded[quoted..].find('"').map(|i| quoted + i) {
+        let mut values =
+            serde_json::Deserializer::from_str(&bounded[start..]).into_iter::<String>();
+        if let Some(Ok(decoded)) = values.next() {
+            let end = start + values.byte_offset();
+            if !masked[start..end].iter().any(|m| *m) && plausible_path(&decoded) {
+                if let Some(mut candidate) = explicit_reference(&decoded) {
+                    candidate.range = start + 1..end - 1;
+                    candidate.display = bounded[start + 1..end - 1].to_owned();
+                    out.push(candidate);
+                    masked[start..end].fill(true);
+                }
+            }
+            quoted = end;
+        } else {
+            quoted = start + 1;
+        }
+    }
+
     // Inline code is a strong signal that whitespace belongs to the path. Produce every bounded
     // whitespace-delimited suffix endpoint so paths with spaces can be resolved exactly on click.
     let mut tick_cursor = 0;
@@ -128,7 +150,8 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
                 || bounded[i..content_end].starts_with("../")
                 || bounded[i..content_end].starts_with("..\\");
             let word_end = scan_word_end(bounded, i, content_end);
-            let looks_file = has_extension(&bounded[i..word_end]);
+            let word = &bounded[i..word_end];
+            let looks_file = has_extension(word) || word.contains(['/', '\\']);
             let spaced_file = bounded[i..content_end]
                 .split_whitespace()
                 .skip(1)
@@ -417,7 +440,10 @@ fn is_local_path(path: &str) -> bool {
 
 fn plausible_path(s: &str) -> bool {
     let s = s.trim();
-    if s.is_empty() || s.len() > MAX_PATH_BYTES || !has_extension(s) {
+    if s.is_empty()
+        || s.len() > MAX_PATH_BYTES
+        || !(has_extension(s) || s.contains(['/', '\\']) || s.starts_with('.'))
+    {
         return false;
     }
     split_reference(s).is_some_and(|(path, line, column)| {
@@ -535,6 +561,15 @@ mod tests {
 
     #[test]
     fn inline_code_and_plain_paths_include_spaces_and_line_column() {
+        let quoted = r#"{"file_path":"C:\\work\\folder name\\Dockerfile"}"#;
+        let decoded = candidates(quoted)
+            .into_iter()
+            .find(|c| c.target == r"C:\work\folder name\Dockerfile")
+            .unwrap();
+        assert_eq!(&quoted[decoded.range], r"C:\\work\\folder name\\Dockerfile");
+        assert!(candidates("Open src/Dockerfile")
+            .iter()
+            .any(|c| c.target == "src/Dockerfile"));
         let s = "Open `src/Unicode file.rs:8:3` or C:\\work\\another file.rs.";
         let cs = candidates(s);
         assert!(cs.iter().any(|c| c.target == "src/Unicode file.rs"

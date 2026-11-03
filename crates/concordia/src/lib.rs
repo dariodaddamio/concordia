@@ -19,6 +19,7 @@ pub mod identity;
 pub mod integration;
 pub mod logging;
 pub mod mcp;
+pub mod native_input;
 pub mod native_memory;
 pub(crate) mod process_ui;
 pub mod prompt_time;
