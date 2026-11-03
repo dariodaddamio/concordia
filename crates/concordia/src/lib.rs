@@ -24,6 +24,7 @@ pub(crate) mod process_ui;
 pub mod prompt_time;
 pub mod provider;
 pub mod release;
+pub mod routing;
 pub mod session_titles;
 pub mod sessions;
 pub mod store;

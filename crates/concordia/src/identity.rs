@@ -27,8 +27,14 @@ pub fn format_identity_label(id: &ProviderIdentity) -> String {
 }
 
 fn read_json(path: &Path) -> Option<Value> {
-    let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+    use std::io::Read;
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 1024 * 1024 {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn jwt_claims(token: &str) -> Option<Value> {
