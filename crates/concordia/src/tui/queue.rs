@@ -742,6 +742,7 @@ impl App {
         self.pulse_on = false;
         self.cancel_handle = None;
         self.questions.cancel_native();
+        self.native_owner = None;
         let automatic_target = if self.queue.force_pending {
             None
         } else {

@@ -92,6 +92,13 @@ pub struct Compat {
     pub caps: Caps,
 }
 
+impl Compat {
+    /// Legacy flag-cache optimism never supplies native interaction/capacity authority.
+    pub fn interaction_capabilities(&self) -> super::interaction::InteractionCapabilities {
+        super::interaction::InteractionCapabilities::unknown_for_version(Some(&self.version))
+    }
+}
+
 /// Runs `program args...` and returns its output (stdout then stderr).
 pub type Runner<'a> = &'a dyn Fn(&Path, &[&str]) -> Result<String, String>;
 

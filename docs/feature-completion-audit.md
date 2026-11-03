@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-02i
+# Feature completion audit: 2026-11-02k
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,12 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- First completion wave adds bounded read-only project search plus dependency/recovery and native
+  interaction contract foundations. See [scope and verification](quality/completion-wave1.md).
+  These foundations do not complete dependency dispatch, workspace isolation, native worker
+  approvals or provider parity. Existing Cursor ACP permissions/questions now bind to the exact
+  conversation/run/attempt/connection, with native options preserved.
 
 - Session handoff selection through `/use` or `/continuation`: pause and choose, automatic
   selection, or a preferred connected account. Session choices preserve the saved default;

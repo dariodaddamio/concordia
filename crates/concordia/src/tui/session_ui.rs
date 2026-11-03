@@ -196,6 +196,8 @@ impl App {
         self.need_context_pack = false;
         self.prior_provider = provider;
         self.prior_home = Some(home.to_string_lossy().into_owned());
+        self.project_search.close();
+        self.native_owner = None;
         self.deleg.change_conversation();
         self.messages.clear();
         self.related_files.reset();

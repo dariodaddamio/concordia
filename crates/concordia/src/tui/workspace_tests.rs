@@ -657,3 +657,39 @@ fn file_search_reload_and_changed_indicator_preserve_chat_draft_and_pane_identit
     assert!(!h.app.workspace.panes[0].changed);
     assert_eq!(h.app.editor.text(), "unsent draft stays here");
 }
+
+#[test]
+fn project_search_opens_raw_exact_snapshot_at_display_columns_and_detects_later_changes() {
+    let mut h = Harness::new(120, 32);
+    let path = h.dir.path().join("result.md");
+    let original = "\u{feff}# Heading\r\n\t\u{754c} needle\r\n";
+    std::fs::write(&path, original).unwrap();
+    let request = crate::workspace_search::SearchRequest::new(
+        h.dir.path(),
+        h.app.deleg.d.conversation_id(),
+        1,
+        "needle",
+        true,
+    )
+    .unwrap();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let summary = crate::workspace_search::search(request.clone(), &cancel);
+    let verified =
+        crate::workspace_search::verify_hit(&request, &summary.hits[0], &cancel).unwrap();
+    std::fs::write(&path, "a newer disk revision").unwrap();
+    h.app.workspace.open_verified(verified).unwrap();
+    h.settle();
+    let pane = h.app.workspace.panes.last().unwrap();
+    assert!(pane.raw());
+    let doc = pane.document.as_ref().unwrap();
+    assert_eq!(doc.text(), original);
+    assert_eq!(doc.position(), (1, 7)); // tab=4, wide character=2, space=1.
+    assert!(doc.position().0 >= pane.scroll);
+    assert!(doc.position().0 < pane.scroll + pane.area.height as usize);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !h.app.workspace.panes.last().unwrap().changed {
+        h.app.workspace.poll();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+}

@@ -167,19 +167,7 @@ impl State {
 }
 
 pub(super) fn sensitive(path: &Path) -> bool {
-    path.components().any(|c| {
-        let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
-        matches!(
-            name.as_str(),
-            ".git" | "auth.json" | "credentials.json" | ".credentials.json" | "concordia-api-key"
-        ) || name == ".env"
-            || name.starts_with(".env.")
-    }) || path.extension().is_some_and(|e| {
-        matches!(
-            e.to_string_lossy().to_ascii_lowercase().as_str(),
-            "pem" | "key" | "p12" | "pfx"
-        )
-    })
+    crate::workspace_paths::sensitive(path)
 }
 
 fn discover(cwd: &Path, sources: &[String]) -> Vec<RelatedFile> {
@@ -313,22 +301,10 @@ fn discover_workspace(
         .max_depth(Some(if project { 14 } else { 1 }))
         .sort_by_file_path(|a, b| a.cmp(b))
         .filter_entry(|entry| {
-            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            !sensitive(entry.path())
-                && !(entry.file_type().is_some_and(|t| t.is_dir())
-                    && (matches!(
-                        name.as_str(),
-                        "target"
-                            | "node_modules"
-                            | ".git"
-                            | "dist"
-                            | "build"
-                            | ".venv"
-                            | "venv"
-                            | "appdata"
-                            | ".cache"
-                    ) || name.starts_with(".codex")
-                        || name.starts_with(".claude")))
+            crate::workspace_paths::discoverable(
+                entry.path(),
+                entry.file_type().is_some_and(|t| t.is_dir()),
+            )
         })
         .build();
     for e in walk.take(12_000).flatten() {

@@ -40,3 +40,6 @@ pub mod attachments;
 mod state_io;
 #[cfg(test)]
 pub(crate) mod test_support;
+
+pub mod workspace_paths;
+pub mod workspace_search;
