@@ -1,5 +1,17 @@
 # Everyday E2E status (MVP A)
 
+## Native worker input and activity, 2026-11-03e
+
+Production source `24e6d9d` passes all 983 enabled checks, everyday/release smoke, all-target
+Clippy and OSS gates. Installed terminal coverage is 47 journeys in the full pass plus the
+corrected extended worker journey in 26.11 seconds; test-only fixes select the active worker and
+wait for existing debounced draft persistence. GitHub CI `41606172479` passes all 48 journeys and
+both jobs on head `716a2e4`. PR #33 is merged as `2032224`, and the candidate is normally installed.
+
+Build e is 19,097,088 bytes, SHA-256
+`19DD5D649822015C9750EDFCC4321CF37F92F45ED7EB2FFB4A0D0DFD6F1B2097`.
+No real model turn was run. [Scope and limits](quality/native-worker-input.md).
+
 ## Related-chat groups, 2026-11-03d
 
 Production source `858b48f` (unchanged production tree after main merge `69248d1`) passes all

@@ -30,6 +30,7 @@ mod dependencies;
 mod input;
 #[path = "delegate_recovery.rs"]
 mod recovery;
+pub(crate) use recovery::managed_references;
 pub mod schedule;
 #[path = "delegate_workspaces.rs"]
 mod workspaces;

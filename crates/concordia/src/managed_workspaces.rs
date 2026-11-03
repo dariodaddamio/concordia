@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 const MAX_BYTES: u64 = 1024 * 1024;
 const MAX_RECORDS: usize = 64;
 
+#[path = "managed_lifecycle.rs"]
+pub mod lifecycle;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -16,6 +19,7 @@ pub enum Phase {
     Ready,
     ReconcileRequired,
     Retained,
+    Retired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +37,8 @@ pub struct Record {
     pub execution_identity: Option<String>,
     pub phase: Phase,
     pub note: String,
+    #[serde(default)]
+    pub operation: Option<lifecycle::Operation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +101,7 @@ pub fn load(root: &Path) -> Result<Registry, String> {
         .canonicalize()
         .map_err(|error| error.to_string())?
         .join("managed-worktrees");
-    if registry.version != 1
+    if !(1..=2).contains(&registry.version)
         || registry.records.len() > MAX_RECORDS
         || registry.records.iter().any(|record| {
             !uuid(&record.id)
@@ -107,6 +113,10 @@ pub fn load(root: &Path) -> Result<Registry, String> {
                 || !record.owner.is_absolute()
                 || !record.common_git.is_absolute()
                 || record.note.len() > 4096
+                || record
+                    .operation
+                    .as_ref()
+                    .is_some_and(|operation| !operation.valid())
                 || [&record.owner, &record.common_git, &record.execution]
                     .iter()
                     .any(|path| path_text(path).is_err())
@@ -134,26 +144,31 @@ fn mutate<T>(
     crate::state_io::with_lock(&lock, || {
         let mut registry = load(&root).map_err(std::io::Error::other)?;
         let result = operation(&mut registry).map_err(std::io::Error::other)?;
-        registry.revision = registry
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| std::io::Error::other("managed revision overflow"))?;
-        let bytes = serde_json::to_vec(&registry).map_err(std::io::Error::other)?;
-        if bytes.len() as u64 > MAX_BYTES {
-            return Err(std::io::Error::other(
-                "managed registry is full; original kept",
-            ));
-        }
-        crate::state_io::write_atomic(&root.join("managed-workspaces.json"), &bytes)?;
+        save(&root, &mut registry).map_err(std::io::Error::other)?;
         Ok(result)
     })
     .map_err(|error| error.to_string())
+}
+
+fn save(root: &Path, registry: &mut Registry) -> Result<(), String> {
+    registry.version = 2;
+    registry.revision = registry
+        .revision
+        .checked_add(1)
+        .ok_or("managed revision overflow")?;
+    let bytes = serde_json::to_vec(registry).map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err("managed registry is full; original kept".into());
+    }
+    crate::state_io::write_atomic(&root.join("managed-workspaces.json"), &bytes)
+        .map_err(|error| error.to_string())
 }
 
 struct Git<'a> {
     args: Vec<String>,
     cancel: &'a AtomicBool,
     deadline: Instant,
+    confirmed_exit: std::cell::Cell<bool>,
 }
 
 impl<'a> Git<'a> {
@@ -180,9 +195,14 @@ impl<'a> Git<'a> {
                 "core.fsmonitor=false".into(),
                 "-c".into(),
                 "submodule.recurse=false".into(),
+                "-c".into(),
+                "gc.auto=0".into(),
+                "-c".into(),
+                "maintenance.auto=false".into(),
             ],
             cancel,
             deadline: Instant::now() + Duration::from_secs(60),
+            confirmed_exit: std::cell::Cell::new(true),
         })
     }
     fn run(&self, cwd: &Path, args: &[&str], allow_missing: bool) -> Result<String, String> {
@@ -197,6 +217,7 @@ impl<'a> Git<'a> {
         argv.extend(args.iter().map(|arg| (*arg).to_owned()));
         let output =
             crate::harness::run::run_command_cancellable(&argv, cwd, remaining, self.cancel);
+        self.confirmed_exit.set(output.exit.is_some());
         if output.timed_out || self.cancel.load(Ordering::SeqCst) {
             return Err("managed Git command interrupted; inspect recorded identities before reconciliation".into());
         }
@@ -459,6 +480,7 @@ pub fn create(
         execution_identity: None,
         id,
         phase: Phase::Creating,
+        operation: None,
         note:
             "Creation reserved; native Git mutation may be incomplete. Never reissue automatically."
                 .into(),
@@ -556,6 +578,9 @@ pub fn reconcile(
         .ok_or("unknown managed workspace")?;
     if owner.canonicalize().ok().as_ref() != Some(&record.owner) {
         return Err("managed workspace belongs to another owner".into());
+    }
+    if record.phase == Phase::Retained && record.operation.is_some() {
+        return lifecycle::reconcile_retained(root, &record, cancel);
     }
     if !matches!(record.phase, Phase::Creating | Phase::ReconcileRequired) {
         return Err("only uncertain creations require explicit reconciliation".into());

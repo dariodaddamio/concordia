@@ -34,7 +34,8 @@ creation does not change the implementation status recorded here.
 - Explicit managed Git worktrees bind a clean committed base, repository, owner/execution
   directories and worker dispatch. Interrupted creation is retained and explicitly reconciled;
   worker returns label unintegrated edits. [Behavior and evidence](quality/managed-workspaces.md).
-  Native filesystem confinement, reviewed integration and retirement remain open.
+  Candidate W3 adds reviewed native integration, retirement and separate branch deletion.
+  Native filesystem confinement remains open.
 
 - Cooperative workspace reservations coordinate main/worker admission and internal saves across
   panes, with explicit declarations, conflict owners and retained uncertain-exit claims.
@@ -86,7 +87,7 @@ creation does not change the implementation status recorded here.
 - Per-worker native models, batched result collection and opt-in automatic handback, bound to
   the launching conversation and using normal dispatch/recovery. Persistent worker state and
   bounded quota failover and approved shared-workspace dependency scheduling are implemented;
-  managed worktree creation is implemented; native confinement and lifecycle integration remain open. See
+  managed worktree creation and candidate reviewed lifecycle integration are implemented; native confinement remains open. See
   [orchestration and latency](orchestration-and-latency.md).
 - Stable completed-diagram rendering in long histories and inspectable patch-failure diagnostics.
 
