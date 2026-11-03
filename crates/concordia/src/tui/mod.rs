@@ -4409,6 +4409,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
             return false;
         }
     }
+    if landing::navigation_key(app, key) {
+        return false;
+    }
     if landing::visible(app) && landing::handle_key(app, key) {
         return false;
     }

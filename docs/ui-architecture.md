@@ -25,6 +25,9 @@ remain explicitly unreported.
 The header's left arrow opens Home over the current chat, preserving its messages, draft, queue,
 and running turn. The return arrow or Esc restores that chat. Home also works with an empty chat
 history. Choosing another chat uses the existing explicit resume flow and running-turn checks.
+Left/Right Arrow navigate between chat and Home when the composer is empty. Alt+Left/Alt+Right
+also navigate with a draft present. Plain arrows continue editing nonempty text; focused panes,
+queue/goal editors and modal decisions keep their arrow keys.
 
 The credit row is clickable. Its details separate numeric balance from availability and include
 the native source and a read-only refresh action. Codex accounts also have a direct dashboard

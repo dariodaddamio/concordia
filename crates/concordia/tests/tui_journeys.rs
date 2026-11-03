@@ -822,6 +822,36 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
     s.until("Home returns to the existing chat", |s| {
         !s.screen().contains(" chats ") && s.screen().contains("resize-chat-marker")
     });
+    s.send("\x1b[D");
+    assert!(
+        !s.screen().contains(" chats "),
+        "Left still edits a nonempty message"
+    );
+    s.send("\x1b[C");
+    s.send("\x1b[1;3D");
+    s.until("Alt Left opens Home with the draft retained", |s| {
+        s.screen().contains(" chats ") && s.draft() == "resize-draft-marker"
+    });
+    s.send("\x1b[1;3C");
+    s.until("Alt Right returns to chat", |s| {
+        !s.screen().contains(" chats ")
+    });
+    s.send("\x01\x08");
+    s.until("empty composer before keyboard navigation", |s| {
+        s.draft().is_empty()
+    });
+    s.send("\x1b[D");
+    s.until("plain Left opens Home from an empty composer", |s| {
+        s.screen().contains(" chats ")
+    });
+    s.send("\x1b[C");
+    s.until("plain Right returns to chat", |s| {
+        !s.screen().contains(" chats ")
+    });
+    s.paste("resize-draft-marker");
+    s.until("restored draft is durably saved", |s| {
+        s.draft() == "resize-draft-marker"
+    });
     s.send("\x1b[<0;2;2M\x1b[<0;2;2m");
     s.until("credit row opens balance details", |s| {
         let screen = s.screen();
