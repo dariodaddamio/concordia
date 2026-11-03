@@ -1,5 +1,9 @@
 # Changelog
 
+- Agents can propose goal additions/closures through MCP for explicit full-text local review.
+  F7 focuses goal choices without consuming the message draft. Revision-bound receipts and visible
+  source attribution preserve monotonic completion and prevent replay of uncertain changes.
+
 - Managed cross-worktree dependencies wait for explicit delivery review. Owners can accept only
   the verified result text or a matching completed integration receipt. Changed source/head/status
   evidence pauses dispatch, and pending dependants prevent premature worktree retirement.

@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03n
+# Feature completion audit: 2026-11-03o
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,10 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Agent-facing goal add/close proposals share the existing local review queue and goal store.
+  Full-text F7/Y/N review, revision-bound receipts and source attribution preserve drafts,
+  monotonic completion and no-replay recovery. [Scope](quality/goal-proposals.md).
 
 - Managed cross-worktree dependencies wait for explicit result-only or already-integrated
   receipts, with source/repository revalidation and retirement references. [Scope](quality/dependency-delivery.md).
@@ -79,7 +83,8 @@ creation does not change the implementation status recorded here.
   observations are separate coverage; broader live native-provider verification remains open.
 
 - Explicit goal/source associations reuse the existing goal store, verified native pointers and
-  one bounded relationship service. CLI/TUI mutation is explicit; MCP exposes reads only.
+  one bounded relationship service. CLI/TUI link mutation is explicit; MCP source links remain
+  read-only while goal add/close changes use locally approved proposals.
   See [association evidence and limits](quality/goal-source-associations.md).
 
 - Approved shared-workspace dependencies now dispatch through the existing durable worker queue.

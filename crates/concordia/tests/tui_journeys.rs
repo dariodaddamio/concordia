@@ -334,7 +334,11 @@ fn landing_goal_scroll_entry_and_completion_work_through_the_real_terminal() {
     assert!(s.draft().is_empty());
     s.enter();
     let saved = || -> Vec<Value> {
-        serde_json::from_slice(&std::fs::read(dir.path().join("goals.json")).unwrap()).unwrap()
+        concordia::goals::read_goals(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|goal| serde_json::to_value(goal).unwrap())
+            .collect()
     };
     s.until("goal saved", |_| {
         saved().iter().any(|g| g["text"] == "new terminal goal")
@@ -360,6 +364,147 @@ fn landing_goal_scroll_entry_and_completion_work_through_the_real_terminal() {
         !s.screen().contains(" chats ") && s.draft().is_empty()
     });
     s.send("\x1b");
+    s.paste("preserve my goal-review draft");
+    s.until("goal review draft persisted", |s| {
+        s.draft() == "preserve my goal-review draft"
+    });
+    let propose = |action: &str, request: &str, goal: Option<&str>, text: Option<&str>| {
+        let revision =
+            concordia::goals::revision(&concordia::goals::read_goals(dir.path()).unwrap()).unwrap();
+        let mut arguments =
+            serde_json::json!({"action":action,"request_id":request,"revision":revision});
+        if let Some(goal) = goal {
+            arguments["goal"] = serde_json::json!(goal);
+        }
+        if let Some(text) = text {
+            arguments["text"] = serde_json::json!(text);
+        }
+        let response = concordia::mcp::handle_line(dir.path(), &serde_json::json!({"jsonrpc":"2.0","id":90,"method":"tools/call","params":{"name":"goals","arguments":arguments}}).to_string()).unwrap();
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["isError"], false, "{response}");
+    };
+    let add_request = uuid::Uuid::new_v4().to_string();
+    let goal_id = format!("g-{add_request}");
+    let unchanged = std::fs::read(dir.path().join("goals.json")).unwrap();
+    propose(
+        "propose_add",
+        &add_request,
+        None,
+        Some("Review the exact proposed MCP goal"),
+    );
+    s.until("full goal proposal awaits explicit focus", |s| {
+        let screen = s.screen();
+        screen.contains("MCP proposes ADD")
+            && screen.contains("Review the exact proposed MCP goal")
+            && screen.contains("F7 focuses goal review")
+    });
+    s.send("y");
+    s.until("ordinary yes-shaped typing edits the draft", |s| {
+        s.draft() == "preserve my goal-review drafty"
+    });
+    assert_eq!(
+        std::fs::read(dir.path().join("goals.json")).unwrap(),
+        unchanged
+    );
+    s.send("\x1b[18~");
+    s.until("goal review explicitly focused", |s| {
+        s.screen().contains("Goal review focused")
+    });
+    s.send("y");
+    s.until("locally approved MCP goal added", |_| {
+        concordia::goals::read_goals(dir.path())
+            .unwrap()
+            .iter()
+            .any(|goal| {
+                goal.id == goal_id
+                    && goal.origin.as_ref().is_some_and(|origin| {
+                        origin.request_id.as_deref() == Some(add_request.as_str())
+                    })
+            })
+    });
+    assert_eq!(s.draft(), "preserve my goal-review drafty");
+    assert!(s.prompts().is_empty());
+    let decline_request = uuid::Uuid::new_v4().to_string();
+    propose("propose_close", &decline_request, Some(&goal_id), None);
+    s.until("full close proposal visible", |s| {
+        s.screen().contains("MCP proposes CLOSE") && s.screen().contains(&decline_request)
+    });
+    s.send("\x1b[18~");
+    s.until("close proposal focus", |s| {
+        s.screen().contains("Goal review focused")
+    });
+    s.send("n");
+    s.until("close proposal declined without goal mutation", |_| {
+        concordia::goals::changes::status(dir.path(), &decline_request)
+            .is_ok_and(|status| status.contains("declined"))
+    });
+    assert!(
+        !concordia::goals::read_goals(dir.path())
+            .unwrap()
+            .iter()
+            .find(|goal| goal.id == goal_id)
+            .unwrap()
+            .done
+    );
+    let close_request = uuid::Uuid::new_v4().to_string();
+    propose("propose_close", &close_request, Some(&goal_id), None);
+    s.until("new close proposal visible", |s| {
+        s.screen().contains("MCP proposes CLOSE") && s.screen().contains(&close_request)
+    });
+    s.send("\x1b[18~");
+    s.until("second close proposal focus", |s| {
+        s.screen().contains("Goal review focused")
+    });
+    s.send("y");
+    s.until("approved goal close attributed to exact request", |_| {
+        concordia::goals::read_goals(dir.path())
+            .unwrap()
+            .iter()
+            .any(|goal| {
+                goal.id == goal_id
+                    && goal.done
+                    && goal
+                        .closed_origin
+                        .as_ref()
+                        .and_then(|origin| origin.request_id.as_deref())
+                        == Some(close_request.as_str())
+            })
+    });
+    assert_eq!(s.draft(), "preserve my goal-review drafty");
+    let stale_request = uuid::Uuid::new_v4().to_string();
+    propose(
+        "propose_add",
+        &stale_request,
+        None,
+        Some("Must not overwrite concurrent goal changes"),
+    );
+    s.until("proposal before concurrent goal change", |s| {
+        s.screen().contains(&stale_request)
+    });
+    concordia::goals::save_goals(
+        dir.path(),
+        &[concordia::goals::Goal {
+            id: "concurrent-terminal-goal".into(),
+            text: "Concurrent user goal".into(),
+            added_at: "0".into(),
+            origin: Some(concordia::goals::Attribution::user()),
+            ..Default::default()
+        }],
+    )
+    .unwrap();
+    s.send("\x1b[18~");
+    s.until("stale proposal review focused", |s| {
+        s.screen().contains("Goal review focused")
+    });
+    s.send("y");
+    s.until("stale goal proposal rejected", |s| {
+        s.screen().contains("goals changed since this proposal")
+    });
+    assert!(concordia::goals::read_goals(dir.path())
+        .unwrap()
+        .iter()
+        .all(|goal| goal.id != format!("g-{stale_request}")));
+    assert_eq!(s.draft(), "preserve my goal-review drafty");
     assert!(s.prompts().is_empty());
     s.exit();
 }
@@ -2759,6 +2904,7 @@ fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
             done: false,
             added_at: "0".into(),
             closed_at: None,
+            ..Default::default()
         }],
     )
     .unwrap();

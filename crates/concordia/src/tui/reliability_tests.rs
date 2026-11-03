@@ -56,6 +56,7 @@ fn long_goal_lists_keep_selected_goal_confirmation_and_entry_visible() {
             done: false,
             added_at: "0".into(),
             closed_at: None,
+            ..Default::default()
         })
         .collect();
     landing::save_goals(&h.app.state_root, &goals).unwrap();
@@ -100,6 +101,7 @@ fn independent_goal_saves_preserve_other_panes_additions_and_completed_status() 
         done: false,
         added_at: "0".into(),
         closed_at: None,
+        ..Default::default()
     };
     let base = goal("base");
     landing::save_goals(&h.app.state_root, std::slice::from_ref(&base)).unwrap();
@@ -128,6 +130,7 @@ fn corrupt_goals_are_never_silently_overwritten_by_a_new_goal() {
         done: false,
         added_at: "0".into(),
         closed_at: None,
+        ..Default::default()
     };
     assert!(landing::save_goals(&h.app.state_root, &[goal]).is_err());
     assert_eq!(std::fs::read(path).unwrap(), original);
@@ -231,6 +234,7 @@ fn goal_mouse_hit_testing_follows_wrapped_and_scrolled_visual_rows() {
             done: false,
             added_at: "0".into(),
             closed_at: None,
+            ..Default::default()
         })
         .collect();
     landing::save_goals(&h.app.state_root, &goals).unwrap();
@@ -340,6 +344,7 @@ fn goal_additions_from_concurrent_panes_all_survive() {
                         done: false,
                         added_at: "0".into(),
                         closed_at: None,
+                        ..Default::default()
                     };
                     // The production lock deliberately times out after two seconds.
                     // Under a tight stress loop another writer can consume that

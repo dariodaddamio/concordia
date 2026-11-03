@@ -288,6 +288,7 @@ fn cli_and_mcp_read_the_same_revision_and_reject_stale_sources() {
             done: false,
             added_at: "now".into(),
             closed_at: None,
+            ..Default::default()
         })
         .collect();
     concordia::goals::save_goals(dir.path(), &goals).unwrap();
