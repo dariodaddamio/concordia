@@ -177,6 +177,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     for fixture in [
         json!({"artifact":true}),
         json!({"question":true}),
+        json!({"question":true,"freeform":true}),
         json!({"resolved":true}),
         json!({"wrong_thread":true}),
         json!({"wrong_turn":true}),
@@ -232,7 +233,16 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                         request
                             .respond_owned(
                                 &owner_for_answers,
-                                request.single_choices(&[choice]).unwrap(),
+                                if request.allows_text(0) {
+                                    request
+                                        .choices_with_text(
+                                            &[0],
+                                            &[Some("Synthetic free reply".into())],
+                                        )
+                                        .unwrap()
+                                } else {
+                                    request.single_choices(&[choice]).unwrap()
+                                },
                             )
                             .unwrap();
                     }
@@ -315,7 +325,12 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         } else if fixture["closed"] != true {
             assert_eq!(offered, 1);
             let answer = values.iter().find(|value| value["id"] == 100).unwrap();
-            if fixture["question"] == true {
+            if fixture["freeform"] == true {
+                assert_eq!(
+                    answer["result"],
+                    json!({"answers":{"route":{"answers":["user_note: Synthetic free reply"]}}})
+                );
+            } else if fixture["question"] == true {
                 assert_eq!(
                     answer["result"],
                     json!({"answers":{"route":{"answers":["Direct"]}}})

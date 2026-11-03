@@ -23,6 +23,7 @@ pub(super) struct State {
     native: Option<crate::provider::turn::NativeRequest>,
     pending_native: std::collections::VecDeque<crate::provider::turn::NativeRequest>,
     native_choices: Vec<usize>,
+    native_texts: Vec<Option<String>>,
     note: String,
 }
 impl State {
@@ -46,6 +47,7 @@ impl State {
             request.invalidate();
         }
         self.native_choices.clear();
+        self.native_texts.clear();
         self.questions.clear();
         self.focused = false;
         self.targets.clear();
@@ -105,7 +107,12 @@ impl State {
     fn rows(&self) -> usize {
         self.questions
             .get(self.current)
-            .map_or(0, |q| q.options.len() + usize::from(self.native.is_none()))
+            .map_or(0, |q| q.options.len() + usize::from(self.note_allowed()))
+    }
+    fn note_allowed(&self) -> bool {
+        self.native
+            .as_ref()
+            .is_none_or(|request| request.allows_text(self.current))
     }
     pub fn offer_native(&mut self, request: crate::provider::turn::NativeRequest, focus: bool) {
         self.refresh_native();
@@ -126,7 +133,13 @@ impl State {
             .into_iter()
             .map(|(prompt, options)| Question { prompt, options })
             .collect();
-        if self.questions.is_empty() || self.questions.iter().any(|q| q.options.is_empty()) {
+        if self.questions.is_empty()
+            || self
+                .questions
+                .iter()
+                .enumerate()
+                .any(|(index, q)| q.options.is_empty() && !request.allows_text(index))
+        {
             request.cancel();
             self.clear();
             return;
@@ -136,6 +149,17 @@ impl State {
         self.answers.clear();
         self.focused = focus;
         self.native = Some(request);
+    }
+}
+
+impl State {
+    fn append_note(&mut self, value: &str) -> bool {
+        if self.native.is_some() {
+            crate::provider::interaction::append_reply(&mut self.note, value)
+        } else {
+            self.note.push_str(value);
+            true
+        }
     }
 }
 
@@ -330,12 +354,16 @@ fn choose(app: &mut App, index: usize) {
         return;
     };
     let note = s.note.clone();
-    if s.native.is_none() && index == q.options.len() {
+    if s.note_allowed() && index == q.options.len() {
         if note.trim().is_empty() {
             return;
         }
         // A free reply stands on its own; never prepend an inferred question or selected option.
         s.answers.push(note);
+        if s.native.is_some() {
+            s.native_choices.push(index);
+            s.native_texts.push(Some(s.note.clone()));
+        }
     } else {
         let Some(answer) = q.options.get(index) else {
             return;
@@ -346,6 +374,10 @@ fn choose(app: &mut App, index: usize) {
             format!("{}\n{answer}\nNote: {note}", q.prompt)
         });
         s.native_choices.push(index);
+        s.native_texts.push(
+            (s.native.is_some() && s.note_allowed() && !s.note.trim().is_empty())
+                .then(|| s.note.clone()),
+        );
     }
     s.note.clear();
     if s.current + 1 < s.questions.len() {
@@ -356,7 +388,7 @@ fn choose(app: &mut App, index: usize) {
     if let Some(native) = s.native.take() {
         let outcome = if let (Some(owner), Ok(result)) = (
             app.native_owner.as_ref(),
-            native.single_choices(&s.native_choices),
+            native.choices_with_text(&s.native_choices, &s.native_texts),
         ) {
             let label = result
                 .pointer("/outcome/outcome")
@@ -426,6 +458,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         .get(app.questions.current)
         .map_or(0, |q| q.options.len());
     let native = app.questions.native.is_some();
+    let note_allowed = app.questions.note_allowed();
     match key.code {
         KeyCode::Esc => {
             if let Some(native) = app.questions.native.take() {
@@ -439,20 +472,26 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Down | KeyCode::Tab => {
             app.questions.selected = (app.questions.selected + 1) % count
         }
-        KeyCode::Enter if !native && key.modifiers.contains(KeyModifiers::SHIFT) => {
-            app.questions.note.push('\n');
+        KeyCode::Enter if note_allowed && key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.questions.append_note("\n");
             app.questions.selected = choices;
         }
         KeyCode::Enter => choose(app, app.questions.selected),
         // Native permission choices retain digit shortcuts. Conversational digits are text.
-        KeyCode::Char(c @ '1'..='9') if native && (c as usize - '1' as usize) < choices => {
+        KeyCode::Char(c @ '1'..='9')
+            if native
+                && app.questions.selected < choices
+                && (c as usize - '1' as usize) < choices =>
+        {
             choose(app, c as usize - '1' as usize)
         }
-        KeyCode::Char(c) if !native => {
-            app.questions.note.push(c);
+        KeyCode::Char(c) if note_allowed => {
+            if !app.questions.append_note(&c.to_string()) {
+                app.flash("Reply exceeds the 4096-byte input limit");
+            }
             app.questions.selected = choices;
         }
-        KeyCode::Backspace if !native => {
+        KeyCode::Backspace if note_allowed => {
             app.questions.note.pop();
         }
         KeyCode::Char(_) | KeyCode::Backspace => {
@@ -465,10 +504,13 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
 }
 /// A deliberate paste into the focused reply panel preserves logical line breaks.
 pub(super) fn paste(app: &mut App, text: &str) -> bool {
-    if !app.questions.focused || app.questions.native.is_some() || !app.questions.waiting() {
+    if !app.questions.focused || !app.questions.note_allowed() || !app.questions.waiting() {
         return false;
     }
-    app.questions.note.push_str(&text::normalize_newlines(text));
+    if !app.questions.append_note(&text::normalize_newlines(text)) {
+        app.flash("Reply paste exceeds 4096 bytes or contains controls; reply retained");
+        return true;
+    }
     app.questions.selected = app.questions.questions[app.questions.current].options.len();
     true
 }
@@ -529,7 +571,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         ))),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    let rows = q.options.len() + usize::from(s.native.is_none());
+    let rows = q.options.len() + usize::from(s.note_allowed());
     let count = (area.height as usize).saturating_sub(2);
     let first = s.selected.saturating_sub(count.saturating_sub(1));
     for (row, index) in (0..rows).skip(first).take(count).enumerate() {
@@ -800,6 +842,112 @@ mod tests {
             Err(tokio::sync::oneshot::error::TryRecvError::Closed)
         ));
         assert_eq!(app.native_owner, main_owner);
+        native_text_proof(&mut app, dir.path());
+    }
+
+    fn native_text_proof(app: &mut App, dir: &Path) {
+        use serde_json::json;
+        let owner = crate::provider::interaction::InteractionOwner {
+            provider: ProviderKind::Codex,
+            ..app.native_owner.clone().unwrap()
+        };
+        app.native_owner = Some(owner.clone());
+        app.editor.set_text("preserve native reply draft");
+        let mut connection = crate::provider::interaction::InteractionConnection::new(
+            Some(owner.clone()),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        connection.initialized_codex("0.166.0");
+        let params = json!({"threadId":"text-thread","turnId":"text-turn","itemId":"text-item","questions":[{"id":"text","header":"Text","question":"Describe the route","isSecret":false,"isOther":false,"options":null},{"id":"mixed","header":"Mixed","question":"Choose or comment","isSecret":false,"isOther":true,"options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]},{"id":"fixed","header":"Fixed","question":"Confirm choice","isSecret":false,"isOther":false,"options":[{"label":"Fixed","description":"Exact"}]}]});
+        let (request, mut rx) = connection
+            .request(
+                "text-thread",
+                json!(21),
+                "item/tool/requestUserInput".into(),
+                params.clone(),
+            )
+            .unwrap();
+        assert!(request
+            .choices_with_text(&[0, 0, 0], &[Some("x".repeat(4097)), None, None])
+            .is_err());
+        app.questions.offer_native(request, false);
+        assert!(!paste(app, "not focused"));
+        handle_key(app, &KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
+        assert!(paste(app, "first answer"));
+        handle_key(app, &KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        handle_key(app, &KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        handle_key(app, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(paste(app, "comment"));
+        handle_key(app, &KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        handle_key(app, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!paste(app, "fixed choice has no text field"));
+        handle_key(app, &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            json!({"answers":{"text":{"answers":["user_note: first answer\n2"]},"mixed":{"answers":["Two","user_note: comment"]},"fixed":{"answers":["Fixed"]}}})
+        );
+        assert_eq!(app.editor.text(), "preserve native reply draft");
+        assert!(app.queue.items.is_empty());
+        let mut secret = params.clone();
+        secret["questions"][0]["isSecret"] = json!(true);
+        assert!(connection
+            .request(
+                "text-thread",
+                json!(22),
+                "item/tool/requestUserInput".into(),
+                secret
+            )
+            .is_err());
+        let mut malformed = params.clone();
+        malformed["questions"][0]["isSecret"] = json!("true");
+        assert!(connection
+            .request(
+                "text-thread",
+                json!(23),
+                "item/tool/requestUserInput".into(),
+                malformed
+            )
+            .is_err());
+        let worker = app.deleg.d.push_test_job(
+            "text-worker",
+            ProviderKind::Codex,
+            crate::delegate::WorkerState::Thinking,
+            "synthetic native text worker",
+            0,
+        );
+        let worker_owner = app.deleg.d.test_native_owner(worker, dir);
+        let mut worker_connection = crate::provider::interaction::InteractionConnection::new(
+            Some(worker_owner),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        worker_connection.initialized_codex("0.166.0");
+        let mut worker_params = params;
+        worker_params["threadId"] = json!("fixture-session");
+        worker_params["questions"] = json!([{"id":"text","header":"Worker","question":"Describe result","isSecret":false,"options":null}]);
+        let (request, mut worker_rx) = worker_connection
+            .request(
+                "fixture-session",
+                json!(31),
+                "item/tool/requestUserInput".into(),
+                worker_params,
+            )
+            .unwrap();
+        app.deleg.d.test_native_input(worker, request);
+        worker_input::open(app, worker);
+        assert!(worker_input::active(app));
+        app.paste_text("unarmed paste");
+        assert_eq!(app.editor.text(), "preserve native reply draft");
+        worker_input::key(app, &KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
+        app.paste_text(&"x".repeat(4097));
+        assert!(worker_rx.try_recv().is_err());
+        app.paste_text("worker\nanswer");
+        worker_input::key(app, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            worker_rx.try_recv().unwrap(),
+            json!({"answers":{"text":{"answers":["user_note: worker\nanswer"]}}})
+        );
+        assert_eq!(app.native_owner, Some(owner));
+        assert_eq!(app.editor.text(), "preserve native reply draft");
     }
 
     #[test]

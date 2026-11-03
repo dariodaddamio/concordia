@@ -11,6 +11,24 @@ use tokio::sync::oneshot;
 const REQUEST_BYTES: usize = 256 * 1024;
 const REQUESTS_PER_CONNECTION: usize = 1024;
 const PENDING_REQUESTS: usize = 8;
+fn valid_reply(text: &str) -> bool {
+    !text.trim().is_empty()
+        && text.len() <= 4096
+        && !text
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+}
+pub(crate) fn append_reply(reply: &mut String, value: &str) -> bool {
+    if reply.len().saturating_add(value.len()) > 4096
+        || value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return false;
+    }
+    reply.push_str(value);
+    true
+}
 type ResponseChannel = Mutex<Option<oneshot::Sender<Value>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +171,7 @@ pub struct NativeQuestion {
     pub prompt: String,
     pub options: Vec<NativeOption>,
     pub multiple: bool,
+    pub allow_text: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,6 +314,15 @@ impl NativeInteraction {
                 let questions = questions
                     .iter()
                     .map(|question| {
+                        if question
+                            .get("isSecret")
+                            .is_some_and(|value| !value.is_boolean())
+                            || question
+                                .get("isOther")
+                                .is_some_and(|value| !value.is_boolean())
+                        {
+                            return Err("Native question flags are invalid".into());
+                        }
                         if question["isSecret"] == true {
                             return Err("secret input stays with the native provider login flow"
                                 .to_string());
@@ -303,10 +331,12 @@ impl NativeInteraction {
                         if !ids.insert(id.clone()) {
                             return Err("duplicate native question".into());
                         }
-                        let choices = question["options"]
-                            .as_array()
-                            .filter(|options| !options.is_empty() && options.len() <= 9)
-                            .ok_or("free-form-only native input is unsupported")?;
+                        let choices = match question.get("options") {
+                            None | Some(Value::Null) => &[][..],
+                            Some(Value::Array(options)) if options.len() <= 9 => options.as_slice(),
+                            _ => return Err("native question option bound exceeded".into()),
+                        };
+                        let allow_text = choices.is_empty() || question["isOther"] == true;
                         let mut choices_seen = HashSet::new();
                         let options = choices
                             .iter()
@@ -331,6 +361,7 @@ impl NativeInteraction {
                             prompt: text(question, "question")?,
                             options,
                             multiple: false,
+                            allow_text,
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -416,6 +447,7 @@ impl NativeInteraction {
                             prompt: text(question, "prompt")?,
                             options: options(&question["options"], false)?,
                             multiple,
+                            allow_text: false,
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -448,9 +480,33 @@ impl NativeInteraction {
                         .and_then(|answer| answer.get("answers"))
                         .and_then(Value::as_array)
                         .is_some_and(|selected| {
-                            selected.len() == 1
-                                && selected[0].as_str().is_some_and(|answer| {
-                                    question.options.iter().any(|option| option.id == answer)
+                            let mut option = false;
+                            let mut note = false;
+                            !selected.is_empty()
+                                && selected.len() <= 2
+                                && selected.iter().all(|answer| {
+                                    let Some(answer) = answer.as_str() else {
+                                        return false;
+                                    };
+                                    if question.options.iter().any(|choice| choice.id == answer) {
+                                        if option {
+                                            return false;
+                                        }
+                                        option = true;
+                                        true
+                                    } else if question.allow_text
+                                        && answer
+                                            .strip_prefix("user_note: ")
+                                            .is_some_and(valid_reply)
+                                    {
+                                        if note {
+                                            return false;
+                                        }
+                                        note = true;
+                                        true
+                                    } else {
+                                        false
+                                    }
                                 })
                         })
                 });
@@ -543,6 +599,46 @@ pub struct NativeRequest {
 }
 
 impl NativeRequest {
+    pub fn allows_text(&self, question: usize) -> bool {
+        matches!(&self.kind, NativeInteraction::CodexQuestions(questions) if questions.get(question).is_some_and(|question| question.allow_text))
+    }
+    pub fn choices_with_text(
+        &self,
+        choices: &[usize],
+        texts: &[Option<String>],
+    ) -> Result<Value, String> {
+        if texts.iter().all(Option::is_none) {
+            return self.single_choices(choices);
+        }
+        let NativeInteraction::CodexQuestions(questions) = &self.kind else {
+            return Err("Native request does not offer text replies".into());
+        };
+        if choices.len() != questions.len() || texts.len() != questions.len() {
+            return Err("Native question answers are incomplete".into());
+        }
+        let mut answers = serde_json::Map::new();
+        for ((question, choice), text) in questions.iter().zip(choices).zip(texts) {
+            let mut selected = Vec::new();
+            if *choice < question.options.len() {
+                selected.push(question.options[*choice].id.clone());
+            }
+            if let Some(text) = text {
+                if !question.allow_text || *choice > question.options.len() || !valid_reply(text) {
+                    return Err("Native text reply is unavailable or exceeds its bound".into());
+                }
+                selected.push(format!("user_note: {text}"));
+            }
+            if selected.is_empty() {
+                return Err("Native question needs an explicit answer".into());
+            }
+            answers.insert(question.id.clone(), json!({"answers":selected}));
+        }
+        let value = json!({"answers":answers});
+        self.kind
+            .accepts(&value)
+            .then_some(value)
+            .ok_or_else(|| "Native text reply is unsupported".into())
+    }
     pub fn owner(&self) -> Option<&InteractionOwner> {
         self.envelope.owner.as_ref()
     }

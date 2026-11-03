@@ -1,5 +1,9 @@
 # Changelog
 
+- Native Codex questions can accept bounded text replies in foreground and worker review when
+  offered by the protocol. F8 focuses the reply; paste and multiline input preserve the composer.
+  Exact request ownership and native secret-input refusal remain enforced.
+
 - Structured Codex file outputs have source-bound cards and a metadata catalog in the file browser.
   Inspect exact run/session/event provenance, then explicitly choose actions on the current file.
   Repeated events deduplicate; missing, replaced and excluded paths retain their source report.

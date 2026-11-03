@@ -751,6 +751,7 @@ impl App {
             && self.picker.is_none()
             && self.workspace.focused.is_none()
             && self.queue.edit.is_none()
+            && !self.questions.focused
         {
             self.start_image_import(None, true);
             return;
@@ -776,6 +777,7 @@ impl App {
             return;
         }
         if worker_input::active(self) {
+            worker_input::paste(self, text);
             return;
         }
         if self.project_search.active() {

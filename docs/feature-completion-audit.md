@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03q
+# Feature completion audit: 2026-11-03r
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -46,7 +46,8 @@ creation does not change the implementation status recorded here.
 - Opt-in Codex app-server execution now connects native command/file decisions and bounded
   questions to foreground/worker review with exact thread/turn ownership and resolution handling.
   [Scope and limitations](quality/codex-native-input.md). CLI 0.166.0 is the matched protocol;
-  Claude bridging, free-form native input and live parity remain separate.
+  Native text replies now work in foreground/worker review where offered; Claude bridging and
+  live parity remain separate.
 
 - Worker-owned native input, opt-in Cursor ACP text and explicit native plan decisions now use
   exact live request ownership. Edit cards, file detection, activity icons, agent inspection,
