@@ -1,5 +1,11 @@
 # Changelog
 
+### Validation
+- A versioned synthetic retrieval corpus compares lexical and opt-in ranking through existing
+  native-memory checks. `scripts/evaluate-memory.ps1` records exact source/test/corpus identity,
+  relevance, verified excerpts, explicit incomplete coverage, read costs and measured resource bounds.
+  It runs no model turns and changes no production ranking defaults.
+
 ### Fixed (`2026-11-03d`)
 - Related-chat groups include the parent source-update artifact fix and current-workspace alias
   correction. Group membership, provenance and discovery controls retain their existing behavior.

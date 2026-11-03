@@ -77,7 +77,9 @@ uses its read-only quota RPC. Native execution, authentication and approvals rem
 
 Opt-in [explainable memory ranking](docs/quality/memory-ranking.md) adds historical file facts
 and verified goal/handoff context. [Related-chat groups](docs/quality/related-chat-groups.md) add
-explicit overlapping membership and a separate discovery screen. Retrieval evaluation remains open.
+explicit overlapping membership and a separate discovery screen. A versioned
+[synthetic retrieval evaluation](docs/quality/memory-evaluation.md) measures declared-scope results;
+controlled live model-retention trials still require an explicit provider/task budget.
 
 Cooperative workspace declarations and cross-pane reservations now guard main/worker admission
 and internal saves. [Workspace ownership](docs/quality/workspace-reservations.md) explains commands,
