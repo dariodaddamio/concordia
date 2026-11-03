@@ -43,5 +43,7 @@ mod state_io;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+mod file_identity;
 pub mod workspace_paths;
 pub mod workspace_search;
+pub mod workspaces;

@@ -253,7 +253,7 @@ mod tests {
         drop(restored);
         let mut corrupt: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(corrupt["version"], 4);
+        assert_eq!(corrupt["version"], 5);
         corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
         let bytes = serde_json::to_vec(&corrupt).unwrap();
         std::fs::write(&path, &bytes).unwrap();
@@ -298,6 +298,10 @@ struct SavedJob {
     routing: Option<crate::routing::Approved>,
     #[serde(default)]
     route_history: Vec<String>,
+    #[serde(default)]
+    workspace: Option<crate::workspaces::Request>,
+    #[serde(default)]
+    workspace_notice: Option<String>,
     native_session: Option<String>,
     collected: bool,
     attempts: Vec<String>,
@@ -351,7 +355,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1..=4)
+            if !matches!(ledger.version, 1..=5)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -386,6 +390,13 @@ impl Delegates {
                     || saved.attempt_records.len() > 4
                     || saved.attempt_records.iter().any(|attempt| !attempt.valid())
                     || saved.route_history.len() > 4
+                    || saved.workspace.as_ref().is_some_and(|request| {
+                        !request.structurally_valid() || request.binding.owner != workspace
+                    })
+                    || saved
+                        .workspace_notice
+                        .as_ref()
+                        .is_some_and(|notice| notice.len() > 4096)
                     || saved
                         .route_history
                         .iter()
@@ -416,6 +427,7 @@ impl Delegates {
                 };
                 jobs.push(Job {
                     run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, routing:saved.routing, route_history:saved.route_history,
+                    workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None,
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
                     task:saved.task, model:saved.spec.model.clone(), trust:saved.spec.trust, spec:saved.spec,
                     state, origin:saved.origin, collected:saved.collected,
@@ -441,6 +453,11 @@ impl Delegates {
             last: Vec::new(),
         });
         self.reconcile_interrupted_accounting();
+        for job in &self.jobs {
+            if let Some(request) = &job.workspace {
+                crate::workspaces::recover(state_root, &job.run_id, request)?;
+            }
+        }
         self.save_recovery()?;
         self.flush_accounting();
         self.save_recovery()?;
@@ -486,6 +503,8 @@ impl Delegates {
                 source: j.source_id.clone(),
                 routing: j.routing.clone(),
                 route_history: j.route_history.clone(),
+                workspace: j.workspace.clone(),
+                workspace_notice: j.workspace_notice.clone(),
                 native_session: j.session_id.clone(),
                 collected: j.collected,
                 attempts: j.attempts.clone(),
@@ -493,7 +512,7 @@ impl Delegates {
             })
             .collect();
         let bytes = serde_json::to_vec(&Ledger {
-            version: 4,
+            version: 5,
             owner: recovery.owner.clone(),
             workspace: recovery.workspace.clone(),
             conversation: self.conversation_id.clone(),
@@ -710,19 +729,26 @@ impl Delegates {
         let Some(target) = get_account(&root, &selected.candidate.target.account) else {
             return false;
         };
+        let target_home = target
+            .home_path
+            .as_ref()
+            .and_then(|home| home.canonicalize().ok());
+        if target_home.is_none() {
+            return false;
+        }
         let model = selected.candidate.target.model.clone();
         if let Some(job) = self.get_mut(id) {
             job.attempts.push(target.account.clone());
             job.attempt_records.push(Attempt::new(
                 &target.account,
                 target.provider,
-                target.home_path.clone(),
+                target_home.clone(),
                 model.clone(),
             ));
             job.account = target.account;
             job.provider = target.provider;
             job.model = model.clone();
-            job.spec.home = target.home_path;
+            job.spec.home = target_home;
             job.spec.model = model;
             job.session_id = None;
             job.source_id = None;

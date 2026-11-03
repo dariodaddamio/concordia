@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-02p
+# Feature completion audit: 2026-11-02r
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,11 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Cooperative workspace reservations coordinate main/worker admission and internal saves across
+  panes, with explicit declarations, conflict owners and retained uncertain-exit claims.
+  [Behavior and limits](quality/workspace-reservations.md). Managed worktrees and native filesystem
+  confinement remain open; scheduler claims do not enforce native write boundaries.
 
 - Local routing evaluation, ordered persisted account/model overrides and inspection share the
   worker/main launch rules. Task approval freezes sequences and identity bindings; changed bindings

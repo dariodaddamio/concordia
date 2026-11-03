@@ -75,6 +75,10 @@ uses its read-only quota RPC. Native execution, authentication and approvals rem
 
 ## Roadmap
 
+Cooperative workspace declarations and cross-pane reservations now guard main/worker admission
+and internal saves. [Workspace ownership](docs/quality/workspace-reservations.md) explains commands,
+recovery and limits. Managed Git worktrees and native filesystem confinement remain separate work.
+
 The [second completion wave](docs/quality/completion-wave2.md) connects approved same-workspace
 dependency tasks to the existing worker queue. Worktree isolation and broader native approval
 transports remain separate phases.

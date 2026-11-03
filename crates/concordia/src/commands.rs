@@ -46,6 +46,12 @@ pub enum SlashCommand {
     DelegateGraph,
     DelegateRoutes(Option<u32>),
     DelegatePolicy(String),
+    DelegateScope(String),
+    DelegateScoped {
+        account: String,
+        declarations: Vec<crate::workspaces::Declaration>,
+        task: String,
+    },
     DelegateStop(Option<String>),
     DelegateUse(Option<String>),
     DelegateCollect,
@@ -151,6 +157,20 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
                 },
             },
             "policy" => SlashCommand::DelegatePolicy(tail.to_owned()),
+            "scope" => SlashCommand::DelegateScope(tail.to_owned()),
+            "scoped" => match tail.split_once(char::is_whitespace) {
+                Some((account, rest)) => match crate::workspaces::parse_declarations(rest, true) {
+                    Ok((declarations, task)) => SlashCommand::DelegateScoped {
+                        account: account.into(),
+                        declarations,
+                        task,
+                    },
+                    Err(error) => SlashCommand::Invalid(error),
+                },
+                None => SlashCommand::Invalid(
+                    "delegate scoped ACCOUNT read:PATH write:PATH -- TASK".into(),
+                ),
+            },
             "returns" => match second.as_deref() {
                 Some("auto") => SlashCommand::DelegateReturns(Some(true)),
                 Some("manual") => SlashCommand::DelegateReturns(Some(false)),
@@ -279,6 +299,10 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
         "inspect context rollover and native compaction policy",
     ),
     ("/delegate", "run tasks on worker accounts"),
+    (
+        "/scope",
+        "declare task paths and inspect workspace reservations",
+    ),
     ("/harness", "connect and run harness tools"),
     (
         "/open",
@@ -432,6 +456,8 @@ pub fn dispatch_slash(
         | SlashCommand::DelegateGraph
         | SlashCommand::DelegateRoutes(_)
         | SlashCommand::DelegatePolicy(_)
+        | SlashCommand::DelegateScope(_)
+        | SlashCommand::DelegateScoped { .. }
         | SlashCommand::DelegateStop(_)
         | SlashCommand::DelegateUse(_)
         | SlashCommand::DelegateCollect

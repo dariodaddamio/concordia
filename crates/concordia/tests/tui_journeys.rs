@@ -2484,6 +2484,19 @@ fn worker_crash_recovery_preserves_request_and_pauses_without_reexecution() {
         1
     );
     assert!(ledgers().iter().any(|l| l.contains("Paused")));
+    let registry = || concordia::workspaces::load(dir.path()).unwrap();
+    assert_eq!(
+        registry().reservations[0].phase,
+        concordia::workspaces::Phase::ReconcileRequired
+    );
+    s.submit("/delegate scope stopped 1");
+    s.until("stopped worker acknowledged without replay", |_| {
+        registry().reservations[0].phase == concordia::workspaces::Phase::Released
+    });
+    assert_eq!(
+        s.journal().iter().filter(|e| e["kind"] == "start").count(),
+        1
+    );
     s.exit();
 }
 
@@ -2583,7 +2596,11 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     s.until("automatic returns enabled", |s| {
         s.screen().contains("Worker returns: auto")
     });
-    s.submit("/delegate codex Implement scoped parser [wait]");
+    s.submit("/scope set write:main.txt");
+    s.until("main scope configured", |s| {
+        s.screen().contains("Future main scope")
+    });
+    s.submit("/delegate scoped codex write:worker.txt -- Implement scoped parser [wait]");
     s.until("native worker running", |s| {
         s.journal()
             .iter()
@@ -2603,6 +2620,14 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     let starts: Vec<_> = journal.iter().filter(|e| e["kind"] == "start").collect();
     assert_eq!(starts.len(), 2);
     assert_eq!(starts[0]["provider"], "codex");
+    assert!(starts[0]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("Write:worker.txt"));
+    assert!(starts[1]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("Write:main.txt"));
     let args = starts[0]["args"].as_array().unwrap();
     assert!(args
         .windows(2)

@@ -96,6 +96,20 @@ fn token_writer_child() {
     let root = std::env::var_os("CONCORDIA_RELIABILITY_CHILD_ROOT").expect("isolated fixture root");
     let root = std::path::PathBuf::from(root);
     assert!(root.join("reliability-owner").is_file());
+    if let Ok(run) = std::env::var("CONCORDIA_RELIABILITY_SCOPE_RUN") {
+        let conversation = std::env::var("CONCORDIA_RELIABILITY_SCOPE_CONVERSATION").unwrap();
+        let attempt = std::env::var("CONCORDIA_RELIABILITY_SCOPE_ATTEMPT").unwrap();
+        let request = concordia::workspaces::Request::shared(&root.join("workspace"), &[]).unwrap();
+        let admission =
+            concordia::workspaces::reserve(&root, &request, &run, &conversation, &attempt).unwrap();
+        let result: &[u8] = match admission {
+            concordia::workspaces::Admission::Reserved => b"reserved",
+            concordia::workspaces::Admission::Conflict { .. } => b"conflict",
+            other => panic!("unexpected reservation result: {other:?}"),
+        };
+        std::fs::write(root.join(format!("scope-result-{run}")), result).unwrap();
+        return;
+    }
     for _ in 0..100 {
         concordia::token_log::record(&root, &token_entry()).unwrap();
     }
@@ -137,6 +151,71 @@ fn independent_processes_can_append_tokens_without_losing_records() {
         );
     }
     assert_eq!(concordia::token_log::load(root.path()).len(), 800);
+    std::fs::create_dir(root.path().join("workspace")).unwrap();
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let mut children = Vec::new();
+    let mut runs = Vec::new();
+    for _ in 0..2 {
+        let run = uuid::Uuid::new_v4().to_string();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "token_writer_child"])
+            .env("CONCORDIA_RELIABILITY_CHILD_ROOT", root.path())
+            .env("CONCORDIA_RELIABILITY_SCOPE_RUN", &run)
+            .env("CONCORDIA_RELIABILITY_SCOPE_CONVERSATION", &conversation)
+            .env(
+                "CONCORDIA_RELIABILITY_SCOPE_ATTEMPT",
+                uuid::Uuid::new_v4().to_string(),
+            )
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        runs.push(run);
+        children.push(child);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    for child in &mut children {
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("workspace reservation child timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    for child in children {
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let results: Vec<_> = runs
+        .iter()
+        .map(|run| std::fs::read(root.path().join(format!("scope-result-{run}"))).unwrap())
+        .collect();
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.as_slice() == b"reserved")
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.as_slice() == b"conflict")
+            .count(),
+        1
+    );
+    let registry = concordia::workspaces::load(root.path()).unwrap();
+    assert_eq!(
+        registry.reservations.len(),
+        1,
+        "conflicts do not create a second reservation"
+    );
 }
 
 #[test]

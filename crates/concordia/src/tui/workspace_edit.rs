@@ -321,7 +321,7 @@ fn finish_action(ws: &mut Workspace, id: u32, action: Action) {
         }
     }
 }
-fn start_save(ws: &mut Workspace, id: u32) {
+fn start_save(ws: &mut Workspace, id: u32, state_root: &Path) {
     let Some(pane) = ws.panes.iter_mut().find(|p| p.id == id) else {
         return;
     };
@@ -341,10 +341,14 @@ fn start_save(ws: &mut Workspace, id: u32) {
         doc.text().to_owned(),
     );
     let saved = text.clone();
+    let state_root = state_root.to_path_buf();
     match std::thread::Builder::new()
         .name("concordia-file-save".into())
-        .spawn(move || crate::file_document::save(&path, &baseline, &text))
-    {
+        .spawn(move || {
+            crate::workspaces::with_write_guard(&state_root, &path, || {
+                crate::file_document::save(&path, &baseline, &text)
+            })
+        }) {
         Ok(job) => {
             pane.saving = true;
             pane.error = None;
@@ -592,7 +596,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                     .unwrap()
                     .prompt = None;
             }
-            KeyCode::Char('s' | 'S') => start_save(&mut app.workspace, id),
+            KeyCode::Char('s' | 'S') => start_save(&mut app.workspace, id, &app.state_root),
             KeyCode::Char('d' | 'D')
                 if !app
                     .workspace
@@ -623,7 +627,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         return true;
     }
     if ctrl && matches!(key.code, KeyCode::Char('s' | 'S')) {
-        start_save(&mut app.workspace, id);
+        start_save(&mut app.workspace, id, &app.state_root);
         return true;
     }
     if ctrl && matches!(key.code, KeyCode::Char('r' | 'R')) {

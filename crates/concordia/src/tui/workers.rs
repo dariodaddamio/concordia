@@ -389,6 +389,8 @@ pub(super) fn viewer_text(j: &Job) -> String {
     t.push('\n');
     t.push_str(&j.routing_summary());
     t.push('\n');
+    t.push_str(&j.workspace_summary());
+    t.push('\n');
     t.push_str(&format!("task: {}\n", one_line(&j.task)));
     t.push_str(&format!(
         "model: {} | result: {}\n",
@@ -687,6 +689,7 @@ impl App {
 
     /// Apply worker events and post the result of each worker that finished.
     pub(super) fn poll_delegates(&mut self) {
+        self.poll_scope_inspection();
         if let Some((generation, rx)) = &self.deleg.route_read {
             match rx.try_recv() {
                 Ok(decision) => {
@@ -926,6 +929,17 @@ impl App {
         origin: Origin,
         after: &[u32],
     ) -> Result<String, String> {
+        self.start_delegate_scoped(target, task, origin, after, &[])
+    }
+
+    fn start_delegate_scoped(
+        &mut self,
+        target: &str,
+        task: &str,
+        origin: Origin,
+        after: &[u32],
+        declarations: &[crate::workspaces::Declaration],
+    ) -> Result<String, String> {
         #[cfg(not(test))]
         if !self.deleg.d.recovery_ready() {
             return Err("worker recovery storage is unavailable; no task was dispatched".into());
@@ -1004,7 +1018,7 @@ impl App {
         );
         let trust = worker_trust(self.trust, settings.child_trust);
         let queued_behind = self.deleg.d.running_for(&account).map(|j| j.id);
-        let id = self.deleg.d.submit_after(
+        let id = self.deleg.d.submit_scoped(
             Submit {
                 account: account.clone(),
                 provider: acct.provider,
@@ -1021,6 +1035,7 @@ impl App {
             },
             Instant::now(),
             after,
+            declarations,
         )?;
         self.deleg.owners.insert(id, self.deleg.generation);
         crate::logging::info(&format!(
@@ -1122,6 +1137,33 @@ impl App {
             SlashCommand::DelegatePolicy(command) => {
                 let result = crate::routing::policy_command(&self.state_root, true, command).unwrap_or_else(|error| error);
                 self.push_system(result);
+            }
+            SlashCommand::DelegateScoped { account, declarations, task } => {
+                let result = self.start_delegate_scoped(account, task, Origin::User, &[], declarations)
+                    .unwrap_or_else(|error| format!("scoped worker not dispatched: {error}"));
+                self.push_system(result);
+            }
+            SlashCommand::DelegateScope(command) => {
+                let parts: Vec<_> = command.split_whitespace().collect();
+                let message = match parts.as_slice() {
+                    [] => {
+                        let mut jobs: Vec<_> = self.deleg.d.jobs.iter().collect();
+                        jobs.sort_by_key(|job| (job.state.is_finished(), job.id));
+                        let mut rows: Vec<_> = jobs.iter().take(16).map(|job| {
+                            let cwd = job.workspace.as_ref().map(|request| request.binding.execution.to_string_lossy().chars().take(180).collect::<String>()).unwrap_or_else(|| "legacy/unmanaged".into());
+                            format!("#{} {}: {} / {} declared paths / cwd {}\n/delegate scope {} inspects the full captured scope", job.id, job.account, job.state.label(), job.workspace.as_ref().map_or(0, |request| request.claims.len()), cwd, job.id)
+                        }).collect();
+                        if jobs.len() > 16 { rows.push(format!("Partial list: 16 of {} jobs; inspect an exact job ID for older entries", jobs.len())); }
+                        rows.join("\n")
+                    },
+                    [id] => id.parse::<u32>().ok().and_then(|id| self.deleg.d.get(id)).map(|job| job.workspace_summary()).unwrap_or_else(|| "Unknown worker job".into()),
+                    ["stopped", id] => match id.parse::<u32>() {
+                        Ok(id) => self.deleg.d.acknowledge_workspace_stopped(id).map(|_| "Stopped-process acknowledgment saved; inspect before retrying the task".into()).unwrap_or_else(|error| error),
+                        Err(_) => "Invalid worker job ID".into(),
+                    },
+                    _ => "usage: /delegate scope [ID|stopped ID]".into(),
+                };
+                self.push_system(if message.is_empty() { "No worker workspace declarations yet".into() } else { message });
             }
             SlashCommand::DelegateUse(acct) => self.delegate_use(acct.as_deref()),
             SlashCommand::DelegateCollect => self.delegate_collect(),

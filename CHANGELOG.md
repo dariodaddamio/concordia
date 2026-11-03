@@ -1,5 +1,15 @@
 # Changelog
 
+### Added (`2026-11-02r`)
+- Main turns and workers reserve their execution folder across Concordia panes. Explicit
+  `/scope set read:PATH write:PATH` and `/delegate scoped ACCOUNT read:PATH write:PATH -- TASK`
+  declarations allow disjoint work; overlapping writes and stable reads wait or pause before launch.
+- `/scope leases` and `/delegate scope [ID]` inspect bounded durable reservations. Uncertain
+  native exits retain claims until explicit stopped-process reconciliation; recovery never replays work.
+  These are cooperative scheduler claims, not filesystem sandboxes or managed Git worktrees.
+- Internal file saves hold the same admission lock and retain unsaved buffers on ownership conflict.
+  Worker ledger v5 and unfinished-request v3 preserve exact workspace/run/conversation bindings.
+
 ### Fixed (`2026-11-02q`)
 - Main-turn completion retains its captured launch owner until usage is recorded. Failed or
   cancelled launches with no reported counters retain explicit unknown coverage instead of

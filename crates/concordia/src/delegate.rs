@@ -29,6 +29,8 @@ mod dependencies;
 #[path = "delegate_recovery.rs"]
 mod recovery;
 pub mod schedule;
+#[path = "delegate_workspaces.rs"]
+mod workspaces;
 
 pub const MAX_WORKERS: usize = 3;
 /// Jobs waiting behind a busy worker (per worker).
@@ -276,6 +278,10 @@ pub struct Job {
     pub source_id: Option<String>,
     pub routing: Option<crate::routing::Approved>,
     pub route_history: Vec<String>,
+    pub workspace: Option<crate::workspaces::Request>,
+    workspace_notice: Option<String>,
+    workspace_next_check: Option<Instant>,
+    workspace_invoked: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
     attempts: Vec<String>,
     attempt_records: Vec<Attempt>,
     pub model: Option<String>,
@@ -454,6 +460,18 @@ fn cap_chars(s: &str, max: usize) -> String {
 }
 
 impl Delegates {
+    pub(crate) fn restore_conversation_identity(
+        &mut self,
+        conversation: &str,
+    ) -> Result<(), String> {
+        if self.any_active()
+            || !uuid::Uuid::parse_str(conversation).is_ok_and(|id| id.to_string() == conversation)
+        {
+            return Err("cannot restore conversation ownership while workers are active or identity is invalid".into());
+        }
+        self.conversation_id = conversation.into();
+        Ok(())
+    }
     /// Explicit owner identity for metadata proposals; never inferred from focused UI state.
     pub fn conversation_id(&self) -> &str {
         &self.conversation_id
@@ -510,6 +528,34 @@ impl Delegates {
 
     /// Explicit submission authorizes this task with these exact prerequisite runs.
     pub fn submit_after(&mut self, s: Submit, now: Instant, after: &[u32]) -> Result<u32, String> {
+        self.submit_scoped(s, now, after, &[])
+    }
+
+    pub fn submit_scoped(
+        &mut self,
+        mut s: Submit,
+        now: Instant,
+        after: &[u32],
+        declarations: &[crate::workspaces::Declaration],
+    ) -> Result<u32, String> {
+        let workspace = match &self.recovery {
+            Some(recovery) => {
+                let request = crate::workspaces::Request::shared(&s.spec.cwd, declarations)?;
+                if request.binding.owner != recovery.workspace {
+                    return Err("worker scope does not match its owning workspace".into());
+                }
+                s.spec.cwd = request.binding.execution.clone();
+                s.spec.home = s
+                    .spec
+                    .home
+                    .as_ref()
+                    .map(|home| home.canonicalize().map_err(|error| error.to_string()))
+                    .transpose()?;
+                Some(request)
+            }
+            None if declarations.is_empty() => None,
+            None => return Err("declared scopes require durable workspace ownership".into()),
+        };
         let prerequisites = self.validate_dependencies(&s, after)?;
         let busy = self.running_for(&s.account).is_some();
         if self.queued_for(&s.account) >= MAX_QUEUED_PER_WORKER {
@@ -558,6 +604,10 @@ impl Delegates {
             source_id: None,
             routing,
             route_history: Vec::new(),
+            workspace,
+            workspace_notice: None,
+            workspace_next_check: None,
+            workspace_invoked: None,
             attempts: vec![s.account.clone()],
             attempt_records: vec![Attempt::new(
                 &s.account,
@@ -604,6 +654,12 @@ impl Delegates {
 
     /// Spawn the turn for a queued job (needs a tokio runtime).
     fn launch(&mut self, id: u32, now: Instant) {
+        if self.get(id).is_some_and(|job| {
+            job.workspace_next_check
+                .is_some_and(|deadline| now < deadline)
+        }) {
+            return;
+        }
         let tx = self.tx.clone();
         if !self.dependencies_ready(id) {
             return;
@@ -706,15 +762,20 @@ impl Delegates {
             self.pause_dependency_job(id, error, now);
             return;
         }
+        if tokio::runtime::Handle::try_current().is_err() {
+            if let Some(job) = self.get_mut(id) {
+                job.state = WorkerState::Failed;
+                job.error = Some("no async runtime".into());
+                job.finished = Some(now);
+            }
+            return;
+        }
+        if !self.prepare_workspace(id, now) {
+            return;
+        }
         let tx = self.tx.clone();
         let state_root = self.recovery.as_ref().map(|r| r.state_root.clone());
         let Some(job) = self.get_mut(id) else { return };
-        if tokio::runtime::Handle::try_current().is_err() {
-            job.state = WorkerState::Failed;
-            job.error = Some("no async runtime".into());
-            job.finished = Some(now);
-            return;
-        }
         job.state = WorkerState::Starting;
         job.started = Some(now);
         if let Some(attempt) = job.attempt_records.last_mut() {
@@ -726,12 +787,25 @@ impl Delegates {
             attempt.home_id = crate::token_log::Attribution::bound_home(canonical.as_deref());
         }
         let mut spec = job.spec.clone();
+        if let Some(workspace) = job
+            .workspace
+            .as_ref()
+            .filter(|workspace| !workspace.whole_workspace_write())
+        {
+            spec.prefix = Some(format!("{}\n[User-declared cooperative workspace scope]\n{}\nThese declarations coordinate scheduler admission; they grant no extra native permissions. Follow the user's declared paths.", spec.prefix.unwrap_or_default(), workspace.describe()));
+        }
         if let Some(prefix) = dependency_prefix {
             spec.prefix = Some(format!("{}\n{prefix}", spec.prefix.unwrap_or_default()));
         }
         let provider = job.provider;
         let account = job.account.clone();
+        let scope_invoked = job
+            .workspace_invoked
+            .as_ref()
+            .map(|(_, flag)| flag.clone())
+            .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
         if let Err(error) = self.save_recovery() {
+            self.finish_workspace(id, false, true);
             if let Some(attempt) = self
                 .get_mut(id)
                 .and_then(|job| job.attempt_records.last_mut())
@@ -780,6 +854,18 @@ impl Delegates {
                 local_time: Some(crate::prompt_time::now()),
                 compaction,
             };
+            if let Err(error) = crate::provider::turn::plan_provider_turn(&req) {
+                let _ = tx.send(Event::Finished(
+                    id,
+                    Box::new(TurnOutcome {
+                        failed: true,
+                        stderr_tail: error.to_string(),
+                        ..Default::default()
+                    }),
+                ));
+                return;
+            }
+            scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
             let run = run_provider_turn_with_progress(&req, Some(hs_tx), Some(pg_tx));
             tokio::pin!(run);
             let outcome = loop {
@@ -838,7 +924,18 @@ impl Delegates {
                 }
                 Event::Finished(id, out) => {
                     self.finish_worker_attempt(id, &out);
-                    let retry = self.worker_failover(id, &out, now);
+                    let confirmed = out.exit_code.is_some()
+                        && !out
+                            .cards
+                            .iter()
+                            .any(|card| card.status == CardStatus::Running)
+                        && self.get(id).is_none_or(|job| {
+                            !job.cards
+                                .iter()
+                                .any(|card| card.status == CardStatus::Running)
+                        });
+                    let released = self.finish_workspace(id, confirmed, false);
+                    let retry = released && self.worker_failover(id, &out, now);
                     if retry {
                         continue;
                     }
@@ -1010,6 +1107,10 @@ impl Delegates {
             source_id: None,
             routing: None,
             route_history: Vec::new(),
+            workspace: None,
+            workspace_notice: None,
+            workspace_next_check: None,
+            workspace_invoked: None,
             attempts: vec![account.into()],
             attempt_records: Vec::new(),
             model: None,
