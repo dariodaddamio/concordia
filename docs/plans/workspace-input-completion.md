@@ -1,5 +1,8 @@
 # Workspace, input and integration completion plan
 
+Active remaining work: [Luna input, artifact and integration briefs](luna-completion/README.md).
+The phase design below is historical; consult the current queue before assigning work.
+
 Current status: [campaign disposition](../quality/overnight-roadmap-disposition.md). The original
 baseline table below predates the shipped input, raster, artifact and integration slices.
 
