@@ -12,7 +12,8 @@ The [accounting slice](../quality/worker-accounting.md) records U1 and bounded m
 external native usage import remains separate.
 The [file facts and ranking slice](../quality/memory-ranking.md) implements opt-in M1;
 [related-chat groups](../quality/related-chat-groups.md) add M2 explicit membership and discovery.
-Retrieval evaluation remains separate.
+[Synthetic retrieval evaluation](../quality/memory-evaluation.md) defines M3 corpus and contract
+measurements. Controlled model-retention experiments remain unrun and separately budgeted.
 The [routing slice](../quality/routing-policies.md) connects local eligibility, ordered overrides,
 approval-bound sequences and worker/main inspection; workspace isolation remains separate.
 

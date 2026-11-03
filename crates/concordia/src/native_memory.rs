@@ -27,6 +27,10 @@ pub mod relations;
 #[path = "memory_retrieval.rs"]
 pub mod retrieval;
 
+#[cfg(test)]
+#[path = "memory_evaluation.rs"]
+mod evaluation;
+
 enum Source {
     File(File),
     Replay(std::io::Cursor<Vec<u8>>),
@@ -243,6 +247,8 @@ fn read_at(file: &mut Source, offset: u64, len: usize) -> Result<Vec<u8>, String
     let mut bytes = vec![0; len];
     file.read_exact(&mut bytes)
         .map_err(|_| "native source was truncated or became unreadable")?;
+    #[cfg(test)]
+    evaluation::count_read(len);
     Ok(bytes)
 }
 
@@ -1101,7 +1107,7 @@ pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::io::Write;
-    fn fixture(provider: ProviderKind, root: &Path, account: &str) -> (PathBuf, String) {
+    pub(super) fn fixture(provider: ProviderKind, root: &Path, account: &str) -> (PathBuf, String) {
         let home = root.join(account);
         let folder = home.join(if provider == ProviderKind::Codex {
             "sessions"
@@ -1130,14 +1136,14 @@ mod tests {
         .unwrap();
         (path, session)
     }
-    fn message(provider: ProviderKind, text: &str) -> String {
+    pub(super) fn message(provider: ProviderKind, text: &str) -> String {
         if provider == ProviderKind::Codex {
             json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":text}]}}).to_string() + "\n"
         } else {
             json!({"type":"user","message":{"role":"user","content":text}}).to_string() + "\n"
         }
     }
-    fn append(path: &Path, bytes: &[u8]) {
+    pub(super) fn append(path: &Path, bytes: &[u8]) {
         fs::OpenOptions::new()
             .append(true)
             .open(path)
@@ -1190,6 +1196,7 @@ mod tests {
 
     #[test]
     fn retrieval_separates_exact_hits_from_verified_links_and_rejects_stale_sources() {
+        evaluation::run();
         for provider in [ProviderKind::Codex, ProviderKind::Claude] {
             let dir = tempfile::tempdir().unwrap();
             let (path, session) = fixture(provider, dir.path(), "fixture");
