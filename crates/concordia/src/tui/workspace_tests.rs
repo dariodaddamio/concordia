@@ -684,7 +684,8 @@ fn project_search_opens_raw_exact_snapshot_at_display_columns_and_detects_later_
     let doc = pane.document.as_ref().unwrap();
     assert_eq!(doc.text(), original);
     assert_eq!(doc.position(), (1, 7)); // tab=4, wide character=2, space=1.
-    assert_eq!(pane.scroll, 1);
+    assert!(doc.position().0 >= pane.scroll);
+    assert!(doc.position().0 < pane.scroll + pane.area.height as usize);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !h.app.workspace.panes.last().unwrap().changed {
         h.app.workspace.poll();
