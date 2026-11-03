@@ -97,6 +97,16 @@ pub struct Binding {
     pub owner: PathBuf,
     pub execution: PathBuf,
     pub directory_id: String,
+    #[serde(default)]
+    pub managed: Option<ManagedBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedBinding {
+    pub id: String,
+    pub revision: u64,
+    pub owner_identity: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,7 +216,7 @@ fn within_key(path: &str, parent: &str) -> bool {
     })
 }
 
-fn linked(metadata: &fs::Metadata) -> bool {
+pub(crate) fn linked(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -218,7 +228,7 @@ fn linked(metadata: &fs::Metadata) -> bool {
     }
 }
 
-fn directory_id(path: &Path) -> Result<String, String> {
+pub(crate) fn directory_id(path: &Path) -> Result<String, String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if !metadata.is_dir() || linked(&metadata) {
         return Err("workspace directory is missing, replaced or linked".into());
@@ -245,7 +255,7 @@ fn node_id(path: &Path) -> Result<String, String> {
     crate::file_identity::of(&file)
 }
 
-fn relative_valid(path: &Path) -> bool {
+pub(crate) fn relative_valid(path: &Path) -> bool {
     path.to_string_lossy().len() <= 1024
         && path
             .components()
@@ -399,7 +409,7 @@ impl Request {
             })
     }
 
-    fn refreshed(&self) -> Result<Self, String> {
+    fn refreshed(&self, root: &Path) -> Result<Self, String> {
         let declarations: Vec<_> = self
             .claims
             .iter()
@@ -408,11 +418,35 @@ impl Request {
                 access: claim.access,
             })
             .collect();
-        let current = Self::shared(&self.binding.execution, &declarations)?;
+        let current = match &self.binding.managed {
+            Some(managed) => Self::managed(root, &self.binding.owner, &managed.id, &declarations)?,
+            None => Self::shared(&self.binding.execution, &declarations)?,
+        };
         if !self.same_scope(&current) {
             return Err("workspace scope or directory binding changed between attempts".into());
         }
         Ok(current)
+    }
+
+    pub fn managed(
+        root: &Path,
+        owner: &Path,
+        id: &str,
+        declarations: &[Declaration],
+    ) -> Result<Self, String> {
+        let record = crate::managed_workspaces::bound(root, owner, id)?;
+        let mut request = Self::shared(&record.execution, declarations)?;
+        if Some(request.binding.directory_id.clone()) != record.execution_identity {
+            return Err("managed execution directory changed during scope capture".into());
+        }
+        request.binding.version = 2;
+        request.binding.owner = record.owner;
+        request.binding.managed = Some(ManagedBinding {
+            id: record.id,
+            revision: record.revision,
+            owner_identity: record.owner_identity,
+        });
+        Ok(request)
     }
 
     pub fn shared(workspace: &Path, declarations: &[Declaration]) -> Result<Self, String> {
@@ -430,6 +464,7 @@ impl Request {
         }
         let binding = Binding {
             version: 1,
+            managed: None,
             owner: execution.clone(),
             directory_id: directory_id(&execution)?,
             execution,
@@ -469,15 +504,24 @@ impl Request {
 
     pub fn structurally_valid(&self) -> bool {
         let mut seen = std::collections::BTreeSet::new();
-        self.binding.version == 1
-            && self.binding.owner.is_absolute()
+        matches!(
+            (&self.binding.managed, self.binding.version),
+            (None, 1) | (Some(_), 2)
+        ) && self.binding.owner.is_absolute()
             && self.binding.execution.is_absolute()
             && self
                 .binding
                 .execution
                 .to_str()
                 .is_some_and(|path| path.len() <= 4096 && !path.chars().any(char::is_control))
-            && self.binding.owner == self.binding.execution
+            && match &self.binding.managed {
+                None => self.binding.owner == self.binding.execution,
+                Some(managed) => {
+                    uuid_valid(&managed.id)
+                        && managed.revision > 0
+                        && stable_id(&managed.owner_identity)
+                }
+            }
             && stable_id(&self.binding.directory_id)
             && !self.claims.is_empty()
             && self.claims.len() <= MAX_DECLARATIONS
@@ -501,6 +545,27 @@ impl Request {
     }
 
     pub fn revalidate(&self) -> Result<(), String> {
+        if self.binding.managed.is_some() {
+            return Err("managed scope requires registry-bound validation".into());
+        }
+        self.validate_paths()
+    }
+
+    fn revalidate_in(&self, root: &Path) -> Result<(), String> {
+        if let Some(managed) = &self.binding.managed {
+            let record = crate::managed_workspaces::bound(root, &self.binding.owner, &managed.id)?;
+            if record.revision != managed.revision
+                || record.owner_identity != managed.owner_identity
+                || record.execution != self.binding.execution
+                || record.execution_identity.as_ref() != Some(&self.binding.directory_id)
+            {
+                return Err("managed registry binding changed since task approval".into());
+            }
+        }
+        self.validate_paths()
+    }
+
+    fn validate_paths(&self) -> Result<(), String> {
         if !self.structurally_valid()
             || self.binding.execution.canonicalize().ok().as_ref() != Some(&self.binding.execution)
             || directory_id(&self.binding.execution)? != self.binding.directory_id
@@ -538,7 +603,7 @@ fn uuid_valid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
 }
 
-fn stable_id(value: &str) -> bool {
+pub(crate) fn stable_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
         && value
@@ -581,7 +646,7 @@ pub fn load(root: &Path) -> Result<Registry, String> {
     let registry: Registry = serde_json::from_slice(&bytes)
         .map_err(|error| format!("workspace registry unavailable: {error}; original kept"))?;
     let mut runs = std::collections::BTreeSet::new();
-    if registry.version != 1
+    if !matches!(registry.version, 1..=2)
         || registry.reservations.len() > MAX_RECORDS
         || registry.reservations.iter().any(|reservation| {
             !uuid_valid(&reservation.run)
@@ -609,6 +674,7 @@ fn mutate<T>(
         let before = serde_json::to_vec(&registry).map_err(std::io::Error::other)?;
         let result = operation(&mut registry).map_err(std::io::Error::other)?;
         if serde_json::to_vec(&registry).map_err(std::io::Error::other)? != before {
+            registry.version = 2;
             registry.revision = registry
                 .revision
                 .checked_add(1)
@@ -637,7 +703,7 @@ pub fn reserve(
         return Err("workspace reservation needs exact run/conversation/attempt UUIDs".into());
     }
     mutate(root, |registry| {
-        request.revalidate()?;
+        request.revalidate_in(root)?;
         if let Some(existing) = registry
             .reservations
             .iter()
@@ -820,7 +886,7 @@ pub fn for_attempt(
             && reservation.phase == Phase::Released
             && reservation.request.same_scope(request)
     }) {
-        request.refreshed()
+        request.refreshed(root)
     } else {
         Ok(request.clone())
     }

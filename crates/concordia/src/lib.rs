@@ -44,6 +44,7 @@ mod state_io;
 pub(crate) mod test_support;
 
 mod file_identity;
+pub mod managed_workspaces;
 pub mod workspace_paths;
 pub mod workspace_search;
 pub mod workspaces;

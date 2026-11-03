@@ -59,6 +59,7 @@ mod images;
 mod input;
 mod input_stream;
 mod landing;
+mod managed_workspaces;
 mod markdown;
 mod modal;
 mod native_agents;
@@ -298,6 +299,7 @@ pub struct App {
     native_usage_session: Option<String>,
     native_accounting_owner: Option<crate::provider::interaction::InteractionOwner>,
     scopes: workspace_scope::State,
+    managed_workspaces: managed_workspaces::State,
     project_search: workspace_search::State,
     continuation_target: Option<String>,
     state_root: PathBuf,
@@ -3144,6 +3146,13 @@ impl App {
             return;
         }
         if let Some(arg) = line
+            .strip_prefix("/worktree")
+            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
+        {
+            self.managed_workspace_command(arg.trim());
+            return;
+        }
+        if let Some(arg) = line
             .strip_prefix("/scope")
             .filter(|arg| arg.is_empty() || arg.starts_with(' '))
         {
@@ -3300,6 +3309,7 @@ impl App {
             native_usage_session: None,
             native_accounting_owner: None,
             scopes: workspace_scope::State::default(),
+            managed_workspaces: managed_workspaces::State::default(),
             project_search: workspace_search::State::default(),
             images: images::State::default(),
             history: Vec::new(),

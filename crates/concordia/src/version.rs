@@ -2,7 +2,7 @@
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Bumped when everyday behavior changes; shown in header + `--version`.
-pub const BUILD_STAMP: &str = "2026-11-02r";
+pub const BUILD_STAMP: &str = "2026-11-02s";
 
 pub fn version_line() -> String {
     format!("concordia {VERSION} ({BUILD_STAMP})")

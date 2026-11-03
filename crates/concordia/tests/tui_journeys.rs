@@ -711,6 +711,37 @@ fn setup(root: &Path, provider: ProviderKind) {
     save_store(root, &store).unwrap();
 }
 
+fn initialize_git_fixture(workspace: &Path, empty_hooks: &Path) {
+    use std::os::windows::process::CommandExt;
+    std::fs::create_dir_all(empty_hooks).unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["commit", "--allow-empty", "-m", "synthetic base"],
+    ] {
+        let output = std::process::Command::new(which::which("git").unwrap())
+            .current_dir(workspace)
+            .creation_flags(0x08000000)
+            .args([
+                "-c",
+                &format!("core.hooksPath={}", empty_hooks.display()),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgSign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "fixture Git initialization failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 impl Session {
     fn launch(root: &Path) -> Self {
         Self::launch_at(root, &root.join("workspace"))
@@ -2611,6 +2642,10 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Claude);
+    initialize_git_fixture(
+        &dir.path().join("workspace"),
+        &dir.path().join("empty-hooks"),
+    );
     std::fs::write(
         dir.path().join("profile/.codex/models_cache.json"),
         r#"{"models":[{"slug":"fixture-fast"}]}"#,
@@ -2669,6 +2704,73 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
         .as_str()
         .unwrap()
         .contains("keep this unsent draft"));
+    s.send("\x01\x08");
+    s.until("draft cleared for explicit worktree command", |s| {
+        s.draft().is_empty()
+    });
+    s.submit("/worktree create HEAD");
+    s.until("managed worktree creation verified", |_| {
+        concordia::managed_workspaces::load(dir.path()).is_ok_and(|registry| {
+            registry.records.len() == 1
+                && registry.records[0].phase == concordia::managed_workspaces::Phase::Ready
+        })
+    });
+    let managed = concordia::managed_workspaces::load(dir.path())
+        .unwrap()
+        .records
+        .remove(0);
+    std::fs::remove_file(dir.path().join("gate")).unwrap();
+    s.submit(&format!(
+        "/delegate worktree {} codex Inspect managed workspace [wait]",
+        managed.id
+    ));
+    s.until("managed native worker started", |s| {
+        s.journal()
+            .iter()
+            .filter(|entry| entry["kind"] == "start")
+            .count()
+            == 3
+    });
+    let journal = s.journal();
+    let started = journal
+        .iter()
+        .filter(|entry| entry["kind"] == "start")
+        .nth(2)
+        .unwrap();
+    assert_eq!(
+        Path::new(started["cwd"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        managed.execution
+    );
+    s.paste("keep this unsent draft");
+    s.release();
+    s.until("managed result returned to owner", |s| {
+        s.journal()
+            .iter()
+            .filter(|entry| entry["kind"] == "done")
+            .count()
+            == 4
+    });
+    s.until("managed return preserves draft", |s| {
+        s.draft() == "keep this unsent draft" && s.screen().contains("Worked for")
+    });
+    let journal = s.journal();
+    let returned = journal
+        .iter()
+        .filter(|entry| entry["kind"] == "start")
+        .nth(3)
+        .unwrap();
+    assert!(returned["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("edits have not been integrated"));
+    assert_eq!(
+        Path::new(returned["cwd"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        dir.path().join("workspace").canonicalize().unwrap()
+    );
     s.exit();
 }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+### Added (`2026-11-02s`)
+- `/worktree create BASE`, `list`, `inspect ID`, `reconcile ID` and `cancel` manage explicit Git
+  worktree creation from a clean committed source. Creation intent and exact identities survive
+  interruption without automatic replay, integration or deletion.
+- `/delegate worktree ID ACCOUNT TASK` binds a worker to a verified managed execution folder.
+  Result returns identify unintegrated edits while the main agent retains its original cwd.
+  Git worktrees organize files; native filesystem confinement remains unverified.
+- Workspace registry v2 and worker ledger v6 preserve distinct owner/execution bindings and
+  conservatively migrate earlier metadata. Unknown native processes still require reconciliation.
+
 ### Added (`2026-11-02r`)
 - Main turns and workers reserve their execution folder across Concordia panes. Explicit
   `/scope set read:PATH write:PATH` and `/delegate scoped ACCOUNT read:PATH write:PATH -- TASK`

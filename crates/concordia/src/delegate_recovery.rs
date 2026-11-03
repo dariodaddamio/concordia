@@ -253,7 +253,7 @@ mod tests {
         drop(restored);
         let mut corrupt: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(corrupt["version"], 5);
+        assert_eq!(corrupt["version"], 6);
         corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
         let bytes = serde_json::to_vec(&corrupt).unwrap();
         std::fs::write(&path, &bytes).unwrap();
@@ -355,7 +355,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1..=5)
+            if !matches!(ledger.version, 1..=6)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -405,7 +405,13 @@ impl Delegates {
                         .routing
                         .as_ref()
                         .is_some_and(|routing| !routing.valid())
-                    || std::fs::canonicalize(&saved.spec.cwd).ok().as_ref() != Some(&workspace)
+                    || std::fs::canonicalize(&saved.spec.cwd).ok().as_ref()
+                        != Some(
+                            saved
+                                .workspace
+                                .as_ref()
+                                .map_or(&workspace, |request| &request.binding.execution),
+                        )
                 {
                     return Err(
                         "invalid worker run identity or request bounds; original kept".into(),
@@ -427,7 +433,7 @@ impl Delegates {
                 };
                 jobs.push(Job {
                     run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, routing:saved.routing, route_history:saved.route_history,
-                    workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None,
+                    workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None, preparation_cancel:Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
                     task:saved.task, model:saved.spec.model.clone(), trust:saved.spec.trust, spec:saved.spec,
                     state, origin:saved.origin, collected:saved.collected,
@@ -512,7 +518,7 @@ impl Delegates {
             })
             .collect();
         let bytes = serde_json::to_vec(&Ledger {
-            version: 5,
+            version: 6,
             owner: recovery.owner.clone(),
             workspace: recovery.workspace.clone(),
             conversation: self.conversation_id.clone(),

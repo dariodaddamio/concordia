@@ -47,6 +47,11 @@ pub enum SlashCommand {
     DelegateRoutes(Option<u32>),
     DelegatePolicy(String),
     DelegateScope(String),
+    DelegateWorktree {
+        workspace: String,
+        account: String,
+        task: String,
+    },
     DelegateScoped {
         account: String,
         declarations: Vec<crate::workspaces::Declaration>,
@@ -171,6 +176,21 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
                     "delegate scoped ACCOUNT read:PATH write:PATH -- TASK".into(),
                 ),
             },
+            "worktree" => {
+                let mut words = tail.splitn(3, char::is_whitespace);
+                match (words.next(), words.next(), words.next()) {
+                    (Some(workspace), Some(account), Some(task)) if !task.trim().is_empty() => {
+                        SlashCommand::DelegateWorktree {
+                            workspace: workspace.into(),
+                            account: account.into(),
+                            task: task.into(),
+                        }
+                    }
+                    _ => {
+                        SlashCommand::Invalid("delegate worktree WORKSPACE_ID ACCOUNT TASK".into())
+                    }
+                }
+            }
             "returns" => match second.as_deref() {
                 Some("auto") => SlashCommand::DelegateReturns(Some(true)),
                 Some("manual") => SlashCommand::DelegateReturns(Some(false)),
@@ -287,6 +307,10 @@ pub fn parse_provider(s: &str) -> Option<ProviderKind> {
 
 /// Every slash command with a one-line description, in the order the palette shows them.
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
+    (
+        "/worktree",
+        "Create or inspect explicitly managed Git worktrees; no automatic integration or deletion",
+    ),
     ("/use", "switch, add or remove accounts"),
     ("/model", "choose the model"),
     ("/mode", "how much the agent may do without asking"),
@@ -458,6 +482,7 @@ pub fn dispatch_slash(
         | SlashCommand::DelegatePolicy(_)
         | SlashCommand::DelegateScope(_)
         | SlashCommand::DelegateScoped { .. }
+        | SlashCommand::DelegateWorktree { .. }
         | SlashCommand::DelegateStop(_)
         | SlashCommand::DelegateUse(_)
         | SlashCommand::DelegateCollect

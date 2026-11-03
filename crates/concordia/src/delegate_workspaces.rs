@@ -146,12 +146,28 @@ impl Delegates {
 }
 
 impl Job {
+    pub(super) fn workspace_delivery_notice(&self) -> Option<String> {
+        let request = self.workspace.as_ref()?;
+        let managed = request.binding.managed.as_ref()?;
+        Some(format!("Managed worktree {}: {}\nResult only: edits have not been integrated into the owner's workspace. Task completion does not authorize integration or retirement.", managed.id, request.binding.execution.display()))
+    }
+
     pub fn workspace_summary(&self) -> String {
         let Some(request) = &self.workspace else {
             return "Workspace: legacy/unmanaged reservation unavailable".into();
         };
-        format!("Execution workspace: {}\n{}\nDeclared scheduler scope: {}\nThese claims do not confine native tools or external editors.",
-            request.binding.execution.display(), self.workspace_notice.as_deref().unwrap_or("Reservation not yet acquired"),
-            request.describe())
+        let binding = request
+            .binding
+            .managed
+            .as_ref()
+            .map(|managed| {
+                format!(
+                    "Managed worktree {} revision {}",
+                    managed.id, managed.revision
+                )
+            })
+            .unwrap_or_else(|| "Shared folder".into());
+        format!("Execution workspace: {}\nOwner: {}\n{binding}\n{}\nDeclared scheduler scope: {}\nThese claims do not confine native tools or external editors.",
+            request.binding.execution.display(), request.binding.owner.display(), self.workspace_notice.as_deref().unwrap_or("Reservation not yet acquired"), request.describe())
     }
 }
