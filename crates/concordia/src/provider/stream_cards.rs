@@ -17,7 +17,7 @@ pub struct StreamCard {
 
 /// Token counts and cost a provider reported for one turn. Every field is optional: a provider
 /// reports what it reports (Cursor reports none) and nothing here is ever guessed.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TurnUsage {
     pub input: Option<u64>,
     pub output: Option<u64>,
@@ -26,6 +26,24 @@ pub struct TurnUsage {
 }
 
 impl TurnUsage {
+    /// Adapters emit terminal turn/result snapshots. Repeated notifications are not deltas.
+    pub fn update_snapshot(&mut self, update: &Self) {
+        if update.input.is_some() {
+            self.input = update.input;
+        }
+        if update.output.is_some() {
+            self.output = update.output;
+        }
+        if update.cached.is_some() {
+            self.cached = update.cached;
+        }
+        if let Some(cost) = update
+            .cost_usd
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        {
+            self.cost_usd = Some(cost);
+        }
+    }
     pub fn is_empty(&self) -> bool {
         self.input.is_none()
             && self.output.is_none()

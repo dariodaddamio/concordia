@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+#[path = "delegate_accounting.rs"]
+mod accounting;
 #[path = "delegate_dependencies.rs"]
 mod dependencies;
 #[path = "delegate_recovery.rs"]
@@ -325,12 +327,75 @@ impl Job {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Attempt {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    started_at: Option<u64>,
+    #[serde(default)]
+    ended_at: Option<u64>,
+    #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    complete: bool,
+    #[serde(default)]
+    accounted: bool,
+    #[serde(default)]
+    usage: crate::provider::stream_cards::TurnUsage,
+    #[serde(default)]
+    home_id: Option<String>,
     account: String,
     provider: ProviderKind,
     home: Option<PathBuf>,
     model: Option<String>,
     native_session: Option<String>,
     source: Option<String>,
+}
+
+impl Attempt {
+    fn valid(&self) -> bool {
+        let uuid_valid = self
+            .id
+            .as_ref()
+            .is_none_or(|id| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id));
+        uuid_valid
+            && self
+                .home_id
+                .as_ref()
+                .is_none_or(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            && self.outcome.as_ref().is_none_or(|outcome| {
+                matches!(
+                    outcome.as_str(),
+                    "succeeded" | "failed" | "cancelled" | "uncertain" | "interrupted"
+                )
+            })
+            && (self.started_at.is_some()
+                || (self.ended_at.is_none() && self.outcome.is_none() && !self.accounted))
+            && (self.outcome.is_some() == self.ended_at.is_some())
+            && (!self.accounted || self.id.is_some())
+    }
+    fn new(
+        account: &str,
+        provider: ProviderKind,
+        home: Option<PathBuf>,
+        model: Option<String>,
+    ) -> Self {
+        Self {
+            id: Some(uuid::Uuid::new_v4().to_string()),
+            started_at: None,
+            ended_at: None,
+            outcome: None,
+            complete: false,
+            accounted: false,
+            usage: Default::default(),
+            home_id: None,
+            account: account.into(),
+            provider,
+            home,
+            model,
+            native_session: None,
+            source: None,
+        }
+    }
 }
 
 pub enum Event {
@@ -469,14 +534,12 @@ impl Delegates {
             conversation_id: self.conversation_id.clone(),
             source_id: None,
             attempts: vec![s.account.clone()],
-            attempt_records: vec![Attempt {
-                account: s.account.clone(),
-                provider: s.provider,
-                home: s.spec.home.clone(),
-                model: s.spec.model.clone(),
-                native_session: None,
-                source: None,
-            }],
+            attempt_records: vec![Attempt::new(
+                &s.account,
+                s.provider,
+                s.spec.home.clone(),
+                s.spec.model.clone(),
+            )],
             model: s.spec.model.clone(),
             collected: false,
             id,
@@ -599,12 +662,31 @@ impl Delegates {
         }
         job.state = WorkerState::Starting;
         job.started = Some(now);
+        if let Some(attempt) = job.attempt_records.last_mut() {
+            attempt.started_at.get_or_insert_with(accounting::now);
+            let canonical = attempt
+                .home
+                .as_ref()
+                .and_then(|home| std::fs::canonicalize(home).ok());
+            attempt.home_id = crate::token_log::Attribution::bound_home(canonical.as_deref());
+        }
         let mut spec = job.spec.clone();
         if let Some(prefix) = dependency_prefix {
             spec.prefix = Some(format!("{}\n{prefix}", spec.prefix.unwrap_or_default()));
         }
         let provider = job.provider;
         let account = job.account.clone();
+        if let Err(error) = self.save_recovery() {
+            if let Some(attempt) = self
+                .get_mut(id)
+                .and_then(|job| job.attempt_records.last_mut())
+            {
+                attempt.started_at = None;
+                attempt.home_id = None;
+            }
+            self.pause_dependency_job(id, format!("attempt reservation failed: {error}"), now);
+            return;
+        }
         tokio::spawn(async move {
             let (hs_tx, mut hs_rx) = mpsc::unbounded_channel::<Arc<RunningTurn>>();
             let (pg_tx, mut pg_rx) = mpsc::unbounded_channel::<TurnProgress>();
@@ -700,6 +782,7 @@ impl Delegates {
                     }
                 }
                 Event::Finished(id, out) => {
+                    self.finish_worker_attempt(id, &out);
                     let retry = self.worker_failover(id, &out, now);
                     if retry {
                         continue;
@@ -757,6 +840,7 @@ impl Delegates {
     }
 
     fn prune(&mut self) {
+        let durable_accounting = self.recovery.is_some();
         let referenced: std::collections::BTreeSet<_> = self
             .schedule
             .tasks()
@@ -769,6 +853,7 @@ impl Delegates {
             if drop_n > 0
                 && j.state.is_finished()
                 && j.state != WorkerState::Paused
+                && !(durable_accounting && accounting::pending(j))
                 && !referenced.contains(&j.run_id)
             {
                 drop_n -= 1;
@@ -975,7 +1060,11 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
             j.snippet = e.clone();
             j.error = Some(e);
         }
-        TurnProgress::Usage(_) => {}
+        TurnProgress::Usage(usage) => {
+            if let Some(attempt) = j.attempt_records.last_mut() {
+                attempt.usage.update_snapshot(&usage);
+            }
+        }
         TurnProgress::Notice(n) => {
             j.snippet = n;
         }

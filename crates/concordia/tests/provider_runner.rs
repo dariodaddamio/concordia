@@ -55,6 +55,50 @@ async fn closed_started_receiver_cancels_the_provider() {
             "provider PID {pid} survived startup cancellation"
         );
     }
+
+    // A resumed Claude result can include earlier session cost; never count it as this attempt.
+    let stream = dir.path().join("claude-usage.jsonl");
+    std::fs::write(&stream, "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"total_cost_usd\":1.25,\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":900,\"cache_creation_input_tokens\":7,\"output_tokens\":45}}\n").unwrap();
+    std::env::set_var("CONCORDIA_CLAUDE_BIN", FAKE);
+    std::env::set_var("FAKE_PROVIDER_MODE", "stream");
+    std::env::set_var("FAKE_PROVIDER_STREAM", &stream);
+    std::env::set_var("CONCORDIA_STATE_DIR", dir.path());
+    for session in [None, Some("11111111-2222-4333-8444-555555555555")] {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let req = ProviderTurnRequest {
+            provider: ProviderKind::Claude,
+            native_session_id: session,
+            prompt: "synthetic accounting turn",
+            ..req.clone()
+        };
+        let outcome =
+            concordia::provider::turn::run_provider_turn_with_progress(&req, None, Some(tx))
+                .await
+                .unwrap();
+        assert_eq!(outcome.exit_code, Some(0));
+        let usage = std::iter::from_fn(|| rx.try_recv().ok())
+            .find_map(|progress| {
+                if let concordia::provider::turn::TurnProgress::Usage(usage) = progress {
+                    Some(usage)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(usage.input, Some(127));
+        assert_eq!(
+            usage.cost_usd,
+            if session.is_none() { Some(1.25) } else { None }
+        );
+    }
+    for key in [
+        "CONCORDIA_CLAUDE_BIN",
+        "FAKE_PROVIDER_MODE",
+        "FAKE_PROVIDER_STREAM",
+        "CONCORDIA_STATE_DIR",
+    ] {
+        std::env::remove_var(key);
+    }
 }
 
 fn process_alive(pid: u32) -> bool {

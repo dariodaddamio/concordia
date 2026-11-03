@@ -15,6 +15,7 @@ fn token_entry() -> concordia::token_log::Entry {
         cached_input: 2,
         output: 3,
         cost_usd: None,
+        attribution: None,
     }
 }
 
@@ -37,6 +38,23 @@ fn concurrent_token_writers_never_interleave_or_lose_records() {
     let entries = concordia::token_log::load(root.path());
     assert_eq!(entries.len(), 1600);
     assert_eq!(concordia::token_log::totals(&entries).total(), 9600);
+    let page_root = tempfile::tempdir().unwrap();
+    let mut row = serde_json::to_vec(&token_entry()).unwrap();
+    row.push(b'\n');
+    std::fs::write(page_root.path().join("token-log.jsonl"), row.repeat(10_001)).unwrap();
+    let first = concordia::token_log::load_page(page_root.path(), None).unwrap();
+    assert_eq!(first.entries.len(), 10_000);
+    assert!(first.incomplete);
+    let cursor = first.next.as_ref().unwrap();
+    let last = concordia::token_log::load_page(page_root.path(), Some(cursor)).unwrap();
+    assert_eq!(last.entries.len(), 1);
+    assert!(last.next.is_none());
+    concordia::token_log::record(page_root.path(), &token_entry()).unwrap();
+    assert!(concordia::token_log::load_page(page_root.path(), Some(cursor)).is_err());
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    assert!(
+        concordia::token_log::load_page_with_cancel(page_root.path(), None, &cancelled).is_err()
+    );
 }
 
 #[test]

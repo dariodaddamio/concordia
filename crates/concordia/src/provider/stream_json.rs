@@ -437,6 +437,15 @@ impl StreamParser {
 
     fn result(&mut self, ev: &Value, out: &mut Vec<StreamPart>) {
         let mut usage = TurnUsage::from_json(ev.get("usage"), "cache_read_input_tokens");
+        if self.flavor == Flavor::Claude {
+            if let (Some(input), Some(written)) = (
+                usage.input,
+                ev.pointer("/usage/cache_creation_input_tokens")
+                    .and_then(Value::as_u64),
+            ) {
+                usage.input = Some(input.saturating_add(written));
+            }
+        }
         if self.flavor == Flavor::Cursor && usage.is_empty() {
             // Cursor names its counts in camelCase (`inputTokens`, `cacheReadTokens`).
             let num = |k: &str| ev.pointer(&format!("/usage/{k}")).and_then(Value::as_u64);
@@ -759,7 +768,7 @@ mod usage_tests {
         assert_eq!(
             usage_of(&parts),
             vec![TurnUsage {
-                input: Some(120),
+                input: Some(127),
                 output: Some(45),
                 cached: Some(900),
                 cost_usd: Some(0.0123)

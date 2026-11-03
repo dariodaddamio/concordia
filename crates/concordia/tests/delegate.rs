@@ -193,6 +193,17 @@ async fn a_delegate_runs_in_the_background_with_a_fresh_session_and_a_labelled_r
     assert_eq!(d.get(q).unwrap().state, WorkerState::Done);
 
     // The same executor also releases approved dependencies from verified source snapshots.
+    let usage_stream = env.path("usage-stream.jsonl");
+    let usage_event = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":200,\"cached_input_tokens\":100,\"output_tokens\":30}}\n";
+    std::fs::write(
+        &usage_stream,
+        format!(
+            "{}\n{usage_event}{usage_event}",
+            std::fs::read_to_string(fixture("codex-stream.jsonl")).unwrap()
+        ),
+    )
+    .unwrap();
+    env.set("FAKE_PROVIDER_STREAM", &usage_stream);
     let state_root = env.path("");
     env.set("CONCORDIA_STATE_DIR", &state_root);
     env.set("CONCORDIA_CODEX_HOME_BASE", env.path("empty-profile"));
@@ -255,6 +266,17 @@ async fn a_delegate_runs_in_the_background_with_a_fresh_session_and_a_labelled_r
         dependency.get(child).unwrap().error
     );
     let receipt = std::fs::read_to_string(&out).unwrap();
+    let recorded = concordia::token_log::load(env.dir.path());
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded
+        .iter()
+        .all(|entry| entry.attribution.as_ref().unwrap().origin
+            == concordia::token_log::Origin::Worker));
+    assert_eq!(
+        concordia::token_log::totals(&recorded).total(),
+        460,
+        "repeated snapshots must not be summed"
+    );
     let args: Vec<_> = receipt
         .lines()
         .filter_map(|line| line.strip_prefix("ARG:"))
@@ -279,6 +301,7 @@ async fn a_delegate_runs_in_the_background_with_a_fresh_session_and_a_labelled_r
     .await;
     assert_eq!(dependency.get(stale).unwrap().state, WorkerState::Paused);
     assert_eq!(std::fs::read_to_string(&out).unwrap(), receipt);
+    assert_eq!(concordia::token_log::load(env.dir.path()).len(), 2);
     let cancelled = dependency
         .submit_after(
             request("cancel before verification returns"),
@@ -365,6 +388,20 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
     );
     assert_eq!(d.get(id).unwrap().account, "worker-two");
     assert_eq!(d.get(id).unwrap().trust, TrustMode::Ask);
+    let usage = concordia::token_log::load(env.dir.path());
+    assert_eq!(
+        usage.len(),
+        2,
+        "each failover attempt is accounted separately"
+    );
+    assert!(usage
+        .iter()
+        .all(|entry| entry.attribution.as_ref().unwrap().run == run));
+    assert_ne!(
+        usage[0].attribution.as_ref().unwrap().attempt,
+        usage[1].attribution.as_ref().unwrap().attempt
+    );
+    assert!(concordia::token_log::totals(&usage).incomplete_events > 0);
     d.reserve_delivery(&[id]).unwrap();
     let before = std::fs::read_to_string(&journal).unwrap();
     assert_eq!(
@@ -384,6 +421,11 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
     assert!(restored.get(id).unwrap().text.is_empty());
     restored.poll(Instant::now());
     assert_eq!(std::fs::read_to_string(journal).unwrap(), before);
+    assert_eq!(
+        concordia::token_log::load(env.dir.path()),
+        usage,
+        "recovery and collection do not count attempts twice"
+    );
 }
 
 #[tokio::test]

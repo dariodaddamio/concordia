@@ -507,7 +507,7 @@ async fn run_provider_turn_inner(
                     raw.push('\n');
                 }
                 {
-                    let parts = if plain_output {
+                    let mut parts = if plain_output {
                         vec![StreamPart::Text(line.clone())]
                     } else {
                         match json_parser.as_mut() {
@@ -515,6 +515,15 @@ async fn run_provider_turn_inner(
                             None => parse_codex_stream_chunk(&line),
                         }
                     };
+                    if plan.provider == ProviderKind::Claude && req.native_session_id.is_some() {
+                        // Recent Claude versions restore earlier session cost into result totals.
+                        // Without a verified baseline, that total is not this attempt's cost.
+                        for part in &mut parts {
+                            if let StreamPart::Usage(usage) = part {
+                                usage.cost_usd = None;
+                            }
+                        }
+                    }
                     emit_progress(&parts, &on_progress);
                     let mut chunk = codex::StreamOutcome::default();
                     apply_stream_parts(parts, &mut chunk);

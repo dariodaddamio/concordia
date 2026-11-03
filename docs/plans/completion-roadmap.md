@@ -8,6 +8,8 @@ Progress: [wave one](../quality/completion-wave1.md) implements D1/P0/search W1;
 [wave two](../quality/completion-wave2.md) connects approved shared-workspace dependencies to
 normal dispatch and paused recovery. Other phases below remain planned unless evidence says otherwise.
 The [goal/source slice](../quality/goal-source-associations.md) records M0 implementation separately.
+The [accounting slice](../quality/worker-accounting.md) records U1 and bounded main/worker views;
+external native usage import remains separate.
 
 ## Baseline and scope
 

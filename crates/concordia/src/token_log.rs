@@ -1,4 +1,4 @@
-//! Every turn's token usage, appended to a local log, so totals and breakdowns cost no provider
+//! Per-attempt token usage and legacy logs, so totals and breakdowns cost no provider
 //! call. Providers count differently: Codex's input includes the cached part, Claude's and
 //! Cursor's do not. Entries store the same three parts for every provider.
 
@@ -8,6 +8,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[path = "token_events.rs"]
+mod events;
+pub use events::{load_page, load_page_with_cancel, Attribution, Cursor, Origin, Report};
+
+pub fn attempt_outcome(exit: Option<i32>, cancelled: bool, failed: bool) -> (&'static str, bool) {
+    let status = if cancelled {
+        "cancelled"
+    } else if exit.is_none() {
+        "uncertain"
+    } else if failed || exit != Some(0) {
+        "failed"
+    } else {
+        "succeeded"
+    };
+    (status, exit.is_some())
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
@@ -26,6 +42,8 @@ pub struct Entry {
     pub cached_input: u64,
     pub output: u64,
     pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<Attribution>,
 }
 
 impl Entry {
@@ -51,8 +69,12 @@ fn path(state_root: &Path) -> PathBuf {
     state_root.join("token-log.jsonl")
 }
 
-/// Append one turn. A failure is the caller's to report; it never stops a turn.
+/// Record one turn: attributed events are idempotent; legacy records retain their append format.
 pub fn record(state_root: &Path, entry: &Entry) -> std::io::Result<()> {
+    if entry.attribution.is_some() {
+        return events::record_once(state_root, entry);
+    }
+    events::validate_legacy(state_root)?;
     std::fs::create_dir_all(state_root)?;
     let mut line = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
     line.push(b'\n');
@@ -65,14 +87,10 @@ pub fn record(state_root: &Path, entry: &Entry) -> std::io::Result<()> {
     })
 }
 
-/// Every recorded turn; a damaged line is skipped, not fatal.
+/// Compatibility convenience for the first bounded page. Use `load_page` for coverage/cursors.
 pub fn load(state_root: &Path) -> Vec<Entry> {
-    std::fs::read_to_string(path(state_root))
-        .map(|text| {
-            text.lines()
-                .filter_map(|l| serde_json::from_str(l).ok())
-                .collect()
-        })
+    load_page(state_root, None)
+        .map(|report| report.entries)
         .unwrap_or_default()
 }
 
@@ -84,6 +102,8 @@ pub struct Totals {
     pub output: u64,
     /// Summed only over turns that reported a cost.
     pub cost_usd: Option<f64>,
+    pub reported_cost_events: u64,
+    pub incomplete_events: u64,
 }
 
 impl Totals {
@@ -94,6 +114,16 @@ impl Totals {
         self.output = self.output.saturating_add(e.output);
         if let Some(c) = e.cost_usd {
             self.cost_usd = Some(self.cost_usd.unwrap_or(0.0) + c);
+            self.reported_cost_events = self.reported_cost_events.saturating_add(1);
+        }
+        if e.attribution.as_ref().is_none_or(|a| {
+            !a.input_known
+                || !a.cached_known
+                || !a.output_known
+                || !a.complete
+                || a.home_id.is_none()
+        }) {
+            self.incomplete_events = self.incomplete_events.saturating_add(1);
         }
     }
 
@@ -142,6 +172,7 @@ mod tests {
             cached_input: parts.1,
             output: parts.2,
             cost_usd: None,
+            attribution: None,
         }
     }
 
@@ -172,6 +203,39 @@ mod tests {
         let second = entry("cursor", "y", 2, (4, 5, 6));
         record(dir.path(), &second).unwrap();
         assert_eq!(load(dir.path()), [first, second]);
+        let usage = TurnUsage {
+            input: Some(2000),
+            cached: Some(1500),
+            output: Some(100),
+            cost_usd: None,
+        };
+        let mut worker = entry("codex", "work", 3, (500, 1500, 100));
+        worker.attribution = Some(Attribution::new(
+            Origin::Worker,
+            &uuid::Uuid::new_v4().to_string(),
+            &uuid::Uuid::new_v4().to_string(),
+            Some(dir.path()),
+            &usage,
+            "succeeded",
+            true,
+        ));
+        record(dir.path(), &worker).unwrap();
+        record(dir.path(), &worker).unwrap();
+        let report = load_page(dir.path(), None).unwrap();
+        assert_eq!(report.entries.len(), 3);
+        assert!(report.incomplete && report.skipped == 1);
+        assert_eq!(totals(&report.entries).incomplete_events, 2);
+        assert_eq!(totals(&report.entries).reported_cost_events, 0);
+        worker.output += 1;
+        assert!(record(dir.path(), &worker).is_err());
+        assert_eq!(
+            load(dir.path())
+                .iter()
+                .find(|entry| entry.attribution.is_some())
+                .unwrap()
+                .output,
+            100
+        );
     }
 
     #[test]

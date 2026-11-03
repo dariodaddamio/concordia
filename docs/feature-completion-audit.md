@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-02n
+# Feature completion audit: 2026-11-02o
 
 Internal raw editing, default formatted documents, file recovery, command-screen and pinned-command
 improvements are implemented. The complete
@@ -10,6 +10,12 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- Main and worker attempts share attributable, idempotent usage recording, including failover,
+  cancelled/failed attempts and accounting-only crash reconciliation. The token screen and landing
+  totals use bounded background reads, explicit coverage and account/home-aware session grouping.
+  See [accounting evidence and native limits](quality/worker-accounting.md). External native usage
+  import and broader native provider verification remain open.
 
 - Explicit goal/source associations reuse the existing goal store, verified native pointers and
   one bounded relationship service. CLI/TUI mutation is explicit; MCP exposes reads only.

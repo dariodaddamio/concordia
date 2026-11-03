@@ -381,6 +381,8 @@ pub(super) fn viewer_text(j: &Job) -> String {
     );
     let mut t = String::new();
     t.push_str(&identity);
+    t.push_str(&j.usage_summary());
+    t.push('\n');
     t.push_str(&format!("task: {}\n", one_line(&j.task)));
     t.push_str(&format!(
         "model: {} | result: {}\n",
@@ -628,7 +630,9 @@ impl App {
         let now = Instant::now();
         let finished = self.deleg.d.poll(now);
         if let Some(error) = self.deleg.d.recovery_error() {
-            self.flash(format!("worker recovery save failed: {error}; new worker launches/returns require successful storage"));
+            self.flash(format!(
+                "worker storage: {error}; launches/returns require successful recovery storage"
+            ));
         }
         let mut i = 0;
         while i < self.deleg.recoveries.len() {
