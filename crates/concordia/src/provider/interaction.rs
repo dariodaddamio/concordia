@@ -135,6 +135,7 @@ impl InteractionCapabilities {
 pub enum DecisionScope {
     Once,
     Always,
+    Session,
     Unknown,
 }
 
@@ -161,6 +162,11 @@ pub enum NativeInteraction {
         options: Vec<NativeOption>,
     },
     Questions(Vec<NativeQuestion>),
+    CodexPermission {
+        title: String,
+        options: Vec<NativeOption>,
+    },
+    CodexQuestions(Vec<NativeQuestion>),
     /// Cursor's documented blocking create_plan extension.
     PlanApproval {
         title: String,
@@ -209,6 +215,127 @@ fn options(value: &Value, permission: bool) -> Result<Vec<NativeOption>, String>
 impl NativeInteraction {
     fn parse(method: &str, params: &Value) -> Result<Self, String> {
         match method {
+            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+                let offered = params
+                    .get("availableDecisions")
+                    .filter(|value| !value.is_null())
+                    .cloned()
+                    .unwrap_or_else(|| json!(["accept", "acceptForSession", "decline", "cancel"]));
+                let offered = offered
+                    .as_array()
+                    .filter(|options| !options.is_empty() && options.len() <= 32)
+                    .ok_or("native decision bound exceeded")?;
+                let mut ids = HashSet::new();
+                let options = offered
+                    .iter()
+                    .map(|decision| {
+                        let (label, scope) = match decision.as_str() {
+                            Some("accept") => ("Allow this action".into(), DecisionScope::Once),
+                            Some("acceptForSession") => {
+                                ("Allow for this session".into(), DecisionScope::Session)
+                            }
+                            Some("decline") => ("Decline this action".into(), DecisionScope::Once),
+                            Some("cancel") => ("Cancel this turn".into(), DecisionScope::Once),
+                            Some(_) => return Err("native decision is unsupported".to_string()),
+                            None if decision.as_object().is_some_and(|object| {
+                                object.len() == 1
+                                    && object.contains_key("acceptWithExecpolicyAmendment")
+                            }) =>
+                            {
+                                (
+                                    format!("Allow and save command rule: {decision}"),
+                                    DecisionScope::Always,
+                                )
+                            }
+                            None if decision.as_object().is_some_and(|object| {
+                                object.len() == 1
+                                    && object.contains_key("applyNetworkPolicyAmendment")
+                            }) =>
+                            {
+                                (
+                                    format!("Save network policy: {decision}"),
+                                    DecisionScope::Always,
+                                )
+                            }
+                            None => return Err("native decision object is unsupported".to_string()),
+                        };
+                        let id = decision.to_string();
+                        if id.len() > 8192 || !ids.insert(id.clone()) {
+                            return Err("duplicate or oversized native decision".into());
+                        }
+                        Ok(NativeOption {
+                            id,
+                            label,
+                            native_kind: None,
+                            scope,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Self::CodexPermission {
+                    title: if method.contains("fileChange") {
+                        "Review proposed file changes"
+                    } else if params
+                        .get("networkApprovalContext")
+                        .is_some_and(|value| !value.is_null())
+                    {
+                        "Review managed network access"
+                    } else {
+                        "Review command execution"
+                    }
+                    .into(),
+                    options,
+                })
+            }
+            "item/tool/requestUserInput" => {
+                let questions = params["questions"]
+                    .as_array()
+                    .filter(|questions| !questions.is_empty() && questions.len() <= 3)
+                    .ok_or("native question bound exceeded")?;
+                let mut ids = HashSet::new();
+                let questions = questions
+                    .iter()
+                    .map(|question| {
+                        if question["isSecret"] == true {
+                            return Err("secret input stays with the native provider login flow"
+                                .to_string());
+                        }
+                        let id = text(question, "id")?;
+                        if !ids.insert(id.clone()) {
+                            return Err("duplicate native question".into());
+                        }
+                        let choices = question["options"]
+                            .as_array()
+                            .filter(|options| !options.is_empty() && options.len() <= 9)
+                            .ok_or("free-form-only native input is unsupported")?;
+                        let mut choices_seen = HashSet::new();
+                        let options = choices
+                            .iter()
+                            .map(|choice| {
+                                let label = text(choice, "label")?;
+                                if !choices_seen.insert(label.clone()) {
+                                    return Err("duplicate native choice".to_string());
+                                }
+                                Ok(NativeOption {
+                                    id: label.clone(),
+                                    label: format!(
+                                        "{label} · {}",
+                                        choice["description"].as_str().unwrap_or("")
+                                    ),
+                                    native_kind: None,
+                                    scope: DecisionScope::Once,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, String>>()?;
+                        Ok(NativeQuestion {
+                            id,
+                            prompt: text(question, "question")?,
+                            options,
+                            multiple: false,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Self::CodexQuestions(questions))
+            }
             "cursor/create_plan" => {
                 text(params, "toolCallId")?;
                 let plan = params["plan"]
@@ -299,6 +426,35 @@ impl NativeInteraction {
     }
 
     fn accepts(&self, value: &Value) -> bool {
+        if let Self::CodexPermission { options, .. } = self {
+            return value.as_object().is_some_and(|object| object.len() == 1)
+                && value.get("decision").is_some_and(|decision| {
+                    options.iter().any(|option| {
+                        serde_json::from_str::<Value>(&option.id)
+                            .is_ok_and(|known| known == *decision)
+                    })
+                });
+        }
+        if let Self::CodexQuestions(questions) = self {
+            let Some(answers) = value.get("answers").and_then(Value::as_object) else {
+                return false;
+            };
+            return value.as_object().is_some_and(|object| object.len() == 1)
+                && answers.len() == questions.len()
+                && questions.iter().all(|question| {
+                    answers
+                        .get(&question.id)
+                        .filter(|answer| answer.as_object().is_some_and(|object| object.len() == 1))
+                        .and_then(|answer| answer.get("answers"))
+                        .and_then(Value::as_array)
+                        .is_some_and(|selected| {
+                            selected.len() == 1
+                                && selected[0].as_str().is_some_and(|answer| {
+                                    question.options.iter().any(|option| option.id == answer)
+                                })
+                        })
+                });
+        }
         if value.as_object().is_none_or(|object| object.len() != 1) {
             return false;
         }
@@ -357,6 +513,7 @@ impl NativeInteraction {
                     })
                 })
             }
+            Self::CodexPermission { .. } | Self::CodexQuestions(_) => false,
         }
     }
 }
@@ -368,6 +525,7 @@ pub struct NativeEnvelope {
     pub native_session_id: String,
     pub connection_id: String,
     pub request_id: Value,
+    pub native_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -380,6 +538,7 @@ pub struct NativeRequest {
     active: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     answered: Arc<AtomicBool>,
+    resolved: Arc<AtomicBool>,
     response: Arc<ResponseChannel>,
 }
 
@@ -419,9 +578,51 @@ impl NativeRequest {
         self.answered.load(Ordering::SeqCst)
     }
 
+    pub fn was_resolved(&self) -> bool {
+        self.resolved.load(Ordering::SeqCst)
+    }
+    pub(crate) fn resolve_native(&self) {
+        self.resolved.store(true, Ordering::SeqCst);
+        self.invalidate();
+    }
+    pub(crate) fn cancel(&self) {
+        if matches!(self.kind, NativeInteraction::CodexPermission { .. }) {
+            if self.send(json!({"decision":"cancel"})).is_err() {
+                self.invalidate();
+            }
+        } else if matches!(self.kind, NativeInteraction::CodexQuestions(_)) {
+            self.invalidate();
+        } else {
+            let _ = self.send(json!({"outcome":{"outcome":"cancelled"}}));
+        }
+    }
+
     /// Encode offered native IDs once for both foreground and worker review surfaces.
     pub fn single_choices(&self, choices: &[usize]) -> Result<Value, String> {
         let value = match &self.kind {
+            NativeInteraction::CodexPermission { options, .. } => {
+                if choices.len() != 1 {
+                    return Err("native decision needs one offered option".into());
+                }
+                let choice = options
+                    .get(choices[0])
+                    .ok_or("native option is no longer offered")?;
+                json!({"decision":serde_json::from_str::<Value>(&choice.id).map_err(|_|"invalid native decision")?})
+            }
+            NativeInteraction::CodexQuestions(questions) => {
+                if choices.len() != questions.len() {
+                    return Err("native questions need exact offered answers".into());
+                }
+                let mut answers = serde_json::Map::new();
+                for (question, choice) in questions.iter().zip(choices) {
+                    let option = question
+                        .options
+                        .get(*choice)
+                        .ok_or("native option is no longer offered")?;
+                    answers.insert(question.id.clone(), json!({"answers":[option.id]}));
+                }
+                json!({"answers":answers})
+            }
             NativeInteraction::Permission { options, .. }
             | NativeInteraction::PlanApproval { options, .. } => {
                 if choices.len() != 1 {
@@ -563,6 +764,18 @@ impl InteractionConnection {
         );
     }
 
+    pub fn initialized_codex(&mut self, version: &str) {
+        self.capabilities.images = CapabilityEvidence {
+            support: Support::Supported,
+            transport: "codex-app-server".into(),
+            cli_version: Some(version.into()),
+            protocol_version: Some(2),
+            connection_id: Some(self.id.clone()),
+            source: "version-matched generated native v2 schema and initialize response".into(),
+            observed_at_unix_ms: observed_at(),
+        };
+    }
+
     pub fn request(
         &mut self,
         session: &str,
@@ -581,7 +794,20 @@ impl InteractionConnection {
             && params.get("sessionId").is_none()
             && self.capabilities.images.protocol_version == Some(1)
             && text(&params, "toolCallId").is_ok();
-        if params["sessionId"].as_str() != Some(session) && !connection_bound {
+        let codex = matches!(
+            method.as_str(),
+            "item/commandExecution/requestApproval"
+                | "item/fileChange/requestApproval"
+                | "item/tool/requestUserInput"
+        );
+        let codex_bound = codex
+            && self.capabilities.images.transport == "codex-app-server"
+            && params["threadId"].as_str() == Some(session)
+            && text(&params, "turnId").is_ok()
+            && text(&params, "itemId").is_ok();
+        if (codex && !codex_bound)
+            || (!codex && params["sessionId"].as_str() != Some(session) && !connection_bound)
+        {
             return Err("native interaction session identity mismatch".into());
         }
         let valid_id = match &request_id {
@@ -612,7 +838,12 @@ impl InteractionConnection {
         }
         let capability = CapabilityEvidence {
             support: Support::Supported,
-            transport: "cursor-acp".into(),
+            transport: if codex {
+                "codex-app-server"
+            } else {
+                "cursor-acp"
+            }
+            .into(),
             cli_version: self.capabilities.images.cli_version.clone(),
             protocol_version: self.capabilities.images.protocol_version,
             connection_id: Some(self.id.clone()),
@@ -620,15 +851,19 @@ impl InteractionConnection {
             observed_at_unix_ms: observed_at(),
         };
         match &kind {
-            NativeInteraction::Permission { .. } => {
+            NativeInteraction::Permission { .. } | NativeInteraction::CodexPermission { .. } => {
                 self.capabilities.permissions = capability.clone()
             }
-            NativeInteraction::Questions(_) => self.capabilities.questions = capability.clone(),
+            NativeInteraction::Questions(_) | NativeInteraction::CodexQuestions(_) => {
+                self.capabilities.questions = capability.clone()
+            }
             NativeInteraction::PlanApproval { .. } => self.capabilities.plans = capability.clone(),
         }
         let (tx, rx) = oneshot::channel();
         let response = Arc::new(Mutex::new(Some(tx)));
         self.pending.push((bytes, Arc::downgrade(&response)));
+        let native_turn_id =
+            codex.then(|| params["turnId"].as_str().unwrap_or_default().to_owned());
         Ok((
             NativeRequest {
                 method,
@@ -639,11 +874,13 @@ impl InteractionConnection {
                     native_session_id: session.into(),
                     connection_id: self.id.clone(),
                     request_id,
+                    native_turn_id,
                 },
                 capability,
                 active: self.active.clone(),
                 cancelled: self.cancelled.clone(),
                 answered: Arc::new(AtomicBool::new(false)),
+                resolved: Arc::new(AtomicBool::new(false)),
                 response,
             },
             rx,
@@ -737,6 +974,58 @@ mod tests {
         request.respond_owned(&owner, selected("once")).unwrap();
         assert_eq!(rx.try_recv().unwrap(), selected("once"));
         assert!(request.respond_owned(&owner, selected("always")).is_err());
+        let mut codex =
+            InteractionConnection::new(Some(owner.clone()), Arc::new(AtomicBool::new(false)));
+        codex.initialized_codex("0.166.0");
+        let params = json!({"threadId":"native-thread","turnId":"native-turn","itemId":"native-item","availableDecisions":["accept","acceptForSession",{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git","status"]}},"decline","cancel"]});
+        assert!(codex
+            .request(
+                "foreign-thread",
+                json!(80),
+                "item/commandExecution/requestApproval".into(),
+                params.clone()
+            )
+            .is_err());
+        let (request, mut response) = codex
+            .request(
+                "native-thread",
+                json!(81),
+                "item/commandExecution/requestApproval".into(),
+                params.clone(),
+            )
+            .unwrap();
+        let NativeInteraction::CodexPermission { options, .. } = request.kind() else {
+            panic!("Codex permission expected")
+        };
+        assert_eq!(options[1].scope, DecisionScope::Session);
+        assert_eq!(options[2].scope, DecisionScope::Always);
+        assert!(request
+            .respond_owned(&owner, json!({"decision":"invented"}))
+            .is_err());
+        assert!(request
+            .respond_owned(&owner, json!({"decision":"accept","scope":"always"}))
+            .is_err());
+        request
+            .respond_owned(&owner, request.single_choices(&[1]).unwrap())
+            .unwrap();
+        assert_eq!(
+            response.try_recv().unwrap(),
+            json!({"decision":"acceptForSession"})
+        );
+        let (resolved, mut response) = codex
+            .request(
+                "native-thread",
+                json!(82),
+                "item/commandExecution/requestApproval".into(),
+                params,
+            )
+            .unwrap();
+        resolved.resolve_native();
+        assert!(resolved.was_resolved() && !resolved.was_answered() && !resolved.is_active());
+        assert!(resolved
+            .respond_owned(&owner, json!({"decision":"accept"}))
+            .is_err());
+        assert!(response.try_recv().is_err());
     }
 
     #[test]

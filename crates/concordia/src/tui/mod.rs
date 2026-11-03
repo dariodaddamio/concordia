@@ -1065,6 +1065,37 @@ impl App {
                     request.kind(),
                     crate::provider::interaction::NativeInteraction::PlanApproval { .. }
                 );
+                let codex_review = matches!(
+                    request.kind(),
+                    crate::provider::interaction::NativeInteraction::CodexPermission { .. }
+                );
+                if codex_review {
+                    let evidence = self
+                        .messages
+                        .iter()
+                        .rev()
+                        .filter_map(|message| message.card.as_ref())
+                        .find(|card| Some(card.id.as_str()) == request.params["itemId"].as_str())
+                        .and_then(|card| card.detail.as_deref())
+                        .unwrap_or("");
+                    let detail = format!(
+                        "{evidence}\n\nNative request:\n{}",
+                        serde_json::to_string_pretty(&request.params).unwrap_or_default()
+                    );
+                    self.push_card(StreamCard {
+                        id: format!(
+                            "native-review:{}:{}",
+                            request.envelope().connection_id,
+                            request.envelope().request_id
+                        ),
+                        title: "Native action awaiting your review".into(),
+                        detail: Some(detail),
+                        status: CardStatus::Running,
+                    });
+                    if self.picker.is_none() && self.activity.detail.is_none() {
+                        self.activity.open(self.messages.len() - 1);
+                    }
+                }
                 if plan {
                     self.push_card(StreamCard {
                         id: format!(
@@ -1086,8 +1117,10 @@ impl App {
                         self.activity.open(self.messages.len() - 1);
                     }
                 }
-                self.questions
-                    .offer_native(*request, !plan && self.editor.text().is_empty());
+                self.questions.offer_native(
+                    *request,
+                    !plan && !codex_review && self.editor.text().is_empty(),
+                );
                 self.pause_queue();
             }
             TurnProgress::Session(id) => {
@@ -1520,6 +1553,7 @@ impl App {
     }
 
     fn on_tick(&mut self) {
+        self.questions.refresh_native();
         self.poll_images();
         self.tick_count = self.tick_count.wrapping_add(1);
         if self.busy {

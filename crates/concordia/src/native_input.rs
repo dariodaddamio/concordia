@@ -12,6 +12,7 @@ pub enum Mode {
     #[default]
     Standard,
     CursorAcp,
+    CodexAppServer,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -68,6 +69,7 @@ pub fn load(root: &Path, binding: &Binding) -> Result<Mode, String> {
         || saved.binding.account != binding.account
         || saved.binding.home != binding.home
         || saved.mode == Mode::CursorAcp && binding.provider != ProviderKind::Cursor
+        || saved.mode == Mode::CodexAppServer && binding.provider != ProviderKind::Codex
     {
         return Err("native-input preference version/account/home mismatch; original kept".into());
     }
@@ -101,9 +103,11 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
     let mode = match command {
         "status" => current,
         "on" if registered.provider == ProviderKind::Cursor => Mode::CursorAcp,
-        "on" => {
-            return Err("native text interaction is currently available only for Cursor ACP".into())
-        }
+        "on" if registered.provider == ProviderKind::Codex => Mode::CodexAppServer,
+        "on" => return Err(
+            "native text interaction is currently available for Cursor ACP and Codex app-server"
+                .into(),
+        ),
         "off" => Mode::Standard,
         _ => return Err("/native ACCOUNT on|off|status".into()),
     };
@@ -138,5 +142,5 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
         })
         .map_err(|error| error.to_string())?;
     }
-    Ok(format!("{account}: native text input {}. Future tasks capture this account/home preference; existing worker attempts keep theirs. Native capabilities are checked on connection.", if mode == Mode::CursorAcp { "on (Cursor ACP)" } else { "off (standard text transport)" }))
+    Ok(format!("{account}: native text input {}. Future tasks capture this account/home preference; existing worker attempts keep theirs. Native capabilities are checked on connection.", match mode { Mode::CursorAcp => "on (Cursor ACP)", Mode::CodexAppServer => "on (Codex app-server)", Mode::Standard => "off (standard text transport)" }))
 }

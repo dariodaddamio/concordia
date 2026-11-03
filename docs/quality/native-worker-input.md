@@ -24,11 +24,12 @@ Escape leaves the request pending and preserves the main draft. Every choice che
 run, attempt, account/home, execution workspace, native session, connection and request identity.
 Eight pending requests per worker and 24 across workers preserve foreground capacity. Cancellation,
 owner changes and connection loss invalidate channels. Restart pauses work and never replays grants.
-Observed native interaction disables automatic worker failover; uncertain completion retains scope.
+All native-mode tasks disable automatic worker failover; uncertain completion retains scope.
 Explicit cancellation with a confirmed process exit can release it.
 
-Codex app-server interactive execution and a provenance-checked Claude permission bridge remain
-separate roadmap slices. No real provider turn or live parity claim is part of this implementation.
+[Codex app-server input](codex-native-input.md) extends this contract behind explicit account/home
+selection. A provenance-checked Claude permission bridge remains separate. No real provider turn
+or live parity claim is part of these implementations.
 
 ## Activity and navigation
 

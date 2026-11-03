@@ -390,7 +390,7 @@ fn classify_item_event(typ: &str, ev: &serde_json::Value) -> Vec<StreamPart> {
 
 /// Codex exec's documented CollabToolCall reports tool and child lifetimes separately.
 /// Completing spawn_agent/wait does not by itself mean that a child has completed.
-fn classify_collab_tool_call(item: &serde_json::Value) -> Vec<StreamPart> {
+pub(super) fn classify_collab_tool_call(item: &serde_json::Value) -> Vec<StreamPart> {
     let states = item.get("agents_states").and_then(|v| v.as_object());
     let mut ids: Vec<&str> = item
         .get("receiver_thread_ids")

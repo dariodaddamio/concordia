@@ -15,10 +15,15 @@ creation does not change the implementation status recorded here.
   the existing editor save path. Durable receipts support explicit reconciliation without replay.
   [Behavior and limits](quality/project-replacement.md).
 
+- Opt-in Codex app-server execution now connects native command/file decisions and bounded
+  questions to foreground/worker review with exact thread/turn ownership and resolution handling.
+  [Scope and limitations](quality/codex-native-input.md). CLI 0.166.0 is the matched protocol;
+  Claude bridging, free-form native input and live parity remain separate.
+
 - Worker-owned native input, opt-in Cursor ACP text and explicit native plan decisions now use
   exact live request ownership. Edit cards, file detection, activity icons, agent inspection,
   queue return and quota/credit cache fixes are implemented in the current candidate.
-  [Scope and verification](quality/native-worker-input.md). Codex/Claude interactive execution,
+  [Scope and verification](quality/native-worker-input.md). Claude interactive execution,
   live parity and the broader workspace/provider roadmap remain separate work.
 
 - A versioned synthetic retrieval corpus and provider-free collector measure scoped relevance,
