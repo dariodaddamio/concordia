@@ -3047,7 +3047,7 @@ fn landing_harness() -> Harness {
 
 #[test]
 fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
-    let h = landing_harness();
+    let mut h = landing_harness();
     let screen = h.screen();
     let folder = h
         .app
@@ -3070,9 +3070,16 @@ fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
     );
     assert!(screen.contains(" goals "));
     assert!(
-        screen.contains("Enter open chat · Tab goals · Esc chat"),
+        screen.contains("Enter open chat · F6 related work · Tab goals · Esc chat"),
         "{screen}"
     );
+    h.app.editor.set_text("keep the landing draft");
+    h.key(KeyCode::F(6), KeyModifiers::NONE);
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Related);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(landing::visible(&h.app));
+    assert_eq!(h.app.editor.text(), "keep the landing draft");
+    assert!(h.screen().contains(&format!("▾ {folder} (2)")));
 }
 
 #[test]
