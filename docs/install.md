@@ -104,6 +104,9 @@ PATH, and points the `current` launcher at it. Open a new terminal and run `conc
 
 ## 6. From source
 
+Source updates honor Cargo's selected output directory and verify the rebuilt source version.
+If Cargo does not report the executable or it fails verification, the current install is retained.
+
 Needs the Rust toolchain pinned by `rust-toolchain.toml` and the Visual Studio C++ build tools.
 
 ```powershell

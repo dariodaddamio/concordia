@@ -1,6 +1,6 @@
 # Explicit related-chat groups
 
-Candidate `2026-11-03b` adds M2 group metadata and a read-only related-work screen. Groups
+Candidate `2026-11-03d` adds M2 group metadata and a read-only related-work screen. Groups
 are user-confirmed associations, independent of project folder grouping and observed handoff links.
 No discovery result creates membership automatically. No provider model turn names a group.
 
@@ -55,5 +55,5 @@ release smoke, portable everyday smoke and OSS gates (330 tracked text files). A
 ConPTY journeys pass in 314.35 seconds; the focused memory journey passes alone in 12.10 seconds.
 That portable candidate is 18,980,352 bytes, SHA-256
 `22469DFF9A06BD8836223758031159EB80AE179245E9004A9AEB7E1AEAF66D63`.
-The corrected b candidate includes the parent Windows workspace-alias fix and needs its own
+The corrected d candidate includes the parent workspace-alias and source-update artifact fixes and needs its own
 final candidate checks. No live provider or physical-host parity is claimed.
