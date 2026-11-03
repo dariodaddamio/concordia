@@ -192,6 +192,26 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                 .map(|line| (line, option)),
         );
     };
+    if let Some(turn) = envelope.native_turn_id.as_deref() {
+        text(format!("Native turn: {turn}"), None);
+        text(
+            serde_json::to_string_pretty(&review.request.params).unwrap_or_default(),
+            None,
+        );
+        if let Some(detail) = app
+            .deleg
+            .d
+            .get(review.job)
+            .and_then(|job| {
+                job.cards
+                    .iter()
+                    .find(|card| Some(card.id.as_str()) == review.request.params["itemId"].as_str())
+            })
+            .and_then(|card| card.detail.as_ref())
+        {
+            text(detail.clone(), None);
+        }
+    }
     text(
         format!(
             "Worker #{} · {} / {}",

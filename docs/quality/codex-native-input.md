@@ -1,0 +1,55 @@
+# Codex native input
+
+Engineering slice P2, based on main `196bc67`. Explicit `/native ACCOUNT on` selects
+Codex app-server for future foreground turns and newly approved workers in that isolated home.
+The standard text adapter stays the default. `/native ACCOUNT off` restores it. Running or
+paused worker attempts retain their captured transport. No global provider configuration changes.
+
+The adapter uses the unmodified native CLI over stdio. Its current protocol evidence is the
+installed `codex-cli 0.166.0` and its generated JSON schema, inspected without a model turn.
+Other versions fail visibly before prompting. Windows npm resolution requires the existing
+verified stock bridge; custom batch launchers are refused. The implementation adds no runtime,
+SDK, credentials reader or authentication service.
+
+Initialization verifies the returned account home. Thread creation/resume verifies the exact
+saved thread ID, execution directory and requested approval policy. Approval requests remain
+unavailable during history loading. Early turn events are buffered until turn/start returns its
+exact turn ID. Foreign thread/turn requests receive errors. Stream closure before a matching
+terminal event is a failure, with no print fallback or automatic replay.
+
+Trust comes from the final enforcement plan: read-only remains read-only without escalation,
+workspace mode requests native user approvals with workspace writes and no default network,
+and explicit full trust retains its existing meaning. Local compaction overrides remain process
+arguments. Image bytes are hash-verified and sent as native data URLs over stdin.
+
+Command/file approval choices preserve native decision payloads: once, session, decline/cancel,
+or an explicitly offered saved command/network policy. Policy choices visibly say they save a
+rule and show its native payload. Review cards retain the command, directory, reported file diff
+and native request. F8 explicitly focuses choices; opening review cannot grant permission.
+Bounded offered-choice questions preserve question IDs and answer labels. Free-form-only and
+secret-input requests are visibly unsupported; no answer or credential is invented. Unsupported
+permission-profile requests, elicitation, dynamic tools and authentication callbacks receive
+errors. Native authentication remains the CLI's responsibility.
+
+Eight live requests fit each connection; the existing aggregate byte and application limits
+also apply. Foreground requests queue without replacing an unanswered choice. Worker review
+keeps exact conversation/run/attempt/account/home/workspace/thread/turn/connection/request
+ownership. Native resolution and matching terminal events invalidate pending choices without
+recording user approval. Cancellation or connection loss invalidates channels; uncertainty
+retains reservations. All native-mode workers pause rather than automatically failing over.
+
+Command, edit, MCP and search items have meaningful labels. Native subagent events enter the
+same retained agent inspector as the standard Codex adapter. Only matching current-turn events
+reach the transcript. Cumulative thread usage and the last model-response usage are not presented
+as complete per-turn totals. Existing verified native-source accounting and quota/credit readers
+remain authoritative; unsupported measurements stay unknown.
+
+Protocol source: [official OpenAI app-server documentation](https://learn.chatgpt.com/docs/app-server).
+Synthetic process fixtures exercise exact resume, image payloads, decline, questions, early
+events, provider resolution, foreign thread/turn rejection and premature closure. These are
+fixture results, not live-provider or physical-host approval parity. No real model turn was run.
+
+Build `2026-11-03g` passes all 983 enabled checks and all-target Clippy. The immutable release
+candidate passes release smoke: 19,877,376 bytes, SHA-256
+`ab64db60582d95aa528b018687867f8720d865daf8f28c68cac8b6b4dfc29ed4`.
+Installed terminal and remote CI evidence are recorded separately when completed.

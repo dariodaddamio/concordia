@@ -13,6 +13,8 @@ use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, Stream
 use crate::provider::stream_json::{Flavor, StreamParser};
 #[path = "turn_acp.rs"]
 mod acp;
+#[path = "turn_appserver.rs"]
+mod appserver;
 use crate::store::{ProviderKind, TrustMode};
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
@@ -387,7 +389,9 @@ pub async fn run_provider_turn_with_transport(
         .validate_for(req.provider, req.cwd, req.home_path)
         .map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
-        mode != crate::native_input::Mode::CursorAcp || req.provider == ProviderKind::Cursor,
+        (mode != crate::native_input::Mode::CursorAcp || req.provider == ProviderKind::Cursor)
+            && (mode != crate::native_input::Mode::CodexAppServer
+                || req.provider == ProviderKind::Codex),
         "native text transport is unsupported for this provider; no fallback was started"
     );
     run_provider_turn_inner(req, Some(owner), mode, on_started, on_progress).await
@@ -415,6 +419,9 @@ async fn run_provider_turn_inner(
         && (!req.images.is_empty() || mode == crate::native_input::Mode::CursorAcp)
     {
         return acp::run(req, &plan, owner, on_started, on_progress).await;
+    }
+    if mode == crate::native_input::Mode::CodexAppServer {
+        return appserver::run(req, &plan, owner, on_started, on_progress).await;
     }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
     // it explicitly. If that does not work the turn runs unbound, exactly as before.

@@ -26,6 +26,11 @@ introduce an alternative approval broker, source reader or provider capability r
 
 ## Source audit
 
+Progress: [Codex native input](../quality/codex-native-input.md) implements the opt-in P2
+stdio transport for matched CLI 0.166.0, offered command/file decisions and bounded questions.
+Native resolution invalidates pending choices. Unsupported request kinds and live parity remain
+explicit. Existing quota and verified native-source capacity measurements are retained.
+
 | Existing source | Implemented behavior | Remaining gap |
 | --- | --- | --- |
 | `src/native_memory.rs` | Provider/account/home/session bindings, immutable bounded source pages and hash-verified excerpts | Relationships need to reference these identities without creating another reader |

@@ -117,13 +117,111 @@ fn fake_acp() {
     }
 }
 
+fn fake_appserver() {
+    use serde_json::{json, Value};
+    use std::io::BufRead;
+    let root = std::env::current_dir().unwrap();
+    let fixture: Value =
+        serde_json::from_slice(&std::fs::read(root.join("appserver-fixture.json")).unwrap())
+            .unwrap();
+    let emit = |value: Value| {
+        println!("{value}");
+        std::io::stdout().flush().unwrap();
+    };
+    let mut thread = "native-fixture-thread".to_owned();
+    let finish = |thread: &str| {
+        emit(
+            json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":"reply","delta":"Native approval handled"}}),
+        );
+        emit(
+            json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":"native-turn","status":"completed"}}}),
+        );
+    };
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        let value: Value = serde_json::from_str(&line).unwrap();
+        let mut journal = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(root.join("appserver-calls.jsonl"))
+            .unwrap();
+        writeln!(journal, "{line}").unwrap();
+        if value["id"] == 100 && value.get("method").is_none() {
+            finish(&thread);
+            continue;
+        }
+        let result = match value["method"].as_str().unwrap_or("") {
+            "initialize" => {
+                json!({"codexHome":std::env::var("CODEX_HOME").unwrap(),"userAgent":"codex-cli 0.166.0","platformFamily":"windows","platformOs":"windows"})
+            }
+            "initialized" => continue,
+            "thread/start" | "thread/resume" => {
+                if let Some(id) = value["params"]["threadId"].as_str() {
+                    thread = id.into();
+                }
+                if fixture["wrong_thread"] == true {
+                    thread = "foreign-thread".into();
+                }
+                json!({"thread":{"id":thread},"cwd":root,"approvalPolicy":value["params"]["approvalPolicy"],"approvalsReviewer":"user"})
+            }
+            "turn/start" => {
+                // Deliberately arrive before the turn/start response: the client must buffer.
+                emit(
+                    json!({"method":"item/started","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"inProgress"}}}),
+                );
+                emit(
+                    json!({"id":value["id"],"result":{"turn":{"id":"native-turn","status":"inProgress"}}}),
+                );
+                if fixture["closed"] == true {
+                    return;
+                }
+                let method = if fixture["question"] == true {
+                    "item/tool/requestUserInput"
+                } else {
+                    "item/commandExecution/requestApproval"
+                };
+                let mut params = json!({"threadId":thread,"turnId":"native-turn","itemId":"command-1","command":"synthetic command","cwd":root,"availableDecisions":["accept","acceptForSession","decline","cancel"]});
+                if fixture["question"] == true {
+                    params["questions"] = json!([{"id":"route","header":"Route","question":"Choose the route","isSecret":false,"isOther":false,"options":[{"label":"Direct","description":"Use direct routing"},{"label":"Review","description":"Review first"}]}]);
+                }
+                if fixture["wrong_turn"] == true {
+                    params["turnId"] = json!("foreign-turn");
+                }
+                emit(json!({"id":100,"method":method,"params":params}));
+                if fixture["resolved"] == true {
+                    emit(
+                        json!({"method":"serverRequest/resolved","params":{"threadId":thread,"requestId":100}}),
+                    );
+                    finish(&thread);
+                }
+                continue;
+            }
+            _ => panic!("native fixture received an unexpected RPC"),
+        };
+        emit(json!({"id":value["id"],"result":result}));
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--version")
+        && std::env::var("FAKE_PROVIDER_NATIVE_CODEX").as_deref() == Ok("1")
+    {
+        println!("codex-cli 0.166.0");
+        return;
+    }
     if args.first().is_some_and(|a| a == "acp") {
         fake_acp();
         return;
     }
     if args.first().is_some_and(|a| a == "app-server") {
+        if std::env::current_dir()
+            .unwrap()
+            .join("appserver-fixture.json")
+            .is_file()
+        {
+            fake_appserver();
+            return;
+        }
         use std::io::BufRead;
         let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
         let fixture: serde_json::Value = serde_json::from_slice(

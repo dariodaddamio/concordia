@@ -22,7 +22,7 @@ impl State {
             if request.is_active() {
                 true
             } else {
-                self.uncertain |= !request.was_answered();
+                self.uncertain |= !request.was_answered() && !request.was_resolved();
                 false
             }
         });
@@ -33,7 +33,11 @@ impl State {
         }
     }
     pub(super) fn unresolved(&self) -> bool {
-        self.uncertain || self.pending.iter().any(|request| !request.was_answered())
+        self.uncertain
+            || self
+                .pending
+                .iter()
+                .any(|request| !request.was_answered() && !request.was_resolved())
     }
     pub(super) fn observed(&self) -> bool {
         self.connection.is_some()
@@ -167,7 +171,7 @@ impl Delegates {
                 serde_json::to_vec(&request.params).map_or(BYTES_PER_RUN + 1, |bytes| bytes.len()),
             ) > BYTES_PER_RUN
         {
-            request.respond(serde_json::json!({"outcome":{"outcome":"cancelled"}}));
+            request.cancel();
             job.snippet = "Native worker request declined: pending input budget reached".into();
             return;
         }
