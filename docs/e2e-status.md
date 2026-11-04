@@ -1,5 +1,41 @@
 # Concordia verification status
 
+## Installed native workspace and one-command delivery, 2026-11-04k
+
+Application source `9302b8e` builds the installed executable, SHA-256
+`51EF2FE75425084E9B47F051596CE961282DD9F70F5BC834AF0C4459EB344C46`.
+Installed bytes match the qualified artifact: 23,105,536 bytes (22.04 MiB), within the reviewed
+23 MiB ceiling. This developer installation retains the permanent checkout and source channel;
+the public installer fixture separately verifies the release channel and ignores old source hints.
+
+The enabled library scenarios pass after focused reconciliation of the obsolete millions-only
+formatter assertion (885 enabled, six ignored). Five install, one provider-runner and nineteen
+release-update scenarios pass, including a default-feed scenario against the loopback server.
+Final all-target Clippy, formatting, release smoke and privacy/OSS gates pass. Nineteen offline
+installer checks use the exact release payload and establish version/hash/archive checks,
+same-shell command resolution and unchanged real user PATH. Defender reports no threats with
+intelligence `1.463.119.0` for the exact hash above.
+
+The actual release App receives only owned-window messages in an isolated fake-provider setup.
+Mouse selection in the permissions dropdown persists Full; an unsent chat draft and unsaved raw
+file edit survive a signed negative-coordinate title drag into a child HWND, child close/dock,
+another detach and another child edit. Disk bytes remain unchanged. Screenshots were inspected.
+Undo after docking and raw/formatted sibling resize isolation are checked in the existing workspace
+scenario; physical modifier keys are not used by the desktop probe. The first desktop attempt
+incorrectly assumed the initial permission row and is retained as failed fixture evidence; the
+successful run selects the displayed mode by mouse. Receipts/screenshots are under ignored
+`target/native-window-proof/premium-final-mouse`.
+
+A current-source native component probe loads the new icon resource, checks 19 glyphs for visible
+ink/neighbor bounds, and checks two image overlays and removal. REA's actual older-artifact
+inspection and remaining interface research are in [REA review](rea-review.md). No provider model
+turn, global keyboard/clipboard change, signing account or publication was performed.
+
+GitHub run `41901656021` could not start either job because of its account payment/spending-limit
+block. This is not green remote CI. Public-feed installation awaits publication; provider counters,
+credit amounts omitted upstream, live qualification, retention experiments and native OS write
+confinement retain their explicit status in the [audit](feature-completion-audit.md).
+
 ## Installed native diffs, history and desktop controls, 2026-11-04j
 
 Application source `9fd0b05` builds the installed executable, SHA-256
