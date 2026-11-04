@@ -401,6 +401,15 @@ fn paint(f: &mut Frame, content: Rect, thumb: &Thumbnail, monochrome: bool) {
 
 #[cfg(test)]
 pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
+    // Earlier attachment scenarios can still have a cancelled inline decode in
+    // flight. Settle it before opening this fixture's explicit viewer.
+    app.raster.close();
+    let settle = Instant::now() + Duration::from_secs(5);
+    while app.raster.job.is_some() {
+        app.raster.poll();
+        assert!(Instant::now() < settle);
+        std::thread::yield_now();
+    }
     let path = dir.join("raster-preview.png");
     image::RgbaImage::from_pixel(12, 8, image::Rgba([200, 40, 90, 255]))
         .save(&path)
