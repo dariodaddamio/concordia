@@ -87,7 +87,7 @@ repository-relative. A phase is complete only when its evidence exists, not when
 5. **Provider integrations and evaluation.** Migrate supported native interactions one adapter at
    a time. Enable proactive capacity behavior only for a verified provider/version measurement.
    Run synthetic retrieval/retention and repeated lifecycle evaluations before any live claim.
-6. **Candidate and release.** Integrate separately owned signing changes through review, rehearse
+6. **Candidate and release.** Use the owner's selected unsigned packaging, rehearse
    the exact candidate, and close supported-host/provider evidence. Publication remains a separate
    explicit action. A preview may state narrower support without claiming the whole roadmap complete.
 

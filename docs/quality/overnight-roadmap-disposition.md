@@ -1,4 +1,4 @@
-# Roadmap implementation disposition, 2026-11-04b candidate
+# Roadmap implementation disposition, 2026-11-04k candidate
 
 This is the current implementation map for the completion campaign. The detailed plans retain
 their original design baselines; their proposed field names and bounds do not override shipped
@@ -23,7 +23,7 @@ The final candidate record is in [E2E status](../e2e-status.md).
 | Input I5 | [Typed structured Codex/Claude/Cursor file outputs](file-output-artifacts.md), source/directory identity, bounded metadata, revision deduplication and explicit current-file actions. | Unsupported provider output formats, remote resources and prose are not promoted to verified outputs. |
 | Integration I6 | [F10/MCP catalog](integrations-catalog.md), namespaced bounded lazy discovery; z adds reviewed local-manifest connect/reconnect/verify and selected-binding disconnect to F10 through the existing command owner. | The catalog does not install an outbound MCP runtime, marketplace or unsupported native plugin API. |
 | Validation V1/V2 | Exact-candidate collector, source/hash-bound receipts and existing fake-process/terminal suites. | Automation does not prove a physical terminal or real model's behavior. |
-| Distribution D1/D2 | [Signing policy rejection checks and explicit scan/package workflow](../release-blockers.md), locked dependency/notices gates and existing install/update failure checks. | Signing identity, trusted timestamp, external upload/publication and a fresh Windows release rehearsal remain separate owner/release gates. |
+| Distribution D1/D2 | [Unsigned prebuilt installer and scan/package workflow](../release-blockers.md), locked dependency/notices gates, official update feed and source/release channel separation. | The owner declined signing. Public publication/feed rehearsal, external uploads and fresh exact-artifact qualification remain separate gates. |
 
 The original user-visible additions are implemented in the same candidate: +/− edit cards,
 file path/open actions, agent-facing advanced commands, retained worker/native-agent inspection,

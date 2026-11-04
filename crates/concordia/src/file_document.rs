@@ -330,17 +330,19 @@ pub fn display_width(c: char) -> usize {
 pub fn visible_line(text: &str, column: usize, width: usize) -> String {
     let mut output = String::new();
     let mut col = 0;
+    let right = column.saturating_add(width);
     for c in text.chars() {
         let cells = display_width(c);
-        if col >= column + width {
+        if col >= right {
             break;
         }
-        if c == '\t' {
-            for offset in 0..4 {
-                if (column..column + width).contains(&(col + offset)) {
-                    output.push(' ');
-                }
-            }
+        let end = col + cells;
+        if c == '\t' || (cells > 1 && (col < column || end > right)) {
+            // Partial wide glyphs occupy blank cells; later text keeps its true column.
+            output.extend(std::iter::repeat_n(
+                ' ',
+                end.min(right).saturating_sub(col.max(column)),
+            ));
         } else if col >= column {
             output.push(if c.is_control() { '�' } else { c });
         }
@@ -491,6 +493,9 @@ mod tests {
         doc.undo(false);
         assert_eq!(doc.line_count(), 4);
         assert!(visible_line(doc.line(0), 0, 40).contains("one    line"));
+        assert_eq!(visible_line("界MARK", 1, 5), " MARK");
+        assert_eq!(visible_line("A界Z", 0, 2), "A ");
+        assert_eq!(visible_line("A\tZ", 3, 3), "  Z");
         doc.horizontal(false);
         doc.vertical(false);
         doc.line_end(true);

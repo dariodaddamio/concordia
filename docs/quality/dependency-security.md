@@ -1,5 +1,13 @@
 # Dependency and terminal-output security
 
+## Native workspace delivery, 2026-11-04k
+
+Shared file windows, descriptive tool wrappers and expanded icon resources reuse existing Rust
+and Windows dependencies. The initial optimized artifact is 23,105,536 bytes, 137,216 bytes above
+04j (about 0.6%). The reviewed distribution ceiling increases from 22 to 23 MiB; exact final
+bytes/hash and checks remain in [E2E status](../e2e-status.md). No dependency or advisory exception
+is added. REA is an isolated development inspection tool, not a shipped runtime dependency.
+
 ## Native raster dependency review, 2026-11-03p
 
 `image` is pinned to 0.25.10 (MIT OR Apache-2.0), with defaults disabled and only PNG, JPEG and

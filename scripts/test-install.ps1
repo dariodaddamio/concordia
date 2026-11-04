@@ -1,4 +1,4 @@
-# Offline tests for scripts/install.ps1. Hermetic: no internet, no real install, no PATH change.
+# Offline installer fixtures: loopback feed, isolated install, no persistent user PATH change.
 #  - -DryRun prints a plan and never touches the network or the disk.
 #  - A wrong SHA-256 fails closed before anything is extracted.
 #  - A correct SHA-256 passes verification, then stops because the fake zip has no concordia.exe.
@@ -38,11 +38,22 @@ function Invoke-Installer([string[]]$CliArgs) {
 # A real zip with one non-concordia file: valid enough to extract, but with no concordia.exe.
 $zipSrc = Join-Path $work 'zipsrc'
 New-Item -ItemType Directory -Path $zipSrc | Out-Null
-Set-Content -Path (Join-Path $zipSrc 'readme.txt') -Value 'synthetic test payload' -Encoding ascii
+Set-Content -Path (Join-Path $zipSrc 'LICENSE') -Value 'synthetic test payload' -Encoding ascii
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $fakeZip = Join-Path $work 'fake.zip'
 [IO.Compression.ZipFile]::CreateFromDirectory($zipSrc, $fakeZip)
 $bodyB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($fakeZip))
+$releaseExe = Join-Path $PSScriptRoot '..\target\release\concordia.exe'
+if (-not (Test-Path -LiteralPath $releaseExe)) { throw 'build the release executable before running installer fixtures' }
+$happySrc = Join-Path $work 'happy-src'
+New-Item -ItemType Directory -Path $happySrc | Out-Null
+Copy-Item -LiteralPath $releaseExe -Destination (Join-Path $happySrc 'concordia.exe')
+$happyZip = Join-Path $work 'happy.zip'
+[IO.Compression.ZipFile]::CreateFromDirectory($happySrc, $happyZip)
+$unsafeZip = Join-Path $work 'unsafe.zip'
+$archive = [IO.Compression.ZipFile]::Open($unsafeZip, [IO.Compression.ZipArchiveMode]::Create)
+try { $null = $archive.CreateEntry('../outside.exe') } finally { $archive.Dispose() }
+$version = ((& $releaseExe --version | Select-Object -First 1) -split ' ')[1]
 
 # ---- 1-4: offline, no feed needed. The API base points at a closed port, so any network call fails.
 $dir1 = Join-Path $work 'dry1'
@@ -54,8 +65,8 @@ Check (-not (Test-Path $dir1)) "dry run creates no install folder"
 $r = Invoke-Installer @('-DryRun', '-Repo', 'test-owner/concordia', '-ApiBase', 'http://127.0.0.1:9')
 Check ($r.Code -eq 0 -and $r.Out -match 'releases\?per_page=30') "dry run without -Version prints the feed and exits 0 without network"
 
-$r = Invoke-Installer @('-Repo', 'dariodaddamio/concordia', '-ApiBase', 'http://127.0.0.1:9')
-Check ($r.Code -ne 0 -and $r.Out -match 'placeholder') "placeholder repo is refused for a real install"
+$r = Invoke-Installer @('-DryRun', '-ApiBase', 'http://127.0.0.1:9')
+Check ($r.Code -eq 0 -and $r.Out -match 'dariodaddamio/concordia') "the official feed is configured by default"
 
 $r = Invoke-Installer @('-DryRun', '-Repo', 'test-owner/concordia', '-Version', '1.0; calc')
 Check ($r.Code -ne 0 -and $r.Out -match '-Version must look like') "a hostile -Version is refused"
@@ -63,8 +74,12 @@ Check ($r.Code -ne 0 -and $r.Out -match '-Version must look like') "a hostile -V
 # ---- 5-7: a loopback fake feed in its own process.
 $serverPs1 = Join-Path $work 'fake-feed.ps1'
 @'
-param([int]$Port, [string]$BodyB64, [string]$Zip)
+param([int]$Port, [string]$BodyB64, [string]$Zip, [string]$HappyPath, [string]$Version)
 $body = [Convert]::FromBase64String($BodyB64)
+$happy = [IO.File]::ReadAllBytes($HappyPath)
+$happyHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($happy)) -replace '-', '').ToLower()
+$unsafe = [IO.File]::ReadAllBytes((Join-Path (Split-Path $HappyPath) 'unsafe.zip'))
+$unsafeHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($unsafe)) -replace '-', '').ToLower()
 $hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($body)) -replace '-', '').ToLower()
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://127.0.0.1:$Port/")
@@ -78,14 +93,24 @@ while ($true) {
     elseif ($path -like '/repos/test-owner/*/releases*') {
         # Repo test-owner/bad publishes a wrong .sha256; every other repo publishes the right one.
         $bad = $path -like '/repos/test-owner/bad/*'
+        $good = $path -like '/repos/test-owner/happy/*'
         $shaUrl = "$base/dl/zip.sha256"
         if ($bad) { $shaUrl = "$base/dl/bad/zip.sha256" }
-        $rel = @{ tag_name = 'v0.0.1'; draft = $false; prerelease = $true; assets = @(
-            @{ name = $Zip; browser_download_url = "$base/dl/zip" },
+        $zipUrl = "$base/dl/zip"
+        if ($good) { $shaUrl = "$base/dl/happy.sha256"; $zipUrl = "$base/dl/happy" }
+        if ($path -like '/repos/test-owner/unsafe/*') { $shaUrl = "$base/dl/unsafe.sha256"; $zipUrl = "$base/dl/unsafe" }
+        $tag = "v$Version"
+        if ($path -like '/repos/test-owner/wrong-version/*') { $tag = 'v99.99.99'; $shaUrl = "$base/dl/happy.sha256"; $zipUrl = "$base/dl/happy" }
+        $rel = @{ tag_name = $tag; draft = $false; prerelease = $true; assets = @(
+            @{ name = $Zip; browser_download_url = $zipUrl },
             @{ name = "$Zip.sha256"; browser_download_url = $shaUrl }) }
         $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @($rel) -Depth 5))
     }
     elseif ($path -eq '/dl/zip') { $bytes = $body }
+    elseif ($path -eq '/dl/happy') { $bytes = $happy }
+    elseif ($path -eq '/dl/happy.sha256') { $bytes = [Text.Encoding]::UTF8.GetBytes("$happyHash  $Zip") }
+    elseif ($path -eq '/dl/unsafe') { $bytes = $unsafe }
+    elseif ($path -eq '/dl/unsafe.sha256') { $bytes = [Text.Encoding]::UTF8.GetBytes("$unsafeHash  $Zip") }
     elseif ($path -eq '/dl/zip.sha256') { $bytes = [Text.Encoding]::UTF8.GetBytes("$hash  $Zip") }
     elseif ($path -eq '/dl/bad/zip.sha256') { $bytes = [Text.Encoding]::UTF8.GetBytes(('0' * 64) + "  $Zip") }
     if ($null -eq $bytes) { $ctx.Response.StatusCode = 404; $bytes = [Text.Encoding]::UTF8.GetBytes('not found') }
@@ -97,7 +122,7 @@ while ($true) {
 $port = Get-FreePort
 $base = "http://127.0.0.1:$port"
 $server = Start-Process -FilePath powershell.exe -PassThru -WindowStyle Hidden `
-    -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $serverPs1, '-Port', "$port", '-BodyB64', $bodyB64, '-Zip', $assetZip) `
+    -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $serverPs1, '-Port', "$port", '-BodyB64', $bodyB64, '-Zip', $assetZip, '-HappyPath', $happyZip, '-Version', $version) `
     -RedirectStandardOutput (Join-Path $work 'feed.out') -RedirectStandardError (Join-Path $work 'feed.err')
 
 try {
@@ -122,10 +147,34 @@ try {
     Check ($r.Out -match 'SHA-256 verified') "correct SHA-256 is verified"
     Check ($r.Code -ne 0 -and $r.Out -match 'no concordia.exe') "a zip without concordia.exe stops before install"
     Check (-not (Test-Path (Join-Path $dir6 'concordia.exe'))) "nothing is installed from the fake zip"
+
+    $r = Invoke-Installer @('-Repo', 'test-owner/unsafe', '-ApiBase', $base, '-Dir', (Join-Path $work 'unsafe-install'), '-NoLaunch')
+    Check ($r.Code -ne 0 -and $r.Out -match 'unexpected path') "verified archives with traversal paths are refused before extraction"
+    $r = Invoke-Installer @('-Repo', 'test-owner/wrong-version', '-ApiBase', $base, '-Dir', (Join-Path $work 'version-install'), '-NoLaunch')
+    Check ($r.Code -ne 0 -and $r.Out -match 'does not match release') "executable version mismatch is refused before installation"
+
+    $dir7 = Join-Path $work 'happy7'
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $wrapper = Join-Path $work 'install-session.ps1'
+    @'
+param($Installer, $Api, $Dir)
+$ErrorActionPreference = 'Stop'
+& $Installer -Repo test-owner/happy -ApiBase $Api -Dir $Dir -NoLaunch
+Write-Output ("SESSION_COMMAND=" + (Get-Command concordia.exe).Source)
+'@ | Set-Content -LiteralPath $wrapper -Encoding ascii
+    $out = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $wrapper -Installer $installer -Api $base -Dir $dir7 2>&1 | Out-String
+    Check ($LASTEXITCODE -eq 0 -and $out -match 'Installed: concordia') "prebuilt install succeeds without a compiler or launch"
+    Check ($out -match [regex]::Escape("SESSION_COMMAND=$dir7\concordia.exe")) "installed command is available in the same PowerShell session"
+    Check ((Get-FileHash (Join-Path $dir7 'concordia.exe')).Hash -eq (Get-FileHash $releaseExe).Hash) "installed executable matches exact downloaded bytes"
+    Check ([IO.File]::ReadAllText((Join-Path $dir7 'channel')).Trim() -eq 'release') "public installs select release updates even after old source installs"
+    Check ([Environment]::GetEnvironmentVariable('Path', 'User') -eq $userPath) "isolated install leaves the real user PATH unchanged"
 }
 finally {
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if ([IO.Path]::GetFullPath($work).StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 if ($failures.Count -gt 0) {

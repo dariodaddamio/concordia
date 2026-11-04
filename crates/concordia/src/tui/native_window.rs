@@ -69,7 +69,29 @@ struct Shared {
     hwnd: AtomicIsize,
     pointer: AtomicUsize,
     dirty: AtomicBool,
+    closing: AtomicBool,
     screen: Mutex<Screen>,
+}
+
+/// Signed cells belong to the captured mouse-up message, before terminal clamping.
+pub(super) enum NativeEvent {
+    Event(Event),
+    MouseUp { event: MouseEvent, x: i32, y: i32 },
+}
+
+enum EventSender {
+    Plain(SyncSender<Event>),
+    Detailed(SyncSender<NativeEvent>),
+}
+
+fn send_until_closed<T>(sender: &SyncSender<T>, mut value: T, closing: &AtomicBool) {
+    while !closing.load(Ordering::Acquire) {
+        match sender.try_send(value) {
+            Ok(()) | Err(mpsc::TrySendError::Disconnected(_)) => return,
+            Err(mpsc::TrySendError::Full(pending)) => value = pending,
+        }
+        thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 pub(super) struct WindowBackend {
@@ -79,11 +101,23 @@ pub(super) struct WindowBackend {
 }
 
 /// Every receiver belongs to one HWND and therefore one Concordia process/run UI.
+#[allow(dead_code)] // Plain-event entry point retained for standalone native diagnostics.
 pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
+    let (events, receiver) = mpsc::sync_channel(4096);
+    Ok((open_with_sender(EventSender::Plain(events))?, receiver))
+}
+
+pub(super) fn open_detailed() -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
+    let (events, receiver) = mpsc::sync_channel(4096);
+    Ok((open_with_sender(EventSender::Detailed(events))?, receiver))
+}
+
+fn open_with_sender(events: EventSender) -> io::Result<WindowBackend> {
     let shared = Arc::new(Shared {
         hwnd: AtomicIsize::new(0),
         pointer: AtomicUsize::new(0),
         dirty: AtomicBool::new(true),
+        closing: AtomicBool::new(false),
         screen: Mutex::new(Screen {
             size: Size::new(120, 42),
             pixels: Size::new(1080, 840),
@@ -94,7 +128,6 @@ pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
             images: Vec::new(),
         }),
     });
-    let (events, receiver) = mpsc::sync_channel(4096);
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (stopped_tx, stopped) = mpsc::sync_channel(1);
     let window_shared = shared.clone();
@@ -108,14 +141,11 @@ pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
             let _ = stopped_tx.send(());
         })?;
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok((
-            WindowBackend {
-                shared,
-                thread: Some(thread),
-                stopped,
-            },
-            receiver,
-        )),
+        Ok(Ok(())) => Ok(WindowBackend {
+            shared,
+            thread: Some(thread),
+            stopped,
+        }),
         Ok(Err(error)) => {
             let _ = thread.join();
             Err(error)
@@ -202,6 +232,7 @@ impl WindowBackend {
 }
 impl Drop for WindowBackend {
     fn drop(&mut self) {
+        self.shared.closing.store(true, Ordering::Release);
         let _ = self.post(SHUTDOWN);
         // A stuck display driver must not block provider cancellation or application exit.
         if self
@@ -333,7 +364,7 @@ impl Backend for WindowBackend {
 
 struct Window {
     shared: Arc<Shared>,
-    events: SyncSender<Event>,
+    events: EventSender,
     fonts: [HFONT; 16],
     symbol_fonts: [HFONT; 16],
     emoji_fonts: [HFONT; 16],
@@ -403,7 +434,12 @@ impl Drop for Window {
 }
 impl Window {
     fn emit(&self, event: Event) {
-        let _ = self.events.send(event);
+        match &self.events {
+            EventSender::Plain(sender) => send_until_closed(sender, event, &self.shared.closing),
+            EventSender::Detailed(sender) => {
+                send_until_closed(sender, NativeEvent::Event(event), &self.shared.closing)
+            }
+        }
     }
     unsafe fn fonts(&mut self, hwnd: HWND, dpi: u32) {
         // Cached glyphs must be regenerated after a DPI/font change.
@@ -525,6 +561,20 @@ impl Window {
             self.last_motion = Some(event);
         } else {
             self.last_motion = None;
+        }
+        if matches!(kind, MouseEventKind::Up(_)) {
+            if let EventSender::Detailed(sender) = &self.events {
+                send_until_closed(
+                    sender,
+                    NativeEvent::MouseUp {
+                        event,
+                        x: x.div_euclid(self.cell_width.max(1)),
+                        y: y.div_euclid(self.cell_height.max(1)),
+                    },
+                    &self.shared.closing,
+                );
+                return;
+            }
         }
         self.emit(Event::Mouse(event));
     }
@@ -851,10 +901,67 @@ unsafe fn paint_glyph(
         RestoreDC(dc, saved);
         return;
     }
+    // Advance widths exclude negative side bearings (notably italic symbols).
+    // Include their actual ink, then translate it back inside the destination.
+    let mut left = 0_i32;
+    let mut right = measured.cx;
+    let mut top = 0_i32;
+    let mut bottom = measured.cy;
+    if let Some(first) = text
+        .first()
+        .copied()
+        .filter(|unit| !(0xd800..=0xdfff).contains(unit))
+    {
+        let mut abc: ABC = mem::zeroed();
+        if GetCharABCWidthsW(dc, u32::from(first), u32::from(first), &mut abc) != 0 {
+            left = left.min(abc.abcA);
+        }
+    }
+    if let Some(last) = text
+        .last()
+        .copied()
+        .filter(|unit| !(0xd800..=0xdfff).contains(unit))
+    {
+        let mut abc: ABC = mem::zeroed();
+        if GetCharABCWidthsW(dc, u32::from(last), u32::from(last), &mut abc) != 0 {
+            right = right.max(measured.cx.saturating_sub(abc.abcC));
+        }
+    }
+    if text.len() == 1 {
+        let mut transform: MAT2 = mem::zeroed();
+        transform.eM11.value = 1;
+        transform.eM22.value = 1;
+        let mut glyph: GLYPHMETRICS = mem::zeroed();
+        let mut metrics: TEXTMETRICW = mem::zeroed();
+        if GetTextMetricsW(dc, &mut metrics) != 0
+            && GetGlyphOutlineW(
+                dc,
+                u32::from(text[0]),
+                GGO_METRICS,
+                &mut glyph,
+                0,
+                null_mut(),
+                &transform,
+            ) != GDI_ERROR as u32
+        {
+            left = left.min(glyph.gmptGlyphOrigin.x);
+            right = right.max(
+                glyph
+                    .gmptGlyphOrigin
+                    .x
+                    .saturating_add(glyph.gmBlackBoxX as i32),
+            );
+            let ink_top = metrics.tmAscent.saturating_sub(glyph.gmptGlyphOrigin.y);
+            top = top.min(ink_top);
+            bottom = bottom.max(ink_top.saturating_add(glyph.gmBlackBoxY as i32));
+        }
+    }
+    let ink_width = right.saturating_sub(left).max(1);
+    let ink_height = bottom.saturating_sub(top).max(1);
     let width = (rect.right - rect.left).max(1);
     let height = (rect.bottom - rect.top).max(1);
-    let scale = (width as f32 / measured.cx.max(1) as f32)
-        .min(height as f32 / measured.cy.max(1) as f32)
+    let scale = (width as f32 / ink_width as f32)
+        .min(height as f32 / ink_height as f32)
         .min(1.0);
     SetDCBrushColor(dc, GetBkColor(dc));
     FillRect(dc, rect, GetStockObject(DC_BRUSH) as HBRUSH);
@@ -866,8 +973,10 @@ unsafe fn paint_glyph(
         eM12: 0.0,
         eM21: 0.0,
         eM22: scale,
-        eDx: rect.left as f32 + (width as f32 - measured.cx as f32 * scale) / 2.0,
-        eDy: rect.top as f32 + (height as f32 - measured.cy as f32 * scale) / 2.0,
+        eDx: rect.left as f32 + (width as f32 - ink_width as f32 * scale) / 2.0
+            - left as f32 * scale,
+        eDy: rect.top as f32 + (height as f32 - ink_height as f32 * scale) / 2.0
+            - top as f32 * scale,
     };
     if SetWorldTransform(dc, &transform) != 0 {
         ExtTextOutW(
@@ -884,75 +993,24 @@ unsafe fn paint_glyph(
     RestoreDC(dc, saved);
 }
 
-/// A small native Concordia mark, owned by this window. No shell icon or
-/// per-user installation state is needed for titlebar/taskbar identity.
+/// Load the executable's master icon at the requested native size. The resource
+/// includes 16/32/48/256-pixel frames shared by Explorer, taskbar and titlebar.
+/// Without LR_SHARED the window owns this handle and releases it on shutdown.
 unsafe fn app_icon(size: i32) -> HICON {
-    let bitmap_info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: size,
-            biHeight: -size,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB,
-            ..mem::zeroed()
-        },
-        ..mem::zeroed()
-    };
-    let mut bits = null_mut();
-    let color = CreateDIBSection(
-        null_mut(),
-        &bitmap_info,
-        DIB_RGB_COLORS,
-        &mut bits,
-        null_mut(),
+    LoadImageW(
+        GetModuleHandleW(null()),
+        // MAKEINTRESOURCEW(1): resource identifier, never a dereferenced string pointer.
+        std::ptr::without_provenance(1),
+        IMAGE_ICON,
+        size,
+        size,
         0,
-    );
-    if color.is_null() || bits.is_null() {
-        if !color.is_null() {
-            DeleteObject(color);
-        }
-        return null_mut();
-    }
-    let mask_bits = vec![0_u8; (((size + 15) / 16) * 2 * size) as usize];
-    let mask = CreateBitmap(size, size, 1, 1, mask_bits.as_ptr().cast());
-    if mask.is_null() {
-        DeleteObject(color);
-        return null_mut();
-    }
-    let pixels = std::slice::from_raw_parts_mut(bits.cast::<u32>(), (size * size) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let px = (x as f32 + 0.5) * 32.0 / size as f32;
-            let py = (y as f32 + 0.5) * 32.0 / size as f32;
-            let radius = (px - 15.0).hypot(py - 16.0);
-            let ring = (7.0..=12.0).contains(&radius) && !(px > 18.0 && (py - 16.0).abs() < 8.0);
-            let node = (23.0..=29.0).contains(&px) && (13.0..=19.0).contains(&py);
-            pixels[(y * size + x) as usize] = if ring {
-                0xff56b6e8
-            } else if node {
-                0xffe5bb62
-            } else {
-                0xff14171f
-            };
-        }
-    }
-    let info = ICONINFO {
-        fIcon: 1,
-        xHotspot: 0,
-        yHotspot: 0,
-        hbmMask: mask,
-        hbmColor: color,
-    };
-    let icon = CreateIconIndirect(&info);
-    DeleteObject(mask);
-    DeleteObject(color);
-    icon
+    ) as HICON
 }
 
 unsafe fn window_thread(
     shared: Arc<Shared>,
-    events: SyncSender<Event>,
+    events: EventSender,
     ready: &mpsc::SyncSender<io::Result<()>>,
 ) -> io::Result<()> {
     // Only this thread creates/destroys windows and owns all GDI objects.
@@ -1215,7 +1273,15 @@ unsafe extern "system" fn window_proc(
                 let mut point: POINT = mem::zeroed();
                 GetCursorPos(&mut point);
                 ScreenToClient(hwnd, &mut point);
-                window.mouse(MouseEventKind::Up(button), point.x, point.y);
+                // Focus loss cancels selection capture; it is not a captured release message
+                // and must not detach a file based on a later global cursor position.
+                let (column, row) = window.coordinates(point.x, point.y);
+                window.emit(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(button),
+                    column,
+                    row,
+                    modifiers: modifiers(),
+                }));
             }
             window.surrogate = None;
             window.emit(Event::FocusLost);

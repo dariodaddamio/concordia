@@ -37,7 +37,7 @@ What blocks a public release: [docs/release-blockers.md](docs/release-blockers.m
 | Context across switches | One Concordia thread; on a switch, a bounded pack of Concordia's own recorded conversation goes to the next provider |
 | Workspace | `/open` and `/preview` create internal splits; Markdown/JSON default to formatted, read-only view. Raw mode edits with syntax colors, explicit save, conflict checks and recovery. `/edit` launches an external editor. Remaining stages: [workspace requirements](docs/workspace-panes.md) |
 | Multi-session | Separate conversations can still use WezTerm panes and tabs; internal file panes belong to one conversation workspace |
-| Install | One binary: `concordia install` puts it where `concordia` on PATH finds it; `/update` keeps it current |
+| Install | One PowerShell command downloads a verified prebuilt binary, sets PATH and opens Concordia; `/update` keeps it current. Unsigned distribution is intentional. The public feed awaits publication. |
 
 ## Principles (contracts)
 

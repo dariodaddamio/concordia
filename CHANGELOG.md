@@ -1,5 +1,18 @@
 # Changelog
 
+### Added (`2026-11-04k`)
+
+- A single unsigned Windows installer downloads verified prebuilt bytes, makes `concordia`
+  available in the current shell and opens it. Release updates use the official feed, independently
+  of old developer checkout hints. Public installation still requires the first published release.
+- An original shared logo and task-first window titles identify Concordia and the active work.
+  The bottom-right permissions control opens the existing mode picker with mouse selection.
+- Native file panes detach into separate windows and return to the workspace with the same
+  document, save checks and undo history. Horizontal scrolling keeps line numbers fixed.
+- Native web-search calls and mixed tool wrappers show meaningful names and retained details.
+  Consecutive completed inspections and checks group into expandable summaries.
+- Large counts use millions, billions, trillions and scientific notation through the full range.
+
 ### Fixed (`2026-11-04j`)
 
 - Native patch recovery accepts static JavaScript tool argument objects and structured output

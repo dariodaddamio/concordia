@@ -536,20 +536,44 @@ fn feed_server(tags: &'static [&str]) -> Server {
 }
 
 #[test]
-fn update_without_a_checkout_or_a_feed_says_exactly_what_to_configure() {
-    let _sb = Sandbox::new();
+fn update_without_a_checkout_uses_the_official_feed_and_rejects_invalid_overrides() {
+    let sb = Sandbox::new();
+    let repo = config_from(None, None, None, None, &real_version())
+        .unwrap()
+        .repo;
+    let expected_repo = repo.clone();
+    let server = Server::start_with("application/json", move |port| {
+        HashMap::from([(
+            format!("/repos/{repo}/releases"),
+            (200, feed_json(port, &[&format!("v{}", real_version())])),
+        )])
+    });
+    let _feed = FeedEnv::point_at(server.port);
     std::env::remove_var("CONCORDIA_UPDATE_REPO");
     let dir = outside_checkout();
+    assert!(matches!(
+        update_auto(dir.path()).unwrap(),
+        UpdateOutcome::UpToDate(_)
+    ));
+    let preview = check_for_update(dir.path()).unwrap();
+    assert!(!preview.install_available);
+    assert!(preview
+        .plain_lines()
+        .iter()
+        .any(|line| line.contains(&expected_repo)));
+    sb.assert_nothing_installed();
+
+    std::env::set_var("CONCORDIA_UPDATE_REPO", "invalid override");
     let err = update_auto(dir.path()).unwrap_err();
     assert!(
-        format!("{err:#}").contains("CONCORDIA_UPDATE_REPO=owner/name"),
+        format!("{err:#}").contains("invalid release repository override"),
         "{err:#}"
     );
-    // The /update screen shows the same instruction and offers nothing to install.
+    // Invalid explicit configuration is actionable and never silently uses another feed.
     let preview = check_for_update(dir.path()).unwrap();
     assert!(!preview.install_available);
     assert!(
-        preview.plain_lines()[0].contains("CONCORDIA_UPDATE_REPO=owner/name"),
+        preview.plain_lines()[0].contains("unset CONCORDIA_UPDATE_REPO"),
         "{:?}",
         preview.plain_lines()
     );

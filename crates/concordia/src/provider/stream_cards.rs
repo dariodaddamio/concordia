@@ -1,4 +1,5 @@
 //! Clean-room Codex JSONL -> text / tool cards.
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardStatus {
@@ -195,6 +196,21 @@ fn native_error_code(ev: &serde_json::Value) -> Option<&str> {
 
 pub fn classify_codex_event(ev: &serde_json::Value) -> Vec<StreamPart> {
     let typ = ev.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    if matches!(
+        typ,
+        "response.output_item.added" | "response.output_item.done"
+    ) {
+        if let Some(item) = ev.get("item") {
+            if let Some(card) = web_search_card(typ, item, ev) {
+                return vec![StreamPart::Card(card)];
+            }
+        }
+    }
+    if typ.starts_with("response.web_search_call.") {
+        if let Some(card) = web_search_card(typ, ev, ev) {
+            return vec![StreamPart::Card(card)];
+        }
+    }
     if typ == "thread.started" {
         if let Some(id) = ev.get("thread_id").and_then(|x| x.as_str()) {
             return vec![StreamPart::Session(id.to_string())];
@@ -248,6 +264,9 @@ pub fn classify_codex_event(ev: &serde_json::Value) -> Vec<StreamPart> {
 fn classify_item_event(typ: &str, ev: &serde_json::Value) -> Vec<StreamPart> {
     let item = ev.get("item").filter(|i| i.is_object()).unwrap_or(ev);
     let item_type = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    if let Some(card) = web_search_card(typ, item, ev) {
+        return vec![StreamPart::Card(card)];
+    }
     if item_type == "collab_tool_call" {
         return classify_collab_tool_call(item);
     }
@@ -458,6 +477,9 @@ pub(super) fn classify_collab_tool_call(item: &serde_json::Value) -> Vec<StreamP
 
 fn classify_payload(p: &serde_json::Value) -> Vec<StreamPart> {
     let p_type = p.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    if let Some(card) = web_search_card("response_item", p, p) {
+        return vec![StreamPart::Card(card)];
+    }
     if p_type == "message" && p.get("role").and_then(|x| x.as_str()) == Some("assistant") {
         if let Some(text) = content_to_text(p.get("content")) {
             return vec![StreamPart::Text(text)];
@@ -482,9 +504,14 @@ fn classify_payload(p: &serde_json::Value) -> Vec<StreamPart> {
             _ => CardStatus::Running,
         };
         let detail = raw.map(format_provider_value).unwrap_or_default();
+        let title = if matches!(name.as_str(), "exec" | "functions.exec") {
+            wrapper_tool_title(&detail).unwrap_or(name)
+        } else {
+            name
+        };
         return vec![StreamPart::Card(StreamCard {
             id,
-            title: name,
+            title,
             detail: if detail.is_empty() {
                 None
             } else {
@@ -533,6 +560,174 @@ fn classify_payload(p: &serde_json::Value) -> Vec<StreamPart> {
         })];
     }
     Vec::new()
+}
+
+/// Describe statically named nested calls without evaluating JavaScript or inventing child IDs.
+/// Quoted strings and comments are skipped so command output cannot masquerade as a tool call.
+fn wrapper_tool_title(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let mut quote = None;
+    let mut labels = Vec::new();
+    while i < bytes.len().min(128 * 1024) {
+        if let Some(delimiter) = quote {
+            if bytes[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if bytes[i] == delimiter {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            quote = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
+        if bytes[i..].starts_with(b"//") {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            while i + 1 < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[i..].starts_with(b"tools.")
+            && (i == 0
+                || !(bytes[i - 1].is_ascii_alphanumeric()
+                    || matches!(bytes[i - 1], b'_' | b'$' | b'.')))
+        {
+            let start = i + 6;
+            i = start;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let end = i;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if bytes.get(i) == Some(&b'(') && end > start {
+                let name = &input[start..end];
+                let label = match name {
+                    "web__run" => "Browse web".into(),
+                    "write_stdin" => "Read command output".into(),
+                    _ => tool_label(name),
+                };
+                if !labels.contains(&label) {
+                    labels.push(label);
+                }
+            }
+            continue;
+        }
+        i += 1;
+    }
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.into_iter().take(4).collect::<Vec<_>>().join(" + "))
+    }
+}
+
+fn web_search_card(typ: &str, item: &Value, event: &Value) -> Option<StreamCard> {
+    let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
+    if !matches!(kind, "web_search" | "web_search_call" | "webSearch")
+        && !typ.starts_with("response.web_search_call.")
+    {
+        return None;
+    }
+    // A search without a native id cannot be safely merged with another search.
+    let id = item
+        .get("id")
+        .or_else(|| item.get("call_id"))
+        .or_else(|| event.get("item_id"))
+        .and_then(Value::as_str)?;
+    let action = item.get("action").unwrap_or(&Value::Null);
+    let action_type = action
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("search");
+    let title = match action_type {
+        "open_page" | "openPage" => "Read web page",
+        "find_in_page" | "findInPage" => "Find in web page",
+        _ => "Search web",
+    };
+    let mut lines = Vec::new();
+    let queries = item.get("queries").or_else(|| action.get("queries"));
+    if let Some(queries) = queries.and_then(Value::as_array) {
+        for query in queries.iter().filter_map(Value::as_str).take(16) {
+            lines.push(format!("Query: {}", compact_detail(query, 1000)));
+        }
+    } else if let Some(query) = item
+        .get("query")
+        .or_else(|| action.get("query"))
+        .and_then(Value::as_str)
+    {
+        if !query.is_empty() {
+            lines.push(format!("Query: {}", compact_detail(query, 1000)));
+        }
+    }
+    for key in ["url", "pattern"] {
+        if let Some(value) = action.get(key).and_then(Value::as_str) {
+            lines.push(format!(
+                "{}: {}",
+                if key == "url" { "URL" } else { "Find" },
+                compact_detail(value, 4096)
+            ));
+        }
+    }
+    if let Some(results) = item
+        .get("results")
+        .or_else(|| item.get("sources"))
+        .and_then(Value::as_array)
+    {
+        for source in results.iter().take(32) {
+            if let Some(url) = source
+                .get("url")
+                .and_then(Value::as_str)
+                .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+            {
+                let title = source.get("title").and_then(Value::as_str).unwrap_or(url);
+                lines.push(format!(
+                    "Source: {}\n{}",
+                    compact_detail(title, 300),
+                    compact_detail(url, 4096)
+                ));
+            }
+        }
+    }
+    // Keep structured source details available even when a provider adds fields
+    // beyond the compact display contract. No text is promoted into the reply.
+    if !typ.starts_with("response.web_search_call.") {
+        lines.push(format!(
+            "Native search details:\n{}",
+            compact_detail(&format_provider_value(item), 64 * 1024)
+        ));
+    }
+    let status = match item.get("status").and_then(Value::as_str) {
+        Some("failed" | "error" | "cancelled" | "incomplete") => CardStatus::Error,
+        Some("completed" | "done") => CardStatus::Done,
+        Some("in_progress" | "searching" | "pending" | "running") => CardStatus::Running,
+        _ if typ.ends_with(".failed") || typ.ends_with(".incomplete") => CardStatus::Error,
+        _ if typ.ends_with(".completed") || typ.ends_with(".done") || typ == "response_item" => {
+            CardStatus::Done
+        }
+        _ => CardStatus::Running,
+    };
+    Some(StreamCard {
+        id: id.into(),
+        title: title.into(),
+        detail: (!lines.is_empty()).then(|| lines.join("\n")),
+        status,
+    })
 }
 
 fn item_type_is_tool(item_type: &str) -> bool {
@@ -660,7 +855,13 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
     super::edit_display::normalize(&mut next);
     if let Some(prev) = cards.iter_mut().find(|c| c.id == next.id) {
         let is_result_update = next.title == "result";
-        if !next.title.is_empty() && (!is_result_update || prev.title.is_empty()) {
+        let search_heartbeat = next.title == "Search web"
+            && next.detail.is_none()
+            && matches!(prev.title.as_str(), "Read web page" | "Find in web page");
+        if !next.title.is_empty()
+            && (!is_result_update || prev.title.is_empty())
+            && !search_heartbeat
+        {
             prev.title = next.title;
         }
         if let Some(d) = next.detail {
@@ -676,6 +877,26 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
                         }
                         _ => prev.detail = Some(d),
                     }
+                } else if matches!(
+                    tool_label(&prev.title).as_str(),
+                    "Search web" | "Read web page" | "Find in web page"
+                ) && !d.lines().any(|line| line.starts_with("Query: "))
+                {
+                    let query = prev
+                        .detail
+                        .as_deref()
+                        .map(|old| {
+                            old.lines()
+                                .filter(|line| line.starts_with("Query: "))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default();
+                    prev.detail = Some(if query.is_empty() {
+                        d
+                    } else {
+                        format!("{query}\n{d}")
+                    });
                 } else if prev.id.starts_with("native-agent:") && !d.starts_with("Task: ") {
                     let task = prev
                         .detail
@@ -718,7 +939,9 @@ pub fn tool_label(name: &str) -> String {
         "edit" | "apply_patch" | "str_replace" | "edittoolcall" => "Edit file".into(),
         "write" | "write_file" | "writetoolcall" => "Write file".into(),
         "grep" | "rg" | "glob" | "search" | "searchtoolcall" => "Search files".into(),
-        "web_search" | "web_search_call" | "websearch" => "Search web".into(),
+        "web_search" | "web_search_call" | "websearch" | "web search" | "search web"
+        | "search the web" => "Search web".into(),
+        "web.run" | "web__run" | "functions.web__run" => "Browse web".into(),
         "webfetch" | "fetch" => "Read web page".into(),
         "spawn_agent" => "Start agent".into(),
         "wait_agent" | "wait" => "Wait for agents".into(),
@@ -978,6 +1201,61 @@ mod tests {
         assert!(parts
             .iter()
             .any(|p| matches!(p, StreamPart::Error(t) if t.contains("spend"))));
+        // Codex exec and Responses/native history use distinct web-search envelopes.
+        let web_events = [
+            r#"{"type":"item.started","item":{"type":"web_search","id":"web-1","query":"Rust clipboard","action":{"type":"search","query":"Rust clipboard"}}}"#,
+            r#"{"type":"item.completed","item":{"type":"web_search","id":"web-1","action":{"type":"search"},"results":[{"title":"Rust docs","url":"https://doc.rust-lang.org/"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"web_search_call","id":"web-2","status":"completed","action":{"type":"open_page","url":"https://doc.rust-lang.org/"}}}"#,
+            r#"{"type":"response.output_item.added","item":{"type":"web_search_call","id":"web-3","action":{"type":"search","queries":["native search"]}}}"#,
+            r#"{"type":"response.web_search_call.completed","item_id":"web-3"}"#,
+            r#"{"type":"item.completed","item":{"type":"web_search","id":"web-4","status":"failed","query":"failed query","error":"search unavailable"}}"#,
+        ].join("\n");
+        let web = parse_codex_stream_chunk(&web_events);
+        let mut cards = Vec::new();
+        for part in web {
+            match part {
+                StreamPart::Card(card) => upsert_card(&mut cards, card),
+                _ => panic!("search emitted a non-tool part"),
+            }
+        }
+        assert_eq!(cards.len(), 4);
+        assert_eq!(cards[0].status, CardStatus::Done);
+        let detail = cards[0].detail.as_deref().unwrap();
+        assert!(detail.contains("Query: Rust clipboard"));
+        assert!(detail.contains("Source: Rust docs\nhttps://doc.rust-lang.org/"));
+        assert!(format_card_line(&cards[0]).contains("Rust clipboard"));
+        assert_eq!(cards[1].title, "Read web page");
+        assert!(cards[1]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("https://doc.rust-lang.org/"));
+        assert_eq!(cards[2].status, CardStatus::Done);
+        assert!(cards[2]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("native search"));
+        assert_eq!(cards[3].status, CardStatus::Error);
+        assert!(cards[3]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("search unavailable"));
+        // Observed native account codex-2 uses a custom exec wrapper containing mixed calls.
+        let mixed = classify_payload(
+            &serde_json::json!({"type":"custom_tool_call", "call_id":"mixed-web", "name":"exec", "input":"text(await tools.web__run({search_query:[{q:\"Rust clipboard\"}]})); text(await tools.exec_command({cmd:\"git status\"}));"}),
+        );
+        let StreamPart::Card(mixed) = &mixed[0] else {
+            panic!("missing wrapper card")
+        };
+        assert_eq!(mixed.id, "mixed-web");
+        assert_eq!(mixed.title, "Browse web + Run command");
+        assert!(mixed.detail.as_deref().unwrap().contains("Rust clipboard"));
+        assert_eq!(
+            wrapper_tool_title("// tools.web__run({})\ntext('tools.exec_command({})');"),
+            None
+        );
     }
 
     #[test]

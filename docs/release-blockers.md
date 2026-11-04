@@ -9,10 +9,10 @@ but still needs the concrete gates below. This document does not authorize publi
 | Gate | Current evidence | Needed before release |
 | --- | --- | --- |
 | Dependency advisories | Unused Syntect YAML/plist import features are removed. Bincode remains under one reviewed maintenance-advisory exception for embedded assets. | Keep all other advisory checks enabled; remove the exception when the upstream dump format migrates. See [dependency review](quality/dependency-security.md). |
-| Artifact size | The 2026-11-03p unsigned candidate measured 21,580,800 bytes (20.58 MiB); this is historical evidence, not the z artifact size. | Re-measure the exact z candidate against the reviewed 22 MiB budget; `smoke-ci.ps1` compares exact bytes and fails above it. |
+| Artifact size | The 04j baseline measured 22,968,320 bytes. Shared native file windows, tool descriptions/grouping and larger icon resources add roughly 134 KiB without new runtime dependencies. | The reviewed ceiling is 23 MiB for 04k. `smoke-ci.ps1` compares exact bytes; the final measured candidate is recorded in E2E status. |
 | Privacy preflight | Public repository/package identifiers are now exempt only as exact identifiers in listed metadata/adapter/installer files. A private-project reference in the implementation ledger was removed. | Continue scanning the remaining contents of those files and every other tracked text file. New identifiers require an explicit review. |
-| Source snapshot | Memory/orchestration work is committed, and the signing-workflow candidate preserves the earlier drafts with publisher identity configured outside source control. | CI must pass on the exact committed candidate. Configured workflows do not establish a signed or release-qualified artifact. |
-| Windows antivirus / publisher trust | Defender quarantined the installed 2026-11-02d executable and release dependency executable as `Trojan:Win32/Bearfoos.A!ml` on 2026-11-02. A locked rebuild passed local scans and installed successfully after intelligence update to `1.463.94.0`; it remains unsigned. | Obtain identity-verified publisher signing, submit the detected artifact to Microsoft for review, and pass signature/Defender/install/update checks on the exact final signed artifact. The workflow gates are implemented; signing setup and vendor review remain pending. See [Windows signing](windows-signing.md) for the recovered artifact hash and limits. No antivirus exclusion is a release prerequisite. |
+| Source snapshot | Memory/orchestration work is committed; the unsigned release workflow builds precompiled assets and checksum/notices bundles. | CI must pass on the exact committed candidate. Configured workflows do not establish release qualification. |
+| Windows antivirus / publisher trust | Defender quarantined the installed 2026-11-02d executable and release dependency executable as `Trojan:Win32/Bearfoos.A!ml` on 2026-11-02. A locked rebuild passed local scans and installed successfully after intelligence update to `1.463.94.0`; it remains unsigned. | The owner selected unsigned distribution on 2026-11-04; no certificate or paid signing account is required. Pass Defender/install/update checks on the exact final artifact, and pursue vendor review for any detected artifact. Public-feed rehearsal remains pending publication. See [Windows signing](windows-signing.md) for the recovered artifact hash and limits. No antivirus exclusion is a release prerequisite. |
 
 The privacy script scans tracked files only; new files also need the final privacy/secrets review.
 No credential files were read or copied for this audit. Evidence: ignored
@@ -37,9 +37,9 @@ No credential files were read or copied for this audit. Evidence: ignored
 - **Candidate rehearsal.** Run current CI/release workflows on the complete candidate; earlier
   green rehearsals predate it. Verify checksum/install/update from a fresh download. A public
   release feed cannot be certified from local source rebuilds alone.
-- **Release choices.** Confirm version, public namespace and signing/distribution policy.
-  Packaging generates checksums and the signing workflow exists, but executable identity and
-  trusted timestamp are not complete. Explicit Windows-only
+- **Release choices.** Confirm version and publication; the owner chose unsigned distribution.
+  Packaging generates checksums and notices; the public repository and first release remain
+  unpublished. Explicit Windows-only
   support is valid for a Windows preview; Linux/macOS are not prerequisites.
 
 Keep the archived pre-release branch and history bundle local. They are not part of a public
