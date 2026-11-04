@@ -1,5 +1,17 @@
 # Chat rendering and input, 2026-11-01f
 
+Build `2026-11-04m` keeps permissions in a compact popover attached to the footer mode control.
+It overlays the bottom-right corner using the existing picker style, preserves the visible
+composer, and dismisses on an outside click. Mode changes retain the existing next-turn policy.
+
+Completed tool cards show Expand/Collapse on their title row; the title text and gutter expand
+the recorded details. File/web links keep their actions and dragging title text selects it.
+Reopening a Codex or Claude chat restores recorded native tool IDs, inputs/results/status and
+readable provider thinking, with Review activity for completed turns. Encrypted reasoning remains
+opaque. Cursor's current saved-history reader restores text only. Restoration is read-only and
+starts no provider work. Source reads remain bounded to the recent 8 MiB, 200 entries and 1 MiB
+of displayed history; omitted data is reported as truncated.
+
 Windows defaults to an app-owned native window using the same Ratatui layout and event handlers.
 It paints the existing cells, including thumbnail pixels, and owns clipboard paste, drops, mouse,
 focus and resize events. `--terminal` remains available for terminal-pane workflows. Provider

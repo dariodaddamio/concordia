@@ -126,6 +126,9 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
     }
     let t = app.areas.transcript;
     if !landing::visible(app) && contains(t, x, y) {
+        if super::activity::card_header_at(app, x, y).is_some() {
+            return "pointer";
+        }
         if app
             .view
             .identity_at((y - t.y) as usize)

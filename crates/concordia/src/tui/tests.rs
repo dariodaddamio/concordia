@@ -559,7 +559,7 @@ fn mouse_is_ignored_while_a_picker_is_open() {
     let mut h = Harness::new(60, 20);
     h.app.push_assistant("alpha beta".into());
     h.app.show_picker(
-        PickerKind::Trust,
+        PickerKind::Use,
         "t".into(),
         vec![PickerRow {
             id: "x".into(),
@@ -2480,6 +2480,19 @@ fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
     let close = h.app.areas.modal_close.expect("picker close control").0;
     assert!(close.x > 80, "permissions popup anchors at the right edge");
     assert!(close.y < mode.y);
+    let popup = h.app.areas.permissions_popup;
+    assert!(popup.width <= 54 && popup.x >= 40);
+    assert_eq!(popup.bottom(), mode.y);
+    assert!(h.app.areas.input.width > 0);
+    assert!(!h.screen().contains("message · paused"));
+    let input = h.app.areas.input;
+    h.click(input.x + 2, input.y);
+    assert!(
+        h.app.picker.is_none(),
+        "outside click returns directly to the composer"
+    );
+    assert_eq!(h.app.editor.text(), "keep this draft");
+    h.click(mode.x + 1, mode.y);
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.app.picker.is_none());
     assert_eq!(
@@ -3974,6 +3987,24 @@ fn expanded_tool_header_stays_reachable_and_collapses_after_scrolling() {
         assert!(!h.app.activity.is_expanded(id, all));
         assert!(h.app.areas.pinned_card.is_none());
         assert_eq!(h.app.editor.text(), "");
+        h.app.view.follow_tail();
+        h.draw();
+        let row = h
+            .app
+            .view
+            .rows
+            .iter()
+            .position(|row| row.text.iter().collect::<String>().contains("Expand"))
+            .unwrap();
+        let (x, y) = h.t_cell(row, 8);
+        assert_eq!(pointer::shape(&h.app, x, y), "pointer");
+        h.down(x, y);
+        assert!(!h.app.activity.is_expanded(id, all));
+        h.up(x, y);
+        assert!(
+            h.app.activity.is_expanded(id, all),
+            "completed header text expands its work"
+        );
     }
 }
 

@@ -140,6 +140,7 @@ struct Areas {
     bottom_button: Rect,
     run_cancel: Rect,
     permissions: Rect,
+    permissions_popup: Rect,
     pinned_card: Option<(Rect, usize)>,
     modal_close: Option<(Rect, modal::Target)>,
     /// Columns available for prompt text (inner width minus the `> ` prefix).
@@ -328,6 +329,7 @@ pub struct App {
     permissions_pressed: bool,
     permission_rows: Vec<(Rect, usize)>,
     permission_row_pressed: Option<usize>,
+    card_header_pressed: Option<usize>,
     header_credits_pressed: bool,
     messages: Vec<ChatLine>,
     editor: Editor,
@@ -1675,10 +1677,10 @@ impl App {
                     text: crate::threads::encode_card(
                         &c.title,
                         c.detail.as_deref(),
-                        if c.status == CardStatus::Error {
-                            "error"
-                        } else {
-                            "done"
+                        match c.status {
+                            CardStatus::Error => "error",
+                            CardStatus::Running => "running",
+                            CardStatus::Done => "done",
                         },
                     ),
                 }),
@@ -3641,6 +3643,7 @@ impl App {
             permissions_pressed: false,
             permission_rows: Vec::new(),
             permission_row_pressed: None,
+            card_header_pressed: None,
             header_credits_pressed: false,
             messages: vec![ChatLine {
                 role: MsgRole::System,
@@ -5141,6 +5144,9 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if matches!(m.kind, MouseEventKind::Down(_) | MouseEventKind::Drag(_)) {
+        app.card_header_pressed = None;
+    }
     if app.raster.active() && !worker_input::active(app) {
         return;
     }
@@ -5184,6 +5190,15 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     }
     if modal::mouse(app, &m) {
         return;
+    }
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|picker| picker.kind == PickerKind::Trust)
+        && m.kind == MouseEventKind::Down(MouseButton::Left)
+        && !contains(app.areas.permissions_popup, m.column, m.row)
+    {
+        app.dismiss_picker();
     }
     if app
         .picker
@@ -5432,6 +5447,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                         }
                     }
                 }
+                app.card_header_pressed = activity::card_header_at(app, x, y);
                 app.editor.clear_selection();
                 app.drag = Drag::Transcript;
                 let pos = app.view.pos_at((y - t.y) as isize, (x - t.x) as usize);
@@ -5493,6 +5509,15 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            if let Some(id) = app.card_header_pressed.take() {
+                if activity::card_header_at(app, x, y) == Some(id) {
+                    app.activity.toggle_card(id, app.expanded_activity);
+                    app.view.clear_selection();
+                    app.drag = Drag::None;
+                    app.file_click = None;
+                    return;
+                }
+            }
             let clicked = app.file_click.take();
             if app.drag == Drag::Transcript {
                 if let Some((anchor, head)) = app.view.sel.filter(|(a, b)| a == b) {
@@ -5598,6 +5623,7 @@ fn write_osc_title(title: &str) -> io::Result<()> {
 
 fn draw_ui(f: &mut Frame, app: &mut App) {
     app.permission_rows.clear();
+    app.areas.permissions_popup = Rect::default();
     app.areas.run_cancel = Rect::default();
     app.areas.pinned_card = None;
     app.areas.modal_close = None;
@@ -5690,13 +5716,24 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         draw_run_status(f, run_status, app);
         questions::draw(f, question_area, app);
         queue::draw(f, queue_area, app);
-        if app.picker.is_some() {
+        if app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind != PickerKind::Trust)
+        {
             draw_picker(f, chunks[1], app);
         }
         draw_palette(f, chunks[1], chunks[2], app);
         chatref::draw(f, chunks[1], chunks[2], app);
         draw_footer(f, chunks[3], app);
         workers::draw(f, strip, chunks[1], app);
+    }
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Trust)
+    {
+        draw_picker(f, f.area(), app);
     }
     if app.project_search.active() {
         app.areas = Areas::default();
@@ -6053,6 +6090,24 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     for (index, text) in groups.text.into_iter().enumerate() {
         if text.is_some() {
             displayed[index] = text;
+        }
+    }
+    for (index, message) in app.messages.iter().enumerate() {
+        if message.role == MsgRole::Card && !groups.hidden[index] {
+            let body = displayed[index]
+                .take()
+                .unwrap_or_else(|| message.text.clone());
+            let (heading, tail) = body.split_once('\n').unwrap_or((&body, ""));
+            let action = if app.activity.is_expanded(index, app.expanded_activity) {
+                "Collapse"
+            } else {
+                "Expand"
+            };
+            displayed[index] = Some(format!(
+                "{heading} · {action}{}{}",
+                if tail.is_empty() { "" } else { "\n" },
+                tail
+            ));
         }
     }
     let tip_text = app.visible_tip().map(|t| format!("tip: {t}"));
@@ -6727,7 +6782,11 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         modal::draw_close(f, popup, app, modal::Target::Picker);
         return;
     }
-    let width = area.width.saturating_sub(4).max(20);
+    let width = if picker.kind == PickerKind::Trust {
+        area.width.saturating_sub(2).min(54)
+    } else {
+        area.width.saturating_sub(4).max(20)
+    };
     let row_width = width.saturating_sub(6).max(1) as usize;
     let height = (picker
         .filtered()
@@ -6765,9 +6824,14 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     };
     if picker.kind == PickerKind::Trust {
         // The footer owns this control; keep its existing picker next to the clicked mode.
-        popup.width = popup.width.min(area.width.saturating_sub(2));
-        popup.x = area.right().saturating_sub(popup.width + 1);
-        popup.y = f.area().bottom().saturating_sub(1 + popup.height);
+        let right = app.areas.permissions.right().min(area.right());
+        popup.width = popup.width.min(right.saturating_sub(area.x));
+        popup.height = popup
+            .height
+            .min(app.areas.permissions.y.saturating_sub(area.y));
+        popup.x = right.saturating_sub(popup.width);
+        popup.y = app.areas.permissions.y.saturating_sub(popup.height);
+        app.areas.permissions_popup = popup;
     }
     f.render_widget(Clear, popup);
     let heading = if picker.kind == PickerKind::Files {
