@@ -241,8 +241,9 @@ for the implemented campaign. The remaining boundaries below are explicit capabi
 
 Managed worktrees and cwd search/replacement are implemented within their documented guards.
 Image/document input, explicit pasted-path attachment and inline cell rasters are implemented;
-binary-document transports remain open. Signing and platform expansion
-have their own release/roadmap status. They are not silently
+bounded Claude PDF transport is candidate-implemented; process/UI/clipboard fixture checks and
+installed/live qualification remain. Codex/Cursor rejection is an explicit provider limit.
+Signing and platform expansion have their own release/roadmap status. They are not silently
 included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.md),
 [workspace requirements](workspace-panes.md), [release blockers](release-blockers.md), and
 [host evidence](chat-rendering.md).

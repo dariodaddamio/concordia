@@ -10,9 +10,10 @@ Bounded continuity maps, explicit delegation, recent native-source pointers/read
 pane-owned unfinished-request recovery and one-attempt explicit capacity-error rollover are implemented.
 Whole-history pages, bounded lexical retrieval/lineage, supported Cursor ACP readback, opt-in Codex
 proactive rollover/native compaction controls and durable worker recovery/failover are implemented
-with fixture evidence. Claude native stdio and post-turn, source-bound context measurements
-are added in the x candidate; the y candidate adds native Claude PDF inputs. Cursor capacity
-and live parity remain open.
+with fixture evidence. Claude native stdio, scoped `AskUserQuestion` broker support and post-turn,
+source-bound context measurements are in the z candidate; bounded native Claude PDF inputs are
+also candidate-implemented. Fixture checks for questions/PDF process/UI/clipboard paths remain
+pending; Cursor capacity, external usage and live parity remain open.
 Current bounds and controls: [native memory](docs/native-memory.md).
 Native image inputs for Codex/Claude/Cursor and local Mermaid rendering are implemented;
 [image/diagram limits](docs/images-and-diagrams.md) distinguish fixture proof from live-provider validation.

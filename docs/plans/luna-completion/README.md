@@ -8,8 +8,9 @@ implementation or live qualification of the remaining features.
 Current execution baseline: `5dbac3e`; coordinator branch `feat/luna-roadmap-completion`.
 Host-native Luna workers `l5_integrations`, `l4_file_outputs` and `l3_binary_inputs`
 own the first wave. Coordinator owns shared integration and candidate delivery. These are
-implementation assignments. The x candidate integrates their approved source changes; qualification
-results remain separate from implementation and are recorded below as checks complete.
+implementation assignments. The z candidate integrates their approved source changes; qualification
+results remain separate from implementation and are recorded below as checks complete. The z
+candidate is not yet merged, installed-qualified or live-qualified.
 
 ## Objective and accountability
 
@@ -110,12 +111,12 @@ and relevant evidence document. A new planning document is not an implementation
 | Task | Initial state | Completion condition |
 | --- | --- | --- |
 | L1 Claude approvals | Review: Luna `l4_file_outputs` + coordinator, z candidate | Scoped 2.1.317 `AskUserQuestion` broker path preserves original questions and string answers (multi-select `, `); malformed/unsupported/HTML/live parity and fixture qualification remain separate |
-| L2 Claude capacity | Review: Luna `l3_binary_inputs` / `l4_file_outputs` + coordinator, x candidate | Completed-turn control capture, exact source/model/settings check before reuse; no speculative pre-prompt sensor |
+| L2 Claude capacity | Review: Luna `l3_binary_inputs` / `l4_file_outputs` + coordinator, z candidate | Completed-turn control capture, exact source/model/settings check before reuse; no speculative pre-prompt sensor |
 | L2 Cursor capacity | Blocked-vendor; [source audit](../../quality/capacity-provenance.md) | Supported current-window request/event is absent from the documented Cursor transport |
-| L3 binary inputs | Review: Luna `l5_integrations`, isolated PDF candidate | Claude 2.1.317 standard/stdio bounded PDF snapshots and ordered native dispatch are implemented with fake-process evidence; installed/live qualification and physical viewer checks remain |
-| L4 Claude outputs | Review: Luna `l3_binary_inputs` + coordinator, x candidate | Built-in Write/Edit correlation plus successful native result metadata; unsupported formats stay excluded |
-| L4 Cursor outputs | Review: Luna `l4_file_outputs` + coordinator, x candidate | Exact-session completed write/edit success path through the existing registry |
-| L5 integrations | Review: Luna `l5_integrations` + coordinator, x candidate | New local manifest and reviewed reconnect/verify/selected disconnect; draft retained |
+| L3 binary inputs | Review: Luna `l5_integrations`, isolated PDF candidate | Claude 2.1.317 standard/stdio bounded PDF snapshots and ordered native dispatch are candidate-implemented; process/UI/clipboard fixture checks and installed/live qualification remain. Codex/Cursor PDF rejection is an explicit limit |
+| L4 Claude outputs | Review: Luna `l3_binary_inputs` + coordinator, z candidate | Built-in Write/Edit correlation plus successful native result metadata; unsupported formats stay excluded |
+| L4 Cursor outputs | Review: Luna `l4_file_outputs` + coordinator, z candidate | Exact-session completed write/edit success path through the existing registry |
+| L5 integrations | Review: Luna `l5_integrations` + coordinator, z candidate | New local manifest and reviewed reconnect/verify/selected disconnect; draft retained |
 | L6 native usage | Blocked-vendor; [Cursor evidence](../../quality/native-usage-coverage.md) | No supported per-event counters; quotas remain distinct and no fabricated totals were added |
 | Numeric credit balance when native response is null | Vendor/data blocked | A supported numeric source exists; availability is not an amount |
 | Live parity and memory-retention trials | Owner-budget gated | Exact provider/task/model scope and usage budget, then recorded results |

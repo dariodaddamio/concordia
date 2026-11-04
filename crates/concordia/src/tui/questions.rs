@@ -800,7 +800,7 @@ mod tests {
         };
         app.native_owner = Some(owner.clone());
         let mut connection = crate::provider::interaction::InteractionConnection::new(
-            Some(owner),
+            Some(owner.clone()),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         let (request, mut rx) = connection.request(
