@@ -4,6 +4,7 @@ use crate::file_links;
 type ReadResult = Result<Vec<crate::artifacts::Record>, String>;
 type ReadJob = (String, std::sync::mpsc::Receiver<ReadResult>);
 type DetailResult = Result<Option<StreamCard>, String>;
+type DetailJob = (String, String, std::sync::mpsc::Receiver<DetailResult>);
 type ActivityJob = (
     String,
     usize,
@@ -17,11 +18,7 @@ pub(super) struct State {
     job: Option<ReadJob>,
     activity_job: Option<ActivityJob>,
     activity_attempted: Option<(String, usize, String)>,
-    detail_job: Option<(
-        String,
-        String,
-        std::sync::mpsc::Receiver<Result<Option<StreamCard>, String>>,
-    )>,
+    detail_job: Option<DetailJob>,
 }
 pub(super) fn open(app: &mut App) {
     if app.artifacts.job.is_some() {
