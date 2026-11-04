@@ -91,6 +91,47 @@ async fn closed_started_receiver_cancels_the_provider() {
             if session.is_none() { Some(1.25) } else { None }
         );
     }
+    if cfg!(windows) {
+        // Exercise the actual spawn/attachment path through a stock npm wrapper. The
+        // fake executable stands in for Node and records the untouched argv prefix.
+        let npm = dir.path().join("npm fixture % & λ");
+        let package = npm.join("node_modules/@openai/codex");
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::copy(FAKE, npm.join("node.exe")).unwrap();
+        let shim = npm.join("codex.cmd");
+        std::fs::write(&shim, "@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\nCALL :find_dp0\n\nIF EXIST \"%dp0%\\node.exe\" (\n  SET \"_prog=%dp0%\\node.exe\"\n) ELSE (\n  SET \"_prog=node\"\n  SET PATHEXT=%PATHEXT:;.JS;=;%\n)\n\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*").unwrap();
+        std::fs::write(package.join("package.json"), r#"{"name":"@openai/codex","bin":{"codex":"bin/codex.js"}}"#).unwrap();
+        std::fs::write(package.join("bin/codex.js"), "synthetic updated bridge marker").unwrap();
+        let png = dir.path().join("image % & λ.png");
+        image::RgbaImage::new(2, 2).save(&png).unwrap();
+        let image = concordia::attachments::import(dir.path(), &png).unwrap();
+        let capture = dir.path().join("npm-launch.txt");
+        std::env::set_var("CONCORDIA_CODEX_BIN", &shim);
+        std::env::set_var("FAKE_PROVIDER_OUT", &capture);
+        let images = [image];
+        let req = ProviderTurnRequest {
+            images: &images,
+            prompt: "image prompt %PATH% & \"quoted\"\nλ",
+            ..req.clone()
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let outcome = run_provider_turn(&req, Some(tx)).await.unwrap();
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(rx.try_recv().is_ok(), "actual child startup is reported");
+        let received = std::fs::read_to_string(&capture).unwrap();
+        let arg = |text: &str| format!("ARG:{}", text.bytes().map(|b| format!("{b:02x}")).collect::<String>());
+        assert!(received.contains(&arg(&package.join("bin/codex.js").to_string_lossy())), "{received}");
+        assert!(received.contains(&arg("--image")), "{received}");
+        assert!(received.contains(&arg(&images[0].path.to_string_lossy())), "{received}");
+        std::fs::remove_file(&capture).unwrap();
+        std::fs::remove_file(&images[0].path).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        assert!(run_provider_turn(&req, Some(tx)).await.is_err());
+        assert!(rx.try_recv().is_err(), "preflight failure reports no child");
+        assert!(!capture.exists(), "invalid image never spawned a process");
+        std::env::remove_var("CONCORDIA_CODEX_BIN");
+        std::env::remove_var("FAKE_PROVIDER_OUT");
+    }
     for key in [
         "CONCORDIA_CLAUDE_BIN",
         "FAKE_PROVIDER_MODE",

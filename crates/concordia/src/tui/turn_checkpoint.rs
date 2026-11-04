@@ -208,6 +208,21 @@ mod tests {
             .validate_for(ProviderKind::Codex, dir.path(), Some(&home))
             .unwrap();
             app.reserve_main_scope(&owner).unwrap();
+            // A rejected input/launch before on_started never owned a provider process.
+            assert!(app.finish_main_scope(&TurnOutcome {
+                stderr_tail: "synthetic pre-spawn image validation failure".into(),
+                ..Default::default()
+            }));
+            let registry = crate::workspaces::load(dir.path()).unwrap();
+            assert!(registry
+                .reservations
+                .iter()
+                .all(|entry| entry.phase == crate::workspaces::Phase::Released));
+            let owner = crate::provider::interaction::InteractionOwner {
+                attempt_id: uuid::Uuid::new_v4().to_string(),
+                ..owner
+            };
+            app.reserve_main_scope(&owner).unwrap();
             app.scope_invocation_flag()
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             let mut blocked = App::new(dir.path().into(), dir.path().into());

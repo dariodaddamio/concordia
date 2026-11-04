@@ -38,6 +38,7 @@ const SHUTDOWN: u32 = WM_APP + 4;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
 
+#[derive(Clone)]
 struct Screen {
     size: Size,
     pixels: Size,
@@ -131,15 +132,17 @@ impl WindowBackend {
         Ok(())
     }
     pub(super) fn set_title(&mut self, title: &str) -> io::Result<()> {
-        self.shared
-            .screen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .title = title
+        let title: String = title
             .chars()
             .filter(|c| !c.is_control())
             .take(512)
             .collect();
+        let mut screen = self.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+        if screen.title == title {
+            return Ok(());
+        }
+        screen.title = title;
+        drop(screen);
         self.post(TITLE)
     }
     pub(super) fn set_pointer(&mut self, pointer: &str) -> io::Result<()> {
@@ -298,6 +301,29 @@ struct Window {
     focused: bool,
     blink: bool,
     wheel: i32,
+    last_motion: Option<MouseEvent>,
+    surface: Option<Surface>,
+}
+
+/// Cached pixels belong to the window thread. Unchanged rows need no GDI calls.
+struct Surface {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous_bitmap: HGDIOBJ,
+    width: i32,
+    height: i32,
+    cells: Vec<Cell>,
+    columns: u16,
+    rows: u16,
+}
+impl Drop for Surface {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.previous_bitmap);
+            DeleteObject(self.bitmap);
+            DeleteDC(self.dc);
+        }
+    }
 }
 impl Drop for Window {
     fn drop(&mut self) {
@@ -315,6 +341,8 @@ impl Window {
         let _ = self.events.send(event);
     }
     unsafe fn fonts(&mut self, hwnd: HWND, dpi: u32) {
+        // Cached glyphs must be regenerated after a DPI/font change.
+        self.surface = None;
         for font in &mut self.fonts {
             if !font.is_null() {
                 DeleteObject(*font);
@@ -382,16 +410,25 @@ impl Window {
             (y / self.cell_height).clamp(0, i32::from(screen.size.height.saturating_sub(1))) as u16,
         )
     }
-    unsafe fn mouse(&self, kind: MouseEventKind, x: i32, y: i32) {
+    unsafe fn mouse(&mut self, kind: MouseEventKind, x: i32, y: i32) {
         let (column, row) = self.coordinates(x, y);
-        self.emit(Event::Mouse(MouseEvent {
+        let event = MouseEvent {
             kind,
             column,
             row,
             modifiers: modifiers(),
-        }));
+        };
+        if matches!(kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
+            if self.last_motion == Some(event) {
+                return;
+            }
+            self.last_motion = Some(event);
+        } else {
+            self.last_motion = None;
+        }
+        self.emit(Event::Mouse(event));
     }
-    unsafe fn paint(&self, hwnd: HWND, supplied_dc: Option<HDC>) {
+    unsafe fn paint(&mut self, hwnd: HWND, supplied_dc: Option<HDC>) {
         let mut paint: PAINTSTRUCT = mem::zeroed();
         let dc = supplied_dc.unwrap_or_else(|| BeginPaint(hwnd, &mut paint));
         if dc.is_null() {
@@ -399,27 +436,60 @@ impl Window {
         }
         let mut client: RECT = mem::zeroed();
         GetClientRect(hwnd, &mut client);
-        let memory = CreateCompatibleDC(dc);
-        let bitmap = CreateCompatibleBitmap(dc, client.right.max(1), client.bottom.max(1));
-        if memory.is_null() || bitmap.is_null() {
-            if !bitmap.is_null() {
-                DeleteObject(bitmap);
+        if self
+            .surface
+            .as_ref()
+            .is_none_or(|surface| surface.width != client.right || surface.height != client.bottom)
+        {
+            self.surface = None;
+            let memory = CreateCompatibleDC(dc);
+            let bitmap = CreateCompatibleBitmap(dc, client.right.max(1), client.bottom.max(1));
+            if memory.is_null() || bitmap.is_null() {
+                if !bitmap.is_null() {
+                    DeleteObject(bitmap);
+                }
+                if !memory.is_null() {
+                    DeleteDC(memory);
+                }
+                if supplied_dc.is_none() {
+                    EndPaint(hwnd, &paint);
+                }
+                return;
             }
-            if !memory.is_null() {
-                DeleteDC(memory);
-            }
-            if supplied_dc.is_none() {
-                EndPaint(hwnd, &paint);
-            }
-            return;
+            let previous_bitmap = SelectObject(memory, bitmap);
+            SetDCBrushColor(memory, rgb(20, 23, 31));
+            FillRect(memory, &client, GetStockObject(DC_BRUSH) as HBRUSH);
+            self.surface = Some(Surface {
+                dc: memory,
+                bitmap,
+                previous_bitmap,
+                width: client.right,
+                height: client.bottom,
+                cells: Vec::new(),
+                columns: 0,
+                rows: 0,
+            });
         }
-        let original_bitmap = SelectObject(memory, bitmap);
+        // GDI rendering can be much slower than updating the cell buffer. Never keep
+        // the application thread waiting on the screen mutex while painting.
+        let screen = self
+            .shared
+            .screen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let surface = self.surface.as_mut().expect("surface initialized above");
+        let memory = surface.dc;
         let original_font = SelectObject(memory, self.fonts[0]);
-        let brush = CreateSolidBrush(rgb(20, 23, 31));
-        FillRect(memory, &client, brush);
-        DeleteObject(brush);
-        let screen = self.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+        let same_grid = surface.columns == screen.size.width && surface.rows == screen.size.height;
         for y in 0..screen.size.height {
+            let start = usize::from(y) * usize::from(screen.size.width);
+            let end = start + usize::from(screen.size.width);
+            if same_grid && surface.cells.get(start..end) == Some(&screen.cells[start..end]) {
+                continue;
+            }
+            // Redraw the entire changed row so removing a wide character also clears
+            // both of its old cells and styled background runs remain continuous.
             let mut covered = 0;
             for x in 0..screen.size.width {
                 if x < covered {
@@ -454,9 +524,8 @@ impl Window {
                     | (usize::from(cell.modifier.contains(Modifier::CROSSED_OUT)) << 3);
                 SelectObject(memory, self.fonts[style]);
                 if cell.symbol() == "▀" || cell.symbol() == "█" {
-                    let bottom = CreateSolidBrush(bg);
-                    FillRect(memory, &rect, bottom);
-                    DeleteObject(bottom);
+                    SetDCBrushColor(memory, bg);
+                    FillRect(memory, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
                     let top = RECT {
                         bottom: if cell.symbol() == "▀" {
                             rect.top + (self.cell_height + 1) / 2
@@ -465,9 +534,8 @@ impl Window {
                         },
                         ..rect
                     };
-                    let brush = CreateSolidBrush(fg);
-                    FillRect(memory, &top, brush);
-                    DeleteObject(brush);
+                    SetDCBrushColor(memory, fg);
+                    FillRect(memory, &top, GetStockObject(DC_BRUSH) as HBRUSH);
                 } else {
                     let text: Vec<u16> = cell.symbol().encode_utf16().collect();
                     ExtTextOutW(
@@ -483,6 +551,13 @@ impl Window {
                 }
             }
         }
+        surface.columns = screen.size.width;
+        surface.rows = screen.size.height;
+        surface.cells = screen.cells;
+        SelectObject(memory, original_font);
+        // Caret is an overlay, never part of the cached backing image. Expose and
+        // blink events therefore only copy cached pixels and repaint this rectangle.
+        BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
         if self.focused
             && self.blink
             && screen.cursor_visible
@@ -497,16 +572,9 @@ impl Window {
                 right: left + 2,
                 bottom: top + self.cell_height - 2,
             };
-            let brush = CreateSolidBrush(rgb(230, 232, 240));
-            FillRect(memory, &rect, brush);
-            DeleteObject(brush);
+            SetDCBrushColor(dc, rgb(230, 232, 240));
+            FillRect(dc, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
         }
-        drop(screen);
-        BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
-        SelectObject(memory, original_font);
-        SelectObject(memory, original_bitmap);
-        DeleteObject(bitmap);
-        DeleteDC(memory);
         if supplied_dc.is_none() {
             EndPaint(hwnd, &paint);
         }
@@ -546,6 +614,8 @@ unsafe fn window_thread(
         focused: false,
         blink: true,
         wheel: 0,
+        last_motion: None,
+        surface: None,
     });
     let dpi = GetDpiForSystem().clamp(96, 768) as i32;
     let initial_width = (1120 * dpi / 96).min((GetSystemMetrics(SM_CXSCREEN) * 9 / 10).max(400));

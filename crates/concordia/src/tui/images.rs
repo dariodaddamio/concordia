@@ -500,7 +500,7 @@ pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
         .iter()
         .position(|attachment| matches!(attachment, Attachment::Image(_)))
     {
-        let height = 8.min(
+        let height = 4.min(
             area.height
                 .saturating_sub(app.images.chip_height() as u16 + 3),
         );

@@ -3952,6 +3952,14 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             quit = true;
                             break;
                         }
+                        Event::Key(key) if use_window => {
+                            // The owned window delivers paste and drops explicitly. Its
+                            // keyboard input needs no terminal paste-inference quiet gap.
+                            if handle_key(&mut app, key, &turn_tx) {
+                                quit = true;
+                                break;
+                            }
+                        }
                         Event::Key(key) => {
                             if dispatch_key_event(
                                 &mut app,
@@ -4296,16 +4304,37 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         });
                         return;
                     }
-                    scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
-                    match run_provider_turn_with_transport(
+                    // Admission is held before planning, but an input/launch failure is not
+                    // evidence of a live process. Mark invocation only when transport reports
+                    // its owned child, forwarding cancellation ownership before completion.
+                    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+                    let forward_started = |handle: Arc<RunningTurn>| {
+                        scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
+                        if handle_tx.send(handle.clone()).is_err() {
+                            handle.cancel();
+                        }
+                    };
+                    let turn = run_provider_turn_with_transport(
                         &req,
                         owner,
                         native_input,
-                        Some(handle_tx),
+                        Some(started_tx),
                         Some(progress_tx),
-                    )
-                    .await
-                    {
+                    );
+                    tokio::pin!(turn);
+                    let result = loop {
+                        tokio::select! {
+                            biased;
+                            Some(handle) = started_rx.recv() => forward_started(handle),
+                            result = &mut turn => {
+                                while let Ok(handle) = started_rx.try_recv() {
+                                    forward_started(handle);
+                                }
+                                break result;
+                            }
+                        }
+                    };
+                    match result {
                         Ok(outcome) => {
                             let _ = done_tx.send(outcome);
                         }

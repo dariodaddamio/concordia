@@ -107,7 +107,8 @@ so late edit details remain visible after completion. The aggregate review is bo
 individual cards remain available above it. This does not enable transcript recording or invent
 activity missing from a provider's native history.
 
-Standalone pasted PNG/JPEG/WebP paths attach and show a composer thumbnail automatically.
+Standalone pasted PNG/JPEG/WebP paths attach and show a compact four-row composer thumbnail
+automatically, with pixels limited to twelve columns. Click the thumbnail or chip to enlarge it.
 Normal typing while import runs keeps the attachment. F9 imports a pending file offer, pastes a
 clipboard image, or opens the attachment chooser. The footer exposes this key even when a host
 intercepts Ctrl+V. Clipboard bitmaps still require an input action delivered to Concordia.

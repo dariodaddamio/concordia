@@ -1,5 +1,16 @@
 # Changelog
 
+### Fixed (`2026-11-04h`)
+
+- Composer image previews use four rows and twelve columns of pixels, with concise dimensions
+  and format beside them. Clicking the thumbnail or attachment chip still enlarges the image.
+- The Windows window caches rendered rows, reuses its drawing surface and combines mouse movement
+  within a cell. Native typing no longer waits for terminal paste inference.
+- Updated stock npm launchers for Codex and Claude run their declared entrypoints through Node
+  without shell argument parsing. Image inputs no longer depend on a particular bridge hash.
+- Input or launch failures before a provider starts release the current workspace reservation.
+  Confirmed startup still retains ownership until the native process is known to have exited.
+
 ### Added (`2026-11-04g`)
 
 - Windows starts Concordia's own native window by default, reusing the existing chat interface.

@@ -65,6 +65,12 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
             launch.env = native.env;
         }
     }
+    if is_batch_shim(&launch.program) {
+        if let Some((node, script)) = super::npm::node_bridge(&launch.program, plan.provider) {
+            launch.program = node.to_string_lossy().into_owned();
+            launch.args.insert(0, script.to_string_lossy().into_owned());
+        }
+    }
     if !prompt_needs_stdin(&plan.prompt, batch) {
         return Ok(launch);
     }

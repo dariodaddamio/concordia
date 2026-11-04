@@ -322,22 +322,22 @@ pub(super) fn draw_inline(f: &mut Frame, area: Rect, app: &App) {
             paint(
                 f,
                 Rect {
-                    width: content.width.min(26),
+                    width: content.width.min(12),
                     ..content
                 },
                 thumb,
                 app.no_color,
             );
-            if content.width > 30 {
+            if content.width > 16 {
                 f.render_widget(
                     Paragraph::new(format!(
-                        "{} × {}\n{}\nVerified attachment snapshot\nThe message stays editable",
+                        "{} × {}\n{}",
                         thumb.width, thumb.height, image.mime
                     ))
                     .wrap(Wrap { trim: false }),
                     Rect {
-                        x: content.x + 28,
-                        width: content.width - 28,
+                        x: content.x + 14,
+                        width: content.width - 14,
                         ..content
                     },
                 );
@@ -467,6 +467,8 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
         .collect();
     assert!(screen.contains("Preview · raster-preview.png"), "{screen}");
     assert!(screen.contains("12 × 8"), "{screen}");
+    assert!(!screen.contains("Verified attachment snapshot"));
+    assert!(!screen.contains("The message stays editable"));
     assert!(
         screen.contains('▀'),
         "the default composer shows actual pixels"
@@ -475,10 +477,10 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
     assert!(app.editor.text().contains("plus typing"));
     app.no_color = true;
     terminal
-        .draw(|f| draw_inline(f, Rect::new(0, 0, 60, 8), app))
+        .draw(|f| draw_inline(f, Rect::new(0, 0, 60, 4), app))
         .unwrap();
     assert!(
-        (1..8).any(|y| (0..26).any(|x| {
+        (1..4).any(|y| (0..12).any(|x| {
             let symbol = terminal.backend().buffer()[(x, y)].symbol();
             symbol != " " && symbol != "▀"
         })),

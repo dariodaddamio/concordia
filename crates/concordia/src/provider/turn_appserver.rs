@@ -349,17 +349,34 @@ pub(super) async fn run(
         .context("Native Codex input requires an isolated account home")?
         .canonicalize()?;
     let native = crate::provider::npm::codex(&plan.command);
-    let program = native.as_ref().map_or_else(
-        || plan.command.clone(),
-        |n| n.program.to_string_lossy().into_owned(),
+    let bridge = native
+        .is_none()
+        .then(|| crate::provider::npm::node_bridge(&plan.command, ProviderKind::Codex))
+        .flatten();
+    let program = bridge.as_ref().map_or_else(
+        || {
+            native.as_ref().map_or_else(
+                || plan.command.clone(),
+                |n| n.program.to_string_lossy().into_owned(),
+            )
+        },
+        |(node, _)| node.to_string_lossy().into_owned(),
     );
     anyhow::ensure!(
         !crate::provider::launch::is_batch_shim(&program),
         "Native Codex input requires the verified stock npm bridge or a native executable"
     );
     let version_program = program.clone();
+    let version_prefix = bridge
+        .as_ref()
+        .map(|(_, script)| script.to_string_lossy().into_owned());
     let version = tokio::task::spawn_blocking(move || {
-        crate::provider::compat::run_cli(Path::new(&version_program), &["--version"])
+        let mut args = Vec::new();
+        if let Some(script) = version_prefix.as_deref() {
+            args.push(script);
+        }
+        args.push("--version");
+        crate::provider::compat::run_cli(Path::new(&version_program), &args)
     })
     .await?
     .map_err(anyhow::Error::msg)?;
@@ -398,6 +415,9 @@ pub(super) async fn run(
     }
     let mut command = Command::new(&program);
     crate::process_ui::background(&mut command);
+    if let Some((_, script)) = bridge {
+        command.arg(script);
+    }
     command.arg("app-server");
     // Carry the process-local compaction overrides from the final enforcement plan.
     for args in plan.argv.windows(2).filter(|args| args[0] == "-c") {
