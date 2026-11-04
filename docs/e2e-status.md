@@ -1,5 +1,32 @@
 # Concordia verification status
 
+## Installed roadmap build, 2026-11-04b
+
+Application source `22b4da5` builds the normally installed executable: **22,522,368 bytes**,
+SHA-256 `ED8BE9149126D55DECC981B4BB9168A5FB4ACC6E7AECFCD50D5418B53AF6D820`.
+The installed hash matches the checked candidate. The update source points to the permanent
+checkout, and the resolved native Claude CLI reports **2.1.318**. Reopen existing panes to load b.
+
+The full z baseline passes **983 enabled tests** plus read-only usage smoke. Native regression
+source `d32233e` passes **26 native unit cases** and the extended process scenario, including
+four-question/multi-select/free-text replies, PDF payloads, deferred background completion,
+late approvals, foreign-session rejection, cancellation and EOF. The final source adds only a
+match-guard lint cleanup. Formatting, all-target Clippy, release build/smoke and the exact-artifact
+Defender scan pass; Defender intelligence is `1.463.110.0`, with protection enabled.
+
+Claude local agents/workflows retain the owning connection through final follow-up output and
+idle state, with a ten-minute run-end ceiling. Agent inspection uses actual native task status;
+launch receipts do not masquerade as completed children. Context capture occurs after settlement.
+The qualified native version and cache identity are centralized at 2.1.318; old 2.1.317 context
+measurements become unknown. Earlier a was an uninstalled qualification candidate.
+
+Exact final-artifact receipts use the existing collector under ignored `target/candidate-evidence`;
+logs are `target/final-1104b-*`. Prior native/baseline logs retain their source identities rather
+than being re-labelled as exact final-source checks. Remote CI remains a separate receipt.
+No real provider model turn, certificate provisioning, external upload, tag or release was run.
+Cursor capacity/event usage, null numeric credit balances, live/physical qualification and
+signing/publication retain their explicit gates.
+
 ## Installed roadmap build, 2026-11-03z
 
 Application source `c93b055` builds the normally installed executable: **22,500,352 bytes**,

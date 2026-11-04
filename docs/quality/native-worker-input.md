@@ -36,7 +36,7 @@ are outside this retention contract.
 
 [Codex app-server input](codex-native-input.md) extends this contract behind explicit account/home
 selection. Claude now has a separately gated stdio contract: the source-matched Claude Code
-The next candidate tracks Claude CLI `2.1.318`; the source-matched Python SDK v0.2.178
+The installed 2026-11-04b candidate tracks Claude CLI `2.1.318`; the source-matched Python SDK v0.2.178
 defines the same `--input-format stream-json --output-format stream-json
 --permission-prompt-tool stdio`; after an `initialize` control exchange, top-level
 `control_request`/`can_use_tool` frames carry a request id, tool name, original input and
@@ -59,12 +59,13 @@ the focused choice and Enter confirms; mouse clicks toggle choices and the confi
 the reviewed set. A free-text `Other` response reuses the existing note row rather than opening
 HTML or a second editor. The same bounded ownership, cancellation and at-most-once response
 rules apply to these answers.
-Extended process and foreground/worker UI fixtures passed in the historical 2026-11-03z receipt;
-new 2.1.318 focused fixtures are pending. No live model turn or physical-host parity is claimed;
+The d322 native source checks pass 26 native unit cases plus extended foreground/worker process
+fixtures, including background, cancellation, foreign-owner and EOF cases. No live model turn or
+physical-host parity is claimed;
 exact historical artifact evidence is in [E2E status](../e2e-status.md). Source evidence: [Python
 v0.2.178 CLI version](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/_cli_version.py),
-[query control methods](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/query.py),
-and [TypeScript v0.3.318 release parity](https://github.com/anthropics/claude-agent-sdk-typescript/releases).
+[query control methods](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/_internal/query.py),
+and [TypeScript v0.3.318 release parity](https://github.com/anthropics/claude-agent-sdk-typescript/releases). Build source is `22b4da5`; exact artifact identity and release receipt remain in E2E status.
 
 ## Activity and navigation
 

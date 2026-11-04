@@ -21,7 +21,7 @@ Native compaction defaults and the separately implemented one-attempt reactive c
 recovery are preserved. No in-flight turn is interrupted or replayed to implement this policy.
 
 Build `2026-11-03x` adds Claude's version-matched Agent SDK `get_context_usage` control
-request on the opt-in native stdio adapter (next candidate CLI 2.1.318). Capture happens **after a completed
+request on the opt-in native stdio adapter (installed 2026-11-04b, CLI 2.1.318). Capture happens **after a completed
 turn on that same live connection**. No pre-prompt resumed-process reading is allowed to trigger
 rollover: the official SDK does not explicitly guarantee that prior context has loaded then.
 The response must match the explicit selected model and contain valid current tokens, effective

@@ -8,9 +8,9 @@ implementation or live qualification of the remaining features.
 Current execution baseline: `5dbac3e`; coordinator branch `feat/luna-roadmap-completion`.
 Host-native Luna workers `l5_integrations`, `l4_file_outputs` and `l3_binary_inputs`
 own the first wave. Coordinator owns shared integration and candidate delivery. These are
-implementation assignments. The 2026-11-04a candidate integrates the approved source changes;
-qualification results remain separate from implementation and are recorded below as checks complete.
-It is not yet merged, installed-qualified or live-qualified; the 2026-11-03z receipt remains historical.
+implementation assignments. The 2026-11-04b candidate integrates the approved source changes and
+is installed-qualified by the coordinator; qualification results remain separate from live use.
+The 2026-11-03z receipt remains historical.
 
 ## Objective and accountability
 
@@ -110,10 +110,10 @@ and relevant evidence document. A new planning document is not an implementation
 
 | Task | Initial state | Completion condition |
 | --- | --- | --- |
-| L1 Claude approvals | Next candidate 2026-11-04b: 2026-11-04a remains an uninstalled qualification candidate | 2.1.318 source contract keeps allow-once/deny and four-question broker flow, multi-select/free text; local_agent/local_workflow background completion is retained up to 10 minutes, then uncertain/failed reconciliation. New focused fixtures remain pending; HTML previews, remote/shell/monitor lifecycles and live parity are excluded |
-| L2 Claude capacity | Next candidate 2026-11-04a: prior z receipt preserved | Completed-turn control capture and exact source/model/settings reuse remain; 2.1.318 focused qualification is pending, with no speculative pre-prompt sensor |
+| L1 Claude approvals | Integrated: 2026-11-04b / CLI 2.1.318 | Source d322 passes 26 native unit cases and extended background/cancel/foreign/EOF process fixtures; local_agent/local_workflow retention is bounded at 10 minutes. Live turns, remote/shell/monitor lifecycles and HTML previews remain excluded |
+| L2 Claude capacity | Integrated: 2026-11-04b / CLI 2.1.318 | Completed-turn control capture and exact source/model/settings reuse remain; no speculative pre-prompt sensor |
 | L2 Cursor capacity | Blocked-vendor; [source audit](../../quality/capacity-provenance.md) | Supported current-window request/event is absent from the documented Cursor transport |
-| L3 binary inputs | Integrated: prior z receipt preserved; next candidate 2026-11-04a | Bounded Claude 2.1.317 PDF snapshots/dispatch remain historical; new 2.1.318 focused process/UI/clipboard qualification is pending. Live processing and physical viewer qualification remain; other-provider rejection is explicit |
+| L3 binary inputs | Integrated: 2026-11-04b / CLI 2.1.318 | Bounded Claude PDF snapshots/dispatch and process checks are integrated; live processing, physical clipboard/viewer behavior remain unqualified; other-provider rejection is explicit |
 | L4 Claude outputs | Integrated: Luna `l3_binary_inputs` + coordinator, z | Built-in Write/Edit correlation plus successful native result metadata; unsupported formats stay excluded |
 | L4 Cursor outputs | Integrated: Luna `l4_file_outputs` + coordinator, z | Exact-session completed write/edit success path through the existing registry |
 | L5 integrations | Integrated: Luna `l5_integrations` + coordinator, z | New local manifest and reviewed reconnect/verify/selected disconnect; draft retained |
