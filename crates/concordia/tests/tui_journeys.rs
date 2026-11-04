@@ -159,7 +159,7 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
         let pdf_before = s.prompts().len();
         s.submit("/attach fixture.pdf");
         s.until("PDF descriptor chip visible", |s| {
-            s.screen().contains("PDF 1: fixture.pdf") && s.screen().contains("native document")
+            s.screen().contains("PDF 1: fixture.pdf") && s.screen().contains("PDF document")
         });
         if provider != ProviderKind::Claude {
             s.paste("Review this PDF");
