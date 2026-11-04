@@ -300,6 +300,9 @@ fn fake_claude_control(args: &[String]) {
                         ])
                     }
                 };
+                if fixture["malformed"] != true {
+                    native["request"]["input"] = json!({"questions": native["request"]["input"].clone()});
+                }
             }
             if fixture["unknown"] == true {
                 native["request"]["subtype"] = json!("future_native_method");
