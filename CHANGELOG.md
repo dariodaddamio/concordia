@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (`2026-11-04c`)
+
+- `/update` ignores unrelated Rust workspaces and terminal configuration trees when choosing
+  Concordia's source checkout. The recorded install source remains available from those projects.
+
 ### Fixed (`2026-11-04b`)
 
 - Claude native stdio waits for local background agents and workflows to settle, including

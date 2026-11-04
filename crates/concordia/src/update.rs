@@ -415,7 +415,8 @@ fn recorded_source_root() -> Option<PathBuf> {
 /// was built from.
 pub fn source_root(cwd: &Path) -> Option<PathBuf> {
     crate::host::wezterm::find_project_root(cwd)
-        .or_else(|| find_cargo_workspace(cwd))
+        .filter(|root| is_source_root(root))
+        .or_else(|| find_cargo_workspace(cwd).filter(|root| is_source_root(root)))
         .or_else(recorded_source_root)
 }
 
@@ -1305,6 +1306,24 @@ mod tests {
             "nothing recorded yet"
         );
         record_source_root(checkout.path());
+        assert_eq!(
+            source_root(elsewhere.path()).as_deref(),
+            Some(checkout.path())
+        );
+
+        // Other projects must not steal an installed application's source update.
+        fs::write(
+            elsewhere.path().join("Cargo.toml"),
+            "[workspace]\nmembers=[]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            source_root(elsewhere.path()).as_deref(),
+            Some(checkout.path())
+        );
+        let terminal = elsewhere.path().join("experiments/terminal/wezterm");
+        fs::create_dir_all(&terminal).unwrap();
+        fs::write(terminal.join("wezterm.lua"), "-- unrelated fixture\n").unwrap();
         assert_eq!(
             source_root(elsewhere.path()).as_deref(),
             Some(checkout.path())
