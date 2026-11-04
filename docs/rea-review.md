@@ -52,6 +52,15 @@ checks remain necessary. See the
 
 ## Remaining roadmap: supported interfaces
 
+### Exact 04k resource follow-up
+
+REA's `inspect-pe-resources` was rerun on the final installed 04k candidate: **23,105,536 bytes**,
+SHA-256 `51ef2fe75425084e9b47f051596ce961282dd9f70f5bc834af0c4459eb344c46`.
+It reports five resources and one icon group with 16/32/48/256-pixel frames (zero dimension bytes
+represent 256 in ICO), all declared payload sizes matching. The exact result remains ignored at
+`target/rea-work/resources-04k.json`. Actual Windows rendering is qualified separately in
+[E2E status](e2e-status.md); REA static inspection does not establish it.
+
 The following recheck does not turn documentation or static inspection into live-provider proof.
 
 - **Cursor context and external token usage:** the currently published ACP page documents session
