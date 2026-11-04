@@ -16,7 +16,9 @@ or a percentage of completion:
 5. **Memory effectiveness:** the synthetic retrieval corpus exists; controlled model-retention
    and token-saving experiments remain unrun and separately scoped/budgeted.
 6. **Native filesystem confinement:** managed worktrees and cooperative reservations exist;
-   they do not establish OS-enforced write boundaries for provider tools.
+   they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer
+   [mechanism prototype](quality/windows-write-guard-research.md) passes file/crypto/network/cancel
+   checks; production scope, ACL lifecycle and provider compatibility remain open.
 7. **Unsigned Windows distribution:** the owner chose unsigned delivery. Fresh exact-artifact
    antivirus/install/update rehearsal, publication and public-feed checks remain release gates. GitHub's current
    billing/spending-limit block also prevents a passing remote-CI claim.

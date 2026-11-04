@@ -143,7 +143,7 @@ impl DetachedWindows {
         let mut failed = Vec::new();
         for (&id, window) in &mut self.windows {
             let result = (|| -> io::Result<()> {
-                if let Some(title) = app.workspace.detached_title(id) {
+                if let Some(title) = app.workspace.detached_title(id, &app.cwd) {
                     window.terminal.backend_mut().set_title(&title)?;
                 }
                 window.terminal.autoresize()?;

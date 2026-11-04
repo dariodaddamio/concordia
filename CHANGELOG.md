@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (`2026-11-04l`)
+
+- Detached file windows identify their file relative to the chat workspace and retain the dirty
+  marker. Their footer names Ctrl+Shift+D to dock, including formatted views.
+
 ### Added (`2026-11-04k`)
 
 - A single unsigned Windows installer downloads verified prebuilt bytes, makes `concordia`
