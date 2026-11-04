@@ -142,16 +142,21 @@ impl Workspace {
             .map(|p| p.id)
             .collect()
     }
-    pub fn detached_title(&self, id: u32) -> Option<String> {
+    pub fn detached_title(&self, id: u32, workspace: &Path) -> Option<String> {
         self.panes.iter().find(|p| p.id == id).map(|p| {
+            let file = p.path.to_string_lossy();
+            let base = workspace.to_string_lossy();
+            let file = Path::new(file.strip_prefix(r"\\?\").unwrap_or(&file));
+            let base = Path::new(base.strip_prefix(r"\\?\").unwrap_or(&base));
+            let label = file.strip_prefix(base).unwrap_or(file);
             format!(
-                "{}{} - Concordia",
+                "{}{} | Concordia",
                 if p.document.as_ref().is_some_and(|d| d.dirty()) {
                     "* "
                 } else {
                     ""
                 },
-                p.path.display()
+                label.display()
             )
         })
     }
@@ -1049,13 +1054,17 @@ fn draw_pane(
             } else if pane.searching {
                 format!("/{}  {} matches", pane.query, pane.matches.len())
             } else if pane.raw() {
-                if standalone {
+                if pane.detached {
+                    "Ctrl+Shift+D dock · Ctrl+S save · Ctrl+F find".into()
+                } else if standalone {
                     "Ctrl+Q close · Ctrl+S save · Ctrl+F find".into()
                 } else {
                     "Esc chat · Ctrl+S save · Ctrl+F find".into()
                 }
             } else if pane.query.is_empty() {
-                if standalone {
+                if pane.detached {
+                    "Ctrl+Shift+D dock · Alt+V edit · / find · r reload".into()
+                } else if standalone {
                     "Ctrl+Q close · Alt+V edit · / find · r reload".into()
                 } else {
                     "Esc chat · Alt+V edit · / find · r reload".into()
