@@ -434,6 +434,11 @@ async fn run_provider_turn_inner(
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
     let timing = Instant::now();
+    let source_started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(i64::MAX);
     let mut session_guard = req
         .native_session_id
         .map(|id| {
@@ -733,6 +738,38 @@ async fn run_provider_turn_inner(
         out.cards = chunk.cards;
         if out.session_id.is_none() {
             out.session_id = chunk.session_id;
+        }
+    }
+    if plan.provider == ProviderKind::Codex
+        && !out.cancelled
+        && super::edit_display::needs_codex_patch(&out.cards)
+    {
+        if let (Some(owner), Some(session)) =
+            (&owner, out.session_id.as_deref().or(req.native_session_id))
+        {
+            if let Some(home) = owner.home.as_deref() {
+                let patches = crate::native_memory::Binding::new(
+                    ProviderKind::Codex,
+                    &owner.account,
+                    home,
+                    session,
+                )
+                .and_then(|binding| {
+                    crate::native_memory::codex_patch_inputs(
+                        &crate::store::default_store_root(),
+                        &binding,
+                        source_started,
+                    )
+                });
+                if let Ok(patches) = patches {
+                    for card in super::edit_display::enrich_codex(&mut out.cards, &patches, req.cwd)
+                    {
+                        if let Some(tx) = &on_progress {
+                            let _ = tx.send(TurnProgress::Card(card));
+                        }
+                    }
+                }
+            }
         }
     }
     crate::logging::info(&format!(

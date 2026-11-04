@@ -110,6 +110,139 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             assert!(!journal.contains(&format!("ARG:{}", hex("Inspect these pixels"))));
         }
     }
+    // Exec's real public event is path-only. The native source is written after launch, then
+    // the fake completes, so freshness/account binding and the final visible update are tested.
+    {
+        let mut scoped = Env(vec![]);
+        scoped.set("FAKE_PROVIDER_MODE", "gated-stream");
+        let work = tempfile::tempdir().unwrap();
+        let home = root.join("codex-patch-home");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let source = home.join("sessions").join(format!("{session}.jsonl"));
+        let output = work.path().join("fixture space.rs");
+        std::fs::write(&output, "after\n").unwrap();
+        let gate = work.path().join("gate");
+        scoped.set("FAKE_PROVIDER_GATE", &gate);
+        let state = concordia::store::default_store_root();
+        assert_eq!(state, root.join("state"));
+        concordia::store::upsert_stored_account(
+            &state,
+            concordia::store::StoredAccount {
+                id: "codex-patch-fixture".into(),
+                provider: ProviderKind::Codex,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "Synthetic".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        let item = json!({"id":"path-only-edit","type":"file_change","changes":[{"path":output,"kind":"update"}]});
+        std::fs::write(
+            &stream,
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                json!({"type":"thread.started","thread_id":session}),
+                json!({"type":"item.started","item":item}),
+                json!({"type":"item.completed","item":item}),
+                json!({"type":"turn.completed"}),
+            ),
+        )
+        .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let native_session = session.clone();
+        let updates = tokio::spawn(async move {
+            let mut wrote_source = false;
+            let mut enriched = false;
+            while let Some(event) = rx.recv().await {
+                if let TurnProgress::Card(card) = event {
+                    if card.id != "path-only-edit" {
+                        continue;
+                    }
+                    if !wrote_source {
+                        let clock = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap();
+                        let seconds = concordia::logging::iso_utc(clock.as_secs());
+                        let timestamp = format!(
+                            "{}.{:03}Z",
+                            seconds.trim_end_matches('Z'),
+                            clock.subsec_millis()
+                        );
+                        let records = [
+                            json!({"type":"session_meta","payload":{"id":native_session}}),
+                            json!({"type":"turn_context","timestamp":timestamp,"payload":{"turn_id":"synthetic-current-turn"}}),
+                            json!({"type":"response_item","payload":{"type":"custom_tool_call","call_id":"native-patch","name":"exec","input":format!("text(await tools.apply_patch({}));\ntext(await tools.exec_command({{\"cmd\":\"git status\"}}));",serde_json::to_string("*** Begin Patch\n*** Update File: fixture space.rs\n@@\n-before\n+after\n*** End Patch\n").unwrap())}}),
+                            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"native-patch","output":"{}"}}),
+                        ];
+                        std::fs::write(
+                            &source,
+                            records
+                                .iter()
+                                .map(|event| format!("{event}\n"))
+                                .collect::<String>(),
+                        )
+                        .unwrap();
+                        std::fs::write(&gate, "ready").unwrap();
+                        wrote_source = true;
+                    }
+                    enriched |= card
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("-before\n+after"));
+                }
+            }
+            assert!(
+                wrote_source && enriched,
+                "final edit must reach progress, not just the returned collection"
+            );
+        });
+        let owner = provider::interaction::InteractionOwner {
+            conversation_id: uuid::Uuid::new_v4().to_string(),
+            workspace: work.path().into(),
+            execution_cwd: work.path().into(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Codex,
+            account: "codex-patch-fixture".into(),
+            home: Some(home.clone()),
+        };
+        let request = ProviderTurnRequest {
+            images: &[],
+            provider: ProviderKind::Codex,
+            prompt: "Synthetic patch display",
+            cwd: work.path(),
+            home_path: Some(&home),
+            model: None,
+            native_session_id: Some(&session),
+            trust: TrustMode::Plan,
+            context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
+        };
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            provider::turn::run_provider_turn_with_owner(&request, owner, None, Some(tx)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        updates.await.unwrap();
+        assert_eq!(out.exit_code, Some(0), "{out:?}");
+        let detail = out
+            .cards
+            .iter()
+            .find(|card| card.id == "path-only-edit")
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap();
+        assert!(
+            detail.contains("-before\n+after") && detail.contains("fixture space.rs"),
+            "{detail}"
+        );
+        assert!(!detail.contains("line diff unavailable"), "{detail}");
+    }
     for (fixture, expected_failed) in [
         (
             json!({"permission":true,"history":[{"role":"assistant","id":"old-answer","text":"Historical answer must not become new output"}],"history_activity":true}),

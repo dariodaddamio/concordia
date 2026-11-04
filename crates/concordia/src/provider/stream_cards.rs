@@ -1145,6 +1145,43 @@ mod tests {
         let rendered = edits[0].detail.as_deref().unwrap();
         assert!(rendered.contains("-one\n-two\n+three"));
         assert!(rendered.contains(&input));
+
+        // Real exec file-change events provide paths/kinds, not a fictional `diff` field.
+        let parts = parse_codex_stream_chunk(
+            r#"{"type":"item.completed","item":{"type":"file_change","id":"path-only","changes":[{"path":"src/parser space.rs","kind":"update"},{"path":"src/new.rs","kind":"add"},{"path":"src/gone.rs","kind":"delete"}]}}"#,
+        );
+        let StreamPart::Card(card) = &parts[0] else {
+            panic!("{parts:?}")
+        };
+        let mut cards = vec![card.clone()];
+        let patch = "*** Begin Patch\n*** Update File: src/parser space.rs\n@@\n-old source\n+new source\n*** Add File: src/new.rs\n+new file\n*** Delete File: src/gone.rs\n*** End Patch\n";
+        let updated = super::super::edit_display::enrich_codex(
+            &mut cards,
+            &[patch.into()],
+            std::path::Path::new("."),
+        );
+        assert_eq!(updated.len(), 1);
+        let detail = updated[0].detail.as_deref().unwrap();
+        assert!(
+            detail.contains("File: src/parser space.rs\n@@\n-old source\n+new source"),
+            "{detail}"
+        );
+        assert!(detail.contains("File: src/new.rs\n+new file"), "{detail}");
+        assert!(
+            detail
+                .contains("File: src/gone.rs\nProvider reported a change; line diff unavailable."),
+            "delete input contains no old file body; do not invent removed lines: {detail}"
+        );
+        assert_eq!(
+            super::super::edit_display::enrich_codex(
+                &mut cards,
+                &[patch.into()],
+                std::path::Path::new("."),
+            )
+            .len(),
+            0,
+            "repeated enrichment must not duplicate hunks"
+        );
     }
 
     #[test]

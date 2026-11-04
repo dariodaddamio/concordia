@@ -136,10 +136,10 @@ mod system {
 }
 
 #[cfg(all(windows, not(test)))]
-pub use native::{get_text, has_image, set_text};
+pub use native::{get_text, has_attachment, set_text};
 
 #[cfg(any(test, not(windows)))]
-pub fn has_image() -> bool {
+pub fn has_attachment() -> bool {
     false
 }
 
@@ -190,9 +190,10 @@ mod native {
         }
         Err("clipboard is busy; try again".into())
     }
-    pub fn has_image() -> bool {
-        // CF_BITMAP, CF_DIB and CF_DIBV5; no data is read by this inexpensive query.
-        [2, 8, 17]
+    pub fn has_attachment() -> bool {
+        // CF_BITMAP, CF_DIB, CF_DIBV5 and Explorer file drops. The import helper
+        // validates file types and bounds after an explicit paste action.
+        [2, 8, 17, 15]
             .into_iter()
             .any(|format| unsafe { IsClipboardFormatAvailable(format) != 0 })
     }

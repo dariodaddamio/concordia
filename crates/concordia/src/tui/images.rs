@@ -83,6 +83,20 @@ impl App {
             conversation: self.deleg.d.conversation_id().into(),
             cwd: self.cwd.clone(),
         });
+        // A standalone pasted image path is an image input, not prose mentioning a file.
+        // Import it immediately so the same preview appears as for a clipboard bitmap.
+        if self.images.pasted.as_ref().is_some_and(|pasted| {
+            pasted.paths.iter().all(|path| {
+                path.extension().is_some_and(|extension| {
+                    matches!(
+                        extension.to_string_lossy().to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "webp"
+                    )
+                })
+            })
+        }) {
+            self.accept_pasted_files();
+        }
     }
     pub(super) fn accept_pasted_files(&mut self) -> bool {
         if self.picker.is_some()
@@ -114,23 +128,7 @@ impl App {
         self.images.cwd = self.cwd.clone();
         self.images.job = Some(rx);
         std::thread::spawn(move || {
-            let mut attachments = Vec::new();
-            let mut errors = Vec::new();
-            for path in pasted.paths {
-                match import_attachment(&root, &path) {
-                    Ok(Paste::Image(image)) => attachments.push(Attachment::Image(image)),
-                    Ok(Paste::Document(document)) => {
-                        attachments.push(Attachment::TextDocument(document))
-                    }
-                    Ok(Paste::Pdf(document)) => attachments.push(Attachment::PdfDocument(document)),
-                    Ok(_) => {}
-                    Err(error) => errors.push(format!(
-                        "{}: {error}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    )),
-                }
-            }
-            let _ = tx.send(Ok(Paste::Batch(attachments, errors)));
+            let _ = tx.send(Ok(import_paths(&root, pasted.paths)));
         });
         true
     }
@@ -225,6 +223,8 @@ impl App {
         .encode()
     }
     pub(super) fn restore_composer(&mut self, raw: &str) {
+        // A restored draft owns its attachments; a previous import must never append to it.
+        self.images.job = None;
         self.images.pressed = None;
         self.images.targets.clear();
         self.images.pasted = None;
@@ -292,13 +292,10 @@ impl App {
         });
         if let Some(result) = result {
             self.images.job = None;
-            if self.images.revision != self.editor.revision()
-                || self.images.conversation != self.deleg.d.conversation_id()
+            if self.images.conversation != self.deleg.d.conversation_id()
                 || self.images.cwd != self.cwd
             {
-                self.flash(
-                    "Draft or conversation changed while importing; choose the attachment again",
-                );
+                self.flash("Conversation changed while importing; choose the attachment again");
                 return;
             }
             match result {
@@ -349,6 +346,38 @@ impl App {
         self.ensure_inline_raster();
     }
 }
+fn import_paths(root: &Path, paths: Vec<PathBuf>) -> Paste {
+    let mut attachments = Vec::new();
+    let mut errors = Vec::new();
+    for path in paths {
+        match import_attachment(root, &path) {
+            Ok(Paste::Image(image)) => attachments.push(Attachment::Image(image)),
+            Ok(Paste::Document(document)) => attachments.push(Attachment::TextDocument(document)),
+            Ok(Paste::Pdf(document)) => attachments.push(Attachment::PdfDocument(document)),
+            Ok(_) => {}
+            Err(error) => errors.push(format!(
+                "{}: {error}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        }
+    }
+    Paste::Batch(attachments, errors)
+}
+fn clipboard_files(root: &Path, bytes: &[u8]) -> Result<Paste, String> {
+    if bytes.len() > 32 * 1024 {
+        return Err("Pasted file paths exceed the attachment limit".into());
+    }
+    let paths: Vec<String> =
+        serde_json::from_slice(bytes).map_err(|_| "Invalid clipboard file list")?;
+    let quoted = paths
+        .iter()
+        .map(|path| format!("\"{path}\""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let paths = crate::attachments::pasted_paths(&quoted)
+        .ok_or("Paste up to four local images, documents or PDFs")?;
+    Ok(import_paths(root, paths))
+}
 fn import_attachment(root: &Path, path: &Path) -> Result<Paste, String> {
     if path.extension().is_some_and(|extension| {
         matches!(
@@ -382,7 +411,7 @@ fn capture(root: &Path, clipboard: bool) -> Result<Paste, String> {
     let mut cmd = std::process::Command::new("powershell.exe");
     crate::process_ui::background_std(&mut cmd);
     let script = if clipboard {
-        "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $image=[Windows.Forms.Clipboard]::GetImage(); if ($null -eq $image) {[Console]::Write('NO_IMAGE'); exit 0}; try {$image.Save($env:CONCORDIA_IMAGE_CAPTURE,[Drawing.Imaging.ImageFormat]::Png)} finally {$image.Dispose()}"
+        "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $image=[Windows.Forms.Clipboard]::GetImage(); if ($null -eq $image) {$files=[Windows.Forms.Clipboard]::GetFileDropList(); if ($files.Count -gt 0) {[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write('FILES:'); [Console]::Write((ConvertTo-Json -InputObject @($files) -Compress)); exit 0}; [Console]::Write('NO_IMAGE'); exit 0}; try {$image.Save($env:CONCORDIA_IMAGE_CAPTURE,[Drawing.Imaging.ImageFormat]::Png)} finally {$image.Dispose()}"
     } else {
         "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $dialog=New-Object Windows.Forms.OpenFileDialog; $dialog.Title='Attach image or document to Concordia'; $dialog.Filter='Images, documents and PDF|*.png;*.jpg;*.jpeg;*.webp;*.txt;*.md;*.json;*.pdf|Images|*.png;*.jpg;*.jpeg;*.webp|UTF-8 documents|*.txt;*.md;*.json|PDF documents|*.pdf'; if ($dialog.ShowDialog() -ne 'OK') {[Console]::Write('CANCELLED'); exit 0}; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($dialog.FileName)"
     };
@@ -394,6 +423,9 @@ fn capture(root: &Path, clipboard: bool) -> Result<Paste, String> {
         Duration::from_secs(if clipboard { 8 } else { 120 }),
     );
     let result = match output {
+        Ok(bytes) if clipboard && bytes.starts_with(b"FILES:") => {
+            clipboard_files(root, &bytes[6..])
+        }
         Ok(bytes) if clipboard && bytes == b"NO_IMAGE" => clipboard::get_text().map(|text| {
             if text.is_empty() {
                 Paste::Empty
@@ -662,7 +694,7 @@ mod tests {
         assert!(queue::tab(&mut app));
         assert!(app.images.draft.is_empty());
         let queued = crate::attachments::Message::decode(&app.queue.items[0]);
-        assert_eq!(queued.images(), vec![image]);
+        assert_eq!(queued.images(), vec![image.clone()]);
         assert_eq!(
             queued.documents().cloned().collect::<Vec<_>>(),
             vec![document]
@@ -704,6 +736,51 @@ mod tests {
         assert!(app.accept_pasted_files());
         assert!(!app.images.importing());
         assert_eq!(app.images.count(), 0);
+        // A pasted image path imports immediately, and typing during the asynchronous
+        // import must not discard the attachment or overwrite the evolving message.
+        image::RgbaImage::from_pixel(12, 8, image::Rgba([200, 40, 90, 255]))
+            .save(&original)
+            .unwrap();
+        app.editor.clear();
+        let pasted = format!("\"{}\"", original.display());
+        app.paste_text_chunk(&pasted, false);
+        assert!(app.images.importing());
+        app.editor.insert_char('!');
+        while app.images.importing() {
+            app.poll_images();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(app.images.count(), 1);
+        assert_eq!(app.editor.text(), format!("{pasted}!"));
+        assert!(app.images.pasted.is_none());
+        let files = serde_json::to_vec(&vec![original.to_string_lossy().to_string()]).unwrap();
+        let Paste::Batch(copied, errors) = clipboard_files(&app.state_root, &files).unwrap() else {
+            panic!("copied Explorer images must use the attachment path");
+        };
+        assert_eq!(copied.len(), 1);
+        assert!(errors.is_empty());
+        assert!(clipboard_files(&app.state_root, b"[]").is_err());
+        assert!(
+            clipboard_files(&app.state_root, b"[\"https://example.invalid/image.png\"]").is_err()
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.images.job = Some(rx);
+        app.restore_composer("replacement draft");
+        assert!(!app.images.importing());
+        assert!(tx.send(Ok(Paste::Image(image.clone()))).is_err());
+        assert_eq!(app.images.count(), 0);
+        let (turn_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE),
+            &turn_tx,
+        );
+        assert!(
+            app.images.importing(),
+            "F9 opens attachment input without a pasted path"
+        );
+        app.restore_composer("replacement draft");
         raster::fixture_proof(&mut app, dir.path());
         artifacts::fixture_proof(&mut app, dir.path());
     }

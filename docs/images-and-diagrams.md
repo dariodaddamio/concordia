@@ -4,12 +4,17 @@ Build: `2026-11-03u`. Supported provider adapters: Codex, Claude Code and Cursor
 
 ## Attach an image
 
-Use Ctrl+V when the terminal passes that key to Concordia, `/attach` to choose a file, or
+Use Ctrl+V when the terminal passes that key to Concordia, F9 to paste a clipboard image or
+choose a file, `/attach` to choose a file, or
 `/attach "path/to/screenshot.png"`. Relative paths resolve from Concordia's cwd; quoted absolute
 paths work. `/attach clear` removes draft attachments. A visible image chip shows the name and
 size. The first image previews automatically above the editable composer; click its thumbnail or
 any image chip to enlarge it, or X to remove it. Paste and file-picker helpers run
 away from the input loop and request no console window.
+Typing while an import finishes keeps both the evolving message and the attachment. Replacing
+the draft or switching conversations prevents an old import from attaching to the new draft.
+Copying image files in Explorer and pasting into Concordia also imports their snapshots; the
+Windows clipboard file-drop format is recognized in addition to screenshot bitmaps.
 
 PNG, JPEG and WebP are accepted, up to four distinct images of 4 MiB each per message. Clipboard
 bitmaps are saved as PNG. Image-only submission uses a short request to describe the image.
@@ -67,11 +72,13 @@ prompt. Images retain their native transports. Missing/changed snapshots or unkn
 versions/kinds pause explicitly before provider execution. These labels are provenance, not a
 guarantee that a model will ignore instructions contained in a document.
 
-Pasted file paths, including file drops represented by the host as quoted path text, remain
-ordinary editable message text. Eligible absolute image/document path lists offer **F9 attach
-pasted files**; nothing is read or imported until that action. Attachment import preserves the
-pasted text and is bound to the same conversation, workspace and draft revision. Later typing or
-switching conversations invalidates a pending import. Up to four paths and 16 KiB of pasted path
+Standalone pasted image paths, including file drops represented by the host as quoted path text,
+attach and preview automatically. Pasted paths remain editable message text. Eligible absolute
+document/PDF or mixed path lists offer **F9 attach pasted files** before importing. Merely mentioning
+an image path inside prose does not attach it. Attachment import preserves the
+pasted text. Accepting a pending file offer checks the original conversation, workspace and
+draft revision. Once accepted, typing can continue during import; replacing the draft or switching
+conversations cancels it. Up to four paths and 16 KiB of pasted path
 text are accepted. No shell expansion, host configuration change or dropped-file execution occurs.
 
 PDF attachments are now integrated in the installed 2026-11-04b candidate. The version-matched [TypeScript SDK

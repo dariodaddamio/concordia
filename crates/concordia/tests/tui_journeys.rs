@@ -50,7 +50,7 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
                     && !screen.contains("flowchart LR")
             });
         }
-        s.submit("/attach diagram.png");
+        s.paste(&format!("\"{}\"", image.display()));
         s.until("attached image chip", |s| {
             s.screen().contains("Image 1: diagram.png")
         });
@@ -79,11 +79,12 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
         s.until("inline raster snapshot", |s| {
             s.screen().contains("cell preview") && s.screen().contains("12 × 8")
         });
-        s.paste("preview must keep draft empty");
+        s.paste("preview must preserve draft");
         s.send("\x1b");
         s.until("raster close preserves composer", |s| {
             !s.screen().contains("cell preview") && s.draft() == preview_draft
         });
+        s.send("\x01\x7f");
         s.paste("Inspect image pixels");
         s.enter();
         if provider == ProviderKind::Cursor {
