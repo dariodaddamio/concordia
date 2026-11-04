@@ -14,6 +14,54 @@ pub(crate) const SUPPORTED_VERSION: &str = crate::capacity::claude_capacity::CLI
 const MAX_ID: usize = 512;
 const MAX_TOOL: usize = 256;
 const MAX_INPUT: usize = 256 * 1024;
+const DEFERRED_TASK_LIMIT: usize = 256;
+const RUN_END_CEILING: Duration = Duration::from_secs(600);
+
+fn native_task_card(
+    identity: (&str, Option<&str>, Option<&str>),
+    title: &str,
+    status: crate::provider::stream_cards::CardStatus,
+    detail: Option<String>,
+    out: &mut TurnOutcome,
+    progress: &Option<tokio::sync::mpsc::UnboundedSender<TurnProgress>>,
+) {
+    let id = format!(
+        "native-agent:claude:{}",
+        json!([identity.1.unwrap_or(""), identity.0, identity.2])
+    );
+    let card = crate::provider::stream_cards::StreamCard {
+        id,
+        title: format!("agent {}", identity.0.chars().take(12).collect::<String>()),
+        detail: Some(
+            format!(
+                "Task: {title}{}",
+                detail
+                    .map(|detail| format!("\nResult: {detail}"))
+                    .unwrap_or_default()
+            )
+            .chars()
+            .take(4096)
+            .collect(),
+        ),
+        status,
+    };
+    emit_progress(&[StreamPart::Card(card.clone())], progress);
+    crate::provider::stream_cards::upsert_card(&mut out.cards, card);
+}
+
+fn clean_task_text(value: Option<&Value>, fallback: &str) -> String {
+    value
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            text.chars()
+                .filter(|character| !character.is_control())
+                .take(256)
+                .collect::<String>()
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct PermissionRequest {
@@ -377,6 +425,9 @@ pub(super) async fn run(
         .args(&launch.args)
         .envs(plan.env.clone())
         .envs(launch.env.clone())
+        // Ask the CLI for the SDK-host-only session_state_changed frames. This is the
+        // versioned signal the official SDK uses to know whether a result owes a follow-up turn.
+        .env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1")
         .current_dir(&plan.cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -432,6 +483,14 @@ pub(super) async fn run(
     let mut seen_native = HashSet::new();
     let mut poll = tokio::time::interval(std::time::Duration::from_millis(10));
     let mut stream_bytes = 0usize;
+    let mut result_seen = false;
+    let mut result_deadline = None;
+    let mut session_state = None::<String>;
+    let mut deferred_tasks = HashSet::new();
+    let mut seen_deferred_tasks = HashSet::new();
+    let mut deferred_task_titles = HashMap::new();
+    let mut deferred_task_tools = HashMap::new();
+    let mut deferred_work_seen = false;
     let initialize_id = uuid::Uuid::new_v4().to_string();
     let initialize_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let result: anyhow::Result<()> = async {
@@ -447,6 +506,11 @@ pub(super) async fn run(
                 _ = handle.wake.notified() => anyhow::bail!("cancelled"),
                 n = &mut read => break n?,
                 _ = tokio::time::sleep_until(initialize_deadline), if !initialized => anyhow::bail!("Claude native initialize timed out before prompt dispatch"),
+                _ = async {
+                    if let Some(deadline) = result_deadline {
+                        tokio::time::sleep_until(deadline).await;
+                    }
+                }, if result_seen && result_deadline.is_some() => anyhow::bail!("Claude native run-end ceiling expired with deferred work"),
                 _ = poll.tick() => {
                     let mut finished = Vec::new();
                     for (id, request) in pending.iter_mut() {
@@ -478,7 +542,17 @@ pub(super) async fn run(
                     }
                 }
             }} };
-            if n == 0 { anyhow::bail!("Claude stdio closed before turn completion"); }
+            if n == 0 {
+                if result_seen
+                    && deferred_tasks.is_empty()
+                    && ((!deferred_work_seen && session_state.as_deref() != Some("running"))
+                        || (deferred_work_seen && session_state.as_deref() == Some("idle")))
+                    && pending.is_empty()
+                {
+                    break;
+                }
+                anyhow::bail!("Claude stdio closed before deferred work settled");
+            }
             anyhow::ensure!(n <= LINE_MAX, "Claude native output line exceeds its bound");
             stream_bytes = stream_bytes.saturating_add(n);
             anyhow::ensure!(stream_bytes <= 16 * 1024 * 1024, "Claude native output exceeds its bound");
@@ -497,6 +571,123 @@ pub(super) async fn run(
                     interactions.initialized_claude(SUPPORTED_VERSION).map_err(anyhow::Error::msg)?;
                     write_frame(&mut input, &message).await?;
                     sent_prompt = true;
+                }
+                continue;
+            }
+            if value["type"] == "system" {
+                match value["subtype"].as_str() {
+                    Some("session_state_changed") => {
+                        if let Some(state) = value["state"].as_str() {
+                            if matches!(state, "running" | "idle") {
+                                session_state = Some(state.to_owned());
+                            }
+                        }
+                    }
+                    Some("task_started") => {
+                        let task_type = value["task_type"].as_str();
+                        if matches!(task_type, Some("local_agent" | "local_workflow")) {
+                            let task_id = bounded_id(value.get("task_id"))
+                                .context("Claude task_started has invalid task identity")?;
+                            anyhow::ensure!(
+                                seen_deferred_tasks.len() < DEFERRED_TASK_LIMIT,
+                                "Claude deferred task budget exceeded"
+                            );
+                            anyhow::ensure!(
+                                seen_deferred_tasks.insert(task_id.to_owned()),
+                                "Claude duplicate deferred task identity"
+                            );
+                            deferred_tasks.insert(task_id.clone());
+                            let title = clean_task_text(
+                                value.get("description"),
+                                "Claude delegated task",
+                            );
+                            deferred_task_titles.insert(task_id.clone(), title.clone());
+                            let tool_use_id = if value.get("tool_use_id").is_some() {
+                                Some(
+                                    bounded_id(value.get("tool_use_id"))
+                                        .context("Claude task_started has invalid tool identity")?,
+                                )
+                            } else {
+                                None
+                            };
+                            deferred_task_tools.insert(task_id.clone(), tool_use_id.clone());
+                            deferred_work_seen = true;
+                            native_task_card(
+                                (&task_id, interactions.capabilities.permissions.connection_id.as_deref(), tool_use_id.as_deref()),
+                                &title,
+                                crate::provider::stream_cards::CardStatus::Running,
+                                None,
+                                &mut out,
+                                &progress,
+                            );
+                        }
+                    }
+                    Some("task_notification") => {
+                        if value["status"].as_str().is_some_and(|status| {
+                            matches!(status, "completed" | "failed" | "stopped" | "killed")
+                        }) {
+                            if let Some(task_id) = bounded_id(value.get("task_id")) {
+                                if deferred_tasks.remove(&task_id) {
+                                    let title = deferred_task_titles
+                                        .remove(&task_id)
+                                        .unwrap_or_else(|| "Claude delegated task".into());
+                                    let tool_use_id = deferred_task_tools.remove(&task_id).flatten();
+                                    let status = if value["status"].as_str() == Some("completed") {
+                                        crate::provider::stream_cards::CardStatus::Done
+                                    } else {
+                                        crate::provider::stream_cards::CardStatus::Error
+                                    };
+                                    native_task_card(
+                                        (&task_id, interactions.capabilities.permissions.connection_id.as_deref(), tool_use_id.as_deref()),
+                                        &title,
+                                        status,
+                                        Some(clean_task_text(
+                                            value.get("summary"),
+                                            "Claude delegated task completed",
+                                        )),
+                                        &mut out,
+                                        &progress,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Some("task_updated") => {
+                        if value["patch"]["status"].as_str().is_some_and(|status| {
+                            matches!(status, "completed" | "failed" | "stopped" | "killed")
+                        }) {
+                            if let Some(task_id) = bounded_id(value.get("task_id")) {
+                                if deferred_tasks.remove(&task_id) {
+                                    let title = deferred_task_titles
+                                        .remove(&task_id)
+                                        .unwrap_or_else(|| "Claude delegated task".into());
+                                    let tool_use_id = deferred_task_tools.remove(&task_id).flatten();
+                                    let status = if value["patch"]["status"].as_str() == Some("completed") {
+                                        crate::provider::stream_cards::CardStatus::Done
+                                    } else {
+                                        crate::provider::stream_cards::CardStatus::Error
+                                    };
+                                    native_task_card(
+                                        (&task_id, interactions.capabilities.permissions.connection_id.as_deref(), tool_use_id.as_deref()),
+                                        &title,
+                                        status,
+                                        None,
+                                        &mut out,
+                                        &progress,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if result_seen
+                    && deferred_tasks.is_empty()
+                    && ((!deferred_work_seen && session_state.as_deref() != Some("running"))
+                        || (deferred_work_seen && session_state.as_deref() == Some("idle")))
+                    && pending.is_empty()
+                {
+                    break;
                 }
                 continue;
             }
@@ -542,6 +733,13 @@ pub(super) async fn run(
                 }
                 continue;
             }
+            if result_seen && matches!(value["type"].as_str(), Some("assistant" | "stream_event")) {
+                result_seen = false;
+                result_deadline = None;
+                if session_state.is_some() {
+                    session_state = Some("running".into());
+                }
+            }
             if value["type"] == "control_request" {
                 let id = value["request_id"].as_str().context("native control request has no identity")?;
                 anyhow::ensure!(seen_native.len() < 1024, "Claude native request budget exceeded");
@@ -571,18 +769,27 @@ pub(super) async fn run(
             if value.get("type").and_then(Value::as_str) == Some("result") {
                 anyhow::ensure!(pending.is_empty(), "Claude ended with unresolved native permissions; completion is uncertain");
                 out.failed |= value["is_error"] == true || value["subtype"].as_str() != Some("success");
-                if !out.failed {
-                    if let (Some(owner), Some(session)) = (artifact_owner.as_ref(), session) {
-                        if let Err(reason) = capture_context(&mut input, &mut output, owner, session,
-                            interactions.capabilities.permissions.connection_id.as_deref().unwrap_or_default(), &handle, req).await {
-                            if let Some(tx) = &progress { let _ = tx.send(TurnProgress::Notice(format!("Native context remains unknown: {reason}"))); }
-                        }
-                    }
+                result_seen = true;
+                result_deadline.get_or_insert(tokio::time::Instant::now() + RUN_END_CEILING);
+                if out.failed
+                    || (deferred_tasks.is_empty()
+                        && ((!deferred_work_seen && session_state.as_deref() != Some("running"))
+                            || (deferred_work_seen && session_state.as_deref() == Some("idle")))
+                        && pending.is_empty())
+                {
+                    break;
                 }
-                break;
             }
         }
         anyhow::ensure!(sent_prompt, "Claude native initialize did not complete");
+        if result_seen && !out.failed {
+            if let (Some(owner), Some(session)) = (artifact_owner.as_ref(), session) {
+                if let Err(reason) = capture_context(&mut input, &mut output, owner, session,
+                    interactions.capabilities.permissions.connection_id.as_deref().unwrap_or_default(), &handle, req).await {
+                    if let Some(tx) = &progress { let _ = tx.send(TurnProgress::Notice(format!("Native context remains unknown: {reason}"))); }
+                }
+            }
+        }
         Ok(())
     }.await;
     out.cancelled |= handle.cancel_flag.load(std::sync::atomic::Ordering::SeqCst);
@@ -590,6 +797,28 @@ pub(super) async fn run(
         if !out.cancelled {
             out.failed = true;
             out.stderr_tail = format!("{error:#}");
+        }
+    }
+    if out.cancelled || out.failed {
+        for task_id in deferred_tasks.drain() {
+            let title = deferred_task_titles
+                .remove(&task_id)
+                .unwrap_or_else(|| "Claude delegated task".into());
+            let tool_use_id = deferred_task_tools.remove(&task_id).flatten();
+            native_task_card(
+                &task_id,
+                &title,
+                crate::provider::stream_cards::CardStatus::Error,
+                Some("interrupted before delegated task completion".into()),
+                &mut out,
+                &progress,
+                interactions
+                    .capabilities
+                    .permissions
+                    .connection_id
+                    .as_deref(),
+                tool_use_id.as_deref(),
+            );
         }
     }
     for (_, request) in pending.drain() {

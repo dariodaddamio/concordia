@@ -453,6 +453,16 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         }
     }
     env.set("FAKE_PROVIDER_NATIVE_CLAUDE", "1");
+    let is_background_task = |card: &&concordia::provider::stream_cards::StreamCard| {
+        card.id
+            .strip_prefix("native-agent:claude:")
+            .and_then(|identity| {
+                serde_json::from_str::<(String, String, Option<String>)>(identity).ok()
+            })
+            .is_some_and(|(connection, task, tool)| {
+                !connection.is_empty() && task == "task-1" && tool.as_deref() == Some("task-tool-1")
+            })
+    };
     for fixture in [
         json!({}),
         json!({"allow":true}),
@@ -464,6 +474,10 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         json!({"questions":true,"cancel":true}),
         json!({"questions":true,"duplicate":true}),
         json!({"questions":true,"malformed":true}),
+        json!({"background":true}),
+        json!({"background":true,"closed":true}),
+        json!({"background":true,"cancel":true}),
+        json!({"background":true,"foreign":true}),
         json!({"unknown":true}),
         json!({"model_only":true}),
         json!({"bad_init":true}),
@@ -495,7 +509,9 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                         // The process must continue reading cancellation/EOF while review is pending.
                         continue;
                     }
-                    let answer = if answer_fixture["four_questions"] == true {
+                    let answer = if answer_fixture["background"] == true {
+                        request.single_choices(&[0]).unwrap()
+                    } else if answer_fixture["four_questions"] == true {
                         request
                             .choices_with_selections(
                                 &[vec![0], vec![0, 1, 2, 3], vec![], vec![0]],
@@ -561,7 +577,10 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             .collect();
         assert_eq!(
             out.failed,
-            fixture["bad_init"] == true || fixture["closed"] == true,
+            fixture["bad_init"] == true
+                || fixture["closed"] == true
+                || (fixture["background"] == true
+                    && (fixture["cancel"] == true || fixture["foreign"] == true)),
             "{fixture}: {out:?}"
         );
         if fixture["bad_init"] == true {
@@ -586,6 +605,97 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             assert!(response["response"]["response"]["message"]
                 .as_str()
                 .is_some_and(|message| message.contains("multiSelect")));
+        } else if fixture["background"] == true && fixture["closed"] == true {
+            assert_eq!(offered, 1);
+            assert!(out.failed);
+            assert!(values.iter().all(|value| {
+                value["type"] != "control_response"
+                    || value["response"]["request_id"] != "late-permission"
+            }));
+            let card = out.cards.iter().find(is_background_task).unwrap();
+            assert!(matches!(
+                card.status,
+                concordia::provider::stream_cards::CardStatus::Error
+            ));
+        } else if fixture["background"] == true && fixture["cancel"] == true {
+            assert_eq!(offered, 1);
+            assert!(out.failed);
+            assert!(values.iter().all(|value| {
+                value["type"] != "control_response"
+                    || value["response"]["request_id"] != "late-permission"
+            }));
+            let card = out.cards.iter().find(is_background_task).unwrap();
+            assert!(matches!(
+                card.status,
+                concordia::provider::stream_cards::CardStatus::Error
+            ));
+        } else if fixture["background"] == true && fixture["foreign"] == true {
+            assert_eq!(offered, 1);
+            assert!(out.failed);
+            assert!(values.iter().any(|value| {
+                value["type"] == "control_response"
+                    && value["response"]["request_id"] == "late-permission"
+            }));
+            let card = out.cards.iter().find(is_background_task).unwrap();
+            assert!(matches!(
+                card.status,
+                concordia::provider::stream_cards::CardStatus::Error
+            ));
+        } else if fixture["background"] == true {
+            assert_eq!(offered, 1);
+            assert!(out.text.contains("Native Claude main result"));
+            assert!(out.text.contains("Native Claude follow-up result"));
+            let events: Vec<Value> =
+                std::fs::read_to_string(work.path().join("claude-events.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+            let task_started = events
+                .iter()
+                .position(|value| value["type"] == "system" && value["subtype"] == "task_started")
+                .unwrap();
+            let first_result = events
+                .iter()
+                .position(|value| {
+                    value["type"] == "result" && value["result"] == "Native Claude main result"
+                })
+                .unwrap();
+            let task_notification = events
+                .iter()
+                .position(|value| {
+                    value["type"] == "system" && value["subtype"] == "task_notification"
+                })
+                .unwrap();
+            let followup_result = events
+                .iter()
+                .position(|value| {
+                    value["type"] == "result" && value["result"] == "Native Claude follow-up result"
+                })
+                .unwrap();
+            let idle = events
+                .iter()
+                .position(|value| {
+                    value["type"] == "system"
+                        && value["subtype"] == "session_state_changed"
+                        && value["state"] == "idle"
+                })
+                .unwrap();
+            assert!(task_started < first_result && first_result < task_notification);
+            assert!(task_notification < followup_result && followup_result < idle);
+            let response = values
+                .iter()
+                .find(|value| {
+                    value["type"] == "control_response"
+                        && value["response"]["request_id"] == "late-permission"
+                })
+                .unwrap();
+            assert_eq!(response["response"]["response"]["behavior"], "allow");
+            let card = out.cards.iter().find(is_background_task).unwrap();
+            assert!(matches!(
+                card.status,
+                concordia::provider::stream_cards::CardStatus::Done
+            ));
         } else {
             assert_eq!(offered, 1);
             let user = values.iter().find(|value| value["type"] == "user").unwrap();

@@ -110,7 +110,7 @@ and relevant evidence document. A new planning document is not an implementation
 
 | Task | Initial state | Completion condition |
 | --- | --- | --- |
-| L1 Claude approvals | Next candidate 2026-11-04a: prior z receipt preserved | 2.1.318 source contract keeps allow-once/deny and four-question broker flow, multi-select/free text; new focused process/UI fixtures pending. HTML previews and live parity are excluded |
+| L1 Claude approvals | Next candidate 2026-11-04b: 2026-11-04a remains an uninstalled qualification candidate | 2.1.318 source contract keeps allow-once/deny and four-question broker flow, multi-select/free text; local_agent/local_workflow background completion is retained up to 10 minutes, then uncertain/failed reconciliation. New focused fixtures remain pending; HTML previews, remote/shell/monitor lifecycles and live parity are excluded |
 | L2 Claude capacity | Next candidate 2026-11-04a: prior z receipt preserved | Completed-turn control capture and exact source/model/settings reuse remain; 2.1.318 focused qualification is pending, with no speculative pre-prompt sensor |
 | L2 Cursor capacity | Blocked-vendor; [source audit](../../quality/capacity-provenance.md) | Supported current-window request/event is absent from the documented Cursor transport |
 | L3 binary inputs | Integrated: prior z receipt preserved; next candidate 2026-11-04a | Bounded Claude 2.1.317 PDF snapshots/dispatch remain historical; new 2.1.318 focused process/UI/clipboard qualification is pending. Live processing and physical viewer qualification remain; other-provider rejection is explicit |

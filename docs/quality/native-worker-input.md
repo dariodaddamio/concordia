@@ -27,6 +27,13 @@ owner changes and connection loss invalidate channels. Restart pauses work and n
 All native-mode tasks disable automatic worker failover; uncertain completion retains scope.
 Explicit cancellation with a confirmed process exit can release it.
 
+Native background completion is retained only for the SDK's bounded `local_agent` and
+`local_workflow` follow-up lifecycles. A foreground/worker owner may keep the completion channel
+open for at most 10 minutes while those local workflows finish; expiry, disconnect or an
+unreconciled first result is reported as uncertain/failed and requires explicit reconciliation,
+never a success claim or automatic replay. Long-lived remote tasks, shell commands and monitors
+are outside this retention contract.
+
 [Codex app-server input](codex-native-input.md) extends this contract behind explicit account/home
 selection. Claude now has a separately gated stdio contract: the source-matched Claude Code
 The next candidate tracks Claude CLI `2.1.318`; the source-matched Python SDK v0.2.178

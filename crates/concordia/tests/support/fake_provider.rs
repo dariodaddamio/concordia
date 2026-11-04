@@ -222,6 +222,14 @@ fn fake_claude_control(args: &[String]) {
         .map(|pair| pair[1].clone())
         .unwrap();
     let emit = |value: Value| {
+        if fixture["background"] == true {
+            let mut events = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(root.join("claude-events.jsonl"))
+                .unwrap();
+            writeln!(events, "{value}").unwrap();
+        }
         println!("{value}");
         std::io::stdout().flush().unwrap();
     };
@@ -266,6 +274,29 @@ fn fake_claude_control(args: &[String]) {
             emit(
                 json!({"type":"system","subtype":"init","session_id":session,"model":"fixture-claude"}),
             );
+            if fixture["background"] == true {
+                emit(
+                    json!({"type":"system","subtype":"task_started","task_id":"task-1","description":"Synthetic background agent","uuid":"task-start-1","session_id":session,"tool_use_id":"task-tool-1","task_type":"local_agent"}),
+                );
+                emit(
+                    json!({"type":"result","subtype":"success","session_id":session,"is_error":false,"result":"Native Claude main result","usage":{"input_tokens":12,"output_tokens":3}}),
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2100));
+                emit(
+                    json!({"type":"system","subtype":"session_state_changed","session_id":session,"state":"running","uuid":"state-running-1"}),
+                );
+                emit(
+                    json!({"type":"control_request","request_id":"late-permission","request":{"subtype":"can_use_tool","tool_name":"Write","tool_use_id":"late-write-1","input":{"file_path":"background-output.md","content":"Synthetic background bytes"}}}),
+                );
+                if fixture["cancel"] == true {
+                    emit(json!({"type":"control_cancel_request","request_id":"late-permission"}));
+                    return;
+                }
+                if fixture["closed"] == true {
+                    return;
+                }
+                continue;
+            }
             let request_id = if fixture["questions"] == true {
                 "question-1"
             } else {
@@ -305,6 +336,9 @@ fn fake_claude_control(args: &[String]) {
                         json!({"questions": native["request"]["input"].clone()});
                 }
             }
+            if fixture["background"] == true {
+                continue;
+            }
             if fixture["unknown"] == true {
                 native["request"]["subtype"] = json!("future_native_method");
             }
@@ -337,6 +371,22 @@ fn fake_claude_control(args: &[String]) {
                 }
             }
         } else if value["type"] == "control_response" {
+            if fixture["background"] == true {
+                assert_eq!(value["response"]["request_id"], "late-permission");
+                emit(
+                    json!({"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","output_file":"background-output.md","summary":"Synthetic background task completed","uuid":"task-done-1","session_id":if fixture["foreign"] == true { "foreign-session" } else { &session },"tool_use_id":"task-tool-1","usage":{"total_tokens":7,"tool_uses":1,"duration_ms":2100}}),
+                );
+                if fixture["foreign"] == true {
+                    continue;
+                }
+                emit(
+                    json!({"type":"result","subtype":"success","session_id":session,"is_error":false,"result":"Native Claude follow-up result","usage":{"input_tokens":8,"output_tokens":2}}),
+                );
+                emit(
+                    json!({"type":"system","subtype":"session_state_changed","session_id":session,"state":"idle","uuid":"state-idle-1"}),
+                );
+                continue;
+            }
             let expected_request_id = if fixture["questions"] == true {
                 "question-1"
             } else {

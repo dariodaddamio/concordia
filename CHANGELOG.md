@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (`2026-11-04b`)
+
+- Claude native stdio waits for local background agents and workflows to settle, including
+  follow-up output and late approval requests. Interrupted or uncertain tasks require reconciliation.
+- Agent inspection tracks native task completion instead of treating a background launch receipt
+  as a finished child. Native task descriptions and result summaries remain available to inspect.
+
 ### Fixed (`2026-11-04a`)
 
 - Qualifies Claude CLI 2.1.318 against the matching official SDK control contract. Approval,
