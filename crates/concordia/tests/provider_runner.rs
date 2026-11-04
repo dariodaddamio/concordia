@@ -114,11 +114,14 @@ async fn closed_started_receiver_cancels_the_provider() {
         image::RgbaImage::new(2, 2).save(&png).unwrap();
         let image = concordia::attachments::import(dir.path(), &png).unwrap();
         let capture = dir.path().join("npm-launch.txt");
+        let home = dir.path().join("fixture-home");
+        std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("CONCORDIA_CODEX_BIN", &shim);
         std::env::set_var("FAKE_PROVIDER_OUT", &capture);
         let images = [image];
         let req = ProviderTurnRequest {
             images: &images,
+            home_path: Some(&home),
             prompt: "image prompt %PATH% & \"quoted\"\nλ",
             ..req.clone()
         };
@@ -134,7 +137,11 @@ async fn closed_started_receiver_cancels_the_provider() {
             )
         };
         assert!(
-            received.contains(&arg(&package.join("bin/codex.js").to_string_lossy())),
+            received.contains(&arg(&npm
+                .join("node_modules")
+                .join("@openai/codex")
+                .join("bin/codex.js")
+                .to_string_lossy())),
             "{received}"
         );
         assert!(received.contains(&arg("--image")), "{received}");
