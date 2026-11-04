@@ -1,4 +1,7 @@
 //! Explicit, bounded access to native CLI chats. No session resume, context transfer or inference.
+use crate::provider::stream_cards::{
+    classify_codex_event, format_card_line, upsert_card, StreamCard, StreamPart,
+};
 use crate::{sessions, store::ProviderKind};
 use serde_json::{json, Value};
 use std::{
@@ -9,11 +12,13 @@ use std::{
 const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|claude|cursor] [--json] [--limit N]\n       concordia chat read SESSION --account ID [--provider codex|claude|cursor] [--tail N] [--grep TEXT] [--max-chars N]\n       concordia chat search TEXT [--account ID] [--provider codex|claude|cursor] [--json] [--limit N] (session IDs and previews/titles only)";
 const MAX_CHAT_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
-/// Recent native chat text for display only; never fed back to a provider.
+/// Read-only restoration data. Loading it never dispatches a provider turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryMessage {
     pub role: String,
     pub text: String,
+    /// Original native tool identity and reported input/output, for display only.
+    pub card: Option<StreamCard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +31,28 @@ pub struct History {
 const HISTORY_MESSAGES: usize = 200;
 const HISTORY_TEXT_BYTES: usize = 1024 * 1024;
 const HISTORY_NATIVE_BYTES: u64 = 8 * 1024 * 1024;
+
+fn bound_history_card(card: &mut StreamCard) -> bool {
+    const LIMIT: usize = 64 * 1024;
+    const NOTICE: &str = "\n[Saved-history detail truncated; original native source retained.]\n";
+    let Some(detail) = &mut card.detail else {
+        return false;
+    };
+    if detail.len() <= LIMIT {
+        return false;
+    }
+    let side = (LIMIT - NOTICE.len()) / 2;
+    let mut head = side;
+    while !detail.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = detail.len() - side;
+    while !detail.is_char_boundary(tail) {
+        tail += 1;
+    }
+    *detail = format!("{}{NOTICE}{}", &detail[..head], &detail[tail..]);
+    true
+}
 
 /// Read a bounded scrollback from an explicitly bound account and native session.
 /// File discovery and I/O belong on a worker thread, outside the render loop.
@@ -75,6 +102,9 @@ fn read_history_file(path: &Path, provider: ProviderKind) -> Result<History, Str
     };
     let mut primary = HistoryBuffer::new(start > 0);
     let mut fallback = HistoryBuffer::new(start > 0);
+    let mut claude = crate::provider::stream_json::StreamParser::new(
+        crate::provider::stream_json::Flavor::Claude,
+    );
     for line in bytes[begin..].split(|b| *b == b'\n') {
         let Ok(value) = serde_json::from_slice::<Value>(line) else {
             continue;
@@ -85,6 +115,54 @@ fn read_history_file(path: &Path, provider: ProviderKind) -> Result<History, Str
             _ => value.get("message").unwrap_or(&value),
         };
         let role = payload.get("role").and_then(Value::as_str).unwrap_or(kind);
+        let structured_assistant = provider == ProviderKind::Claude
+            && role == "assistant"
+            && payload.get("content").is_some_and(Value::is_array);
+        let activity = if provider == ProviderKind::Codex {
+            let mut parts = classify_codex_event(&value);
+            if kind == "response_item"
+                && payload.get("type").and_then(Value::as_str) == Some("reasoning")
+            {
+                // Only provider-reported readable summaries; encrypted reasoning stays opaque.
+                if let Some(summary) = payload.get("summary").and_then(Value::as_array) {
+                    let text = summary
+                        .iter()
+                        .filter_map(|block| block.get("text").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !text.is_empty() {
+                        parts.push(StreamPart::Thinking(text));
+                    }
+                }
+            }
+            if kind == "event_msg"
+                && payload.get("type").and_then(Value::as_str) == Some("agent_reasoning")
+            {
+                if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                    parts.push(StreamPart::Thinking(text.to_owned()));
+                }
+            }
+            parts
+        } else {
+            claude.parse_line(std::str::from_utf8(line).unwrap_or_default())
+        };
+        for part in activity {
+            match part {
+                StreamPart::Card(card) if reported_tool_id(&value, &card.id) => {
+                    primary.push_card(card.clone());
+                    fallback.push_card(card);
+                }
+                StreamPart::Thinking(text) => {
+                    primary.push("thinking", &text);
+                    fallback.push("thinking", &text);
+                }
+                StreamPart::Text(text) if structured_assistant => primary.push("assistant", &text),
+                _ => {}
+            }
+        }
+        if structured_assistant {
+            continue;
+        }
         if matches!(role, "user" | "assistant") {
             let content = payload.get("content");
             let text = content
@@ -118,12 +196,43 @@ fn read_history_file(path: &Path, provider: ProviderKind) -> Result<History, Str
             }
         }
     }
-    Ok(if primary.messages.is_empty() {
+    Ok(if !primary
+        .messages
+        .iter()
+        .any(|message| matches!(message.role.as_str(), "user" | "assistant"))
+    {
         fallback
     } else {
         primary
     }
     .finish())
+}
+
+fn reported_tool_id(value: &Value, id: &str) -> bool {
+    let payload = value.get("payload").unwrap_or(value);
+    let item = value.get("item").unwrap_or(payload);
+    [
+        value.get("item_id"),
+        payload.get("id"),
+        payload.get("call_id"),
+        item.get("id"),
+        item.get("call_id"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| value.as_str() == Some(id))
+        || value
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks.iter().any(|block| {
+                    block
+                        .get("id")
+                        .or_else(|| block.get("tool_use_id"))
+                        .and_then(Value::as_str)
+                        == Some(id)
+                })
+            })
 }
 
 struct HistoryBuffer {
@@ -151,6 +260,14 @@ impl HistoryBuffer {
         if text.trim().is_empty() {
             return;
         }
+        if role == "thinking"
+            && self
+                .messages
+                .back()
+                .is_some_and(|message| message.role == role && message.text == text)
+        {
+            return;
+        }
         if text.len() > HISTORY_TEXT_BYTES {
             let mut start = text.len() - HISTORY_TEXT_BYTES;
             while !text.is_char_boundary(start) {
@@ -163,10 +280,63 @@ impl HistoryBuffer {
         self.messages.push_back(HistoryMessage {
             role: role.into(),
             text,
+            card: None,
         });
+        self.enforce_bound();
+    }
+
+    fn push_card(&mut self, mut card: StreamCard) {
+        card.title = terminal_safe(&card.title);
+        card.detail = card.detail.as_deref().map(terminal_safe);
+        self.truncated |= bound_history_card(&mut card);
+        let start = self
+            .messages
+            .iter()
+            .rposition(|message| message.role == "user")
+            .unwrap_or(0);
+        if let Some(index) = (start..self.messages.len()).find(|&index| {
+            self.messages[index]
+                .card
+                .as_ref()
+                .is_some_and(|old| old.id == card.id)
+        }) {
+            let message = &mut self.messages[index];
+            self.bytes = self.bytes.saturating_sub(
+                message.text.len()
+                    + message
+                        .card
+                        .as_ref()
+                        .and_then(|card| card.detail.as_ref())
+                        .map_or(0, String::len),
+            );
+            let mut cards = vec![message.card.take().unwrap()];
+            upsert_card(&mut cards, card);
+            card = cards.remove(0);
+            self.truncated |= bound_history_card(&mut card);
+            message.text = format_card_line(&card);
+            self.bytes += message.text.len() + card.detail.as_ref().map_or(0, String::len);
+            message.card = Some(card);
+        } else {
+            let text = format_card_line(&card);
+            self.bytes += text.len() + card.detail.as_ref().map_or(0, String::len);
+            self.messages.push_back(HistoryMessage {
+                role: "card".into(),
+                text,
+                card: Some(card),
+            });
+        }
+        self.enforce_bound();
+    }
+
+    fn enforce_bound(&mut self) {
         while self.messages.len() > HISTORY_MESSAGES || self.bytes > HISTORY_TEXT_BYTES {
             if let Some(message) = self.messages.pop_front() {
-                self.bytes -= message.text.len();
+                self.bytes -= message.text.len()
+                    + message
+                        .card
+                        .as_ref()
+                        .and_then(|card| card.detail.as_ref())
+                        .map_or(0, String::len);
             }
             self.truncated = true;
         }
@@ -595,11 +765,13 @@ mod tests {
             vec![
                 HistoryMessage {
                     role: "user".into(),
-                    text: "question 雪".into()
+                    text: "question 雪".into(),
+                    card: None,
                 },
                 HistoryMessage {
                     role: "assistant".into(),
-                    text: "answer 🙂".into()
+                    text: "answer 🙂".into(),
+                    card: None,
                 },
             ]
         );
@@ -616,9 +788,73 @@ mod tests {
                 .messages[0],
             HistoryMessage {
                 role: "assistant".into(),
-                text: "Claude 雪".into()
+                text: "Claude 雪".into(),
+                card: None,
             }
         );
+        let rows = [
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":"inspect the project"}}),
+            json!({"type":"event_msg","payload":{"type":"agent_reasoning","text":"Check the reported files first"}}),
+            json!({"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Check the reported files first"}],"encrypted_content":"opaque-do-not-display"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","call_id":"native-call-one","name":"exec","input":"text(await tools.exec_command({cmd:\"git status\"}));"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"native-call-one","output":"working tree clean"}}),
+            json!({"type":"response_item","payload":{"type":"reasoning","encrypted_content":"opaque-only"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":"finished"}}),
+        ];
+        std::fs::write(
+            &path,
+            rows.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let history = read_history_file(&path, ProviderKind::Codex).unwrap();
+        assert_eq!(
+            history
+                .messages
+                .iter()
+                .map(|message| message.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["user", "thinking", "card", "assistant"]
+        );
+        assert_eq!(history.messages[1].text, "Check the reported files first");
+        let card = history.messages[2].card.as_ref().unwrap();
+        assert_eq!(card.id, "native-call-one");
+        assert_eq!(card.status, crate::provider::stream_cards::CardStatus::Done);
+        assert!(card.detail.as_deref().unwrap().contains("git status"));
+        assert!(card
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("working tree clean"));
+        assert!(!format!("{history:?}").contains("opaque-"));
+
+        let rows = [
+            json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Inspect actual input"},{"type":"text","text":"Opening file"},{"type":"tool_use","id":"claude-tool-one","name":"Read","input":{"file_path":"src/main.rs"}}]}}),
+            json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"claude-tool-one","content":"fn main() {}"}]}}),
+            json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Read complete"}]}}),
+        ];
+        std::fs::write(
+            &path,
+            rows.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let history = read_history_file(&path, ProviderKind::Claude).unwrap();
+        assert_eq!(
+            history
+                .messages
+                .iter()
+                .map(|message| message.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["thinking", "assistant", "card", "assistant"]
+        );
+        let card = history.messages[2].card.as_ref().unwrap();
+        assert_eq!(card.id, "claude-tool-one");
+        assert!(card.detail.as_deref().unwrap().contains("fn main() {}"));
     }
 
     #[test]
@@ -639,6 +875,39 @@ mod tests {
         assert_eq!(history.messages.len(), 1);
         assert!(history.messages[0].text.len() <= HISTORY_TEXT_BYTES);
         assert!(history.messages[0].text.chars().all(|c| c == '雪'));
+        let mut history = HistoryBuffer::new(false);
+        history.push("user", "bounded request");
+        history.push_card(StreamCard {
+            id: "bounded-native-tool".into(),
+            title: "read_file".into(),
+            detail: Some("x".repeat(HISTORY_TEXT_BYTES + 1)),
+            status: crate::provider::stream_cards::CardStatus::Done,
+        });
+        let history = history.finish();
+        assert!(history.truncated);
+        assert!(
+            history
+                .messages
+                .iter()
+                .any(|message| message.card.as_ref().is_some_and(|card| card
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("Saved-history detail truncated")))),
+            "large tools retain an inspectable card instead of erasing the history"
+        );
+        assert!(
+            history
+                .messages
+                .iter()
+                .map(|message| message.text.len()
+                    + message
+                        .card
+                        .as_ref()
+                        .and_then(|card| card.detail.as_ref())
+                        .map_or(0, String::len))
+                .sum::<usize>()
+                <= HISTORY_TEXT_BYTES
+        );
     }
 
     #[test]
@@ -661,7 +930,8 @@ mod tests {
             history.messages,
             vec![HistoryMessage {
                 role: "assistant".into(),
-                text: "recent 🙂".into()
+                text: "recent 🙂".into(),
+                card: None,
             }]
         );
     }
@@ -786,7 +1056,8 @@ mod tests {
             history.messages,
             vec![HistoryMessage {
                 role: "assistant".into(),
-                text: "old target answer".into()
+                text: "old target answer".into(),
+                card: None,
             }]
         );
         assert!(read_history(

@@ -1,5 +1,15 @@
 # Changelog
 
+### Fixed (`2026-11-04m`)
+
+- Permissions open in a compact footer popover, preserving the visible composer. Clicking
+  outside returns directly to the underlying control without changing the permission mode.
+- Completed tool headers show Expand/Collapse and respond across their header text; links keep
+  their file/web actions and dragging still selects text.
+- Reopened Codex and Claude chats restore recorded native tool inputs/results/status and readable
+  thinking, with a completed-turn activity review. Encrypted reasoning stays unavailable; Cursor
+  saved-history restoration remains text-only. Imported running calls retain their status.
+
 ### Fixed (`2026-11-04l`)
 
 - Detached file windows identify their file relative to the chat workspace and retain the dirty

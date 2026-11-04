@@ -20,6 +20,11 @@ fn setup() -> (App, tempfile::TempDir, PathBuf) {
         serde_json::json!({"type":"session_meta","payload":{"id":"target-session","cwd":dir.path()}}).to_string(),
     ];
     for i in 0..80 {
+        if i == 79 {
+            events.push(serde_json::json!({"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Provider reported inspection"}],"encrypted_content":"unreadable-private-data"}}).to_string());
+            events.push(serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"restored-native-tool","name":"shell_command","arguments":"{\"command\":\"git status\"}"}}).to_string());
+            events.push(serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"restored-native-tool","output":"working tree clean"}}).to_string());
+        }
         events.push(serde_json::json!({"type":"response_item","payload":{"type":"message","role":if i%2==0 {"user"} else {"assistant"},"content":[{"type":"output_text","text":format!("message-{i}: synthetic history")}]}}).to_string());
     }
     std::fs::write(home.join("sessions/target.jsonl"), events.join("\n") + "\n").unwrap();
@@ -84,6 +89,39 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
     finish(&mut app);
     assert_eq!(app.editor.text(), "unsent draft");
     assert!(app.usage_block.is_none());
+    let (index, card) = app
+        .messages
+        .iter()
+        .enumerate()
+        .find_map(|(index, message)| message.card.as_ref().map(|card| (index, card)))
+        .unwrap();
+    assert!(app.messages[index].role == MsgRole::Card);
+    assert_eq!(card.id, "restored-native-tool");
+    assert_eq!(card.status, CardStatus::Done);
+    assert!(card.detail.as_deref().unwrap().contains("git status"));
+    assert!(card
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("working tree clean"));
+    assert!(app
+        .messages
+        .iter()
+        .any(|message| message.role == MsgRole::Thinking
+            && message.text == "Provider reported inspection"));
+    let review = app
+        .messages
+        .iter()
+        .position(|message| {
+            message.role == MsgRole::Meta && message.text.contains("Review activity")
+        })
+        .unwrap();
+    app.open_activity_review(review);
+    let (_, body) = app.activity.detail_text.as_ref().unwrap();
+    assert!(body.contains("Provider reported inspection") && body.contains("working tree clean"));
+    assert!(!body.contains("unreadable-private-data"));
+    app.activity.detail = None;
+    app.activity.detail_text = None;
     assert_eq!(
         app.messages
             .iter()

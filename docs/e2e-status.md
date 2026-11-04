@@ -1,5 +1,33 @@
 # Concordia verification status
 
+## Installed footer popover and completed-work restoration, 2026-11-04m
+
+Application source `93d0d68` builds the installed executable, SHA-256
+`257CA03BECAF0F9AE9838152EAB483CC37984D5BFE57CC168000851BAF2F2BA0`.
+Installed bytes match the checked artifact: 23,205,888 bytes (22.13 MiB), within the 23 MiB ceiling.
+477 enabled UI scenarios and eight native-history scenarios pass after focused regression reruns;
+five UI scenarios remain ignored. Final all-target Clippy, optimized build, release smoke and
+privacy/OSS checks pass. Defender reports no threats with intelligence `1.463.119.0` for that hash.
+
+The exact release App reopens an isolated native Codex fixture and shows readable thinking,
+recorded input/output/status, Expand on its collapsed tool and completed Review activity. Clicking
+the tool title itself exposes its recorded output. The permissions menu occupies the compact
+lower-right region above the footer: 17,073 changed pixels inside the checked bounds and zero
+outside. The draft stays visible/persisted; an outside click closes the menu with zero remaining
+visual difference. Screenshots were inspected. Evidence remains ignored under
+`target/native-window-proof/history-popover-04m-qualified`. Earlier controller failures used an
+incorrect recovery-field assertion or mismatched underline/underscore glyph recognition; their
+receipts are retained separately. No application-source changes were needed for those fixes.
+
+Codex and Claude history fixtures cover native IDs, reported reasoning, merged call/results and
+review restoration. Large saved results retain a labelled partial card, bounded to 64 KiB of detail,
+rather than erasing all activity. Source limits remain 8 MiB/200 entries/1 MiB displayed history.
+Cursor saved-history tools and encrypted reasoning remain unavailable. Importing history starts
+no provider work, and running calls are not relabelled as completed in context packs.
+
+No provider model turn, guard activation, global input/clipboard change or publication occurred.
+The requested guard-scope, live-test budget and publication choices remain owner decisions.
+
 ## Installed child-window details, 2026-11-04l
 
 Application source `ecf6d58` builds the installed executable, SHA-256

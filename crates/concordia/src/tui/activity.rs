@@ -1,5 +1,40 @@
 use super::{ChatLine, MsgRole};
 use crate::provider::stream_cards::{format_card_line, tool_label, CardStatus, StreamCard};
+
+/// The title row is an accordion target; links retain their file/web actions.
+pub(super) fn card_header_at(app: &super::App, x: u16, y: u16) -> Option<usize> {
+    let area = app.areas.transcript;
+    if !super::contains(area, x, y) || app.picker.is_some() || app.activity.detail.is_some() {
+        return None;
+    }
+    let pos = app
+        .view
+        .pos_at((y - area.y) as isize, (x - area.x) as usize)?;
+    let row = app.view.rows.get(pos.row)?;
+    let index = row.identity?;
+    let mut first = pos.row;
+    while first > 0 && app.view.rows[first].joins_prev {
+        first -= 1;
+    }
+    if app.messages.get(index)?.role != MsgRole::Card
+        || app.view.rows[first].identity != Some(index)
+        || app.view.rows[first].source_offset != 0
+    {
+        return None;
+    }
+    if row
+        .links
+        .iter()
+        .any(|(start, end, _)| *start <= pos.col && pos.col < *end)
+        || row
+            .web_links
+            .iter()
+            .any(|(start, end, _)| *start <= pos.col && pos.col < *end)
+    {
+        return None;
+    }
+    Some(index)
+}
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 use std::collections::HashSet;

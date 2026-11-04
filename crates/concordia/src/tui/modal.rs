@@ -58,6 +58,13 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
 }
 
 pub(super) fn draw_input(f: &mut Frame, area: Rect, app: &mut App) -> bool {
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Trust)
+    {
+        return false;
+    }
     let hint = if let Some(picker) = &app.picker {
         if picker.kind == PickerKind::Update
             && app.job.as_ref().is_some_and(|j| j.kind == JobKind::Update)
