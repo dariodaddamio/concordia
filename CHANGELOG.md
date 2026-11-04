@@ -1,5 +1,18 @@
 # Changelog
 
+### Added (`2026-11-03y`)
+
+- Native PDF attachments for qualified Claude CLI 2.1.317, including mixed ordered image,
+  text and PDF content, durable queued snapshots, F9 file-path attachment and explicit viewer
+  opening. Limits are 8 MiB per PDF, 16 MiB of PDFs and four attachments per message.
+- PDF dispatch verifies snapshot hashes and refuses unsupported providers before a model launch.
+  Native payload fixtures establish transport behavior; live PDF model processing remains unverified.
+
+### Fixed (`2026-11-03x`)
+
+- Windows installation retries temporary sharing/lock violations during executable replacement,
+  with a bounded deadline and rollback to the previous installation on failure.
+
 ### Added (`2026-11-03x`)
 
 - F10 manages selected local integrations: connect a manifest, reconnect, verify, or disconnect

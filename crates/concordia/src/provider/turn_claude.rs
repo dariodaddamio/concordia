@@ -174,15 +174,23 @@ pub(super) async fn run(
         None
     };
     let mut message = user_message(&plan.prompt);
-    anyhow::ensure!(
-        req.images.len() <= crate::attachments::MAX_IMAGES,
-        "at most four images per message"
-    );
-    for image in req.images {
-        message["message"]["content"]
-            .as_array_mut()
-            .expect("native content array")
-            .push(image.claude().map_err(anyhow::Error::msg)?);
+    if let Some(documents) = pdf_message(req)? {
+        message["message"]["content"] = Value::Array(
+            documents
+                .claude_content(&plan.prompt)
+                .map_err(anyhow::Error::msg)?,
+        );
+    } else {
+        anyhow::ensure!(
+            req.images.len() <= crate::attachments::MAX_IMAGES,
+            "at most four images per message"
+        );
+        for image in req.images {
+            message["message"]["content"]
+                .as_array_mut()
+                .expect("native content array")
+                .push(image.claude().map_err(anyhow::Error::msg)?);
+        }
     }
     let program = plan.command.clone();
     let version = tokio::task::spawn_blocking(move || {

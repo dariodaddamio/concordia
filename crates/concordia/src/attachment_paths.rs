@@ -59,7 +59,15 @@ pub fn parse(text: &str) -> Option<Vec<PathBuf>> {
                 || !PathBuf::from(path).extension().is_some_and(|extension| {
                     matches!(
                         extension.to_string_lossy().to_ascii_lowercase().as_str(),
-                        "png" | "jpg" | "jpeg" | "webp" | "txt" | "md" | "markdown" | "json"
+                        "png"
+                            | "jpg"
+                            | "jpeg"
+                            | "webp"
+                            | "txt"
+                            | "md"
+                            | "markdown"
+                            | "json"
+                            | "pdf"
                     )
                 })
         })

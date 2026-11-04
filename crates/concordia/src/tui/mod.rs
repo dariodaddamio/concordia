@@ -3378,6 +3378,11 @@ impl App {
             self.flash("Keep attachments with a message; commands leave the draft intact");
             return;
         }
+        if incoming.has_pdfs() && self.provider != ProviderKind::Claude {
+            self.restore_composer(&original_line);
+            self.flash("Native PDF attachments require Claude; select Claude before sending. The draft is retained");
+            return;
+        }
         let line = incoming.text.clone();
         if let Some(arg) = line
             .strip_prefix("/attach")
@@ -3890,7 +3895,11 @@ pub async fn run_chat_tui() -> Result<()> {
             app.queue_advance(&turn_tx);
             while let Ok(prompt) = turn_rx.try_recv() {
                 let incoming = crate::attachments::Message::decode(&prompt);
-                let prompt = match incoming.prompt_text() {
+                let prompt = match if incoming.has_pdfs() {
+                    incoming.validate().map(|()| incoming.encode())
+                } else {
+                    incoming.prompt_text()
+                } {
                     Ok(prompt) => prompt,
                     Err(error) => {
                         app.on_turn_done(

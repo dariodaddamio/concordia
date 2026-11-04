@@ -187,9 +187,13 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
 }
 
 fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
+    let document_message = pdf_message(req)?;
+    let raw_prompt = document_message
+        .as_ref()
+        .map_or(req.prompt, |message| message.text.as_str());
     let mut prompt = match req.context_prefix {
-        Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{}", req.prompt),
-        _ => req.prompt.to_string(),
+        Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{raw_prompt}"),
+        _ => raw_prompt.to_string(),
     };
     if req
         .native_session_id
@@ -208,7 +212,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
     }
     if let Some(now) = &req.local_time {
         // Relative times are read from what the user wrote, not from the context pack.
-        prompt = format!("{}\n{prompt}", crate::prompt_time::header(req.prompt, now));
+        prompt = format!("{}\n{prompt}", crate::prompt_time::header(raw_prompt, now));
     }
     match req.provider {
         ProviderKind::Codex => {
@@ -402,6 +406,26 @@ pub async fn run_provider_turn_with_transport(
     run_provider_turn_inner(req, Some(owner), mode, on_started, on_progress).await
 }
 
+fn pdf_message(req: &ProviderTurnRequest<'_>) -> Result<Option<crate::attachments::Message>> {
+    if !req.prompt.starts_with('\u{1e}') {
+        return Ok(None);
+    }
+    let message = crate::attachments::Message::decode(req.prompt);
+    message.validate().map_err(anyhow::Error::msg)?;
+    if !message.has_pdfs() {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        req.provider == ProviderKind::Claude,
+        "Native PDF attachments require Claude; original draft and snapshots were retained"
+    );
+    anyhow::ensure!(
+        message.images() == req.images,
+        "PDF message image descriptors changed; attach the files again"
+    );
+    Ok(Some(message))
+}
+
 async fn run_provider_turn_inner(
     req: &ProviderTurnRequest<'_>,
     owner: Option<InteractionOwner>,
@@ -417,6 +441,17 @@ async fn run_provider_turn_inner(
         })
         .transpose()?;
     let mut plan = plan_provider_turn(req)?;
+    let documents = pdf_message(req)?;
+    if documents.is_some() && mode == crate::native_input::Mode::Standard {
+        let program = plan.command.clone();
+        let version = tokio::task::spawn_blocking(move || {
+            super::compat::run_cli(Path::new(&program), &["--version"])
+        })
+        .await?
+        .map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(super::compat::version_token(&version).as_deref() == Some(claude_native::SUPPORTED_VERSION),
+            "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained", claude_native::SUPPORTED_VERSION);
+    }
     if let (Some(tx), Some(notice)) = (&on_progress, enforcement_notice(req)) {
         let _ = tx.send(TurnProgress::Notice(notice));
     }
@@ -448,7 +483,25 @@ async fn run_provider_turn_inner(
     let plain_output =
         super::compat::caps_for(plan.provider).is_some_and(|caps| caps.known && !caps.stream_json);
     let mut launch = prepare(&plan)?;
-    attach_images(&mut launch, plan.provider, req.images, &plan.prompt)?;
+    if let Some(message) = documents {
+        anyhow::ensure!(
+            !super::launch::is_batch_shim(&launch.program),
+            "Native PDF input requires a native executable"
+        );
+        if launch.args.last() == Some(&plan.prompt) {
+            launch.args.pop();
+        }
+        launch
+            .args
+            .extend(["--input-format".into(), "stream-json".into()]);
+        launch.stdin = Some(format!(
+            "{}\n",
+            serde_json::json!({"type":"user","message":{
+            "role":"user","content":message.claude_content(&plan.prompt).map_err(anyhow::Error::msg)?},"parent_tool_use_id":null})
+        ));
+    } else {
+        attach_images(&mut launch, plan.provider, req.images, &plan.prompt)?;
+    }
     let handle = Arc::new(RunningTurn::new());
 
     let mut cmd = Command::new(&launch.program);

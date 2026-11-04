@@ -954,7 +954,11 @@ impl Delegates {
                 }
             };
             let message = crate::attachments::Message::decode(&spec.prompt);
-            let prompt = match message.prompt_text() {
+            let prompt = match if message.has_pdfs() {
+                message.validate().map(|()| message.encode())
+            } else {
+                message.prompt_text()
+            } {
                 Ok(prompt) => prompt,
                 Err(error) => {
                     let _ = tx.send(Event::Finished(
