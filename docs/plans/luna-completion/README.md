@@ -119,7 +119,7 @@ and relevant evidence document. A new planning document is not an implementation
 | L5 integrations | Integrated: Luna `l5_integrations` + coordinator, z | New local manifest and reviewed reconnect/verify/selected disconnect; draft retained |
 | L6 native usage | Blocked-vendor; [Cursor evidence](../../quality/native-usage-coverage.md) | No supported per-event counters; quotas remain distinct and no fabricated totals were added |
 | Numeric credit balance when native response is null | Vendor/data blocked | Requires a supported numeric response; availability is not an amount |
-| Live parity and memory-retention trials | Owner-budget gated | Exact provider/task/model scope and usage budget, then recorded results |
+| Live parity and memory-retention trials | Partial: Cursor live continuation exercised | Owner-authorized bounded Cursor read-only/exact-session trials ran; replay defect reproduced and corrected in d. Other provider/parity trials remain open |
 | Signing and publication | Owner/release gated | Identity, distribution decisions and exact-artifact release evidence |
 
 Use `ready`, `building`, `review`, `integrated`, `blocked-vendor`, `blocked-owner` for work state.
@@ -139,7 +139,9 @@ do not bypass them with administrator flags. Planning-only edits need link/diff/
 not Cargo builds. For an integrated release candidate, bind all receipts to its source and hash.
 
 Live model validation remains disabled until a provider/task scope and usage budget are explicitly
-given. Preparing the cases and synthetic fixtures is autonomous. No certificate provisioning,
+given. The owner's reaffirmed Cursor authorization covers bounded synthetic Cursor live checks;
+read-only/exact-session results are recorded in `docs/e2e-status.md`. Preparing other cases and
+synthetic fixtures is autonomous. No certificate provisioning,
 paid services, vendor submissions, external uploads, tags, releases or visibility changes are
 authorized by this plan. Prepare the concrete local artifact before requesting any final release action.
 

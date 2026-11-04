@@ -111,7 +111,10 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         }
     }
     for (fixture, expected_failed) in [
-        (json!({"permission":true}), false),
+        (
+            json!({"permission":true,"history":[{"role":"assistant","id":"old-answer","text":"Historical answer must not become new output"}],"history_activity":true}),
+            false,
+        ),
         (json!({"image":false}), true),
         (json!({"quota":true}), true),
     ] {
@@ -120,6 +123,16 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let answers = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
+                match &event {
+                    TurnProgress::TextDelta(text) | TurnProgress::ThinkingDelta(text) => {
+                        assert!(
+                            !text.contains("Historical"),
+                            "replayed history leaked: {event:?}"
+                        );
+                    }
+                    TurnProgress::Card(card) => assert_ne!(card.id, "historical-tool"),
+                    _ => {}
+                }
                 if let TurnProgress::Interaction(request) = event {
                     request.respond(json!({"outcome":{"outcome":"selected","optionId":"yes"}}));
                 }

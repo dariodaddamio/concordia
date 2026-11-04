@@ -88,6 +88,16 @@ fn fake_acp() {
                     );
                     continue;
                 }
+                if fixture["history_activity"] == true {
+                    for update in [
+                        serde_json::json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Historical thinking"}}),
+                        serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"historical-tool","title":"Historical read","status":"completed"}),
+                    ] {
+                        emit(
+                            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session_id,"update":update}}),
+                        );
+                    }
+                }
                 serde_json::json!({})
             }
             "session/set_mode" | "session/set_model" => serde_json::json!({}),

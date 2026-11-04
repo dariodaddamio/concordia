@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (`2026-11-04d`)
+
+- Cursor ACP continuation keeps replayed session history out of the new reply, thinking stream
+  and active tool cards. The exact native session is still loaded before sending the new prompt.
+
 ### Fixed (`2026-11-04c`)
 
 - `/update` ignores unrelated Rust workspaces and terminal configuration trees when choosing
