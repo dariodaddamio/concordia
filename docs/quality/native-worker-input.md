@@ -27,9 +27,17 @@ owner changes and connection loss invalidate channels. Restart pauses work and n
 All native-mode tasks disable automatic worker failover; uncertain completion retains scope.
 Explicit cancellation with a confirmed process exit can release it.
 
+Native background completion is retained only for the SDK's bounded `local_agent` and
+`local_workflow` follow-up lifecycles. A foreground/worker owner may keep the completion channel
+open for at most 10 minutes while those local workflows finish; expiry, disconnect or an
+unreconciled first result is reported as uncertain/failed and requires explicit reconciliation,
+never a success claim or automatic replay. Long-lived remote tasks, shell commands and monitors
+are outside this retention contract.
+
 [Codex app-server input](codex-native-input.md) extends this contract behind explicit account/home
 selection. Claude now has a separately gated stdio contract: the source-matched Claude Code
-`2.1.317` CLI accepts `--input-format stream-json --output-format stream-json
+The installed 2026-11-04b candidate tracks Claude CLI `2.1.318`; the source-matched Python SDK v0.2.178
+defines the same `--input-format stream-json --output-format stream-json
 --permission-prompt-tool stdio`; after an `initialize` control exchange, top-level
 `control_request`/`can_use_tool` frames carry a request id, tool name, original input and
 tool-use id, and the only native response is a matching `control_response`. The adapter keeps
@@ -41,8 +49,23 @@ before dispatch; `/native ACCOUNT off` selects the existing standard adapter. It
 falls back from an approval-capable transport. Duplicate IDs receive no second grant. Native
 cancellation invalidates pending review while stdout continues being consumed; closing or losing
 the provider leaves uncertain completion paused. Image content is preserved. Structured Claude
-`AskUserQuestion` payloads are denied with an instruction to ask in ordinary assistant text;
-this version implements allow-once/deny tool approval rather than full Claude question parity.
+`AskUserQuestion` is now supported in the existing broker for the scoped native 2.1.318 shape.
+The broker preserves original question text/options and returns answers as strings; multi-select
+answers are joined with `, `. Malformed, unsupported or cancelled payloads are denied, and no HTML
+preview is rendered. This follows the official [user-input contract](https://platform.claude.com/docs/en/agent-sdk/user-input)
+and [AskUserQuestion preview example](https://github.com/anthropics/claude-agent-sdk-demos/tree/main/ask-user-question-previews).
+The review surface supports up to four questions, each with two to four choices. Space toggles
+the focused choice and Enter confirms; mouse clicks toggle choices and the confirm control submits
+the reviewed set. A free-text `Other` response reuses the existing note row rather than opening
+HTML or a second editor. The same bounded ownership, cancellation and at-most-once response
+rules apply to these answers.
+The d322 native source checks pass 26 native unit cases plus extended foreground/worker process
+fixtures, including background, cancellation, foreign-owner and EOF cases. No live model turn or
+physical-host parity is claimed;
+exact historical artifact evidence is in [E2E status](../e2e-status.md). Source evidence: [Python
+v0.2.178 CLI version](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/_cli_version.py),
+[query control methods](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/_internal/query.py),
+and [TypeScript v0.3.318 release parity](https://github.com/anthropics/claude-agent-sdk-typescript/releases). Build source is `22b4da5`; exact artifact identity and release receipt remain in E2E status.
 
 ## Activity and navigation
 

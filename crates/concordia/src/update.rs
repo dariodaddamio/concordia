@@ -1362,6 +1362,34 @@ mod tests {
                 "notes.txt"
             ]
         );
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let from = d.path().join("held-source.bin");
+            let to = d.path().join("held-destination.bin");
+            fs::write(&from, b"retry payload").unwrap();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let held = std::thread::spawn({
+                let from = from.clone();
+                move || {
+                    let _file = fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .share_mode(3)
+                        .open(from)
+                        .unwrap();
+                    ready_tx.send(()).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            });
+            ready_rx.recv().unwrap();
+            let first = fs::rename(&from, &to).unwrap_err();
+            assert!(matches!(first.raw_os_error(), Some(32 | 33)), "{first}");
+            rename_with_retry(&from, &to).unwrap();
+            held.join().unwrap();
+            assert_eq!(fs::read(&to).unwrap(), b"retry payload");
+        }
     }
 
     #[test]

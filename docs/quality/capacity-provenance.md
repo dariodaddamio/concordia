@@ -21,7 +21,7 @@ Native compaction defaults and the separately implemented one-attempt reactive c
 recovery are preserved. No in-flight turn is interrupted or replayed to implement this policy.
 
 Build `2026-11-03x` adds Claude's version-matched Agent SDK `get_context_usage` control
-request on the opt-in native stdio adapter (CLI 2.1.317). Capture happens **after a completed
+request on the opt-in native stdio adapter (installed 2026-11-04b, CLI 2.1.318). Capture happens **after a completed
 turn on that same live connection**. No pre-prompt resumed-process reading is allowed to trigger
 rollover: the official SDK does not explicitly guarantee that prior context has loaded then.
 The response must match the explicit selected model and contain valid current tokens, effective
@@ -60,5 +60,6 @@ Primary references inspected 2026-11-03:
 - [Claude interactive statusline](https://code.claude.com/docs/en/statusline)
 - [Claude Agent SDK `get_context_usage`](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/client.py)
 - [Claude Agent SDK context usage types](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/types.py)
-- [Claude Agent SDK v0.2.177 release (bundled CLI 2.1.317)](https://github.com/anthropics/claude-agent-sdk-python/releases/tag/v0.2.177)
+- [Claude Agent SDK Python v0.2.178 CLI version source](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/_cli_version.py)
+- [Claude Agent SDK TypeScript v0.3.318 releases](https://github.com/anthropics/claude-agent-sdk-typescript/releases)
 - [Cursor ACP transport and session schema](https://cursor.com/docs/cli/acp)

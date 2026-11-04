@@ -10,9 +10,10 @@ Bounded continuity maps, explicit delegation, recent native-source pointers/read
 pane-owned unfinished-request recovery and one-attempt explicit capacity-error rollover are implemented.
 Whole-history pages, bounded lexical retrieval/lineage, supported Cursor ACP readback, opt-in Codex
 proactive rollover/native compaction controls and durable worker recovery/failover are implemented
-with fixture evidence. Claude native stdio and post-turn, source-bound context measurements
-are added in the x candidate; the y candidate adds native Claude PDF inputs. Cursor capacity
-and live parity remain open.
+with fixture evidence. Claude native stdio, structured questions, post-turn source-bound context
+measurements and native PDF inputs are implemented. Build `2026-11-04b` qualifies CLI 2.1.318
+and retains local native background work through completion and follow-up output. Native regression
+fixtures pass; Cursor capacity, external usage and live/physical parity remain open.
 Current bounds and controls: [native memory](docs/native-memory.md).
 Native image inputs for Codex/Claude/Cursor and local Mermaid rendering are implemented;
 [image/diagram limits](docs/images-and-diagrams.md) distinguish fixture proof from live-provider validation.

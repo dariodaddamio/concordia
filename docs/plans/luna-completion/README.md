@@ -8,8 +8,9 @@ implementation or live qualification of the remaining features.
 Current execution baseline: `5dbac3e`; coordinator branch `feat/luna-roadmap-completion`.
 Host-native Luna workers `l5_integrations`, `l4_file_outputs` and `l3_binary_inputs`
 own the first wave. Coordinator owns shared integration and candidate delivery. These are
-implementation assignments. The x candidate integrates their approved source changes; qualification
-results remain separate from implementation and are recorded below as checks complete.
+implementation assignments. The 2026-11-04b candidate integrates the approved source changes and
+is installed-qualified by the coordinator; qualification results remain separate from live use.
+The 2026-11-03z receipt remains historical.
 
 ## Objective and accountability
 
@@ -109,15 +110,15 @@ and relevant evidence document. A new planning document is not an implementation
 
 | Task | Initial state | Completion condition |
 | --- | --- | --- |
-| L1 Claude approvals | Review: Luna `l4_file_outputs` + coordinator, x candidate | Qualified 2.1.317 native stdio allow-once/deny; broader structured question parity remains separate |
-| L2 Claude capacity | Review: Luna `l3_binary_inputs` / `l4_file_outputs` + coordinator, x candidate | Completed-turn control capture, exact source/model/settings check before reuse; no speculative pre-prompt sensor |
+| L1 Claude approvals | Integrated: 2026-11-04b / CLI 2.1.318 | Source d322 passes 26 native unit cases and extended background/cancel/foreign/EOF process fixtures; local_agent/local_workflow retention is bounded at 10 minutes. Live turns, remote/shell/monitor lifecycles and HTML previews remain excluded |
+| L2 Claude capacity | Integrated: 2026-11-04b / CLI 2.1.318 | Completed-turn control capture and exact source/model/settings reuse remain; no speculative pre-prompt sensor |
 | L2 Cursor capacity | Blocked-vendor; [source audit](../../quality/capacity-provenance.md) | Supported current-window request/event is absent from the documented Cursor transport |
-| L3 binary inputs | Review: Luna `l5_integrations`, isolated PDF candidate | Claude 2.1.317 standard/stdio bounded PDF snapshots and ordered native dispatch are implemented with fake-process evidence; installed/live qualification and physical viewer checks remain |
-| L4 Claude outputs | Review: Luna `l3_binary_inputs` + coordinator, x candidate | Built-in Write/Edit correlation plus successful native result metadata; unsupported formats stay excluded |
-| L4 Cursor outputs | Review: Luna `l4_file_outputs` + coordinator, x candidate | Exact-session completed write/edit success path through the existing registry |
-| L5 integrations | Review: Luna `l5_integrations` + coordinator, x candidate | New local manifest and reviewed reconnect/verify/selected disconnect; draft retained |
+| L3 binary inputs | Integrated: 2026-11-04b / CLI 2.1.318 | Bounded Claude PDF snapshots/dispatch and process checks are integrated; live processing, physical clipboard/viewer behavior remain unqualified; other-provider rejection is explicit |
+| L4 Claude outputs | Integrated: Luna `l3_binary_inputs` + coordinator, z | Built-in Write/Edit correlation plus successful native result metadata; unsupported formats stay excluded |
+| L4 Cursor outputs | Integrated: Luna `l4_file_outputs` + coordinator, z | Exact-session completed write/edit success path through the existing registry |
+| L5 integrations | Integrated: Luna `l5_integrations` + coordinator, z | New local manifest and reviewed reconnect/verify/selected disconnect; draft retained |
 | L6 native usage | Blocked-vendor; [Cursor evidence](../../quality/native-usage-coverage.md) | No supported per-event counters; quotas remain distinct and no fabricated totals were added |
-| Numeric credit balance when native response is null | Vendor/data blocked | A supported numeric source exists; availability is not an amount |
+| Numeric credit balance when native response is null | Vendor/data blocked | Requires a supported numeric response; availability is not an amount |
 | Live parity and memory-retention trials | Owner-budget gated | Exact provider/task/model scope and usage budget, then recorded results |
 | Signing and publication | Owner/release gated | Identity, distribution decisions and exact-artifact release evidence |
 

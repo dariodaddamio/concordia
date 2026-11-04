@@ -16,11 +16,28 @@ pub(super) fn panel_area(area: Rect) -> Rect {
 #[derive(Default)]
 pub(super) struct State {
     cards: Vec<(String, usize)>,
+    launch_tools: Vec<String>,
 }
 
 impl State {
     pub fn record(&mut self, card: &StreamCard, index: usize) {
         let id = &card.id;
+        if let Some(identity) = id.strip_prefix("native-agent:claude:") {
+            if let Ok((_, _, Some(tool))) =
+                serde_json::from_str::<(String, String, Option<String>)>(identity)
+            {
+                if !self.launch_tools.contains(&tool) {
+                    if self.launch_tools.len() >= 64 {
+                        self.launch_tools.remove(0);
+                    }
+                    self.launch_tools.push(tool.clone());
+                }
+                self.cards.retain(|(old, _)| old != &tool);
+            }
+        }
+        if self.launch_tools.contains(id) {
+            return;
+        }
         if !id.starts_with("native-agent:") && !matches!(card.title.as_str(), "Agent" | "Task") {
             return;
         }

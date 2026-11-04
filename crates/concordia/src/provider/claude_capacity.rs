@@ -11,7 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
-pub const CLI_VERSION: &str = "2.1.317";
+pub const CLI_VERSION: &str = "2.1.318";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextUsage {

@@ -1,4 +1,4 @@
-# Release readiness, 2026-11-02
+# Release readiness, 2026-11-03z candidate
 
 Concordia is a working private Windows build. It is not ready to advertise as a proven,
 complete context manager/orchestrator. A limited public preview has a smaller product scope,
@@ -9,7 +9,7 @@ but still needs the concrete gates below. This document does not authorize publi
 | Gate | Current evidence | Needed before release |
 | --- | --- | --- |
 | Dependency advisories | Unused Syntect YAML/plist import features are removed. Bincode remains under one reviewed maintenance-advisory exception for embedded assets. | Keep all other advisory checks enabled; remove the exception when the upstream dump format migrates. See [dependency review](quality/dependency-security.md). |
-| Artifact size | The 2026-11-03p unsigned candidate is 21,580,800 bytes (20.58 MiB), adding 733,696 bytes over build o for native PNG/JPEG/WebP previews. | The reviewed distribution budget is 22 MiB, about 7% headroom above this measured artifact. Default image codecs and Rayon are disabled. `smoke-ci.ps1` compares exact bytes and fails above it. This is a distribution decision, not a performance or memory claim. Re-run on the exact candidate. |
+| Artifact size | The 2026-11-03p unsigned candidate measured 21,580,800 bytes (20.58 MiB); this is historical evidence, not the z artifact size. | Re-measure the exact z candidate against the reviewed 22 MiB budget; `smoke-ci.ps1` compares exact bytes and fails above it. |
 | Privacy preflight | Public repository/package identifiers are now exempt only as exact identifiers in listed metadata/adapter/installer files. A private-project reference in the implementation ledger was removed. | Continue scanning the remaining contents of those files and every other tracked text file. New identifiers require an explicit review. |
 | Source snapshot | Memory/orchestration work is committed, and the signing-workflow candidate preserves the earlier drafts with publisher identity configured outside source control. | CI must pass on the exact committed candidate. Configured workflows do not establish a signed or release-qualified artifact. |
 | Windows antivirus / publisher trust | Defender quarantined the installed 2026-11-02d executable and release dependency executable as `Trojan:Win32/Bearfoos.A!ml` on 2026-11-02. A locked rebuild passed local scans and installed successfully after intelligence update to `1.463.94.0`; it remains unsigned. | Obtain identity-verified publisher signing, submit the detected artifact to Microsoft for review, and pass signature/Defender/install/update checks on the exact final signed artifact. The workflow gates are implemented; signing setup and vendor review remain pending. See [Windows signing](windows-signing.md) for the recovered artifact hash and limits. No antivirus exclusion is a release prerequisite. |
@@ -38,7 +38,8 @@ No credential files were read or copied for this audit. Evidence: ignored
   green rehearsals predate it. Verify checksum/install/update from a fresh download. A public
   release feed cannot be certified from local source rebuilds alone.
 - **Release choices.** Confirm version, public namespace and signing/distribution policy.
-  Packaging generates checksums; executable signing is not implemented. Explicit Windows-only
+  Packaging generates checksums and the signing workflow exists, but executable identity and
+  trusted timestamp are not complete. Explicit Windows-only
   support is valid for a Windows preview; Linux/macOS are not prerequisites.
 
 Keep the archived pre-release branch and history bundle local. They are not part of a public
@@ -53,11 +54,13 @@ Image paste and internal editing are no longer unimplemented blockers.
 
 Whole-history indexing/pagination, bounded lexical retrieval and confirmed/observed lineage,
 Cursor ACP readback, optional Codex proactive rollover, native compaction controls, durable worker
-ownership and bounded worker quota failover are implemented with fixture evidence. Still open:
-richer goal/file ranking, cross-worktree dependencies/integration, file/worktree isolation, external
-native usage import and native interactive approval parity. Main/worker attempt accounting has
-fixture evidence with explicit counter/cost coverage. Claude/Cursor proactive capacity remains unknown.
-General tool/plugin integration and unified file-open choices also remain unfinished. See the
+ownership, bounded worker quota failover, cross-worktree dependencies and unified file actions are
+implemented with fixture evidence. Still open: richer goal/file ranking, file/worktree isolation,
+external native usage import and native interactive approval parity. Main/worker attempt accounting
+has fixture evidence with explicit counter/cost coverage. Claude post-turn capacity is candidate-
+qualified with source/settings checks; Cursor proactive capacity remains unknown. Reviewed F10
+integration management is implemented; a general outbound MCP/plugin runtime remains intentionally
+out of scope. See the
 [feature audit](feature-completion-audit.md), [orchestration](orchestration-and-latency.md)
 and [workspace requirements](workspace-panes.md).
 

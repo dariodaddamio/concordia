@@ -141,5 +141,5 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
         })
         .map_err(|error| error.to_string())?;
     }
-    Ok(format!("{account}: native text input {}. Future tasks capture this account/home preference; existing worker attempts keep theirs. Native capabilities are checked on connection.", match mode { Mode::CursorAcp => "on (Cursor ACP)", Mode::CodexAppServer => "on (Codex app-server)", Mode::ClaudeStdio => "on (Claude native stdio; CLI 2.1.317 required)", Mode::Standard => "off (standard text transport)" }))
+    Ok(format!("{account}: native text input {}. Future tasks capture this account/home preference; existing worker attempts keep theirs. Native capabilities are checked on connection.", match mode { Mode::CursorAcp => "on (Cursor ACP)", Mode::CodexAppServer => "on (Codex app-server)", Mode::ClaudeStdio => "on (Claude native stdio; qualified CLI required)", Mode::Standard => "off (standard text transport)" }))
 }

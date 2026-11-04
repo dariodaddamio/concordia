@@ -1,5 +1,25 @@
 # Changelog
 
+### Fixed (`2026-11-04b`)
+
+- Claude native stdio waits for local background agents and workflows to settle, including
+  follow-up output and late approval requests. Interrupted or uncertain tasks require reconciliation.
+- Agent inspection tracks native task completion instead of treating a background launch receipt
+  as a finished child. Native task descriptions and result summaries remain available to inspect.
+
+### Fixed (`2026-11-04a`)
+
+- Qualifies Claude CLI 2.1.318 against the matching official SDK control contract. Approval,
+  question, PDF and context gates share one version identity; cached 2.1.317 measurements become
+  unknown until refreshed. The installed CLI patch no longer leaves these features unavailable.
+
+### Added (`2026-11-03z`)
+
+- Claude 2.1.317 native `AskUserQuestion` uses foreground and worker review, including up to four
+  questions, two to four choices, multi-select and free-text replies. Space/click toggles and
+  Enter confirms. Original questions and native request identities are retained; answers return
+  as strings. Malformed and cancelled requests receive no grant. HTML previews are not rendered.
+
 ### Added (`2026-11-03y`)
 
 - Native PDF attachments for qualified Claude CLI 2.1.317, including mixed ordered image,

@@ -222,6 +222,14 @@ fn fake_claude_control(args: &[String]) {
         .map(|pair| pair[1].clone())
         .unwrap();
     let emit = |value: Value| {
+        if fixture["background"] == true {
+            let mut events = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(root.join("claude-events.jsonl"))
+                .unwrap();
+            writeln!(events, "{value}").unwrap();
+        }
         println!("{value}");
         std::io::stdout().flush().unwrap();
     };
@@ -266,9 +274,71 @@ fn fake_claude_control(args: &[String]) {
             emit(
                 json!({"type":"system","subtype":"init","session_id":session,"model":"fixture-claude"}),
             );
-            let mut native = json!({"type":"control_request","request_id":"permission-1","request":{
+            if fixture["background"] == true {
+                emit(
+                    json!({"type":"system","subtype":"task_started","task_id":"task-1","description":"Synthetic background agent","uuid":"task-start-1","session_id":session,"tool_use_id":"task-tool-1","task_type":"local_agent"}),
+                );
+                emit(
+                    json!({"type":"result","subtype":"success","session_id":session,"is_error":false,"result":"Native Claude main result","usage":{"input_tokens":12,"output_tokens":3}}),
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2100));
+                emit(
+                    json!({"type":"system","subtype":"session_state_changed","session_id":session,"state":"running","uuid":"state-running-1"}),
+                );
+                emit(
+                    json!({"type":"control_request","request_id":"late-permission","request":{"subtype":"can_use_tool","tool_name":"Write","tool_use_id":"late-write-1","input":{"file_path":"background-output.md","content":"Synthetic background bytes"}}}),
+                );
+                if fixture["cancel"] == true {
+                    emit(json!({"type":"control_cancel_request","request_id":"late-permission"}));
+                    return;
+                }
+                if fixture["closed"] == true {
+                    return;
+                }
+                continue;
+            }
+            let request_id = if fixture["questions"] == true {
+                "question-1"
+            } else {
+                "permission-1"
+            };
+            let mut native = json!({"type":"control_request","request_id":request_id,"request":{
                 "subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write-1",
                 "input":{"file_path":"synthetic-output.md","content":"Synthetic bytes"}}});
+            if fixture["questions"] == true {
+                native["request"]["tool_name"] = json!("AskUserQuestion");
+                native["request"]["tool_use_id"] = json!("ask-1");
+                native["request"]["input"] = if fixture["malformed"] == true {
+                    json!({"questions":[{"question":"Choose a route","multiSelect":"yes","options":[]}]})
+                } else {
+                    if fixture["four_questions"] == true {
+                        json!([
+                        {"question":"Choose a route","header":"Route","multiSelect":false,
+                         "options":[{"label":"Direct","description":"Use direct routing"},{"label":"Review","description":"Review first"}]},
+                        {"question":"Choose colors","header":"Colors","multiSelect":true,
+                         "options":[{"label":"Red","description":"Use red"},{"label":"Blue","description":"Use blue"},{"label":"Green","description":"Use green"},{"label":"Yellow","description":"Use yellow"}]},
+                        {"question":"Add context","header":"Context","multiSelect":false,
+                         "options":[{"label":"Keep","description":"Keep context"},{"label":"Drop","description":"Drop context"}]},
+                        {"question":"Route note","header":"Note","multiSelect":true,
+                         "options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]}
+                        ])
+                    } else {
+                        json!([
+                        {"question":"Choose a route","header":"Route","multiSelect":false,
+                         "options":[{"label":"Direct","description":"Use direct routing"},{"label":"Review","description":"Review first"}]},
+                        {"question":"Choose colors","header":"Colors","multiSelect":true,
+                         "options":[{"label":"Red","description":"Use red"},{"label":"Blue","description":"Use blue"},{"label":"Green","description":"Use green"}]}
+                        ])
+                    }
+                };
+                if fixture["malformed"] != true {
+                    native["request"]["input"] =
+                        json!({"questions": native["request"]["input"].clone()});
+                }
+            }
+            if fixture["background"] == true {
+                continue;
+            }
             if fixture["unknown"] == true {
                 native["request"]["subtype"] = json!("future_native_method");
             }
@@ -293,7 +363,7 @@ fn fake_claude_control(args: &[String]) {
                     emit(native);
                 }
                 if fixture["cancel"] == true {
-                    emit(json!({"type":"control_cancel_request","request_id":"permission-1"}));
+                    emit(json!({"type":"control_cancel_request","request_id":request_id}));
                     finish();
                 }
                 if fixture["closed"] == true {
@@ -301,7 +371,34 @@ fn fake_claude_control(args: &[String]) {
                 }
             }
         } else if value["type"] == "control_response" {
-            assert_eq!(value["response"]["request_id"], "permission-1");
+            if fixture["background"] == true {
+                assert_eq!(value["response"]["request_id"], "late-permission");
+                if fixture["foreign"] != true {
+                    emit(
+                        json!({"type":"system","subtype":"task_updated","task_id":"task-1",
+                        "session_id":session,"patch":{"status":"completed"}}),
+                    );
+                }
+                emit(
+                    json!({"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","output_file":"background-output.md","summary":"Synthetic background task completed","uuid":"task-done-1","session_id":if fixture["foreign"] == true { "foreign-session" } else { &session },"tool_use_id":"task-tool-1","usage":{"total_tokens":7,"tool_uses":1,"duration_ms":2100}}),
+                );
+                if fixture["foreign"] == true {
+                    continue;
+                }
+                emit(
+                    json!({"type":"result","subtype":"success","session_id":session,"is_error":false,"result":"Native Claude follow-up result","usage":{"input_tokens":8,"output_tokens":2}}),
+                );
+                emit(
+                    json!({"type":"system","subtype":"session_state_changed","session_id":session,"state":"idle","uuid":"state-idle-1"}),
+                );
+                continue;
+            }
+            let expected_request_id = if fixture["questions"] == true {
+                "question-1"
+            } else {
+                "permission-1"
+            };
+            assert_eq!(value["response"]["request_id"], expected_request_id);
             finish();
         }
     }
@@ -312,7 +409,7 @@ fn main() {
     if args.first().is_some_and(|arg| arg == "--version")
         && std::env::var("FAKE_PROVIDER_NATIVE_CLAUDE").as_deref() == Ok("1")
     {
-        println!("2.1.317 (Claude Code)");
+        println!("2.1.318 (Claude Code)");
         return;
     }
     if args.iter().any(|arg| arg == "--permission-prompt-tool")
