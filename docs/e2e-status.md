@@ -14,6 +14,11 @@ starts. The existing process regression now replays historical messages, thinkin
 before the load response, and checks both final output and progress events. Local engineering
 logs and the temporary driver are under ignored `target/cursor-live-1103`.
 
+A third live turn used the fixed production library from source `e9c83c6` and loaded that same
+exact session. It returned only the token, without historical text, thinking or tool-card events.
+All three turns completed within their deadlines. The extended process scenario and all-target
+Clippy pass. The live driver linked the production library; it did not exercise physical TUI input.
+
 This is live evidence for Cursor read-only execution and exact-session continuity, not Claude PDF,
 physical clipboard/viewer behavior, numeric credits or broader provider parity. Earlier statements
 that no live model turn ran describe their historical candidates.
