@@ -1,5 +1,12 @@
 # Changelog
 
+### Added (`2026-11-03z`)
+
+- Claude 2.1.317 native `AskUserQuestion` uses foreground and worker review, including up to four
+  questions, two to four choices, multi-select and free-text replies. Space/click toggles and
+  Enter confirms. Original questions and native request identities are retained; answers return
+  as strings. Malformed and cancelled requests receive no grant. HTML previews are not rendered.
+
 ### Added (`2026-11-03y`)
 
 - Native PDF attachments for qualified Claude CLI 2.1.317, including mixed ordered image,

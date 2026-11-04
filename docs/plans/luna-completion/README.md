@@ -109,7 +109,7 @@ and relevant evidence document. A new planning document is not an implementation
 
 | Task | Initial state | Completion condition |
 | --- | --- | --- |
-| L1 Claude approvals | Review: Luna `l4_file_outputs` + coordinator, x candidate | Qualified 2.1.317 native stdio allow-once/deny; broader structured question parity remains separate |
+| L1 Claude approvals | Review: Luna `l4_file_outputs` + coordinator, z candidate | Scoped 2.1.317 `AskUserQuestion` broker path preserves original questions and string answers (multi-select `, `); malformed/unsupported/HTML/live parity and fixture qualification remain separate |
 | L2 Claude capacity | Review: Luna `l3_binary_inputs` / `l4_file_outputs` + coordinator, x candidate | Completed-turn control capture, exact source/model/settings check before reuse; no speculative pre-prompt sensor |
 | L2 Cursor capacity | Blocked-vendor; [source audit](../../quality/capacity-provenance.md) | Supported current-window request/event is absent from the documented Cursor transport |
 | L3 binary inputs | Review: Luna `l5_integrations`, isolated PDF candidate | Claude 2.1.317 standard/stdio bounded PDF snapshots and ordered native dispatch are implemented with fake-process evidence; installed/live qualification and physical viewer checks remain |

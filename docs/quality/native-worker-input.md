@@ -41,8 +41,17 @@ before dispatch; `/native ACCOUNT off` selects the existing standard adapter. It
 falls back from an approval-capable transport. Duplicate IDs receive no second grant. Native
 cancellation invalidates pending review while stdout continues being consumed; closing or losing
 the provider leaves uncertain completion paused. Image content is preserved. Structured Claude
-`AskUserQuestion` payloads are denied with an instruction to ask in ordinary assistant text;
-this version implements allow-once/deny tool approval rather than full Claude question parity.
+`AskUserQuestion` is now supported in the existing broker for the scoped native 2.1.317 shape.
+The broker preserves original question text/options and returns answers as strings; multi-select
+answers are joined with `, `. Malformed, unsupported or cancelled payloads are denied, and no HTML
+preview is rendered. This follows the official [user-input contract](https://platform.claude.com/docs/en/agent-sdk/user-input)
+and [AskUserQuestion preview example](https://github.com/anthropics/claude-agent-sdk-demos/tree/main/ask-user-question-previews).
+The review surface supports up to four questions, each with two to four choices. Space toggles
+the focused choice and Enter confirms; mouse clicks toggle choices and the confirm control submits
+the reviewed set. A free-text `Other` response reuses the existing note row rather than opening
+HTML or a second editor. The same bounded ownership, cancellation and at-most-once response
+rules apply to these answers.
+Fixture qualification is pending, and no live model turn or installed-host parity is claimed.
 
 ## Activity and navigation
 

@@ -5,6 +5,8 @@ pub(super) struct Review {
     job: u32,
     request: Arc<crate::provider::turn::NativeRequest>,
     answers: Vec<usize>,
+    selections: Vec<Vec<usize>>,
+    active_selections: Vec<usize>,
     texts: Vec<Option<String>>,
     note: String,
     notice: Option<String>,
@@ -35,6 +37,8 @@ pub(super) fn open(app: &mut App, id: u32) {
         job: id,
         request,
         answers: Vec::new(),
+        selections: Vec::new(),
+        active_selections: Vec::new(),
         texts: Vec::new(),
         note: String::new(),
         notice: None,
@@ -57,6 +61,18 @@ fn choose(app: &mut App, option: usize) {
         .get(review.answers.len())
         .map_or(0, |(_, options)| options.len());
     let text_reply = review.request.allows_text(review.answers.len()) && option == count;
+    let multiple = review.request.allows_multiple(review.answers.len());
+    let selection = if option >= count {
+        Vec::new()
+    } else if multiple {
+        if review.active_selections.is_empty() {
+            vec![option]
+        } else {
+            review.active_selections.clone()
+        }
+    } else {
+        vec![option]
+    };
     if option >= count && (!text_reply || review.note.trim().is_empty()) {
         app.deleg.input = Some(review);
         return;
@@ -71,6 +87,8 @@ fn choose(app: &mut App, option: usize) {
         return;
     }
     review.answers.push(option);
+    review.selections.push(selection);
+    review.active_selections.clear();
     review.texts.push(
         (review.request.allows_text(review.answers.len() - 1) && !review.note.trim().is_empty())
             .then(|| std::mem::take(&mut review.note)),
@@ -87,7 +105,7 @@ fn choose(app: &mut App, option: usize) {
     }
     let result = review
         .request
-        .choices_with_text(&review.answers, &review.texts)
+        .choices_with_selections(&review.selections, &review.texts)
         .and_then(|answer| {
             app.deleg
                 .d
@@ -172,6 +190,21 @@ pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
             review.selected = count;
             review.follow_selection = true;
         }
+        KeyCode::Char(' ')
+            if review.armed
+                && review.request.allows_multiple(review.answers.len())
+                && review.selected < count =>
+        {
+            if let Some(position) = review
+                .active_selections
+                .iter()
+                .position(|option| *option == review.selected)
+            {
+                review.active_selections.remove(position);
+            } else {
+                review.active_selections.push(review.selected);
+            }
+        }
         KeyCode::Enter if review.armed => {
             let selected = review.selected;
             choose(app, selected);
@@ -242,7 +275,19 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) {
         MouseEventKind::Up(MouseButton::Left) => {
             let pressed = review.pressed.take();
             if let Some(option) = hit.filter(|_| pressed == hit) {
-                choose(app, option);
+                if review.request.allows_multiple(review.answers.len()) {
+                    if let Some(position) = review
+                        .active_selections
+                        .iter()
+                        .position(|item| *item == option)
+                    {
+                        review.active_selections.remove(position);
+                    } else {
+                        review.active_selections.push(option);
+                    }
+                } else {
+                    choose(app, option);
+                }
             }
         }
         MouseEventKind::ScrollUp => {
@@ -316,7 +361,14 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         ),
         None,
     );
-    text("F8 enters/leaves options · arrows select/scroll · Enter confirms · Esc / X returns to chat and leaves the request pending".into(), None);
+    text(
+        if review.request.allows_multiple(review.answers.len()) {
+            "F8 enters/leaves options · arrows select/scroll · Space toggles · Enter confirms · Esc / X returns to chat and leaves the request pending".into()
+        } else {
+            "F8 enters/leaves options · arrows select/scroll · Enter confirms · Esc / X returns to chat and leaves the request pending".into()
+        },
+        None,
+    );
     if let Some(plan) = review
         .request
         .params
@@ -349,13 +401,23 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             None,
         );
         for (index, option) in options.iter().enumerate() {
+            let marked = review.active_selections.contains(&index);
             text(
                 format!(
-                    "{} {}. {option}",
+                    "{} {} {}. {option}",
                     if review.armed && review.selected == index {
                         ">"
                     } else {
                         " "
+                    },
+                    if review.request.allows_multiple(review.answers.len()) {
+                        if marked {
+                            "[x]"
+                        } else {
+                            "[ ]"
+                        }
+                    } else {
+                        "   "
                     },
                     index + 1
                 ),

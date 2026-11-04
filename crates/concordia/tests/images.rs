@@ -459,6 +459,11 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         json!({"cancel":true}),
         json!({"duplicate":true}),
         json!({"fragmented":true}),
+        json!({"questions":true}),
+        json!({"questions":true,"four_questions":true}),
+        json!({"questions":true,"cancel":true}),
+        json!({"questions":true,"duplicate":true}),
+        json!({"questions":true,"malformed":true}),
         json!({"unknown":true}),
         json!({"model_only":true}),
         json!({"bad_init":true}),
@@ -490,9 +495,28 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                         // The process must continue reading cancellation/EOF while review is pending.
                         continue;
                     }
-                    let answer = request
-                        .single_choices(&[usize::from(answer_fixture["allow"] != true)])
-                        .unwrap();
+                    let answer = if answer_fixture["four_questions"] == true {
+                        request
+                            .choices_with_selections(
+                                &[vec![0], vec![0, 1, 2, 3], vec![], vec![0]],
+                                &[
+                                    None,
+                                    None,
+                                    Some("free-form answer".into()),
+                                    Some("option note".into()),
+                                ],
+                            )
+                            .unwrap()
+                    } else if answer_fixture["questions"] == true {
+                        json!({"outcome":{"outcome":"answered","answers":[
+                            {"questionId":"Choose a route","selectedOptionIds":["Direct"]},
+                            {"questionId":"Choose colors","selectedOptionIds":["Red","Blue"]}
+                        ]}})
+                    } else {
+                        request
+                            .single_choices(&[usize::from(answer_fixture["allow"] != true)])
+                            .unwrap()
+                    };
                     request.respond_owned(&answer_owner, answer).unwrap();
                 }
             }
@@ -552,6 +576,16 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 .find(|value| value["type"] == "control_response")
                 .unwrap();
             assert_eq!(response["response"]["subtype"], "error");
+        } else if fixture["questions"] == true && fixture["malformed"] == true {
+            assert_eq!(offered, 0);
+            let response = values
+                .iter()
+                .find(|value| value["type"] == "control_response")
+                .unwrap();
+            assert_eq!(response["response"]["response"]["behavior"], "deny");
+            assert!(response["response"]["response"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("multiSelect")));
         } else {
             assert_eq!(offered, 1);
             let user = values.iter().find(|value| value["type"] == "user").unwrap();
@@ -572,7 +606,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 assert_eq!(responses.len(), 1, "duplicate response: {calls}");
                 assert_eq!(
                     responses[0]["response"]["response"]["behavior"],
-                    if fixture["allow"] == true {
+                    if fixture["allow"] == true || fixture["questions"] == true {
                         "allow"
                     } else {
                         "deny"
@@ -583,6 +617,37 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                         responses[0]["response"]["response"]["updatedInput"]["file_path"],
                         "synthetic-output.md"
                     );
+                }
+                if fixture["questions"] == true {
+                    assert_eq!(responses[0]["response"]["response"]["behavior"], "allow");
+                    let updated = &responses[0]["response"]["response"]["updatedInput"];
+                    if fixture["four_questions"] == true {
+                        assert_eq!(
+                            updated["questions"],
+                            json!([
+                                {"question":"Choose a route","header":"Route","multiSelect":false,
+                                 "options":[{"label":"Direct","description":"Use direct routing"},{"label":"Review","description":"Review first"}]},
+                                {"question":"Choose colors","header":"Colors","multiSelect":true,
+                                 "options":[{"label":"Red","description":"Use red"},{"label":"Blue","description":"Use blue"},{"label":"Green","description":"Use green"},{"label":"Yellow","description":"Use yellow"}]},
+                                {"question":"Add context","header":"Context","multiSelect":false,
+                                 "options":[{"label":"Keep","description":"Keep context"},{"label":"Drop","description":"Drop context"}]},
+                                {"question":"Route note","header":"Note","multiSelect":true,
+                                 "options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]}
+                            ])
+                        );
+                        assert_eq!(updated["answers"]["Choose a route"], "Direct");
+                        assert_eq!(
+                            updated["answers"]["Choose colors"],
+                            "Red, Blue, Green, Yellow"
+                        );
+                        assert_eq!(updated["answers"]["Add context"], "free-form answer");
+                        assert_eq!(updated["answers"]["Route note"], "One, option note");
+                    } else {
+                        assert_eq!(updated["questions"][0]["question"], "Choose a route");
+                        assert_eq!(updated["questions"][1]["question"], "Choose colors");
+                        assert_eq!(updated["answers"]["Choose a route"], "Direct");
+                        assert_eq!(updated["answers"]["Choose colors"], "Red, Blue");
+                    }
                 }
             }
         }

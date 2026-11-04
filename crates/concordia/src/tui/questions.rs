@@ -22,7 +22,8 @@ pub(super) struct State {
     pressed: Option<usize>,
     native: Option<crate::provider::turn::NativeRequest>,
     pending_native: std::collections::VecDeque<crate::provider::turn::NativeRequest>,
-    native_choices: Vec<usize>,
+    native_selections: Vec<Vec<usize>>,
+    native_selected: Vec<usize>,
     native_texts: Vec<Option<String>>,
     note: String,
 }
@@ -46,7 +47,8 @@ impl State {
         if let Some(request) = self.native.take() {
             request.invalidate();
         }
-        self.native_choices.clear();
+        self.native_selections.clear();
+        self.native_selected.clear();
         self.native_texts.clear();
         self.questions.clear();
         self.focused = false;
@@ -354,6 +356,21 @@ fn choose(app: &mut App, index: usize) {
         return;
     };
     let note = s.note.clone();
+    let multiple = s
+        .native
+        .as_ref()
+        .is_some_and(|request| request.allows_multiple(s.current));
+    let selected = if index >= q.options.len() {
+        Vec::new()
+    } else if multiple {
+        if s.native_selected.is_empty() {
+            vec![index]
+        } else {
+            s.native_selected.clone()
+        }
+    } else {
+        vec![index]
+    };
     if s.note_allowed() && index == q.options.len() {
         if note.trim().is_empty() {
             return;
@@ -361,7 +378,7 @@ fn choose(app: &mut App, index: usize) {
         // A free reply stands on its own; never prepend an inferred question or selected option.
         s.answers.push(note);
         if s.native.is_some() {
-            s.native_choices.push(index);
+            s.native_selections.push(selected);
             s.native_texts.push(Some(s.note.clone()));
         }
     } else {
@@ -373,7 +390,7 @@ fn choose(app: &mut App, index: usize) {
         } else {
             format!("{}\n{answer}\nNote: {note}", q.prompt)
         });
-        s.native_choices.push(index);
+        s.native_selections.push(selected);
         s.native_texts.push(
             (s.native.is_some() && s.note_allowed() && !s.note.trim().is_empty())
                 .then(|| s.note.clone()),
@@ -383,12 +400,13 @@ fn choose(app: &mut App, index: usize) {
     if s.current + 1 < s.questions.len() {
         s.current += 1;
         s.selected = 0;
+        s.native_selected.clear();
         return;
     }
     if let Some(native) = s.native.take() {
         let outcome = if let (Some(owner), Ok(result)) = (
             app.native_owner.as_ref(),
-            native.choices_with_text(&s.native_choices, &s.native_texts),
+            native.choices_with_selections(&s.native_selections, &s.native_texts),
         ) {
             let label = result
                 .pointer("/outcome/outcome")
@@ -475,6 +493,26 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Enter if note_allowed && key.modifiers.contains(KeyModifiers::SHIFT) => {
             app.questions.append_note("\n");
             app.questions.selected = choices;
+        }
+        KeyCode::Char(' ')
+            if native
+                && app
+                    .questions
+                    .native
+                    .as_ref()
+                    .is_some_and(|request| request.allows_multiple(app.questions.current))
+                && app.questions.selected < choices =>
+        {
+            if let Some(position) = app
+                .questions
+                .native_selected
+                .iter()
+                .position(|choice| *choice == app.questions.selected)
+            {
+                app.questions.native_selected.remove(position);
+            } else {
+                app.questions.native_selected.push(app.questions.selected);
+            }
         }
         KeyCode::Enter => choose(app, app.questions.selected),
         // Native permission choices retain digit shortcuts. Conversational digits are text.
@@ -594,9 +632,26 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         let line = if let Some(choice) = q.options.get(index) {
             let number = format!("{}. ", index + 1);
             let room = width.saturating_sub(2 + number.len());
+            let marked = s.native_selected.contains(&index);
             Line::from(vec![
                 marker,
                 Span::styled(number, base.fg(Color::DarkGray)),
+                Span::styled(
+                    if s.native.is_some()
+                        && s.native
+                            .as_ref()
+                            .is_some_and(|request| request.allows_multiple(s.current))
+                    {
+                        if marked {
+                            "[x] "
+                        } else {
+                            "[ ] "
+                        }
+                    } else {
+                        ""
+                    },
+                    base.fg(Color::Cyan),
+                ),
                 Span::styled(fit(choice, room), base),
             ])
         } else {
@@ -625,13 +680,21 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         s.targets.push((rect, index));
     }
     f.render_widget(
-        Paragraph::new(if s.native.is_some() {
-            " F8 options · ↑↓ choose · Enter answer · Esc cancel request"
-        } else if s.focused {
-            " ↑↓ choose · type a reply · Shift+Enter newline · Enter send · Esc message box"
-        } else {
-            " Type in the message box, or F8 / click to reply with an option or note"
-        })
+        Paragraph::new(
+            if s.native.is_some()
+                && s.native
+                    .as_ref()
+                    .is_some_and(|request| request.allows_multiple(s.current))
+            {
+                " F8 options · ↑↓ choose · Space toggle · Enter confirm · Esc cancel request"
+            } else if s.native.is_some() {
+                " F8 options · ↑↓ choose · Enter answer · Esc cancel request"
+            } else if s.focused {
+                " ↑↓ choose · type a reply · Shift+Enter newline · Enter send · Esc message box"
+            } else {
+                " Type in the message box, or F8 / click to reply with an option or note"
+            },
+        )
         .style(Style::default().fg(Color::DarkGray)),
         Rect::new(area.x, area.bottom() - 1, area.width, 1),
     );
@@ -658,6 +721,25 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                         .is_some_and(|q| index == q.options.len());
                     if note_row && app.questions.note.trim().is_empty() {
                         // Clicking the empty note row starts a note rather than sending nothing.
+                        app.questions.focused = true;
+                        app.questions.selected = index;
+                    } else if app
+                        .questions
+                        .native
+                        .as_ref()
+                        .is_some_and(|request| request.allows_multiple(app.questions.current))
+                        && !note_row
+                    {
+                        if let Some(position) = app
+                            .questions
+                            .native_selected
+                            .iter()
+                            .position(|choice| *choice == index)
+                        {
+                            app.questions.native_selected.remove(position);
+                        } else {
+                            app.questions.native_selected.push(index);
+                        }
                         app.questions.focused = true;
                         app.questions.selected = index;
                     } else {
@@ -736,6 +818,65 @@ mod tests {
         );
         assert!(!app.questions.waiting());
         assert!(app.queue.items.is_empty());
+
+        // Claude AskUserQuestion uses the same foreground broker, including a real multi-select
+        // toggle sequence. The draft must remain untouched while native input is answered.
+        let claude_owner = crate::provider::interaction::InteractionOwner {
+            conversation_id: app.deleg.d.conversation_id().to_owned(),
+            workspace: dir.path().into(),
+            execution_cwd: dir.path().into(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Claude,
+            account: "claude-fixture".into(),
+            home: Some(dir.path().into()),
+        };
+        let mut claude_connection = crate::provider::interaction::InteractionConnection::new(
+            Some(claude_owner.clone()),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        claude_connection.initialized_claude("2.1.317").unwrap();
+        let (question, mut question_rx) = claude_connection
+            .request(
+                "fixture-session",
+                serde_json::json!(2),
+                "claude/ask_question".into(),
+                serde_json::json!({
+                    "sessionId":"fixture-session",
+                    "toolCall":{"title":"Answer questions","toolCallId":"ask-1","rawInput":{}},
+                    "questions":[
+                        {"id":"route","prompt":"Choose a route","options":[{"id":"Direct","label":"Direct"},{"id":"Review","label":"Review"}],"allowMultiple":false},
+                        {"id":"colors","prompt":"Choose colors","options":[{"id":"Red","label":"Red"},{"id":"Blue","label":"Blue"}],"allowMultiple":true}
+                    ]
+                }),
+            )
+            .unwrap();
+        app.native_owner = Some(claude_owner);
+        app.editor.set_text("preserve foreground draft");
+        app.questions.offer_native(question, true);
+        handle_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        );
+        handle_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        handle_key(&mut app, &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        handle_key(&mut app, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            question_rx.try_recv().unwrap(),
+            serde_json::json!({"outcome":{"outcome":"answered","answers":[
+                {"questionId":"route","selectedOptionIds":["Direct"]},
+                {"questionId":"colors","selectedOptionIds":["Red","Blue"]}
+            ]}})
+        );
+        assert_eq!(app.editor.text(), "preserve foreground draft");
+        app.native_owner = Some(owner.clone());
 
         connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
         let (plan, mut plan_rx) = connection.request("fixture-session", serde_json::json!(10), "cursor/create_plan".into(), serde_json::json!({"toolCallId":"plan-tool","plan":"Inspect the exact parser.\nPreserve unrelated files.","todos":[]})).unwrap();
@@ -947,6 +1088,46 @@ mod tests {
             json!({"answers":{"text":{"answers":["user_note: worker\nanswer"]}}})
         );
         assert_eq!(app.native_owner, Some(owner));
+        assert_eq!(app.editor.text(), "preserve native reply draft");
+
+        let claude_worker = app.deleg.d.push_test_job(
+            "claude-question-worker",
+            ProviderKind::Claude,
+            crate::delegate::WorkerState::Thinking,
+            "synthetic Claude question worker",
+            0,
+        );
+        let claude_worker_owner = app.deleg.d.test_native_owner(claude_worker, dir);
+        let mut claude_worker_connection = crate::provider::interaction::InteractionConnection::new(
+            Some(claude_worker_owner),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        claude_worker_connection
+            .initialized_claude("2.1.317")
+            .unwrap();
+        let (claude_request, mut claude_rx) = claude_worker_connection
+            .request(
+                "fixture-session",
+                json!(32),
+                "claude/ask_question".into(),
+                json!({
+                    "sessionId":"fixture-session",
+                    "toolCall":{"title":"Worker questions","toolCallId":"ask-worker","rawInput":{}},
+                    "questions":[{"id":"colors","prompt":"Choose colors","options":[{"id":"Red","label":"Red"},{"id":"Blue","label":"Blue"}],"allowMultiple":true}]
+                }),
+            )
+            .unwrap();
+        app.deleg.d.test_native_input(claude_worker, claude_request);
+        worker_input::open(app, claude_worker);
+        worker_input::key(app, &KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
+        worker_input::key(app, &KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        worker_input::key(app, &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        worker_input::key(app, &KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        worker_input::key(app, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            claude_rx.try_recv().unwrap(),
+            json!({"outcome":{"outcome":"answered","answers":[{"questionId":"colors","selectedOptionIds":["Red","Blue"]}]}})
+        );
         assert_eq!(app.editor.text(), "preserve native reply draft");
     }
 

@@ -22,6 +22,12 @@ model-callable MCP permission tool alone does not authenticate a native approval
 3. Deliver foreground and worker approval routing through the coordinator's existing review UI;
    keep native options/restrictions and at-most-once response semantics.
 
+The supported structured-question slice is limited to native Claude 2.1.317 `AskUserQuestion`:
+original question/options are retained, answers are strings, and multi-select answers join with
+`, `. Malformed, unsupported and cancelled requests are denied; HTML previews are out of scope.
+See the official [user-input contract](https://platform.claude.com/docs/en/agent-sdk/user-input)
+and [AskUserQuestion preview example](https://github.com/anthropics/claude-agent-sdk-demos/tree/main/ask-user-question-previews).
+
 Own a Claude-specific bridge module under `crates/concordia/src/provider/` (proposed new file;
 coordinator registers it) and the Claude-specific evidence update. The coordinator owns edits to
 `provider/claude.rs`, `provider/interaction.rs`, `provider/turn.rs`, `native_input.rs`,

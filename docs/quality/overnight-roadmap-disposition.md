@@ -1,4 +1,4 @@
-# Roadmap implementation disposition, 2026-11-03x candidate
+# Roadmap implementation disposition, 2026-11-03z candidate
 
 This is the current implementation map for the completion campaign. The detailed plans retain
 their original design baselines; their proposed field names and bounds do not override shipped
@@ -14,7 +14,7 @@ The final candidate record is in [E2E status](../e2e-status.md).
 | Memory M0-M2 | [Goal/source links](goal-source-associations.md), [file facts/explainable ranking](memory-ranking.md), [explicit groups/discovery](related-chat-groups.md), [reviewed goal proposals](goal-proposals.md). | Suggested links are not confirmed relationships; historical tool requests are not proof of edits. |
 | Memory M3 | [Versioned synthetic retrieval corpus and collector](memory-evaluation.md). | Model-retention/token-saving experiments need an explicit provider/task budget and have not run. |
 | Provider P0-P3 | [Worker interaction ownership/routing](native-worker-input.md), [opt-in Codex native transport and text replies](codex-native-input.md), Cursor ACP text/images/permission/plan decisions. | Current matched Codex protocol is 0.166.0. No universal native/live parity claim. |
-| Provider P4 | x adds opt-in Claude CLI 2.1.317 native stdio allow-once/deny approval in main/worker review. | Structured Claude questions and full live parity remain separate; model-callable MCP tools never establish native approval authority. |
+| Provider P4 | Opt-in Claude CLI 2.1.317 native stdio allow-once/deny approval and structured questions in main/worker review. Question choices, multi-select and free-text replies use the owned native broker. | Full live parity and unsupported native formats remain separate; model-callable MCP tools never establish native approval authority. |
 | Provider P5 | [Exact turn/model/source-bound Codex capacity](capacity-provenance.md) and invalidation; reactive capacity-error recovery remains available. | x adds explicit-model Claude post-turn current-window measurements, reused only against unchanged source/settings. Cursor remains unavailable; no inferred windows or global hooks. |
 | Workspace W1-W4 | Bounded cwd search, [selected replacement/reconciliation](project-replacement.md), [shared file actions and independent editor](file-actions.md). | Save conflicts/uncertainty preserve user buffers and receipts; no rollback/replay. |
 | Workspace W5 / input I2 | [Bounded inline color-cell previews](../images-and-diagrams.md) with standard frame redraw and explicit GIF/system-viewer fallback. | Pixel image protocols and visible pointer shape support require exact physical-host evidence. WezTerm 2024 does not establish that support. |

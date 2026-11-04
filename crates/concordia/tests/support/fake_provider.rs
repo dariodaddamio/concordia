@@ -266,9 +266,41 @@ fn fake_claude_control(args: &[String]) {
             emit(
                 json!({"type":"system","subtype":"init","session_id":session,"model":"fixture-claude"}),
             );
-            let mut native = json!({"type":"control_request","request_id":"permission-1","request":{
+            let request_id = if fixture["questions"] == true {
+                "question-1"
+            } else {
+                "permission-1"
+            };
+            let mut native = json!({"type":"control_request","request_id":request_id,"request":{
                 "subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write-1",
                 "input":{"file_path":"synthetic-output.md","content":"Synthetic bytes"}}});
+            if fixture["questions"] == true {
+                native["request"]["tool_name"] = json!("AskUserQuestion");
+                native["request"]["tool_use_id"] = json!("ask-1");
+                native["request"]["input"] = if fixture["malformed"] == true {
+                    json!({"questions":[{"question":"Choose a route","multiSelect":"yes","options":[]}]})
+                } else {
+                    if fixture["four_questions"] == true {
+                        json!([
+                        {"question":"Choose a route","header":"Route","multiSelect":false,
+                         "options":[{"label":"Direct","description":"Use direct routing"},{"label":"Review","description":"Review first"}]},
+                        {"question":"Choose colors","header":"Colors","multiSelect":true,
+                         "options":[{"label":"Red","description":"Use red"},{"label":"Blue","description":"Use blue"},{"label":"Green","description":"Use green"},{"label":"Yellow","description":"Use yellow"}]},
+                        {"question":"Add context","header":"Context","multiSelect":false,
+                         "options":[{"label":"Keep","description":"Keep context"},{"label":"Drop","description":"Drop context"}]},
+                        {"question":"Route note","header":"Note","multiSelect":true,
+                         "options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]}
+                        ])
+                    } else {
+                        json!([
+                        {"question":"Choose a route","header":"Route","multiSelect":false,
+                         "options":[{"label":"Direct","description":"Use direct routing"},{"label":"Review","description":"Review first"}]},
+                        {"question":"Choose colors","header":"Colors","multiSelect":true,
+                         "options":[{"label":"Red","description":"Use red"},{"label":"Blue","description":"Use blue"},{"label":"Green","description":"Use green"}]}
+                        ])
+                    }
+                };
+            }
             if fixture["unknown"] == true {
                 native["request"]["subtype"] = json!("future_native_method");
             }
@@ -293,7 +325,7 @@ fn fake_claude_control(args: &[String]) {
                     emit(native);
                 }
                 if fixture["cancel"] == true {
-                    emit(json!({"type":"control_cancel_request","request_id":"permission-1"}));
+                    emit(json!({"type":"control_cancel_request","request_id":request_id}));
                     finish();
                 }
                 if fixture["closed"] == true {
@@ -301,7 +333,12 @@ fn fake_claude_control(args: &[String]) {
                 }
             }
         } else if value["type"] == "control_response" {
-            assert_eq!(value["response"]["request_id"], "permission-1");
+            let expected_request_id = if fixture["questions"] == true {
+                "question-1"
+            } else {
+                "permission-1"
+            };
+            assert_eq!(value["response"]["request_id"], expected_request_id);
             finish();
         }
     }

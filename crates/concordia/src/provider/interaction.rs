@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 const REQUEST_BYTES: usize = 256 * 1024;
 const REQUESTS_PER_CONNECTION: usize = 1024;
 const PENDING_REQUESTS: usize = 8;
-fn valid_reply(text: &str) -> bool {
+pub(crate) fn valid_reply(text: &str) -> bool {
     !text.trim().is_empty()
         && text.len() <= 4096
         && !text
@@ -421,13 +421,16 @@ impl NativeInteraction {
                     .to_owned(),
                 options: options(&params["options"], true)?,
             }),
-            "cursor/ask_question" => {
+            "cursor/ask_question" | "claude/ask_question" => {
+                let max_questions = if method == "claude/ask_question" {
+                    4
+                } else {
+                    3
+                };
                 let questions = params["questions"]
                     .as_array()
-                    .ok_or("native request needs questions")?;
-                if questions.is_empty() || questions.len() > 3 {
-                    return Err("native question bound exceeded".into());
-                }
+                    .filter(|questions| !questions.is_empty() && questions.len() <= max_questions)
+                    .ok_or("native question bound exceeded")?;
                 let mut ids = HashSet::new();
                 let questions = questions
                     .iter()
@@ -447,7 +450,7 @@ impl NativeInteraction {
                             prompt: text(question, "prompt")?,
                             options: options(&question["options"], false)?,
                             multiple,
-                            allow_text: false,
+                            allow_text: method == "claude/ask_question",
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -557,16 +560,33 @@ impl NativeInteraction {
                     };
                     if !answered.insert(id)
                         || selected.is_empty()
-                        || (!question.multiple && selected.len() != 1)
+                        || selected.len()
+                            > question.options.len() + usize::from(question.allow_text)
                     {
                         return false;
                     }
                     let mut unique = HashSet::new();
-                    selected.iter().all(|option| {
+                    let mut option_count = 0;
+                    let mut note_count = 0;
+                    let valid = selected.iter().all(|option| {
                         option.as_str().is_some_and(|id| {
-                            unique.insert(id) && question.options.iter().any(|o| o.id == id)
+                            if !unique.insert(id) {
+                                return false;
+                            }
+                            if question.options.iter().any(|o| o.id == id) {
+                                option_count += 1;
+                                true
+                            } else if question.allow_text
+                                && id.strip_prefix("user_note: ").is_some_and(valid_reply)
+                            {
+                                note_count += 1;
+                                true
+                            } else {
+                                false
+                            }
                         })
-                    })
+                    });
+                    valid && note_count <= 1 && (question.multiple || option_count <= 1)
                 })
             }
             Self::CodexPermission { .. } | Self::CodexQuestions(_) => false,
@@ -600,8 +620,87 @@ pub struct NativeRequest {
 
 impl NativeRequest {
     pub fn allows_text(&self, question: usize) -> bool {
-        matches!(&self.kind, NativeInteraction::CodexQuestions(questions) if questions.get(question).is_some_and(|question| question.allow_text))
+        matches!(&self.kind,
+            NativeInteraction::CodexQuestions(questions) | NativeInteraction::Questions(questions)
+                if questions.get(question).is_some_and(|question| question.allow_text))
     }
+
+    pub fn allows_multiple(&self, question: usize) -> bool {
+        matches!(&self.kind,
+            NativeInteraction::Questions(questions) | NativeInteraction::CodexQuestions(questions)
+                if questions.get(question).is_some_and(|question| question.multiple))
+    }
+
+    pub fn choices_with_selections(
+        &self,
+        selections: &[Vec<usize>],
+        texts: &[Option<String>],
+    ) -> Result<Value, String> {
+        if texts.len() != selections.len() {
+            return Err("Native question answers are incomplete".into());
+        }
+        let questions = match &self.kind {
+            NativeInteraction::CodexQuestions(questions)
+            | NativeInteraction::Questions(questions) => questions,
+            _ => {
+                if texts.iter().any(Option::is_some)
+                    || selections.iter().any(|selected| selected.len() != 1)
+                {
+                    return Err("Native decision needs one offered option".into());
+                }
+                return self.single_choices(
+                    &selections
+                        .iter()
+                        .map(|selected| selected[0])
+                        .collect::<Vec<_>>(),
+                );
+            }
+        };
+        if selections.len() != questions.len() || texts.len() != questions.len() {
+            return Err("Native question answers are incomplete".into());
+        }
+        let mut answers = serde_json::Map::new();
+        let mut question_answers = Vec::with_capacity(questions.len());
+        for ((question, selected), text) in questions.iter().zip(selections).zip(texts) {
+            if selected.len() > question.options.len() || (!question.multiple && selected.len() > 1)
+            {
+                return Err("Native question has too many selections".into());
+            }
+            let mut ids = Vec::new();
+            let mut unique = HashSet::new();
+            for choice in selected {
+                let option = question
+                    .options
+                    .get(*choice)
+                    .ok_or("Native option is unavailable")?;
+                if !unique.insert(option.id.clone()) {
+                    return Err("Native question has duplicate selections".into());
+                }
+                ids.push(option.id.clone());
+            }
+            if let Some(text) = text {
+                if !question.allow_text || !valid_reply(text) {
+                    return Err("Native text reply is unavailable or exceeds its bound".into());
+                }
+                ids.push(format!("user_note: {text}"));
+            }
+            if ids.is_empty() {
+                return Err("Native question needs an explicit answer".into());
+            }
+            answers.insert(question.id.clone(), json!({"answers":ids.clone()}));
+            question_answers.push(json!({"questionId":question.id,"selectedOptionIds":ids}));
+        }
+        let value = if matches!(&self.kind, NativeInteraction::Questions(_)) {
+            json!({"outcome":{"outcome":"answered","answers":question_answers}})
+        } else {
+            json!({"answers":answers})
+        };
+        self.kind
+            .accepts(&value)
+            .then_some(value)
+            .ok_or_else(|| "Native question answer is unsupported".into())
+    }
+
     pub fn choices_with_text(
         &self,
         choices: &[usize],
@@ -610,8 +709,25 @@ impl NativeRequest {
         if texts.iter().all(Option::is_none) {
             return self.single_choices(choices);
         }
-        let NativeInteraction::CodexQuestions(questions) = &self.kind else {
-            return Err("Native request does not offer text replies".into());
+        if matches!(&self.kind, NativeInteraction::Questions(_)) {
+            let selections = choices
+                .iter()
+                .zip(texts)
+                .enumerate()
+                .map(|(question, (choice, text))| {
+                    if text.is_some() && *choice >= self.question_option_count(question) {
+                        Vec::new()
+                    } else {
+                        vec![*choice]
+                    }
+                })
+                .collect::<Vec<_>>();
+            return self.choices_with_selections(&selections, texts);
+        }
+        let questions = match &self.kind {
+            NativeInteraction::CodexQuestions(questions)
+            | NativeInteraction::Questions(questions) => questions,
+            _ => return Err("Native request does not offer text replies".into()),
         };
         if choices.len() != questions.len() || texts.len() != questions.len() {
             return Err("Native question answers are incomplete".into());
@@ -638,6 +754,16 @@ impl NativeRequest {
             .accepts(&value)
             .then_some(value)
             .ok_or_else(|| "Native text reply is unsupported".into())
+    }
+
+    fn question_option_count(&self, question: usize) -> usize {
+        match &self.kind {
+            NativeInteraction::Questions(questions)
+            | NativeInteraction::CodexQuestions(questions) => questions
+                .get(question)
+                .map_or(0, |question| question.options.len()),
+            _ => 0,
+        }
     }
     pub fn owner(&self) -> Option<&InteractionOwner> {
         self.envelope.owner.as_ref()
@@ -927,7 +1053,10 @@ impl InteractionConnection {
             && params["threadId"].as_str() == Some(session)
             && text(&params, "turnId").is_ok()
             && text(&params, "itemId").is_ok();
-        let claude = method == "claude/can_use_tool";
+        let claude = matches!(
+            method.as_str(),
+            "claude/can_use_tool" | "claude/ask_question"
+        );
         let claude_bound = self.capabilities.permissions.transport == "claude-stdio"
             && self.capabilities.permissions.cli_version.as_deref() == Some("2.1.317")
             && params["sessionId"].as_str() == Some(session)

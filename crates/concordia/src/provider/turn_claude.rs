@@ -27,6 +27,7 @@ pub(crate) struct PermissionRequest {
 struct PendingPermission {
     request_id: String,
     input: Value,
+    question: bool,
     native: crate::provider::interaction::NativeRequest,
     rx: tokio::sync::oneshot::Receiver<Value>,
 }
@@ -137,6 +138,153 @@ pub(crate) fn user_message(prompt: &str) -> Value {
 /// Translate the broker's one-shot ACP-shaped selection into the Claude wire decision.
 pub(crate) fn allow_from_broker(value: &Value) -> bool {
     value.pointer("/outcome/optionId").and_then(Value::as_str) == Some("allow")
+}
+
+fn question_answered(value: &Value) -> bool {
+    value.pointer("/outcome/outcome").and_then(Value::as_str) == Some("answered")
+}
+
+fn bounded_question_text(value: Option<&Value>, field: &str) -> Result<String, String> {
+    let text = value
+        .and_then(Value::as_str)
+        .filter(|text| {
+            !text.is_empty() && text.len() <= 4096 && !text.chars().any(char::is_control)
+        })
+        .ok_or_else(|| format!("Claude question has invalid {field}"))?;
+    Ok(text.to_owned())
+}
+
+/// Normalize Claude's AskUserQuestion payload into the existing bounded Questions broker shape.
+/// The original input remains in the pending request and is used to build updatedInput later.
+fn claude_question_params(request: &PermissionRequest, session: &str) -> Result<Value, String> {
+    let questions = request
+        .input
+        .get("questions")
+        .and_then(Value::as_array)
+        .filter(|questions| (1..=4).contains(&questions.len()))
+        .ok_or("Claude question count must be between 1 and 4")?;
+    let mut question_ids = HashSet::new();
+    let mut normalized = Vec::with_capacity(questions.len());
+    for question in questions {
+        let id = bounded_question_text(question.get("question"), "question")?;
+        if !question_ids.insert(id.clone()) {
+            return Err("Claude questions must have unique question text".into());
+        }
+        let multiple = question
+            .get("multiSelect")
+            .and_then(Value::as_bool)
+            .ok_or("Claude question multiSelect must be boolean")?;
+        let options = question
+            .get("options")
+            .and_then(Value::as_array)
+            .filter(|options| (2..=4).contains(&options.len()))
+            .ok_or("Claude question options must contain between 2 and 4 choices")?;
+        let mut labels = HashSet::new();
+        let mut choices = Vec::with_capacity(options.len());
+        for option in options {
+            let label = bounded_question_text(option.get("label"), "option label")?;
+            if !labels.insert(label.clone()) {
+                return Err("Claude question options must have unique labels".into());
+            }
+            let description = match option.get("description") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(bounded_question_text(Some(value), "option description")?),
+            };
+            let display = description
+                .as_deref()
+                .filter(|description| !description.is_empty())
+                .map_or_else(
+                    || label.clone(),
+                    |description| format!("{label} · {description}"),
+                );
+            choices.push(json!({"id": label, "label": display}));
+        }
+        normalized.push(json!({
+            "id": id,
+            "prompt": bounded_question_text(question.get("question"), "question")?,
+            "options": choices,
+            "allowMultiple": multiple,
+        }));
+    }
+    Ok(json!({
+        "sessionId": session,
+        "toolCall": {
+            "title": request.title.as_deref().unwrap_or("Answer Claude's questions"),
+            "toolCallId": request.tool_use_id,
+            "rawInput": request.input,
+        },
+        "questions": normalized,
+    }))
+}
+
+/// Convert broker selections to the official Claude answer shape. Claude accepts a string for
+/// each answer; multi-select labels are joined with comma-space as documented by the SDK demo.
+fn claude_question_answer(input: &Value, answer: &Value) -> Result<Value, String> {
+    let questions = input
+        .get("questions")
+        .and_then(Value::as_array)
+        .ok_or("Claude question input disappeared")?;
+    let selected = answer
+        .pointer("/outcome/answers")
+        .and_then(Value::as_array)
+        .ok_or("Claude question answer is malformed")?;
+    if selected.len() != questions.len() {
+        return Err("Claude question answer count changed".into());
+    }
+    let mut answers = serde_json::Map::new();
+    for item in selected {
+        let id = item
+            .get("questionId")
+            .and_then(Value::as_str)
+            .ok_or("Claude question answer has no question identity")?;
+        let question = questions
+            .iter()
+            .find(|question| question.get("question").and_then(Value::as_str) == Some(id))
+            .ok_or("Claude question answer has a foreign question identity")?;
+        let options = question
+            .get("options")
+            .and_then(Value::as_array)
+            .ok_or("Claude question options disappeared")?;
+        let labels: Vec<String> = item
+            .get("selectedOptionIds")
+            .and_then(Value::as_array)
+            .ok_or("Claude question answer has no selections")?
+            .iter()
+            .map(|selection| {
+                let label = selection
+                    .as_str()
+                    .ok_or("Claude question selection is not text")?;
+                if options
+                    .iter()
+                    .any(|option| option.get("label").and_then(Value::as_str) == Some(label))
+                {
+                    return Ok(label.to_owned());
+                }
+                if let Some(note) = label.strip_prefix("user_note: ") {
+                    if !crate::provider::interaction::valid_reply(note) {
+                        return Err(
+                            "Claude question free-text answer exceeds its bound".to_string()
+                        );
+                    }
+                    return Ok(note.to_owned());
+                }
+                if !options
+                    .iter()
+                    .any(|option| option.get("label").and_then(Value::as_str) == Some(label))
+                {
+                    return Err("Claude question answer has a foreign option".to_string());
+                }
+                Ok(label.to_owned())
+            })
+            .collect::<Result<_, String>>()?;
+        if labels.is_empty() {
+            return Err("Claude question answer is empty".into());
+        }
+        answers.insert(id.to_owned(), Value::String(labels.join(", ")));
+    }
+    let mut updated = input.clone();
+    updated["answers"] = Value::Object(answers);
+    Ok(updated)
 }
 
 async fn write_frame(input: &mut tokio::process::ChildStdin, value: &Value) -> anyhow::Result<()> {
@@ -311,9 +459,21 @@ pub(super) async fn run(
                     for (id, answer) in finished {
                         if let Some(request) = pending.remove(&id) {
                             anyhow::ensure!(!handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
-                            let allow = allow_from_broker(&answer);
+                            let allow = if request.question {
+                                question_answered(&answer)
+                            } else {
+                                allow_from_broker(&answer)
+                            };
                             request.native.invalidate();
-                            write_frame(&mut input, &permission_response(&request.request_id, &request.input, allow, "Permission denied")).await?;
+                            let (allow, updated_input, message) = if allow && request.question {
+                                match claude_question_answer(&request.input, &answer) {
+                                    Ok(updated) => (true, updated, "Permission denied".to_owned()),
+                                    Err(reason) => (false, request.input.clone(), reason),
+                                }
+                            } else {
+                                (allow, request.input.clone(), "Permission denied".to_owned())
+                            };
+                            write_frame(&mut input, &permission_response(&request.request_id, &updated_input, allow, &message)).await?;
                         }
                     }
                 }
@@ -352,15 +512,32 @@ pub(super) async fn run(
                     continue;
                 }
                 if request.tool_name == "AskUserQuestion" {
-                    write_frame(&mut input, &permission_response(&request.request_id, &request.input, false,
-                        "Structured Claude questions are not enabled in this transport; ask the user in ordinary assistant text.")).await?;
+                    let session = session.context("Claude native session identity is unavailable")?;
+                    let params = match claude_question_params(&request, session) {
+                        Ok(params) => params,
+                        Err(reason) => {
+                            write_frame(&mut input, &permission_response(&request.request_id, &request.input, false, &reason)).await?;
+                            continue;
+                        }
+                    };
+                    let (native, rx) = match interactions.request(session, json!(request.request_id), "claude/ask_question".into(), params) {
+                        Ok(pair) => pair,
+                        Err(reason) => {
+                            write_frame(&mut input, &permission_response(&request.request_id, &request.input, false, &reason)).await?;
+                            continue;
+                        }
+                    };
+                    if !progress.as_ref().is_some_and(|tx| tx.send(TurnProgress::Interaction(Box::new(native.clone()))).is_ok()) { native.cancel(); }
+                    if pending.insert(request.request_id.clone(), PendingPermission { request_id: request.request_id, input: request.input, question: true, native, rx }).is_some() {
+                        anyhow::bail!("duplicate Claude native request identity");
+                    }
                     continue;
                 }
                 let session = session.context("Claude native session identity is unavailable")?;
                 let params = json!({"sessionId":session,"toolCall":{"title":request.title.as_deref().unwrap_or(&request.tool_name),"toolCallId":request.tool_use_id,"rawInput":request.input},"options":[{"optionId":"allow","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]});
                 let (native, rx) = interactions.request(session, json!(request.request_id), "claude/can_use_tool".into(), params).map_err(anyhow::Error::msg)?;
                 if !progress.as_ref().is_some_and(|tx| tx.send(TurnProgress::Interaction(Box::new(native.clone()))).is_ok()) { native.cancel(); }
-                if pending.insert(request.request_id.clone(), PendingPermission { request_id: request.request_id, input: request.input, native, rx }).is_some() {
+                if pending.insert(request.request_id.clone(), PendingPermission { request_id: request.request_id, input: request.input, question: false, native, rx }).is_some() {
                     anyhow::bail!("duplicate Claude native request identity");
                 }
                 continue;

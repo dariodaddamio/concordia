@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03x candidate
+# Feature completion audit: 2026-11-03z candidate
 
 The full roadmap is **not complete**. Remaining product capabilities include Cursor proactive
 capacity and external usage signals, installed/live qualification of the new PDF/binary document transport, and unsupported
@@ -24,8 +24,10 @@ creation does not change the implementation status recorded here.
 
 - F10 adds reviewed local-manifest connect/reconnect/verify and binding-specific disconnect,
   bounded background actions and stale target checks. [Scope](quality/integrations-management.md).
-- Claude CLI 2.1.317 native stdio supports owned allow-once/deny review in main/worker runs.
-  Structured Claude questions remain explicitly unsupported; normal assistant questions still work.
+- Claude CLI 2.1.317 native stdio supports owned allow-once/deny review and the scoped
+  `AskUserQuestion` broker path in main/worker runs. Original question/options and string answers
+  are preserved; multi-select joins with `, `. Malformed/unsupported requests receive denial and
+  no HTML preview; fixture qualification, live turns and full question parity remain open.
   [Transport limits](quality/native-worker-input.md).
 - Claude explicit-model context measurements are captured after a completed turn on its live
   connection and reused only while the exact transcript revision and compaction setting match.
@@ -70,8 +72,9 @@ creation does not change the implementation status recorded here.
 - Opt-in Codex app-server execution now connects native command/file decisions and bounded
   questions to foreground/worker review with exact thread/turn ownership and resolution handling.
   [Scope and limitations](quality/codex-native-input.md). CLI 0.166.0 is the matched protocol;
-  Native text replies work in foreground/worker review where offered; x adds the qualified
-  Claude permission bridge. Full native question/live parity remains separate.
+  Native text replies work in foreground/worker review where offered; z adds the scoped Claude
+  permission and `AskUserQuestion` broker paths. Fixture qualification, live turns and full
+  native question parity remain separate.
 
 - Worker-owned native input, opt-in Cursor ACP text and explicit native plan decisions now use
   exact live request ownership. Edit cards, file detection, activity icons, agent inspection,
