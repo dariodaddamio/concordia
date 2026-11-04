@@ -1,6 +1,6 @@
 //! App-owned Windows input and cell painting. No terminal bindings, hooks or global listeners.
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::{
     backend::{Backend, ClearType, WindowSize},
@@ -768,21 +768,26 @@ unsafe extern "system" fn window_proc(
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let mods = modifiers();
             let vk = wparam as u16;
-            if vk == VK_F4 && mods == KeyModifiers::ALT {
-                window.emit(Event::Key(KeyEvent::new(
-                    KeyCode::F(12),
-                    KeyModifiers::CONTROL,
-                )));
-                return 0;
-            }
             let repeating = (lparam as usize & (1 << 30)) != 0;
-            if repeating
-                && (mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) || vk == VK_RETURN)
-            {
+            if vk == VK_F4 && mods == KeyModifiers::ALT {
+                if !repeating {
+                    window.emit(Event::Key(KeyEvent::new(
+                        KeyCode::F(12),
+                        KeyModifiers::CONTROL,
+                    )));
+                }
                 return 0;
             }
             if let Some(key) = key(vk, mods) {
-                window.emit(Event::Key(KeyEvent::new(key, mods)));
+                window.emit(Event::Key(KeyEvent::new_with_kind(
+                    key,
+                    mods,
+                    if repeating {
+                        KeyEventKind::Repeat
+                    } else {
+                        KeyEventKind::Press
+                    },
+                )));
                 return 0;
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
@@ -804,9 +809,14 @@ unsafe extern "system" fn window_proc(
                 char::from_u32(u32::from(unit))
             };
             if let Some(character) = character.filter(|c| !c.is_control()) {
-                window.emit(Event::Key(KeyEvent::new(
+                window.emit(Event::Key(KeyEvent::new_with_kind(
                     KeyCode::Char(character),
                     modifiers(),
+                    if lparam as usize & (1 << 30) != 0 {
+                        KeyEventKind::Repeat
+                    } else {
+                        KeyEventKind::Press
+                    },
                 )));
             }
             0
