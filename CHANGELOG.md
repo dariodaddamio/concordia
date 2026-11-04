@@ -1,5 +1,15 @@
 # Changelog
 
+### Fixed (`2026-11-04n`)
+
+- Thinking renders Markdown consistently, and shortened previews avoid broken formatting.
+- Explicit documentation links can open a missing root basename from the workspace's `docs`
+  directory; wrapped labels retain their original clickable destinations.
+- Tool headers distinguish the action, status, file links, additions/removals and disclosure with
+  color. Expanded cards retain their readable action and summary.
+- The footer permissions menu separates mode names from complete descriptions and clearly marks
+  the current mode, with responsive rows and the existing selection colors.
+
 ### Fixed (`2026-11-04m`)
 
 - Permissions open in a compact footer popover, preserving the visible composer. Clicking

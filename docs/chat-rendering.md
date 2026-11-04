@@ -1,5 +1,13 @@
 # Chat rendering and input, 2026-11-01f
 
+Build `2026-11-04n` renders reported thinking as Markdown, with plain readable shortened previews.
+Tool headings keep their readable action when expanded and distinguish action, status, linked
+paths, green additions, red removals and subdued Expand/Collapse controls. The footer permissions
+menu separates each mode from its explanation and marks the current mode without clipped prose.
+Explicit Markdown basename links resolve at the chat workspace first, then its direct `docs`
+directory if the root file is absent. Subdirectory paths and plain text references stay exact;
+there is no recursive file search. This does not repair already-corrupted provider text.
+
 Build `2026-11-04m` keeps permissions in a compact popover attached to the footer mode control.
 It overlays the bottom-right corner using the existing picker style, preserves the visible
 composer, and dismisses on an outside click. Mode changes retain the existing next-turn policy.

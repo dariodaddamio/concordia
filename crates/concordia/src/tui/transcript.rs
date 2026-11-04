@@ -548,6 +548,7 @@ fn wrap_block(
                 web_links.push((*a, *b, target.clone()));
             } else if let Some(mut candidate) = crate::file_links::explicit_reference(target) {
                 candidate.display = chars[*a..*b].iter().collect();
+                candidate.markdown = true;
                 links.push((*a, *b, candidate));
             }
         }
@@ -1013,6 +1014,37 @@ mod tests {
             &text.chars().skip(a).take(b - a).collect::<String>(),
             "cargo test"
         );
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("docs/e2e-status.md"), "source status").unwrap();
+        let mut v = TranscriptView {
+            link_root: Some(dir.path().into()),
+            ..Default::default()
+        };
+        v.rebuild(&[md("", "Read [E2E status](e2e-status.md) now")], 12, 20);
+        let links = v
+            .rows
+            .iter()
+            .flat_map(|row| row.links.iter())
+            .collect::<Vec<_>>();
+        assert!(!links.is_empty());
+        for (_, _, candidate) in links {
+            assert!(candidate.markdown);
+            assert_eq!(candidate.target, "e2e-status.md");
+            assert!(crate::file_links::resolve(candidate, dir.path()).is_ok());
+        }
+        let text = v
+            .rows
+            .iter()
+            .map(|row| row.text.iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("E2E status"));
+        assert!(!text.contains("](e2e-status.md)"));
     }
 
     #[test]

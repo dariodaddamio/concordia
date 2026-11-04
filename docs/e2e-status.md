@@ -1,5 +1,32 @@
 # Concordia verification status
 
+## Transcript and menu follow-up, 2026-11-04n
+
+This scoped UI batch renders reported thinking as Markdown, keeps readable tool summaries when
+expanded, separates edit/status/action/disclosure colors and gives permission choices their own
+description rows. Short windows retain compact choices. Explicit Markdown basename links use
+the workspace root first, then its direct `docs` directory; plain references and nested paths
+are not searched or rewritten. Existing regression cases cover wrapped link resolution, thinking
+formatting, edit colors and description-row clicks. All 477 enabled UI regressions and eight
+file-link regressions pass (five UI cases remain intentionally ignored). The wrapped-label test
+assertion was corrected to normalize display whitespace; Clippy requested a test-only initializer
+cleanup after the passing run. No additional provider turn, sandbox profile or publication is involved.
+
+All-target Clippy passes with warnings denied. The optimized application at source commit
+`110e3d1702d8a150f41dcf7369c0af15bf85e5a7` passes release smoke checks and a Defender scan
+(signatures `1.463.129.0`). The installed artifact is byte-identical: 23,217,664 bytes, SHA-256
+`F6264B8E0FF2098E685E6707C3176441B7DEF180B1BA066411D90866FA31E005`.
+
+An isolated native-window fixture restores bold reported thinking and a completed tool call,
+expands the tool by its readable header, displays all permission descriptions, retains the
+composer draft, dismisses on an outside click and opens an explicit basename Markdown label
+from the workspace's `docs` directory. The popover changes 47,040 pixels in its bounds and zero
+in the measured outside region; dismissal restores the original measured pixels exactly.
+The ignored receipt, progress log and screenshots are under
+`target/native-window-proof/transcript-menu-04n-qualified/`. No global input or clipboard was used;
+only the fixture process was closed. GitHub jobs could not start because of the existing
+account billing/spending-limit block, so remote CI is not claimed passing.
+
 ## Single authorized live handoff check, 2026-11-04
 
 The owner approved up to one synthetic model turn and deferred Windows/release work and GitHub
