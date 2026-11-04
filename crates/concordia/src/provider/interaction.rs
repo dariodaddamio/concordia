@@ -1003,13 +1003,16 @@ impl InteractionConnection {
 
     /// Called only after a successful native stdio initialization, before sending a prompt.
     pub fn initialized_claude(&mut self, version: &str) -> Result<(), String> {
-        if version != "2.1.317"
+        if version != crate::capacity::claude_capacity::CLI_VERSION
             || self
                 .owner
                 .as_ref()
                 .is_some_and(|owner| owner.provider != ProviderKind::Claude)
         {
-            return Err("Claude native control protocol requires verified CLI 2.1.317".into());
+            return Err(format!(
+                "Claude native control protocol requires verified CLI {}",
+                crate::capacity::claude_capacity::CLI_VERSION
+            ));
         }
         self.capabilities.permissions = CapabilityEvidence {
             support: Support::Unknown,
@@ -1058,7 +1061,8 @@ impl InteractionConnection {
             "claude/can_use_tool" | "claude/ask_question"
         );
         let claude_bound = self.capabilities.permissions.transport == "claude-stdio"
-            && self.capabilities.permissions.cli_version.as_deref() == Some("2.1.317")
+            && self.capabilities.permissions.cli_version.as_deref()
+                == Some(crate::capacity::claude_capacity::CLI_VERSION)
             && params["sessionId"].as_str() == Some(session)
             && params
                 .pointer("/toolCall/toolCallId")
@@ -1309,7 +1313,10 @@ mod tests {
             )
             .is_err());
         assert!(claude.initialized_claude("unknown").is_err());
-        claude.initialized_claude("2.1.317").unwrap();
+        assert!(claude.initialized_claude("2.1.317").is_err());
+        claude
+            .initialized_claude(crate::capacity::claude_capacity::CLI_VERSION)
+            .unwrap();
         let mut params = permission();
         params["toolCall"]["toolCallId"] = json!("native-write");
         let (request, mut response) = claude

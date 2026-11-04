@@ -835,7 +835,9 @@ mod tests {
             Some(claude_owner.clone()),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
-        claude_connection.initialized_claude("2.1.317").unwrap();
+        claude_connection
+            .initialized_claude(crate::capacity::claude_capacity::CLI_VERSION)
+            .unwrap();
         let (question, mut question_rx) = claude_connection
             .request(
                 "fixture-session",
@@ -1103,7 +1105,7 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         claude_worker_connection
-            .initialized_claude("2.1.317")
+            .initialized_claude(crate::capacity::claude_capacity::CLI_VERSION)
             .unwrap();
         let (claude_request, mut claude_rx) = claude_worker_connection
             .request(

@@ -353,7 +353,7 @@ fn main() {
     if args.first().is_some_and(|arg| arg == "--version")
         && std::env::var("FAKE_PROVIDER_NATIVE_CLAUDE").as_deref() == Ok("1")
     {
-        println!("2.1.317 (Claude Code)");
+        println!("2.1.318 (Claude Code)");
         return;
     }
     if args.iter().any(|arg| arg == "--permission-prompt-tool")

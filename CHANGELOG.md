@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (`2026-11-04a`)
+
+- Qualifies Claude CLI 2.1.318 against the matching official SDK control contract. Approval,
+  question, PDF and context gates share one version identity; cached 2.1.317 measurements become
+  unknown until refreshed. The installed CLI patch no longer leaves these features unavailable.
+
 ### Added (`2026-11-03z`)
 
 - Claude 2.1.317 native `AskUserQuestion` uses foreground and worker review, including up to four

@@ -203,7 +203,7 @@ pub struct SourceEvidence {
 pub fn unavailable_reason(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Codex => "no fresh, exact-turn Codex rollout last_token_usage/model_context_window evidence",
-        ProviderKind::Claude => "requires native stdio on CLI 2.1.317 and a fresh exact-session/model get_context_usage response",
+        ProviderKind::Claude => "requires native stdio on the qualified Claude CLI and a fresh exact-session/model get_context_usage response",
         ProviderKind::Cursor => "no negotiated current-context/window signal from the selected Cursor transport; schema fields alone are not capability evidence",
     }
 }
