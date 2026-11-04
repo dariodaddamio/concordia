@@ -7,6 +7,23 @@ turns, account/session identities and native approvals use the same application 
 Image previews in the Windows window use original decoded pixels with smooth scaling; terminal
 mode retains cell-based previews. Preview size and rendering do not alter provider attachments.
 
+Build `2026-11-04j` uses responsive mixed-attachment cards with top-edge close controls,
+subdued Esc text, and window titles ordered as application, account/model, actual phase and task.
+The native renderer fits symbol/emoji fallback fonts inside their allocated cells. The same
+Concordia mark appears in the titlebar, taskbar and Windows executable resource.
+
+The owned window supplies default clipboard/drop ownership and pixel images while sharing the
+existing provider and conversation UI. Its cell renderer remains a lightweight GDI host, not a
+complete native widget/accessibility toolkit. DirectWrite remains a possible incremental text
+backend: Microsoft documents font fallback and [GDI interoperability](https://learn.microsoft.com/en-us/windows/win32/directwrite/interoperating-with-gdi).
+No frontend replacement is implied by these rendering fixes.
+
+Codex patch recovery accepts bounded static JavaScript objects and structured tool output blocks.
+Historical file-output inspection binds a unique successful immutable attempt receipt to its
+completed native turn, then matches the exact sibling file set for the reported event. Selected
+file-output cards recover asynchronously by full artifact identity; ambiguous or failed evidence
+stays unavailable. Current disk contents never become an invented historical diff.
+
 Build `2026-11-01f` renders complete Mermaid fences locally in chat/Markdown panes and adds native
 image attachment chips. Timing/token metadata and reply headers are not file-link candidates;
 bare measurements such as 12.3k and 8.2s are not guessed filenames. Full user rows, including

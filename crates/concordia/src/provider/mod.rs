@@ -26,4 +26,4 @@ pub fn bin_override(var: &str) -> Option<String> {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
-mod edit_display;
+pub(crate) mod edit_display;

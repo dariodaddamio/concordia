@@ -1,17 +1,42 @@
-# Feature completion audit: 2026-11-04b candidate
+# Feature completion audit: 2026-11-04j candidate
 
-The full roadmap is **not complete**. Remaining product capabilities include Cursor proactive
-capacity and external usage signals, live qualification of native PDF processing, and unsupported
-native interaction/output formats beyond the qualified adapters. Live-provider
-qualification, memory-retention experiments and signing/distribution remain separate open gates.
+The full roadmap is **not complete**. The current board has seven grouped remaining workstreams;
+they mix missing capabilities, qualification and release work, so they are not a feature count
+or a percentage of completion:
+
+1. **Cursor context capacity:** the supported current-window sensor remains recorded as
+   vendor-blocked; reactive error recovery does not supply a proactive measurement.
+2. **Cursor external usage:** a supported per-event counter and stable identity are still missing
+   from the qualified import contract. Quotas and Concordia attempt totals remain separate.
+3. **Numeric credits:** when the native response omits the amount, availability cannot establish
+   a balance. A supported numeric source is still needed.
+4. **Native provider and host qualification:** broader approval/output/lifecycle formats, live
+   Claude PDF processing and the remaining provider/physical-host matrix stay open. Cursor live
+   exact-session continuation was exercised in 04d; that does not qualify every provider path.
+5. **Memory effectiveness:** the synthetic retrieval corpus exists; controlled model-retention
+   and token-saving experiments remain unrun and separately scoped/budgeted.
+6. **Native filesystem confinement:** managed worktrees and cooperative reservations exist;
+   they do not establish OS-enforced write boundaries for provider tools.
+7. **Trusted Windows distribution:** signing identity, antivirus vendor review, fresh exact-artifact
+   install/update rehearsal and publication decisions remain release gates. GitHub's current
+   billing/spending-limit block also prevents a passing remote-CI claim.
+
+Builds 04g–04i added default application-owned Windows input and original-pixel image previews.
+The earlier terminal cell-preview and pointer limitations do not describe that native window;
+explicit terminal mode retains its host-dependent limits.
+
+The 04j delivery batch is addressing reported regressions in native edit diffs, glyphs/window
+identity, Esc emphasis, duplicate Home history and mixed-attachment presentation. These requests
+are not marked closed here before the exact candidate is qualified. See [E2E status](e2e-status.md)
+for installed source/hash-bound evidence.
 
 Recent UI follow-ups add automatic composer thumbnails, a separate credit row and details view,
 private-by-default header email, concurrent foreground instances and draft-preserving Home
 navigation by mouse and keyboard. Native numeric credit balances remain unavailable when the
 provider returns null; the details view links to the full account Usage page.
 
-The supported local roadmap slices and the additional UX requests are implemented within their
-documented capabilities. The [current disposition](quality/overnight-roadmap-disposition.md) maps
+The supported local roadmap slices have implementations within their documented capabilities;
+the regression batch above remains distinct. The [current disposition](quality/overnight-roadmap-disposition.md) maps
 every area to shipped contracts and separates unavailable native interfaces, live/physical-host
 evidence and release gates. Those remaining gates are not claimed complete by fixture results.
 
@@ -20,7 +45,7 @@ including implementation order, parallel ownership and provider/host/release evi
 [original area plans](plans/completion-roadmap.md) retain detailed design history. Plan
 creation does not change the implementation status recorded here.
 
-## Closed in this build
+## Closed in earlier builds
 
 - F10 adds reviewed local-manifest connect/reconnect/verify and binding-specific disconnect,
   bounded background actions and stale target checks. [Scope](quality/integrations-management.md).

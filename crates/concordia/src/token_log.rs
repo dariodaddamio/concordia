@@ -10,7 +10,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 #[path = "token_events.rs"]
 mod events;
-pub use events::{load_page, load_page_with_cancel, Attribution, Cursor, Origin, Report};
+pub use events::{
+    load_attempt, load_page, load_page_with_cancel, Attribution, Cursor, Origin, Report,
+};
 
 pub fn attempt_outcome(exit: Option<i32>, cancelled: bool, failed: bool) -> (&'static str, bool) {
     let status = if cancelled {

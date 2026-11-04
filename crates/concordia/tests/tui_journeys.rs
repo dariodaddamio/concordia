@@ -62,9 +62,7 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
         let preview_draft = s.draft();
         s.until("automatic image preview without a click", |s| {
             let screen = s.screen();
-            screen.contains("Preview · diagram.png")
-                && screen.contains("12 × 8")
-                && screen.contains('▀')
+            screen.contains("Image 1: diagram.png") && screen.contains('▀')
         });
         assert!(s.screen().contains("Credits: not reported"));
         let screen = s.screen();

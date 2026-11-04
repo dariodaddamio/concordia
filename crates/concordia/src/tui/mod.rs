@@ -600,36 +600,46 @@ impl App {
     }
 
     fn window_title(&self) -> String {
-        let (icon, status): (&str, String) =
-            if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
-                ("\u{21bb}", "Updating".into())
-            } else if self.cancel_requested && self.busy {
-                ("\u{25a0}", "Stopping".into())
-            } else if self.busy && self.questions.waiting() {
-                ("◇", "Waiting for you".into())
-            } else if self.busy {
-                match &self.phase {
-                    Phase::Waiting => ("✧", "Waiting".into()),
-                    Phase::Thinking => ("◈", "Thinking".into()),
-                    Phase::Tool(name) => (
-                        crate::provider::stream_cards::tool_icon(name),
-                        crate::provider::stream_cards::tool_label(name),
-                    ),
-                    Phase::Writing => ("✎", "Writing".into()),
-                }
-            } else if self.continuation.waiting() {
-                ("!", "Usage limit".into())
-            } else {
-                ("✦", "Idle".into())
-            };
+        let status = if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
+            "Installing update".into()
+        } else if self.cancel_requested && self.busy {
+            "Stopping provider turn".into()
+        } else if worker_input::active(self) || (self.busy && self.questions.waiting()) {
+            "Waiting for your input".into()
+        } else if self.busy {
+            self.run_status_label()
+        } else if self.continuation.waiting() {
+            "Paused; continuation required".into()
+        } else if self.deleg.d.any_active() {
+            "Workers running".into()
+        } else {
+            "Ready".into()
+        };
         let project = self
             .cwd
             .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
+            .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "New chat".into());
-        let title = self.session_ui.title.as_deref().unwrap_or(&project);
-        let title: String = title.chars().filter(|c| !c.is_control()).take(72).collect();
-        format!("{icon} {title} \u{b7} {status} \u{b7} Concordia")
+        let task = self.session_ui.title.as_deref().unwrap_or(&project);
+        let clean = |value: &str, max: usize| -> String {
+            value
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(max)
+                .collect()
+        };
+        let account = self.account_label();
+        let model = if self.model == "?" {
+            String::new()
+        } else {
+            format!(" / {}", clean(&self.model, 40))
+        };
+        format!(
+            "Concordia | {}{model} | {} | {}",
+            clean(&account, 48),
+            clean(&status, 96),
+            clean(task, 72)
+        )
     }
 
     fn run_status_label(&self) -> String {
@@ -3897,14 +3907,14 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
                 app.raster.native = use_window;
                 #[cfg(windows)]
-                let mut image = None;
+                let mut image = Vec::new();
                 let drawn = terminal
                     .draw(|f| {
                         raster::begin_frame(&app);
                         draw_ui(f, &mut app);
                         #[cfg(windows)]
                         {
-                            image = raster::native_image(f, &app);
+                            image = raster::native_images(f, &app);
                         }
                     })
                     .map(|_| ());
@@ -5531,7 +5541,9 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
             .constraints([
                 Constraint::Length(2),
                 Constraint::Min(3),
-                Constraint::Length(input_rows as u16 + 2 + app.images.height() as u16),
+                Constraint::Length(
+                    input_rows as u16 + 2 + app.images.height(chat_area.width) as u16,
+                ),
                 Constraint::Length(1),
             ])
             .split(chat_area)
@@ -5729,10 +5741,7 @@ fn draw_run_status(f: &mut Frame, area: Rect, app: &mut App) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let key = Style::default()
-        .fg(Color::White)
-        .bg(Color::Indexed(238))
-        .add_modifier(Modifier::BOLD);
+    let key = Style::default().fg(Color::DarkGray);
     let right = format!(
         " \u{b7} {} \u{b7} ",
         run_elapsed(app.turn_started.map_or(0, |t| t.elapsed().as_secs()))

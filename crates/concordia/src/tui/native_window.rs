@@ -54,7 +54,7 @@ struct Screen {
     cursor: Position,
     cursor_visible: bool,
     title: String,
-    image: Option<RasterImage>,
+    images: Vec<RasterImage>,
 }
 impl Screen {
     fn resize(&mut self, cols: u16, rows: u16, pixels: Size) {
@@ -62,7 +62,7 @@ impl Screen {
         self.pixels = pixels;
         self.cells =
             vec![Cell::default(); usize::from(self.size.width) * usize::from(self.size.height)];
-        self.image = None;
+        self.images.clear();
     }
 }
 struct Shared {
@@ -91,7 +91,7 @@ pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
             cursor: Position::default(),
             cursor_visible: false,
             title: "Concordia".into(),
-            image: None,
+            images: Vec::new(),
         }),
     });
     let (events, receiver) = mpsc::sync_channel(4096);
@@ -130,29 +130,32 @@ pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
 }
 
 impl WindowBackend {
-    pub(super) fn set_image(&mut self, image: Option<RasterImage>) -> io::Result<()> {
-        if image.as_ref().is_some_and(|image| {
-            image.pixels.width() == 0
-                || image.pixels.height() == 0
-                || image.pixels.width() > 4096
-                || image.pixels.height() > 4096
-                || u64::from(image.pixels.width()) * u64::from(image.pixels.height()) > 16_000_000
-        }) {
+    pub(super) fn set_images(&mut self, images: Vec<RasterImage>) -> io::Result<()> {
+        if images.len() > 4
+            || images.iter().any(|image| {
+                image.pixels.width() == 0
+                    || image.pixels.height() == 0
+                    || image.pixels.width() > 4096
+                    || image.pixels.height() > 4096
+                    || u64::from(image.pixels.width()) * u64::from(image.pixels.height())
+                        > 16_000_000
+            })
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Image exceeds native preview bounds",
             ));
         }
         let mut screen = self.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
-        let unchanged = match (&screen.image, &image) {
-            (None, None) => true,
-            (Some(old), Some(new)) => old.area == new.area && Arc::ptr_eq(&old.pixels, &new.pixels),
-            _ => false,
-        };
+        let unchanged =
+            screen.images.len() == images.len()
+                && screen.images.iter().zip(&images).all(|(old, new)| {
+                    old.area == new.area && Arc::ptr_eq(&old.pixels, &new.pixels)
+                });
         if unchanged {
             return Ok(());
         }
-        screen.image = image;
+        screen.images = images;
         drop(screen);
         self.shared.dirty.store(true, Ordering::Release);
         Backend::flush(self)
@@ -332,6 +335,10 @@ struct Window {
     shared: Arc<Shared>,
     events: SyncSender<Event>,
     fonts: [HFONT; 16],
+    symbol_fonts: [HFONT; 16],
+    emoji_fonts: [HFONT; 16],
+    glyph_fonts: std::collections::HashMap<String, u8>,
+    icons: [HICON; 2],
     cell_width: i32,
     cell_height: i32,
     surrogate: Option<u16>,
@@ -341,7 +348,7 @@ struct Window {
     wheel: i32,
     last_motion: Option<MouseEvent>,
     surface: Option<Surface>,
-    image_pixels: Option<BitmapPixels>,
+    image_pixels: Vec<BitmapPixels>,
 }
 
 struct BitmapPixels {
@@ -378,6 +385,20 @@ impl Drop for Window {
                 }
             }
         }
+        for font in self.symbol_fonts.into_iter().chain(self.emoji_fonts) {
+            if !font.is_null() {
+                unsafe {
+                    DeleteObject(font);
+                }
+            }
+        }
+        for icon in self.icons {
+            if !icon.is_null() {
+                unsafe {
+                    DestroyIcon(icon);
+                }
+            }
+        }
     }
 }
 impl Window {
@@ -387,7 +408,18 @@ impl Window {
     unsafe fn fonts(&mut self, hwnd: HWND, dpi: u32) {
         // Cached glyphs must be regenerated after a DPI/font change.
         self.surface = None;
+        self.glyph_fonts.clear();
         for font in &mut self.fonts {
+            if !font.is_null() {
+                DeleteObject(*font);
+            }
+            *font = null_mut();
+        }
+        for font in self
+            .symbol_fonts
+            .iter_mut()
+            .chain(self.emoji_fonts.iter_mut())
+        {
             if !font.is_null() {
                 DeleteObject(*font);
             }
@@ -411,6 +443,30 @@ impl Window {
                 FIXED_PITCH as u32 | FF_MODERN as u32,
                 face.as_ptr(),
             );
+        }
+        for (family, fonts) in [
+            ("Segoe UI Symbol", &mut self.symbol_fonts),
+            ("Segoe UI Emoji", &mut self.emoji_fonts),
+        ] {
+            let face = wide(family);
+            for (style, font) in fonts.iter_mut().enumerate() {
+                *font = CreateFontW(
+                    -((18 * dpi.max(96) / 96) as i32),
+                    0,
+                    0,
+                    0,
+                    if style & 1 != 0 { 700 } else { 400 },
+                    u32::from(style & 2 != 0),
+                    u32::from(style & 4 != 0),
+                    u32::from(style & 8 != 0),
+                    DEFAULT_CHARSET as u32,
+                    OUT_DEFAULT_PRECIS as u32,
+                    CLIP_DEFAULT_PRECIS as u32,
+                    CLEARTYPE_QUALITY as u32,
+                    DEFAULT_PITCH as u32,
+                    face.as_ptr(),
+                );
+            }
         }
         let dc = GetDC(hwnd);
         if !dc.is_null() {
@@ -582,16 +638,30 @@ impl Window {
                     FillRect(memory, &top, GetStockObject(DC_BRUSH) as HBRUSH);
                 } else {
                     let text: Vec<u16> = cell.symbol().encode_utf16().collect();
-                    ExtTextOutW(
-                        memory,
-                        rect.left,
-                        rect.top,
-                        ETO_OPAQUE | ETO_CLIPPED,
-                        &rect,
-                        text.as_ptr(),
-                        text.len() as u32,
-                        null(),
-                    );
+                    if cell.symbol().is_ascii() {
+                        ExtTextOutW(
+                            memory,
+                            rect.left,
+                            rect.top,
+                            ETO_OPAQUE | ETO_CLIPPED,
+                            &rect,
+                            text.as_ptr(),
+                            text.len() as u32,
+                            null(),
+                        );
+                    } else {
+                        paint_glyph(
+                            memory,
+                            cell.symbol(),
+                            &rect,
+                            [
+                                self.fonts[style],
+                                self.symbol_fonts[style],
+                                self.emoji_fonts[style],
+                            ],
+                            &mut self.glyph_fonts,
+                        );
+                    }
                 }
             }
         }
@@ -602,7 +672,7 @@ impl Window {
         // Caret is an overlay, never part of the cached backing image. Expose and
         // blink events therefore only copy cached pixels and repaint this rectangle.
         BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
-        self.paint_image(dc, screen.image.as_ref(), &client);
+        self.paint_images(dc, &screen.images, &client);
         if self.focused
             && self.blink
             && screen.cursor_visible
@@ -625,90 +695,259 @@ impl Window {
         }
     }
 
-    unsafe fn paint_image(&mut self, dc: HDC, image: Option<&RasterImage>, client: &RECT) {
-        let Some(image) = image else {
-            self.image_pixels = None;
-            return;
-        };
-        if self
-            .image_pixels
-            .as_ref()
-            .is_none_or(|cached| !Arc::ptr_eq(&cached.source, &image.pixels))
-        {
-            let mut bgra = image.pixels.as_raw().clone();
-            for pixel in bgra.as_chunks_mut::<4>().0 {
-                let [red, green, blue, alpha] = *pixel;
-                let composite = |channel: u8, background: u8| {
-                    ((u32::from(channel) * u32::from(alpha)
-                        + u32::from(background) * (255 - u32::from(alpha))
-                        + 127)
-                        / 255) as u8
-                };
-                *pixel = [
-                    composite(blue, 31),
-                    composite(green, 23),
-                    composite(red, 20),
-                    255,
-                ];
+    unsafe fn paint_images(&mut self, dc: HDC, images: &[RasterImage], client: &RECT) {
+        self.image_pixels.retain(|cached| {
+            images
+                .iter()
+                .any(|image| Arc::ptr_eq(&cached.source, &image.pixels))
+        });
+        for image in images {
+            let index = if let Some(index) = self
+                .image_pixels
+                .iter()
+                .position(|cached| Arc::ptr_eq(&cached.source, &image.pixels))
+            {
+                index
+            } else {
+                let mut bgra = image.pixels.as_raw().clone();
+                for pixel in bgra.as_chunks_mut::<4>().0 {
+                    let [red, green, blue, alpha] = *pixel;
+                    let composite = |channel: u8, background: u8| {
+                        ((u32::from(channel) * u32::from(alpha)
+                            + u32::from(background) * (255 - u32::from(alpha))
+                            + 127)
+                            / 255) as u8
+                    };
+                    *pixel = [
+                        composite(blue, 31),
+                        composite(green, 23),
+                        composite(red, 20),
+                        255,
+                    ];
+                }
+                self.image_pixels.push(BitmapPixels {
+                    source: image.pixels.clone(),
+                    bgra,
+                });
+                self.image_pixels.len() - 1
+            };
+            let cached = &self.image_pixels[index];
+            let left = i32::from(image.area.x) * self.cell_width;
+            let top = i32::from(image.area.y) * self.cell_height;
+            let available_width =
+                (i32::from(image.area.width) * self.cell_width).min(client.right - left);
+            let available_height =
+                (i32::from(image.area.height) * self.cell_height).min(client.bottom - top);
+            if available_width <= 0 || available_height <= 0 {
+                continue;
             }
-            self.image_pixels = Some(BitmapPixels {
-                source: image.pixels.clone(),
-                bgra,
-            });
-        }
-        let cached = self.image_pixels.as_ref().expect("image pixels prepared");
-        let left = i32::from(image.area.x) * self.cell_width;
-        let top = i32::from(image.area.y) * self.cell_height;
-        let available_width =
-            (i32::from(image.area.width) * self.cell_width).min(client.right - left);
-        let available_height =
-            (i32::from(image.area.height) * self.cell_height).min(client.bottom - top);
-        if available_width <= 0 || available_height <= 0 {
-            return;
-        }
-        let width = image.pixels.width();
-        let height = image.pixels.height();
-        let scale = (f64::from(available_width) / f64::from(width))
-            .min(f64::from(available_height) / f64::from(height))
-            .min(1.0);
-        let rendered_width = (f64::from(width) * scale).floor().max(1.0) as i32;
-        let rendered_height = (f64::from(height) * scale).floor().max(1.0) as i32;
-        let bitmap = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width as i32,
-                biHeight: -(height as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB,
-                biSizeImage: cached.bgra.len() as u32,
+            let width = image.pixels.width();
+            let height = image.pixels.height();
+            let scale = (f64::from(available_width) / f64::from(width))
+                .min(f64::from(available_height) / f64::from(height))
+                .min(1.0);
+            let rendered_width = (f64::from(width) * scale).floor().max(1.0) as i32;
+            let rendered_height = (f64::from(height) * scale).floor().max(1.0) as i32;
+            let bitmap = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width as i32,
+                    biHeight: -(height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB,
+                    biSizeImage: cached.bgra.len() as u32,
+                    ..mem::zeroed()
+                },
                 ..mem::zeroed()
-            },
-            ..mem::zeroed()
-        };
-        let previous_mode = SetStretchBltMode(dc, HALFTONE);
-        let mut previous_origin: POINT = mem::zeroed();
-        SetBrushOrgEx(dc, 0, 0, &mut previous_origin);
-        StretchDIBits(
-            dc,
-            left,
-            top,
-            rendered_width,
-            rendered_height,
-            0,
-            0,
-            width as i32,
-            height as i32,
-            cached.bgra.as_ptr().cast(),
-            &bitmap,
-            DIB_RGB_COLORS,
-            SRCCOPY,
-        );
-        SetBrushOrgEx(dc, previous_origin.x, previous_origin.y, null_mut());
-        if previous_mode != 0 {
-            SetStretchBltMode(dc, previous_mode);
+            };
+            let previous_mode = SetStretchBltMode(dc, HALFTONE);
+            let mut previous_origin: POINT = mem::zeroed();
+            SetBrushOrgEx(dc, 0, 0, &mut previous_origin);
+            StretchDIBits(
+                dc,
+                left,
+                top,
+                rendered_width,
+                rendered_height,
+                0,
+                0,
+                width as i32,
+                height as i32,
+                cached.bgra.as_ptr().cast(),
+                &bitmap,
+                DIB_RGB_COLORS,
+                SRCCOPY,
+            );
+            SetBrushOrgEx(dc, previous_origin.x, previous_origin.y, null_mut());
+            if previous_mode != 0 {
+                SetStretchBltMode(dc, previous_mode);
+            }
         }
     }
+}
+
+/// GDI's fixed Consolas cell metrics are not the natural metrics of symbol/emoji
+/// fonts. Choose an installed glyph face, then fit its complete ink into the
+/// allocated terminal cells rather than clipping a wider glyph at the right edge.
+unsafe fn paint_glyph(
+    dc: HDC,
+    symbol: &str,
+    rect: &RECT,
+    fonts: [HFONT; 3],
+    cache: &mut std::collections::HashMap<String, u8>,
+) {
+    let text: Vec<u16> = symbol
+        .chars()
+        .filter(|c| !matches!(c, '\u{fe0e}' | '\u{fe0f}'))
+        .flat_map(|c| {
+            let mut units = [0; 2];
+            let count = c.encode_utf16(&mut units).len();
+            units.into_iter().take(count)
+        })
+        .collect();
+    if text.is_empty() {
+        return;
+    }
+    let family = if let Some(family) = cache.get(symbol) {
+        *family
+    } else {
+        let mut chosen = 0;
+        if symbol.chars().any(|c| c as u32 > 0xffff) {
+            chosen = 2;
+        } else {
+            let mut indices = vec![0; text.len()];
+            for (index, font) in fonts.iter().enumerate() {
+                SelectObject(dc, *font);
+                if GetGlyphIndicesW(
+                    dc,
+                    text.as_ptr(),
+                    text.len() as i32,
+                    indices.as_mut_ptr(),
+                    GGI_MARK_NONEXISTING_GLYPHS,
+                ) != GDI_ERROR as u32
+                    && indices.iter().all(|glyph| *glyph != 0xffff)
+                {
+                    chosen = index as u8;
+                    break;
+                }
+            }
+        }
+        if symbol.len() <= 64 {
+            if cache.len() >= 512 {
+                cache.clear();
+            }
+            cache.insert(symbol.into(), chosen);
+        }
+        chosen
+    };
+    SelectObject(dc, fonts[usize::from(family)]);
+    let saved = SaveDC(dc);
+    if saved == 0 {
+        return;
+    }
+    let mut measured: windows_sys::Win32::Foundation::SIZE = mem::zeroed();
+    if GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32, &mut measured) == 0 {
+        RestoreDC(dc, saved);
+        return;
+    }
+    let width = (rect.right - rect.left).max(1);
+    let height = (rect.bottom - rect.top).max(1);
+    let scale = (width as f32 / measured.cx.max(1) as f32)
+        .min(height as f32 / measured.cy.max(1) as f32)
+        .min(1.0);
+    SetDCBrushColor(dc, GetBkColor(dc));
+    FillRect(dc, rect, GetStockObject(DC_BRUSH) as HBRUSH);
+    IntersectClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetGraphicsMode(dc, GM_ADVANCED);
+    let transform = XFORM {
+        eM11: scale,
+        eM12: 0.0,
+        eM21: 0.0,
+        eM22: scale,
+        eDx: rect.left as f32 + (width as f32 - measured.cx as f32 * scale) / 2.0,
+        eDy: rect.top as f32 + (height as f32 - measured.cy as f32 * scale) / 2.0,
+    };
+    if SetWorldTransform(dc, &transform) != 0 {
+        ExtTextOutW(
+            dc,
+            0,
+            0,
+            0,
+            null(),
+            text.as_ptr(),
+            text.len() as u32,
+            null(),
+        );
+    }
+    RestoreDC(dc, saved);
+}
+
+/// A small native Concordia mark, owned by this window. No shell icon or
+/// per-user installation state is needed for titlebar/taskbar identity.
+unsafe fn app_icon(size: i32) -> HICON {
+    let bitmap_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size,
+            biHeight: -size,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..mem::zeroed()
+        },
+        ..mem::zeroed()
+    };
+    let mut bits = null_mut();
+    let color = CreateDIBSection(
+        null_mut(),
+        &bitmap_info,
+        DIB_RGB_COLORS,
+        &mut bits,
+        null_mut(),
+        0,
+    );
+    if color.is_null() || bits.is_null() {
+        if !color.is_null() {
+            DeleteObject(color);
+        }
+        return null_mut();
+    }
+    let mask_bits = vec![0_u8; (((size + 15) / 16) * 2 * size) as usize];
+    let mask = CreateBitmap(size, size, 1, 1, mask_bits.as_ptr().cast());
+    if mask.is_null() {
+        DeleteObject(color);
+        return null_mut();
+    }
+    let pixels = std::slice::from_raw_parts_mut(bits.cast::<u32>(), (size * size) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let px = (x as f32 + 0.5) * 32.0 / size as f32;
+            let py = (y as f32 + 0.5) * 32.0 / size as f32;
+            let radius = (px - 15.0).hypot(py - 16.0);
+            let ring = (7.0..=12.0).contains(&radius) && !(px > 18.0 && (py - 16.0).abs() < 8.0);
+            let node = (23.0..=29.0).contains(&px) && (13.0..=19.0).contains(&py);
+            pixels[(y * size + x) as usize] = if ring {
+                0xff56b6e8
+            } else if node {
+                0xffe5bb62
+            } else {
+                0xff14171f
+            };
+        }
+    }
+    let info = ICONINFO {
+        fIcon: 1,
+        xHotspot: 0,
+        yHotspot: 0,
+        hbmMask: mask,
+        hbmColor: color,
+    };
+    let icon = CreateIconIndirect(&info);
+    DeleteObject(mask);
+    DeleteObject(color);
+    icon
 }
 
 unsafe fn window_thread(
@@ -737,6 +976,10 @@ unsafe fn window_thread(
         shared: shared.clone(),
         events,
         fonts: [null_mut(); 16],
+        symbol_fonts: [null_mut(); 16],
+        emoji_fonts: [null_mut(); 16],
+        glyph_fonts: std::collections::HashMap::new(),
+        icons: [app_icon(32), app_icon(16)],
         cell_width: 9,
         cell_height: 20,
         surrogate: None,
@@ -746,7 +989,7 @@ unsafe fn window_thread(
         wheel: 0,
         last_motion: None,
         surface: None,
-        image_pixels: None,
+        image_pixels: Vec::new(),
     });
     let dpi = GetDpiForSystem().clamp(96, 768) as i32;
     let initial_width = (1120 * dpi / 96).min((GetSystemMetrics(SM_CXSCREEN) * 9 / 10).max(400));
@@ -769,6 +1012,22 @@ unsafe fn window_thread(
         return Err(io::Error::last_os_error());
     }
     shared.hwnd.store(hwnd as isize, Ordering::Release);
+    if !window.icons[0].is_null() {
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            ICON_BIG as usize,
+            window.icons[0] as LPARAM,
+        );
+    }
+    if !window.icons[1].is_null() {
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            ICON_SMALL as usize,
+            window.icons[1] as LPARAM,
+        );
+    }
     window.fonts(hwnd, GetDpiForWindow(hwnd));
     window.resized(hwnd);
     DragAcceptFiles(hwnd, 1);

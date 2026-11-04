@@ -1,0 +1,2 @@
+// Application icon: keep the 16/32-pixel marks aligned with native_window::app_icon.
+1 ICON "concordia.ico"
