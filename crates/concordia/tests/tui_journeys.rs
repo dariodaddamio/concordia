@@ -3000,7 +3000,13 @@ fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
         s.screen().contains("New local integration")
     });
     s.paste(&format!("{}x", managed_manifest.display()));
+    s.until("manifest path paste is visible", |s| {
+        s.screen().contains("new-harness.jsonx")
+    });
     s.send("\x08");
+    s.until("manifest field Backspace updates the path", |s| {
+        !s.screen().contains("new-harness.jsonx") && s.screen().contains("new-harness.json")
+    });
     s.send("\r");
     s.until("local manifest review shows command and revision", |s| {
         let screen = s.screen();

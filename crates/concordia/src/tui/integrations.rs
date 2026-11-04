@@ -195,7 +195,16 @@ pub(super) fn open(app: &mut App) {
     );
     app.footer_left = "R refresh · Esc close".into();
 }
-pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
+    if app.integrations.new_path.is_some()
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && (matches!(
+            key.code,
+            KeyCode::Backspace | KeyCode::Char('\u{8}' | '\u{7f}')
+        ) || key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL)
+    {
+        key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+    }
     if !app
         .picker
         .as_ref()
