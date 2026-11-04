@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-03z candidate
+# Feature completion audit: 2026-11-04a candidate
 
 The full roadmap is **not complete**. Remaining product capabilities include Cursor proactive
 capacity and external usage signals, live qualification of native PDF processing, and unsupported
@@ -24,10 +24,11 @@ creation does not change the implementation status recorded here.
 
 - F10 adds reviewed local-manifest connect/reconnect/verify and binding-specific disconnect,
   bounded background actions and stale target checks. [Scope](quality/integrations-management.md).
-- Claude CLI 2.1.317 native stdio supports owned allow-once/deny review and the scoped
+- Historical 2026-11-03z receipt covers Claude CLI 2.1.317 native stdio owned allow-once/deny review; the next 2.1.318 candidate keeps the scoped
   `AskUserQuestion` broker path in main/worker runs. Original question/options and string answers
   are preserved; multi-select joins with `, `. Malformed/unsupported requests receive denial and
-  no HTML preview. Process and foreground/worker UI fixtures pass; live turns remain unverified.
+  no HTML preview. Historical z process/UI fixtures pass; new 2.1.318 focused fixtures and live
+  turns remain unverified.
   [Transport limits](quality/native-worker-input.md).
 - Claude explicit-model context measurements are captured after a completed turn on its live
   connection and reused only while the exact transcript revision and compaction setting match.
@@ -51,8 +52,9 @@ creation does not change the implementation status recorded here.
   receipts, with source/repository revalidation and retirement references. [Scope](quality/dependency-delivery.md).
 
 - Ordered text-document and bounded PDF snapshots, plus explicit F9 pasted-path attachment,
-  preserve drafts/queues and exact native data. Claude 2.1.317 standard/stdio PDF dispatch is a
-  candidate backed by fake-process schema/order/tamper evidence; installed/live qualification,
+  preserve drafts/queues and exact native data. Historical z covers Claude 2.1.317 standard/stdio
+  PDF dispatch; the next 2.1.318 candidate awaits focused process/UI/clipboard fixtures and
+  installed/live qualification,
   physical viewer behavior and other-provider support remain open. [Input scope](images-and-diagrams.md).
 - Context observations bind exact native turn/model and source revision, including same-model
   invalidation and specific unsupported-provider reasons. [Evidence](quality/capacity-provenance.md).

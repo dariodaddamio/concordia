@@ -29,7 +29,8 @@ Explicit cancellation with a confirmed process exit can release it.
 
 [Codex app-server input](codex-native-input.md) extends this contract behind explicit account/home
 selection. Claude now has a separately gated stdio contract: the source-matched Claude Code
-`2.1.317` CLI accepts `--input-format stream-json --output-format stream-json
+The next candidate tracks Claude CLI `2.1.318`; the source-matched Python SDK v0.2.178
+defines the same `--input-format stream-json --output-format stream-json
 --permission-prompt-tool stdio`; after an `initialize` control exchange, top-level
 `control_request`/`can_use_tool` frames carry a request id, tool name, original input and
 tool-use id, and the only native response is a matching `control_response`. The adapter keeps
@@ -41,7 +42,7 @@ before dispatch; `/native ACCOUNT off` selects the existing standard adapter. It
 falls back from an approval-capable transport. Duplicate IDs receive no second grant. Native
 cancellation invalidates pending review while stdout continues being consumed; closing or losing
 the provider leaves uncertain completion paused. Image content is preserved. Structured Claude
-`AskUserQuestion` is now supported in the existing broker for the scoped native 2.1.317 shape.
+`AskUserQuestion` is now supported in the existing broker for the scoped native 2.1.318 shape.
 The broker preserves original question text/options and returns answers as strings; multi-select
 answers are joined with `, `. Malformed, unsupported or cancelled payloads are denied, and no HTML
 preview is rendered. This follows the official [user-input contract](https://platform.claude.com/docs/en/agent-sdk/user-input)
@@ -51,8 +52,12 @@ the focused choice and Enter confirms; mouse clicks toggle choices and the confi
 the reviewed set. A free-text `Other` response reuses the existing note row rather than opening
 HTML or a second editor. The same bounded ownership, cancellation and at-most-once response
 rules apply to these answers.
-Extended process and foreground/worker UI fixtures pass in build z. No live model turn or
-physical-host parity is claimed; exact installed artifact evidence is in [E2E status](../e2e-status.md).
+Extended process and foreground/worker UI fixtures passed in the historical 2026-11-03z receipt;
+new 2.1.318 focused fixtures are pending. No live model turn or physical-host parity is claimed;
+exact historical artifact evidence is in [E2E status](../e2e-status.md). Source evidence: [Python
+v0.2.178 CLI version](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/_cli_version.py),
+[query control methods](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/query.py),
+and [TypeScript v0.3.318 release parity](https://github.com/anthropics/claude-agent-sdk-typescript/releases).
 
 ## Activity and navigation
 

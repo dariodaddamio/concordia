@@ -22,7 +22,7 @@ model-callable MCP permission tool alone does not authenticate a native approval
 3. Deliver foreground and worker approval routing through the coordinator's existing review UI;
    keep native options/restrictions and at-most-once response semantics.
 
-The supported structured-question slice is limited to native Claude 2.1.317 `AskUserQuestion`:
+The next candidate's supported structured-question slice is limited to native Claude 2.1.318 `AskUserQuestion`:
 original question/options are retained, answers are strings, and multi-select answers join with
 `, `. Malformed, unsupported and cancelled requests are denied; HTML previews are out of scope.
 See the official [user-input contract](https://platform.claude.com/docs/en/agent-sdk/user-input)

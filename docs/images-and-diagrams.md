@@ -77,8 +77,9 @@ text are accepted. No shell expansion, host configuration change or dropped-file
 PDF attachments are now a bounded native Claude candidate. The version-matched [TypeScript SDK
 `UserMessage` input union](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusermessage)
 places image/document blocks in `message.content`; this is user input, not the older output
-`ContentBlock` union. Concordia dispatches the ordered document block through Claude 2.1.317
-standard stdin and `ClaudeStdio` only, after the capability/version gate. Each PDF is capped at
+`ContentBlock` union. The historical z receipt dispatched the ordered document block through
+Claude 2.1.317 standard stdin and `ClaudeStdio`; the next candidate targets 2.1.318 after the
+capability/version gate. Each PDF is capped at
 8 MiB, all PDFs together at 16 MiB, and the message at four attachments. Snapshots retain the
 SHA-256 descriptor and refuse sensitive or linked paths, changed identity/hash, missing `%PDF-`
 signature, and encrypted files marked with `/Encrypt`. Codex and Cursor currently reject PDF
@@ -90,7 +91,7 @@ Attach through the existing picker/F9 path flow. The PDF chip opens the immutabl
 system viewer as an explicit file action; it does not rasterize or OCR the document. Drafts,
 queues and checkpoints retain descriptor metadata and the original envelope. Fake-process tests
 cover schema/order, Standard Claude and ClaudeStdio payloads, unsupported providers and tamper
-rejection. Process checks and the extended attachment terminal journey pass; build z is installed.
+rejection in the historical z receipt. New 2.1.318 process/UI/clipboard fixture checks are pending;
 live provider processing, physical clipboard/viewer behavior and real PDF quality remain unqualified. Codex/Cursor PDF rejection is
 an explicit provider limit, not an unfinished transport.
 
@@ -136,6 +137,6 @@ Up to 16 diagrams per message render; additional diagrams retain source.
 The first Python SDK audit examined an output content union; that did not settle accepted user
 input. The official [TypeScript SDK streamed user-message contract](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusermessage)
 explicitly places images and documents in `message.content` and identifies native support from
-CLI 2.1.277. Installed 2.1.317 exceeds that threshold. This supplies the missing native wire
-contract. The current candidate adds bounded snapshots and dispatch; schema/fixture support
-remains distinct from installed and live parity, which still requires focused qualification.
+CLI 2.1.277. The next 2.1.318 candidate exceeds that threshold. This supplies the native wire
+contract; the historical z receipt contains bounded snapshots and dispatch. New schema/fixture
+support remains distinct from installed and live parity, which still requires focused qualification.
