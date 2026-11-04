@@ -67,7 +67,7 @@ local function resolve_concordia()
 end
 
 local concordia_exe = resolve_concordia()
-local concordia_spawn = { args = { concordia_exe }, domain = 'CurrentPaneDomain' }
+local concordia_spawn = { args = { concordia_exe, '--terminal' }, domain = 'CurrentPaneDomain' }
 
 local function looks_like_shell_title(title)
   if not title or title == '' then

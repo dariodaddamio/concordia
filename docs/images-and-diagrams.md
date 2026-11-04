@@ -4,7 +4,8 @@ Build: `2026-11-03u`. Supported provider adapters: Codex, Claude Code and Cursor
 
 ## Attach an image
 
-Use Ctrl+V when the terminal passes that key to Concordia, F9 to paste a clipboard image or
+The default Windows window owns keyboard and drag/drop input. Use Ctrl+V or Ctrl+Shift+V to
+paste an image, drop local image files into the window, F9 to paste a clipboard image or
 choose a file, `/attach` to choose a file, or
 `/attach "path/to/screenshot.png"`. Relative paths resolve from Concordia's cwd; quoted absolute
 paths work. `/attach clear` removes draft attachments. A visible image chip shows the name and
@@ -19,10 +20,10 @@ Registered PNG clipboard streams are accepted even when the clipboard has no bit
 An explicit empty bracketed-paste event checks for an image; unbracketed file-drop character
 bursts recognize the whole local path before inserting ordinary text.
 
-Windows Terminal binds Ctrl+V and Ctrl+Shift+V to its own paste action by default. A bitmap-only
-paste can produce no input event, so application code cannot capture that key. Forwarding those
-shortcuts requires a host keybinding change, which also affects other terminal apps; Concordia
-does not silently rewrite it. See [Microsoft's action and keybinding documentation](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/actions).
+Explicit `--terminal` mode still depends on the host forwarding paste input. Windows Terminal
+binds Ctrl+V and Ctrl+Shift+V to its own paste action, which can consume bitmap-only paste without
+an input event. Normal Windows launches use Concordia's own window instead of asking users to
+change global bindings. No host settings, global keyboard listener or hook is installed.
 
 PNG, JPEG and WebP are accepted, up to four distinct images of 4 MiB each per message. Clipboard
 bitmaps are saved as PNG. Image-only submission uses a short request to describe the image.

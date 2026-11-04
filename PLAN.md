@@ -29,7 +29,7 @@ What blocks a public release: [docs/release-blockers.md](docs/release-blockers.m
 
 | Decision | Choice |
 | --- | --- |
-| Interface | Concordia's own TUI (`ratatui`), inspired by modern agent clients; clean-room |
+| Interface | Concordia's own Windows window renders the shared `ratatui` UI; `--terminal` preserves explicit terminal-pane workflows. Native clipboard/drop input needs no host keybinding setup. |
 | Chat, tool cards, command previews | Rendered by Concordia from the providers' structured output |
 | Setup and control | Slash commands in the same input as chat (`/use`, `/use add`, `/model`, `/usage`, `/resume`, `/trust`, `/update`, `/doctor`, `/copy`) |
 | Backends | Programmatic CLIs: `codex exec`, `claude -p`, `agent --print`. Never a scraped hidden TUI |

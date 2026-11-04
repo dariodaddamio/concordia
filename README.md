@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Local memory management and orchestration for AI coding CLIs.</b><br>
-  A native Rust terminal app that connects tasks, accounts and sessions across Codex, Claude and Cursor.
+  A native Rust app that connects tasks, accounts and sessions across Codex, Claude and Cursor.
 </p>
 
 <p align="center">
@@ -28,8 +28,12 @@
 
 A task can outlive one chat, one account's usage window or one coding provider. Concordia's
 purpose is to keep that task navigable and coordinate the work across those boundaries.
-Memory management and orchestration are the core product. The terminal UI makes their state,
+Memory management and orchestration are the core product. The shared interface makes their state,
 sources and controls visible.
+
+On Windows, `concordia` opens its own window. Ctrl+V, Ctrl+Shift+V and image-file drops reach the
+application directly, without terminal-keybinding setup. `concordia --terminal` keeps the terminal
+interface for explicit pane workflows; `concordia wezterm` keeps its terminal panes.
 
 Concordia runs the official Codex, Claude Code and Cursor CLIs under your own accounts. Those
 CLIs still execute model turns and tools, enforce their permission modes, and own authentication

@@ -1,5 +1,10 @@
 # Chat rendering and input, 2026-11-01f
 
+Windows defaults to an app-owned native window using the same Ratatui layout and event handlers.
+It paints the existing cells, including thumbnail pixels, and owns clipboard paste, drops, mouse,
+focus and resize events. `--terminal` remains available for terminal-pane workflows. Provider
+turns, account/session identities and native approvals use the same application loop.
+
 Build `2026-11-01f` renders complete Mermaid fences locally in chat/Markdown panes and adds native
 image attachment chips. Timing/token metadata and reply headers are not file-link candidates;
 bare measurements such as 12.3k and 8.2s are not guessed filenames. Full user rows, including

@@ -1073,8 +1073,16 @@ pub fn ensure_on_user_path(dir: &Path) -> Result<bool> {
 /// returned the console to the shell early, the shell and the new Concordia would both read the
 /// keyboard and swallow each other's keystrokes.
 pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<i32> {
+    reexec_into_mode(new_exe, cwd, false)
+}
+
+pub fn reexec_into_mode(new_exe: &Path, cwd: &Path, terminal: bool) -> Result<i32> {
     persist_concordia_exe_env(new_exe);
-    let status = Command::new(new_exe)
+    let mut command = Command::new(new_exe);
+    if terminal {
+        command.arg("--terminal");
+    }
+    let status = command
         .current_dir(cwd)
         .env("CONCORDIA_EXE", new_exe)
         .stdin(Stdio::inherit())

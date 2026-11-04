@@ -18,7 +18,7 @@ use crate::store::{
     set_use_selection, ProviderKind, TrustMode, UseSelection,
 };
 use crate::update::{
-    reexec_into, start_check, start_update, Job, JobKind, JobResult, UpdateOutcome, UpdatePreview,
+    start_check, start_update, Job, JobKind, JobResult, UpdateOutcome, UpdatePreview,
 };
 use crate::usage::{usage_rows_for_accounts, usage_tone, UsageFetcher, UsageTone};
 use crate::version::short_stamp;
@@ -51,9 +51,12 @@ mod activity;
 mod artifacts;
 mod chatref;
 mod clipboard;
+#[cfg(all(windows, not(test)))]
+mod clipboard_capture;
 mod compat_ui;
 mod continuation;
 mod diagrams;
+mod display_backend;
 mod editor;
 mod files;
 mod images;
@@ -65,6 +68,8 @@ mod managed_workspaces;
 mod markdown;
 mod modal;
 mod native_agents;
+#[cfg(windows)]
+mod native_window;
 mod palette;
 mod persist;
 mod pointer;
@@ -3771,6 +3776,15 @@ pub fn run_file_editor(arguments: &[String]) -> Result<()> {
 }
 
 pub async fn run_chat_tui() -> Result<()> {
+    run_chat_ui(false).await
+}
+
+#[cfg(windows)]
+pub async fn run_chat_window() -> Result<()> {
+    run_chat_ui(true).await
+}
+
+async fn run_chat_ui(use_window: bool) -> Result<()> {
     let state_root = default_store_root();
     crate::logging::init(&state_root);
     crate::logging::info(&format!(
@@ -3802,21 +3816,47 @@ pub async fn run_chat_tui() -> Result<()> {
     app.prior_provider = app.provider;
     app.prior_home = app.continuity_home();
 
-    enable_raw_mode()?;
-    let terminal_restore = TerminalRestoreGuard::new();
-    let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    // Mouse capture replaces the terminal's own selection (concordia draws its own); bracketed paste
-    // delivers pasted newlines as text instead of Enter presses. Both are best-effort.
-    let _ = execute!(
-        stdout,
-        EnableMouseCapture,
-        EnableBracketedPaste,
-        EnableFocusChange
-    );
+    let terminal_restore = (!use_window).then(TerminalRestoreGuard::new);
+    let (backend, mut terminal_input) = if use_window {
+        #[cfg(windows)]
+        {
+            let (backend, events) = native_window::open()?;
+            let input = input_stream::InputStream::from_native(events)?;
+            // This process owns a native window now. Detach only its inherited console,
+            // so another application's console control events cannot terminate its runs.
+            unsafe {
+                windows_sys::Win32::System::Console::FreeConsole();
+            }
+            (display_backend::DisplayBackend::Window(backend), input)
+        }
+        #[cfg(not(windows))]
+        anyhow::bail!("Native windows are available on Windows")
+    } else {
+        enable_raw_mode()?;
+        let mut output = stdout();
+        execute!(output, EnterAlternateScreen)?;
+        let _ = execute!(
+            output,
+            EnableMouseCapture,
+            EnableBracketedPaste,
+            EnableFocusChange
+        );
+        let _ = execute!(
+            output,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+        );
+        let backend = ratatui::backend::CrosstermBackend::new(output);
+        (
+            display_backend::DisplayBackend::Terminal(backend),
+            input_stream::InputStream::spawn()?,
+        )
+    };
     // A panic must not leave the terminal in raw/mouse-reporting mode.
     let default_hook = std::panic::take_hook();
-    let panic_restore = terminal_restore.0.clone();
+    let panic_restore = terminal_restore
+        .as_ref()
+        .map(|restore| restore.0.clone())
+        .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
     std::panic::set_hook(Box::new(move |info| {
         if panic_restore.load(std::sync::atomic::Ordering::Acquire) {
             // Show the panic on the primary screen. The guard restores input modes after
@@ -3838,36 +3878,42 @@ pub async fn run_chat_tui() -> Result<()> {
         );
         default_hook(info);
     }));
-    // So KeyEvent.kind distinguishes Press vs Release on Windows (otherwise both look like Press).
-    let _ = execute!(
-        stdout,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
-    );
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    let mut terminal_input = input_stream::InputStream::spawn()?;
 
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = Instant::now();
     let mut key_burst = input::BurstBuffer::default();
     let mut mouse_pointer = pointer::Pointer::default();
+    let mut window_mouse = None;
 
     let mut previous_title = String::new();
     let input_result = (|| -> Result<()> {
         loop {
             // Drain pending paste chunks before repainting the growing prompt.
             if !key_burst.active() || !terminal_input.poll(Duration::ZERO)? {
-                execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+                if !use_window {
+                    execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+                }
                 let drawn = terminal.draw(|f| draw_ui(f, &mut app)).map(|_| ());
-                let ended = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
+                let ended = if use_window {
+                    Ok(())
+                } else {
+                    execute!(terminal.backend_mut(), EndSynchronizedUpdate)
+                };
                 drawn?;
                 ended?;
-                mouse_pointer.refresh(&app)?;
+                if use_window {
+                    if let Some((x, y)) = window_mouse {
+                        terminal.backend_mut().pointer(pointer::shape(&app, x, y))?;
+                    }
+                } else {
+                    mouse_pointer.refresh(&app)?;
+                }
             }
             let title = app.window_title();
             if title != previous_title {
-                write_osc_title(&title)?;
+                terminal.backend_mut().title(&title)?;
                 previous_title = title;
             }
 
@@ -3898,6 +3944,14 @@ pub async fn run_chat_tui() -> Result<()> {
                         continue;
                     };
                     match event {
+                        Event::Key(key)
+                            if use_window
+                                && key.code == KeyCode::F(12)
+                                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            quit = true;
+                            break;
+                        }
                         Event::Key(key) => {
                             if dispatch_key_event(
                                 &mut app,
@@ -3914,7 +3968,14 @@ pub async fn run_chat_tui() -> Result<()> {
                             if let Some(burst) = key_burst.take_pending() {
                                 dispatch_key_burst(&mut app, burst, &turn_tx);
                             }
-                            mouse_pointer.update(&app, m.column, m.row)?;
+                            if use_window {
+                                window_mouse = Some((m.column, m.row));
+                                terminal
+                                    .backend_mut()
+                                    .pointer(pointer::shape(&app, m.column, m.row))?;
+                            } else {
+                                mouse_pointer.update(&app, m.column, m.row)?;
+                            }
                             handle_mouse(&mut app, m)
                         }
                         Event::Paste(s) => {
@@ -4305,13 +4366,18 @@ pub async fn run_chat_tui() -> Result<()> {
     drop(terminal_input);
     // Clear only on normal shutdown. The panic hook has already returned to the
     // primary screen to print diagnostics; unwinding must preserve those messages.
-    let _ = terminal.clear();
-    let _ = execute!(terminal.backend_mut(), crossterm::cursor::MoveTo(0, 0));
-    terminal_restore.restore();
-    terminal.show_cursor()?;
+    if !use_window {
+        let _ = terminal.clear();
+        let _ = execute!(terminal.backend_mut(), crossterm::cursor::MoveTo(0, 0));
+        if let Some(restore) = &terminal_restore {
+            restore.restore();
+        }
+        terminal.show_cursor()?;
+    }
+    drop(terminal);
     input_result?;
     if let Some(path) = reexec {
-        let code = reexec_into(&path, &cwd)?;
+        let code = crate::update::reexec_into_mode(&path, &cwd, !use_window)?;
         std::process::exit(code);
     }
     Ok(())

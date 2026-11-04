@@ -43,8 +43,13 @@ fn help_lists_the_surface_users_need() {
         "/threads",
         "Connect:",
         "Mouse:",
+        "concordia --terminal",
+        "concordia window",
     ] {
         assert!(text.contains(needle), "help missing {needle}:\n{text}");
+    }
+    if cfg!(windows) {
+        assert!(text.contains("native app window (image paste and file drop)"));
     }
 }
 
