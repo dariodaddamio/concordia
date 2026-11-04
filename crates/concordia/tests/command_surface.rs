@@ -8,7 +8,20 @@ use concordia::store::{ProviderKind, TrustMode};
 
 #[test]
 fn cli_commands_reject_extra_arguments_before_any_action() {
-    for command in ["--version", "--help", "doctor", "install", "wezterm", "mcp"] {
+    for command in [
+        "--version",
+        "--help",
+        "doctor",
+        "install",
+        "wezterm",
+        "mcp",
+        "--host",
+        "host",
+        "--terminal",
+        "terminal",
+        "--window",
+        "window",
+    ] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_concordia"))
             .args([command, "unexpected"])
             .output()

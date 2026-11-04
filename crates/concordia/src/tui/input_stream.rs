@@ -30,6 +30,41 @@ pub struct InputStream {
 }
 
 impl InputStream {
+    #[cfg(windows)]
+    pub fn from_native(events: Receiver<Event>) -> io::Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stopped = shutdown.clone();
+        let reader = thread::Builder::new()
+            .name("concordia-window-input".into())
+            .spawn(move || {
+                let mut boundary = QuietBoundary::default();
+                while !stopped.load(Ordering::Acquire) {
+                    match events.recv_timeout(super::input::BURST_QUIET) {
+                        Ok(event) => {
+                            boundary.event_arrived();
+                            if sender.send(Message::Event(event, Instant::now())).is_err() {
+                                break;
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) => {
+                            if boundary.timed_out()
+                                && sender.send(Message::Quiet(Instant::now())).is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            })?;
+        Ok(Self {
+            receiver: Some(receiver),
+            pending: None,
+            shutdown,
+            reader: Some(reader),
+        })
+    }
     /// Start the reader. Call this only after terminal input modes have been configured.
     pub fn spawn() -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);

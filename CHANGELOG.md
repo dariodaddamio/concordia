@@ -1,5 +1,16 @@
 # Changelog
 
+### Added (`2026-11-04g`)
+
+- Windows starts Concordia's own native window by default, reusing the existing chat interface.
+  Its own keyboard and drop events provide Ctrl+V, Ctrl+Shift+V and image-file drops without
+  changing terminal settings, intercepting other applications' keys or installing hooks.
+- Clipboard images and copied file lists are captured through bounded in-process Windows APIs,
+  avoiding PowerShell startup delays for paste. Attachments retain their immutable snapshots.
+- `concordia --terminal` keeps explicit terminal-pane mode; bundled WezTerm launchers and updates
+  preserve that choice. Provider authentication, conversations and native approval ownership are
+  shared by the existing application loop.
+
 ### Fixed (`2026-11-04f`)
 
 - Completed turns reconcile final tool cards even after earlier cards streamed. A clickable

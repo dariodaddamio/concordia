@@ -60,7 +60,10 @@ pub fn find_concordia_exe() -> PathBuf {
 }
 
 fn concordia_pane_argv() -> Vec<String> {
-    vec![find_concordia_exe().to_string_lossy().into_owned()]
+    vec![
+        find_concordia_exe().to_string_lossy().into_owned(),
+        "--terminal".into(),
+    ]
 }
 
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
@@ -109,7 +112,8 @@ pub fn launch_command(wez: &Path, config: &Path, exe: &Path, cwd: &Path) -> Comm
         .arg("--cwd")
         .arg(cwd)
         .arg("--")
-        .arg(exe);
+        .arg(exe)
+        .arg("--terminal");
     cmd
 }
 
@@ -204,7 +208,14 @@ mod tests {
             .collect();
         assert_eq!(
             args,
-            ["start", "--cwd", r"C:\work", "--", r"C:\bin\concordia.exe"]
+            [
+                "start",
+                "--cwd",
+                r"C:\work",
+                "--",
+                r"C:\bin\concordia.exe",
+                "--terminal"
+            ]
         );
         let envs: Vec<_> = cmd
             .get_envs()

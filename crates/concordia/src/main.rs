@@ -5,10 +5,17 @@ use concordia::update::resolve_active_exe;
 use concordia::version::version_line;
 
 fn print_help() {
+    let default_chat = if cfg!(windows) {
+        "native app window (image paste and file drop)"
+    } else {
+        "chat TUI in this terminal"
+    };
     println!(
         "{}\n\
          \n\
-           concordia           chat TUI in this terminal\n\
+           concordia           {default_chat}\n\
+           concordia --terminal chat TUI in this terminal\n\
+           concordia window    native app window (Windows)\n\
            concordia --help    this message\n\
            concordia --version build stamp (confirm pane is not stale)\n\
            concordia install   install this exe as the `concordia` on your PATH (new panes get it)\n\
@@ -44,11 +51,22 @@ fn print_help() {
     );
 }
 
+async fn run_default_chat() -> Result<()> {
+    #[cfg(windows)]
+    {
+        tui::run_chat_window().await
+    }
+    #[cfg(not(windows))]
+    {
+        tui::run_chat_tui().await
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        tui::run_chat_tui().await?;
+        run_default_chat().await?;
         return Ok(());
     }
     if args.len() > 1
@@ -56,6 +74,10 @@ async fn main() -> Result<()> {
             args[0].as_str(),
             "--host"
                 | "host"
+                | "--terminal"
+                | "terminal"
+                | "--window"
+                | "window"
                 | "--help"
                 | "-h"
                 | "help"
@@ -88,8 +110,17 @@ async fn main() -> Result<()> {
             tui::run_file_preview(std::path::Path::new(&args[1]))?;
         }
         "--host" | "host" => {
-            // Alias: same as bare concordia (TUI in current pane).
+            // Alias: the platform's default app interface, as for bare concordia.
+            run_default_chat().await?;
+        }
+        "--terminal" | "terminal" => {
             tui::run_chat_tui().await?;
+        }
+        "--window" | "window" => {
+            #[cfg(windows)]
+            tui::run_chat_window().await?;
+            #[cfg(not(windows))]
+            anyhow::bail!("Native app windows require Windows; use concordia --terminal");
         }
         "--help" | "-h" | "help" => print_help(),
         "install" => {

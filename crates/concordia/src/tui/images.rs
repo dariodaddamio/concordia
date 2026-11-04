@@ -404,6 +404,10 @@ fn import_attachment(root: &Path, path: &Path) -> Result<Paste, String> {
 }
 #[cfg(not(test))]
 fn capture(root: &Path, clipboard: bool) -> Result<Paste, String> {
+    #[cfg(windows)]
+    if clipboard {
+        return capture_native_clipboard(root);
+    }
     let temp = root
         .join("attachments")
         .join(format!("capture-{}.png", uuid::Uuid::new_v4()));
@@ -446,6 +450,42 @@ fn capture(root: &Path, clipboard: bool) -> Result<Paste, String> {
     };
     let _ = std::fs::remove_file(temp);
     result
+}
+#[cfg(all(windows, not(test)))]
+fn capture_native_clipboard(root: &Path) -> Result<Paste, String> {
+    match clipboard_capture::read()? {
+        clipboard_capture::Capture::Image(bytes) => {
+            let directory = root.join("attachments");
+            std::fs::create_dir_all(&directory).map_err(|_| "Image storage unavailable")?;
+            let path = directory.join(format!("capture-{}.png", uuid::Uuid::new_v4()));
+            let result = std::fs::write(&path, bytes)
+                .map_err(|_| "Clipboard image could not be saved".to_string())
+                .and_then(|_| crate::attachments::import(root, &path))
+                .map(|mut image| {
+                    image.name = "Clipboard image.png".into();
+                    Paste::Image(image)
+                });
+            let _ = std::fs::remove_file(path);
+            result
+        }
+        clipboard_capture::Capture::Files(paths) => {
+            let quoted = paths
+                .iter()
+                .map(|path| format!("\"{}\"", path.display()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let paths = crate::attachments::pasted_paths(&quoted)
+                .ok_or("Paste up to four local image or document files")?;
+            Ok(import_paths(root, paths))
+        }
+        clipboard_capture::Capture::Empty => clipboard::get_text().map(|text| {
+            if text.is_empty() {
+                Paste::Empty
+            } else {
+                Paste::Text(text)
+            }
+        }),
+    }
 }
 #[cfg(test)]
 fn capture(_: &Path, _: bool) -> Result<Paste, String> {

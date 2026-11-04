@@ -1102,7 +1102,7 @@ impl Session {
             std::fs::write(
                 &script,
                 format!(
-                    "@echo off\r\necho CONCORDIA_SHELL_ORIGINAL\r\n\"{}\"\r\necho CONCORDIA_SHELL_RETURNED\r\npause >nul\r\n",
+                    "@echo off\r\necho CONCORDIA_SHELL_ORIGINAL\r\n\"{}\" --terminal\r\necho CONCORDIA_SHELL_RETURNED\r\npause >nul\r\n",
                     Path::new(&binary).display()
                 ),
             )
@@ -1112,7 +1112,11 @@ impl Session {
             cmd.arg(script);
             cmd
         } else {
-            CommandBuilder::new(binary)
+            let mut cmd = CommandBuilder::new(binary);
+            if args.is_empty() {
+                cmd.arg("--terminal");
+            }
+            cmd
         };
         for arg in args {
             cmd.arg(arg);
