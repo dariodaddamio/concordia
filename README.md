@@ -2,6 +2,7 @@
   <img alt="Concordia: a conversation with tool cards and a markdown reply in the terminal" src="docs/img/hero.svg" width="900">
 </p>
 
+<p align="center"><img alt="Concordia logo" src="crates/concordia/assets/concordia.svg" width="72"></p>
 <h1 align="center">Concordia</h1>
 
 <p align="center">
@@ -19,8 +20,8 @@
 
 > **Status: private pre-release, Windows first.** Session continuity, bounded context maps,
 > explicit workers, recent Codex/Claude native-source pointers, unfinished-request recovery and
-> opt-in limit handoff are implemented. Related-chat discovery and proactive capacity/compaction
-> policy remain planned; [native memory](docs/native-memory.md) describes the shipped bounds.
+> opt-in limit handoff are implemented. Related-chat discovery and capability-gated native context
+> controls are available; [native memory](docs/native-memory.md) describes the shipped bounds.
 > Fake-provider checks establish local behavior; live provider parity and physical-host checks
 > remain separate release gates. See [release blockers](docs/release-blockers.md).
 
@@ -196,12 +197,12 @@ Reproduce with `powershell -NoProfile -File scripts\metrics.ps1`; details in [do
 
 ## Install
 
-**Requirements:** Windows 10/11, [Rust](https://rustup.rs) with MSVC Build Tools, and at least one provider CLI (`codex`, `claude` or `agent`) already logged in.
+**Requirements:** Windows 10/11 and a provider CLI (`codex`, `claude` or `agent`) with your account. Public binary installs need no Rust compiler, SDK, administrator access or signing account. Building from source requires [Rust](https://rustup.rs) and MSVC Build Tools.
 
-Full guide: [docs/install.md](docs/install.md). The one-liner (placeholder until the first release):
+Full guide: [docs/install.md](docs/install.md). The public one-command flow is prepared below; it becomes available after this private repository and its first release are published:
 
 ```powershell
-# irm <release-url>/install.ps1 | iex
+irm https://github.com/dariodaddamio/concordia/raw/main/scripts/install.ps1 | iex
 ```
 
 From source today:
@@ -228,7 +229,7 @@ Prebuilt downloads (`concordia-x86_64-pc-windows-msvc.exe`, `SHA256SUMS`, `THIRD
 `/update` adapts to how you installed Concordia:
 
 - **From source:** it shows the installed build, the checkout's build, its branch and whether it has uncommitted files, and the incoming changelog entries. H expands earlier history. Enter rebuilds, installs into a free slot and restarts the pane on the new build; while it builds, the message box shows that sending waits for the restart.
-- **From a release download:** `/update` opens a fresh page with the newest release and its notes from the configured repository (`CONCORDIA_UPDATE_REPO=owner/name`). Enter fetches it, verifies the checksum, confirms the new binary runs and reports the expected version, and only then switches over. If any check fails, nothing is installed. Esc returns to your chat; `o` opens the release page.
+- **From a release download:** `/update` opens a fresh page with the newest release and its notes from the built-in official release feed (forks can override `CONCORDIA_UPDATE_REPO=owner/name`). Enter fetches it, verifies the checksum, confirms the new binary runs and reports the expected version, and only then switches over. If any check fails, nothing is installed. Esc returns to your chat; `o` opens the release page.
 
 Provider CLIs make their own network connections for turns, sign-in and usage views. Concordia
 has no hosted relay or memory service; `/update` can download a release.
@@ -417,7 +418,7 @@ rows, buttons and file links request a hand cursor on terminals supporting OSC 2
 - **Concordia awareness is configurable.** Homes Concordia creates can receive a short awareness
   note; optional MCP registration exposes local tools. `@chat` and bounded maps are implemented.
   User-owned provider setup is preserved. See [architecture](docs/architecture.md).
-- **Private pre-release.** Public distribution is blocked until publisher signing and exact-artifact antivirus validation pass. An earlier private artifact triggered Defender; publisher setup and vendor review remain pending. See [Windows signing](docs/windows-signing.md) and [release blockers](docs/release-blockers.md).
+- **Private pre-release.** The owner chose unsigned distribution. Public repository visibility, first release assets and an exact-artifact public install/update rehearsal remain pending; signing is not required. An earlier private artifact triggered Defender, so current exact-artifact antivirus validation remains required. See [Windows signing](docs/windows-signing.md) and [release blockers](docs/release-blockers.md).
 - **Not yet verified live:** the `/use add` login window, mouse selection inside WezTerm, and real multi-line turns through each provider. The automated tests use a fake provider by design, so they never spend your subscription.
 
 ## Safety and provider terms
@@ -470,7 +471,7 @@ More detail: [continuity](docs/continuity.md), [UI architecture](docs/ui-archite
 ## Verification and release scope
 
 The project remains a private pre-release. Source builds and local installation are supported;
-public release assets and signing must not be assumed to exist. Automated tests use synthetic
+public release assets must not be assumed to exist. Automated tests use synthetic
 accounts and fake providers. They establish local transport, binding, UI and recovery behavior;
 they do not certify every provider version, real login flow or physical terminal host.
 

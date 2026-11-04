@@ -1,11 +1,13 @@
 # Installing Concordia on Windows
 
-Concordia is a Windows terminal app. Every route below ends with a `concordia` command on your
+Concordia is a native Rust Windows app with an optional terminal mode. Every route below ends with a `concordia` command on your
 PATH. None of them needs administrator rights. Routes are listed from simplest to most manual.
 
-Replace `OWNER` with the GitHub owner of the release you install from.
+The public install contract is prepared below. This repository is currently private and has no published release assets; the public command becomes available after the owner publishes the repository and first release. No publication is performed by these instructions.
 
 ## Updating from inside Concordia
+
+Release installations check the built-in official GitHub feed, with no environment configuration or source checkout required. Developer source installations retain source rebuilds. An explicit install-channel marker prevents old checkout hints from changing a release installation back into a source build.
 
 `/update` checks for an update and opens its changelog. The green action strip stays
 visible while scrolling: **Enter installs and restarts this tab**. Concordia builds
@@ -33,30 +35,30 @@ automatic CLI rollback or migration of authentication/history.
 In Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
-irm https://github.com/OWNER/concordia/raw/main/scripts/install.ps1 | iex
+irm https://github.com/dariodaddamio/concordia/raw/main/scripts/install.ps1 | iex
 ```
 
 The script reads the newest published release, downloads the Windows zip and its `.sha256`,
-verifies the SHA-256 and runs `concordia.exe install`. Open a new terminal afterwards and run
-`concordia --version`.
+verifies the SHA-256 and archive paths, checks the executable version, and runs `concordia.exe install`. Concordia opens immediately; the command works in the current PowerShell session and future terminals. No Rust, SDK, administrator access, signing account or package manager is required. Provider CLIs and their accounts are configured separately.
 
 Options (use the scriptblock form, because `iex` cannot take arguments):
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/OWNER/concordia/raw/main/scripts/install.ps1))) -Version 0.1.0
+& ([scriptblock]::Create((irm https://github.com/dariodaddamio/concordia/raw/main/scripts/install.ps1))) -Version 0.1.0
 ```
 
 | Option | Meaning |
 | --- | --- |
 | `-Version 0.1.0` | install this release instead of the newest (`v` prefix optional) |
-| `-Dir C:\tools\concordia` | install into this folder; your PATH is then not changed |
+| `-Dir C:\tools\concordia` | install into this folder; only the current session PATH is changed |
+| `-NoLaunch` | install without opening Concordia (automation) |
 | `-DryRun` | print what would happen; no download, no install, no network |
 | `-Repo owner/name` | use a different repository (mirrors and forks) |
 
 To see the plan first without running anything:
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/OWNER/concordia/raw/main/scripts/install.ps1))) -DryRun
+& ([scriptblock]::Create((irm https://github.com/dariodaddamio/concordia/raw/main/scripts/install.ps1))) -DryRun
 ```
 
 ## 2. winget

@@ -10,7 +10,7 @@ pub fn ui_token_line_enabled() -> bool {
         && crate::config::ui_token_line()
 }
 
-/// 999, 1.2k, 12k, 123k, 1.2M.
+/// Compact counts through billions/trillions and scientific notation, without overflow.
 pub fn compact(n: u64) -> String {
     fn one_decimal(tenths: u64, suffix: &str) -> String {
         if tenths.is_multiple_of(10) {
@@ -31,7 +31,48 @@ pub fn compact(n: u64) -> String {
     if n < 999_500 {
         return format!("{}k", (n + 500) / 1000);
     }
-    one_decimal(n / 100_000 + u64::from(n % 100_000 >= 50_000), "M")
+    let n = u128::from(n);
+    let mut scale = 1_000_000u128;
+    for suffix in ["M", "B", "T"] {
+        let digits = if n < scale * 10 {
+            2
+        } else if n < scale * 100 {
+            1
+        } else {
+            0
+        };
+        let factor = 10u128.pow(digits);
+        let rounded = (n * factor + scale / 2) / scale;
+        if rounded < 1000 * factor {
+            return decimal_count(rounded, factor, suffix);
+        }
+        scale *= 1000;
+    }
+    let mut exponent = 0;
+    scale = 1;
+    while n >= scale * 10 {
+        scale *= 10;
+        exponent += 1;
+    }
+    let mut rounded = (n * 100 + scale / 2) / scale;
+    if rounded >= 1000 {
+        rounded = 100;
+        exponent += 1;
+    }
+    decimal_count(rounded, 100, &format!("e{exponent}"))
+}
+
+fn decimal_count(value: u128, factor: u128, suffix: &str) -> String {
+    if value.is_multiple_of(factor) {
+        return format!("{}{suffix}", value / factor);
+    }
+    let digits = if factor == 100 { 2 } else { 1 };
+    let fraction = format!("{:0width$}", value % factor, width = digits);
+    format!(
+        "{}.{}{suffix}",
+        value / factor,
+        fraction.trim_end_matches('0')
+    )
 }
 
 fn elapsed_text(d: Duration) -> String {
@@ -87,7 +128,13 @@ mod tests {
             (99_960, "100k"),
             (123_456, "123k"),
             (999_600, "1M"),
-            (1_234_567, "1.2M"),
+            (1_234_567, "1.23M"),
+            (2_490_000_000, "2.49B"),
+            (999_499_999, "999M"),
+            (999_500_000, "1B"),
+            (1_234_000_000_000, "1.23T"),
+            (1_000_000_000_000_000, "1e15"),
+            (u64::MAX, "1.84e19"),
         ] {
             assert_eq!(compact(n), want, "{n}");
         }

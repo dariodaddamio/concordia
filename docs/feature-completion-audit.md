@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-04j candidate
+# Feature completion audit: 2026-11-04k candidate
 
 The full roadmap is **not complete**. The current board has seven grouped remaining workstreams;
 they mix missing capabilities, qualification and release work, so they are not a feature count
@@ -17,9 +17,17 @@ or a percentage of completion:
    and token-saving experiments remain unrun and separately scoped/budgeted.
 6. **Native filesystem confinement:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools.
-7. **Trusted Windows distribution:** signing identity, antivirus vendor review, fresh exact-artifact
-   install/update rehearsal and publication decisions remain release gates. GitHub's current
+7. **Unsigned Windows distribution:** the owner chose unsigned delivery. Fresh exact-artifact
+   antivirus/install/update rehearsal, publication and public-feed checks remain release gates. GitHub's current
    billing/spending-limit block also prevents a passing remote-CI claim.
+
+Build 04k adds one-command prebuilt installation, a shared original icon, task-first window titles,
+clickable permission selection, descriptive web tools, expandable completed-operation groups,
+full-range compact counts, horizontal file scrolling and shared-document native file windows.
+Local checks and exact-candidate qualification are recorded separately in [E2E status](e2e-status.md).
+The [REA review](rea-review.md) records actual static binary inspection and a current recheck of
+remaining supported-interface limits. None of these UI/delivery changes close missing native
+measurements, OS confinement or live model-effectiveness evidence.
 
 Builds 04g–04i added default application-owned Windows input and original-pixel image previews.
 The earlier terminal cell-preview and pointer limitations do not describe that native window;
@@ -287,7 +295,7 @@ included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.
   can continue without asking the owner to research them.
 - Visible pointer shapes require a terminal host that supports the requested control. The
   installed WezTerm 2024 build does not; demo cursor overlays do not change this.
-- Publishing, signing identity and distribution choices are release decisions, not reasons to
+- Publishing and distribution choices are release decisions, not reasons to
   stop implementing local features.
 
 ## GIF scope

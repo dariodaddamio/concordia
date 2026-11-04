@@ -1,71 +1,30 @@
-# Windows release signing and antivirus validation
+# Windows distribution and antivirus validation
 
-The expected publisher is configured through `CONCORDIA_RELEASE_PUBLISHER` in the protected
-release-signing environment, or an explicit local `-PolicyPath`. The tracked policy intentionally
-contains no personal identity. Its timestamp endpoint stays in `scripts/release-signing.json`. Every public
-release must have a Windows-trusted Authenticode signature under that exact publisher,
-an RFC 3161 timestamp, and a clean Defender scan. Signing establishes provenance; it
-does not guarantee that antivirus software will never detect a file.
+The owner chose unsigned Windows distribution on 2026-11-04. Public installation does not
+require a certificate, legal identity verification, Azure account, paid signing service,
+Windows SDK or administrator rights. The release workflow no longer requires signing secrets,
+OIDC access or a signing environment. Unsigned downloads can still show Windows publisher
+reputation prompts; do not describe them as signed or Windows-trusted.
 
-## Provision publisher signing
-
-No signing certificate or cloud signing account is provisioned by these scripts.
-Self-signed certificates and installing a new local trusted root do not establish
-publisher trust for customers and are not part of this release process.
-
-The release workflow uses Microsoft Azure Artifact Signing with GitHub OIDC. The owner
-must complete Public Trust individual identity validation using the legal publisher
-name in the protected publisher setting. This requires an Azure subscription, supported region,
-government identity verification and a paid signing service. Account creation, billing
-and identity verification are separate owner actions; no identity documents belong in
-this repository. Microsoft documents the prerequisites in its
-[Artifact Signing quickstart](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart).
-
-Create a Public Trust certificate profile and grant the federated GitHub identity only
-the Artifact Signing Certificate Profile Signer role scoped to that profile. Bind its
-federated credential to this repository's `release-signing` GitHub environment; restrict
-that environment to approved release tags and rehearsal branches. Configure environment
-variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`,
-`AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE`, and
-`CONCORDIA_RELEASE_PUBLISHER`.
-No client secret or exportable signing key is needed. Follow the
-[official signing action](https://github.com/Azure/artifact-signing-action) for federation.
-
-For local signing with an already-issued trusted certificate and its hardware/provider
-key accessible in `Cert:\CurrentUser\My`:
+The release workflow builds with the lockfile, updates Defender intelligence, scans the exact
+executable, runs smoke checks, and packages that same executable with license notices. SHA-256
+checksums detect changed downloads; they do not independently establish publisher identity.
+The installer validates bounded root-only archive entries and the executable version before
+installation. The updater uses the official feed by default and verifies the executable hash.
 
 ```powershell
-./scripts/sign-release.ps1 -Exe ./target/release/concordia.exe -Thumbprint YOUR_CERTIFICATE_THUMBPRINT
-```
-
-The script uses Windows SDK SignTool and refuses a missing, expired, untrusted or
-wrong-publisher certificate. It never exports keys or adds certificates to trust stores.
-For cloud signing, sign the local build with the same verified Artifact Signing profile,
-or download the signed rehearsal artifact; verify it with `scripts/verify-signature.ps1`.
-
-For local use, set the publisher environment variable for that process, or pass a private JSON
-policy outside the repository with `publisher` and `timestampUrl`. Both signing and verification
-accept `-PolicyPath`. These settings are identity metadata, never a private key or credential.
-
-## Exact-artifact release checks
-
-The workflow builds with the lockfile, signs only `concordia.exe`, checks its publisher
-and timestamp, updates Defender intelligence and scans it before executing the release
-smoke checks or packaging. Checksums are generated after signing. The packaged executable
-must retain those exact bytes. Unsigned rehearsals also fail rather than producing an
-artifact that could accidentally be presented as release-ready.
-
-```powershell
-./scripts/verify-signature.ps1 -Exe ./target/release/concordia.exe
 Update-MpSignature
 ./scripts/scan-release.ps1 -Exe ./target/release/concordia.exe
 ```
 
-The custom scan ignores exclusions, leaves real-time protection enabled, and fails on a
-detection, scanner error, stale intelligence or changing/missing artifact. A clean scan
-is point-in-time evidence for that hash and intelligence version, not a universal guarantee.
-Rehearse download, installation, startup and update on a clean Windows host with Defender
-enabled before publishing. The existing product, dependency and license gates still apply.
+A clean scan is evidence for that hash and intelligence version. Rehearse download, install,
+startup and update from published assets before claiming the public command is available.
+The repository is currently private with no published releases; source support is implemented,
+but publication and a clean public-host rehearsal have not happened.
+
+The existing `sign-release.ps1`, `verify-signature.ps1` and signing-policy fixtures are optional
+legacy tooling for a future explicit signing decision. They are not prerequisites for installing,
+updating or releasing the chosen unsigned build. No signing service is provisioned automatically.
 
 ## Incorrect detection review
 
@@ -88,4 +47,4 @@ cleared the artifact before receiving that result.
 
 Do not instruct customers to add exclusions or disable antivirus. Do not rename, repack
 or change code merely to escape a verdict. Resolve the detection with Microsoft and
-rescan the final signed candidate with current intelligence before release.
+rescan the final candidate with current intelligence before release.

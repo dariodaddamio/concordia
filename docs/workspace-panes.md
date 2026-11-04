@@ -1,6 +1,7 @@
 # Internal terminal workspace
 
-Status: build `2026-11-01d` adds bounded chat/recent/workspace file discovery and directory browsing.
+Status: build `2026-11-04k` adds horizontal scrolling and shared-document native file windows.
+Build `2026-11-01d` adds bounded chat/recent/workspace file discovery and directory browsing.
 Build `2026-11-01c` adds internal editing and pane-owned file recovery to the existing
 preview/search/reload/current-chat suggestion surface. Markdown/JSON open formatted by default;
 Alt+V or the view bar switches modes. Formatted view is read-only. Source code opens raw,
@@ -27,6 +28,15 @@ Concordia should provide a graphical workspace inside the terminal: chat and fil
 screen, with mouse operations and slash commands controlling the same pane state. Harness owns
 shared workflow and routing policy; Concordia implements the workspace and execution mechanisms.
 The project's design system owns applicable UI principles. Neither provider sessions nor authentication are replaced.
+
+Raw files have a horizontal scrollbar when a line exceeds the viewport. Shift+wheel,
+horizontal trackpad/wheel gestures, or dragging the scrollbar moves the viewport without
+moving the caret. Line numbers stay fixed. In the native window, **Detach** or dragging a
+file title beyond the main window opens a separate file window; **Return**, its window close
+button, or Ctrl+Shift+D docks it again. Ctrl+Shift+D detaches a focused docked pane. These
+windows share the same document, undo history, save checks and recovery lease; they do not
+start a provider or create another file buffer. Restart recovery restores file panes docked.
+The existing pane and file limits apply across all windows.
 
 ## User-visible contract
 
@@ -97,9 +107,10 @@ before enrollment. Never automatically clean unrelated user work.
 ## Accepted file-opening choices
 
 The owner chose the labels **Preview here**, **Split off** (a new terminal), and **Open in editor**.
-Internal preview/editing and the existing terminal-editor `/edit` route are implemented. A unified
-three-choice preference, direct GUI editor launch and a dedicated Concordia editor process remain
-workspace work; they are not closed by the image/diagram build.
+The shared file-action resolver supports these choices, direct configured GUI editor launch and
+a dedicated terminal editor process; [file actions](quality/file-actions.md) records their bounds.
+Native **Detach** differs from **Split off**: it moves the existing document view into another
+window with shared undo/save state, rather than opening an independent editor from disk.
 
 ## Project content search
 
@@ -112,4 +123,5 @@ Scans exclude sensitive/provider paths, ignored/build directories and paths esca
 Results retain original byte offsets and hashes. Opening verifies the exact source on a background
 worker and displays the verified snapshot; changed results must be searched again. An already-open
 file must be closed before a search snapshot can open, preserving unsaved pane buffers. Replacement
-and regex search are future phases. See [first-wave evidence](quality/completion-wave1.md).
+is implemented through explicit hash-bound selected previews; regex search remains unsupported.
+See [project replacement](quality/project-replacement.md).

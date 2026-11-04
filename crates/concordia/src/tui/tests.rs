@@ -2404,10 +2404,10 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     for w in [40u16, 60, 80, 100, 140] {
         let h = Harness::new(w, 12);
         let row = footer_row(&h);
-        let right = if row.ends_with("permissions: workspace") {
-            "permissions: workspace"
-        } else if row.ends_with("workspace") {
-            "workspace"
+        let right = if row.ends_with("permissions: workspace ▾") {
+            "permissions: workspace ▾"
+        } else if row.ends_with("workspace ▾") {
+            "workspace ▾"
         } else {
             ""
         };
@@ -2467,6 +2467,36 @@ fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
         assert_eq!(buf[(x, y)].fg, want, "{mode:?}");
     }
     assert!(h.screen().contains("full \u{26a0}"));
+    let mode = h.app.areas.permissions;
+    assert_eq!(pointer::shape(&h.app, mode.x + 1, mode.y), "pointer");
+    h.type_str("keep this draft");
+    h.click(mode.x + 1, mode.y);
+    assert!(h
+        .app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Trust));
+    assert_eq!(h.app.editor.text(), "keep this draft");
+    let close = h.app.areas.modal_close.expect("picker close control").0;
+    assert!(close.x > 80, "permissions popup anchors at the right edge");
+    assert!(close.y < mode.y);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert_eq!(
+        h.app.trust,
+        TrustMode::Full,
+        "opening and dismissing grants nothing"
+    );
+    h.click(mode.x + 1, mode.y);
+    let (row, _) = h.app.permission_rows[0];
+    assert_eq!(pointer::shape(&h.app, row.x + 2, row.y), "pointer");
+    h.app.busy = true;
+    h.click(row.x + 2, row.y);
+    assert_eq!(h.app.trust, TrustMode::Plan);
+    assert_eq!(get_settings(&h.app.state_root).trust, TrustMode::Plan);
+    assert!(h.app.picker.is_none());
+    assert_eq!(h.app.editor.text(), "keep this draft");
+    assert!(h.screen().contains("next turn"));
 }
 
 #[test]
@@ -3952,7 +3982,11 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     let mut h = Harness::new(100, 20);
     h.app.cwd = PathBuf::from("C:/work/fixture-project");
     let title = h.app.window_title();
-    assert!(title.starts_with("Concordia | Codex"), "{title}");
+    assert!(
+        title.starts_with("fixture-project | Ready | Codex"),
+        "{title}"
+    );
+    assert!(title.ends_with(" | Concordia"), "{title}");
     assert!(title.contains("Ready") && title.contains("fixture-project"));
     h.app.session_ui.title = Some("Fix parser".into());
     h.app.busy = true;
@@ -3962,6 +3996,7 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
         .window_title()
         .contains("Working through the next step"));
     assert!(h.app.window_title().contains("Fix parser"));
+    assert!(h.app.window_title().starts_with("Fix parser | "));
     h.app.phase = Phase::Writing;
     assert!(h.app.window_title().contains("Putting the answer together"));
     h.app.phase = Phase::Tool("Read".into());

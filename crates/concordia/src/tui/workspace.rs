@@ -50,6 +50,9 @@ fn read_snapshot(path: &Path) -> Result<Snapshot, String> {
 
 pub(super) struct Pane {
     pub id: u32,
+    detached: bool,
+    window_area: Rect,
+    window_resizing: Option<Resize>,
     path: PathBuf,
     lines: Vec<String>,
     formatted: Option<String>,
@@ -59,6 +62,9 @@ pub(super) struct Pane {
     loading: bool,
     scroll: usize,
     column: usize,
+    horizontal_bar: Rect,
+    horizontal_measure: Option<(u64, usize)>,
+    horizontal_max: usize,
     pub area: Rect,
     stamp: Option<Stamp>,
     changed: bool,
@@ -80,10 +86,13 @@ pub(super) struct Pane {
 enum Resize {
     Columns,
     Rows(usize),
+    Horizontal(u32),
 }
 
 pub(super) struct Workspace {
     standalone: bool,
+    native_windows: bool,
+    tab_drag: Option<(u32, u16, u16)>,
     pub panes: Vec<Pane>,
     pub focused: Option<u32>,
     next_id: u32,
@@ -103,6 +112,8 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             standalone: false,
+            native_windows: false,
+            tab_drag: None,
             panes: Vec::new(),
             focused: None,
             next_id: 1,
@@ -121,6 +132,62 @@ impl Default for Workspace {
 }
 
 impl Workspace {
+    pub fn set_native_windows(&mut self, enabled: bool) {
+        self.native_windows = enabled;
+    }
+    pub fn detached_ids(&self) -> Vec<u32> {
+        self.panes
+            .iter()
+            .filter(|p| p.detached)
+            .map(|p| p.id)
+            .collect()
+    }
+    pub fn detached_title(&self, id: u32) -> Option<String> {
+        self.panes.iter().find(|p| p.id == id).map(|p| {
+            format!(
+                "{}{} - Concordia",
+                if p.document.as_ref().is_some_and(|d| d.dirty()) {
+                    "* "
+                } else {
+                    ""
+                },
+                p.path.display()
+            )
+        })
+    }
+    pub fn request_detach(&mut self, id: u32) -> Result<(), String> {
+        if !self.native_windows || self.standalone {
+            return Err("Separate file windows require Concordia's native window".into());
+        }
+        let pane = self
+            .panes
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("file pane is closed")?;
+        if pane.detached {
+            return Ok(());
+        }
+        pane.detached = true;
+        pane.window_area = Rect::new(0, 0, pane.area.width.max(80), pane.area.height.max(24));
+        pane.area = Rect::default();
+        if self.focused == Some(id) {
+            self.focused = None;
+        }
+        self.resizing = None;
+        self.tab_drag = None;
+        self.reset_cuts();
+        Ok(())
+    }
+    pub fn request_dock(&mut self, id: u32) {
+        if let Some(pane) = self.panes.iter_mut().find(|p| p.id == id) {
+            pane.detached = false;
+            pane.area = Rect::default();
+            pane.window_resizing = None;
+        }
+        self.resizing = None;
+        self.tab_drag = None;
+        self.reset_cuts();
+    }
     pub fn selected_file(&self) -> Option<file_links::ResolvedFile> {
         let pane = self
             .panes
@@ -148,6 +215,14 @@ impl Workspace {
         self.jobs.is_empty() && self.panes.iter().all(|p| !p.loading && !p.saving)
     }
     pub fn pointer_shape(&self, x: u16, y: u16) -> Option<&'static str> {
+        if matches!(self.resizing, Some(Resize::Horizontal(_)))
+            || self
+                .panes
+                .iter()
+                .any(|pane| contains(pane.area, x, y) && contains(pane.horizontal_bar, x, y))
+        {
+            return Some("pointer");
+        }
         if matches!(self.resizing, Some(Resize::Columns)) || contains(self.divider, x, y) {
             return Some("ew-resize");
         }
@@ -189,9 +264,8 @@ impl Workspace {
         }
     }
     fn reset_cuts(&mut self) {
-        self.cuts = (1..self.panes.len())
-            .map(|i| (100 * i / self.panes.len()) as u16)
-            .collect();
+        let count = self.panes.iter().filter(|p| !p.detached).count();
+        self.cuts = (1..count).map(|i| (100 * i / count) as u16).collect();
     }
 
     pub fn open(&mut self, file: file_links::ResolvedFile) -> Result<(), String> {
@@ -294,6 +368,9 @@ impl Workspace {
         self.jobs.push((id, job));
         self.panes.push(Pane {
             id,
+            detached: false,
+            window_area: Rect::default(),
+            window_resizing: None,
             path: file.path,
             lines: Vec::new(),
             formatted: None,
@@ -303,6 +380,9 @@ impl Workspace {
             loading: true,
             scroll: file.line.unwrap_or(1).saturating_sub(1) as usize,
             column: file.column.unwrap_or(1).saturating_sub(1) as usize,
+            horizontal_bar: Rect::default(),
+            horizontal_measure: None,
+            horizontal_max: 0,
             area: Rect::default(),
             stamp: None,
             changed: false,
@@ -488,8 +568,53 @@ impl Workspace {
 }
 
 impl Pane {
+    fn measure_columns(&mut self) -> usize {
+        if let Some(doc) = &self.document {
+            if self
+                .horizontal_measure
+                .is_none_or(|(revision, _)| revision != doc.revision())
+            {
+                let width = (0..doc.line_count())
+                    .map(|row| {
+                        doc.line(row)
+                            .chars()
+                            .map(crate::file_document::display_width)
+                            .sum::<usize>()
+                    })
+                    .max()
+                    .unwrap_or(0);
+                self.horizontal_measure = Some((doc.revision(), width.saturating_add(1)));
+            }
+            self.horizontal_measure.map_or(0, |(_, width)| width)
+        } else {
+            self.lines
+                .iter()
+                .map(|line| line.chars().map(crate::file_document::display_width).sum())
+                .max()
+                .unwrap_or(0)
+        }
+    }
+    fn horizontal_scroll(&mut self, forward: bool, amount: usize) {
+        self.column = if forward {
+            self.column.saturating_add(amount).min(self.horizontal_max)
+        } else {
+            self.column.saturating_sub(amount)
+        };
+    }
+    fn horizontal_at(&mut self, x: u16) {
+        let width = self.horizontal_bar.width.saturating_sub(1).max(1);
+        self.column = usize::from(x.saturating_sub(self.horizontal_bar.x).min(width))
+            .saturating_mul(self.horizontal_max)
+            / usize::from(width);
+    }
     fn raw(&self) -> bool {
         !(self.formatted_mode && self.formatted.is_some())
+    }
+    fn window_button(&self) -> Rect {
+        if self.area.width < 26 {
+            return Rect::default();
+        }
+        Rect::new(self.area.right().saturating_sub(14), self.area.y, 10, 1)
     }
     fn mode_button(&self) -> Rect {
         Rect {
@@ -632,9 +757,13 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
     state.files = Rect::default();
     for pane in &mut state.panes {
         pane.area = Rect::default();
+        if !pane.detached {
+            pane.horizontal_bar = Rect::default();
+        }
     }
     let area = f.area();
-    if state.panes.is_empty() {
+    let count = state.panes.iter().filter(|pane| !pane.detached).count();
+    if count == 0 {
         return area;
     }
     if area.width
@@ -643,7 +772,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
         } else {
             MIN_CHAT + MIN_FILE + 1
         }
-        || area.height < state.panes.len() as u16 * MIN_HEIGHT
+        || area.height < count as u16 * MIN_HEIGHT
     {
         state.focused = None;
         state.resizing = None;
@@ -693,8 +822,12 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
         state.divider,
     );
     let mut previous = 0;
-    let count = state.panes.len();
-    for (index, pane) in state.panes.iter_mut().enumerate() {
+    for (index, pane) in state
+        .panes
+        .iter_mut()
+        .filter(|pane| !pane.detached)
+        .enumerate()
+    {
         let bottom = if index + 1 == count {
             area.height
         } else {
@@ -711,183 +844,256 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
         previous = bottom;
         pane.area = rect;
         let focused = state.focused == Some(pane.id);
-        let style = Style::default().fg(if focused {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        });
-        let title = format!(
-            " #{} {}{} · {} ",
-            pane.id,
-            if pane.document.as_ref().is_some_and(|d| d.dirty()) {
-                "* "
-            } else {
-                ""
-            },
-            pane.path.file_name().unwrap_or_default().to_string_lossy(),
-            if pane.raw() { "raw" } else { "preview" }
+        draw_pane(
+            f,
+            pane,
+            focused,
+            show_caret,
+            state.standalone,
+            state.native_windows,
+            state.editor.error.as_ref(),
         );
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(style)
-            .title(if pane.changed {
-                format!("{title} changed on disk (Ctrl+R reload) ")
-            } else {
-                title
-            });
-        let mut inner = block.inner(rect);
-        f.render_widget(block, rect);
-        f.render_widget(
-            Paragraph::new("X").style(style),
-            Rect {
-                x: rect.right() - 2,
-                y: rect.y,
-                width: 1,
-                height: 1,
-            },
-        );
-        f.render_widget(
-            Paragraph::new(if pane.formatted.is_some() {
-                if pane.formatted_mode {
-                    "[ Formatted ]  Raw (Alt+V)"
-                } else {
-                    "[ Raw · edit ]  Preview (Alt+V)"
-                }
-            } else {
-                "Raw · edit · syntax colors"
-            })
-            .style(style),
-            pane.mode_button(),
-        );
-        inner.y += 1;
-        inner.height = inner.height.saturating_sub(1);
-        let lines: Vec<Line> = if pane.loading {
-            vec![Line::raw("Loading…")]
-        } else if let Some(error) = pane.error.as_ref().filter(|_| pane.document.is_none()) {
-            vec![Line::styled(error.clone(), Style::default().fg(Color::Red))]
-        } else if pane.formatted_mode && pane.formatted.is_some() {
-            pane.view.rebuild(
-                &[TBlock {
-                    identity: None,
-                    gutter: "",
-                    gutter_style: Style::default(),
-                    style: Style::default(),
-                    text: pane.formatted.as_deref().unwrap_or_default(),
-                    linkify: true,
-                    markdown: !pane
-                        .path
-                        .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("json")),
-                    runs: &[],
-                }],
-                inner.width.max(1) as usize,
-                inner.height as usize,
-            );
-            pane.scroll = pane.scroll.min(pane.view.rows.len().saturating_sub(1));
-            pane.view.follow_tail();
-            pane.view.scroll_up(pane.view.rows.len());
-            pane.view.scroll_down(pane.scroll);
-            pane.view.lines()
-        } else if let Some(doc) = &pane.document {
-            (pane.scroll..doc.line_count())
-                .take(inner.height as usize)
-                .map(|row| {
-                    let gutter = format!("{:>4} ", row + 1);
-                    let colors = if pane.color_revision == doc.revision() {
-                        pane.colors.get(row).map(Vec::as_slice).unwrap_or(&[])
-                    } else {
-                        &[]
-                    };
-                    let mut line = syntax::line(
-                        doc.line(row),
-                        pane.column,
-                        inner.width.saturating_sub(5) as usize,
-                        colors,
-                        doc.selection_columns(row),
-                    );
-                    line.spans.insert(
-                        0,
-                        Span::styled(gutter, Style::default().fg(Color::DarkGray)),
-                    );
-                    line
-                })
-                .collect()
-        } else {
-            pane.lines
-                .iter()
-                .skip(pane.scroll)
-                .take(inner.height as usize)
-                .map(|line| {
-                    Line::raw(
-                        line.chars()
-                            .skip(pane.column)
-                            .take(inner.width as usize)
-                            .collect::<String>(),
-                    )
-                })
-                .collect()
-        };
-        f.render_widget(Paragraph::new(lines), inner);
-        if focused && pane.raw() && !pane.searching && pane.prompt.is_none() && show_caret {
-            if let Some(doc) = &pane.document {
-                let (row, col) = doc.position();
-                if row >= pane.scroll
-                    && row < pane.scroll + inner.height as usize
-                    && col >= pane.column
-                    && col < pane.column + inner.width.saturating_sub(5) as usize
-                {
-                    f.set_cursor_position(Position::new(
-                        inner.x + 5 + (col - pane.column) as u16,
-                        inner.y + (row - pane.scroll) as u16,
-                    ));
-                }
-            }
-        }
-        if focused {
-            f.render_widget(
-                Paragraph::new(if pane.prompt.is_some() {
-                    "Unsaved · S save · D discard · Esc cancel".into()
-                } else if pane.saving {
-                    "Saving… edits retained".into()
-                } else if let Some(error) = &state.editor.error {
-                    format!("Recovery: {error}")
-                } else if let Some(error) = &pane.error {
-                    error.clone()
-                } else if pane.searching {
-                    format!("/{}  {} matches", pane.query, pane.matches.len())
-                } else if pane.raw() {
-                    if state.standalone {
-                        "Ctrl+Q close · Ctrl+S save · Ctrl+F find".into()
-                    } else {
-                        "Esc chat · Ctrl+S save · Ctrl+F find".into()
-                    }
-                } else if pane.query.is_empty() {
-                    if state.standalone {
-                        "Ctrl+Q close · Alt+V edit · / find · r reload".into()
-                    } else {
-                        "Esc chat · Alt+V edit · / find · r reload".into()
-                    }
-                } else {
-                    format!(
-                        "/{}  {} matches \u{b7} n/N next/prev",
-                        pane.query,
-                        pane.matches.len()
-                    )
-                })
-                .style(style),
-                Rect {
-                    x: rect.x + 1,
-                    y: rect.bottom() - 1,
-                    width: rect.width - 2,
-                    height: 1,
-                },
-            );
-        }
     }
     chat
 }
 
+fn draw_pane(
+    f: &mut Frame,
+    pane: &mut Pane,
+    focused: bool,
+    show_caret: bool,
+    standalone: bool,
+    native_windows: bool,
+    editor_error: Option<&String>,
+) {
+    let rect = pane.area;
+    let style = Style::default().fg(if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    });
+    let title = format!(
+        " #{} {}{} · {} ",
+        pane.id,
+        if pane.document.as_ref().is_some_and(|d| d.dirty()) {
+            "* "
+        } else {
+            ""
+        },
+        pane.path.file_name().unwrap_or_default().to_string_lossy(),
+        if pane.raw() { "raw" } else { "preview" }
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(style)
+        .title(if pane.changed {
+            format!("{title} changed on disk (Ctrl+R reload) ")
+        } else {
+            title
+        });
+    let mut inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if native_windows && !standalone && rect.width >= 26 {
+        f.render_widget(
+            Paragraph::new(if pane.detached {
+                "[ Return ]"
+            } else {
+                "[ Detach ]"
+            })
+            .style(style),
+            pane.window_button(),
+        );
+    }
+    f.render_widget(
+        Paragraph::new("X").style(style),
+        Rect {
+            x: rect.right() - 2,
+            y: rect.y,
+            width: 1,
+            height: 1,
+        },
+    );
+    f.render_widget(
+        Paragraph::new(if pane.formatted.is_some() {
+            if pane.formatted_mode {
+                "[ Formatted ]  Raw (Alt+V)"
+            } else {
+                "[ Raw · edit ]  Preview (Alt+V)"
+            }
+        } else {
+            "Raw · edit · syntax colors"
+        })
+        .style(style),
+        pane.mode_button(),
+    );
+    inner.y += 1;
+    inner.height = inner.height.saturating_sub(1);
+    if pane.raw() && !pane.loading {
+        let gutter = if pane.document.is_some() { 5 } else { 0 };
+        let width = inner.width.saturating_sub(gutter).max(1);
+        pane.horizontal_max = pane.measure_columns().saturating_sub(usize::from(width));
+        pane.column = pane.column.min(pane.horizontal_max);
+        if pane.horizontal_max > 0 && inner.height > 1 && width > 3 {
+            pane.horizontal_bar = Rect::new(inner.x + gutter, inner.bottom() - 1, width, 1);
+            inner.height -= 1;
+        }
+    } else {
+        pane.horizontal_max = 0;
+    }
+    let lines: Vec<Line> = if pane.loading {
+        vec![Line::raw("Loading…")]
+    } else if let Some(error) = pane.error.as_ref().filter(|_| pane.document.is_none()) {
+        vec![Line::styled(error.clone(), Style::default().fg(Color::Red))]
+    } else if pane.formatted_mode && pane.formatted.is_some() {
+        pane.view.rebuild(
+            &[TBlock {
+                identity: None,
+                gutter: "",
+                gutter_style: Style::default(),
+                style: Style::default(),
+                text: pane.formatted.as_deref().unwrap_or_default(),
+                linkify: true,
+                markdown: !pane
+                    .path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("json")),
+                runs: &[],
+            }],
+            inner.width.max(1) as usize,
+            inner.height as usize,
+        );
+        pane.scroll = pane.scroll.min(pane.view.rows.len().saturating_sub(1));
+        pane.view.follow_tail();
+        pane.view.scroll_up(pane.view.rows.len());
+        pane.view.scroll_down(pane.scroll);
+        pane.view.lines()
+    } else if let Some(doc) = &pane.document {
+        (pane.scroll..doc.line_count())
+            .take(inner.height as usize)
+            .map(|row| {
+                let gutter = format!("{:>4} ", row + 1);
+                let colors = if pane.color_revision == doc.revision() {
+                    pane.colors.get(row).map(Vec::as_slice).unwrap_or(&[])
+                } else {
+                    &[]
+                };
+                let mut line = syntax::line(
+                    doc.line(row),
+                    pane.column,
+                    inner.width.saturating_sub(5) as usize,
+                    colors,
+                    doc.selection_columns(row),
+                );
+                line.spans.insert(
+                    0,
+                    Span::styled(gutter, Style::default().fg(Color::DarkGray)),
+                );
+                line
+            })
+            .collect()
+    } else {
+        pane.lines
+            .iter()
+            .skip(pane.scroll)
+            .take(inner.height as usize)
+            .map(|line| {
+                Line::raw(crate::file_document::visible_line(
+                    line,
+                    pane.column,
+                    inner.width as usize,
+                ))
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(lines), inner);
+    if !pane.horizontal_bar.is_empty() {
+        let bar = pane.horizontal_bar;
+        let width = usize::from(bar.width);
+        let content = pane.horizontal_max.saturating_add(width);
+        let thumb = (width.saturating_mul(width) / content.max(1)).clamp(1, width);
+        let offset = pane.column.saturating_mul(width - thumb) / pane.horizontal_max.max(1);
+        f.render_widget(
+            Paragraph::new("─".repeat(width)).style(Style::default().fg(Color::DarkGray)),
+            bar,
+        );
+        f.render_widget(
+            Paragraph::new("━".repeat(thumb)).style(style),
+            Rect::new(bar.x + offset as u16, bar.y, thumb as u16, 1),
+        );
+    }
+    if focused && pane.raw() && !pane.searching && pane.prompt.is_none() && show_caret {
+        if let Some(doc) = &pane.document {
+            let (row, col) = doc.position();
+            if row >= pane.scroll
+                && row < pane.scroll + inner.height as usize
+                && col >= pane.column
+                && col < pane.column + inner.width.saturating_sub(5) as usize
+            {
+                f.set_cursor_position(Position::new(
+                    inner.x + 5 + (col - pane.column) as u16,
+                    inner.y + (row - pane.scroll) as u16,
+                ));
+            }
+        }
+    }
+    if focused {
+        f.render_widget(
+            Paragraph::new(if pane.prompt.is_some() {
+                "Unsaved · S save · D discard · Esc cancel".into()
+            } else if pane.saving {
+                "Saving… edits retained".into()
+            } else if let Some(error) = editor_error {
+                format!("Recovery: {error}")
+            } else if let Some(error) = &pane.error {
+                error.clone()
+            } else if pane.searching {
+                format!("/{}  {} matches", pane.query, pane.matches.len())
+            } else if pane.raw() {
+                if standalone {
+                    "Ctrl+Q close · Ctrl+S save · Ctrl+F find".into()
+                } else {
+                    "Esc chat · Ctrl+S save · Ctrl+F find".into()
+                }
+            } else if pane.query.is_empty() {
+                if standalone {
+                    "Ctrl+Q close · Alt+V edit · / find · r reload".into()
+                } else {
+                    "Esc chat · Alt+V edit · / find · r reload".into()
+                }
+            } else {
+                format!(
+                    "/{}  {} matches \u{b7} n/N next/prev",
+                    pane.query,
+                    pane.matches.len()
+                )
+            })
+            .style(style),
+            Rect {
+                x: rect.x + 1,
+                y: rect.bottom() - 1,
+                width: rect.width - 2,
+                height: 1,
+            },
+        );
+    }
+}
+
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
+    if key
+        .modifiers
+        .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        && matches!(key.code, KeyCode::Char('d' | 'D'))
+    {
+        if let Some(id) = app.workspace.focused {
+            let detached = app.workspace.panes.iter().any(|p| p.id == id && p.detached);
+            if detached {
+                app.workspace.request_dock(id);
+            } else if let Err(error) = app.workspace.request_detach(id) {
+                app.flash(error);
+            }
+            return true;
+        }
+    }
     if edit::handle_key(app, key) {
         return true;
     }
@@ -900,9 +1106,9 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             Some(id) => state
                 .panes
                 .iter()
-                .position(|p| p.id == id)
-                .and_then(|i| state.panes.get(i + 1))
-                .filter(|p| p.area.width > 0)
+                .skip_while(|p| p.id != id)
+                .skip(1)
+                .find(|p| p.area.width > 0)
                 .map(|p| p.id),
         };
         return true;
@@ -990,6 +1196,90 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
 }
 
 pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
+    if app.workspace.native_windows && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+        if let Some(pane) = app
+            .workspace
+            .panes
+            .iter()
+            .find(|p| contains(p.area, mouse.column, mouse.row) && mouse.row == p.area.y)
+        {
+            let (id, detached, button) = (
+                pane.id,
+                pane.detached,
+                contains(pane.window_button(), mouse.column, mouse.row),
+            );
+            if button {
+                if detached {
+                    app.workspace.request_dock(id);
+                } else if let Err(error) = app.workspace.request_detach(id) {
+                    app.flash(error);
+                }
+                return true;
+            }
+            if !detached && mouse.column < pane.area.right().saturating_sub(14) {
+                app.workspace.tab_drag = Some((id, mouse.column, mouse.row));
+                app.workspace.focused = Some(id);
+                return true;
+            }
+        }
+    }
+    if app.workspace.tab_drag.is_some() {
+        match mouse.kind {
+            MouseEventKind::Drag(MouseButton::Left) => return true,
+            MouseEventKind::Up(MouseButton::Left) => {
+                finish_tab_drag(app, i32::from(mouse.column), i32::from(mouse.row));
+                return true;
+            }
+            _ => {}
+        }
+    }
+    // Horizontal navigation owns its track before the raw editor sees a text-selection click.
+    if let Some(Resize::Horizontal(id)) = app.workspace.resizing {
+        if let Some(pane) = app.workspace.panes.iter_mut().find(|pane| pane.id == id) {
+            if matches!(
+                mouse.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            ) {
+                pane.horizontal_at(mouse.column);
+            }
+        }
+        if matches!(mouse.kind, MouseEventKind::Up(_)) {
+            app.workspace.resizing = None;
+        }
+        return true;
+    }
+    if let Some(pane) = app
+        .workspace
+        .panes
+        .iter_mut()
+        .find(|pane| pane.raw() && contains(pane.area, mouse.column, mouse.row))
+    {
+        let forward = match mouse.kind {
+            MouseEventKind::ScrollRight => Some(true),
+            MouseEventKind::ScrollLeft => Some(false),
+            MouseEventKind::ScrollDown if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(true)
+            }
+            MouseEventKind::ScrollUp if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(false)
+            }
+            _ => None,
+        };
+        if let Some(forward) = forward {
+            pane.horizontal_scroll(forward, 6);
+            return true;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && contains(pane.horizontal_bar, mouse.column, mouse.row)
+        {
+            pane.horizontal_at(mouse.column);
+            pane.selecting = false;
+            app.workspace.resizing = Some(Resize::Horizontal(pane.id));
+            app.drag = Drag::None;
+            app.file_click = None;
+            return true;
+        }
+    }
     if edit::mouse(app, mouse) {
         return true;
     }
@@ -1064,6 +1354,7 @@ pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
                         state.cuts[index] = state.cuts[index].clamp(min + gap, max - gap);
                     }
                 }
+                Resize::Horizontal(_) => {}
             },
             _ => {}
         }
@@ -1077,6 +1368,13 @@ pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
     }
     let hit = state.panes.iter().position(|p| contains(p.area, x, y));
     if let Some(index) = hit {
+        let split_index = state.panes[..index].iter().filter(|p| !p.detached).count();
+        // A child HWND has no sibling row split, even when the shared workspace
+        // still contains docked panes whose main-window hit areas are hidden.
+        let has_next = !state.panes[index].detached
+            && state.panes[index + 1..]
+                .iter()
+                .any(|p| !p.detached && !p.area.is_empty());
         let pane = &mut state.panes[index];
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -1087,8 +1385,8 @@ pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
                 } else if contains(pane.mode_button(), x, y) {
                     pane.toggle_mode();
                     state.focused = Some(id);
-                } else if y == pane.area.bottom() - 1 && index + 1 < state.panes.len() {
-                    state.resizing = Some(Resize::Rows(index));
+                } else if y == pane.area.bottom() - 1 && has_next {
+                    state.resizing = Some(Resize::Rows(split_index));
                 } else {
                     state.focused = Some(id);
                     app.deleg.selected = None;
@@ -1121,4 +1419,137 @@ mod tests;
 
 pub(super) fn paste(app: &mut App, text: &str) -> bool {
     edit::paste(app, text)
+}
+
+/// A native backend supplies signed cells before clamping terminal mouse coordinates.
+/// Returns true when a pane was detached by a completed title drag.
+pub(super) fn finish_tab_drag(app: &mut App, x: i32, y: i32) -> bool {
+    let Some((id, start_x, start_y)) = app.workspace.tab_drag.take() else {
+        return false;
+    };
+    let screen = app.workspace.screen;
+    let moved = (x - i32::from(start_x)).abs() + (y - i32::from(start_y)).abs() >= 2;
+    let outside = x < i32::from(screen.x)
+        || y < i32::from(screen.y)
+        || x >= i32::from(screen.right())
+        || y >= i32::from(screen.bottom());
+    if moved && outside {
+        return app.workspace.request_detach(id).is_ok();
+    }
+    false
+}
+
+/// Draw another view of the same document, without changing main-window hit targets.
+pub(super) fn draw_window(f: &mut Frame, app: &mut App, id: u32) {
+    let state = &mut app.workspace;
+    if let Some(pane) = state.panes.iter_mut().find(|p| p.id == id && p.detached) {
+        let main_area = pane.area;
+        pane.window_area = f.area();
+        if f.area().width < MIN_FILE || f.area().height < MIN_HEIGHT {
+            f.render_widget(Paragraph::new("Enlarge file window"), f.area());
+            return;
+        }
+        pane.area = f.area();
+        draw_pane(
+            f,
+            pane,
+            true,
+            true,
+            false,
+            true,
+            state.editor.error.as_ref(),
+        );
+        pane.area = main_area;
+    }
+}
+
+/// Route only editor events; provider dispatch and application commands stay in the main window.
+pub(super) fn handle_window_event(app: &mut App, id: u32, event: Event) -> bool {
+    if !app.workspace.panes.iter().any(|p| p.id == id && p.detached) {
+        return false;
+    }
+    let focus = app.workspace.focused;
+    let divider = app.workspace.divider;
+    let resizing = app.workspace.resizing.take();
+    app.workspace.resizing = app
+        .workspace
+        .panes
+        .iter_mut()
+        .find(|p| p.id == id)
+        .and_then(|p| p.window_resizing.take());
+    let areas = app
+        .workspace
+        .panes
+        .iter()
+        .map(|p| (p.id, p.area))
+        .collect::<Vec<_>>();
+    for pane in &mut app.workspace.panes {
+        pane.area = if pane.id == id
+            && pane.window_area.width >= MIN_FILE
+            && pane.window_area.height >= MIN_HEIGHT
+        {
+            pane.window_area
+        } else {
+            Rect::default()
+        };
+    }
+    app.workspace.divider = Rect::default();
+    app.workspace.focused = Some(id);
+    let handled = match event {
+        Event::Key(key) if key.kind != KeyEventKind::Release => {
+            if handle_key(app, &key) {
+                true
+            } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('c' | 'C'))
+            {
+                if let Some(text) = app
+                    .workspace
+                    .panes
+                    .iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| p.view.selected_text())
+                {
+                    if let Err(error) = clipboard::set_text(&text) {
+                        app.flash(error);
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
+        Event::Mouse(mouse) => handle_mouse(app, &mouse),
+        Event::Paste(text) => paste(app, &text),
+        Event::Resize(width, height) => {
+            if let Some(p) = app.workspace.panes.iter_mut().find(|p| p.id == id) {
+                p.window_area = Rect::new(0, 0, width, height);
+            }
+            true
+        }
+        _ => false,
+    };
+    for pane in &mut app.workspace.panes {
+        pane.area = areas
+            .iter()
+            .find(|(old_id, _)| *old_id == pane.id)
+            .map_or(Rect::default(), |(_, area)| *area);
+    }
+    app.workspace.focused = focus.filter(|old| {
+        app.workspace
+            .panes
+            .iter()
+            .any(|p| p.id == *old && !p.detached)
+    });
+    app.workspace.divider = divider;
+    let child_resizing = app.workspace.resizing.take();
+    if let Some(pane) = app
+        .workspace
+        .panes
+        .iter_mut()
+        .find(|p| p.id == id && p.detached)
+    {
+        pane.window_resizing = child_resizing;
+    }
+    app.workspace.resizing = resizing;
+    handled
 }

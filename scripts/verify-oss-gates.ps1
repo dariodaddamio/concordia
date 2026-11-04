@@ -57,7 +57,10 @@ $personalRegex = if ($personal.Count -gt 0) { '(?i)(' + (($personal | ForEach-Ob
 # Exact public product identifiers are intentional metadata, not personal filesystem data.
 # Scope exceptions to the files that need each identifier; all remaining text is still scanned.
 $publicIdentifiers = @{
+    'README.md' = @('dariodaddamio/concordia')
     'crates/concordia/Cargo.toml' = @('dariodaddamio/concordia')
+    'crates/concordia/src/release.rs' = @('dariodaddamio/concordia')
+    'docs/install.md' = @('dariodaddamio/concordia')
     'crates/concordia/src/harness/adapter.rs' = @('@dariodaddamio/harness')
     'scripts/install.ps1' = @('dariodaddamio/concordia')
     'scripts/test-install.ps1' = @('dariodaddamio/concordia')

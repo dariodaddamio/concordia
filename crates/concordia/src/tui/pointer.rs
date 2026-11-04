@@ -41,10 +41,31 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
     if contains(app.areas.run_cancel, x, y) {
         return "pointer";
     }
+    if contains(app.areas.permissions, x, y)
+        && app
+            .picker
+            .as_ref()
+            .is_none_or(|picker| picker.kind == PickerKind::Trust)
+        && app.activity.detail.is_none()
+        && !workers::overlay_open(app)
+    {
+        return "pointer";
+    }
     if app
         .areas
         .modal_close
         .is_some_and(|(rect, _)| contains(rect, x, y))
+    {
+        return "pointer";
+    }
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|picker| picker.kind == PickerKind::Trust)
+        && app
+            .permission_rows
+            .iter()
+            .any(|(rect, _)| contains(*rect, x, y))
     {
         return "pointer";
     }

@@ -18,6 +18,22 @@ enum Message {
     Event(Event, Instant),
     Quiet(Instant),
     Error(io::Error),
+    #[cfg(windows)]
+    Wake,
+    #[cfg(windows)]
+    MouseUp(crossterm::event::MouseEvent, i32, i32, Instant),
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+pub(super) struct WakeHandle(SyncSender<Message>);
+
+#[cfg(windows)]
+impl WakeHandle {
+    pub(super) fn wake(&self) {
+        // If full, input is already ready and the root loop will drain child events.
+        let _ = self.0.try_send(Message::Wake);
+    }
 }
 
 /// Owns the only Crossterm event reader for the TUI. Events and quiet-boundary markers are bounded
@@ -27,12 +43,19 @@ pub struct InputStream {
     pending: Option<Message>,
     shutdown: Arc<AtomicBool>,
     reader: Option<JoinHandle<()>>,
+    #[cfg(windows)]
+    wake_sender: Option<SyncSender<Message>>,
+    #[cfg(windows)]
+    native_mouse_up: Option<(i32, i32)>,
 }
 
 impl InputStream {
     #[cfg(windows)]
-    pub fn from_native(events: Receiver<Event>) -> io::Result<Self> {
+    pub(super) fn from_native(
+        events: Receiver<super::native_window::NativeEvent>,
+    ) -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
+        let wake_sender = sender.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
         let stopped = shutdown.clone();
         let reader = thread::Builder::new()
@@ -43,7 +66,15 @@ impl InputStream {
                     match events.recv_timeout(super::input::BURST_QUIET) {
                         Ok(event) => {
                             boundary.event_arrived();
-                            if sender.send(Message::Event(event, Instant::now())).is_err() {
+                            let message = match event {
+                                super::native_window::NativeEvent::Event(event) => {
+                                    Message::Event(event, Instant::now())
+                                }
+                                super::native_window::NativeEvent::MouseUp { event, x, y } => {
+                                    Message::MouseUp(event, x, y, Instant::now())
+                                }
+                            };
+                            if sender.send(message).is_err() {
                                 break;
                             }
                         }
@@ -54,7 +85,13 @@ impl InputStream {
                                 break;
                             }
                         }
-                        Err(RecvTimeoutError::Disconnected) => break,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            let _ = sender.send(Message::Error(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "native input reader stopped",
+                            )));
+                            break;
+                        }
                     }
                 }
             })?;
@@ -63,11 +100,15 @@ impl InputStream {
             pending: None,
             shutdown,
             reader: Some(reader),
+            wake_sender: Some(wake_sender),
+            native_mouse_up: None,
         })
     }
     /// Start the reader. Call this only after terminal input modes have been configured.
     pub fn spawn() -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
+        #[cfg(windows)]
+        let wake_sender = sender.clone();
         let (startup_tx, startup_rx) = mpsc::sync_channel(1);
         let shutdown = Arc::new(AtomicBool::new(false));
         let thread_shutdown = shutdown.clone();
@@ -85,7 +126,26 @@ impl InputStream {
             pending: None,
             shutdown,
             reader: Some(reader),
+            #[cfg(windows)]
+            wake_sender: Some(wake_sender),
+            #[cfg(windows)]
+            native_mouse_up: None,
         })
+    }
+
+    #[cfg(windows)]
+    pub(super) fn wake_handle(&self) -> WakeHandle {
+        WakeHandle(
+            self.wake_sender
+                .as_ref()
+                .expect("input wake sender is alive")
+                .clone(),
+        )
+    }
+
+    #[cfg(windows)]
+    pub(super) fn take_native_mouse_up(&mut self) -> Option<(i32, i32)> {
+        self.native_mouse_up.take()
     }
 
     /// Wait for an event for at most `timeout`. A queued reader error is returned immediately.
@@ -94,6 +154,8 @@ impl InputStream {
             return match message {
                 Message::Event(..) | Message::Quiet(..) => Ok(true),
                 Message::Error(error) => Err(clone_error(error)),
+                #[cfg(windows)]
+                Message::Wake | Message::MouseUp(..) => Ok(true),
             };
         }
         let receiver = self.receiver.as_ref().expect("reader receiver is alive");
@@ -107,6 +169,11 @@ impl InputStream {
                 self.pending = Some(Message::Error(error));
                 result
             }
+            #[cfg(windows)]
+            Ok(message @ (Message::Wake | Message::MouseUp(..))) => {
+                self.pending = Some(message);
+                Ok(true)
+            }
             Err(RecvTimeoutError::Timeout) => Ok(false),
             Err(RecvTimeoutError::Disconnected) => Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -118,6 +185,10 @@ impl InputStream {
     /// Return the next event or ordered idle marker, its reader timestamp, and whether it marks a
     /// quiet boundary. A boundary is `(None, at, true)`. Intended to follow `poll(true)`.
     pub fn read(&mut self) -> io::Result<(Option<Event>, Instant, bool)> {
+        #[cfg(windows)]
+        {
+            self.native_mouse_up = None;
+        }
         let message = match self.pending.take() {
             Some(message) => message,
             None => self
@@ -136,6 +207,13 @@ impl InputStream {
             Message::Event(event, at) => Ok((Some(event), at, false)),
             Message::Quiet(at) => Ok((None, at, true)),
             Message::Error(error) => Err(error),
+            #[cfg(windows)]
+            Message::Wake => Ok((None, Instant::now(), false)),
+            #[cfg(windows)]
+            Message::MouseUp(event, x, y, at) => {
+                self.native_mouse_up = Some((x, y));
+                Ok((Some(Event::Mouse(event)), at, false))
+            }
         }
     }
 }
@@ -306,6 +384,10 @@ mod tests {
             pending: None,
             shutdown: Arc::new(AtomicBool::new(true)),
             reader: None,
+            #[cfg(windows)]
+            wake_sender: Some(sender.clone()),
+            #[cfg(windows)]
+            native_mouse_up: None,
         };
         let expected = [
             (Some(first), first_at, false),
@@ -319,6 +401,32 @@ mod tests {
             assert_eq!(stream.read().unwrap(), item);
         }
         assert!(!stream.poll(Duration::ZERO).unwrap());
+        #[cfg(windows)]
+        {
+            stream.wake_handle().wake();
+            assert!(stream.poll(Duration::ZERO).unwrap());
+            let (event, _, quiet) = stream.read().unwrap();
+            assert!(
+                event.is_none() && !quiet,
+                "a child wake must not end a paste burst"
+            );
+            let mouse = crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 0,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            };
+            sender
+                .send(Message::MouseUp(mouse, -5, 2, third_at))
+                .unwrap();
+            assert!(stream.poll(Duration::ZERO).unwrap());
+            assert_eq!(
+                stream.read().unwrap(),
+                (Some(Event::Mouse(mouse)), third_at, false)
+            );
+            assert_eq!(stream.take_native_mouse_up(), Some((-5, 2)));
+            assert_eq!(stream.take_native_mouse_up(), None);
+        }
     }
 
     #[test]
@@ -336,6 +444,10 @@ mod tests {
             pending: None,
             shutdown: Arc::new(AtomicBool::new(false)),
             reader: Some(reader),
+            #[cfg(windows)]
+            wake_sender: None,
+            #[cfg(windows)]
+            native_mouse_up: None,
         };
         drop(stream);
     }

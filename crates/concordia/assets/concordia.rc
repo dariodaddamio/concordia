@@ -1,2 +1,2 @@
-// Application icon: keep the 16/32-pixel marks aligned with native_window::app_icon.
+// Shared Explorer/taskbar/titlebar mark. Regenerate from render_icon.py after SVG edits.
 1 ICON "concordia.ico"

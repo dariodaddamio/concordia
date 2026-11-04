@@ -1,6 +1,137 @@
+use super::{ChatLine, MsgRole};
+use crate::provider::stream_cards::{format_card_line, tool_label, CardStatus, StreamCard};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 use std::collections::HashSet;
+
+/// Presentation only: message indexes, native IDs and complete tool output stay untouched.
+pub(super) struct GroupedCards {
+    pub text: Vec<Option<String>>,
+    pub hidden: Vec<bool>,
+}
+
+pub(super) fn grouped_cards(messages: &[ChatLine], activity: &Activity, all: bool) -> GroupedCards {
+    let mut grouped = GroupedCards {
+        text: vec![None; messages.len()],
+        hidden: vec![false; messages.len()],
+    };
+    let mut start = 0;
+    while start < messages.len() {
+        let Some(category) = messages[start].card.as_ref().and_then(group_category) else {
+            start += 1;
+            continue;
+        };
+        if !matches!(messages[start].role, MsgRole::Card) {
+            start += 1;
+            continue;
+        }
+        let mut end = start + 1;
+        while end < messages.len()
+            && matches!(messages[end].role, MsgRole::Card)
+            && messages[end].meta == messages[start].meta
+            && messages[end].card.as_ref().and_then(group_category) == Some(category)
+        {
+            end += 1;
+        }
+        if end - start > 1 {
+            let summary = format!("{category} · {} operations · completed", end - start);
+            if activity.is_expanded(start, all) {
+                let card = messages[start].card.as_ref().unwrap();
+                grouped.text[start] = Some(format!(
+                    "{summary}\n{}",
+                    full_output(&format_card_line(card), card.detail.as_deref())
+                ));
+            } else {
+                grouped.text[start] = Some(summary);
+                grouped.hidden[start + 1..end].fill(true);
+            }
+        }
+        start = end;
+    }
+    grouped
+}
+
+fn group_category(card: &StreamCard) -> Option<&'static str> {
+    // Errors, live operations, approvals, edits and agent cards remain individually visible.
+    if card.status != CardStatus::Done || card.id.starts_with("native-agent:") {
+        return None;
+    }
+    let title = tool_label(&card.title);
+    match title.as_str() {
+        "Read file" | "Search files" => Some("Inspect project"),
+        "Run command" => {
+            let detail = card.detail.as_deref().unwrap_or("");
+            let lower = detail.to_ascii_lowercase();
+            if lower.contains("approval") || lower.contains("require_escalated") {
+                return None;
+            }
+            let mut subject = detail.lines().next().unwrap_or("").trim().to_owned();
+            let json = detail
+                .strip_prefix("arguments: ")
+                .or_else(|| detail.strip_prefix("input: "))
+                .unwrap_or(detail);
+            if let Some(Ok(value)) = serde_json::Deserializer::from_str(json)
+                .into_iter::<serde_json::Value>()
+                .next()
+            {
+                if let Some(command) = value
+                    .get("cmd")
+                    .or_else(|| value.get("command"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    subject = command.to_owned();
+                }
+            }
+            let command = subject
+                .trim()
+                .trim_start_matches("command: ")
+                .to_ascii_lowercase();
+            if [
+                "cargo test",
+                "cargo check",
+                "cargo clippy",
+                "cargo build",
+                "cargo fmt",
+                "npm test",
+                "npm run test",
+                "npm run build",
+                "npm run lint",
+                "pnpm test",
+                "pnpm exec",
+                "pnpm build",
+                "pnpm lint",
+                "pytest",
+                "python -m pytest",
+                "tsc ",
+            ]
+            .iter()
+            .any(|prefix| command.starts_with(prefix))
+            {
+                Some("Check project")
+            } else if [
+                "rg ",
+                "grep ",
+                "cat ",
+                "ls",
+                "pwd",
+                "get-content ",
+                "get-childitem",
+                "git status",
+                "git diff",
+                "git log",
+                "git show",
+            ]
+            .iter()
+            .any(|prefix| command == prefix.trim() || command.starts_with(prefix))
+            {
+                Some("Inspect project")
+            } else {
+                Some("Run commands")
+            }
+        }
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ModalAction {

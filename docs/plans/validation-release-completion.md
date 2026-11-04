@@ -1,5 +1,10 @@
 # Provider, host and release validation plan
 
+The owner selected **unsigned Windows distribution on 2026-11-04**. Mandatory signing in
+this historical plan, including D1's identity/certificate requirements, is superseded by
+[the current unsigned policy](../windows-signing.md). Exact-artifact scans, checksums,
+notices, install/update rehearsal and publication decisions still apply.
+
 Active execution and coordinator responsibilities: [Luna queue](luna-completion/README.md).
 Use the existing evidence collector and signing checks; do not rebuild shipped infrastructure.
 

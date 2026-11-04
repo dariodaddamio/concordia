@@ -9,8 +9,8 @@
 //! user runs `/update`; concordia never phones home on its own.
 //!
 //! Integrity note: the checksum file comes from the same release as the binary, so it catches
-//! corruption and truncation, not a compromised release. TLS authenticates GitHub; signed
-//! releases are the next step.
+//! corruption and truncation, not a compromised release. TLS authenticates GitHub. The owner
+//! has selected unsigned distribution; checksums do not establish publisher identity.
 
 use crate::update::{install_binary, verify_binary, UpdateResult};
 use anyhow::{bail, Context, Result};
@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 pub const ASSET_NAME: &str = "concordia-x86_64-pc-windows-msvc.exe";
 pub const SUMS_NAME: &str = "SHA256SUMS";
+const DEFAULT_REPO: &str = "dariodaddamio/concordia";
 const DEFAULT_API: &str = "https://api.github.com";
 /// Anything outside these bounds is not our binary.
 const MIN_EXE_BYTES: u64 = 100 * 1024;
@@ -115,8 +116,8 @@ fn valid_repo(r: &str) -> bool {
     }
 }
 
-/// The release feed, or `None` when updates from releases are not configured. The repo comes from
-/// `CONCORDIA_UPDATE_REPO` or is baked in at build time with `CONCORDIA_RELEASE_REPO`.
+/// Normal installs use the public project feed. Explicit environment/build overrides remain
+/// available for forks; an invalid override fails instead of silently switching repositories.
 pub fn config_from_env(current: &str) -> Option<Config> {
     config_from(
         std::env::var("CONCORDIA_UPDATE_REPO").ok().as_deref(),
@@ -138,7 +139,8 @@ pub fn config_from(
         .into_iter()
         .flatten()
         .map(str::trim)
-        .find(|r| !r.is_empty())?
+        .find(|r| !r.is_empty())
+        .unwrap_or(DEFAULT_REPO)
         .to_string();
     if !valid_repo(&repo) {
         return None;
@@ -529,7 +531,10 @@ mod tests {
 
     #[test]
     fn config_needs_a_valid_repo_and_defaults_sensibly() {
-        assert!(config_from(None, None, None, None, "0.1.0").is_none());
+        assert_eq!(
+            config_from(None, None, None, None, "0.1.0").unwrap().repo,
+            DEFAULT_REPO
+        );
         assert!(config_from(Some("not a repo"), None, None, None, "0.1.0").is_none());
         let c = config_from(
             Some(" me/concordia "),

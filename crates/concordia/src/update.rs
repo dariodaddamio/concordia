@@ -376,6 +376,41 @@ pub enum UpdateOutcome {
 }
 
 const SOURCE_HINT_FILE: &str = "source";
+const CHANNEL_FILE: &str = "channel";
+
+fn install_channel() -> Result<Option<String>> {
+    let path = install_bin_dir().join(CHANNEL_FILE);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("cannot inspect the install channel"),
+    };
+    let linked = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    let linked = {
+        use std::os::windows::fs::MetadataExt;
+        linked || metadata.file_attributes() & 0x400 != 0
+    };
+    anyhow::ensure!(
+        metadata.is_file() && !linked && metadata.len() <= 16,
+        "invalid install channel file; reinstall Concordia to repair it"
+    );
+    let channel = fs::read_to_string(path).context("cannot read the install channel")?;
+    anyhow::ensure!(
+        matches!(channel.trim(), "source" | "release"),
+        "invalid install channel; reinstall Concordia to repair it"
+    );
+    Ok(Some(channel.trim().to_owned()))
+}
+
+fn record_install_channel(channel: &str) -> Result<()> {
+    // Validate an existing owned marker before overwriting it; never follow a link.
+    install_channel()?;
+    let dir = install_bin_dir();
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join(CHANNEL_FILE), format!("{channel}\n"))?;
+    Ok(())
+}
 
 fn is_source_root(dir: &Path) -> bool {
     dir.join("crates")
@@ -402,6 +437,7 @@ pub fn record_source_root(root: &Path) {
             dir.join(SOURCE_HINT_FILE),
             root.to_string_lossy().as_bytes(),
         );
+        let _ = record_install_channel("source");
     }
 }
 
@@ -414,6 +450,10 @@ fn recorded_source_root() -> Option<PathBuf> {
 /// The source checkout `/update` rebuilds: the one containing `cwd`, else the one this install
 /// was built from.
 pub fn source_root(cwd: &Path) -> Option<PathBuf> {
+    let channel = install_channel().ok()?;
+    if channel.as_deref() == Some("release") {
+        return None;
+    }
     crate::host::wezterm::find_project_root(cwd)
         .filter(|root| is_source_root(root))
         .or_else(|| find_cargo_workspace(cwd).filter(|root| is_source_root(root)))
@@ -427,12 +467,13 @@ pub fn update_auto(cwd: &Path) -> Result<UpdateOutcome> {
 }
 
 pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
+    install_channel()?;
     if source_root(cwd).is_some() {
         return perform_update_ctl(cwd, ctl).map(UpdateOutcome::Installed);
     }
     let current = crate::version::VERSION;
     let cfg = crate::release::config_from_env(current).context(
-        "no source checkout here and no release feed configured (set CONCORDIA_UPDATE_REPO=owner/name)",
+        "invalid release repository override; CONCORDIA_UPDATE_REPO must be owner/name (unset it to use the official feed)",
     )?;
     let fetch = crate::release::PowerShellFetcher;
     ctl.say("checking for a newer release");
@@ -678,13 +719,14 @@ pub fn check_for_update(cwd: &Path) -> Result<UpdatePreview> {
 }
 
 fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
+    install_channel()?;
     if let Some(root) = source_root(cwd) {
         return source_preview(&root, ctl);
     }
     let current = crate::version::VERSION;
     let Some(cfg) = crate::release::config_from_env(current) else {
         return Ok(UpdatePreview::message(
-            "no source checkout here and no release feed configured (set CONCORDIA_UPDATE_REPO=owner/name)",
+            "invalid release repository override; unset CONCORDIA_UPDATE_REPO to use the official feed",
         ));
     };
     let from = PreviewLine::Field(
@@ -752,6 +794,7 @@ pub fn perform_update(cwd: &Path) -> Result<UpdateResult> {
 }
 
 pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> {
+    install_channel()?;
     let root = source_root(cwd).context(
         "no source checkout found: run /update inside the repository once, or run `concordia install` from a build in it",
     )?;
@@ -935,10 +978,13 @@ pub struct InstallReport {
 }
 
 pub fn install_self() -> Result<InstallReport> {
+    install_channel()?;
     let me = env::current_exe().context("cannot locate the running executable")?;
     let installed = install_binary(&me)?;
     if let Some(root) = source_root_of_exe(&me) {
         record_source_root(&root);
+    } else {
+        record_install_channel("release")?;
     }
     let explicit_dir = env::var("CONCORDIA_INSTALL_DIR").is_ok_and(|d| !d.trim().is_empty());
     let state_adopted = !explicit_dir
@@ -1314,6 +1360,7 @@ mod tests {
             "nothing recorded yet"
         );
         record_source_root(checkout.path());
+        assert_eq!(install_channel().unwrap().as_deref(), Some("source"));
         assert_eq!(
             source_root(elsewhere.path()).as_deref(),
             Some(checkout.path())
@@ -1336,6 +1383,19 @@ mod tests {
             source_root(elsewhere.path()).as_deref(),
             Some(checkout.path())
         );
+
+        record_install_channel("release").unwrap();
+        assert!(
+            source_root(checkout.path()).is_none(),
+            "release installs never require a checkout"
+        );
+        fs::write(install.path().join(CHANNEL_FILE), "unknown").unwrap();
+        assert!(install_channel().is_err());
+        assert!(update_auto(elsewhere.path())
+            .unwrap_err()
+            .to_string()
+            .contains("invalid install channel"));
+        fs::write(install.path().join(CHANNEL_FILE), "source\n").unwrap();
 
         // A record pointing at something that is no longer a checkout is ignored.
         fs::remove_dir_all(checkout.path().join("crates")).unwrap();

@@ -217,7 +217,7 @@ fn extreme_usage_updates_finish_and_render_without_counter_or_formatter_overflow
     assert_eq!(h.app.session_input, u64::MAX);
     assert_eq!(h.app.session_output, u64::MAX);
     h.draw();
-    assert!(token_line::compact(u64::MAX).ends_with('M'));
+    assert_eq!(token_line::compact(u64::MAX), "1.84e19");
 }
 
 #[test]

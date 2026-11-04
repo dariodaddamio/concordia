@@ -7,8 +7,8 @@
 #
 # What it does: reads the release feed, downloads the Windows zip and its .sha256, verifies the
 # SHA-256 with .NET (fails closed on any mismatch, nothing is installed), extracts to a temp folder
-# and runs `concordia.exe install`. That copies concordia to %LOCALAPPDATA%\concordia\bin and adds
-# that folder to your USER PATH. Nothing else on the machine is changed.
+# and runs `concordia.exe install`. That copies concordia to %LOCALAPPDATA%\concordia\bin, adds
+# it to PATH and opens Concordia. No compiler or administrator access is needed.
 #
 # Windows PowerShell 5.1 compatible: keep this file ASCII-only and avoid newer syntax.
 param(
@@ -19,12 +19,16 @@ param(
     # Install into this folder instead of %LOCALAPPDATA%\concordia\bin. The user PATH is then not
     # changed; add the folder to PATH yourself.
     [string]$Dir = '',
+    # Install without opening a window (automation and unattended installation).
+    [switch]$NoLaunch,
     # Print the plan and exit. Makes no network calls and changes nothing.
     [switch]$DryRun,
     # GitHub API root. Only for mirrors and the offline tests.
     [string]$ApiBase = 'https://api.github.com'
 )
 
+$installerPreviousEap = $ErrorActionPreference
+$installerPreviousProgress = $ProgressPreference
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 try {
@@ -57,6 +61,65 @@ function Read-ExpectedHash([string]$Path, [string]$Name) {
     Stop-Install "$AssetSha has no SHA-256 entry for $Name"
 }
 
+function Assert-DownloadUrl([string]$Value, [uri]$Api) {
+    $uri = $null
+    if (-not [uri]::TryCreate($Value, [UriKind]::Absolute, [ref]$uri) -or $uri.UserInfo) {
+        Stop-Install 'the release feed returned an invalid download URL'
+    }
+    if ($uri.Scheme -eq 'https') { return }
+    if ($uri.Scheme -eq 'http' -and $Api.IsLoopback -and $uri.IsLoopback -and $uri.Authority -eq $Api.Authority) { return }
+    Stop-Install 'release downloads require HTTPS'
+}
+
+function Expand-VerifiedRelease([string]$Zip, [string]$Stage) {
+    if ((Get-Item -LiteralPath $Zip).Length -gt 67108864) { Stop-Install 'release zip exceeds 64 MiB' }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        if ($archive.Entries.Count -gt 8) { Stop-Install 'release zip contains too many entries' }
+        $names = @{}
+        $total = 0L
+        foreach ($entry in $archive.Entries) {
+            if ($entry.FullName -notin @('concordia.exe', 'LICENSE', 'THIRD-PARTY-LICENSES.txt')) {
+                Stop-Install "release zip contains an unexpected path: $($entry.FullName)"
+            }
+            if ($names.ContainsKey($entry.FullName)) { Stop-Install 'release zip contains duplicate paths' }
+            $names[$entry.FullName] = $true
+            $total += $entry.Length
+            if ($entry.Length -gt 67108864 -or $total -gt 100663296) { Stop-Install 'release zip exceeds extraction limits' }
+        }
+        if (-not $names.ContainsKey('concordia.exe')) { Stop-Install 'the zip has no concordia.exe at its root' }
+    } finally { $archive.Dispose() }
+    [IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Stage)
+}
+
+function Invoke-ReleaseExe([string]$Exe, [string]$Argument) {
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $Exe
+    $start.Arguments = $Argument
+    $start.WorkingDirectory = Split-Path -Parent $Exe
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) { Stop-Install "could not start concordia $Argument" }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(60000)) {
+            $process.Kill()
+            $process.WaitForExit()
+            Stop-Install "concordia $Argument timed out"
+        }
+        $out = $stdout.GetAwaiter().GetResult()
+        $err = $stderr.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { Stop-Install "concordia $Argument failed: $err" }
+        return $out.TrimEnd()
+    } finally { $process.Dispose() }
+}
+
 function Invoke-Main {
     if ($Repo -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') {
         Stop-Install "-Repo must look like owner/name, got '$Repo'"
@@ -73,8 +136,23 @@ function Invoke-Main {
     }
 
     $installDir = $Dir
+    if (-not $installDir -and $env:CONCORDIA_INSTALL_DIR) { $installDir = $env:CONCORDIA_INSTALL_DIR }
     if (-not $installDir) { $installDir = Join-Path $env:LOCALAPPDATA 'concordia\bin' }
+    $installDir = [IO.Path]::GetFullPath($installDir)
+    $channelPath = Join-Path $installDir 'channel'
+    if (Test-Path -LiteralPath $channelPath) {
+        $marker = Get-Item -LiteralPath $channelPath -Force
+        if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $marker.Length -gt 16 -or
+            ([IO.File]::ReadAllText($channelPath).Trim() -notin @('source', 'release'))) {
+            Stop-Install 'invalid install channel file; repair or remove the owned channel marker before reinstalling'
+        }
+    }
     $base = $ApiBase.TrimEnd('/')
+    $api = $null
+    if (-not [uri]::TryCreate($base, [UriKind]::Absolute, [ref]$api) -or $api.UserInfo -or
+        ($api.Scheme -ne 'https' -and -not ($api.Scheme -eq 'http' -and $api.IsLoopback))) {
+        Stop-Install '-ApiBase must use HTTPS (HTTP is allowed only for local fixtures)'
+    }
     if ($Version) {
         $feed = "$base/repos/$Repo/releases/tags/v$Version"
     } else {
@@ -89,7 +167,8 @@ function Invoke-Main {
         Write-Host "Assets       : $AssetZip and $AssetSha"
         Write-Host "Install dir  : $installDir"
         Write-Host 'Steps        : 1 read feed, 2 download zip and .sha256, 3 verify SHA-256 (fail closed),'
-        Write-Host '               4 extract to a temp folder, 5 run concordia.exe install, 6 print version'
+        Write-Host '               4 validate/extract, 5 install prebuilt executable, 6 verify version'
+        if (-not $NoLaunch) { Write-Host '               7 open Concordia' }
         if ($Dir) { Write-Host 'PATH         : not changed (-Dir given)' } else { Write-Host 'PATH         : install folder added to the USER PATH if missing' }
         return
     }
@@ -111,6 +190,10 @@ function Invoke-Main {
         Stop-Install "no published release with $AssetZip found in $Repo"
     }
     Write-Host "Found $($chosen.Tag)"
+    if ($chosen.Tag -notmatch '^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') { Stop-Install 'release tag has an invalid version' }
+    $expectedVersion = $matches[1]
+    Assert-DownloadUrl $chosen.ZipUrl $api
+    Assert-DownloadUrl $chosen.ShaUrl $api
 
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ('concordia-install-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -130,35 +213,43 @@ function Invoke-Main {
         Write-Host "SHA-256 verified ($actual)"
 
         $stage = Join-Path $tmp 'extract'
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $stage)
+        Expand-VerifiedRelease $zipPath $stage
         $exe = Join-Path $stage 'concordia.exe'
         if (-not (Test-Path -LiteralPath $exe)) { Stop-Install "the zip has no concordia.exe at its root" }
 
         # Only set for the child process; `concordia install` reads it to pick the folder.
         if ($Dir) { $env:CONCORDIA_INSTALL_DIR = $installDir }
-        $prevEap = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $out = & $exe install 2>&1 | Out-String
-            $code = $LASTEXITCODE
-        } finally { $ErrorActionPreference = $prevEap }
-        Write-Host $out.TrimEnd()
-        if ($code -ne 0) { Stop-Install "concordia.exe install exited with code $code" }
+        $versionLine = Invoke-ReleaseExe $exe '--version'
+        if ($versionLine -notmatch ('^concordia ' + [regex]::Escape($expectedVersion) + ' \(')) {
+            Stop-Install "downloaded executable does not match release $($chosen.Tag)"
+        }
+        $downloadedExeHash = Get-Sha256Hex $exe
+        $out = Invoke-ReleaseExe $exe 'install'
+        Write-Host (($out -split '\r?\n' | Where-Object { $_ -notmatch 'open a NEW terminal' }) -join [Environment]::NewLine)
     } finally {
         $env:CONCORDIA_INSTALL_DIR = $savedInstallDir
-        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        if ([IO.Path]::GetFullPath($tmp).StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     $installed = Join-Path $installDir 'concordia.exe'
-    $verLine = & $installed --version | Select-Object -First 1
+    if ((Get-Sha256Hex $installed) -ne $downloadedExeHash) { Stop-Install 'installed executable did not match the download' }
+    $verLine = Invoke-ReleaseExe $installed '--version'
+    [IO.File]::WriteAllText($channelPath, "release`n", (New-Object Text.UTF8Encoding($false)))
+    # The child installer updates future terminals; this process also needs the new command now.
+    $env:Path = "$installDir;" + (($env:Path -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ine $installDir.TrimEnd('\') }) -join ';')
     Write-Host ''
     Write-Host "Installed: $verLine"
-    if ($Dir) {
-        Write-Host "Add $installDir to your PATH to run concordia from any terminal."
-    } else {
-        Write-Host 'Open a NEW terminal, then run: concordia --version'
+    Write-Host 'Run concordia any time. Use /update inside the app for updates.'
+    if (-not $NoLaunch) {
+        Write-Host 'Opening Concordia...'
+        Start-Process -FilePath $installed -WindowStyle Normal
     }
 }
 
-Invoke-Main
+try { Invoke-Main } finally {
+    $ErrorActionPreference = $installerPreviousEap
+    $ProgressPreference = $installerPreviousProgress
+}

@@ -458,6 +458,158 @@ fn mouse_and_keyboard_scroll_and_resize_without_editing_or_dispatch() {
         first.bottom() - 5,
     );
     assert!(h.app.workspace.panes[0].area.height < first.height);
+
+    // Horizontal movement scrolls the viewport and keeps the caret and file bytes intact.
+    let mut h = Harness::new(110, 30);
+    let body = format!("{}\nsecond line", "wide ".repeat(60));
+    h.open("wide.txt", &body);
+    let pane = &h.app.workspace.panes[0];
+    let id = pane.id;
+    let area = pane.area;
+    let cursor = pane.document.as_ref().unwrap().position();
+    assert!(!pane.horizontal_bar.is_empty());
+    h.mouse(MouseEventKind::ScrollRight, area.x + 8, area.y + 2);
+    assert_eq!(h.app.workspace.panes[0].column, 6);
+    assert!(handle_mouse(
+        &mut h.app,
+        &MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: area.x + 8,
+            row: area.y + 2,
+            modifiers: KeyModifiers::SHIFT
+        }
+    ));
+    assert_eq!(h.app.workspace.panes[0].column, 12);
+    assert_eq!(
+        h.app.workspace.panes[0]
+            .document
+            .as_ref()
+            .unwrap()
+            .position(),
+        cursor
+    );
+    let bar = h.app.workspace.panes[0].horizontal_bar;
+    h.mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        bar.right() - 1,
+        bar.y,
+    );
+    h.mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        bar.right() - 1,
+        bar.y,
+    );
+    assert_eq!(
+        h.app.workspace.panes[0].column,
+        h.app.workspace.panes[0].horizontal_max
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.dir.path().join("wide.txt")).unwrap(),
+        body
+    );
+
+    // Detaching keeps exactly one document and routes child typing without moving chat focus.
+    assert!(h.app.workspace.request_detach(id).is_err());
+    h.app.workspace.set_native_windows(true);
+    h.app.workspace.tab_drag = Some((id, area.x + 2, area.y));
+    assert!(finish_tab_drag(&mut h.app, -2, i32::from(area.y)));
+    assert_eq!(h.app.workspace.detached_ids(), vec![id]);
+    h.draw();
+    assert!(h.app.workspace.panes[0].area.is_empty());
+    h.terminal
+        .draw(|frame| draw_window(frame, &mut h.app, id))
+        .unwrap();
+    assert!(h.app.workspace.panes[0].area.is_empty());
+    let revision = h.app.workspace.panes[0]
+        .document
+        .as_ref()
+        .unwrap()
+        .revision();
+    assert!(handle_window_event(
+        &mut h.app,
+        id,
+        Event::Paste("typed in detached window".into())
+    ));
+    assert!(
+        h.app.workspace.panes[0]
+            .document
+            .as_ref()
+            .unwrap()
+            .revision()
+            > revision
+    );
+    assert!(h.app.workspace.focused.is_none());
+    assert_eq!(h.app.workspace.panes.len(), 1);
+    h.app.workspace.request_dock(id);
+    h.draw();
+    assert!(h.app.workspace.detached_ids().is_empty());
+    assert!(!h.app.workspace.panes[0].area.is_empty());
+    assert!(h.app.workspace.panes[0].document.as_ref().unwrap().dirty());
+    h.app.workspace.focused = Some(id);
+    h.key(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(
+        h.app.workspace.panes[0].document.as_ref().unwrap().text(),
+        body
+    );
+    assert!(!h.app.workspace.panes[0].document.as_ref().unwrap().dirty());
+
+    // Read-only raw/diff views use terminal columns too, including tabs and wide glyphs.
+    let pane = &mut h.app.workspace.panes[0];
+    pane.document = None;
+    pane.formatted = None;
+    pane.formatted_mode = false;
+    pane.lines = vec![format!("界\tMARK{}", "x".repeat(180))];
+    pane.scroll = 0;
+    pane.column = 6;
+    h.draw();
+    let pane = &h.app.workspace.panes[0];
+    let buffer = h.terminal.backend().buffer();
+    let first = (pane.area.x + 1, pane.area.y + 2);
+    assert_eq!(buffer[first].symbol(), "M");
+    assert_eq!(buffer[(first.0 + 3, first.1)].symbol(), "K");
+    assert_eq!(
+        pane.horizontal_max,
+        190usize.saturating_sub(usize::from(pane.area.width.saturating_sub(2)))
+    );
+
+    // A detached bottom border never grabs the main workspace's sibling divider.
+    let mut h = Harness::new(110, 30);
+    let child = h.open("child.txt", "child document");
+    let sibling = h.open("sibling.txt", "docked sibling");
+    h.app.workspace.set_native_windows(true);
+    h.app.workspace.request_detach(child).unwrap();
+    h.draw();
+    let sibling_area = h.app.workspace.panes[1].area;
+    let cuts = h.app.workspace.cuts.clone();
+    for formatted in [false, true] {
+        h.app.workspace.panes[0].formatted = Some("formatted child".into());
+        h.app.workspace.panes[0].formatted_mode = formatted;
+        h.terminal
+            .draw(|frame| draw_window(frame, &mut h.app, child))
+            .unwrap();
+        let area = h.app.workspace.panes[0].window_area;
+        for (kind, row) in [
+            (MouseEventKind::Down(MouseButton::Left), area.bottom() - 1),
+            (MouseEventKind::Drag(MouseButton::Left), area.bottom() - 5),
+            (MouseEventKind::Up(MouseButton::Left), area.bottom() - 5),
+        ] {
+            handle_window_event(
+                &mut h.app,
+                child,
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column: area.x + 2,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                }),
+            );
+            assert!(h.app.workspace.resizing.is_none());
+            assert!(h.app.workspace.panes[0].window_resizing.is_none());
+            assert_eq!(h.app.workspace.cuts, cuts);
+            assert_eq!(h.app.workspace.panes[1].area, sibling_area);
+            assert_eq!(h.app.workspace.focused, Some(sibling));
+        }
+    }
 }
 
 #[test]

@@ -249,6 +249,9 @@ fn restore(ws: &mut Workspace) {
         let recovered = document.is_some();
         let mut pane = Pane {
             id,
+            detached: false,
+            window_area: Rect::default(),
+            window_resizing: None,
             path: draft.path.clone(),
             lines: Vec::new(),
             formatted: None,
@@ -258,6 +261,9 @@ fn restore(ws: &mut Workspace) {
             loading: true,
             scroll: draft.scroll,
             column: draft.column,
+            horizontal_bar: Rect::default(),
+            horizontal_measure: None,
+            horizontal_max: 0,
             area: Rect::default(),
             stamp: stamp(&draft.path),
             changed: false,
@@ -525,6 +531,7 @@ pub(super) fn loaded(p: &mut Pane, snapshot: Snapshot) {
     p.initial_cursor = None;
     p.restoring = false;
     p.lines = snapshot.lines;
+    p.horizontal_measure = None;
     p.colors = if matches { snapshot.colors } else { Vec::new() };
     p.color_revision = if matches {
         p.document.as_ref().map_or(0, |d| d.revision())
@@ -545,7 +552,11 @@ pub(super) fn loaded(p: &mut Pane, snapshot: Snapshot) {
 fn follow(p: &mut Pane) {
     let Some(doc) = &p.document else { return };
     let (row, col) = doc.position();
-    let height = p.area.height.saturating_sub(3).max(1) as usize;
+    let height = p
+        .area
+        .height
+        .saturating_sub(3 + u16::from(!p.horizontal_bar.is_empty()))
+        .max(1) as usize;
     let width = p.area.width.saturating_sub(8).max(1) as usize;
     if row < p.scroll {
         p.scroll = row;
@@ -812,7 +823,10 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
             && p.prompt.is_none()
             && contains(p.area, event.column, event.row)
             && event.row >= p.area.y + 2
-            && event.row < p.area.bottom().saturating_sub(1)
+            && event.row
+                < p.area
+                    .bottom()
+                    .saturating_sub(1 + u16::from(!p.horizontal_bar.is_empty()))
     });
     if let Some(i) = hit {
         let p = &mut state.panes[i];

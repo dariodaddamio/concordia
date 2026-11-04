@@ -1,5 +1,5 @@
 use super::{
-    activity::{full_output, Activity},
+    activity::{full_output, grouped_cards, Activity},
     detail_lines_parts, detail_scroll_target_parts, dispatch_key_burst, handle_key, App, ChatLine,
     Editor, MsgRole, Picker, PickerKind,
 };
@@ -17,6 +17,38 @@ fn expansion_and_detail_use_independent_message_identity() {
     assert!(!a.expanded.contains(&4));
     a.open(4);
     assert_eq!(a.detail, Some(4));
+    let message = |id: &str, status: CardStatus, title: &str| ChatLine {
+        role: MsgRole::Card,
+        text: String::new(),
+        card: Some(StreamCard {
+            id: id.into(),
+            title: title.into(),
+            detail: Some("command: rg widgets\nexact output".into()),
+            status,
+        }),
+        meta: None,
+    };
+    let messages = vec![
+        message("read-one", CardStatus::Done, "shell_command"),
+        message("read-two", CardStatus::Done, "read_file"),
+        message("failed", CardStatus::Error, "shell_command"),
+        message("live", CardStatus::Running, "shell_command"),
+        message("approval", CardStatus::Done, "approval_request"),
+        message("edit", CardStatus::Done, "apply_patch"),
+    ];
+    let groups = grouped_cards(&messages, &a, false);
+    assert!(groups.text[0]
+        .as_deref()
+        .unwrap()
+        .contains("Inspect project · 2 operations"));
+    assert_eq!(groups.hidden, vec![false, true, false, false, false, false]);
+    a.toggle_card(0, false);
+    let groups = grouped_cards(&messages, &a, false);
+    assert!(!groups.hidden.iter().any(|hidden| *hidden));
+    assert!(groups.text[0].as_deref().unwrap().contains("exact output"));
+    assert_eq!(messages[1].card.as_ref().unwrap().id, "read-two");
+    a.toggle_card(0, true);
+    assert!(grouped_cards(&messages, &a, true).hidden[1]);
 }
 
 #[test]

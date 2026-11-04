@@ -55,6 +55,8 @@ mod clipboard;
 mod clipboard_capture;
 mod compat_ui;
 mod continuation;
+#[cfg(windows)]
+mod detached;
 mod diagrams;
 mod display_backend;
 mod editor;
@@ -137,6 +139,7 @@ struct Areas {
     input: Rect,
     bottom_button: Rect,
     run_cancel: Rect,
+    permissions: Rect,
     pinned_card: Option<(Rect, usize)>,
     modal_close: Option<(Rect, modal::Target)>,
     /// Columns available for prompt text (inner width minus the `> ` prefix).
@@ -322,6 +325,9 @@ pub struct App {
     header_email_revealed: bool,
     header_email_pressed: bool,
     header_home_pressed: bool,
+    permissions_pressed: bool,
+    permission_rows: Vec<(Rect, usize)>,
+    permission_row_pressed: Option<usize>,
     header_credits_pressed: bool,
     messages: Vec<ChatLine>,
     editor: Editor,
@@ -635,10 +641,10 @@ impl App {
             format!(" / {}", clean(&self.model, 40))
         };
         format!(
-            "Concordia | {}{model} | {} | {}",
-            clean(&account, 48),
-            clean(&status, 96),
-            clean(task, 72)
+            "{} | {} | {}{model} | Concordia",
+            clean(task, 64),
+            clean(&status, 64),
+            clean(&account, 40),
         )
     }
 
@@ -2496,6 +2502,7 @@ impl App {
     }
 
     fn dismiss_picker(&mut self) {
+        self.permission_row_pressed = None;
         if self
             .picker
             .as_ref()
@@ -3631,6 +3638,9 @@ impl App {
             header_email_revealed: false,
             header_email_pressed: false,
             header_home_pressed: false,
+            permissions_pressed: false,
+            permission_rows: Vec::new(),
+            permission_row_pressed: None,
             header_credits_pressed: false,
             messages: vec![ChatLine {
                 role: MsgRole::System,
@@ -3830,7 +3840,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let (backend, mut terminal_input) = if use_window {
         #[cfg(windows)]
         {
-            let (backend, events) = native_window::open()?;
+            let (backend, events) = native_window::open_detailed()?;
             let input = input_stream::InputStream::from_native(events)?;
             // This process owns a native window now. Detach only its inherited console,
             // so another application's console control events cannot terminate its runs.
@@ -3890,6 +3900,10 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     }));
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
+    app.workspace.set_native_windows(use_window);
+    #[cfg(windows)]
+    let mut detached_windows =
+        use_window.then(|| detached::DetachedWindows::new(terminal_input.wake_handle()));
 
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = Instant::now();
@@ -3900,6 +3914,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let mut previous_title = String::new();
     let input_result = (|| -> Result<()> {
         loop {
+            #[cfg(windows)]
+            if let Some(windows) = &mut detached_windows {
+                windows.drain(&mut app);
+                windows.sync(&mut app);
+            }
             // Drain pending paste chunks before repainting the growing prompt.
             if !key_burst.active() || !terminal_input.poll(Duration::ZERO)? {
                 if !use_window {
@@ -3929,6 +3948,10 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 };
                 drawn?;
                 ended?;
+                #[cfg(windows)]
+                if let Some(windows) = &mut detached_windows {
+                    windows.draw(&mut app);
+                }
                 if use_window {
                     if let Some((x, y)) = window_mouse {
                         terminal.backend_mut().pointer(pointer::shape(&app, x, y))?;
@@ -4009,6 +4032,12 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     .pointer(pointer::shape(&app, m.column, m.row))?;
                             } else {
                                 mouse_pointer.update(&app, m.column, m.row)?;
+                            }
+                            #[cfg(windows)]
+                            if let Some((x, y)) = terminal_input.take_native_mouse_up() {
+                                if workspace::finish_tab_drag(&mut app, x, y) {
+                                    continue;
+                                }
                             }
                             handle_mouse(&mut app, m)
                         }
@@ -5124,7 +5153,68 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     if app.project_search.active() {
         return;
     }
+    let permissions_hit = contains(app.areas.permissions, m.column, m.row);
+    let permissions_allowed = app
+        .picker
+        .as_ref()
+        .is_none_or(|picker| picker.kind == PickerKind::Trust)
+        && app.activity.detail.is_none()
+        && !workers::overlay_open(app);
+    if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.permissions_pressed = permissions_hit && permissions_allowed;
+        if app.permissions_pressed {
+            return;
+        }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.permissions_pressed)
+    {
+        if permissions_hit && permissions_allowed {
+            if app
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.kind == PickerKind::Trust)
+            {
+                app.dismiss_picker();
+            } else {
+                app.open_trust_picker();
+            }
+        }
+        return;
+    }
     if modal::mouse(app, &m) {
+        return;
+    }
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|picker| picker.kind == PickerKind::Trust)
+    {
+        let hit = app
+            .permission_rows
+            .iter()
+            .find(|(rect, _)| contains(*rect, m.column, m.row))
+            .map(|(_, index)| *index);
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                app.permission_row_pressed = hit;
+                if let Some(index) = hit {
+                    app.picker.as_mut().unwrap().state.select(Some(index));
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(index) = app
+                    .permission_row_pressed
+                    .take()
+                    .filter(|index| Some(*index) == hit)
+                {
+                    app.picker.as_mut().unwrap().state.select(Some(index));
+                    app.apply_picker_selection(None);
+                }
+            }
+            MouseEventKind::Drag(_) => app.permission_row_pressed = None,
+            _ => {}
+        }
         return;
     }
     let home_hit = app
@@ -5507,6 +5597,7 @@ fn write_osc_title(title: &str) -> io::Result<()> {
 }
 
 fn draw_ui(f: &mut Frame, app: &mut App) {
+    app.permission_rows.clear();
     app.areas.run_cancel = Rect::default();
     app.areas.pinned_card = None;
     app.areas.modal_close = None;
@@ -5937,7 +6028,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         tail_lines(&condense_thinking(&app.live_thinking), 3)
     };
-    let displayed: Vec<Option<String>> = app
+    let mut displayed: Vec<Option<String>> = app
         .messages
         .iter()
         .enumerate()
@@ -5958,6 +6049,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             _ => None,
         })
         .collect();
+    let groups = activity::grouped_cards(&app.messages, &app.activity, app.expanded_activity);
+    for (index, text) in groups.text.into_iter().enumerate() {
+        if text.is_some() {
+            displayed[index] = text;
+        }
+    }
     let tip_text = app.visible_tip().map(|t| format!("tip: {t}"));
     let cur_meta = app.reply_meta();
     // Coloured runs for `/usage` blocks (empty for every other message).
@@ -5977,6 +6074,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     let mut in_block = false;
     let count = app.messages.len();
     for (i, m) in app.messages.iter().enumerate() {
+        if groups.hidden[i] {
+            continue;
+        }
         let (mut gutter, gutter_style, style) = match m.role {
             MsgRole::User => (
                 "You › ",
@@ -6649,7 +6749,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .min(24) as u16)
         .saturating_add(2)
         .max(5);
-    let popup = Rect {
+    let mut popup = Rect {
         x: area.x + 2,
         y: if agents_panel {
             area.y
@@ -6663,6 +6763,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             height.min(area.height)
         },
     };
+    if picker.kind == PickerKind::Trust {
+        // The footer owns this control; keep its existing picker next to the clicked mode.
+        popup.width = popup.width.min(area.width.saturating_sub(2));
+        popup.x = area.right().saturating_sub(popup.width + 1);
+        popup.y = f.area().bottom().saturating_sub(1 + popup.height);
+    }
     f.render_widget(Clear, popup);
     let heading = if picker.kind == PickerKind::Files {
         let filter_width = if picker.filter.is_empty() {
@@ -6749,6 +6855,22 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         )
         .highlight_symbol("> ");
     f.render_stateful_widget(list, popup, &mut picker.state);
+    if picker.kind == PickerKind::Trust {
+        for (row, index) in (picker.state.offset()..picker.filtered().len())
+            .take(popup.height.saturating_sub(2) as usize)
+            .enumerate()
+        {
+            app.permission_rows.push((
+                Rect::new(
+                    popup.x + 1,
+                    popup.y + 1 + row as u16,
+                    popup.width.saturating_sub(2),
+                    1,
+                ),
+                index,
+            ));
+        }
+    }
     app.related_files.targets.clear();
     if picker.kind == PickerKind::Files {
         let offset = picker.state.offset();
@@ -6908,7 +7030,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
+fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     let w = area.width as usize;
     let mode = app.trust;
     let label = if mode == TrustMode::Full {
@@ -6920,8 +7042,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     // The mode column is kept only while it leaves room for the first hint.
     const MIN_LEFT: usize = 12;
     let right = [
-        (100, format!("permissions: {label} ")),
-        (0, format!("{label} ")),
+        (100, format!("permissions: {label} ▾ ")),
+        (0, format!("{label} ▾ ")),
     ]
     .into_iter()
     .find(|(min_width, r)| w >= *min_width && r.chars().count() + MIN_LEFT <= w)
@@ -6939,6 +7061,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             ..area
         },
     ];
+    app.areas.permissions = cols[1];
     let flash = app
         .flash
         .as_ref()
@@ -7123,7 +7246,7 @@ fn mode_label(m: TrustMode) -> &'static str {
 fn mode_blurb(m: TrustMode) -> &'static str {
     match m {
         TrustMode::Plan => "read-only, analyse and propose (advisory where a CLI has no plan flag)",
-        TrustMode::Ask => "approvals on, may hang headless",
+        TrustMode::Ask => "native approvals (provider support varies)",
         TrustMode::Workspace => "auto-edit inside the workspace",
         TrustMode::Full => "skips all permissions - careful",
     }
