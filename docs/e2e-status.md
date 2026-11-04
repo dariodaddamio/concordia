@@ -10,7 +10,7 @@ Existing panes retain their old executable until reopened.
 All **885 enabled unit tests** pass (six ignored), including foreground/worker multi-select
 and the Windows sharing-lock retry. The extended process scenario passes for native Claude
 permissions/questions/context, Claude/Cursor outputs and mixed PDF inputs. The extended
-attachment terminal journey passes in 34.38 seconds. Formatting, all-target Clippy, release
+attachment terminal journey on PDF source `91040ab` passes in 34.38 seconds. Formatting, all-target Clippy, release
 build/smoke and the 385-file OSS/privacy scan pass. Defender intelligence `1.463.110.0` reports
 no threats for these exact bytes, with protection enabled. Full remote checks are recorded
 separately by the integration PRs; these focused results do not assert an unobserved CI result.

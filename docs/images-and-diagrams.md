@@ -90,7 +90,7 @@ Attach through the existing picker/F9 path flow. The PDF chip opens the immutabl
 system viewer as an explicit file action; it does not rasterize or OCR the document. Drafts,
 queues and checkpoints retain descriptor metadata and the original envelope. Fake-process tests
 cover schema/order, Standard Claude and ClaudeStdio payloads, unsupported providers and tamper
-rejection. Process checks and the attachment terminal journey pass in installed build z;
+rejection. Process checks and the extended attachment terminal journey pass; build z is installed.
 live provider processing, physical clipboard/viewer behavior and real PDF quality remain unqualified. Codex/Cursor PDF rejection is
 an explicit provider limit, not an unfinished transport.
 

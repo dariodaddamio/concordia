@@ -118,7 +118,7 @@ and relevant evidence document. A new planning document is not an implementation
 | L4 Cursor outputs | Integrated: Luna `l4_file_outputs` + coordinator, z | Exact-session completed write/edit success path through the existing registry |
 | L5 integrations | Integrated: Luna `l5_integrations` + coordinator, z | New local manifest and reviewed reconnect/verify/selected disconnect; draft retained |
 | L6 native usage | Blocked-vendor; [Cursor evidence](../../quality/native-usage-coverage.md) | No supported per-event counters; quotas remain distinct and no fabricated totals were added |
-| Numeric credit balance when native response is null | Vendor/data blocked | A supported numeric source exists; availability is not an amount |
+| Numeric credit balance when native response is null | Vendor/data blocked | Requires a supported numeric response; availability is not an amount |
 | Live parity and memory-retention trials | Owner-budget gated | Exact provider/task/model scope and usage budget, then recorded results |
 | Signing and publication | Owner/release gated | Identity, distribution decisions and exact-artifact release evidence |
 
