@@ -25,10 +25,11 @@ Builds 04g–04i added default application-owned Windows input and original-pixe
 The earlier terminal cell-preview and pointer limitations do not describe that native window;
 explicit terminal mode retains its host-dependent limits.
 
-The 04j delivery batch is addressing reported regressions in native edit diffs, glyphs/window
-identity, Esc emphasis, duplicate Home history and mixed-attachment presentation. These requests
-are not marked closed here before the exact candidate is qualified. See [E2E status](e2e-status.md)
-for installed source/hash-bound evidence.
+The installed 04j delivery fixes the reported native edit extraction, glyph/window identity,
+Esc emphasis, subagent rows in Home and mixed-attachment presentation. Exact historical file-output
+cards recover on inspection when a unique successful patch batch can be verified; ambiguous old
+Edit rows are preserved. Local source and exact-binary checks qualify this scoped batch, while
+the broader seven workstreams remain open. See [E2E status](e2e-status.md) for installed evidence.
 
 Recent UI follow-ups add automatic composer thumbnails, a separate credit row and details view,
 private-by-default header email, concurrent foreground instances and draft-preserving Home

@@ -74,9 +74,11 @@ GIF links retain the existing system-viewer action; the inline decoder does not 
 One background decoder handles PNG/JPEG/WebP files up to 4 MiB, 4096 pixels per edge,
 16 megapixels and 64 MiB decoded output. Decoder allocation limits are 96 MiB; upstream defines
 that allocation limit as non-strict, while edge limits are strict. Up to eight content-hash entries
-cache original pixels plus 256×256 thumbnails; entries are evicted above 64 MiB, retaining one
-current entry even if its thumbnail takes it slightly over that bound. The native renderer caches
-one converted bitmap of at most 64 MiB. Composer previews verify the snapshot hash.
+cache decoded display pixels plus 256×256 terminal thumbnails; composer pixel buffers are capped
+at 512 per edge, while the enlarged viewer reloads original resolution. Entries are evicted above
+64 MiB, retaining one current entry. The native renderer caches the active converted bitmaps:
+at most four bounded composer previews or one full-resolution viewer bitmap of at most 64 MiB.
+Composer previews verify the snapshot hash.
 Each open hashes bounded file bytes; unchanged cached images skip decoding. Closing cancels
 publication of the result; the bounded decode can finish off-thread and another job cannot start
 until it exits. Histories are never predecoded. Selected historical image links use the same action.
