@@ -190,7 +190,7 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
         let pasted = format!("\"{}\"", document.display());
         s.paste(&pasted);
         s.until("pasted paths stay text until explicit attach", |s| {
-            s.draft() == pasted && s.screen().contains("pasted file(s) too")
+            s.draft() == pasted && s.screen().contains("pasted file(s)")
         });
         assert_eq!(
             std::fs::read_dir(dir.path().join("attachments"))
@@ -210,8 +210,8 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
             .enumerate()
             .find(|(_, row)| row.contains("Document 1: notes.md"))
             .unwrap();
-        let at = row.rfind("[X]").unwrap();
-        let x = row[..at].chars().count() + 1;
+        let at = row.rfind('X').unwrap();
+        let x = row[..at].chars().count();
         s.send(&format!(
             "\x1b[<0;{};{}M\x1b[<0;{};{}m",
             x + 1,
