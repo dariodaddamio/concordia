@@ -1,5 +1,31 @@
 # Concordia verification status
 
+## Installed default Windows input window, 2026-11-04g
+
+Application source `e96f02b` builds the installed executable, SHA-256
+`D1602EF2064C0ACAC6DE6898E9ABB5D2C23E49E485CD7356F1787C95950EE3D8`.
+Normal Windows launches now open Concordia's own window with the shared chat UI.
+Ctrl+V, Ctrl+Shift+V and local image-file drops use application-owned input without
+terminal configuration. Explicit `--terminal` retains terminal-pane operation.
+The earlier proposed host keybinding changes were declined and remain unapplied;
+this default window supersedes that proposal.
+
+Nine CLI/command-surface tests, all-target Clippy, optimized build, release smoke
+and exact-artifact Defender scan pass. The focused legacy terminal input journey
+passes on `f6c529c`; the subsequent source change preserves native key-repeat metadata.
+Owned-window keyboard checks on the final native source verify both paste shortcuts
+and repeat classification. Owned bitmap conversion verifies colors, orientation,
+alpha and bounds without accessing the global clipboard.
+
+The exact release executable passes a default-window run with two native file-drop
+messages, durable attachment snapshots, Unicode draft retention, resize and a rendered
+thumbnail containing 42,120 exact synthetic-color pixels. The screenshot and receipts
+are under ignored `target/native-window-proof/release-final`. Physical keyboard and
+user clipboard ingestion were not observed; isolated clipboard testing was denied
+before clipboard access. No global bindings, clipboard contents or provider accounts
+were changed, and no provider model turns ran for this change. Existing processes
+need reopening to load g.
+
 ## Installed completed-activity and delivered-paste correction, 2026-11-04f
 
 Application source `cca73d1` builds the installed executable, SHA-256
