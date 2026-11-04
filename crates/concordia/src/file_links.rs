@@ -216,7 +216,8 @@ pub fn explicit_reference(text: &str) -> Option<Candidate> {
 }
 
 /// Resolve one candidate for explicit navigation or bounded active-chat reference discovery.
-/// It does not search for a same-named file elsewhere or read the file contents.
+/// Explicit Markdown basenames may use the workspace's direct `docs` directory when absent
+/// at the root. No recursive search, subdirectory rewriting or file-content read occurs.
 pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String> {
     if !is_local_path(&candidate.target)
         || candidate.target.len() > MAX_PATH_BYTES
@@ -235,7 +236,20 @@ pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String
     } else {
         cwd.join(raw)
     };
-    let path = std::fs::canonicalize(&path).map_err(|e| format!("file is unavailable: {e}"))?;
+    let path = match std::fs::canonicalize(&path) {
+        Ok(path) => path,
+        Err(error) => {
+            let basename = error.kind() == std::io::ErrorKind::NotFound
+                && candidate.markdown
+                && !target.contains(['/', '\\', ':'])
+                && !matches!(target, "." | "..");
+            let fallback = basename
+                .then(|| cwd.join("docs").join(target))
+                .and_then(|path| std::fs::canonicalize(path).ok())
+                .filter(|path| std::fs::canonicalize(cwd).is_ok_and(|root| path.starts_with(root)));
+            fallback.ok_or_else(|| format!("file is unavailable: {error}"))?
+        }
+    };
     if !path.is_file() {
         return Err("reference does not name a file".into());
     }
@@ -252,10 +266,14 @@ pub fn exists_cached(candidate: &Candidate, cwd: &Path) -> bool {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
-    type Cache = HashMap<(PathBuf, String), (bool, Instant)>;
+    type Cache = HashMap<(PathBuf, String, bool), (bool, Instant)>;
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     const FRESH: Duration = Duration::from_secs(10);
-    let key = (cwd.to_path_buf(), candidate.target.clone());
+    let key = (
+        cwd.to_path_buf(),
+        candidate.target.clone(),
+        candidate.markdown,
+    );
     let cache = CACHE.get_or_init(Default::default);
     if let Some((exists, at)) = cache.lock().ok().and_then(|c| c.get(&key).copied()) {
         if at.elapsed() < FRESH {
@@ -663,5 +681,28 @@ mod tests {
         let mut missing = c.clone();
         missing.target = "hello.md".into();
         assert!(resolve(&missing, dir.path()).is_err());
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        let doc = dir.path().join("docs/e2e-status.md");
+        std::fs::write(&doc, "reported status").unwrap();
+        let mut explicit = c.clone();
+        explicit.target = "e2e-status.md".into();
+        assert_eq!(
+            resolve(&explicit, dir.path()).unwrap().path,
+            std::fs::canonicalize(&doc).unwrap()
+        );
+        let mut plain = explicit.clone();
+        plain.markdown = false;
+        assert!(!exists_cached(&plain, dir.path()));
+        assert!(exists_cached(&explicit, dir.path()));
+        assert!(resolve(&plain, dir.path()).is_err());
+        let mut nested = explicit.clone();
+        nested.target = "missing/e2e-status.md".into();
+        assert!(resolve(&nested, dir.path()).is_err());
+        let root_doc = dir.path().join("e2e-status.md");
+        std::fs::write(&root_doc, "root wins").unwrap();
+        assert_eq!(
+            resolve(&explicit, dir.path()).unwrap().path,
+            std::fs::canonicalize(root_doc).unwrap()
+        );
     }
 }

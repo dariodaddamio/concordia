@@ -1,5 +1,17 @@
 # Concordia verification status
 
+## Transcript and menu follow-up, 2026-11-04n
+
+This scoped UI batch renders reported thinking as Markdown, keeps readable tool summaries when
+expanded, separates edit/status/action/disclosure colors and gives permission choices their own
+description rows. Short windows retain compact choices. Explicit Markdown basename links use
+the workspace root first, then its direct `docs` directory; plain references and nested paths
+are not searched or rewritten. Existing regression cases cover wrapped link resolution, thinking
+formatting, edit colors and description-row clicks. All 477 enabled UI regressions and eight
+file-link regressions pass (five UI cases remain intentionally ignored). The wrapped-label test
+assertion was corrected to normalize display whitespace; Clippy requested a test-only initializer
+cleanup after the passing run. No additional provider turn, sandbox profile or publication is involved.
+
 ## Single authorized live handoff check, 2026-11-04
 
 The owner approved up to one synthetic model turn and deferred Windows/release work and GitHub

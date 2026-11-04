@@ -1,5 +1,80 @@
 use super::{ChatLine, MsgRole};
 use crate::provider::stream_cards::{format_card_line, tool_label, CardStatus, StreamCard};
+use ratatui::style::{Color, Modifier, Style};
+
+/// Style the presentation, never the provider payload. All offsets are Unicode characters.
+pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::transcript::LineRun> {
+    let heading = text.lines().next().unwrap_or("");
+    let mut runs = Vec::new();
+    let muted = Style::default().fg(Color::Indexed(244));
+    let mut mark = |start: usize, end: usize, style: Style| {
+        runs.push((
+            0,
+            heading[..start].chars().count(),
+            heading[..end].chars().count(),
+            style,
+        ));
+    };
+    mark(0, heading.len(), Style::default().fg(Color::Indexed(245)));
+    if let Some(card) = card {
+        let status = match card.status {
+            CardStatus::Running => Color::Cyan,
+            CardStatus::Done => Color::Green,
+            CardStatus::Error => Color::Red,
+        };
+        for symbol in ['◉', '✓', '✗'] {
+            if let Some(start) = heading.find(symbol) {
+                mark(
+                    start,
+                    start + symbol.len_utf8(),
+                    Style::default().fg(status),
+                );
+                break;
+            }
+        }
+        let label = tool_label(&card.title);
+        if let Some(start) = heading.find(&label) {
+            mark(
+                start,
+                start + label.len(),
+                Style::default()
+                    .fg(Color::Indexed(252))
+                    .add_modifier(Modifier::BOLD),
+            );
+        } else {
+            // A collapsed operation group has a human title of its own.
+            let end = heading.find(" · ").unwrap_or(heading.len());
+            mark(
+                0,
+                end,
+                Style::default()
+                    .fg(Color::Indexed(252))
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        // Only edit summaries own +/- counts; command flags and output are never coloured as edits.
+        if matches!(label.as_str(), "Edit file" | "Write file") {
+            for token in heading.split_whitespace() {
+                let color = match token.as_bytes().first() {
+                    Some(b'+') => Color::Green,
+                    Some(b'-') => Color::Red,
+                    _ => continue,
+                };
+                if token.len() > 1 && token[1..].bytes().all(|b| b.is_ascii_digit()) {
+                    if let Some(start) = heading.rfind(token) {
+                        mark(start, start + token.len(), Style::default().fg(color));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(start) = heading.rfind(" · ") {
+        if matches!(&heading[start + " · ".len()..], "Expand" | "Collapse") {
+            mark(start, heading.len(), muted);
+        }
+    }
+    runs
+}
 
 /// The title row is an accordion target; links retain their file/web actions.
 pub(super) fn card_header_at(app: &super::App, x: u16, y: u16) -> Option<usize> {

@@ -1555,9 +1555,40 @@ fn unified_diff_cards_show_counts_and_review_colours() {
     });
     h.draw();
     assert!(h.screen().contains("+2 -1"));
+    let heading = h
+        .app
+        .view
+        .rows
+        .iter()
+        .find(|r| r.text.iter().collect::<String>().contains("+2 -1"))
+        .unwrap();
+    let heading_text: String = heading.text.iter().collect();
+    for (token, color) in [
+        ("+2", Color::Green),
+        ("-1", Color::Red),
+        ("Edit file", Color::Indexed(252)),
+        ("Expand", Color::Indexed(244)),
+    ] {
+        let start = heading_text[..heading_text.find(token).unwrap()]
+            .chars()
+            .count();
+        assert!(
+            heading
+                .runs
+                .iter()
+                .any(|(a, b, style)| *a <= start && start < *b && style.fg == Some(color)),
+            "missing {token} style: {:?}",
+            heading.runs
+        );
+    }
 
     h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     h.draw();
+    assert!(
+        h.screen().contains("Edit file"),
+        "expanded headings keep the readable action"
+    );
+    assert!(!h.screen().contains("edit · Collapse"));
     let row_texts: Vec<String> = h
         .app
         .view
@@ -2367,6 +2398,23 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
         h.app.activity.detail_text.is_some(),
         "keyboard review remains available after completion"
     );
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    h.app.messages.clear();
+    h.app.messages.push(ChatLine {
+        role: MsgRole::Thinking,
+        text: "## Checking **formatting**\nSee [E2E status](docs/e2e-status.md).".into(),
+        card: None,
+        meta: None,
+    });
+    h.app.expanded_activity = true;
+    h.draw();
+    assert!(h.screen().contains("Checking formatting"), "{}", h.screen());
+    assert!(!h.screen().contains("**formatting**"));
+    assert!(!h.screen().contains("](docs/"));
+    assert!(h.app.view.rows.iter().any(|row| row
+        .links
+        .iter()
+        .any(|(_, _, c)| c.target == "docs/e2e-status.md")));
 }
 
 #[test]
@@ -2510,6 +2558,21 @@ fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
     assert!(h.app.picker.is_none());
     assert_eq!(h.app.editor.text(), "keep this draft");
     assert!(h.screen().contains("next turn"));
+    let mut roomy = Harness::new(100, 26);
+    roomy.type_str("visible draft");
+    let anchor = roomy.app.areas.permissions;
+    roomy.click(anchor.x + 1, anchor.y);
+    assert!(roomy.screen().contains("Read and plan; no file edits."));
+    let (choice, index) = roomy.app.permission_rows[0];
+    assert_eq!(index, 0);
+    assert!(choice.height >= 2, "descriptions have their own row");
+    roomy.click(choice.x + 4, choice.y + 1);
+    assert_eq!(
+        roomy.app.trust,
+        TrustMode::Plan,
+        "description clicks select the same choice"
+    );
+    assert_eq!(roomy.app.editor.text(), "visible draft");
 }
 
 #[test]

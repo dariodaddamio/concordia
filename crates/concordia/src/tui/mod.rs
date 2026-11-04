@@ -6073,7 +6073,13 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             MsgRole::Card if app.activity.is_expanded(idx, app.expanded_activity) => m
                 .card
                 .as_ref()
-                .map(|c| format!("{}\n{}", c.title, c.detail.as_deref().unwrap_or("")))
+                .map(|c| {
+                    format!(
+                        "{}\n{}",
+                        format_card_line(c),
+                        c.detail.as_deref().unwrap_or("")
+                    )
+                })
                 .map(Some)
                 .unwrap_or(None),
             MsgRole::Thinking if !app.expanded_activity => Some(format!(
@@ -6112,13 +6118,16 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let tip_text = app.visible_tip().map(|t| format!("tip: {t}"));
     let cur_meta = app.reply_meta();
-    // Coloured runs for `/usage` blocks (empty for every other message).
+    // Preserve semantic colour through wrapping, selection and saved-history rendering.
     let msg_runs: Vec<Vec<transcript::LineRun>> = app
         .messages
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(i, m)| {
             if m.role == MsgRole::System {
                 usage_style::runs(&m.text)
+            } else if m.role == MsgRole::Card {
+                activity::card_runs(displayed[i].as_deref().unwrap_or(&m.text), m.card.as_ref())
             } else {
                 Vec::new()
             }
@@ -6204,12 +6213,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             ),
             MsgRole::Card => (
                 "  ",
-                Style::default(),
-                Style::default().fg(match m.card.as_ref().map(|c| c.status) {
-                    Some(CardStatus::Running) => Color::Cyan,
-                    Some(CardStatus::Error) => Color::Red,
-                    Some(CardStatus::Done) | None => Color::Indexed(108),
-                }),
+                Style::default().fg(Color::Indexed(244)),
+                Style::default().fg(Color::Indexed(250)),
             ),
         };
         if m.role == MsgRole::Card {
@@ -6241,7 +6246,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             gutter_style,
             style,
             text: displayed[i].as_deref().unwrap_or(&m.text),
-            markdown: m.role == MsgRole::Assistant
+            markdown: matches!(m.role, MsgRole::Assistant | MsgRole::Thinking)
                 || m.role == MsgRole::User && m.text.contains("[Image: "),
             linkify: m.role != MsgRole::Meta,
             runs: &msg_runs[i],
@@ -6275,7 +6280,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .fg(Color::Indexed(244))
                 .add_modifier(Modifier::ITALIC),
             text: &live_thought,
-            markdown: false,
+            markdown: true,
             linkify: true,
             runs: &[],
         });
@@ -6788,23 +6793,90 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         area.width.saturating_sub(4).max(20)
     };
     let row_width = width.saturating_sub(6).max(1) as usize;
-    let height = (picker
-        .filtered()
-        .iter()
-        .map(|r| {
-            if r.label.contains('\n') {
-                r.label
-                    .lines()
-                    .map(|line| {
-                        text::wrap_ranges(&line.chars().collect::<Vec<_>>(), row_width).len()
+    let permission_lines = (picker.kind == PickerKind::Trust).then(|| {
+        let available = app
+            .areas
+            .permissions
+            .y
+            .saturating_sub(area.y)
+            .saturating_sub(2);
+        let rows = picker.filtered();
+        let expanded_height = rows
+            .iter()
+            .map(|row| {
+                1 + text::wrap_ranges(&row.detail.chars().collect::<Vec<_>>(), row_width).len()
+            })
+            .sum::<usize>();
+        let compact = row_width < 24 || expanded_height > usize::from(available);
+        rows.into_iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let (label, current) = row
+                    .label
+                    .split_once(" \u{b7} current")
+                    .map_or((row.label.as_str(), false), |(label, _)| (label, true));
+                let selected = picker.state.selected() == Some(index);
+                let label_style = if selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let mut head = vec![Span::styled(label.to_owned(), label_style)];
+                if current {
+                    head.push(Span::styled(
+                        " \u{b7} current",
+                        Style::default().fg(Color::Green),
+                    ));
+                }
+                let mut lines = vec![Line::from(head)];
+                if !compact {
+                    let detail_style = Style::default().fg(if row.id == "trust:full" {
+                        Color::Yellow
+                    } else {
+                        Color::Gray
+                    });
+                    let chars = row.detail.chars().collect::<Vec<_>>();
+                    for (start, end) in text::wrap_ranges(&chars, row_width)
+                        .into_iter()
+                        .take(usize::from(available.saturating_sub(1)))
+                    {
+                        lines.push(Line::styled(
+                            chars[start..end].iter().collect::<String>(),
+                            detail_style,
+                        ));
+                    }
+                }
+                lines
+            })
+            .collect::<Vec<_>>()
+    });
+    let height = (permission_lines
+        .as_ref()
+        .map_or_else(
+            || {
+                picker
+                    .filtered()
+                    .iter()
+                    .map(|r| {
+                        if r.label.contains('\n') {
+                            r.label
+                                .lines()
+                                .map(|line| {
+                                    text::wrap_ranges(&line.chars().collect::<Vec<_>>(), row_width)
+                                        .len()
+                                })
+                                .sum::<usize>()
+                                + usize::from(!r.detail.is_empty())
+                        } else {
+                            1
+                        }
                     })
                     .sum::<usize>()
-                    + usize::from(!r.detail.is_empty())
-            } else {
-                1
-            }
-        })
-        .sum::<usize>()
+            },
+            |rows| rows.iter().map(Vec::len).sum::<usize>(),
+        )
         .min(24) as u16)
         .saturating_add(2)
         .max(5);
@@ -6834,6 +6906,43 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         app.areas.permissions_popup = popup;
     }
     f.render_widget(Clear, popup);
+    if let Some(rows) = permission_lines {
+        let heights = rows
+            .iter()
+            .map(|lines| lines.len() as u16)
+            .collect::<Vec<_>>();
+        let list = List::new(rows.into_iter().map(ListItem::new).collect::<Vec<_>>())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .padding(ratatui::widgets::Padding::horizontal(1))
+                    .title(picker.title.clone()),
+            )
+            .highlight_style(Style::default().bg(Color::Indexed(235)))
+            .highlight_symbol("> ");
+        f.render_stateful_widget(list, popup, &mut picker.state);
+        let mut top = popup.y.saturating_add(1);
+        let mut remaining = popup.height.saturating_sub(2);
+        for (index, height) in heights.into_iter().enumerate().skip(picker.state.offset()) {
+            if height > remaining {
+                break;
+            }
+            app.permission_rows.push((
+                Rect::new(
+                    popup.x.saturating_add(1),
+                    top,
+                    popup.width.saturating_sub(2),
+                    height,
+                ),
+                index,
+            ));
+            top = top.saturating_add(height);
+            remaining = remaining.saturating_sub(height);
+        }
+        app.related_files.targets.clear();
+        modal::draw_close(f, popup, app, modal::Target::Picker);
+        return;
+    }
     let heading = if picker.kind == PickerKind::Files {
         let filter_width = if picker.filter.is_empty() {
             0
@@ -6919,22 +7028,6 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         )
         .highlight_symbol("> ");
     f.render_stateful_widget(list, popup, &mut picker.state);
-    if picker.kind == PickerKind::Trust {
-        for (row, index) in (picker.state.offset()..picker.filtered().len())
-            .take(popup.height.saturating_sub(2) as usize)
-            .enumerate()
-        {
-            app.permission_rows.push((
-                Rect::new(
-                    popup.x + 1,
-                    popup.y + 1 + row as u16,
-                    popup.width.saturating_sub(2),
-                    1,
-                ),
-                index,
-            ));
-        }
-    }
     app.related_files.targets.clear();
     if picker.kind == PickerKind::Files {
         let offset = picker.state.offset();
@@ -7430,21 +7523,9 @@ fn fit_hints(width: usize) -> String {
     String::new()
 }
 
-/// Reasoning text as a few readable lines: blank lines and runs of spaces collapsed, long ones cut.
+/// Render markup before shortening so a preview never exposes half a Markdown delimiter.
 fn condense_thinking(raw: &str) -> String {
-    let lines: Vec<String> = raw
-        .lines()
-        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|l| !l.is_empty())
-        .collect();
-    let joined = lines.join("\n");
-    let chars: Vec<char> = joined.chars().collect();
-    if chars.len() <= 600 {
-        joined
-    } else {
-        let tail: String = chars[chars.len() - 600..].iter().collect();
-        format!("...{tail}")
-    }
+    markdown::thinking_preview(raw, 600)
 }
 
 fn tail_lines(text: &str, n: usize) -> String {

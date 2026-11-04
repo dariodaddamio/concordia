@@ -877,23 +877,23 @@ pub fn trust_picker_rows(current: crate::store::TrustMode) -> Vec<PickerRow> {
     vec![
         PickerRow {
             id: "trust:plan".into(),
-            label: format!("plan{}", cur(TrustMode::Plan)),
-            detail: "read-only: analyse and propose, no edits".into(),
+            label: format!("Plan{}", cur(TrustMode::Plan)),
+            detail: "Read and plan; no file edits.".into(),
         },
         PickerRow {
             id: "trust:ask".into(),
-            label: format!("ask{}", cur(TrustMode::Ask)),
-            detail: "fail closed — may hang on trust dialogs".into(),
+            label: format!("Ask{}", cur(TrustMode::Ask)),
+            detail: "Provider approval prompts may pause work.".into(),
         },
         PickerRow {
             id: "trust:workspace".into(),
-            label: format!("workspace{}", cur(TrustMode::Workspace)),
-            detail: "cwd write + skip git-trust (recommended)".into(),
+            label: format!("Workspace{}", cur(TrustMode::Workspace)),
+            detail: "Allow workspace edits; provider rules apply.".into(),
         },
         PickerRow {
             id: "trust:full".into(),
-            label: format!("full{}", cur(TrustMode::Full)),
-            detail: "skip all permissions — dangerous".into(),
+            label: format!("Full access{}", cur(TrustMode::Full)),
+            detail: "Use with care: bypass provider permissions.".into(),
         },
     ]
 }

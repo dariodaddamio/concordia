@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-04m
+# Feature completion audit: 2026-11-04n
 
 The full roadmap is **not complete**. The current board has seven grouped open/deferred workstreams;
 they mix missing capabilities, qualification and release work, so they are not a feature count
@@ -34,7 +34,7 @@ The [REA review](rea-review.md) records actual static binary inspection and a cu
 remaining supported-interface limits. None of these UI/delivery changes close missing native
 measurements, OS confinement or live model-effectiveness evidence.
 
-Builds 04g–04i added default application-owned Windows input and original-pixel image previews.
+Builds 04g through 04i added default application-owned Windows input and original-pixel image previews.
 The earlier terminal cell-preview and pointer limitations do not describe that native window;
 explicit terminal mode retains its host-dependent limits.
 

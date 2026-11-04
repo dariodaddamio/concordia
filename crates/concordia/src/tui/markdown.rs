@@ -173,6 +173,40 @@ fn render_prose(line: &str) -> MdLine {
     line
 }
 
+/// Compact reported reasoning without cutting through Markdown markers or link destinations.
+/// The original text remains available in the expanded transcript and activity review.
+pub fn thinking_preview(raw: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let (clean, _) = super::text::terminal_text(raw);
+    let text = clean
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .map(|line| {
+            render_prose(line)
+                .text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text;
+    }
+    if max_chars <= 3 {
+        return "...".chars().take(max_chars).collect();
+    }
+    let tail = text
+        .chars()
+        .skip(count - (max_chars - 3))
+        .collect::<String>();
+    format!("...{tail}")
+}
+
 fn render_prose_inner(line: &str) -> MdLine {
     let trimmed = line.trim_start();
     let lead = line.len() - trimmed.len();
@@ -513,6 +547,20 @@ mod tests {
             literal_target[0].links[0].2,
             "https://example.test/?q=*value*"
         );
+        let relative = render("Read [E2E status](e2e-status.md).");
+        assert_eq!(relative[0].text, "Read E2E status.");
+        assert_eq!(relative[0].links, vec![(5, 15, "e2e-status.md".into())]);
+        assert_eq!(
+            thinking_preview(
+                "**Inspecting source**\n\nRead [E2E status](e2e-status.md) and `main.rs`.",
+                600
+            ),
+            "Inspecting source\nRead E2E status and main.rs."
+        );
+        let preview = thinking_preview(&format!("{}**Reported summary**", "雪".repeat(100)), 24);
+        assert!(preview.starts_with("..."));
+        assert!(preview.ends_with("Reported summary"));
+        assert!(!preview.contains('*') && preview.chars().count() <= 24);
     }
 
     #[test]
