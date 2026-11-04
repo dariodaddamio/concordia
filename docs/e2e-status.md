@@ -1,5 +1,34 @@
 # Concordia verification status
 
+## Installed native-window polish and npm image launch correction, 2026-11-04h
+
+Source `399c4a5` builds the installed executable, SHA-256
+`68EE1A739134414B3ED39D2E1EBCC5996A08FD24C2D0DB5946806294623ABF03`.
+The install pointer matches the qualified bytes and retains the permanent checkout update source.
+Composer previews now occupy four rows with twelve columns of pixels and concise metadata.
+Native keys bypass terminal paste inference. The window reuses its drawing surface, redraws
+changed rows, releases the shared screen lock before painting and combines mouse motion within a cell.
+
+Updated stock Codex/Claude npm wrappers run their verified declared entrypoints through native
+Node without shell parsing. Actual child startup marks invocation, so rejected input or launch
+preparation releases the current reservation. Old uncertain reservations remain intact because
+their records lack trustworthy startup evidence; inspect the old process before `/scope stopped`.
+
+477 TUI unit tests, the stock npm resolver unit and the extended fake-process provider startup,
+cancellation and image-input scenario pass. The process check includes Unicode/shell-character
+paths and verifies a missing snapshot fails before startup. All-target Clippy, optimized build,
+release smoke and exact-artifact Defender scan pass. Initial checks exposed an outdated attempt
+fixture and an unsettled cancelled decoder in the viewer fixture; the corrected affected checks pass.
+
+At 115×35 cells, twenty forced unchanged paints take 166.7 ms versus 6.342 seconds before;
+twenty one-row updates take 312.7 ms versus 5.812 seconds. These are synthetic drawing costs,
+not whole-app latency measurements. Both verify clearing a wide character's old background.
+Owned-window paste-key/repeat checks pass. The exact release executable passes default-window
+Unicode draft, resize, two native image-file drops and compact thumbnail rendering (9,828 exact
+synthetic-color pixels); its screenshot was inspected. Receipts are under ignored
+`target/native-window-proof/polish-*`. No physical clipboard ingestion or provider model turns
+were exercised. Reopen existing processes to load h.
+
 ## Installed default Windows input window, 2026-11-04g
 
 Application source `e96f02b` builds the installed executable, SHA-256

@@ -1,6 +1,6 @@
 # Images and diagrams in Concordia
 
-Build: `2026-11-03u`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
+Build: `2026-11-04h`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
 
 ## Attach an image
 
@@ -9,7 +9,8 @@ paste an image, drop local image files into the window, F9 to paste a clipboard 
 choose a file, `/attach` to choose a file, or
 `/attach "path/to/screenshot.png"`. Relative paths resolve from Concordia's cwd; quoted absolute
 paths work. `/attach clear` removes draft attachments. A visible image chip shows the name and
-size. The first image previews automatically above the editable composer; click its thumbnail or
+size. The first image shows a compact four-row preview above the editable composer, with
+pixels limited to twelve columns and dimensions beside them; click its thumbnail or
 any image chip to enlarge it, or X to remove it. Paste and file-picker helpers run
 away from the input loop and request no console window.
 Typing while an import finishes keeps both the evolving message and the attachment. Replacing
@@ -29,6 +30,13 @@ PNG, JPEG and WebP are accepted, up to four distinct images of 4 MiB each per me
 bitmaps are saved as PNG. Image-only submission uses a short request to describe the image.
 Sending and queueing wait for capture to finish. Selecting a file explicitly attaches pixels;
 merely opening an image or mentioning a path does not silently attach it.
+
+On Windows, verified stock npm launchers for Codex and Claude run their declared JavaScript
+entrypoints through native Node when the direct native bridge cannot be verified. This keeps
+image paths and prompts out of shell parsing and preserves updated package behavior. Custom
+batch launchers remain unsupported for native image inputs. A rejected input before the provider
+starts releases its workspace reservation; older uncertain reservations still require inspection
+and `/scope stopped` acknowledgment because their records lack reliable startup evidence.
 
 A selected image is copied into app-owned, content-addressed storage. Changing the original file
 after queueing does not change the attached snapshot. Byte hashes are checked before dispatch.
