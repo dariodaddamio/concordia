@@ -562,11 +562,79 @@ pub fn control_checkpoint(
 
 /// Successful native patch inputs from fresh turns only. Exec's public progress stream omits
 /// patch bodies, so edit rendering uses this same account/home/session-verified source reader.
-fn literal_exec_patch(input: &str) -> Option<String> {
+fn literal_tool_argument(input: &str) -> Option<(Value, usize)> {
+    // Normalize only unquoted identifier keys in a static JSON-like literal. Never
+    // evaluate JavaScript, expressions, templates, comments, or computed properties.
+    let mut at = 0;
+    let mut json = String::new();
+    let mut depth = Vec::new();
+    while at < input.len() {
+        let byte = input.as_bytes()[at];
+        if byte == b')' && depth.is_empty() {
+            break;
+        }
+        match byte {
+            b'"' => {
+                let mut values =
+                    serde_json::Deserializer::from_str(&input[at..]).into_iter::<String>();
+                values.next()?.ok()?;
+                let end = at + values.byte_offset();
+                json.push_str(&input[at..end]);
+                at = end;
+            }
+            b'{' | b'[' => {
+                if depth.len() >= 64 {
+                    return None;
+                }
+                depth.push(byte);
+                json.push(char::from(byte));
+                at += 1;
+            }
+            b'}' | b']' => {
+                let expected = if byte == b'}' { b'{' } else { b'[' };
+                if depth.pop()? != expected {
+                    return None;
+                }
+                json.push(char::from(byte));
+                at += 1;
+            }
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                let start = at;
+                while input
+                    .as_bytes()
+                    .get(at)
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                {
+                    at += 1;
+                }
+                let word = &input[start..at];
+                if input[at..].trim_start().starts_with(':') {
+                    json.push_str(&serde_json::to_string(word).ok()?);
+                } else if matches!(word, "true" | "false" | "null") {
+                    json.push_str(word);
+                } else {
+                    return None;
+                }
+            }
+            b'0'..=b'9' | b'-' | b'+' | b'.' | b':' | b',' | b' ' | b'\n' | b'\r' | b'\t' => {
+                json.push(char::from(byte));
+                at += 1;
+            }
+            _ => return None,
+        }
+    }
+    if !depth.is_empty() {
+        return None;
+    }
+    Some((serde_json::from_str(&json).ok()?, at))
+}
+
+fn literal_exec_patch(input: &str) -> Option<(String, usize)> {
     // The host emits these literal statement batches. This is a finite grammar, not JavaScript
     // evaluation: comments, dynamic arguments, control flow and other statements are rejected.
     let mut rest = input.trim();
     let mut patch = None;
+    let mut result_index = 0;
     while !rest.is_empty() {
         let statement = rest.strip_prefix("text(await tools.")?;
         let (argument, is_patch) = if let Some(argument) = statement.strip_prefix("apply_patch(") {
@@ -574,10 +642,9 @@ fn literal_exec_patch(input: &str) -> Option<String> {
         } else {
             (statement.strip_prefix("exec_command(")?, false)
         };
-        let mut values = serde_json::Deserializer::from_str(argument).into_iter::<Value>();
-        let value = values.next()?.ok()?;
+        let (value, end) = literal_tool_argument(argument)?;
         rest = argument
-            .get(values.byte_offset()..)?
+            .get(end..)?
             .trim_start()
             .strip_prefix("));")?
             .trim_start();
@@ -585,18 +652,82 @@ fn literal_exec_patch(input: &str) -> Option<String> {
             if patch.is_some() {
                 return None;
             }
-            patch = Some(value.as_str()?.to_owned());
+            patch = Some((value.as_str()?.to_owned(), result_index));
         } else if !value.is_object() {
             return None;
         }
+        result_index += 1;
     }
     patch
+}
+
+fn successful_patch_output(output: &Value, result_index: Option<usize>) -> bool {
+    let output = if let Some(blocks) = output.as_array() {
+        // Each recognized text(await tool(...)) statement publishes one result.
+        // Match the patch's own result, not a later successful shell command.
+        let Some(index) = result_index else {
+            return false;
+        };
+        if !blocks
+            .first()
+            .and_then(|block| block["text"].as_str())
+            .is_some_and(|text| text.starts_with("Script completed\n"))
+        {
+            return false;
+        }
+        let Some(text) = blocks
+            .get(index + 1)
+            .and_then(|block| block["text"].as_str())
+        else {
+            return false;
+        };
+        Value::String(text.into())
+    } else {
+        output.clone()
+    };
+    let parsed = output
+        .as_str()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let structured = parsed.as_ref().unwrap_or(&output);
+    if structured["is_error"] == true
+        || structured["isError"] == true
+        || structured["status"] == "failed"
+        || structured
+            .get("error")
+            .is_some_and(|error| !error.is_null())
+        || structured
+            .pointer("/metadata/exit_code")
+            .or_else(|| structured.get("exit_code"))
+            .and_then(Value::as_i64)
+            .is_some_and(|code| code != 0)
+    {
+        return false;
+    }
+    let text = structured["output"]
+        .as_str()
+        .or_else(|| output.as_str())
+        .unwrap_or("");
+    text.starts_with("Success. Updated the following files:")
+        || result_index.is_some()
+            && structured
+                .as_object()
+                .is_some_and(|object| object.is_empty())
 }
 
 pub(crate) fn codex_patch_inputs(
     root: &Path,
     binding: &Binding,
     not_before: i64,
+) -> Result<Vec<String>, String> {
+    codex_patch_inputs_between(root, binding, not_before, i64::MAX, None)
+}
+
+fn codex_patch_inputs_between(
+    root: &Path,
+    binding: &Binding,
+    not_before: i64,
+    not_after: i64,
+    turn: Option<&str>,
 ) -> Result<Vec<String>, String> {
     if binding.provider != ProviderKind::Codex {
         return Ok(Vec::new());
@@ -612,7 +743,7 @@ pub(crate) fn codex_patch_inputs(
     } else {
         0
     };
-    let mut pending = std::collections::HashMap::<String, (String, bool)>::new();
+    let mut pending = std::collections::HashMap::<String, (String, Option<usize>)>::new();
     let mut patches = Vec::new();
     let mut fresh_turn = false;
     for raw in bytes[begin..].split(|b| *b == b'\n') {
@@ -629,7 +760,12 @@ pub(crate) fn codex_patch_inputs(
             fresh_turn = event["timestamp"]
                 .as_str()
                 .and_then(rank::timestamp_ms)
-                .is_some_and(|timestamp| timestamp >= not_before);
+                .is_some_and(|timestamp| timestamp >= not_before && timestamp <= not_after)
+                && turn.is_none_or(|turn| event["payload"]["turn_id"] == turn);
+            pending.clear();
+        }
+        if event["type"] == "event_msg" && event["payload"]["type"] == "task_complete" {
+            fresh_turn = false;
             pending.clear();
         }
         if !fresh_turn || event["type"] != "response_item" {
@@ -640,45 +776,38 @@ pub(crate) fn codex_patch_inputs(
             continue;
         };
         if payload["type"] == "custom_tool_call"
-            && matches!(payload["name"].as_str(), Some("apply_patch" | "exec"))
+            && matches!(
+                payload["name"]
+                    .as_str()
+                    .and_then(|name| name.rsplit('.').next()),
+                Some("apply_patch" | "exec")
+            )
         {
             if let Some(input) = payload["input"]
                 .as_str()
                 .filter(|input| input.len() <= LINE_BYTES)
             {
                 if pending.len() < 64 {
-                    let direct = payload["name"] == "apply_patch";
+                    let direct = payload["name"]
+                        .as_str()
+                        .is_some_and(|name| name.rsplit('.').next() == Some("apply_patch"));
                     let patch = if direct {
-                        Some(input.into())
+                        Some((input.into(), None))
                     } else {
-                        literal_exec_patch(input)
+                        literal_exec_patch(input).map(|(patch, index)| (patch, Some(index)))
                     };
                     if let Some(patch) = patch {
-                        pending.insert(id.into(), (patch, direct));
+                        pending.insert(id.into(), patch);
                     }
                 }
             }
         } else if payload["type"] == "custom_tool_call_output" {
-            let Some((input, direct)) = pending.remove(id) else {
+            let Some((input, result_index)) = pending.remove(id) else {
                 continue;
             };
-            let output = &payload["output"];
-            let parsed = output
-                .as_str()
-                .and_then(|text| serde_json::from_str::<Value>(text).ok());
-            let structured = parsed.as_ref().unwrap_or(output);
-            let text = structured["output"]
-                .as_str()
-                .or_else(|| output.as_str())
-                .unwrap_or("");
-            let failed = payload["is_error"] == true
-                || payload["status"] == "failed"
-                || structured
-                    .pointer("/metadata/exit_code")
-                    .and_then(Value::as_i64)
-                    .is_some_and(|code| code != 0);
+            let failed = payload["is_error"] == true || payload["status"] == "failed";
             if !failed
-                && (!direct || text.starts_with("Success. Updated the following files:"))
+                && successful_patch_output(&payload["output"], result_index)
                 && patches.len() < 64
             {
                 patches.push(input);
@@ -687,12 +816,120 @@ pub(crate) fn codex_patch_inputs(
     }
     let (mut check, current) = open_bound(root, binding)?;
     if current.file_identity != index.file_identity
-        || current.source_len != index.source_len
+        || current.source_len < index.source_len
         || read_at(&mut check, start, bytes.len())? != bytes
     {
         return Err("native patch source changed during read".into());
     }
     Ok(patches)
+}
+
+/// Explicit historical inspection binds a completed immutable attempt to one unique
+/// completed native turn near settlement, then reads only that turn's patch inputs.
+pub(crate) fn historical_codex_patches(
+    root: &Path,
+    record: &crate::artifacts::Record,
+) -> Result<Vec<String>, String> {
+    let owner = &record.owner;
+    if owner.provider != ProviderKind::Codex {
+        return Ok(Vec::new());
+    }
+    let home = owner
+        .home
+        .as_deref()
+        .ok_or("reported edit has no native home binding")?;
+    let mut attempts = Vec::new();
+    for origin in [
+        crate::token_log::Origin::Main,
+        crate::token_log::Origin::Worker,
+    ] {
+        if let Some(entry) =
+            crate::token_log::load_attempt(root, origin, &owner.run_id, &owner.attempt_id)
+                .map_err(|error| error.to_string())?
+        {
+            attempts.push(entry);
+        }
+    }
+    if attempts.len() != 1 {
+        return Err("historical edit has no unique immutable attempt receipt".into());
+    }
+    let entry = &attempts[0];
+    let attribution = entry
+        .attribution
+        .as_ref()
+        .ok_or("historical edit has no attribution")?;
+    if !attribution.complete
+        || attribution.outcome != "succeeded"
+        || attribution.home_id != crate::token_log::Attribution::bound_home(Some(home))
+        || entry.provider != "codex"
+        || entry.account != owner.account
+        || entry.chat.as_deref() != Some(record.native_session.as_str())
+        || Path::new(&entry.project).canonicalize().ok() != owner.execution_cwd.canonicalize().ok()
+        || crate::workspaces::directory_id(&owner.execution_cwd)? != record.execution_directory_id
+    {
+        return Err("historical edit attempt/account/session/workspace binding changed".into());
+    }
+    let binding = Binding::new(
+        ProviderKind::Codex,
+        &owner.account,
+        home,
+        &record.native_session,
+    )?;
+    let (mut file, index) = open_bound(root, &binding)?;
+    let start = index.source_len.saturating_sub(TAIL_BYTES);
+    let bytes = read_at(&mut file, start, (index.source_len - start) as usize)?;
+    let end = i64::try_from(entry.at)
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1000))
+        .ok_or("historical completion timestamp is invalid")?;
+    let mut starts = std::collections::HashMap::new();
+    let mut candidates = Vec::new();
+    for raw in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|raw| raw.len() <= LINE_BYTES)
+    {
+        let Ok(event) = serde_json::from_slice::<Value>(raw) else {
+            continue;
+        };
+        if event["type"] != "event_msg" {
+            continue;
+        }
+        let (Some(id), Some(timestamp)) = (
+            event["payload"]["turn_id"].as_str(),
+            event["timestamp"].as_str().and_then(rank::timestamp_ms),
+        ) else {
+            continue;
+        };
+        if event["payload"]["type"] == "task_started" && id.len() <= 256 {
+            starts.insert(id.to_owned(), timestamp);
+        } else if event["payload"]["type"] == "task_complete"
+            && timestamp >= end.saturating_sub(5000)
+            && timestamp < end.saturating_add(1000)
+        {
+            if let Some(started) = starts.get(id) {
+                if *started <= timestamp
+                    && record.native_turn.as_deref().is_none_or(|turn| turn == id)
+                {
+                    candidates.push((id.to_owned(), *started, timestamp));
+                }
+            }
+        }
+    }
+    let (mut check, current) = open_bound(root, &binding)?;
+    if current.file_identity != index.file_identity
+        || current.source_len < index.source_len
+        || read_at(&mut check, start, bytes.len())? != bytes
+    {
+        return Err("historical patch source changed during inspection".into());
+    }
+    if candidates.len() != 1 {
+        return Err(
+            "historical edit has no unique completed native turn in the bounded source window"
+                .into(),
+        );
+    }
+    let (turn, started, completed) = &candidates[0];
+    codex_patch_inputs_between(root, &binding, *started, *completed, Some(turn))
 }
 
 /// Verify source identity and all retained record hashes without retaining conversation text.
@@ -1404,13 +1641,32 @@ mod tests {
         let patch = "*** Begin Patch\n*** Update File: src/fixture.rs\n@@\n-before\n+after\n*** End Patch\n";
         let literal = serde_json::to_string(patch).unwrap();
         let wrapped = format!("text(await tools.apply_patch({literal}));\ntext(await tools.exec_command({{\"cmd\":\"git status\"}}));");
-        assert_eq!(literal_exec_patch(&wrapped).as_deref(), Some(patch));
-        assert_eq!(literal_exec_patch(&format!("text(await tools.exec_command({{\"cmd\":\"git status\"}}));\ntext(await tools.apply_patch({literal}));")).as_deref(), Some(patch));
+        assert_eq!(literal_exec_patch(&wrapped), Some((patch.into(), 0)));
+        assert_eq!(literal_exec_patch(&format!("text(await tools.exec_command({{\"cmd\":\"git status\"}}));\ntext(await tools.apply_patch({literal}));")), Some((patch.into(), 1)));
+        let actual = format!("text(await tools.apply_patch({literal}));\ntext(await tools.exec_command({{cmd:\"git status\",workdir:\"C:/fixture\",max_output_tokens:1200}}));");
+        assert_eq!(literal_exec_patch(&actual), Some((patch.into(), 0)));
+        let blocks = json!([
+            {"type":"input_text","text":"Script completed\nWall time 0.7 seconds\nOutput:\n"},
+            {"type":"input_text","text":"{}"},
+            {"type":"input_text","text":"{\"exit_code\":0,\"output\":\"shell output\"}"}
+        ]);
+        assert!(successful_patch_output(&blocks, Some(0)));
+        let failed_blocks = json!([
+            {"type":"input_text","text":"Script completed\nOutput:\n"},
+            {"type":"input_text","text":"{\"isError\":true,\"error\":\"patch failed\"}"},
+            {"type":"input_text","text":"{}"}
+        ]);
+        assert!(!successful_patch_output(&failed_blocks, Some(0)));
+        assert!(!successful_patch_output(
+            &json!([{"type":"input_text","text":"Script running with cell ID x"},{"type":"input_text","text":"{}"}]),
+            Some(0)
+        ));
         for source in [
             format!("// text(await tools.apply_patch({literal}));"),
             format!("if(false) {{ text(await tools.apply_patch({literal})); }}"),
             format!("text(await tools.apply_patch({literal} + dynamic));"),
             format!("text(await tools.apply_patch({literal}));text(await tools.apply_patch({literal}));"),
+            format!("text(await tools.apply_patch({literal}));text(await tools.exec_command({{cmd:dynamic}}));"),
         ] {
             assert!(literal_exec_patch(&source).is_none());
         }
@@ -1418,6 +1674,7 @@ mod tests {
             json!({"timestamp":"2026-01-01T00:00:00Z","type":"turn_context","payload":{"turn_id":"old-turn"}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"old","input":patch}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"old","output":"Success. Updated the following files:\nM src/fixture.rs"}}),
+            json!({"timestamp":"2026-01-02T03:04:06Z","type":"event_msg","payload":{"type":"task_started","turn_id":"fresh-turn"}}),
             json!({"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"turn_id":"fresh-turn"}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"unmatched","output":"Success. Updated the following files:\nM src/fixture.rs"}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"failed","input":patch}}),
@@ -1427,16 +1684,79 @@ mod tests {
             json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"success","output":json!({"output":"Success. Updated the following files:\nM src/fixture.rs","metadata":{"exit_code":0}}).to_string()}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"wrapped","input":wrapped}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"wrapped","output":"{}"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"functions.exec","call_id":"actual-wrapper","input":actual}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"actual-wrapper","output":blocks}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"failed-wrapper","input":wrapped}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"failed-wrapper","output":failed_blocks}}),
         ] {
             append(&path, format!("{event}\n").as_bytes());
         }
         assert_eq!(
             codex_patch_inputs(dir.path(), &binding, start).unwrap(),
-            vec![patch, patch]
+            vec![patch, patch, patch]
         );
         assert!(codex_patch_inputs(dir.path(), &binding, start + 2000)
             .unwrap()
             .is_empty());
+        append(&path, format!("{}\n", json!({"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"fresh-turn"}})).as_bytes());
+        let workspace = dir.path().canonicalize().unwrap();
+        let owner = crate::provider::interaction::InteractionOwner {
+            conversation_id: uuid::Uuid::new_v4().to_string(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Codex,
+            account: "fixture".into(),
+            home: Some(binding.home.clone()),
+            workspace: workspace.clone(),
+            execution_cwd: workspace.clone(),
+        };
+        let entry = crate::token_log::Entry {
+            at: ((start + 3000) / 1000) as u64,
+            provider: "codex".into(),
+            account: "fixture".into(),
+            model: None,
+            project: workspace.to_string_lossy().into_owned(),
+            chat: Some(session.clone()),
+            new_input: 0,
+            cached_input: 0,
+            output: 0,
+            cost_usd: None,
+            attribution: Some(crate::token_log::Attribution::new(
+                crate::token_log::Origin::Main,
+                &owner.run_id,
+                &owner.attempt_id,
+                owner.home.as_deref(),
+                &Default::default(),
+                "succeeded",
+                true,
+            )),
+        };
+        crate::token_log::record(dir.path(), &entry).unwrap();
+        let records = crate::artifacts::from_item(
+            &owner,
+            &session,
+            None,
+            &json!({"id":"item_4","type":"file_change","status":"completed","changes":[{"path":"src/fixture.rs","kind":"update"}]}),
+        );
+        assert_eq!(
+            historical_codex_patches(dir.path(), &records[0]).unwrap(),
+            vec![patch, patch, patch]
+        );
+        let recovered = records[0].inspect_edit(dir.path()).unwrap().unwrap();
+        assert!(recovered.detail.unwrap().contains("-before\n+after"));
+        let mut wrong = records[0].clone();
+        wrong.owner.account = "another-account".into();
+        assert!(historical_codex_patches(dir.path(), &wrong).is_err());
+        for event in [
+            json!({"timestamp":"2026-01-02T03:04:07.100Z","type":"event_msg","payload":{"type":"task_started","turn_id":"ambiguous-turn"}}),
+            json!({"timestamp":"2026-01-02T03:04:07.500Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"ambiguous-turn"}}),
+        ] {
+            append(&path, format!("{event}\n").as_bytes());
+        }
+        assert!(
+            historical_codex_patches(dir.path(), &records[0]).is_err(),
+            "ambiguous settlement never guesses a turn"
+        );
         let context =
             json!({"type":"turn_context","payload":{"model":"fixture-model","turn_id":"fixture-turn-1"}}).to_string() + "\n";
         append(&path, context.as_bytes());

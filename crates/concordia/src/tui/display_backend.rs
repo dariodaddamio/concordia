@@ -12,10 +12,10 @@ pub(super) enum DisplayBackend {
 
 impl DisplayBackend {
     #[cfg(windows)]
-    pub fn image(&mut self, image: Option<super::native_window::RasterImage>) -> io::Result<()> {
+    pub fn image(&mut self, image: Vec<super::native_window::RasterImage>) -> io::Result<()> {
         match self {
             Self::Terminal(_) => Ok(()),
-            Self::Window(window) => window.set_image(image),
+            Self::Window(window) => window.set_images(image),
         }
     }
     pub fn title(&mut self, title: &str) -> io::Result<()> {

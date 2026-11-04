@@ -6,6 +6,45 @@ use std::path::Path;
 const MAX_BYTES: usize = 256 * 1024;
 const UNAVAILABLE: &str = "Provider reported a change; line diff unavailable.";
 
+fn path_key(path: &str, cwd: &Path) -> String {
+    let path = Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let absolute = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+    let text = absolute.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text);
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text.to_owned()
+    }
+}
+
+pub(crate) fn matches_reported_paths(input: &str, cwd: &Path, reported: &[String]) -> bool {
+    let mut paths = std::collections::BTreeSet::new();
+    let mut current = None;
+    for line in input.lines() {
+        if let Some(path) = line
+            .strip_prefix("*** Update File: ")
+            .or_else(|| line.strip_prefix("*** Add File: "))
+            .or_else(|| line.strip_prefix("*** Delete File: "))
+        {
+            if let Some(previous) = current.replace(path_key(path, cwd)) {
+                paths.insert(previous);
+            }
+        } else if let Some(path) = line.strip_prefix("*** Move to: ") {
+            current = Some(path_key(path, cwd));
+        }
+    }
+    if let Some(path) = current {
+        paths.insert(path);
+    }
+    !paths.is_empty() && paths == reported.iter().map(|path| path_key(path, cwd)).collect()
+}
+
 pub(super) fn needs_codex_patch(cards: &[StreamCard]) -> bool {
     cards.iter().any(|card| {
         card.status == super::CardStatus::Done
@@ -46,7 +85,7 @@ pub(super) fn changes(value: &Value) -> Option<String> {
 
 /// `codex exec --json` reports changed paths without patch bodies. Attach only successful
 /// apply_patch input recovered from this exact native session and current attempt.
-pub(super) fn enrich_codex(
+pub(crate) fn enrich_codex(
     cards: &mut [StreamCard],
     inputs: &[String],
     cwd: &Path,
@@ -91,22 +130,6 @@ pub(super) fn enrich_codex(
             }
         }
     }
-    let key = |path: &str| {
-        let path = Path::new(path);
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            cwd.join(path)
-        };
-        let absolute = std::fs::canonicalize(&absolute).unwrap_or(absolute);
-        let text = absolute.to_string_lossy().replace('\\', "/");
-        let text = text.strip_prefix("//?/").unwrap_or(&text);
-        if cfg!(windows) {
-            text.to_lowercase()
-        } else {
-            text.to_owned()
-        }
-    };
     let mut changed = Vec::new();
     for card in cards {
         if card.status != super::CardStatus::Done || card.title != "Edit" {
@@ -124,10 +147,10 @@ pub(super) fn enrich_codex(
             let Some(path) = line.strip_prefix("File: ") else {
                 continue;
             };
-            let path_key = key(path);
+            let path_key = path_key(path, cwd);
             let body: String = patches
                 .iter()
-                .filter(|(patch_path, _)| key(patch_path) == path_key)
+                .filter(|(patch_path, _)| self::path_key(patch_path, cwd) == path_key)
                 .map(|(_, body)| body.as_str())
                 .collect();
             if !body.is_empty() && detail.len() + body.len() <= MAX_BYTES {

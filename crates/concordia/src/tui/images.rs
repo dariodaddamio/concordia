@@ -50,20 +50,16 @@ impl State {
             _ => "Review the attached images and documents.",
         }
     }
-    pub fn height(&self) -> usize {
-        self.chip_height()
-            + if self
-                .draft
-                .iter()
-                .any(|attachment| matches!(attachment, Attachment::Image(_)))
-            {
-                8
-            } else {
-                0
-            }
+    pub fn height(&self, width: u16) -> usize {
+        let columns = self.columns(width);
+        self.count().div_ceil(columns) * 6
+            + usize::from(self.job.is_some())
+            + usize::from(self.pasted.is_some())
     }
-    fn chip_height(&self) -> usize {
-        self.count() + usize::from(self.job.is_some()) + usize::from(self.pasted.is_some())
+    fn columns(&self, width: u16) -> usize {
+        let maximum = (usize::from(width) / 28).clamp(1, 4);
+        let count = self.count().max(1);
+        count.div_ceil(count.div_ceil(maximum))
     }
 }
 impl App {
@@ -494,97 +490,160 @@ fn capture(_: &Path, _: bool) -> Result<Paste, String> {
 
 pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
     app.images.targets.clear();
-    if let Some(index) = app
-        .images
-        .draft
-        .iter()
-        .position(|attachment| matches!(attachment, Attachment::Image(_)))
+    let columns = app.images.columns(area.width);
+    let rows = app.images.count().div_ceil(columns);
+    let card_height = 6u16;
+    let available = area.height.saturating_sub(3);
+    let mut card_rows = rows.min(usize::from(available / card_height));
+    while card_rows > 0
+        && card_rows * usize::from(card_height)
+            + app.images.count().saturating_sub(card_rows * columns)
+            > usize::from(available)
     {
-        let height = 4.min(
-            area.height
-                .saturating_sub(app.images.chip_height() as u16 + 3),
-        );
-        let preview = Rect { height, ..area };
-        raster::draw_inline(f, preview, app);
-        if height > 0 {
-            app.images.targets.push((preview, index, false));
-        }
-        area.y += height;
-        area.height -= height;
+        card_rows -= 1;
     }
-    let count = app
-        .images
-        .chip_height()
-        .min(area.height.saturating_sub(3) as usize);
-    for index in 0..count {
-        let row = Rect::new(area.x, area.y, area.width, 1);
-        let entry = app.images.draft.get(index);
-        let offered = index == app.images.count() + usize::from(app.images.importing())
-            && app.images.pasted.is_some();
-        if entry.is_some() || offered {
-            let label = if let Some(attachment) = entry {
-                match attachment {
-                    Attachment::Image(image) => format!(
-                        " [Image {}: {} · {} KB]",
-                        index + 1,
-                        image.name,
-                        image.bytes.div_ceil(1024)
-                    ),
-                    Attachment::TextDocument(document) => format!(
-                        " [Document {}: {} · {} bytes{}]",
-                        index + 1,
-                        document.name,
-                        document.bytes,
-                        document
-                            .range
-                            .as_ref()
-                            .map(|range| format!(" · selection {}..{}", range.start, range.end))
-                            .unwrap_or_default()
-                    ),
-                    Attachment::PdfDocument(document) => format!(
-                        " [PDF {}: {} · {} bytes · native document]",
-                        index + 1,
-                        document.name,
-                        document.bytes
-                    ),
-                }
+    for index in 0..app.images.count().min(card_rows * columns) {
+        let column = index % columns;
+        let row = index / columns;
+        let start = area.width as usize * column / columns;
+        let end = area.width as usize * (column + 1) / columns;
+        let card = Rect::new(
+            area.x + start as u16,
+            area.y + row as u16 * card_height,
+            (end - start) as u16,
+            card_height,
+        );
+        let attachment = &app.images.draft[index];
+        let (kind, name, bytes) = match attachment {
+            Attachment::Image(image) => ("Image", image.name.as_str(), image.bytes),
+            Attachment::TextDocument(document) => {
+                ("Document", document.name.as_str(), document.bytes)
+            }
+            Attachment::PdfDocument(document) => ("PDF", document.name.as_str(), document.bytes),
+        };
+        let label = format!("{kind} {}: {name}", index + 1);
+        let label: String = label
+            .chars()
+            .take(usize::from(card.width.saturating_sub(7)))
+            .collect();
+        let block = Block::bordered()
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(Line::styled(
+                format!(" {label} "),
+                Style::default().fg(Color::Cyan),
+            ));
+        let inner = block.inner(card);
+        f.render_widget(block, card);
+        let close = Rect::new(
+            card.x + card.width.saturating_sub(4),
+            card.y,
+            3.min(card.width),
+            1,
+        );
+        f.render_widget(
+            Paragraph::new(" X ").style(Style::default().fg(Color::Cyan)),
+            close,
+        );
+        app.images.targets.push((card, index, false));
+        app.images.targets.push((close, index, true));
+        let content = Rect {
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
+        match attachment {
+            Attachment::Image(image) => raster::draw_attachment(f, content, app, image),
+            Attachment::TextDocument(document) => {
+                let text = if document.range.is_some() {
+                    "Text selection"
+                } else {
+                    "Text document"
+                };
+                f.render_widget(
+                    Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
+                    content,
+                );
+            }
+            Attachment::PdfDocument(_) => {
+                f.render_widget(
+                    Paragraph::new("PDF document\nClick to open")
+                        .style(Style::default().fg(Color::DarkGray)),
+                    content,
+                );
+            }
+        }
+        f.render_widget(
+            Paragraph::new(format!("{} KB", bytes.div_ceil(1024)))
+                .style(Style::default().fg(Color::DarkGray)),
+            Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        );
+    }
+    let used = card_rows as u16 * card_height;
+    area.y += used;
+    area.height = area.height.saturating_sub(used);
+    for index in (card_rows * columns).min(app.images.count())..app.images.count() {
+        if area.height <= 3 {
+            break;
+        }
+        let (kind, name) = match &app.images.draft[index] {
+            Attachment::Image(image) => ("Image", image.name.as_str()),
+            Attachment::TextDocument(document) => ("Document", document.name.as_str()),
+            Attachment::PdfDocument(document) => ("PDF", document.name.as_str()),
+        };
+        let row = Rect { height: 1, ..area };
+        let close = Rect::new(
+            row.x + row.width.saturating_sub(4),
+            row.y,
+            3.min(row.width),
+            1,
+        );
+        f.render_widget(
+            Paragraph::new(format!("{kind} {}: {name}", index + 1))
+                .style(Style::default().fg(Color::Cyan)),
+            Rect {
+                width: row.width.saturating_sub(4),
+                ..row
+            },
+        );
+        f.render_widget(
+            Paragraph::new(" X ").style(Style::default().fg(Color::Cyan)),
+            close,
+        );
+        app.images.targets.push((row, index, false));
+        app.images.targets.push((close, index, true));
+        area.y += 1;
+        area.height -= 1;
+    }
+    for offered in [false, true] {
+        if area.height <= 3
+            || if offered {
+                app.images.pasted.is_none()
             } else {
-                format!(
-                    " [Attach {} pasted file(s) too · F9] text stays unchanged",
-                    app.images
-                        .pasted
-                        .as_ref()
-                        .map_or(0, |pasted| pasted.paths.len())
-                )
-            };
+                !app.images.importing()
+            }
+        {
+            continue;
+        }
+        let row = Rect { height: 1, ..area };
+        let label = if offered {
+            format!(
+                " Attach {} pasted file(s) · F9",
+                app.images.pasted.as_ref().map_or(0, |p| p.paths.len())
+            )
+        } else {
+            " Preparing attachment...".into()
+        };
+        f.render_widget(
+            Paragraph::new(label).style(Style::default().fg(Color::DarkGray)),
+            row,
+        );
+        if offered {
+            let close = Rect::new(row.right().saturating_sub(4), row.y, 3.min(row.width), 1);
             f.render_widget(
-                Paragraph::new(label).style(Style::default().fg(Color::Cyan)),
-                row,
-            );
-            let close_width = 4.min(row.width);
-            let close = Rect::new(
-                row.right().saturating_sub(close_width),
-                row.y,
-                close_width,
-                1,
-            );
-            f.render_widget(
-                Paragraph::new("[X]").style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new(" X ").style(Style::default().fg(Color::Cyan)),
                 close,
             );
-            let target = if offered { usize::MAX } else { index };
-            app.images.targets.push((
-                Rect::new(row.x, row.y, row.width.saturating_sub(close_width), 1),
-                target,
-                false,
-            ));
-            app.images.targets.push((close, target, true));
-        } else {
-            f.render_widget(
-                Paragraph::new(" Preparing attachment...")
-                    .style(Style::default().fg(Color::DarkGray)),
-                row,
-            );
+            app.images.targets.push((row, usize::MAX, false));
+            app.images.targets.push((close, usize::MAX, true));
         }
         area.y += 1;
         area.height -= 1;
@@ -603,6 +662,7 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
         .images
         .targets
         .iter()
+        .rev()
         .find(|(rect, _, _)| contains(*rect, event.column, event.row))
         .map(|(_, index, close)| (*index, *close));
     match event.kind {
@@ -630,6 +690,7 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
             };
             if pressed.1 {
                 app.images.draft.remove(pressed.0);
+                app.images.targets.clear(); // Indices become valid again after the next draw.
                 app.persist_draft_now();
                 return true;
             }
@@ -730,6 +791,76 @@ mod tests {
         assert!(screen.contains("Image 1: diagram.png"));
         assert!(screen.contains("Document 2: notes.md"));
         assert!(!screen.contains("concordia-message-v1"));
+        let image_card = app
+            .images
+            .targets
+            .iter()
+            .find(|(_, i, close)| *i == 0 && !close)
+            .unwrap()
+            .0;
+        let document_card = app
+            .images
+            .targets
+            .iter()
+            .find(|(_, i, close)| *i == 1 && !close)
+            .unwrap()
+            .0;
+        assert_eq!(
+            image_card.y, document_card.y,
+            "mixed attachments share a horizontal row"
+        );
+        let close = app
+            .images
+            .targets
+            .iter()
+            .find(|(_, i, close)| *i == 1 && *close)
+            .unwrap()
+            .0;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert!(mouse(
+                &mut app,
+                &MouseEvent {
+                    kind,
+                    column: close.x,
+                    row: close.y,
+                    modifiers: KeyModifiers::NONE
+                }
+            ));
+        }
+        assert_eq!(
+            app.images.count(),
+            1,
+            "the top close target removes only its own attachment"
+        );
+        assert_eq!(app.editor.text(), "Inspect it");
+        app.images
+            .draft
+            .push(Attachment::TextDocument(document.clone()));
+        let saved = app.images.draft.clone();
+        app.images.draft.extend([
+            Attachment::Image(image.clone()),
+            Attachment::TextDocument(document.clone()),
+        ]);
+        let mut narrow = Terminal::new(ratatui::backend::TestBackend::new(24, 12)).unwrap();
+        narrow
+            .draw(|f| {
+                let remaining = draw(f, f.area(), &mut app);
+                assert!(remaining.height >= 3);
+            })
+            .unwrap();
+        assert_eq!(
+            app.images
+                .targets
+                .iter()
+                .filter(|(_, _, close)| *close)
+                .count(),
+            4,
+            "compact overflow rows retain every attachment's remove control"
+        );
+        app.images.draft = saved;
         app.busy = true;
         assert!(queue::tab(&mut app));
         assert!(app.images.draft.is_empty());

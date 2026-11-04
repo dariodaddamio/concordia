@@ -279,6 +279,38 @@ pub fn load_page(root: &Path, cursor: Option<&Cursor>) -> std::io::Result<Report
     load_internal(root, cursor, None)
 }
 
+pub fn load_attempt(
+    root: &Path,
+    origin: Origin,
+    run: &str,
+    attempt: &str,
+) -> std::io::Result<Option<Entry>> {
+    if !uuid::Uuid::parse_str(run).is_ok_and(|id| id.to_string() == run)
+        || !uuid::Uuid::parse_str(attempt).is_ok_and(|id| id.to_string() == attempt)
+    {
+        return Err(std::io::Error::other("invalid attempt identity"));
+    }
+    let key = hash(&serde_json::to_vec(&(origin, run, attempt)).map_err(std::io::Error::other)?);
+    require_owned(&directory(root), true)?;
+    let path = directory(root).join(format!("{key}.json"));
+    require_owned(&path, false)?;
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.take(EVENT_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > EVENT_BYTES {
+        return Err(std::io::Error::other("attempt record exceeds its bound"));
+    }
+    let stored: StoredEvent = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+    if stored.version != 1 || event_key(&stored.entry)? != key {
+        return Err(std::io::Error::other("attempt record identity mismatch"));
+    }
+    Ok(Some(stored.entry))
+}
+
 pub fn load_page_with_cancel(
     root: &Path,
     cursor: Option<&Cursor>,

@@ -1,6 +1,6 @@
 # Images and diagrams in Concordia
 
-Build: `2026-11-04i`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
+Build: `2026-11-04j`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
 
 ## Attach an image
 
@@ -9,9 +9,11 @@ paste an image, drop local image files into the window, F9 to paste a clipboard 
 choose a file, `/attach` to choose a file, or
 `/attach "path/to/screenshot.png"`. Relative paths resolve from Concordia's cwd; quoted absolute
 paths work. `/attach clear` removes draft attachments. A visible image chip shows the name and
-size. The first image shows a compact four-row preview above the editable composer, with
-pixels limited to twelve columns and dimensions beside them; click its thumbnail or
-any image chip to enlarge it, or X to remove it. Paste and file-picker helpers run
+size. Images, text documents and PDFs share six-row attachment cards above the composer.
+Cards sit horizontally when space allows and wrap into balanced rows; short windows use
+compact overflow rows so every attachment retains open/remove controls. Each X sits above
+its content. Click an image to enlarge it, a document to inspect it, or X to remove it.
+Paste and file-picker helpers run
 away from the input loop and request no console window.
 Typing while an import finishes keeps both the evolving message and the attachment. Replacing
 the draft or switching conversations prevents an old import from attaching to the new draft.
@@ -62,7 +64,8 @@ for every provider or background worker.
 Image chips and image file links open an enlarged image preview. Esc returns to the unchanged
 draft; E explicitly opens the system viewer. The default Windows window draws original decoded
 pixels directly, fitting the available area with smooth scaling and no upscaling. The compact
-composer thumbnail stays small; the enlarged viewer retains detail beyond the old 256-pixel
+composer thumbnails stay small; their cache is limited to 512 pixels per edge. The enlarged
+viewer loads original resolution and retains detail beyond the old 256-pixel
 thumbnail. Neither preview changes the original attachment bytes sent to the provider.
 Explicit terminal mode uses true-color half-block cells; no-color mode uses luminance characters.
 Those terminal previews have character-cell resolution. Native pixels need no terminal image protocol.
@@ -71,9 +74,11 @@ GIF links retain the existing system-viewer action; the inline decoder does not 
 One background decoder handles PNG/JPEG/WebP files up to 4 MiB, 4096 pixels per edge,
 16 megapixels and 64 MiB decoded output. Decoder allocation limits are 96 MiB; upstream defines
 that allocation limit as non-strict, while edge limits are strict. Up to eight content-hash entries
-cache original pixels plus 256×256 thumbnails; entries are evicted above 64 MiB, retaining one
-current entry even if its thumbnail takes it slightly over that bound. The native renderer caches
-one converted bitmap of at most 64 MiB. Composer previews verify the snapshot hash.
+cache decoded display pixels plus 256×256 terminal thumbnails; composer pixel buffers are capped
+at 512 per edge, while the enlarged viewer reloads original resolution. Entries are evicted above
+64 MiB, retaining one current entry. The native renderer caches the active converted bitmaps:
+at most four bounded composer previews or one full-resolution viewer bitmap of at most 64 MiB.
+Composer previews verify the snapshot hash.
 Each open hashes bounded file bytes; unchanged cached images skip decoding. Closing cancels
 publication of the result; the bounded decode can finish off-thread and another job cannot start
 until it exits. Histories are never predecoded. Selected historical image links use the same action.

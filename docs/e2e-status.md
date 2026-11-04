@@ -1,5 +1,46 @@
 # Concordia verification status
 
+## Installed native diffs, history and desktop controls, 2026-11-04j
+
+Application source `9fd0b05` builds the installed executable, SHA-256
+`65E0C43EE8457FE939479F906752BC0698771334A002E5D2FFA4EC2628457961`.
+Installed bytes match the qualified candidate and retain the permanent checkout update source.
+The binary is 22,968,320 bytes, within the 22 MiB budget.
+
+Static JavaScript tool arguments and structured output blocks now yield verified native patches.
+Historical inspection binds immutable attempt accounting, exact native identity and one completed
+turn to a unique patch batch with the event's complete sibling file set. Read-only inspection of
+the three reported records recovered `display_backend.rs` +7/-0, `mod.rs` +11/-1 and `raster.rs`
++59/-7. No current file bodies supplied these diffs. Opening the exact File output card in the
+activity viewer or catalog hydrates its patch asynchronously; ambiguous bare legacy Edit rows
+remain unchanged because their event ids repeat across attempts.
+
+Home excludes explicit Codex subagent rollouts before its limit and deduplicates exact identities;
+native source lookup and genuine user forks remain. Native glyph fallback/fitting, window and
+embedded executable icons, account/model/action/task titles, subdued Esc text and responsive mixed
+attachment cards are implemented. Top-edge X controls and compact overflow rows preserve removal
+and draft text; a failed image no longer blocks later preview jobs.
+
+477 TUI scenarios and focused native-memory/history checks pass. Initial broad checks exposed two
+old presentation assertions; the updated affected TUI checks pass. The image/document/PDF terminal
+journey passes across three fake providers in 26.63 seconds. All-target Clippy, optimized build,
+release smoke and exact-artifact Defender scan pass (signatures `1.463.119.0`). Nineteen glyphs
+pass owned-window visibility/bounds checks. The exact release App verifies embedded/native icons,
+two independent image previews and a document in horizontal cards, and top-X removal preserving
+the remaining attachments and exact draft. Document drop offers were explicitly accepted with F9.
+Controlled final-release input checks disabled external input to the owned visible window and
+confirmed the composer remains after removal. Earlier enabled-window captures unexpectedly entered
+the viewer; they are retained separately and do not qualify composer stability. A temporary debug
+app trace, with original tracked source restored afterward, confirmed one enabled down/up pair
+consumed the exact close target, left two attachments and made no viewer-open call. The earlier
+transition remains unexplained, so broader physical desktop click qualification stays open.
+Screenshots were inspected; receipts/logs are under ignored `target/native-window-proof`.
+No extra provider model turns, clipboard changes or global input were used for these checks.
+
+Both GitHub jobs could not start; annotations report an account payment/spending-limit block.
+This is not a passing remote-CI claim. Reopen existing processes to load j. The roadmap still has
+seven grouped capability/qualification/release workstreams in the [audit](feature-completion-audit.md).
+
 ## Installed native original-pixel previews, 2026-11-04i
 
 Source `bc31959` builds the installed executable, SHA-256

@@ -30,6 +30,64 @@ pub struct Record {
     pub execution_directory_id: String,
 }
 impl Record {
+    /// Explicit bounded historical source inspection; never reads current file contents.
+    pub fn inspect_edit(&self, root: &Path) -> Result<Option<StreamCard>, String> {
+        if self.owner.provider != crate::store::ProviderKind::Codex {
+            return Ok(None);
+        }
+        let patches = crate::native_memory::historical_codex_patches(root, self)?;
+        let mut reported = read(root, &self.owner.conversation_id)?
+            .into_iter()
+            .filter(|record| {
+                record.owner == self.owner
+                    && record.event_id == self.event_id
+                    && record.source_revision == self.source_revision
+            })
+            .map(|record| record.reported_path)
+            .collect::<Vec<_>>();
+        if reported.is_empty() {
+            reported.push(self.reported_path.clone());
+        }
+        let patches = patches
+            .into_iter()
+            .filter(|patch| {
+                crate::provider::edit_display::matches_reported_paths(
+                    patch,
+                    &self.owner.execution_cwd,
+                    &reported,
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if patches.len() != 1 {
+            return Err("reported file event has no unique matching native patch batch".into());
+        }
+        let patches = patches.into_iter().collect::<Vec<_>>();
+        let mut cards = [StreamCard {
+            id: format!("artifact:{}", self.id),
+            title: "Edit".into(),
+            status: CardStatus::Done,
+            detail: Some(format!(
+                "File: {}\nProvider reported a change; line diff unavailable.",
+                self.reported_path
+            )),
+        }];
+        if crate::provider::edit_display::enrich_codex(
+            &mut cards,
+            &patches,
+            &self.owner.execution_cwd,
+        )
+        .is_empty()
+        {
+            return Ok(None);
+        }
+        let mut card = cards.into_iter().next().unwrap();
+        card.detail = Some(format!(
+            "{}\n\nVerified patch input from this completed native attempt.\n\n{}",
+            card.detail.as_deref().unwrap_or_default(),
+            self.card().detail.as_deref().unwrap_or_default()
+        ));
+        Ok(Some(card))
+    }
     pub fn card(&self) -> StreamCard {
         let target = self
             .local_path

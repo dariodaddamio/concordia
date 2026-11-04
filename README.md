@@ -482,6 +482,9 @@ criteria in [PLAN.md](PLAN.md), [release blockers](docs/release-blockers.md) and
 
 ## Contributing
 
+Windows source builds require the Microsoft C++ toolchain and Windows SDK, including `rc.exe`
+for the embedded application icon. Installed binaries do not require those build tools.
+
 ```powershell
 cargo test -p concordia --tests
 powershell -NoProfile -File .\scripts\smoke-e2e-everyday.ps1    # checks the installed build, help, tests and a read-only usage reader

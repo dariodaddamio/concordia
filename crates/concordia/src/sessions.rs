@@ -569,6 +569,49 @@ pub fn list_native_records_bounded(
     account: Option<&str>,
     provider: Option<ProviderKind>,
 ) -> NativeRecordScan {
+    scan_native_records(state_root, limit, account, provider, true)
+}
+
+// Codex can put child-agent rollouts directly beside user chats. Their inherited
+// first messages make them look like copies of the parent on Home. Keep them in
+// source discovery and exact lookup, but not the recent user-chat list.
+fn is_child_agent(provider: ProviderKind, path: &Path) -> bool {
+    if provider != ProviderKind::Codex {
+        return false;
+    }
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    // Session metadata can exceed the display summary's per-line limit because
+    // native base instructions live in that record. Keep the same total byte cap.
+    let mut reader = BufReader::new(file.take(MAX_SUMMARY_BYTES));
+    for _ in 0..8 {
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if value["type"] != "session_meta" {
+            continue;
+        }
+        let metadata = &value["payload"];
+        return metadata["thread_source"] == "subagent"
+            || metadata["source"] == "subagent"
+            || metadata["source"].get("subagent").is_some();
+    }
+    false
+}
+
+fn scan_native_records(
+    state_root: &Path,
+    limit: usize,
+    account: Option<&str>,
+    provider: Option<ProviderKind>,
+    include_child_agents: bool,
+) -> NativeRecordScan {
     let limit = limit.clamp(1, 1000);
     let accounts: Vec<_> = list_all_accounts(state_root)
         .into_iter()
@@ -616,7 +659,22 @@ pub fn list_native_records_bounded(
             truncated = true;
             break;
         }
+        if !include_child_agents && is_child_agent(*provider, path) {
+            continue;
+        }
         if let Some(mut record) = summarize_one(account, *provider, path, *ms) {
+            if !include_child_agents
+                && records
+                    .iter()
+                    .any(|(known, _): &(SessionSummary, PathBuf)| {
+                        known.provider == record.0.provider
+                            && known.account == record.0.account
+                            && known.session_id == record.0.session_id
+                            && known.cwd == record.0.cwd
+                    })
+            {
+                continue;
+            }
             if let Some(title) = crate::session_titles::get(
                 state_root,
                 *provider,
@@ -714,7 +772,8 @@ pub fn find_native_record(
 }
 
 pub fn list_recent_sessions(state_root: &Path, limit: usize) -> Vec<SessionSummary> {
-    list_native_records(state_root, limit.clamp(1, 100))
+    scan_native_records(state_root, limit.clamp(1, 100), None, None, false)
+        .records
         .into_iter()
         .map(|(session, _)| session)
         .collect()
@@ -980,6 +1039,61 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(found.0.preview.as_deref(), Some("Saved automatic title"));
-        assert_eq!(fs::read_to_string(path).unwrap(), native);
+        assert_eq!(fs::read_to_string(&path).unwrap(), native);
+        // Native agents can inherit the entire parent's opening history while
+        // living in the same sessions directory. Home must list user threads,
+        // while exact source lookup must still find the child's original file.
+        let child = home.join("sessions/rollout-child.jsonl");
+        fs::write(&child, concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-child\",\"thread_source\":\"subagent\",\"source\":{\"subagent\":{}},\"parent_thread_id\":\"synthetic-session\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"Native request\"}]}}\n"
+        )).unwrap();
+        let metadata = serde_json::json!({"type":"session_meta","payload":{
+            "id":"large-child", "thread_source":"subagent", "base_instructions":"x".repeat(40 * 1024)
+        }});
+        fs::write(
+            home.join("sessions/rollout-large-child.jsonl"),
+            format!("{metadata}\n"),
+        )
+        .unwrap();
+        fs::write(home.join("sessions/rollout-copy.jsonl"), native).unwrap();
+        fs::write(home.join("sessions/rollout-fork.jsonl"), native.replace(
+            "\"id\":\"synthetic-session\"",
+            "\"id\":\"independent-fork\",\"forked_from_id\":\"synthetic-session\",\"thread_source\":\"user\"",
+        )).unwrap();
+        for _ in 0..2 {
+            let recent = scan_native_records(
+                dir.path(),
+                10,
+                Some("synthetic-title-account"),
+                Some(ProviderKind::Codex),
+                false,
+            );
+            let mut ids: Vec<_> = recent
+                .records
+                .iter()
+                .map(|(summary, _)| summary.session_id.as_str())
+                .collect();
+            ids.sort_unstable();
+            assert_eq!(
+                ids,
+                ["independent-fork", "synthetic-session"],
+                "refreshes deduplicate the same native identity and preserve user forks"
+            );
+        }
+        let child_source = find_native_record(
+            dir.path(),
+            "synthetic-title-account",
+            Some(ProviderKind::Codex),
+            "synthetic-child",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(child_source.1, child);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            native,
+            "Home filtering never edits provider history"
+        );
     }
 }

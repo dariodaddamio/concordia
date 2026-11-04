@@ -592,7 +592,7 @@ fn svg_structure_is_valid_and_carries_the_screen_text() {
         ("palette", "/use"),
         ("usage", "Cursor 1"),
         ("waiting", "Working through the next step"),
-        ("attachment", "Preview · diagram.png"),
+        ("attachment", "Image 1: diagram.png"),
     ];
     for ((name, svg), (n2, needle)) in scenes().into_iter().zip(expected) {
         assert_eq!(name, n2);

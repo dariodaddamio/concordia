@@ -3,11 +3,22 @@ use super::*;
 use crate::file_links;
 type ReadResult = Result<Vec<crate::artifacts::Record>, String>;
 type ReadJob = (String, std::sync::mpsc::Receiver<ReadResult>);
+type DetailResult = Result<Option<StreamCard>, String>;
+type DetailJob = (String, String, std::sync::mpsc::Receiver<DetailResult>);
+type ActivityJob = (
+    String,
+    usize,
+    String,
+    std::sync::mpsc::Receiver<DetailResult>,
+);
 #[derive(Default)]
 pub(super) struct State {
     records: Vec<crate::artifacts::Record>,
     selected: Option<crate::artifacts::Record>,
     job: Option<ReadJob>,
+    activity_job: Option<ActivityJob>,
+    activity_attempted: Option<(String, usize, String)>,
+    detail_job: Option<DetailJob>,
 }
 pub(super) fn open(app: &mut App) {
     if app.artifacts.job.is_some() {
@@ -37,6 +48,8 @@ pub(super) fn open(app: &mut App) {
     app.footer_left = "Enter inspect source · type to filter · Esc close".into();
 }
 pub(super) fn poll(app: &mut App) {
+    poll_activity(app);
+    poll_detail(app);
     let Some((conversation, rx)) = &app.artifacts.job else {
         return;
     };
@@ -92,6 +105,78 @@ pub(super) fn poll(app: &mut App) {
     );
     app.footer_left = "Enter inspect source · type to filter · Esc close".into();
 }
+fn poll_activity(app: &mut App) {
+    let target = app.activity.detail.and_then(|index| {
+        let id = &app.messages.get(index)?.card.as_ref()?.id;
+        id.strip_prefix("artifact:")
+            .filter(|id| id.len() == 64)
+            .map(|id| {
+                (
+                    app.deleg.d.conversation_id().to_owned(),
+                    index,
+                    id.to_owned(),
+                )
+            })
+    });
+    if target.is_none() {
+        app.artifacts.activity_attempted = None;
+    }
+    if let Some((conversation, index, id, rx)) = &app.artifacts.activity_job {
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(_) => Err("native edit reader stopped".into()),
+        };
+        let valid = target.as_ref().is_some_and(|target| {
+            &target.0 == conversation && target.1 == *index && &target.2 == id
+        });
+        let index = *index;
+        app.artifacts.activity_job = None;
+        if valid {
+            let message = &mut app.messages[index];
+            match result {
+                Ok(Some(card)) if message.card.as_ref().is_some_and(|old| old.id == card.id) => {
+                    message.text = format_card_line(&card);
+                    message.card = Some(card);
+                }
+                Err(error) => {
+                    if let Some(card) = &mut message.card {
+                        card.detail = Some(format!(
+                            "{}\n\nHistorical line diff unavailable: {error}",
+                            card.detail.as_deref().unwrap_or_default()
+                        ));
+                    }
+                }
+                Ok(_) => {}
+            }
+            app.activity.invalidate_search();
+        }
+    }
+    let Some((conversation, index, id)) = target else {
+        return;
+    };
+    if app.artifacts.activity_attempted.as_ref() == Some(&(conversation.clone(), index, id.clone()))
+    {
+        return;
+    }
+    app.artifacts.activity_attempted = Some((conversation.clone(), index, id.clone()));
+    let root = app.state_root.clone();
+    let source = conversation.clone();
+    let selected = id.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = crate::artifacts::read(&root, &source).and_then(|records| {
+            records
+                .into_iter()
+                .find(|record| record.id == selected)
+                .ok_or_else(|| "reported file source identity is unavailable".to_owned())?
+                .inspect_edit(&root)
+        });
+        let _ = tx.send(result);
+    });
+    app.artifacts.activity_job = Some((conversation, index, id, rx));
+}
+
 pub(super) fn choose(app: &mut App, id: &str) {
     let Some(record) = app
         .artifacts
@@ -104,8 +189,14 @@ pub(super) fn choose(app: &mut App, id: &str) {
     else {
         return;
     };
-    let detail = record.card().detail.unwrap_or_default();
-    app.update_preview = Some(crate::update::UpdatePreview { history: Vec::new(), history_expanded: false, lines: std::iter::once(crate::update::PreviewLine::Title("Reported file output".into())).chain(detail.lines().map(|line| crate::update::PreviewLine::Text(line.into()))).chain([crate::update::PreviewLine::Text(format!("Execution directory: {}", record.owner.execution_cwd.display())), crate::update::PreviewLine::Hint("O current-file actions · R catalog · Esc close. Opening never reruns the producing tool.".into())]).collect(), install_available: false, release_url: None });
+    show_detail(app, &record, &record.card());
+    let root = app.state_root.clone();
+    let selected = record.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(selected.inspect_edit(&root));
+    });
+    app.artifacts.detail_job = Some((app.deleg.d.conversation_id().into(), record.id.clone(), rx));
     app.artifacts.selected = Some(record);
     app.show_picker(
         PickerKind::ArtifactDetail,
@@ -114,6 +205,62 @@ pub(super) fn choose(app: &mut App, id: &str) {
         false,
     );
     app.footer_left = "O current-file actions · R catalog · Esc close".into();
+}
+
+fn show_detail(app: &mut App, record: &crate::artifacts::Record, card: &StreamCard) {
+    let detail = card.detail.as_deref().unwrap_or_default();
+    app.update_preview = Some(crate::update::UpdatePreview { history: Vec::new(), history_expanded: false, lines: std::iter::once(crate::update::PreviewLine::Title("Reported file output".into())).chain(detail.lines().map(|line| crate::update::PreviewLine::Text(line.into()))).chain([crate::update::PreviewLine::Text(format!("Execution directory: {}", record.owner.execution_cwd.display())), crate::update::PreviewLine::Hint("O current-file actions · R catalog · Esc close. Opening never reruns the producing tool.".into())]).collect(), install_available: false, release_url: None });
+}
+
+fn poll_detail(app: &mut App) {
+    let Some((conversation, id, rx)) = &app.artifacts.detail_job else {
+        return;
+    };
+    let valid = conversation == app.deleg.d.conversation_id()
+        && app
+            .artifacts
+            .selected
+            .as_ref()
+            .is_some_and(|record| &record.id == id)
+        && app
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::ArtifactDetail);
+    let result = match rx.try_recv() {
+        Ok(result) => result,
+        Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        Err(_) => Err("native edit reader stopped".into()),
+    };
+    app.artifacts.detail_job = None;
+    if !valid {
+        return;
+    }
+    let Some(record) = app.artifacts.selected.clone() else {
+        return;
+    };
+    match result {
+        Ok(Some(card)) => {
+            // Artifact ids include owner/run/attempt/event/revision. Bare exec event
+            // ids repeat across turns and cannot safely identify old Edit rows.
+            for message in &mut app.messages {
+                if message.card.as_ref().is_some_and(|old| old.id == card.id) {
+                    message.card = Some(card.clone());
+                    message.text = format_card_line(&card);
+                }
+            }
+            app.activity.invalidate_search();
+            show_detail(app, &record, &card);
+        }
+        Err(error) => {
+            let mut card = record.card();
+            card.detail = Some(format!(
+                "{}\n\nHistorical line diff unavailable: {error}",
+                card.detail.as_deref().unwrap_or_default()
+            ));
+            show_detail(app, &record, &card);
+        }
+        Ok(None) => {}
+    }
 }
 pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
     if !app.picker.as_ref().is_some_and(|picker| {
@@ -202,6 +349,66 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
             .len(),
         2
     );
+    // Hydration follows the selected exact artifact identity, never a reused native event id.
+    let message_index = app.messages.len();
+    for record in [&records[0], &revised[0]] {
+        let card = record.card();
+        app.messages.push(ChatLine {
+            role: MsgRole::Card,
+            text: format_card_line(&card),
+            card: Some(card),
+            meta: None,
+        });
+    }
+    app.activity.detail = Some(message_index);
+    let conversation = app.deleg.d.conversation_id().to_owned();
+    app.artifacts.activity_attempted =
+        Some((conversation.clone(), message_index, records[0].id.clone()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut hydrated = records[0].card();
+    hydrated.title = "Edit".into();
+    hydrated.detail = Some("File: output.md\n@@ reported edit @@\n-before\n+after".into());
+    app.artifacts.activity_job = Some((
+        conversation.clone(),
+        message_index,
+        records[0].id.clone(),
+        rx,
+    ));
+    tx.send(Ok(Some(hydrated))).unwrap();
+    poll_activity(app);
+    assert!(app.messages[message_index]
+        .card
+        .as_ref()
+        .unwrap()
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("-before\n+after"));
+    assert!(!app.messages[message_index + 1]
+        .card
+        .as_ref()
+        .unwrap()
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("-before\n+after"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.artifacts.activity_job = Some((conversation, message_index, revised[0].id.clone(), rx));
+    let mut stale = revised[0].card();
+    stale.detail = Some("stale result must not replace selected content".into());
+    tx.send(Ok(Some(stale))).unwrap();
+    poll_activity(app);
+    assert!(!app.messages[message_index]
+        .card
+        .as_ref()
+        .unwrap()
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("stale result"));
+    app.activity.detail = None;
+    poll_activity(app);
+    app.messages.truncate(message_index);
     app.editor.set_text("file catalog keeps this draft");
     open(app);
     let deadline = Instant::now() + Duration::from_secs(5);

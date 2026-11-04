@@ -35,10 +35,11 @@ struct Job {
 #[derive(Default)]
 pub(super) struct State {
     pub native: bool,
-    native_area: std::cell::Cell<Option<Rect>>,
+    native_draws: std::cell::RefCell<Vec<(Rect, Arc<image::RgbaImage>)>>,
     view: Option<View>,
     job: Option<Job>,
     cache: std::collections::VecDeque<Arc<Thumbnail>>,
+    preview_errors: std::collections::VecDeque<(String, String)>,
 }
 impl State {
     pub fn active(&self) -> bool {
@@ -62,14 +63,30 @@ impl State {
         if cancelled {
             return;
         }
+        if let (Err(error), Some(hash)) = (
+            &result,
+            self.view.as_ref().and_then(|view| view.snapshot.as_ref()),
+        ) {
+            self.preview_errors.retain(|(old, _)| old != hash);
+            self.preview_errors.push_back((hash.clone(), error.clone()));
+            while self.preview_errors.len() > CACHE {
+                self.preview_errors.pop_front();
+            }
+        }
         let result = result.map(|thumb| {
             if let Some(index) = self.cache.iter().position(|old| old.hash == thumb.hash) {
-                self.cache.remove(index).unwrap()
+                let old = self.cache.remove(index).unwrap();
+                if old.original.len() >= thumb.original.len() {
+                    old
+                } else {
+                    Arc::new(thumb)
+                }
             } else {
                 Arc::new(thumb)
             }
         });
         if let Ok(thumb) = &result {
+            self.preview_errors.retain(|(hash, _)| hash != &thumb.hash);
             self.cache.push_back(thumb.clone());
             while self.cache.len() > 1
                 && (self.cache.len() > CACHE
@@ -112,7 +129,10 @@ fn decode(
     if cancelled.load(Ordering::Relaxed) {
         return Err("Preview cancelled".into());
     }
-    if let Some(old) = cached.iter().find(|old| old.hash == hash) {
+    if let Some(old) = cached
+        .iter()
+        .find(|old| old.hash == hash && old.original.dimensions() == (old.width, old.height))
+    {
         return Ok(Thumbnail {
             hash,
             width: old.width,
@@ -167,13 +187,30 @@ impl App {
         }
         let first = self.images.draft.iter().find_map(|attachment| {
             if let crate::attachments::Attachment::Image(image) = attachment {
-                Some(image.clone())
+                (!self
+                    .raster
+                    .cache
+                    .iter()
+                    .any(|cached| cached.hash == image.sha256)
+                    && !self
+                        .raster
+                        .preview_errors
+                        .iter()
+                        .any(|(hash, _)| hash == &image.sha256))
+                .then(|| image.clone())
             } else {
                 None
             }
         });
         let Some(image) = first else {
-            self.raster.close();
+            if !self
+                .images
+                .draft
+                .iter()
+                .any(|item| matches!(item, crate::attachments::Attachment::Image(_)))
+            {
+                self.raster.close();
+            }
             return;
         };
         if self.raster.view.as_ref().is_some_and(|view| {
@@ -209,7 +246,18 @@ impl App {
         });
         let cached = self.raster.cache.iter().cloned().collect::<Vec<_>>();
         std::thread::spawn(move || {
-            let _ = tx.send(decode(&path, expected.as_deref(), &cached, &cancelled));
+            let result =
+                decode(&path, expected.as_deref(), &cached, &cancelled).map(|mut image| {
+                    // Four composer previews must fit the shared cache without eviction
+                    // repeatedly restarting their decoders. The explicit viewer decodes
+                    // the original again when a full-resolution entry is not cached.
+                    if inline && (image.width > 512 || image.height > 512) {
+                        image.original =
+                            Arc::new(image::imageops::thumbnail(&*image.original, 512, 512));
+                    }
+                    image
+                });
+            let _ = tx.send(result);
         });
     }
 }
@@ -253,6 +301,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         app.raster.close();
         return;
     }
+    app.raster.native_draws.borrow_mut().clear();
     let area = f.area();
     f.render_widget(Clear, area);
     let block = Block::bordered().title(" Image preview · Esc back · E system viewer ");
@@ -307,6 +356,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     );
 }
 
+#[cfg(test)]
 pub(super) fn draw_inline(f: &mut Frame, area: Rect, app: &App) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -329,52 +379,50 @@ pub(super) fn draw_inline(f: &mut Frame, area: Rect, app: &App) {
         height: area.height.saturating_sub(1),
         ..area
     };
-    let Some(view) = app.raster.view.as_ref().filter(|view| {
-        view.inline
-            && view.snapshot.as_deref() == Some(&image.sha256)
-            && view.conversation == app.deleg.d.conversation_id()
-    }) else {
-        f.render_widget(Paragraph::new(" Preparing preview…"), content);
+    draw_attachment(
+        f,
+        Rect {
+            width: content.width.min(12),
+            ..content
+        },
+        app,
+        image,
+    );
+}
+
+pub(super) fn draw_attachment(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    image: &crate::attachments::Image,
+) {
+    if area.is_empty() {
         return;
-    };
-    match &view.result {
-        Some(Ok(thumb)) => {
-            paint_view(
-                f,
-                Rect {
-                    width: content.width.min(12),
-                    ..content
-                },
-                thumb,
-                app,
-            );
-            if content.width > 16 {
-                f.render_widget(
-                    Paragraph::new(format!(
-                        "{} × {}\n{}",
-                        thumb.width, thumb.height, image.mime
-                    ))
-                    .wrap(Wrap { trim: false }),
-                    Rect {
-                        x: content.x + 14,
-                        width: content.width - 14,
-                        ..content
-                    },
-                );
-            }
-        }
-        Some(Err(error)) => {
-            f.render_widget(
-                Paragraph::new(format!(
-                    " Preview unavailable: {error}\nClick the image chip for viewer options"
-                ))
+    }
+    if let Some(thumb) = app
+        .raster
+        .cache
+        .iter()
+        .find(|cached| cached.hash == image.sha256)
+    {
+        paint_view(f, area, thumb, app);
+    } else if let Some((_, error)) = app
+        .raster
+        .preview_errors
+        .iter()
+        .find(|(hash, _)| hash == &image.sha256)
+    {
+        f.render_widget(
+            Paragraph::new(format!("Preview unavailable\n{error}"))
+                .style(Style::default().fg(Color::DarkGray))
                 .wrap(Wrap { trim: false }),
-                content,
-            );
-        }
-        None => {
-            f.render_widget(Paragraph::new(" Preparing preview…"), content);
-        }
+            area,
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new("Preparing preview...").style(Style::default().fg(Color::DarkGray)),
+            area,
+        );
     }
 }
 
@@ -390,38 +438,47 @@ fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {
                     .set_bg(Color::Rgb(20, 23, 31));
             }
         }
-        app.raster.native_area.set(Some(content));
+        app.raster
+            .native_draws
+            .borrow_mut()
+            .push((content, thumb.original.clone()));
         return;
     }
     paint(f, content, thumb, app.no_color);
 }
 
 pub(super) fn begin_frame(app: &App) {
-    app.raster.native_area.set(None);
+    app.raster.native_draws.borrow_mut().clear();
 }
 
 #[cfg(windows)]
-pub(super) fn native_image(f: &mut Frame, app: &App) -> Option<super::native_window::RasterImage> {
-    let area = app.raster.native_area.get()?;
-    if area.is_empty() || area.intersection(f.area()) != area {
-        return None;
-    }
-    for y in area.y..area.bottom() {
-        for x in area.x..area.right() {
-            let cell = &f.buffer_mut()[(x, y)];
-            if cell.symbol() != " "
-                || cell.fg != Color::Rgb(20, 23, 31)
-                || cell.bg != Color::Rgb(20, 23, 31)
-            {
+pub(super) fn native_images(f: &mut Frame, app: &App) -> Vec<super::native_window::RasterImage> {
+    app.raster
+        .native_draws
+        .borrow()
+        .iter()
+        .filter_map(|(area, pixels)| {
+            let area = *area;
+            if area.is_empty() || area.intersection(f.area()) != area {
                 return None;
             }
-        }
-    }
-    let thumb = app.raster.view.as_ref()?.result.as_ref()?.as_ref().ok()?;
-    Some(super::native_window::RasterImage {
-        area,
-        pixels: thumb.original.clone(),
-    })
+            for y in area.y..area.bottom() {
+                for x in area.x..area.right() {
+                    let cell = &f.buffer_mut()[(x, y)];
+                    if cell.symbol() != " "
+                        || cell.fg != Color::Rgb(20, 23, 31)
+                        || cell.bg != Color::Rgb(20, 23, 31)
+                    {
+                        return None;
+                    }
+                }
+            }
+            Some(super::native_window::RasterImage {
+                area,
+                pixels: pixels.clone(),
+            })
+        })
+        .collect()
 }
 
 fn paint(f: &mut Frame, content: Rect, thumb: &Thumbnail, monochrome: bool) {
@@ -555,8 +612,7 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(screen.contains("Preview · raster-preview.png"), "{screen}");
-    assert!(screen.contains("12 × 8"), "{screen}");
+    assert!(screen.contains("Image 1: raster-preview.png"), "{screen}");
     assert!(!screen.contains("Verified attachment snapshot"));
     assert!(!screen.contains("The message stays editable"));
     assert!(
@@ -584,22 +640,68 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
             .draw(|f| {
                 begin_frame(app);
                 draw_inline(f, Rect::new(0, 0, 60, 4), app);
-                let overlay = native_image(f, app).expect("native thumbnail uses original pixels");
+                let overlay = native_images(f, app)
+                    .pop()
+                    .expect("native thumbnail uses original pixels");
                 assert_eq!(overlay.pixels.dimensions(), (12, 8));
                 f.render_widget(Clear, overlay.area);
                 assert!(
-                    native_image(f, app).is_none(),
+                    native_images(f, app).is_empty(),
                     "a modal hides the image overlay"
                 );
                 begin_frame(app);
                 assert!(
-                    native_image(f, app).is_none(),
+                    native_images(f, app).is_empty(),
                     "a new frame cannot reuse an old overlay"
                 );
             })
             .unwrap();
         app.raster.native = false;
     }
+    let broken = crate::attachments::import(&app.state_root, &bad).unwrap();
+    let next_path = dir.join("next-preview.png");
+    image::RgbaImage::from_pixel(32, 16, image::Rgba([30, 90, 200, 255]))
+        .save(&next_path)
+        .unwrap();
+    let next = crate::attachments::import(&app.state_root, &next_path).unwrap();
+    app.images.draft = vec![
+        crate::attachments::Attachment::Image(broken.clone()),
+        crate::attachments::Attachment::Image(next.clone()),
+    ];
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.raster.poll();
+        app.ensure_inline_raster();
+        if app
+            .raster
+            .cache
+            .iter()
+            .any(|cached| cached.hash == next.sha256)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a failed image must not block later previews"
+        );
+        std::thread::yield_now();
+    }
+    assert!(app
+        .raster
+        .preview_errors
+        .iter()
+        .any(|(hash, _)| hash == &broken.sha256));
+    terminal
+        .draw(|f| draw_attachment(f, Rect::new(0, 0, 60, 3), app, &broken))
+        .unwrap();
+    let error_text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(error_text.contains("Preview unavailable"));
     app.images.draft.clear();
     app.ensure_inline_raster();
     assert!(app.raster.view.is_none());

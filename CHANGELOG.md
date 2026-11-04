@@ -1,5 +1,16 @@
 # Changelog
 
+### Fixed (`2026-11-04j`)
+
+- Native patch recovery accepts static JavaScript tool argument objects and structured output
+  blocks while retaining exact attempt/source ownership and successful-patch checks.
+- Home excludes explicit native subagent sessions from user chat history and deduplicates exact
+  session identities while retaining genuine user forks and source lookup.
+- Native symbols use fallback fonts and fitted glyph bounds; Concordia has its own window and
+  executable icon. Window titles identify the account/model, actual phase and task.
+- Esc uses the existing subdued text style. Mixed attachments share responsive horizontal cards
+  with close controls above their previews; image cards retain sharp native pixels.
+
 ### Fixed (`2026-11-04i`)
 
 - Native Windows image previews draw original decoded pixels with smooth scaling instead of

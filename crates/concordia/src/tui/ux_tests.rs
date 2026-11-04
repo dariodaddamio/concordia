@@ -411,7 +411,7 @@ fn run_status_sits_below_transcript_and_user_rows_have_background_and_completion
     let rect = ui.app.areas.run_cancel;
     assert!(rect.width > 0);
     assert!(rect.y < ui.app.areas.input.y);
-    assert!(ui.terminal.backend().buffer()[(rect.x + 2, rect.y)]
+    assert!(!ui.terminal.backend().buffer()[(rect.x + 2, rect.y)]
         .modifier
         .contains(Modifier::BOLD));
     assert!(ui

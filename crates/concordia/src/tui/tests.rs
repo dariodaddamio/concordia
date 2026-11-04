@@ -3951,21 +3951,21 @@ fn expanded_tool_header_stays_reachable_and_collapses_after_scrolling() {
 fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     let mut h = Harness::new(100, 20);
     h.app.cwd = PathBuf::from("C:/work/fixture-project");
-    assert_eq!(
-        h.app.window_title(),
-        "✦ fixture-project \u{b7} Idle \u{b7} Concordia"
-    );
+    let title = h.app.window_title();
+    assert!(title.starts_with("Concordia | Codex"), "{title}");
+    assert!(title.contains("Ready") && title.contains("fixture-project"));
     h.app.session_ui.title = Some("Fix parser".into());
     h.app.busy = true;
     h.app.phase = Phase::Thinking;
-    assert_eq!(
-        h.app.window_title(),
-        "\u{25c8} Fix parser \u{b7} Thinking \u{b7} Concordia"
-    );
+    assert!(h
+        .app
+        .window_title()
+        .contains("Working through the next step"));
+    assert!(h.app.window_title().contains("Fix parser"));
     h.app.phase = Phase::Writing;
-    assert!(h.app.window_title().starts_with("\u{270e} Fix parser"));
+    assert!(h.app.window_title().contains("Putting the answer together"));
     h.app.phase = Phase::Tool("Read".into());
-    assert!(h.app.window_title().contains("Read file"));
+    assert!(h.app.window_title().contains("Read"));
     assert_eq!(h.app.phase.frame(0), "▤");
     h.app.phase = Phase::Tool("apply_patch".into());
     assert_eq!(h.app.phase.frame(0), "✎");
