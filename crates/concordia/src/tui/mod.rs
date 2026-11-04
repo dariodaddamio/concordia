@@ -3370,16 +3370,19 @@ impl App {
         let incoming = crate::attachments::Message::decode(&original_line);
         if let Err(error) = incoming.validate() {
             self.restore_composer(&original_line);
+            self.persist_draft_now();
             self.flash(error);
             return;
         }
         if incoming.text.starts_with('/') && !incoming.attachments.is_empty() {
             self.restore_composer(&original_line);
+            self.persist_draft_now();
             self.flash("Keep attachments with a message; commands leave the draft intact");
             return;
         }
         if incoming.has_pdfs() && self.provider != ProviderKind::Claude {
             self.restore_composer(&original_line);
+            self.persist_draft_now();
             self.flash("Native PDF attachments require Claude; select Claude before sending. The draft is retained");
             return;
         }
