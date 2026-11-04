@@ -1,5 +1,19 @@
 # Concordia verification status
 
+## Installed updater correction, 2026-11-04c
+
+Application source `f628ef6` builds the normally installed executable: **22,521,856 bytes**,
+SHA-256 `B09E80EB007FCEA2163448E24C32B0A88E3A6EBED11D5C3583630B708081B2DD`.
+Installed bytes match the checked candidate and the update hint points to the permanent checkout.
+
+Source discovery now validates Concordia's layout before accepting a Cargo workspace or terminal
+configuration root. The existing regression passes for both unrelated-project cases, the recorded
+checkout and removal of that checkout. It ran with `profile.test.package.concordia.debug=0`;
+this changes test debug symbols, not assertions or production configuration. All-target Clippy,
+release build/smoke and Defender scanning pass, using intelligence `1.463.110.0` with protection
+enabled. Native provider implementation is unchanged from b; its evidence and live limits follow.
+Exact c receipts/logs use the existing collector and ignored `target/final-1104c-*` paths.
+
 ## Installed roadmap build, 2026-11-04b
 
 Application source `22b4da5` builds the normally installed executable: **22,522,368 bytes**,
