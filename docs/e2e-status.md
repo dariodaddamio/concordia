@@ -1,5 +1,23 @@
 # Concordia verification status
 
+## Cursor live continuation, 2026-11-03
+
+The owner reaffirmed Cursor live-run authorization. Two bounded read-only model turns ran through
+Concordia's production ACP adapter, using the installed unmodified Cursor CLI
+`2026.10.22-27dcf5f`, its existing login and a synthetic workspace. Each turn had a two-minute
+deadline and tracked cancellation. The first read a synthetic token; the second loaded its exact
+native session and recalled the token without a new tool call. Both completed successfully.
+
+The continuation also reproduced a product defect: `session/load` replayed old text, thinking
+and tool cards into the new turn. Build `2026-11-04d` ignores those updates until the new prompt
+starts. The existing process regression now replays historical messages, thinking and tool cards
+before the load response, and checks both final output and progress events. Local engineering
+logs and the temporary driver are under ignored `target/cursor-live-1103`.
+
+This is live evidence for Cursor read-only execution and exact-session continuity, not Claude PDF,
+physical clipboard/viewer behavior, numeric credits or broader provider parity. Earlier statements
+that no live model turn ran describe their historical candidates.
+
 ## Installed updater correction, 2026-11-04c
 
 Application source `f628ef6` builds the normally installed executable: **22,521,856 bytes**,

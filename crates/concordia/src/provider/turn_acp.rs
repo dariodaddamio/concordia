@@ -141,6 +141,11 @@ impl Connection {
         }
     }
     fn update(&mut self, value: &Value) {
+        // session/load replays the old transcript before its response. History belongs to
+        // readback, not this turn's answer, thinking stream or active tool cards.
+        if !self.prompting {
+            return;
+        }
         if value.pointer("/params/sessionId").and_then(Value::as_str) != self.session_id.as_deref()
         {
             return;
