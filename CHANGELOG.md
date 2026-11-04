@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (`2026-11-04i`)
+
+- Native Windows image previews draw original decoded pixels with smooth scaling instead of
+  character-cell mosaics. Compact thumbnails stay small; the enlarged viewer retains screenshot
+  detail beyond the old 256-pixel thumbnail limit. Provider attachments retain their original bytes.
+
 ### Fixed (`2026-11-04h`)
 
 - Composer image previews use four rows and twelve columns of pixels, with concise dimensions

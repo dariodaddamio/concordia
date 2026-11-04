@@ -11,6 +11,13 @@ pub(super) enum DisplayBackend {
 }
 
 impl DisplayBackend {
+    #[cfg(windows)]
+    pub fn image(&mut self, image: Option<super::native_window::RasterImage>) -> io::Result<()> {
+        match self {
+            Self::Terminal(_) => Ok(()),
+            Self::Window(window) => window.set_image(image),
+        }
+    }
     pub fn title(&mut self, title: &str) -> io::Result<()> {
         match self {
             Self::Terminal(_) => super::write_osc_title(title),

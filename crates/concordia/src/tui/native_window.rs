@@ -5,7 +5,7 @@ use crossterm::event::{
 use ratatui::{
     backend::{Backend, ClearType, WindowSize},
     buffer::Cell,
-    layout::{Position, Size},
+    layout::{Position, Rect, Size},
     style::{Color, Modifier},
 };
 use std::{
@@ -38,6 +38,14 @@ const SHUTDOWN: u32 = WM_APP + 4;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
 
+/// Decoded attachment pixels and their cell-aligned viewport. Provider input retains
+/// its separate immutable file snapshot; this is only a display overlay.
+#[derive(Clone)]
+pub(super) struct RasterImage {
+    pub area: Rect,
+    pub pixels: Arc<image::RgbaImage>,
+}
+
 #[derive(Clone)]
 struct Screen {
     size: Size,
@@ -46,6 +54,7 @@ struct Screen {
     cursor: Position,
     cursor_visible: bool,
     title: String,
+    image: Option<RasterImage>,
 }
 impl Screen {
     fn resize(&mut self, cols: u16, rows: u16, pixels: Size) {
@@ -53,6 +62,7 @@ impl Screen {
         self.pixels = pixels;
         self.cells =
             vec![Cell::default(); usize::from(self.size.width) * usize::from(self.size.height)];
+        self.image = None;
     }
 }
 struct Shared {
@@ -81,6 +91,7 @@ pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
             cursor: Position::default(),
             cursor_visible: false,
             title: "Concordia".into(),
+            image: None,
         }),
     });
     let (events, receiver) = mpsc::sync_channel(4096);
@@ -119,6 +130,33 @@ pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
 }
 
 impl WindowBackend {
+    pub(super) fn set_image(&mut self, image: Option<RasterImage>) -> io::Result<()> {
+        if image.as_ref().is_some_and(|image| {
+            image.pixels.width() == 0
+                || image.pixels.height() == 0
+                || image.pixels.width() > 4096
+                || image.pixels.height() > 4096
+                || u64::from(image.pixels.width()) * u64::from(image.pixels.height()) > 16_000_000
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Image exceeds native preview bounds",
+            ));
+        }
+        let mut screen = self.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+        let unchanged = match (&screen.image, &image) {
+            (None, None) => true,
+            (Some(old), Some(new)) => old.area == new.area && Arc::ptr_eq(&old.pixels, &new.pixels),
+            _ => false,
+        };
+        if unchanged {
+            return Ok(());
+        }
+        screen.image = image;
+        drop(screen);
+        self.shared.dirty.store(true, Ordering::Release);
+        Backend::flush(self)
+    }
     fn post(&self, message: u32) -> io::Result<()> {
         let hwnd = self.shared.hwnd.load(Ordering::Acquire) as HWND;
         if hwnd.is_null() {
@@ -303,6 +341,12 @@ struct Window {
     wheel: i32,
     last_motion: Option<MouseEvent>,
     surface: Option<Surface>,
+    image_pixels: Option<BitmapPixels>,
+}
+
+struct BitmapPixels {
+    source: Arc<image::RgbaImage>,
+    bgra: Vec<u8>,
 }
 
 /// Cached pixels belong to the window thread. Unchanged rows need no GDI calls.
@@ -558,6 +602,7 @@ impl Window {
         // Caret is an overlay, never part of the cached backing image. Expose and
         // blink events therefore only copy cached pixels and repaint this rectangle.
         BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
+        self.paint_image(dc, screen.image.as_ref(), &client);
         if self.focused
             && self.blink
             && screen.cursor_visible
@@ -577,6 +622,91 @@ impl Window {
         }
         if supplied_dc.is_none() {
             EndPaint(hwnd, &paint);
+        }
+    }
+
+    unsafe fn paint_image(&mut self, dc: HDC, image: Option<&RasterImage>, client: &RECT) {
+        let Some(image) = image else {
+            self.image_pixels = None;
+            return;
+        };
+        if self
+            .image_pixels
+            .as_ref()
+            .is_none_or(|cached| !Arc::ptr_eq(&cached.source, &image.pixels))
+        {
+            let mut bgra = image.pixels.as_raw().clone();
+            for pixel in bgra.as_chunks_mut::<4>().0 {
+                let [red, green, blue, alpha] = *pixel;
+                let composite = |channel: u8, background: u8| {
+                    ((u32::from(channel) * u32::from(alpha)
+                        + u32::from(background) * (255 - u32::from(alpha))
+                        + 127)
+                        / 255) as u8
+                };
+                *pixel = [
+                    composite(blue, 31),
+                    composite(green, 23),
+                    composite(red, 20),
+                    255,
+                ];
+            }
+            self.image_pixels = Some(BitmapPixels {
+                source: image.pixels.clone(),
+                bgra,
+            });
+        }
+        let cached = self.image_pixels.as_ref().expect("image pixels prepared");
+        let left = i32::from(image.area.x) * self.cell_width;
+        let top = i32::from(image.area.y) * self.cell_height;
+        let available_width =
+            (i32::from(image.area.width) * self.cell_width).min(client.right - left);
+        let available_height =
+            (i32::from(image.area.height) * self.cell_height).min(client.bottom - top);
+        if available_width <= 0 || available_height <= 0 {
+            return;
+        }
+        let width = image.pixels.width();
+        let height = image.pixels.height();
+        let scale = (f64::from(available_width) / f64::from(width))
+            .min(f64::from(available_height) / f64::from(height))
+            .min(1.0);
+        let rendered_width = (f64::from(width) * scale).floor().max(1.0) as i32;
+        let rendered_height = (f64::from(height) * scale).floor().max(1.0) as i32;
+        let bitmap = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                biSizeImage: cached.bgra.len() as u32,
+                ..mem::zeroed()
+            },
+            ..mem::zeroed()
+        };
+        let previous_mode = SetStretchBltMode(dc, HALFTONE);
+        let mut previous_origin: POINT = mem::zeroed();
+        SetBrushOrgEx(dc, 0, 0, &mut previous_origin);
+        StretchDIBits(
+            dc,
+            left,
+            top,
+            rendered_width,
+            rendered_height,
+            0,
+            0,
+            width as i32,
+            height as i32,
+            cached.bgra.as_ptr().cast(),
+            &bitmap,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+        SetBrushOrgEx(dc, previous_origin.x, previous_origin.y, null_mut());
+        if previous_mode != 0 {
+            SetStretchBltMode(dc, previous_mode);
         }
     }
 }
@@ -616,6 +746,7 @@ unsafe fn window_thread(
         wheel: 0,
         last_motion: None,
         surface: None,
+        image_pixels: None,
     });
     let dpi = GetDpiForSystem().clamp(96, 768) as i32;
     let initial_width = (1120 * dpi / 96).min((GetSystemMetrics(SM_CXSCREEN) * 9 / 10).max(400));

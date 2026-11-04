@@ -1,5 +1,28 @@
 # Concordia verification status
 
+## Installed native original-pixel previews, 2026-11-04i
+
+Source `bc31959` builds the installed executable, SHA-256
+`74133C5FC71AAEBDF26B69D6792E649DF33D2419EB9C80C4E71212CA1877C413`.
+The installed bytes match the qualified artifact; the update source remains the permanent checkout.
+Native Windows previews now draw original decoded pixels with smooth aspect-fit scaling and no
+upscaling. The composer thumbnail remains compact. Enlarged previews no longer reuse the old
+256-pixel thumbnail. Explicit terminal mode retains cell previews. Original attachment bytes and
+provider transport are unchanged.
+
+The existing integrated attachment/viewer test passes with fine-pattern original-resolution
+retention, modal overlay suppression and frame reset. All-target Clippy, optimized build, release
+smoke and exact-artifact Defender scan pass (signatures `1.463.119.0`). An owned native-window
+component probe verifies 4,032 exact checkerboard samples, transparency, no upscaling, resizing
+and removal. The actual release App accepts a synthetic 512×256 image, shows its compact preview,
+opens the viewer through an owned mouse click and matches 8,192 adjacent original pixels exactly
+at 1:1. The final viewer screenshot was inspected. Receipts and screenshots are under ignored
+`target/native-window-proof/sharp-*`; no clipboard changes or extra provider model turns ran.
+
+GitHub's dependency job could not start: its annotation reports failed account payments or a
+spending-limit block. This is not a passing remote CI claim. Existing windows need reopening to
+load i.
+
 ## Installed native-window polish and npm image launch correction, 2026-11-04h
 
 Source `399c4a5` builds the installed executable, SHA-256

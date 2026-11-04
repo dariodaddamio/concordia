@@ -3895,7 +3895,23 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 if !use_window {
                     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 }
-                let drawn = terminal.draw(|f| draw_ui(f, &mut app)).map(|_| ());
+                app.raster.native = use_window;
+                #[cfg(windows)]
+                let mut image = None;
+                let drawn = terminal
+                    .draw(|f| {
+                        raster::begin_frame(&app);
+                        draw_ui(f, &mut app);
+                        #[cfg(windows)]
+                        {
+                            image = raster::native_image(f, &app);
+                        }
+                    })
+                    .map(|_| ());
+                #[cfg(windows)]
+                if drawn.is_ok() {
+                    terminal.backend_mut().image(image)?;
+                }
                 let ended = if use_window {
                     Ok(())
                 } else {
