@@ -1,6 +1,6 @@
-# Feature completion audit: 2026-11-04k candidate
+# Feature completion audit: 2026-11-04m
 
-The full roadmap is **not complete**. The current board has seven grouped remaining workstreams;
+The full roadmap is **not complete**. The current board has seven grouped open/deferred workstreams;
 they mix missing capabilities, qualification and release work, so they are not a feature count
 or a percentage of completion:
 
@@ -13,13 +13,16 @@ or a percentage of completion:
 4. **Native provider and host qualification:** broader approval/output/lifecycle formats, live
    Claude PDF processing and the remaining provider/physical-host matrix stay open. Cursor live
    exact-session continuation was exercised in 04d; that does not qualify every provider path.
-5. **Memory effectiveness:** the synthetic retrieval corpus exists; controlled model-retention
-   and token-saving experiments remain unrun and separately scoped/budgeted.
-6. **Native filesystem confinement:** managed worktrees and cooperative reservations exist;
+5. **Memory effectiveness:** the synthetic retrieval corpus exists and one authorized live Codex
+   handoff smoke passes all six constraint checks. Controlled multi-arm retention/token-saving
+   comparisons remain unrun; the one-turn allowance is consumed. [Evidence](quality/memory-evaluation.md).
+6. **Native filesystem confinement — deferred by owner:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer
    [mechanism prototype](quality/windows-write-guard-research.md) passes file/crypto/network/cancel
-   checks; production scope, ACL lifecycle and provider compatibility remain open.
-7. **Unsigned Windows distribution:** the owner chose unsigned delivery. Fresh exact-artifact
+   checks; production integration is deferred with other new Windows work. Existing provider
+   permissions remain unchanged; no additional guard-scope decision is being requested now.
+7. **Unsigned Windows distribution — publication on hold:** the owner chose unsigned delivery, then
+   deferred Windows/release work and GitHub publication on 2026-11-04. Fresh exact-artifact
    antivirus/install/update rehearsal, publication and public-feed checks remain release gates. GitHub's current
    billing/spending-limit block also prevents a passing remote-CI claim.
 

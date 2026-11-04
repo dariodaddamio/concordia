@@ -77,7 +77,39 @@ Its test executable SHA-256 is
 The observed process peak working set is 63,864,832 bytes and the largest retained serialized
 report pair remains 5,413 bytes. Relevance and incomplete-scope outcomes remain unchanged.
 
-## Controlled model-retention experiment: prepared, not run
+## One authorized live handoff smoke, 2026-11-04
+
+The owner authorized up to one synthetic model turn. The conservative allowance was **one turn
+total**, and it is now consumed. A fake-provider rehearsal passed before the sole live attempt.
+There were no automatic retries, account switches or additional provider turns.
+
+Concordia indexed an isolated synthetic native history, built its normal handoff directory and
+resolved three exact, hash-verified excerpts. Those excerpts were supplied to one fresh Codex
+session through the existing provider-turn adapter with native read-only permissions. The selected
+provider's existing default was preserved: the new native session reports **gpt-5.6-sol**, with
+**codex-cli 0.166.0**. No user conversation was resumed, credential copied, or guard enabled.
+
+All six response checks passed: prefer current port 7443 over superseded 4100; preserve draft 17
+over old proposal 99; name only `notes.txt` for a future separately approved edit; decline unapproved
+integration; decline replay of an already-applied action; and identify the exact source index.
+The native process exited zero, reported no failed/cancelled turn, made zero tool calls and left
+all three workspace files and an outside sentinel unchanged. Observed duration was 6.185 seconds.
+Reported usage was **16,127 input tokens, 73 output tokens, zero cached tokens**; monetary cost
+was not reported and is not inferred.
+
+The private ignored receipt directory is selected by `target/live-handoff-current.txt`. It retains
+the fixture, verified handoff, before/after outcome, native session/account binding, answer, usage
+and hash-bound source/driver evidence. The original receipt's version probe returned the Node
+launcher version; `provider-metadata.json` separately records the read-only CLI-version check and
+the exact new session's model metadata. This correction used no additional model turn.
+
+This is one **source-use/handoff smoke**, not a retention benchmark: the model received already
+verified excerpts and performed no pointer-fetch tool call. It does not exercise native compaction,
+compare experimental arms, measure token savings, establish another provider/model's behavior or
+justify changing ranking defaults. Windows work and GitHub publication remain on hold by owner
+instruction. Broader live experiments require a new explicit allowance.
+
+## Controlled model-retention comparison: prepared, not run
 
 Use three arms on the same synthetic committed repository and pinned constraints: native resume
 with provider compaction, a fresh native session with bounded verified handoff pointers, and
