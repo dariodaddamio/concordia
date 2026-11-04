@@ -655,10 +655,10 @@ pub(super) async fn run(
                             }
                         }
                     }
-                    Some("task_updated") => {
+                    Some("task_updated")
                         if value["patch"]["status"].as_str().is_some_and(|status| {
                             matches!(status, "completed" | "failed" | "stopped" | "killed")
-                        }) {
+                        }) => {
                             if let Some(task_id) = bounded_id(value.get("task_id")) {
                                 if seen_deferred_tasks.contains(&task_id) {
                                     deferred_tasks.remove(&task_id);
@@ -681,7 +681,6 @@ pub(super) async fn run(
                                     );
                                 }
                             }
-                        }
                     }
                     _ => {}
                 }
