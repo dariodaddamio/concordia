@@ -28,6 +28,7 @@ pub(super) struct Activity {
     pub expanded: HashSet<usize>,
     pub collapsed: HashSet<usize>,
     pub detail: Option<usize>,
+    pub detail_text: Option<(String, String)>,
     pub query: String,
     pub query_cursor: usize,
     pub matches: Vec<Match>,
@@ -166,6 +167,7 @@ impl Activity {
         }
     }
     pub fn open(&mut self, message: usize) {
+        self.detail_text = None;
         self.file_targets.clear();
         self.pressed_file = None;
         self.detail = Some(message);

@@ -1,5 +1,30 @@
 # Concordia verification status
 
+## Installed completed-activity and delivered-paste correction, 2026-11-04f
+
+Application source `cca73d1` builds the installed executable, SHA-256
+`CF88DE80CDFE223B20A0F14E19B49EAA3EB03B7594A2E61915C007DFA6C6F9B9`.
+The active install pointer resolves to matching bytes. Existing panes need reopening to load f.
+
+Completed turns reconcile final cards even after progress has streamed. The clickable Review
+activity completion row and Ctrl+E reopen reported thinking and tool/edit details without adding
+reasoning to context. Async option prompts accept the actual title/string-choice schema.
+
+Five focused existing unit scenarios and two real-terminal fixture journeys pass; terminal checks
+finished in 40.66 seconds and include unbracketed image paths plus activity search/navigation.
+The production PNG clipboard branch passed an isolated in-memory Windows Forms DataObject check
+with exact byte comparison, without touching the user's clipboard. All-target Clippy, release
+build/smoke and Defender scan pass; signatures are `1.463.116.0`. Logs and exact installed-artifact
+receipt are under ignored `target/paste-activity-fix`.
+
+The actual host clipboard exposed text formats during metadata-only checks; physical bitmap paste
+was not observed. Windows Terminal settings explicitly bind Ctrl+V to its host paste action, and
+Ctrl+Shift+V uses the default paste action. PNG-only clipboard support and delivered empty paste
+events are fixed, but the app cannot capture a key the host consumes without an input event.
+The concrete forwarding bindings are prepared separately and remain unapplied pending owner
+approval because they change those shortcuts for other Terminal apps. This is not a claim that
+physical Ctrl+V/Ctrl+Shift+V image paste now works under unchanged host bindings.
+
 ## Installed image-paste and native-edit correction, 2026-11-04e
 
 Application source `4deeb39` builds the installed executable, SHA-256

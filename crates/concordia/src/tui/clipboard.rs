@@ -149,7 +149,7 @@ mod native {
     use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
-        OpenClipboard, SetClipboardData,
+        OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
@@ -193,9 +193,15 @@ mod native {
     pub fn has_attachment() -> bool {
         // CF_BITMAP, CF_DIB, CF_DIBV5 and Explorer file drops. The import helper
         // validates file types and bounds after an explicit paste action.
-        [2, 8, 17, 15]
+        let bitmap_or_files = [2, 8, 17, 15]
             .into_iter()
-            .any(|format| unsafe { IsClipboardFormatAvailable(format) != 0 })
+            .any(|format| unsafe { IsClipboardFormatAvailable(format) != 0 });
+        // Browsers and image editors can expose only the registered PNG format rather
+        // than CF_BITMAP/DIB. Registering the name obtains its id; it changes no contents.
+        let png = unsafe {
+            RegisterClipboardFormatW([b'P' as u16, b'N' as u16, b'G' as u16, 0].as_ptr())
+        };
+        bitmap_or_files || (png != 0 && unsafe { IsClipboardFormatAvailable(png) != 0 })
     }
     pub fn get_text() -> Result<String, String> {
         let _open = open(null_mut())?;

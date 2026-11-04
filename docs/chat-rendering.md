@@ -94,6 +94,14 @@ physical-host check are required to claim working visible pointer shapes.
 
 ### Image paste and edit evidence, 2026-11-04e
 
+Build `2026-11-04f` adds a clickable **Review activity** completion row. It opens the turn's
+provider-reported thinking and full tool/edit details, with file links and search; Ctrl+E opens
+the latest review. Thinking rows also have a clickable gutter. No reasoning is synthesized or
+added to provider context. Final tool cards reconcile by identity even when earlier cards streamed,
+so late edit details remain visible after completion. The aggregate review is bounded to 256 KiB;
+individual cards remain available above it. This does not enable transcript recording or invent
+activity missing from a provider's native history.
+
 Standalone pasted PNG/JPEG/WebP paths attach and show a composer thumbnail automatically.
 Normal typing while import runs keeps the attachment. F9 imports a pending file offer, pastes a
 clipboard image, or opens the attachment chooser. The footer exposes this key even when a host

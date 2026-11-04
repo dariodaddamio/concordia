@@ -43,6 +43,7 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
                     Target::Picker => app.dismiss_picker(),
                     Target::Activity => {
                         app.activity.detail = None;
+                        app.activity.detail_text = None;
                         app.activity.query.clear();
                     }
                 }

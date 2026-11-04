@@ -268,19 +268,40 @@ fn parse_tool(text: &str) -> Vec<Question> {
                     .iter()
                     .take(3)
                     .filter_map(|q| {
-                        let prompt = q.get("question")?.as_str()?.to_owned();
-                        let options = q
-                            .get("options")?
-                            .as_array()?
-                            .iter()
-                            .take(9)
-                            .filter_map(|o| {
-                                o.as_str()
-                                    .or_else(|| o.get("label").and_then(|s| s.as_str()))
-                                    .map(str::to_owned)
-                            })
-                            .collect::<Vec<_>>();
-                        (options.len() >= 2).then_some(Question { prompt, options })
+                        let prompt = q
+                            .get("question")
+                            .or_else(|| q.get("title"))?
+                            .as_str()?
+                            .trim();
+                        if prompt.is_empty() || prompt.len() > 4096 {
+                            return None;
+                        }
+                        // Host async prompts use `title` and optional string choices. These
+                        // remain conversational replies, never native permission decisions.
+                        let options = match q.get("options") {
+                            None if q.get("title").is_some() => Vec::new(),
+                            Some(options) => {
+                                let options = options.as_array()?;
+                                if options.is_empty() || options.len() > 9 {
+                                    return None;
+                                }
+                                options
+                                    .iter()
+                                    .map(|option| {
+                                        let label = option.as_str().or_else(|| {
+                                            option.get("label").and_then(|label| label.as_str())
+                                        })?;
+                                        (!label.trim().is_empty() && label.len() <= 1200)
+                                            .then(|| label.to_owned())
+                                    })
+                                    .collect::<Option<Vec<_>>>()?
+                            }
+                            _ => return None,
+                        };
+                        (!options.is_empty() || q.get("title").is_some()).then_some(Question {
+                            prompt: prompt.to_owned(),
+                            options,
+                        })
                     })
                     .collect();
             }
@@ -1194,5 +1215,57 @@ mod tests {
         assert!(parse("```\nWhich?\n1. one\n2. two\n```").is_empty());
         assert_eq!(parse("Which approach do you prefer?\n\n1. **Small patch** (Recommended)\n2. Full refactor")[0].options.len(),2);
         assert_eq!(parse_tool(r#"input: {"questions":[{"question":"Which?","options":[{"label":"One"},{"label":"Two"}]}]}"#)[0].options[0],"One");
+        let payload = serde_json::json!({"questions":[{"title":"How are you pasting the image?","options":["Ctrl+V","Ctrl+Shift+V","Drag and drop"]}]}).to_string();
+        assert_eq!(
+            parse_tool(&payload)[0].prompt,
+            "How are you pasting the image?"
+        );
+        assert_eq!(parse_tool(&payload)[0].options.len(), 3);
+        assert_eq!(
+            parse_tool(r#"{"questions":[{"title":"Describe the result"}]}"#)[0]
+                .options
+                .len(),
+            0
+        );
+        assert!(
+            parse_tool(r#"{"questions":[{"title":"Choose","options":["One",17]}]}"#).is_empty()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().into(), dir.path().into());
+        app.editor.set_text("keep the current draft");
+        app.push_card(StreamCard {
+            id: "async-question-fixture".into(),
+            title: "functions.request_user_input_async".into(),
+            detail: Some(format!("arguments: {payload}")),
+            status: CardStatus::Done,
+        });
+        assert!(app.questions.waiting());
+        assert!(app.questions.native.is_none());
+        assert!(!app.questions.focused);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let mut transcript = frame.area();
+                let area = carve(&mut transcript, &mut app);
+                draw(frame, area, &mut app);
+            })
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("How are you pasting the image?"));
+        assert!(screen.contains("Ctrl+Shift+V"));
+        assert!(screen.contains("Drag and drop"));
+        choose(&mut app, 1);
+        assert_eq!(
+            app.queue.items[0],
+            "How are you pasting the image?\nCtrl+Shift+V"
+        );
+        assert_eq!(app.editor.text(), "keep the current draft");
+        assert!(app.questions.native.is_none());
     }
 }

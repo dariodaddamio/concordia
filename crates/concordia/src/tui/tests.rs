@@ -2286,7 +2286,30 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
         "first   idea\n\n\nsecond idea".into(),
     ));
     h.app.apply_progress(TurnProgress::Text("Because.".into()));
-    h.app.finalize_turn(TurnOutcome::default());
+    h.app.apply_progress(TurnProgress::Card(StreamCard {
+        id: "streamed-edit".into(),
+        title: "Edit".into(),
+        detail: Some("File: example.rs".into()),
+        status: CardStatus::Running,
+    }));
+    h.app.finalize_turn(TurnOutcome {
+        exit_code: Some(0),
+        cards: vec![
+            StreamCard {
+                id: "streamed-edit".into(),
+                title: "Edit".into(),
+                detail: Some("File: example.rs\n@@\n-before\n+after".into()),
+                status: CardStatus::Done,
+            },
+            StreamCard {
+                id: "late-edit".into(),
+                title: "Edit".into(),
+                detail: Some("File: late.rs\n@@\n-old\n+new".into()),
+                status: CardStatus::Done,
+            },
+        ],
+        ..TurnOutcome::default()
+    });
     let thought = h
         .app
         .messages
@@ -2300,6 +2323,50 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
         .iter()
         .all(|m| !m.text.contains("idea")));
     assert!(h.app.live_thinking.is_empty());
+    let cards: Vec<_> = h
+        .app
+        .messages
+        .iter()
+        .filter_map(|m| m.card.as_ref())
+        .collect();
+    assert_eq!(
+        cards.len(),
+        2,
+        "final cards reconcile instead of disappearing or duplicating"
+    );
+    assert!(cards.iter().all(|card| card.status == CardStatus::Done));
+    h.draw();
+    let row = h
+        .app
+        .view
+        .rows
+        .iter()
+        .position(|row| {
+            row.text
+                .iter()
+                .collect::<String>()
+                .contains("Review activity")
+        })
+        .unwrap();
+    let y = h.app.areas.transcript.y + (row - h.app.view.visible().start) as u16;
+    let x = h.app.areas.transcript.x + 4;
+    assert_eq!(pointer::shape(&h.app, x, y), "pointer");
+    h.click(x, y);
+    h.draw();
+    let (_, detail) = h
+        .app
+        .activity
+        .detail_text
+        .as_ref()
+        .expect("clicking completion opens turn activity");
+    assert!(detail.contains("first   idea\n\n\nsecond idea"));
+    assert!(detail.contains("-before\n+after") && detail.contains("File: late.rs"));
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    h.key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert!(
+        h.app.activity.detail_text.is_some(),
+        "keyboard review remains available after completion"
+    );
 }
 
 #[test]
