@@ -810,18 +810,20 @@ pub(super) async fn run(
                 .unwrap_or_else(|| "Claude delegated task".into());
             let tool_use_id = deferred_task_tools.remove(&task_id).flatten();
             native_task_card(
-                &task_id,
+                (
+                    &task_id,
+                    interactions
+                        .capabilities
+                        .permissions
+                        .connection_id
+                        .as_deref(),
+                    tool_use_id.as_deref(),
+                ),
                 &title,
                 crate::provider::stream_cards::CardStatus::Error,
                 Some("interrupted before delegated task completion".into()),
                 &mut out,
                 &progress,
-                interactions
-                    .capabilities
-                    .permissions
-                    .connection_id
-                    .as_deref(),
-                tool_use_id.as_deref(),
             );
         }
     }
