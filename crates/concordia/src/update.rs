@@ -839,6 +839,25 @@ fn unique_tag() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
+/// Rename may briefly fail while Windows AV or a just-exited verifier releases its image.
+/// Retry only the documented sharing/lock errors; all other failures remain immediate.
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(32 | 33))
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Replace `dest` with a copy of `built`, tolerating `dest` being a running executable.
 fn swap_in(built: &Path, dest: &Path, built_len: u64, expected_version: &str) -> Result<()> {
     let dir = dest.parent().context("install path has no parent")?;
@@ -859,15 +878,15 @@ fn swap_in(built: &Path, dest: &Path, built_len: u64, expected_version: &str) ->
     }
     let had_old = dest.exists();
     if had_old {
-        if let Err(e) = fs::rename(dest, &aside) {
+        if let Err(e) = rename_with_retry(dest, &aside) {
             let _ = fs::remove_file(&staged);
             bail!("cannot move the old {} aside: {e}", dest.display());
         }
     }
-    if let Err(e) = fs::rename(&staged, dest) {
+    if let Err(e) = rename_with_retry(&staged, dest) {
         // Put the old one back so the install is never left without an concordia.exe.
         if had_old {
-            let _ = fs::rename(&aside, dest);
+            let _ = rename_with_retry(&aside, dest);
         }
         let _ = fs::remove_file(&staged);
         bail!("cannot install {}: {e}", dest.display());

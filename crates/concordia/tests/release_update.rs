@@ -287,6 +287,30 @@ fn updating_twice_keeps_a_working_install() {
     let payload = real_concordia();
     let tag = format!("v{}", real_version());
     install_with(&Mock::honest(payload.clone()), &tag).unwrap();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let active = PathBuf::from(
+            std::fs::read_to_string(sb.install.path().join("current"))
+                .unwrap()
+                .trim(),
+        );
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let held = std::thread::spawn(move || {
+            let _file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(3)
+                .open(active)
+                .unwrap();
+            ready_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        });
+        ready_rx.recv().unwrap();
+        install_with(&Mock::honest(payload.clone()), &tag).unwrap();
+        held.join().unwrap();
+    }
+    #[cfg(not(windows))]
     install_with(&Mock::honest(payload.clone()), &tag).unwrap();
     assert_installed_and_active(&sb, &payload);
 }
