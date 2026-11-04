@@ -1,6 +1,8 @@
 # Windows write guard: mechanism proof and product decision
 
 Status: local prototype, 2026-11-04. No production provider guard is shipped or enabled.
+The owner's later instruction defers new Windows work. Production integration stays deferred;
+there is no pending request to enable it or change real folder permissions.
 Managed worktrees and reservations remain cooperative; the existing native provider permission
 modes keep their documented behavior.
 
@@ -36,9 +38,10 @@ Exact local proof source and result are under ignored `target/sandbox-proof`:
 
 ## Decision before production integration
 
-The owner has been asked whether the optional guard should cover only Concordia-managed
+Before the deferral, the owner was asked whether the optional guard should cover only Concordia-managed
 worktrees/accounts, existing projects/provider folders too, or remain delegated to native provider
-permission modes. Existing-folder support needs explicit Windows ACL grants, runtime read access
+permission modes. No scope was approved; the subsequent Windows-work deferral takes precedence.
+Existing-folder support needs explicit Windows ACL grants, runtime read access
 and crash cleanup. The prototype does not authorize those real-folder mutations.
 
 A production adapter needs exact path review, a default-off policy, bounded inventory, durable

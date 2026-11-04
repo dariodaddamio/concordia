@@ -1,5 +1,29 @@
 # Concordia verification status
 
+## Single authorized live handoff check, 2026-11-04
+
+The owner approved up to one synthetic model turn and deferred Windows/release work and GitHub
+publication. One turn total was used, with no automatic retry or account switch. A fake-provider
+rehearsal passed first. Application source remains `36addaad1a18af6a7338e4c098227508bf3d193b`;
+no product code, installed binary, permission policy or release asset was changed.
+
+The existing Concordia provider adapter launched a fresh native read-only Codex session using
+the selected account's existing default. Native metadata reports gpt-5.6-sol; read-only CLI
+version verification reports codex-cli 0.166.0. Three hash-verified synthetic native-history
+excerpts were supplied through the handoff prefix. All six answer checks pass, with zero tool
+calls, unchanged workspace/sentinel bytes, exit zero and no failed/cancelled/timed-out outcome.
+Observed duration was 6.185 seconds; reported usage was 16,127 input and 73 output tokens,
+zero cached tokens, with no monetary cost reported.
+
+The exact new native session ID was verified against its own session header. The initial version
+probe measured the Node launcher; a separately retained metadata receipt corrects the CLI/model
+identity without another model turn. Source, driver/library/receipt hashes and account/session
+bindings remain in the ignored directory selected by `target/live-handoff-current.txt`.
+
+This qualifies one source-use smoke only, not compaction retention, a multi-arm comparison,
+token savings, another model/provider or the full roadmap. The one-turn allowance is consumed.
+See [memory evaluation](quality/memory-evaluation.md) for the exact scope and remaining comparison.
+
 ## Installed footer popover and completed-work restoration, 2026-11-04m
 
 Application source `93d0d68` builds the installed executable, SHA-256

@@ -1,5 +1,9 @@
 # Release readiness, 2026-11-03z candidate
 
+Owner direction, 2026-11-04: defer Windows/release work and wait to publish on GitHub.
+The repository remains private; no tag, release, upload or visibility change is authorized.
+Existing installed builds and their recorded local evidence remain available.
+
 Concordia is a working private Windows build. It is not ready to advertise as a proven,
 complete context manager/orchestrator. A limited public preview has a smaller product scope,
 but still needs the concrete gates below. This document does not authorize publication.
