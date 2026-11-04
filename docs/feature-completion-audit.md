@@ -1,7 +1,7 @@
 # Feature completion audit: 2026-11-03z candidate
 
 The full roadmap is **not complete**. Remaining product capabilities include Cursor proactive
-capacity and external usage signals, installed/live qualification of the new PDF/binary document transport, and unsupported
+capacity and external usage signals, live qualification of native PDF processing, and unsupported
 native interaction/output formats beyond the qualified adapters. Live-provider
 qualification, memory-retention experiments and signing/distribution remain separate open gates.
 
@@ -27,7 +27,7 @@ creation does not change the implementation status recorded here.
 - Claude CLI 2.1.317 native stdio supports owned allow-once/deny review and the scoped
   `AskUserQuestion` broker path in main/worker runs. Original question/options and string answers
   are preserved; multi-select joins with `, `. Malformed/unsupported requests receive denial and
-  no HTML preview; fixture qualification, live turns and full question parity remain open.
+  no HTML preview. Process and foreground/worker UI fixtures pass; live turns remain unverified.
   [Transport limits](quality/native-worker-input.md).
 - Claude explicit-model context measurements are captured after a completed turn on its live
   connection and reused only while the exact transcript revision and compaction setting match.

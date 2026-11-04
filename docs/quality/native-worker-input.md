@@ -51,7 +51,8 @@ the focused choice and Enter confirms; mouse clicks toggle choices and the confi
 the reviewed set. A free-text `Other` response reuses the existing note row rather than opening
 HTML or a second editor. The same bounded ownership, cancellation and at-most-once response
 rules apply to these answers.
-Fixture qualification is pending, and no live model turn or installed-host parity is claimed.
+Extended process and foreground/worker UI fixtures pass in build z. No live model turn or
+physical-host parity is claimed; exact installed artifact evidence is in [E2E status](../e2e-status.md).
 
 ## Activity and navigation
 
