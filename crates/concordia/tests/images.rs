@@ -340,4 +340,422 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             }
         }
     }
+
+    // Cursor reports successful file paths on completed structured events. Exercise the real
+    // stream runner and the shared catalog, including duplicate and foreign/failed reports.
+    env.set("CONCORDIA_CURSOR_BIN", FAKE);
+    for (reported_session, failed, expected) in [
+        ("cursor-output-session", false, 1),
+        ("foreign-session", false, 0),
+        ("", false, 0),
+        ("cursor-output-session", true, 0),
+    ] {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("output.md"), "Synthetic output\n").unwrap();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let owner = provider::interaction::InteractionOwner {
+            conversation_id: conversation.clone(),
+            workspace: work.path().into(),
+            execution_cwd: work.path().into(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Cursor,
+            account: "cursor-fixture".into(),
+            home: Some(root.into()),
+        };
+        let mut event = json!({"type":"tool_call","subtype":"completed","session_id":reported_session,
+            "call_id":"file-output\nrevision","tool_call":{"writeToolCall":{"args":{"path":"output.md"},
+            "result":{"success":{"path":"output.md"}}}}});
+        if failed {
+            event["tool_call"]["writeToolCall"]["result"]["error"] = json!("Write failed");
+        }
+        std::fs::write(&stream, format!("{event}\n{event}\n")).unwrap();
+        let request = ProviderTurnRequest {
+            images: &[],
+            provider: ProviderKind::Cursor,
+            prompt: "Produce the requested file",
+            cwd: work.path(),
+            home_path: Some(root),
+            model: None,
+            native_session_id: Some("cursor-output-session"),
+            trust: TrustMode::Plan,
+            context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
+        };
+        let outcome = provider::turn::run_provider_turn_with_owner(&request, owner, None, None)
+            .await
+            .unwrap();
+        assert_eq!(outcome.exit_code, Some(0));
+        let records = concordia::artifacts::read(&root.join("state"), &conversation).unwrap();
+        assert_eq!(records.len(), expected);
+        if let Some(record) = records.first() {
+            assert_eq!(record.native_session, "cursor-output-session");
+            assert_eq!(record.kind, "update");
+            assert!(!record.event_id.contains('\n'));
+            assert_eq!(
+                record.open_current().unwrap(),
+                work.path().join("output.md").canonicalize().unwrap()
+            );
+            std::fs::remove_file(work.path().join("output.md")).unwrap();
+            assert!(record.open_current().is_err());
+        }
+    }
+
+    env.set("CONCORDIA_CLAUDE_BIN", FAKE);
+    for (failed, path, expected) in [
+        (false, "output.md", 1),
+        (true, "output.md", 0),
+        (false, "foreign.md", 0),
+    ] {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("output.md"), "Synthetic Claude output\n").unwrap();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let owner = provider::interaction::InteractionOwner {
+            conversation_id: conversation.clone(),
+            workspace: work.path().into(),
+            execution_cwd: work.path().into(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Claude,
+            account: "claude-artifacts".into(),
+            home: Some(root.into()),
+        };
+        let call = json!({"type":"assistant","session_id":"claude-output-session","message":{"content":[
+            {"type":"tool_use","id":"write-output","name":"Write","input":{"file_path":"output.md","content":"Synthetic Claude output"}}]}});
+        let result = json!({"type":"user","session_id":"claude-output-session","message":{"content":[
+            {"type":"tool_result","tool_use_id":"write-output","is_error":failed,"content":"Completed"}]},
+            "tool_use_result":{"filePath":path}});
+        std::fs::write(&stream, format!("{call}\n{result}\n{result}\n")).unwrap();
+        let request = ProviderTurnRequest {
+            images: &[],
+            provider: ProviderKind::Claude,
+            prompt: "Produce the requested file",
+            cwd: work.path(),
+            home_path: Some(root),
+            model: None,
+            native_session_id: Some("claude-output-session"),
+            trust: TrustMode::Plan,
+            context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
+        };
+        let outcome = provider::turn::run_provider_turn_with_owner(&request, owner, None, None)
+            .await
+            .unwrap();
+        assert_eq!(outcome.exit_code, Some(0));
+        let records = concordia::artifacts::read(&root.join("state"), &conversation).unwrap();
+        assert_eq!(records.len(), expected);
+        if let Some(record) = records.first() {
+            assert_eq!(record.kind, "update");
+            assert!(record.open_current().is_ok());
+        }
+    }
+    env.set("FAKE_PROVIDER_NATIVE_CLAUDE", "1");
+    for fixture in [
+        json!({}),
+        json!({"allow":true}),
+        json!({"cancel":true}),
+        json!({"duplicate":true}),
+        json!({"fragmented":true}),
+        json!({"unknown":true}),
+        json!({"model_only":true}),
+        json!({"bad_init":true}),
+        json!({"closed":true}),
+    ] {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("claude-fixture.json"), fixture.to_string()).unwrap();
+        let owner = provider::interaction::InteractionOwner {
+            conversation_id: uuid::Uuid::new_v4().to_string(),
+            workspace: work.path().into(),
+            execution_cwd: work.path().into(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Claude,
+            account: "claude-fixture".into(),
+            home: Some(root.into()),
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let answer_owner = owner
+            .validate_for(ProviderKind::Claude, work.path(), Some(root))
+            .unwrap();
+        let answer_fixture = fixture.clone();
+        let answers = tokio::spawn(async move {
+            let mut offered = 0;
+            while let Some(event) = rx.recv().await {
+                if let TurnProgress::Interaction(request) = event {
+                    offered += 1;
+                    if answer_fixture["cancel"] == true || answer_fixture["closed"] == true {
+                        // The process must continue reading cancellation/EOF while review is pending.
+                        continue;
+                    }
+                    let answer = request
+                        .single_choices(&[usize::from(answer_fixture["allow"] != true)])
+                        .unwrap();
+                    request.respond_owned(&answer_owner, answer).unwrap();
+                }
+            }
+            offered
+        });
+        let request = ProviderTurnRequest {
+            images: &images,
+            provider: ProviderKind::Claude,
+            prompt: "Inspect the synthetic fixture",
+            cwd: work.path(),
+            home_path: Some(root),
+            model: Some("fixture-claude"),
+            native_session_id: Some("exact-claude-session"),
+            trust: TrustMode::Ask,
+            context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
+        };
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            provider::turn::run_provider_turn_with_transport(
+                &request,
+                owner,
+                concordia::native_input::Mode::ClaudeStdio,
+                None,
+                Some(tx),
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "Claude fixture timed out: {fixture}; journal: {}",
+                std::fs::read_to_string(work.path().join("claude-calls.jsonl")).unwrap_or_default()
+            )
+        })
+        .unwrap();
+        let offered = answers.await.unwrap();
+        let calls = std::fs::read_to_string(work.path().join("claude-calls.jsonl")).unwrap();
+        let values: Vec<Value> = calls
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            out.failed,
+            fixture["bad_init"] == true || fixture["closed"] == true,
+            "{fixture}: {out:?}"
+        );
+        if fixture["bad_init"] == true {
+            assert!(!values.iter().any(|value| value["type"] == "user"));
+            assert_eq!(offered, 0);
+        } else if fixture["model_only"] == true {
+            assert_eq!(offered, 0);
+        } else if fixture["unknown"] == true {
+            assert_eq!(offered, 0);
+            let response = values
+                .iter()
+                .find(|value| value["type"] == "control_response")
+                .unwrap();
+            assert_eq!(response["response"]["subtype"], "error");
+        } else {
+            assert_eq!(offered, 1);
+            let user = values.iter().find(|value| value["type"] == "user").unwrap();
+            assert_eq!(
+                user["message"]["content"][1]["source"]["data"],
+                image.data().unwrap()
+            );
+            let responses: Vec<_> = values
+                .iter()
+                .filter(|value| value["type"] == "control_response")
+                .collect();
+            if fixture["cancel"] == true || fixture["closed"] == true {
+                assert!(
+                    responses.is_empty(),
+                    "late grant after cancellation/EOF: {calls}"
+                );
+            } else {
+                assert_eq!(responses.len(), 1, "duplicate response: {calls}");
+                assert_eq!(
+                    responses[0]["response"]["response"]["behavior"],
+                    if fixture["allow"] == true {
+                        "allow"
+                    } else {
+                        "deny"
+                    }
+                );
+                if fixture["allow"] == true {
+                    assert_eq!(
+                        responses[0]["response"]["response"]["updatedInput"]["file_path"],
+                        "synthetic-output.md"
+                    );
+                }
+            }
+        }
+    }
+
+    concordia::store::upsert_stored_account(
+        &root.join("state"),
+        concordia::store::StoredAccount {
+            id: "claude-fixture".into(),
+            provider: ProviderKind::Claude,
+            home_path: Some(root.to_string_lossy().into_owned()),
+            label: "Synthetic Claude fixture".into(),
+            created_at: "0".into(),
+        },
+    )
+    .unwrap();
+    for (fixture, known) in [
+        (json!({"context_used":800}), true),
+        (json!({"context_model":"foreign-model"}), false),
+    ] {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("claude-fixture.json"), fixture.to_string()).unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let binding = concordia::native_memory::Binding::new(
+            ProviderKind::Claude,
+            "claude-fixture",
+            root,
+            &session,
+        )
+        .unwrap();
+        concordia::capacity::set(&root.join("state"), &binding, "rollover 80").unwrap();
+        let owner = provider::interaction::InteractionOwner {
+            conversation_id: uuid::Uuid::new_v4().to_string(),
+            workspace: work.path().into(),
+            execution_cwd: work.path().into(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Claude,
+            account: "claude-fixture".into(),
+            home: Some(root.into()),
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let answers = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let TurnProgress::Interaction(request) = event {
+                    let owner = request.owner().unwrap().clone();
+                    request
+                        .respond_owned(&owner, request.single_choices(&[1]).unwrap())
+                        .unwrap();
+                }
+            }
+        });
+        let request = ProviderTurnRequest {
+            images: &[],
+            provider: ProviderKind::Claude,
+            prompt: "Synthetic context fixture",
+            cwd: work.path(),
+            home_path: Some(root),
+            model: Some("fixture-claude"),
+            native_session_id: Some(&session),
+            trust: TrustMode::Ask,
+            context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
+        };
+        let outcome = provider::turn::run_provider_turn_with_transport(
+            &request,
+            owner,
+            concordia::native_input::Mode::ClaudeStdio,
+            None,
+            Some(tx),
+        )
+        .await
+        .unwrap();
+        answers.await.unwrap();
+        assert!(!outcome.failed, "{outcome:?}");
+        let observation = concordia::native_memory::context_observation(
+            &root.join("state"),
+            &binding,
+            "fixture-claude",
+        )
+        .unwrap();
+        assert_eq!(observation.measurement.is_some(), known, "{observation:?}");
+        assert!(observation.native_turn_id.is_none());
+        if known {
+            let evidence = observation.control.clone().unwrap();
+            assert_eq!(evidence.response_sha256.len(), 64);
+            uuid::Uuid::parse_str(&evidence.connection_id).unwrap();
+            uuid::Uuid::parse_str(&evidence.request_id).unwrap();
+            assert!(observation.source.is_some());
+            assert!(concordia::capacity::Policy {
+                rollover_percent: Some(80),
+                compaction: Default::default()
+            }
+            .rollover(observation.measurement));
+            let state = root.join("state");
+            concordia::capacity::set(&state, &binding, "compact automatic-off").unwrap();
+            assert!(concordia::native_memory::context_observation(
+                &state,
+                &binding,
+                "fixture-claude"
+            )
+            .unwrap()
+            .measurement
+            .is_none());
+            concordia::capacity::set(&state, &binding, "compact native").unwrap();
+            let cache = std::fs::read_dir(state.join(".ao/context-observations"))
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "json")
+                })
+                .unwrap();
+            let original = std::fs::read(&cache).unwrap();
+            let mut future: Value = serde_json::from_slice(&original).unwrap();
+            future["version"] = json!(255);
+            std::fs::write(&cache, future.to_string()).unwrap();
+            assert!(concordia::native_memory::context_observation(
+                &state,
+                &binding,
+                "fixture-claude"
+            )
+            .unwrap()
+            .measurement
+            .is_none());
+            assert!(concordia::capacity::claude_capacity::save(
+                &state,
+                &binding,
+                "fixture-claude",
+                observation.source.clone().unwrap(),
+                observation.measurement.unwrap(),
+                evidence,
+                &Default::default()
+            )
+            .is_err());
+            assert_eq!(std::fs::read_to_string(&cache).unwrap(), future.to_string());
+            std::fs::write(&cache, original).unwrap();
+            let source = root
+                .join("projects/fake-provider")
+                .join(format!("{session}.jsonl"));
+            use std::io::Write;
+            writeln!(std::fs::OpenOptions::new()
+                .append(true)
+                .open(source)
+                .unwrap())
+            .unwrap();
+            let stale = concordia::native_memory::context_observation(
+                &root.join("state"),
+                &binding,
+                "fixture-claude",
+            )
+            .unwrap();
+            assert!(stale.measurement.is_none());
+        }
+        let journal = std::fs::read_to_string(work.path().join("claude-calls.jsonl")).unwrap();
+        let values: Vec<Value> = journal
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            values
+                .iter()
+                .filter(|value| value["type"] == "user")
+                .count(),
+            1
+        );
+        assert_eq!(
+            values
+                .iter()
+                .filter(|value| value["request"]["subtype"] == "get_context_usage")
+                .count(),
+            1
+        );
+    }
 }

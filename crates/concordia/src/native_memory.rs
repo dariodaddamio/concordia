@@ -415,9 +415,18 @@ pub fn context_observation(
         transport: "codex-rollout-jsonl",
         evidence_version: "last-request-v1",
         source: None,
+        control: None,
         measurement: None,
         invalidation_reason: Some(crate::capacity::unavailable_reason(binding.provider).into()),
     };
+    if binding.provider == ProviderKind::Claude {
+        match control_checkpoint(root, binding) {
+            Ok(checkpoint) => {
+                return crate::capacity::claude_capacity::load(root, binding, model, &checkpoint)
+            }
+            Err(reason) => observation.invalidation_reason = Some(reason),
+        }
+    }
     if binding.provider != ProviderKind::Codex {
         observation.transport = "unavailable";
         return Ok(observation);
@@ -526,6 +535,29 @@ pub fn context_observation(
     }
     observation.source = Some(evidence);
     Ok(observation)
+}
+
+/// Revision checkpoint for a native control measurement. Reads the existing bounded source
+/// owner and verifies the exact account/home/session; no transcript bodies are persisted.
+pub fn control_checkpoint(
+    root: &Path,
+    binding: &Binding,
+) -> Result<crate::capacity::SourceEvidence, String> {
+    let (mut file, index) = open_bound(root, binding)?;
+    let start = index.source_len.saturating_sub(TAIL_BYTES);
+    let bytes = read_at(&mut file, start, (index.source_len - start) as usize)?;
+    if file.len()? != index.source_len || file.identity()? != index.file_identity {
+        return Err("native source changed during context checkpoint".into());
+    }
+    Ok(crate::capacity::SourceEvidence {
+        file_identity: index.file_identity,
+        source_bytes: index.source_len,
+        tail_start: start,
+        tail_sha256: digest(&bytes),
+        record_start: None,
+        record_bytes: None,
+        record_sha256: None,
+    })
 }
 
 /// Verify source identity and all retained record hashes without retaining conversation text.

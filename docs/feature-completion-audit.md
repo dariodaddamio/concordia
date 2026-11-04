@@ -1,8 +1,8 @@
-# Feature completion audit: 2026-11-03w
+# Feature completion audit: 2026-11-03x candidate
 
-The full roadmap is **not complete**. Remaining product capabilities include Claude native
-approval provenance, Claude/Cursor proactive capacity signals, verified PDF/binary document
-transport, broader provider file-output coverage and fuller integration management. Live-provider
+The full roadmap is **not complete**. Remaining product capabilities include Cursor proactive
+capacity and external usage signals, verified PDF/binary document transport, and unsupported
+native interaction/output formats beyond the qualified adapters. Live-provider
 qualification, memory-retention experiments and signing/distribution remain separate open gates.
 
 Recent UI follow-ups add automatic composer thumbnails, a separate credit row and details view,
@@ -21,6 +21,17 @@ including implementation order, parallel ownership and provider/host/release evi
 creation does not change the implementation status recorded here.
 
 ## Closed in this build
+
+- F10 adds reviewed local-manifest connect/reconnect/verify and binding-specific disconnect,
+  bounded background actions and stale target checks. [Scope](quality/integrations-management.md).
+- Claude CLI 2.1.317 native stdio supports owned allow-once/deny review in main/worker runs.
+  Structured Claude questions remain explicitly unsupported; normal assistant questions still work.
+  [Transport limits](quality/native-worker-input.md).
+- Claude explicit-model context measurements are captured after a completed turn on its live
+  connection and reused only while the exact transcript revision and compaction setting match.
+  [Provenance](quality/capacity-provenance.md).
+- Qualified Claude and Cursor completed file reports reach the shared artifact catalog, alongside
+  Codex. [Provider coverage](quality/file-output-artifacts.md).
 
 - Completed structured Codex file outputs have typed provenance records, source-bound cards and
   file-browser discovery. Current-file actions revalidate execution directory/path ownership;
@@ -57,8 +68,8 @@ creation does not change the implementation status recorded here.
 - Opt-in Codex app-server execution now connects native command/file decisions and bounded
   questions to foreground/worker review with exact thread/turn ownership and resolution handling.
   [Scope and limitations](quality/codex-native-input.md). CLI 0.166.0 is the matched protocol;
-  Native text replies now work in foreground/worker review where offered; Claude bridging and
-  live parity remain separate.
+  Native text replies work in foreground/worker review where offered; x adds the qualified
+  Claude permission bridge. Full native question/live parity remains separate.
 
 - Worker-owned native input, opt-in Cursor ACP text and explicit native plan decisions now use
   exact live request ownership. Edit cards, file detection, activity icons, agent inspection,
@@ -212,7 +223,8 @@ for the implemented campaign. The remaining boundaries below are explicit capabi
    separate from confirmed relationships. Explainable goal/file ranking, explicit related groups
    and synthetic retrieval evaluation are implemented with their recorded limits.
 4. Optional Codex proactive rollover and process-local Codex/Claude compaction controls are
-   implemented. Claude/Cursor proactive capacity remains unknown; live validation remains open.
+   implemented. Claude x adds source-bound post-turn measurements for explicit models; Cursor
+   capacity remains unknown and live validation remains open.
 5. Worker UUIDs, pane-owned ledgers, paused crash recovery, exact result pointers, delivery
    reservations and bounded quota failover are implemented. Uncertain work requires explicit
    reconciliation; no process, tool or result is automatically replayed at restart.

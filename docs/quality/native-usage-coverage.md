@@ -19,7 +19,15 @@ Claude assistant usage and Codex `token_count.info.last_token_usage` are retaine
 snapshots**. Metadata includes counter presence, exact source range/hash, observed Claude message
 id/model where available, and source kind. Native text is parsed transiently and never copied into
 the usage catalog. Unknown counters and model/event identities stay unknown. Session-cumulative
-Codex counters are ignored. Cursor has no verified usage-event source and remains unavailable.
+Codex counters are ignored. Cursor remains unavailable: as inspected 2026-11-03, the official
+Cursor stream-json output contract documents stable `session_id`, optional `request_id`, terminal
+`result`, timing fields, assistant/tool events and correlation IDs, but no input, output, cache,
+or total-token counters. The official ACP contract likewise documents JSON-RPC session lifecycle,
+`session/update`, permission requests and cancellation, but no usage event, usage request, context
+window, or token fields. Session/request IDs identify events but do not provide usage. Quota or
+plan/status data is not per-event token usage and is not imported. Cursor therefore remains
+`blocked-vendor` for this slice until an official native event with stable event identity and
+counter semantics is published.
 
 The separate coverage view has no aggregate token, request or dollar total. Repeated assistant
 snapshots and Codex last-request records can overlap one another or foreground/worker accounting;
@@ -45,3 +53,8 @@ body text in metadata. Existing rendering checks cover attempt/outcome/workspace
 large percentage values. The existing proactive-context terminal journey opens native source
 coverage before any prompt and verifies that returning leaves Concordia totals empty. No real
 provider turn was run for this work.
+
+Primary Cursor sources inspected 2026-11-03:
+
+- [Cursor CLI output format](https://cursor.com/docs/cli/reference/output-format) (JSON/stream-json event fields and terminal result schema)
+- [Cursor CLI ACP](https://cursor.com/docs/cli/acp) (initialize/session/prompt/update/cancel schema)

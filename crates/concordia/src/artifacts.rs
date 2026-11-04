@@ -7,6 +7,7 @@ use crate::provider::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::{
     io::Read,
     path::{Component, Path, PathBuf},
@@ -196,6 +197,227 @@ pub fn from_item(
         })
         .collect()
 }
+
+/// Convert Cursor's documented completed write/edit tool report into the shared artifact
+/// registry. Cursor emits the request and result in one `tool_call` event, so `call_id` is the
+/// native event identity and the successful result path is the provider-owned local-path report.
+/// A started call, failed result, prose path, or a result without an explicit success path is not
+/// evidence that a file was produced.
+pub fn from_cursor_event(
+    owner: &InteractionOwner,
+    session: &str,
+    turn: Option<&str>,
+    event: &Value,
+) -> Vec<Record> {
+    if owner.provider != crate::store::ProviderKind::Cursor
+        || event.get("type").and_then(Value::as_str) != Some("tool_call")
+        || event.get("subtype").and_then(Value::as_str) != Some("completed")
+        || event.to_string().len() > MAX_BYTES
+    {
+        return Vec::new();
+    }
+    let Some(native_event_id) = event
+        .get("call_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 512)
+    else {
+        return Vec::new();
+    };
+    let Some((kind, call)) = event
+        .get("tool_call")
+        .and_then(Value::as_object)
+        .and_then(|calls| {
+            calls
+                .iter()
+                .find(|(name, _)| matches!(name.as_str(), "writeToolCall" | "editToolCall"))
+        })
+    else {
+        return Vec::new();
+    };
+    if event.get("session_id").and_then(Value::as_str) != Some(session)
+        || call.get("result").is_some_and(|result| {
+            result.get("error").is_some_and(|error| !error.is_null())
+                || result
+                    .get("failure")
+                    .is_some_and(|failure| !failure.is_null())
+        })
+    {
+        return Vec::new();
+    }
+    let Some(success) = call.pointer("/result/success").filter(|v| v.is_object()) else {
+        return Vec::new();
+    };
+    // A success object is required to carry a concrete path. Do not fall back to prose or the
+    // request arguments: the completed native result is the provenance-bearing report.
+    let Some(path) = success.get("path").and_then(Value::as_str).filter(|path| {
+        !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
+    }) else {
+        return Vec::new();
+    };
+    let kind = match kind.as_str() {
+        "writeToolCall" => "update",
+        "editToolCall" => "update",
+        _ => return Vec::new(),
+    };
+    let Ok(execution_directory_id) = crate::workspaces::directory_id(&owner.execution_cwd) else {
+        return Vec::new();
+    };
+    if [&owner.conversation_id, &owner.run_id, &owner.attempt_id]
+        .iter()
+        .any(|id| uuid::Uuid::parse_str(id).is_err())
+        || session.is_empty()
+        || session.len() > 512
+        || session.chars().any(char::is_control)
+        || turn.is_some_and(|turn| {
+            turn.is_empty() || turn.len() > 512 || turn.chars().any(char::is_control)
+        })
+    {
+        return Vec::new();
+    }
+    let revision = format!("{:x}", Sha256::digest(event.to_string().as_bytes()));
+    // Some native call IDs contain line breaks. Keep their identity in a visibly escaped
+    // representation rather than injecting control characters into provenance cards.
+    let event_id = if native_event_id.chars().any(char::is_control) {
+        format!(
+            "json:{}",
+            serde_json::to_string(native_event_id).unwrap_or_default()
+        )
+    } else {
+        native_event_id.to_owned()
+    };
+    vec![Record {
+        id: identity(owner, session, turn, &event_id, &revision, path),
+        owner: owner.clone(),
+        native_session: session.into(),
+        native_turn: turn.map(str::to_owned),
+        event_id,
+        source_revision: revision,
+        reported_path: path.into(),
+        local_path: local_path(owner, path),
+        kind: kind.into(),
+        execution_directory_id,
+    }]
+}
+/// Track Claude's built-in Write/Edit tool use until the matching successful user tool result.
+/// Request arguments alone are not output evidence; the result must carry native tool-result
+/// metadata (`filePath`/`path` or `structuredPatch`) and the exact `tool_use_id` correlation.
+pub fn claude_tool_event(
+    pending: &mut HashMap<String, (String, String)>,
+    owner: &InteractionOwner,
+    session: &str,
+    turn: Option<&str>,
+    event: &Value,
+) -> Option<Record> {
+    if owner.provider != crate::store::ProviderKind::Claude
+        || event.to_string().len() > MAX_BYTES
+        || session.is_empty()
+        || session.len() > 512
+        || session.chars().any(char::is_control)
+        || [&owner.conversation_id, &owner.run_id, &owner.attempt_id]
+            .iter()
+            .any(|id| uuid::Uuid::parse_str(id).is_err())
+        || turn.is_some_and(|turn| {
+            turn.is_empty() || turn.len() > 512 || turn.chars().any(char::is_control)
+        })
+        || event.get("session_id").and_then(Value::as_str) != Some(session)
+    {
+        return None;
+    }
+    let kind = event.get("type").and_then(Value::as_str)?;
+    if kind == "assistant" {
+        let blocks = event.pointer("/message/content")?.as_array()?;
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let name = block.get("name").and_then(Value::as_str)?;
+            if !matches!(name, "Write" | "Edit") {
+                continue;
+            }
+            let id = block.get("id").and_then(Value::as_str).filter(|id| {
+                !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
+            })?;
+            let path = block
+                .pointer("/input/file_path")
+                .and_then(Value::as_str)
+                .filter(|path| {
+                    !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
+                })?;
+            if pending.len() < 128 {
+                let next = (name.into(), path.into());
+                pending
+                    .entry(id.into())
+                    .and_modify(|previous| {
+                        if previous != &next {
+                            *previous = (String::new(), String::new());
+                        }
+                    })
+                    .or_insert(next);
+            }
+        }
+        return None;
+    }
+    if kind != "user" {
+        return None;
+    }
+    let blocks = event.pointer("/message/content")?.as_array()?;
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let id = block.get("tool_use_id").and_then(Value::as_str)?;
+        let (tool, requested_path) = pending.remove(id)?;
+        if block.get("is_error").is_some_and(|error| error != false)
+            || !matches!(tool.as_str(), "Write" | "Edit")
+            || blocks
+                .iter()
+                .filter(|block| block["type"] == "tool_result")
+                .count()
+                != 1
+        {
+            return None;
+        }
+        let metadata = event
+            .get("tool_use_result")
+            .filter(|value| value.is_object())?;
+        let result_path = metadata
+            .get("filePath")
+            .or_else(|| metadata.get("file_path"))
+            .or_else(|| metadata.get("path"))
+            .and_then(Value::as_str);
+        let has_patch = metadata
+            .get("structuredPatch")
+            .and_then(Value::as_array)
+            .is_some_and(|patch| !patch.is_empty());
+        if result_path.is_none() && !has_patch {
+            return None;
+        }
+        let path = result_path.unwrap_or(&requested_path);
+        if path != requested_path
+            && !local_path(owner, path)
+                .zip(local_path(owner, &requested_path))
+                .is_some_and(|(reported, requested)| reported == requested)
+        {
+            return None;
+        }
+        let revision = format!("{:x}", Sha256::digest(event.to_string().as_bytes()));
+        let execution_directory_id = crate::workspaces::directory_id(&owner.execution_cwd).ok()?;
+        return Some(Record {
+            id: identity(owner, session, turn, id, &revision, path),
+            owner: owner.clone(),
+            native_session: session.into(),
+            native_turn: turn.map(str::to_owned),
+            event_id: id.into(),
+            source_revision: revision,
+            reported_path: path.into(),
+            local_path: local_path(owner, path),
+            kind: "update".into(),
+            execution_directory_id,
+        });
+    }
+    None
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Index {
@@ -327,20 +549,15 @@ pub(crate) struct Collector {
     count: usize,
     seen: std::collections::HashSet<String>,
     limited: bool,
+    claude_pending: HashMap<String, (String, String)>,
 }
 impl Collector {
-    pub fn report(
+    fn report_records(
         &mut self,
-        owner: Option<&InteractionOwner>,
-        session: Option<&str>,
-        turn: Option<&str>,
-        item: &Value,
+        records: impl IntoIterator<Item = Record>,
         progress: &Option<tokio::sync::mpsc::UnboundedSender<crate::provider::turn::TurnProgress>>,
     ) {
-        let (Some(owner), Some(session)) = (owner, session) else {
-            return;
-        };
-        for record in from_item(owner, session, turn, item) {
+        for record in records {
             if self.count >= 32 {
                 if !self.limited {
                     if let Some(tx) = progress {
@@ -371,6 +588,54 @@ impl Collector {
                     }
                 }
             }
+        }
+    }
+
+    pub fn report(
+        &mut self,
+        owner: Option<&InteractionOwner>,
+        session: Option<&str>,
+        turn: Option<&str>,
+        item: &Value,
+        progress: &Option<tokio::sync::mpsc::UnboundedSender<crate::provider::turn::TurnProgress>>,
+    ) {
+        let (Some(owner), Some(session)) = (owner, session) else {
+            return;
+        };
+        self.report_records(from_item(owner, session, turn, item), progress);
+    }
+
+    /// Record a completed Cursor write/edit report using the same bounded registry and
+    /// persistence path as Codex file-change items.
+    pub fn report_cursor(
+        &mut self,
+        owner: Option<&InteractionOwner>,
+        session: Option<&str>,
+        turn: Option<&str>,
+        event: &Value,
+        progress: &Option<tokio::sync::mpsc::UnboundedSender<crate::provider::turn::TurnProgress>>,
+    ) {
+        let (Some(owner), Some(session)) = (owner, session) else {
+            return;
+        };
+        self.report_records(from_cursor_event(owner, session, turn, event), progress);
+    }
+
+    pub fn report_claude(
+        &mut self,
+        owner: Option<&InteractionOwner>,
+        session: Option<&str>,
+        turn: Option<&str>,
+        event: &Value,
+        progress: &Option<tokio::sync::mpsc::UnboundedSender<crate::provider::turn::TurnProgress>>,
+    ) {
+        let (Some(owner), Some(session)) = (owner, session) else {
+            return;
+        };
+        if let Some(record) =
+            claude_tool_event(&mut self.claude_pending, owner, session, turn, event)
+        {
+            self.report_records([record], progress);
         }
     }
 }

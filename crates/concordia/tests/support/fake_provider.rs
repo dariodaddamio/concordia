@@ -210,8 +210,120 @@ fn fake_appserver() {
     }
 }
 
+fn fake_claude_control(args: &[String]) {
+    use serde_json::{json, Value};
+    use std::io::BufRead;
+    let root = std::env::current_dir().unwrap();
+    let fixture: Value =
+        serde_json::from_slice(&std::fs::read(root.join("claude-fixture.json")).unwrap()).unwrap();
+    let session = args
+        .windows(2)
+        .find(|pair| matches!(pair[0].as_str(), "--resume" | "--session-id"))
+        .map(|pair| pair[1].clone())
+        .unwrap();
+    let emit = |value: Value| {
+        println!("{value}");
+        std::io::stdout().flush().unwrap();
+    };
+    let finish = || {
+        emit(
+            json!({"type":"result","subtype":"success","session_id":session,
+        "is_error":false,"result":"Native Claude review handled","usage":{"input_tokens":12,"output_tokens":3}}),
+        )
+    };
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        let value: Value = serde_json::from_str(&line).unwrap();
+        let mut journal = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(root.join("claude-calls.jsonl"))
+            .unwrap();
+        writeln!(journal, "{line}").unwrap();
+        if value["type"] == "control_request" {
+            let subtype = value["request"]["subtype"].as_str().unwrap();
+            let response = match subtype {
+                "initialize" => json!({}),
+                "get_context_usage" => {
+                    json!({"totalTokens":fixture["context_used"].as_u64().unwrap_or(120),
+                    "maxTokens":1000,"rawMaxTokens":1000,"percentage":fixture["context_used"].as_u64().unwrap_or(120) as f64 / 10.0,
+                    "model":fixture["context_model"].as_str().unwrap_or("fixture-claude"),"sessionId":session,"isAutoCompactEnabled":true})
+                }
+                other => panic!("unexpected Claude control request: {other}"),
+            };
+            emit(
+                json!({"type":"control_response","response":{"subtype":if fixture["bad_init"] == true {"error"} else {"success"},
+                "request_id":value["request_id"],"response":response}}),
+            );
+        } else if value["type"] == "user" {
+            if fixture.get("context_used").is_some() || fixture.get("context_model").is_some() {
+                let home = std::path::PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").unwrap());
+                let folder = home.join("projects/fake-provider");
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::write(folder.join(format!("{session}.jsonl")), format!("{}\n{}\n",
+                    json!({"type":"user","sessionId":session,"cwd":root,"message":{"role":"user","content":[{"type":"text","text":"Synthetic context fixture"}]}}),
+                    json!({"type":"assistant","sessionId":session,"message":{"role":"assistant","content":[{"type":"text","text":"Completed fixture"}]}}))).unwrap();
+            }
+            emit(
+                json!({"type":"system","subtype":"init","session_id":session,"model":"fixture-claude"}),
+            );
+            let mut native = json!({"type":"control_request","request_id":"permission-1","request":{
+                "subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write-1",
+                "input":{"file_path":"synthetic-output.md","content":"Synthetic bytes"}}});
+            if fixture["unknown"] == true {
+                native["request"]["subtype"] = json!("future_native_method");
+            }
+            if fixture["model_only"] == true {
+                emit(
+                    json!({"type":"assistant","message":{"content":[{"type":"text","text":native.to_string()}]}}),
+                );
+                finish();
+            } else {
+                if fixture["fragmented"] == true {
+                    let text = native.to_string();
+                    let split = text.len() / 2;
+                    print!("{}", &text[..split]);
+                    std::io::stdout().flush().unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(35));
+                    println!("{}", &text[split..]);
+                    std::io::stdout().flush().unwrap();
+                } else {
+                    emit(native.clone());
+                }
+                if fixture["duplicate"] == true {
+                    emit(native);
+                }
+                if fixture["cancel"] == true {
+                    emit(json!({"type":"control_cancel_request","request_id":"permission-1"}));
+                    finish();
+                }
+                if fixture["closed"] == true {
+                    return;
+                }
+            }
+        } else if value["type"] == "control_response" {
+            assert_eq!(value["response"]["request_id"], "permission-1");
+            finish();
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--version")
+        && std::env::var("FAKE_PROVIDER_NATIVE_CLAUDE").as_deref() == Ok("1")
+    {
+        println!("2.1.317 (Claude Code)");
+        return;
+    }
+    if args.iter().any(|arg| arg == "--permission-prompt-tool")
+        && std::env::current_dir()
+            .unwrap()
+            .join("claude-fixture.json")
+            .is_file()
+    {
+        fake_claude_control(&args);
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "--version")
         && std::env::var("FAKE_PROVIDER_NATIVE_CODEX").as_deref() == Ok("1")
     {

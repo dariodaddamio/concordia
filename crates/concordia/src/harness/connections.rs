@@ -69,6 +69,33 @@ pub struct ReceiptIdentity<'a> {
     pub manifest_sha256: &'a str,
 }
 
+/// Immutable identity captured while a catalog row is reviewed.  Mutating commands must
+/// validate this target immediately before invoking an adapter; a later catalog refresh may
+/// never silently retarget an action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionTarget {
+    pub name: String,
+    pub manifest_path: String,
+    pub manifest_sha256: String,
+    pub provider: String,
+    pub home: Option<String>,
+    pub project: String,
+}
+
+impl ActionTarget {
+    pub fn from_connection(connection: &Connection, entry: &Entry) -> Self {
+        Self {
+            name: connection.name.clone(),
+            manifest_path: connection.manifest_path.clone(),
+            manifest_sha256: connection.manifest_sha256.clone(),
+            provider: entry.provider.clone(),
+            home: entry.home.clone(),
+            project: entry.project.clone(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct File {
     version: u32,
@@ -77,6 +104,37 @@ struct File {
 
 fn file(store: &Path) -> PathBuf {
     store.join("harness").join("connections.json")
+}
+
+fn owned_directory(store: &Path, create: bool) -> Result<(), String> {
+    let dir = store.join("harness");
+    match fs::symlink_metadata(&dir) {
+        Ok(meta) if !meta.is_dir() || crate::workspaces::linked(&meta) => {
+            Err("harness state directory must not be linked".into())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if create {
+                fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn transaction<T>(store: &Path, mutate: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    owned_directory(store, true)?;
+    let lock = store.join("harness/connections.lock");
+    match fs::symlink_metadata(&lock) {
+        Ok(meta) if !meta.is_file() || crate::workspaces::linked(&meta) => {
+            return Err("harness state lock must not be linked".into())
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.to_string()),
+        _ => {}
+    }
+    crate::state_io::with_lock(&lock, || mutate().map_err(std::io::Error::other))
+        .map_err(|error| error.to_string())
 }
 
 /// Whether a receipt's recorded adapter identity is still the connected identity.
@@ -143,6 +201,7 @@ fn path_key(path: &Path) -> String {
 /// Every connection. Missing file: none. A damaged file is an error, so it is never overwritten.
 pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
     use std::io::Read;
+    owned_directory(store, false)?;
     let path = file(store);
     match fs::symlink_metadata(&path) {
         Ok(metadata) if !metadata.is_file() || crate::workspaces::linked(&metadata) => {
@@ -192,7 +251,64 @@ pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
         })
 }
 
-fn save(store: &Path, connections: Vec<Connection>) -> Result<(), String> {
+/// Re-read the saved connection and refuse a mutation when any reviewed identity changed.
+pub fn check_action_target(store: &Path, target: &ActionTarget) -> Result<(), String> {
+    let all = load(store)?;
+    let connection = all
+        .iter()
+        .find(|connection| connection.name == target.name)
+        .ok_or_else(|| {
+            "integration changed: connection no longer exists; refresh and reselect".to_string()
+        })?;
+    if connection.manifest_path != target.manifest_path
+        || connection.manifest_sha256 != target.manifest_sha256
+    {
+        return Err("integration revision changed; refresh and reselect before acting".into());
+    }
+    if !connection.entries.iter().any(|entry| {
+        entry.provider == target.provider
+            && entry.home == target.home
+            && entry.project == target.project
+    }) {
+        return Err("integration binding changed; refresh and reselect before acting".into());
+    }
+    Ok(())
+}
+
+/// Check a reviewed target and remove only that integration. This is intentionally separate
+/// from native uninstall: it withdraws Concordia receipts only.
+pub fn remove_action_target(store: &Path, target: &ActionTarget) -> Result<bool, String> {
+    transaction(store, || remove_action_target_locked(store, target))
+}
+
+fn remove_action_target_locked(store: &Path, target: &ActionTarget) -> Result<bool, String> {
+    check_action_target(store, target)?;
+    let mut all = load(store)?;
+    let Some(connection) = all
+        .iter_mut()
+        .find(|connection| connection.name == target.name)
+    else {
+        return Ok(false);
+    };
+    let before = connection.entries.len();
+    connection.entries.retain(|entry| {
+        !(entry.provider == target.provider
+            && entry.home == target.home
+            && entry.project == target.project)
+    });
+    let changed = connection.entries.len() != before;
+    if connection.entries.is_empty() {
+        all.retain(|item| item.name != target.name);
+    }
+    if changed {
+        save_unlocked(store, all)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn save_unlocked(store: &Path, connections: Vec<Connection>) -> Result<(), String> {
     if connections.len() > 512
         || connections
             .iter()
@@ -212,9 +328,7 @@ fn save(store: &Path, connections: Vec<Connection>) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("could not save harness connections: {e}"))?;
     }
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, body)
-        .and_then(|()| fs::rename(&temporary, &path))
+    crate::state_io::write_atomic(&path, &body)
         .map_err(|e| format!("could not save harness connections: {e}"))
 }
 
@@ -231,6 +345,17 @@ pub fn record(store: &Path, identity: &Identity<'_>, entry: Entry) -> Result<(),
 }
 
 pub fn record_with_pins(
+    store: &Path,
+    identity: &Identity<'_>,
+    entry: Entry,
+    has_pins: bool,
+) -> Result<(), String> {
+    transaction(store, || {
+        record_with_pins_unlocked(store, identity, entry, has_pins)
+    })
+}
+
+fn record_with_pins_unlocked(
     store: &Path,
     identity: &Identity<'_>,
     entry: Entry,
@@ -274,12 +399,28 @@ pub fn record_with_pins(
     connection.has_pinned_decisions = has_pins;
     connection.entries.retain(|e| !same_target(e, &entry));
     connection.entries.push(entry);
-    save(store, all)
+    save_unlocked(store, all)
 }
 
 /// Update the verify result of one existing entry.
 #[allow(clippy::too_many_arguments)]
 pub fn set_verify(
+    store: &Path,
+    name: &str,
+    provider: &str,
+    home: Option<&str>,
+    project: &str,
+    state: &str,
+    note: &str,
+    at: u64,
+) -> Result<(), String> {
+    transaction(store, || {
+        set_verify_unlocked(store, name, provider, home, project, state, note, at)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn set_verify_unlocked(
     store: &Path,
     name: &str,
     provider: &str,
@@ -300,17 +441,21 @@ pub fn set_verify(
         e.verify_note = note.into();
         e.at = at;
     }
-    save(store, all)
+    save_unlocked(store, all)
 }
 
 /// Forget a connection. Returns whether it existed.
 pub fn remove(store: &Path, name: &str) -> Result<bool, String> {
+    transaction(store, || remove_unlocked(store, name))
+}
+
+fn remove_unlocked(store: &Path, name: &str) -> Result<bool, String> {
     let mut all = load(store)?;
     let before = all.len();
     all.retain(|c| c.name != name);
     let removed = all.len() != before;
     if removed {
-        save(store, all)?;
+        save_unlocked(store, all)?;
     }
     Ok(removed)
 }
@@ -476,6 +621,27 @@ mod tests {
     fn remove_reports_whether_anything_was_there() {
         let store = tempfile::tempdir().unwrap();
         record(store.path(), &identity(), entry("claude", None, true)).unwrap();
+        record(
+            store.path(),
+            &identity(),
+            entry("codex", Some("/h/2"), true),
+        )
+        .unwrap();
+        let target = ActionTarget {
+            name: "h1".into(),
+            manifest_path: identity().manifest_path.into(),
+            manifest_sha256: "abc".into(),
+            provider: "claude".into(),
+            home: None,
+            project: "/work/app".into(),
+        };
+        let stale = ActionTarget {
+            manifest_sha256: "changed".into(),
+            ..target.clone()
+        };
+        assert!(remove_action_target(store.path(), &stale).is_err());
+        assert!(remove_action_target(store.path(), &target).unwrap());
+        assert_eq!(load(store.path()).unwrap()[0].entries.len(), 1);
         assert!(remove(store.path(), "h1").unwrap());
         assert!(!remove(store.path(), "h1").unwrap());
         assert!(load(store.path()).unwrap().is_empty());

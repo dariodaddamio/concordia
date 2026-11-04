@@ -52,6 +52,14 @@ fn sha_hex(text: &str) -> String {
         .collect()
 }
 
+fn manifest_revision_current(path: &Path, expected: &str) -> bool {
+    if path.to_string_lossy().starts_with(COMMAND_PREFIX) {
+        return true;
+    }
+    load_local_manifest_for_action(&path.to_string_lossy(), Path::new("."))
+        .is_ok_and(|(_, revision, _)| revision == expected)
+}
+
 fn home_label(home: Option<&str>) -> String {
     home.map_or("default home".to_string(), str::to_string)
 }
@@ -191,6 +199,13 @@ pub fn connect_in(
     ctx: &Context<'_>,
     run: Run<'_>,
 ) -> Entry {
+    if !manifest_revision_current(manifest_path, sha) {
+        return entry_for(
+            ctx,
+            false,
+            "manifest revision changed; refresh and reconnect explicitly".into(),
+        );
+    }
     let provider = ctx.provider.as_str();
     let outcome = manifest
         .providers
@@ -242,6 +257,11 @@ pub fn verify_in(
     ctx: &Context<'_>,
     run: Run<'_>,
 ) -> Verdict {
+    if !manifest_revision_current(manifest_path, sha) {
+        return Verdict::Unverified(
+            "manifest revision changed; refresh and reconnect explicitly".into(),
+        );
+    }
     let env = manifest
         .providers
         .get(ctx.provider.as_str())
@@ -291,6 +311,71 @@ pub fn verify_in(
         now(),
     );
     verdict
+}
+
+/// Reviewed reconnect: the saved binding and manifest revision must still be the one shown to
+/// the user immediately before the adapter is called.
+pub fn reconnect_reviewed(
+    store: &Path,
+    target: &connections::ActionTarget,
+    manifest: &Manifest,
+    run: Run<'_>,
+) -> Result<Entry, String> {
+    connections::check_action_target(store, target)?;
+    if manifest.name != target.name || target.manifest_sha256.is_empty() {
+        return Err("integration identity changed; refresh and reselect".into());
+    }
+    let provider = match target.provider.as_str() {
+        "codex" => ProviderKind::Codex,
+        "claude" => ProviderKind::Claude,
+        "cursor" => ProviderKind::Cursor,
+        _ => return Err("unsupported provider binding".into()),
+    };
+    let project = Path::new(&target.project);
+    let home = target.home.as_deref().map(Path::new);
+    Ok(connect_in(
+        store,
+        manifest,
+        Path::new(&target.manifest_path),
+        &target.manifest_sha256,
+        &Context {
+            provider,
+            home,
+            project,
+        },
+        run,
+    ))
+}
+
+/// Reviewed verification with the same revision/binding guard as reconnect.
+pub fn verify_reviewed(
+    store: &Path,
+    target: &connections::ActionTarget,
+    manifest: &Manifest,
+    run: Run<'_>,
+) -> Result<Verdict, String> {
+    connections::check_action_target(store, target)?;
+    if manifest.name != target.name {
+        return Err("integration identity changed; refresh and reselect".into());
+    }
+    let provider = match target.provider.as_str() {
+        "codex" => ProviderKind::Codex,
+        "claude" => ProviderKind::Claude,
+        "cursor" => ProviderKind::Cursor,
+        _ => return Err("unsupported provider binding".into()),
+    };
+    Ok(verify_in(
+        store,
+        manifest,
+        Path::new(&target.manifest_path),
+        &target.manifest_sha256,
+        &Context {
+            provider,
+            home: target.home.as_deref().map(Path::new),
+            project: Path::new(&target.project),
+        },
+        run,
+    ))
 }
 
 pub fn status_lines(store: &Path) -> Vec<String> {
@@ -445,6 +530,12 @@ fn connect_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<Stri
     lines
 }
 
+/// Explicit manifest-selection entry point for the F10 "new connection" action. The selected
+/// path/program is passed as one argument and is never discovered or executed implicitly.
+pub fn connect_selected(session: &Session<'_>, selection: &str, run: Run<'_>) -> Vec<String> {
+    connect_cmd(session, &[selection.to_string()], run)
+}
+
 fn verify_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<String> {
     let all = args.iter().any(|a| a == "--all");
     let mut provider_filter = None;
@@ -548,6 +639,111 @@ fn reload(stored: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, String> {
     }
 }
 
+/// Load a reviewed manifest without executing a connect/verify action. F10 uses this after the
+/// user confirms a target; command-backed manifests are refreshed through their declared
+/// read-only manifest query.
+pub fn load_manifest_for_action(
+    stored: &str,
+    cwd: &Path,
+    run: Run<'_>,
+) -> Result<(Manifest, String), String> {
+    let loaded = reload(stored, cwd, run)?;
+    Ok((loaded.manifest, loaded.sha))
+}
+
+/// Read an explicitly selected local manifest for F10. This deliberately rejects bare programs
+/// and command-backed manifests: entering a path is discovery only, and adapter execution waits
+/// for the separate reviewed connect confirmation.
+pub fn load_local_manifest_for_action(
+    selection: &str,
+    cwd: &Path,
+) -> Result<(Manifest, String, String), String> {
+    let given = Path::new(selection);
+    let path = if given.is_absolute() {
+        given.to_path_buf()
+    } else {
+        cwd.join(given)
+    };
+    let file = if path.is_dir() {
+        path.join("harness.json")
+    } else {
+        path
+    };
+    let metadata = fs::symlink_metadata(&file).map_err(|_| "manifest path is unavailable")?;
+    if !metadata.is_file()
+        || super::super::workspaces::linked(&metadata)
+        || metadata.len() > MAX_MANIFEST_BYTES
+    {
+        return Err("manifest must be a regular local file of at most 256 KiB".into());
+    }
+    let canonical = file
+        .canonicalize()
+        .map_err(|_| "manifest path is unavailable")?;
+    if crate::workspace_paths::sensitive(&file) || crate::workspace_paths::sensitive(&canonical) {
+        return Err("manifest path is excluded by workspace policy".into());
+    }
+    use std::io::Read;
+    let mut text = String::new();
+    fs::File::open(&canonical)
+        .map_err(|_| "manifest is not readable")?
+        .take(MAX_MANIFEST_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|_| "manifest is not bounded UTF-8")?;
+    if text.len() as u64 > MAX_MANIFEST_BYTES
+        || file.canonicalize().ok().as_ref() != Some(&canonical)
+    {
+        return Err("manifest changed or exceeds 256 KiB; reselect it".into());
+    }
+    let dir = canonical.parent().unwrap_or(cwd);
+    let manifest = parse_manifest(&text, dir)?;
+    Ok((
+        manifest,
+        sha_hex(&text),
+        canonical.to_string_lossy().into_owned(),
+    ))
+}
+
+/// Reviewed first connection for F10. Unlike reconnect, this target is not yet in the receipt
+/// store; the manifest revision is checked immediately before the declared connect argv runs.
+pub fn connect_new_reviewed(
+    store: &Path,
+    target: &connections::ActionTarget,
+    manifest: &Manifest,
+    run: Run<'_>,
+) -> Result<Entry, String> {
+    if manifest.name != target.name || target.manifest_path.starts_with("command:") {
+        return Err("new F10 connections require an explicit local manifest".into());
+    }
+    if !manifest_revision_current(Path::new(&target.manifest_path), &target.manifest_sha256) {
+        return Err("manifest revision changed; refresh and reselect".into());
+    }
+    if connections::load(store)?.iter().any(|existing| {
+        existing.name == target.name
+            && (existing.manifest_path != target.manifest_path
+                || existing.manifest_sha256 != target.manifest_sha256)
+    }) {
+        return Err("an integration with this name already has a different manifest; select its existing connection first".into());
+    }
+    let provider = match target.provider.as_str() {
+        "codex" => ProviderKind::Codex,
+        "claude" => ProviderKind::Claude,
+        "cursor" => ProviderKind::Cursor,
+        _ => return Err("unsupported provider binding".into()),
+    };
+    Ok(connect_in(
+        store,
+        manifest,
+        Path::new(&target.manifest_path),
+        &target.manifest_sha256,
+        &Context {
+            provider,
+            home: target.home.as_deref().map(Path::new),
+            project: Path::new(&target.project),
+        },
+        run,
+    ))
+}
+
 /// Delete every receipt that `name` wrote. Receipts from other harnesses are left alone.
 fn withdraw_receipts(store: &Path, name: &str) -> usize {
     let Ok(projects) = fs::read_dir(store.join("enforcement")) else {
@@ -572,7 +768,38 @@ fn withdraw_receipts(store: &Path, name: &str) -> usize {
     removed
 }
 
-fn disconnect_cmd(session: &Session<'_>, args: &[String]) -> Vec<String> {
+fn withdraw_receipt_target(store: &Path, target: &connections::ActionTarget) -> usize {
+    let Some(root) = crate::provider::enforcement::project_root(Path::new(&target.project)) else {
+        return 0;
+    };
+    let path =
+        crate::provider::enforcement::slot(store, &root).join(format!("{}.json", target.provider));
+    let wrote = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|value| {
+            value.get("harness").and_then(|h| h.as_str()) == Some(target.name.as_str())
+                && value
+                    .get("home")
+                    .and_then(|home| home.as_str())
+                    .map(|home| crate::provider::enforcement::path_key(Path::new(home)))
+                    == target
+                        .home
+                        .as_deref()
+                        .map(|home| crate::provider::enforcement::path_key(Path::new(home)))
+                && value
+                    .get("harnessManifestSha256")
+                    .and_then(|revision| revision.as_str())
+                    == Some(target.manifest_sha256.as_str())
+        });
+    if wrote && fs::remove_file(path).is_ok() {
+        1
+    } else {
+        0
+    }
+}
+
+pub fn disconnect_cmd(session: &Session<'_>, args: &[String]) -> Vec<String> {
     let Some(name) = args.first() else {
         return vec!["usage: /harness disconnect <name>".into()];
     };
@@ -587,6 +814,24 @@ fn disconnect_cmd(session: &Session<'_>, args: &[String]) -> Vec<String> {
                 "disconnected {name}; withdrew {withdrawn} receipt(s). Changes it made in provider homes stay; use its own uninstall to remove them."
             )]
         }
+    }
+}
+
+/// Commit a reviewed disconnect after rechecking the immutable catalog target.
+/// The caller supplies confirmation separately; this function performs no implicit prompt.
+pub fn disconnect_reviewed(
+    store: &Path,
+    target: &connections::ActionTarget,
+) -> Result<String, String> {
+    match connections::remove_action_target(store, target)? {
+        true => {
+            let withdrawn = withdraw_receipt_target(store, target);
+            Ok(format!(
+                "disconnected {}; withdrew {withdrawn} receipt(s); provider homes were not uninstalled",
+                target.name
+            ))
+        }
+        false => Ok(format!("{} was already disconnected", target.name)),
     }
 }
 
@@ -614,7 +859,7 @@ fn skill_cmd(session: &Session<'_>) -> Vec<String> {
     }
 }
 
-fn tools_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<String> {
+pub fn tools_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<String> {
     let connections = match connections::load(session.store) {
         Ok(c) => c,
         Err(e) => return vec![e],

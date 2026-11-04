@@ -2991,6 +2991,80 @@ fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
     });
     assert_eq!(s.draft(), "UNSENT_INTEGRATION_DRAFT");
     assert!(s.prompts().is_empty());
+    let managed_manifest = dir.path().join("workspace/new-harness.json");
+    let managed_text = serde_json::json!({"name":"ui-managed","providers":{"codex":{
+        "connect":[std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into()),"/c","exit","0"]}}}).to_string();
+    std::fs::write(&managed_manifest, &managed_text).unwrap();
+    s.send("n");
+    s.until("new integration has its own path field", |s| {
+        s.screen().contains("New local integration")
+    });
+    s.paste(&format!("{}x", managed_manifest.display()));
+    s.send("\x08");
+    s.send("\r");
+    s.until("local manifest review shows command and revision", |s| {
+        let screen = s.screen();
+        screen.contains("Review integration action")
+            && screen.contains("ui-managed")
+            && screen.contains("Manifest revision")
+            && screen.contains("exit")
+    });
+    assert_eq!(
+        concordia::harness::connections::load(dir.path())
+            .unwrap()
+            .len(),
+        1
+    );
+    // A changed source between review and confirmation cannot execute or create a receipt.
+    std::fs::write(&managed_manifest, format!("{managed_text}\n")).unwrap();
+    s.send("\r");
+    s.until("stale integration review is rejected", |s| {
+        s.screen().contains("revision changed")
+    });
+    assert_eq!(
+        concordia::harness::connections::load(dir.path())
+            .unwrap()
+            .len(),
+        1
+    );
+    s.send("r");
+    s.until("catalog refreshed after stale review", |s| {
+        s.screen().contains("Integrations and agent tools")
+    });
+    s.send("n");
+    s.paste(&managed_manifest.display().to_string());
+    s.send("\r");
+    s.until("fresh integration review", |s| {
+        s.screen().contains("Review integration action")
+    });
+    s.send("\r");
+    s.until("reviewed integration connects from F10", |s| {
+        s.screen().contains("Integration action finished")
+    });
+    assert_eq!(
+        concordia::harness::connections::load(dir.path())
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(s.draft(), "UNSENT_INTEGRATION_DRAFT");
+    s.send("r");
+    s.until("connected integration catalog refresh", |s| {
+        s.screen().contains("Integrations and agent tools")
+    });
+    s.send("\x1b[B");
+    s.send("d");
+    s.until("selected binding disconnect review", |s| {
+        s.screen().contains("Review integration action") && s.screen().contains("ui-managed")
+    });
+    s.send("\r");
+    s.until("selected integration disconnects", |s| {
+        s.screen().contains("Integration action finished")
+    });
+    let remaining = concordia::harness::connections::load(dir.path()).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].name, "ui-catalog");
+    assert!(s.prompts().is_empty());
     s.send("\x1b");
     s.until(
         "integration catalog closes without consuming the draft",

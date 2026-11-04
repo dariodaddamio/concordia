@@ -805,6 +805,9 @@ impl App {
         if self.raster.active() {
             return;
         }
+        if integrations::paste(self, text) {
+            return;
+        }
         if worker_input::active(self) {
             worker_input::paste(self, text);
             return;

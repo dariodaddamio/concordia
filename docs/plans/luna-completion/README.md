@@ -1,9 +1,15 @@
 # Luna roadmap execution plan
 
-Status: draft, ready for scoped dispatch. Prepared 2026-11-03 against build
+Status: execution started 2026-11-03. Prepared 2026-11-03 against build
 `2026-11-03w`, source `0caec481a42428f92c024c9429715202cd4e4e74`.
 Three Luna planning reviewers audited the current contracts. This document does not claim
 implementation or live qualification of the remaining features.
+
+Current execution baseline: `5dbac3e`; coordinator branch `feat/luna-roadmap-completion`.
+Host-native Luna workers `l5_integrations`, `l4_file_outputs` and `l3_binary_inputs`
+own the first wave. Coordinator owns shared integration and candidate delivery. These are
+implementation assignments. The x candidate integrates their approved source changes; qualification
+results remain separate from implementation and are recorded below as checks complete.
 
 ## Objective and accountability
 
@@ -103,14 +109,14 @@ and relevant evidence document. A new planning document is not an implementation
 
 | Task | Initial state | Completion condition |
 | --- | --- | --- |
-| L1 Claude approvals | Ready for contract investigation | Supported native request reaches foreground/worker review with exact ownership |
-| L2 Claude capacity | Ready for contract investigation | Exact supported measurement drives existing before-turn policy |
-| L2 Cursor capacity | Ready for contract investigation | Same, with actual negotiated/reported Cursor evidence |
-| L3 binary inputs | Ready for contract investigation | Supported provider payload dispatch plus durable mixed-attachment recovery |
-| L4 Claude outputs | Ready for schema investigation and adapter work | Completed supported file reports reach the existing catalog |
-| L4 Cursor outputs | Ready for schema investigation | Same, independently evidenced |
-| L5 integrations | Ready for implementation | Reviewed connect/verify/disconnect works from F10 without losing the draft |
-| L6 native usage | Ready for source investigation | Exact non-overlapping source coverage for a newly supported provider |
+| L1 Claude approvals | Review: Luna `l4_file_outputs` + coordinator, x candidate | Qualified 2.1.317 native stdio allow-once/deny; broader structured question parity remains separate |
+| L2 Claude capacity | Review: Luna `l3_binary_inputs` / `l4_file_outputs` + coordinator, x candidate | Completed-turn control capture, exact source/model/settings check before reuse; no speculative pre-prompt sensor |
+| L2 Cursor capacity | Blocked-vendor; [source audit](../../quality/capacity-provenance.md) | Supported current-window request/event is absent from the documented Cursor transport |
+| L3 binary inputs | Building next: Luna `l4_file_outputs`, isolated PDF branch | Official SDK streamed user-message contract includes documents on qualified CLI; bounded snapshots/dispatch still require implementation |
+| L4 Claude outputs | Review: Luna `l3_binary_inputs` + coordinator, x candidate | Built-in Write/Edit correlation plus successful native result metadata; unsupported formats stay excluded |
+| L4 Cursor outputs | Review: Luna `l4_file_outputs` + coordinator, x candidate | Exact-session completed write/edit success path through the existing registry |
+| L5 integrations | Review: Luna `l5_integrations` + coordinator, x candidate | New local manifest and reviewed reconnect/verify/selected disconnect; draft retained |
+| L6 native usage | Blocked-vendor; [Cursor evidence](../../quality/native-usage-coverage.md) | No supported per-event counters; quotas remain distinct and no fabricated totals were added |
 | Numeric credit balance when native response is null | Vendor/data blocked | A supported numeric source exists; availability is not an amount |
 | Live parity and memory-retention trials | Owner-budget gated | Exact provider/task/model scope and usage budget, then recorded results |
 | Signing and publication | Owner/release gated | Identity, distribution decisions and exact-artifact release evidence |

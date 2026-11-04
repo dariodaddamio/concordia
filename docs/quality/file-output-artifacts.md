@@ -1,9 +1,20 @@
 # Structured file output records
 
-Build `2026-11-03q`, based on inline-preview build `ff52bc1`. The first I5 slice records completed
+Build `2026-11-03x` candidate extends the original q slice. The shared registry records completed
 Codex `file_change` / native `fileChange` items with explicit add/update/delete changes. Failed,
-unknown, unowned and prose events do not create records. Claude/Cursor output formats, remote
-resource URLs and embedded generated-image blobs are not promoted without a verified adapter.
+unknown, unowned and prose events do not create records. Cursor's documented `stream-json`
+`tool_call` completed events are now promoted for `writeToolCall` and `editToolCall` only when
+`result.success.path` is present; `call_id` is retained as the native event identity and the
+whole structured event is the source revision. The official Cursor schema documents the same
+session id on each event and distinguishes completed tool results from started calls
+([output format](https://docs.cursor.com/en/cli/reference/output-format)). Claude built-in Write/Edit calls are correlated by native tool-use ID with a successful native
+user tool result and file-result metadata. Both envelopes must name the exact session; request
+arguments or prose alone never create a record. Write is conservatively an update, because the
+result does not prove file creation. Failed, mismatched, ambiguous and uncorrelated results are
+refused. The official [SDK message types](https://platform.claude.com/docs/en/agent-sdk/python)
+and [tool callbacks](https://code.claude.com/docs/en/agent-sdk/hooks) describe this correlation.
+Remote resource URLs and embedded generated-image blobs are not promoted without a verified
+adapter.
 
 The provider's verified launch owner supplies conversation, account, home, workspace, execution
 directory, run and attempt. Native session/item identities and native turn id when available

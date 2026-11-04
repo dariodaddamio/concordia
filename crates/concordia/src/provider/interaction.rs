@@ -413,7 +413,7 @@ impl NativeInteraction {
                     .collect(),
                 })
             }
-            "session/request_permission" => Ok(Self::Permission {
+            "session/request_permission" | "claude/can_use_tool" => Ok(Self::Permission {
                 title: params
                     .pointer("/toolCall/title")
                     .and_then(Value::as_str)
@@ -875,6 +875,29 @@ impl InteractionConnection {
         };
     }
 
+    /// Called only after a successful native stdio initialization, before sending a prompt.
+    pub fn initialized_claude(&mut self, version: &str) -> Result<(), String> {
+        if version != "2.1.317"
+            || self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.provider != ProviderKind::Claude)
+        {
+            return Err("Claude native control protocol requires verified CLI 2.1.317".into());
+        }
+        self.capabilities.permissions = CapabilityEvidence {
+            support: Support::Unknown,
+            transport: "claude-stdio".into(),
+            cli_version: Some(version.into()),
+            protocol_version: None,
+            connection_id: Some(self.id.clone()),
+            source: "version-matched official SDK control protocol and native initialize response"
+                .into(),
+            observed_at_unix_ms: observed_at(),
+        };
+        Ok(())
+    }
+
     pub fn request(
         &mut self,
         session: &str,
@@ -904,7 +927,16 @@ impl InteractionConnection {
             && params["threadId"].as_str() == Some(session)
             && text(&params, "turnId").is_ok()
             && text(&params, "itemId").is_ok();
-        if (codex && !codex_bound)
+        let claude = method == "claude/can_use_tool";
+        let claude_bound = self.capabilities.permissions.transport == "claude-stdio"
+            && self.capabilities.permissions.cli_version.as_deref() == Some("2.1.317")
+            && params["sessionId"].as_str() == Some(session)
+            && params
+                .pointer("/toolCall/toolCallId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty() && id.len() <= 512);
+        if (claude && !claude_bound)
+            || (codex && !codex_bound)
             || (!codex && params["sessionId"].as_str() != Some(session) && !connection_bound)
         {
             return Err("native interaction session identity mismatch".into());
@@ -937,13 +969,19 @@ impl InteractionConnection {
         }
         let capability = CapabilityEvidence {
             support: Support::Supported,
-            transport: if codex {
+            transport: if claude {
+                "claude-stdio"
+            } else if codex {
                 "codex-app-server"
             } else {
                 "cursor-acp"
             }
             .into(),
-            cli_version: self.capabilities.images.cli_version.clone(),
+            cli_version: if claude {
+                self.capabilities.permissions.cli_version.clone()
+            } else {
+                self.capabilities.images.cli_version.clone()
+            },
             protocol_version: self.capabilities.images.protocol_version,
             connection_id: Some(self.id.clone()),
             source: "validated native request on this connection".into(),
@@ -1125,6 +1163,48 @@ mod tests {
             .respond_owned(&owner, json!({"decision":"accept"}))
             .is_err());
         assert!(response.try_recv().is_err());
+        let claude_owner = InteractionOwner {
+            provider: ProviderKind::Claude,
+            ..owner.clone()
+        };
+        let mut claude = InteractionConnection::new(
+            Some(claude_owner.clone()),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(claude
+            .request(
+                "native-session",
+                json!("native-1"),
+                "claude/can_use_tool".into(),
+                permission()
+            )
+            .is_err());
+        assert!(claude.initialized_claude("unknown").is_err());
+        claude.initialized_claude("2.1.317").unwrap();
+        let mut params = permission();
+        params["toolCall"]["toolCallId"] = json!("native-write");
+        let (request, mut response) = claude
+            .request(
+                "native-session",
+                json!("native-1"),
+                "claude/can_use_tool".into(),
+                params.clone(),
+            )
+            .unwrap();
+        assert_eq!(request.capability().transport, "claude-stdio");
+        assert!(request.respond_owned(&owner, selected("once")).is_err());
+        request
+            .respond_owned(&claude_owner, selected("once"))
+            .unwrap();
+        assert_eq!(response.try_recv().unwrap(), selected("once"));
+        assert!(claude
+            .request(
+                "native-session",
+                json!("native-1"),
+                "claude/can_use_tool".into(),
+                params
+            )
+            .is_err());
     }
 
     #[test]
