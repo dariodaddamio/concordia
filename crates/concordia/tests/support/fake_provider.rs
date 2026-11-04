@@ -373,6 +373,12 @@ fn fake_claude_control(args: &[String]) {
         } else if value["type"] == "control_response" {
             if fixture["background"] == true {
                 assert_eq!(value["response"]["request_id"], "late-permission");
+                if fixture["foreign"] != true {
+                    emit(
+                        json!({"type":"system","subtype":"task_updated","task_id":"task-1",
+                        "session_id":session,"patch":{"status":"completed"}}),
+                    );
+                }
                 emit(
                     json!({"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","output_file":"background-output.md","summary":"Synthetic background task completed","uuid":"task-done-1","session_id":if fixture["foreign"] == true { "foreign-session" } else { &session },"tool_use_id":"task-tool-1","usage":{"total_tokens":7,"tool_uses":1,"duration_ms":2100}}),
                 );

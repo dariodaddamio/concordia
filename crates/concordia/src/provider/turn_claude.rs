@@ -49,14 +49,14 @@ fn native_task_card(
     crate::provider::stream_cards::upsert_card(&mut out.cards, card);
 }
 
-fn clean_task_text(value: Option<&Value>, fallback: &str) -> String {
+fn clean_task_text(value: Option<&Value>, fallback: &str, limit: usize) -> String {
     value
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
         .map(|text| {
             text.chars()
-                .filter(|character| !character.is_control())
-                .take(256)
+                .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+                .take(limit)
                 .collect::<String>()
         })
         .filter(|text| !text.is_empty())
@@ -600,9 +600,10 @@ pub(super) async fn run(
                             let title = clean_task_text(
                                 value.get("description"),
                                 "Claude delegated task",
+                                256,
                             );
                             deferred_task_titles.insert(task_id.clone(), title.clone());
-                            let tool_use_id = if value.get("tool_use_id").is_some() {
+                            let tool_use_id = if value.get("tool_use_id").is_some_and(|value| !value.is_null()) {
                                 Some(
                                     bounded_id(value.get("tool_use_id"))
                                         .context("Claude task_started has invalid tool identity")?,
@@ -627,11 +628,12 @@ pub(super) async fn run(
                             matches!(status, "completed" | "failed" | "stopped" | "killed")
                         }) {
                             if let Some(task_id) = bounded_id(value.get("task_id")) {
-                                if deferred_tasks.remove(&task_id) {
+                                if seen_deferred_tasks.contains(&task_id) {
+                                    deferred_tasks.remove(&task_id);
                                     let title = deferred_task_titles
-                                        .remove(&task_id)
+                                        .get(&task_id).cloned()
                                         .unwrap_or_else(|| "Claude delegated task".into());
-                                    let tool_use_id = deferred_task_tools.remove(&task_id).flatten();
+                                    let tool_use_id = deferred_task_tools.get(&task_id).cloned().flatten();
                                     let status = if value["status"].as_str() == Some("completed") {
                                         crate::provider::stream_cards::CardStatus::Done
                                     } else {
@@ -644,6 +646,7 @@ pub(super) async fn run(
                                         Some(clean_task_text(
                                             value.get("summary"),
                                             "Claude delegated task completed",
+                                            4096,
                                         )),
                                         &mut out,
                                         &progress,
@@ -657,11 +660,12 @@ pub(super) async fn run(
                             matches!(status, "completed" | "failed" | "stopped" | "killed")
                         }) {
                             if let Some(task_id) = bounded_id(value.get("task_id")) {
-                                if deferred_tasks.remove(&task_id) {
+                                if seen_deferred_tasks.contains(&task_id) {
+                                    deferred_tasks.remove(&task_id);
                                     let title = deferred_task_titles
-                                        .remove(&task_id)
+                                        .get(&task_id).cloned()
                                         .unwrap_or_else(|| "Claude delegated task".into());
-                                    let tool_use_id = deferred_task_tools.remove(&task_id).flatten();
+                                    let tool_use_id = deferred_task_tools.get(&task_id).cloned().flatten();
                                     let status = if value["patch"]["status"].as_str() == Some("completed") {
                                         crate::provider::stream_cards::CardStatus::Done
                                     } else {
