@@ -74,11 +74,24 @@ pasted text and is bound to the same conversation, workspace and draft revision.
 switching conversations invalidates a pending import. Up to four paths and 16 KiB of pasted path
 text are accepted. No shell expansion, host configuration change or dropped-file execution occurs.
 
-PDF and other binary document transports remain unavailable. Anthropic's API documents PDF
-`document` blocks, but the version-matched Claude Agent SDK user-content union does not define a
-PDF/document input block, and Claude Code CLI documentation does not establish that subscription
-`stream-json` accepts one. Concordia therefore refuses PDF dispatch rather than converting bytes
-to prompt text or relying on the Read tool. Typed local-file output records are described in [file outputs](quality/file-output-artifacts.md).
+PDF attachments are now a bounded native Claude candidate. The version-matched [TypeScript SDK
+`UserMessage` input union](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusermessage)
+places image/document blocks in `message.content`; this is user input, not the older output
+`ContentBlock` union. Concordia dispatches the ordered document block through Claude 2.1.317
+standard stdin and `ClaudeStdio` only, after the capability/version gate. Each PDF is capped at
+8 MiB, all PDFs together at 16 MiB, and the message at four attachments. Snapshots retain the
+SHA-256 descriptor and refuse sensitive or linked paths, changed identity/hash, missing `%PDF-`
+signature, and encrypted files marked with `/Encrypt`. Codex and Cursor currently reject PDF
+dispatch before child spawn; no OCR, rasterization or Read-tool conversion is substituted.
+
+The PDF block schema is `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"<base64>"}}`; descriptor SHA-256 remains local integrity metadata and is not injected into native content.
+
+Attach through the existing picker/F9 path flow. The PDF chip opens the immutable snapshot in the
+system viewer as an explicit file action; it does not rasterize or OCR the document. Drafts,
+queues and checkpoints retain descriptor metadata and the original envelope. Fake-process tests
+cover schema/order, Standard Claude and ClaudeStdio payloads, unsupported providers and tamper
+rejection. Installed/live provider parity, physical viewer behavior and real PDF quality remain
+unqualified pending focused checks.
 
 ## Mermaid
 
@@ -123,5 +136,5 @@ The first Python SDK audit examined an output content union; that did not settle
 input. The official [TypeScript SDK streamed user-message contract](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusermessage)
 explicitly places images and documents in `message.content` and identifies native support from
 CLI 2.1.277. Installed 2.1.317 exceeds that threshold. This supplies the missing native wire
-contract. The x candidate still refuses binary documents while the next isolated implementation
-adds bounded snapshots and dispatch; schema/fixture support remains distinct from live parity.
+contract. The current candidate adds bounded snapshots and dispatch; schema/fixture support
+remains distinct from installed and live parity, which still requires focused qualification.

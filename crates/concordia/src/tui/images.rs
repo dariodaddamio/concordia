@@ -1,9 +1,10 @@
 //! Image composer state. Snapshots travel with durable queue/draft envelopes.
 use super::*;
-use crate::attachments::{Attachment, Document, Image, Message};
+use crate::attachments::{Attachment, Document, Image, Message, PdfDocument};
 enum Paste {
     Image(Image),
     Document(Document),
+    Pdf(PdfDocument),
     Batch(Vec<Attachment>, Vec<String>),
     Text(String),
     Empty,
@@ -37,10 +38,12 @@ impl State {
             .draft
             .iter()
             .any(|attachment| matches!(attachment, Attachment::Image(_)));
-        let documents = self
-            .draft
-            .iter()
-            .any(|attachment| matches!(attachment, Attachment::TextDocument(_)));
+        let documents = self.draft.iter().any(|attachment| {
+            matches!(
+                attachment,
+                Attachment::TextDocument(_) | Attachment::PdfDocument(_)
+            )
+        });
         match (images, documents) {
             (true, false) => "Describe the attached image.",
             (false, true) => "Review the attached documents.",
@@ -119,6 +122,7 @@ impl App {
                     Ok(Paste::Document(document)) => {
                         attachments.push(Attachment::TextDocument(document))
                     }
+                    Ok(Paste::Pdf(document)) => attachments.push(Attachment::PdfDocument(document)),
                     Ok(_) => {}
                     Err(error) => errors.push(format!(
                         "{}: {error}",
@@ -160,6 +164,22 @@ impl App {
                 return Err("Documents exceed 64 KiB per message; original draft retained".into());
             }
         }
+        if let Attachment::PdfDocument(document) = &attachment {
+            let bytes = self
+                .images
+                .draft
+                .iter()
+                .filter_map(|attachment| match attachment {
+                    Attachment::PdfDocument(document) => Some(document.bytes),
+                    _ => None,
+                })
+                .sum::<usize>();
+            if bytes.saturating_add(document.bytes) > crate::attachments::MAX_PDF_TOTAL_BYTES {
+                return Err(
+                    "PDF attachments exceed 16 MiB per message; original draft retained".into(),
+                );
+            }
+        }
         let document = if let Attachment::TextDocument(document) = &attachment {
             Some(document.clone())
         } else {
@@ -185,6 +205,12 @@ impl App {
                 }
                 self.flash("Document snapshot attached; preview shows the included text. Esc returns to the draft");
             }
+        } else if let Attachment::PdfDocument(pdf) = &self.images.draft[self.images.draft.len() - 1]
+        {
+            self.flash(format!(
+                "PDF snapshot attached: {} · {} bytes; click its chip for the system viewer",
+                pdf.name, pdf.bytes
+            ));
         } else {
             self.flash("Image attached · click its preview or X to remove");
         }
@@ -299,6 +325,13 @@ impl App {
                         self.flash(error);
                     }
                 }
+                Ok(Paste::Pdf(document)) => {
+                    if let Err(error) =
+                        self.attach_imported(Attachment::PdfDocument(document), false)
+                    {
+                        self.flash(error);
+                    }
+                }
                 Ok(Paste::Batch(attachments, mut errors)) => {
                     let mut count = 0;
                     for attachment in attachments {
@@ -331,11 +364,13 @@ fn import_attachment(root: &Path, path: &Path) -> Result<Paste, String> {
         )
     }) {
         crate::attachments::import(root, path).map(Paste::Image)
+    } else if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+    {
+        PdfDocument::import(root, path).map(Paste::Pdf)
     } else {
-        Err(
-            "Attach PNG/JPEG/WebP or UTF-8 .txt/.md/.json; native binary documents are unavailable"
-                .into(),
-        )
+        Err("Attach PNG/JPEG/WebP, UTF-8 .txt/.md/.json, or a PDF".into())
     }
 }
 #[cfg(not(test))]
@@ -349,7 +384,7 @@ fn capture(root: &Path, clipboard: bool) -> Result<Paste, String> {
     let script = if clipboard {
         "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $image=[Windows.Forms.Clipboard]::GetImage(); if ($null -eq $image) {[Console]::Write('NO_IMAGE'); exit 0}; try {$image.Save($env:CONCORDIA_IMAGE_CAPTURE,[Drawing.Imaging.ImageFormat]::Png)} finally {$image.Dispose()}"
     } else {
-        "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $dialog=New-Object Windows.Forms.OpenFileDialog; $dialog.Title='Attach image or document to Concordia'; $dialog.Filter='Images and UTF-8 documents|*.png;*.jpg;*.jpeg;*.webp;*.txt;*.md;*.json|Images|*.png;*.jpg;*.jpeg;*.webp|UTF-8 documents|*.txt;*.md;*.json'; if ($dialog.ShowDialog() -ne 'OK') {[Console]::Write('CANCELLED'); exit 0}; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($dialog.FileName)"
+        "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $dialog=New-Object Windows.Forms.OpenFileDialog; $dialog.Title='Attach image or document to Concordia'; $dialog.Filter='Images, documents and PDF|*.png;*.jpg;*.jpeg;*.webp;*.txt;*.md;*.json;*.pdf|Images|*.png;*.jpg;*.jpeg;*.webp|UTF-8 documents|*.txt;*.md;*.json|PDF documents|*.pdf'; if ($dialog.ShowDialog() -ne 'OK') {[Console]::Write('CANCELLED'); exit 0}; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($dialog.FileName)"
     };
     cmd.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
         .env("CONCORDIA_IMAGE_CAPTURE", &temp);
@@ -433,6 +468,12 @@ pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
                             .as_ref()
                             .map(|range| format!(" · selection {}..{}", range.start, range.end))
                             .unwrap_or_default()
+                    ),
+                    Attachment::PdfDocument(document) => format!(
+                        " [PDF {}: {} · {} bytes · native document]",
+                        index + 1,
+                        document.name,
+                        document.bytes
                     ),
                 }
             } else {
@@ -531,6 +572,18 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
                         return true;
                     }
                     (document.path, true)
+                }
+                Attachment::PdfDocument(document) => {
+                    if let Err(error) = document.data() {
+                        app.flash(error);
+                        return true;
+                    }
+                    let path = document.path.to_string_lossy();
+                    app.open_host_target(
+                        path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned(),
+                        "PDF",
+                    );
+                    return true;
                 }
             };
             app.perform_file_action(

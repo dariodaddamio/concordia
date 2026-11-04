@@ -150,6 +150,36 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
             prompt.contains("DOCUMENT_SNAPSHOT_FIRST") && !prompt.contains("CHANGED_AFTER_IMPORT")
         );
         assert!(!s.screen().contains("concordia-message-v2"));
+        let pdf = work.join("fixture.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\nsynthetic TUI PDF\n%%EOF\n").unwrap();
+        let pdf_before = s.prompts().len();
+        s.submit("/attach fixture.pdf");
+        s.until("PDF descriptor chip visible", |s| {
+            s.screen().contains("PDF 1: fixture.pdf") && s.screen().contains("native document")
+        });
+        if provider != ProviderKind::Claude {
+            s.paste("Review this PDF");
+            s.enter();
+            s.until("unsupported PDF send retains draft", |s| {
+                s.screen().contains("Native PDF attachments require Claude")
+            });
+            assert_eq!(s.prompts().len(), pdf_before);
+            assert_eq!(
+                concordia::attachments::Message::decode(&s.draft())
+                    .attachments
+                    .len(),
+                1
+            );
+        }
+        if provider != ProviderKind::Claude {
+            s.send("\x01\x08");
+        }
+        s.paste("/attach clear");
+        s.until("PDF clear command ready", |s| {
+            concordia::attachments::Message::decode(&s.draft()).text == "/attach clear"
+        });
+        s.enter();
+        s.until("PDF draft cleared", |s| s.draft().is_empty());
         let blobs = std::fs::read_dir(dir.path().join("attachments"))
             .unwrap()
             .count();

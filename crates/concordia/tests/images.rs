@@ -1,4 +1,5 @@
 //! Real process transport with synthetic image bytes; never invokes a real provider.
+use base64::Engine as _;
 use concordia::{
     attachments,
     provider::{
@@ -758,4 +759,165 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             1
         );
     }
+
+    // PDF transport is exercised through the same fake process boundary as images. The bytes
+    // are synthetic but have a PDF signature; this proves ordering, hashing and rejection before
+    // child spawn without invoking a PDF engine or a real provider.
+    let pdf_path = root.join("brief.pdf");
+    let original_pdf = b"%PDF-1.7\nsynthetic pdf bytes\n%%EOF\n".to_vec();
+    std::fs::write(&pdf_path, &original_pdf).unwrap();
+    let pdf = attachments::PdfDocument::import(root, &pdf_path).unwrap();
+    // Pasted absolute PDF paths use the same bounded grammar as other attachments.
+    assert_eq!(
+        attachments::pasted_paths(r#"C:\folder\document.pdf"#).unwrap(),
+        vec![std::path::PathBuf::from(r"C:\folder\document.pdf")]
+    );
+    // Import snapshots bytes, so changing the source after import cannot alter the payload.
+    std::fs::write(&pdf_path, b"%PDF-1.7\nsource changed after import\n%%EOF\n").unwrap();
+    let expected_pdf = base64::engine::general_purpose::STANDARD.encode(&original_pdf);
+    assert_eq!(pdf.data().unwrap(), expected_pdf);
+    let encrypted_path = root.join("encrypted.pdf");
+    std::fs::write(&encrypted_path, b"%PDF-1.7\n/Encrypt 7 0 R\n%%EOF\n").unwrap();
+    let encrypted = attachments::PdfDocument::import(root, &encrypted_path).unwrap_err();
+    assert!(encrypted.to_ascii_lowercase().contains("encrypt"));
+    let mixed = attachments::Message {
+        text: "Inspect ordered attachments".into(),
+        attachments: vec![
+            attachments::Attachment::Image(image.clone()),
+            attachments::Attachment::PdfDocument(pdf.clone()),
+            attachments::Attachment::TextDocument(
+                attachments::Document::import(root, &document_path).unwrap(),
+            ),
+        ],
+        ..Default::default()
+    };
+    assert!(mixed.has_pdfs());
+    let claude_content = mixed.claude_content("Inspect ordered attachments").unwrap();
+    assert_eq!(claude_content[0]["text"], "Inspect ordered attachments");
+    assert_eq!(claude_content[1]["type"], "image");
+    assert_eq!(claude_content[2]["type"], "document");
+    assert_eq!(claude_content[2]["source"]["media_type"], "application/pdf");
+    assert_eq!(claude_content[3]["type"], "text");
+    assert!(claude_content[3]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Attached document bytes\r\n"));
+    assert_eq!(pdf.data().unwrap(), expected_pdf);
+    assert_eq!(pdf.claude().unwrap()["source"]["data"], expected_pdf);
+
+    let encoded = mixed.encode();
+    let pdf_images = mixed.images();
+    env.set("FAKE_PROVIDER_MODE", "stream");
+    let pdf_request = ProviderTurnRequest {
+        images: &pdf_images,
+        provider: ProviderKind::Claude,
+        prompt: &encoded,
+        cwd: root,
+        home_path: Some(root),
+        model: Some("fixture-claude"),
+        native_session_id: None,
+        trust: TrustMode::Plan,
+        context_prefix: None,
+        local_time: None,
+        compaction: Default::default(),
+    };
+    let pdf_outcome = provider::run_provider_turn(&pdf_request, None)
+        .await
+        .unwrap();
+    assert_eq!(pdf_outcome.exit_code, Some(0));
+    let pdf_journal = std::fs::read_to_string(root.join("launch.txt")).unwrap();
+    let stdin_hex = pdf_journal
+        .lines()
+        .find_map(|line| line.strip_prefix("STDIN:"))
+        .unwrap();
+    let stdin = (0..stdin_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&stdin_hex[i..i + 2], 16).unwrap())
+        .collect::<Vec<_>>();
+    let envelope: Value = serde_json::from_slice(&stdin).unwrap();
+    assert!(envelope.to_string().contains(&expected_pdf));
+
+    let stdio_work = tempfile::tempdir().unwrap();
+    std::fs::write(stdio_work.path().join("claude-fixture.json"), "{}").unwrap();
+    let owner = concordia::provider::interaction::InteractionOwner {
+        conversation_id: uuid::Uuid::new_v4().to_string(),
+        workspace: stdio_work.path().into(),
+        execution_cwd: stdio_work.path().into(),
+        run_id: uuid::Uuid::new_v4().to_string(),
+        attempt_id: uuid::Uuid::new_v4().to_string(),
+        provider: ProviderKind::Claude,
+        account: "pdf-claude".into(),
+        home: Some(root.into()),
+    };
+    let owner_for_answer = owner
+        .validate_for(ProviderKind::Claude, stdio_work.path(), Some(root))
+        .unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let answerer = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if let TurnProgress::Interaction(request) = event {
+                request
+                    .respond_owned(&owner_for_answer, request.single_choices(&[1]).unwrap())
+                    .unwrap();
+            }
+        }
+    });
+    let stdio_request = ProviderTurnRequest {
+        images: &pdf_images,
+        provider: ProviderKind::Claude,
+        prompt: &encoded,
+        cwd: stdio_work.path(),
+        home_path: Some(root),
+        model: Some("fixture-claude"),
+        native_session_id: Some("pdf-stdio-session"),
+        trust: TrustMode::Ask,
+        context_prefix: None,
+        local_time: None,
+        compaction: Default::default(),
+    };
+    let stdio_outcome = provider::turn::run_provider_turn_with_transport(
+        &stdio_request,
+        owner,
+        concordia::native_input::Mode::ClaudeStdio,
+        None,
+        Some(tx),
+    )
+    .await
+    .unwrap();
+    answerer.await.unwrap();
+    assert!(!stdio_outcome.failed, "{stdio_outcome:?}");
+    let stdio_journal =
+        std::fs::read_to_string(stdio_work.path().join("claude-calls.jsonl")).unwrap();
+    assert!(stdio_journal.contains(&expected_pdf));
+
+    for provider in [ProviderKind::Codex, ProviderKind::Cursor] {
+        let _ = std::fs::remove_file(root.join("launch.txt"));
+        let unsupported = ProviderTurnRequest {
+            images: &pdf_images,
+            provider,
+            prompt: &encoded,
+            cwd: root,
+            home_path: Some(root),
+            model: Some("fixture-model"),
+            native_session_id: None,
+            trust: TrustMode::Plan,
+            context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
+        };
+        let outcome = provider::run_provider_turn(&unsupported, None).await;
+        assert!(outcome.is_err() || outcome.unwrap().failed);
+        assert!(
+            !root.join("launch.txt").exists(),
+            "unsupported PDF child spawned for {provider:?}"
+        );
+    }
+
+    // A changed PDF is rejected before launching the fake process; the original envelope stays
+    // the draft/queue value and no provider child is spawned.
+    std::fs::write(&pdf.path, b"%PDF-1.7\ntampered\n%%EOF\n").unwrap();
+    let _ = std::fs::remove_file(root.join("launch.txt"));
+    let tampered = provider::run_provider_turn(&pdf_request, None).await;
+    assert!(tampered.is_err() || tampered.unwrap().failed);
+    assert!(!root.join("launch.txt").exists());
 }

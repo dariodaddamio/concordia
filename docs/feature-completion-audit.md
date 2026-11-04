@@ -1,7 +1,7 @@
 # Feature completion audit: 2026-11-03x candidate
 
 The full roadmap is **not complete**. Remaining product capabilities include Cursor proactive
-capacity and external usage signals, verified PDF/binary document transport, and unsupported
+capacity and external usage signals, installed/live qualification of the new PDF/binary document transport, and unsupported
 native interaction/output formats beyond the qualified adapters. Live-provider
 qualification, memory-retention experiments and signing/distribution remain separate open gates.
 
@@ -48,8 +48,10 @@ creation does not change the implementation status recorded here.
 - Managed cross-worktree dependencies wait for explicit result-only or already-integrated
   receipts, with source/repository revalidation and retirement references. [Scope](quality/dependency-delivery.md).
 
-- Ordered text-document snapshots and explicit F9 pasted-path attachment preserve drafts/queues
-  and exact native text data. [Input scope](images-and-diagrams.md). Binary transports remain unavailable.
+- Ordered text-document and bounded PDF snapshots, plus explicit F9 pasted-path attachment,
+  preserve drafts/queues and exact native data. Claude 2.1.317 standard/stdio PDF dispatch is a
+  candidate backed by fake-process schema/order/tamper evidence; installed/live qualification,
+  physical viewer behavior and other-provider support remain open. [Input scope](images-and-diagrams.md).
 - Context observations bind exact native turn/model and source revision, including same-model
   invalidation and specific unsupported-provider reasons. [Evidence](quality/capacity-provenance.md).
 - Native usage records have a separate bounded coverage view, excluded from combined totals.
@@ -157,7 +159,8 @@ creation does not change the implementation status recorded here.
 - Native image payloads for Codex/Claude/Cursor, composer capture/preview/remove chips, immutable
   snapshots and draft/queue/recovery/handoff references. Cursor requires advertised ACP image
   capability. UTF-8 documents and explicit attachment of pasted file paths are implemented;
-  inline cell rasters are implemented; verified binary document transports remain open.
+  bounded Claude PDF snapshots/native dispatch are candidate-implemented with fake-process
+  evidence; inline cell rasters are implemented and live binary qualification remains open.
 - Cursor image-turn native permission/choice responses. Ordinary text adapters and other native
   approval paths have not been migrated; this is not full provider interaction parity.
 - Draft-preserving automatic quota continuation, deferred retry after command screens/queued edits,
