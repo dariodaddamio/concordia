@@ -15,6 +15,14 @@ Typing while an import finishes keeps both the evolving message and the attachme
 the draft or switching conversations prevents an old import from attaching to the new draft.
 Copying image files in Explorer and pasting into Concordia also imports their snapshots; the
 Windows clipboard file-drop format is recognized in addition to screenshot bitmaps.
+Registered PNG clipboard streams are accepted even when the clipboard has no bitmap/DIB format.
+An explicit empty bracketed-paste event checks for an image; unbracketed file-drop character
+bursts recognize the whole local path before inserting ordinary text.
+
+Windows Terminal binds Ctrl+V and Ctrl+Shift+V to its own paste action by default. A bitmap-only
+paste can produce no input event, so application code cannot capture that key. Forwarding those
+shortcuts requires a host keybinding change, which also affects other terminal apps; Concordia
+does not silently rewrite it. See [Microsoft's action and keybinding documentation](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/actions).
 
 PNG, JPEG and WebP are accepted, up to four distinct images of 4 MiB each per message. Clipboard
 bitmaps are saved as PNG. Image-only submission uses a short request to describe the image.

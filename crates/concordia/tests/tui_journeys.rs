@@ -50,7 +50,12 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
                     && !screen.contains("flowchart LR")
             });
         }
-        s.paste(&format!("\"{}\"", image.display()));
+        let dropped = format!("\"{}\"", image.display());
+        if provider == ProviderKind::Cursor {
+            s.send(&dropped);
+        } else {
+            s.paste(&dropped);
+        }
         s.until("attached image chip", |s| {
             s.screen().contains("Image 1: diagram.png")
         });

@@ -1,5 +1,14 @@
 # Changelog
 
+### Fixed (`2026-11-04f`)
+
+- Completed turns reconcile final tool cards even after earlier cards streamed. A clickable
+  Review activity row and Ctrl+E reopen reported thinking and edit details after completion.
+- Async option prompts accept the host's title/string-choice schema and preserve normal replies.
+- PNG-only clipboard images are recognized. Delivered empty paste events can capture clipboard
+  images, and unbracketed dropped image paths attach automatically. Terminal shortcuts still
+  need to reach the application; host-level paste interception is a separate configuration.
+
 ### Fixed (`2026-11-04e`)
 
 - Standalone pasted image paths attach and preview automatically. Typing while an image imports
