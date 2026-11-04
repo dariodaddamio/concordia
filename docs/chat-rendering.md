@@ -4,6 +4,8 @@ Windows defaults to an app-owned native window using the same Ratatui layout and
 It paints the existing cells, including thumbnail pixels, and owns clipboard paste, drops, mouse,
 focus and resize events. `--terminal` remains available for terminal-pane workflows. Provider
 turns, account/session identities and native approvals use the same application loop.
+Image previews in the Windows window use original decoded pixels with smooth scaling; terminal
+mode retains cell-based previews. Preview size and rendering do not alter provider attachments.
 
 Build `2026-11-01f` renders complete Mermaid fences locally in chat/Markdown panes and adds native
 image attachment chips. Timing/token metadata and reply headers are not file-link candidates;

@@ -12,12 +12,14 @@ const EDGE: u32 = 4096;
 const PIXELS: u64 = 16_000_000;
 const THUMB: u32 = 256;
 const CACHE: usize = 8;
+const CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 struct Thumbnail {
     hash: String,
     width: u32,
     height: u32,
     pixels: image::RgbaImage,
+    original: Arc<image::RgbaImage>,
 }
 struct View {
     inline: bool,
@@ -32,6 +34,8 @@ struct Job {
 }
 #[derive(Default)]
 pub(super) struct State {
+    pub native: bool,
+    native_area: std::cell::Cell<Option<Rect>>,
     view: Option<View>,
     job: Option<Job>,
     cache: std::collections::VecDeque<Arc<Thumbnail>>,
@@ -67,7 +71,15 @@ impl State {
         });
         if let Ok(thumb) = &result {
             self.cache.push_back(thumb.clone());
-            while self.cache.len() > CACHE {
+            while self.cache.len() > 1
+                && (self.cache.len() > CACHE
+                    || self
+                        .cache
+                        .iter()
+                        .map(|image| image.original.len() + image.pixels.len())
+                        .sum::<usize>()
+                        > CACHE_BYTES)
+            {
                 self.cache.pop_front();
             }
         }
@@ -106,6 +118,7 @@ fn decode(
             width: old.width,
             height: old.height,
             pixels: old.pixels.clone(),
+            original: old.original.clone(),
         });
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
@@ -135,11 +148,13 @@ fn decode(
         return Err("Preview cancelled".into());
     }
     let pixels = image.thumbnail(THUMB, THUMB).to_rgba8();
+    let original = Arc::new(image.into_rgba8());
     Ok(Thumbnail {
         hash,
         width,
         height,
         pixels,
+        original,
     })
 }
 impl App {
@@ -270,12 +285,17 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             return;
         }
     };
-    paint(f, content, thumb, app.no_color);
+    paint_view(f, content, thumb, app);
     let footer = format!(
-        "{} × {} · SHA-256 {} · cell preview",
+        "{} × {} · SHA-256 {} · {}",
         thumb.width,
         thumb.height,
-        &thumb.hash[..12]
+        &thumb.hash[..12],
+        if app.raster.native && !app.no_color {
+            "image preview"
+        } else {
+            "cell preview"
+        }
     );
     f.render_widget(
         Paragraph::new(footer),
@@ -319,14 +339,14 @@ pub(super) fn draw_inline(f: &mut Frame, area: Rect, app: &App) {
     };
     match &view.result {
         Some(Ok(thumb)) => {
-            paint(
+            paint_view(
                 f,
                 Rect {
                     width: content.width.min(12),
                     ..content
                 },
                 thumb,
-                app.no_color,
+                app,
             );
             if content.width > 16 {
                 f.render_widget(
@@ -356,6 +376,52 @@ pub(super) fn draw_inline(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(Paragraph::new(" Preparing preview…"), content);
         }
     }
+}
+
+fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {
+    if app.raster.native && !app.no_color {
+        // A marker confined to blank image cells lets later modal widgets suppress
+        // the overlay, including a Clear widget that covers only part of the image.
+        for y in content.y..content.bottom() {
+            for x in content.x..content.right() {
+                f.buffer_mut()[(x, y)].reset();
+                f.buffer_mut()[(x, y)]
+                    .set_fg(Color::Rgb(20, 23, 31))
+                    .set_bg(Color::Rgb(20, 23, 31));
+            }
+        }
+        app.raster.native_area.set(Some(content));
+        return;
+    }
+    paint(f, content, thumb, app.no_color);
+}
+
+pub(super) fn begin_frame(app: &App) {
+    app.raster.native_area.set(None);
+}
+
+#[cfg(windows)]
+pub(super) fn native_image(f: &mut Frame, app: &App) -> Option<super::native_window::RasterImage> {
+    let area = app.raster.native_area.get()?;
+    if area.is_empty() || area.intersection(f.area()) != area {
+        return None;
+    }
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let cell = &f.buffer_mut()[(x, y)];
+            if cell.symbol() != " "
+                || cell.fg != Color::Rgb(20, 23, 31)
+                || cell.bg != Color::Rgb(20, 23, 31)
+            {
+                return None;
+            }
+        }
+    }
+    let thumb = app.raster.view.as_ref()?.result.as_ref()?.as_ref().ok()?;
+    Some(super::native_window::RasterImage {
+        area,
+        pixels: thumb.original.clone(),
+    })
 }
 
 fn paint(f: &mut Frame, content: Rect, thumb: &Thumbnail, monochrome: bool) {
@@ -431,6 +497,21 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
     let bad = dir.join("bad.png");
     std::fs::write(&bad, b"\x89PNG\r\n\x1a\nnot pixels").unwrap();
     assert!(decode(&bad, None, &[], &cancel).is_err());
+    let sharp = dir.join("sharp-pattern.png");
+    image::RgbaImage::from_fn(512, 256, |x, y| {
+        if (x + y) % 2 == 0 {
+            image::Rgba([255, 255, 255, 255])
+        } else {
+            image::Rgba([0, 0, 0, 255])
+        }
+    })
+    .save(&sharp)
+    .unwrap();
+    let sharp = decode(&sharp, None, &[], &cancel).unwrap();
+    assert_eq!(sharp.original.dimensions(), (512, 256));
+    assert_eq!(sharp.original.get_pixel(1, 0).0, [0, 0, 0, 255]);
+    assert_eq!(sharp.original.get_pixel(2, 0).0, [255, 255, 255, 255]);
+    assert_eq!(sharp.pixels.dimensions(), (256, 128));
     app.editor.set_text("preview preserves this draft");
     app.start_raster(path.clone(), Some(hash));
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -495,6 +576,30 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
         })),
         "monochrome terminals also show image pixels"
     );
+    #[cfg(windows)]
+    {
+        app.no_color = false;
+        app.raster.native = true;
+        terminal
+            .draw(|f| {
+                begin_frame(app);
+                draw_inline(f, Rect::new(0, 0, 60, 4), app);
+                let overlay = native_image(f, app).expect("native thumbnail uses original pixels");
+                assert_eq!(overlay.pixels.dimensions(), (12, 8));
+                f.render_widget(Clear, overlay.area);
+                assert!(
+                    native_image(f, app).is_none(),
+                    "a modal hides the image overlay"
+                );
+                begin_frame(app);
+                assert!(
+                    native_image(f, app).is_none(),
+                    "a new frame cannot reuse an old overlay"
+                );
+            })
+            .unwrap();
+        app.raster.native = false;
+    }
     app.images.draft.clear();
     app.ensure_inline_raster();
     assert!(app.raster.view.is_none());

@@ -1,6 +1,6 @@
 # Images and diagrams in Concordia
 
-Build: `2026-11-04h`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
+Build: `2026-11-04i`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
 
 ## Attach an image
 
@@ -59,17 +59,21 @@ native permission and choice requests with their original RPC request ids; the o
 text adapter still uses print mode. This does not establish complete native interaction parity
 for every provider or background worker.
 
-Image chips and image file links open an inline raster preview. Esc returns to the unchanged
-draft; E explicitly opens the system viewer. The preview uses ordinary true-color cells with
-half-block glyphs and normal frame clipping/redraw, without a terminal image escape protocol.
-No-color mode previews the pixels with luminance characters. This is a terminal-resolution preview, not pixel-perfect
-rendering or evidence of physical-host image protocol support.
+Image chips and image file links open an enlarged image preview. Esc returns to the unchanged
+draft; E explicitly opens the system viewer. The default Windows window draws original decoded
+pixels directly, fitting the available area with smooth scaling and no upscaling. The compact
+composer thumbnail stays small; the enlarged viewer retains detail beyond the old 256-pixel
+thumbnail. Neither preview changes the original attachment bytes sent to the provider.
+Explicit terminal mode uses true-color half-block cells; no-color mode uses luminance characters.
+Those terminal previews have character-cell resolution. Native pixels need no terminal image protocol.
 GIF links retain the existing system-viewer action; the inline decoder does not enable GIF.
 
 One background decoder handles PNG/JPEG/WebP files up to 4 MiB, 4096 pixels per edge,
 16 megapixels and 64 MiB decoded output. Decoder allocation limits are 96 MiB; upstream defines
-that allocation limit as non-strict, while edge limits are strict. Eight content-hash thumbnails
-at at most 256×256 RGBA pixels retain at most 2 MiB. Composer previews verify the snapshot hash.
+that allocation limit as non-strict, while edge limits are strict. Up to eight content-hash entries
+cache original pixels plus 256×256 thumbnails; entries are evicted above 64 MiB, retaining one
+current entry even if its thumbnail takes it slightly over that bound. The native renderer caches
+one converted bitmap of at most 64 MiB. Composer previews verify the snapshot hash.
 Each open hashes bounded file bytes; unchanged cached images skip decoding. Closing cancels
 publication of the result; the bounded decode can finish off-thread and another job cannot start
 until it exits. Histories are never predecoded. Selected historical image links use the same action.
