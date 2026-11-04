@@ -1,8 +1,21 @@
 //! Render only provider-reported edit evidence; never reconstruct history from today's file.
 use super::stream_cards::StreamCard;
 use serde_json::Value;
+use std::path::Path;
 
 const MAX_BYTES: usize = 256 * 1024;
+const UNAVAILABLE: &str = "Provider reported a change; line diff unavailable.";
+
+pub(super) fn needs_codex_patch(cards: &[StreamCard]) -> bool {
+    cards.iter().any(|card| {
+        card.status == super::CardStatus::Done
+            && card.title == "Edit"
+            && card
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains(UNAVAILABLE))
+    })
+}
 
 pub(super) fn changes(value: &Value) -> Option<String> {
     let changes = value.as_array()?;
@@ -24,11 +37,112 @@ pub(super) fn changes(value: &Value) -> Option<String> {
         ) {
             text.push_str(&replacement(old, new));
         } else {
-            text.push_str("Provider reported a change; line diff unavailable.");
+            text.push_str(UNAVAILABLE);
         }
         out.push(text);
     }
     (!out.is_empty()).then(|| out.join("\n\n"))
+}
+
+/// `codex exec --json` reports changed paths without patch bodies. Attach only successful
+/// apply_patch input recovered from this exact native session and current attempt.
+pub(super) fn enrich_codex(
+    cards: &mut [StreamCard],
+    inputs: &[String],
+    cwd: &Path,
+) -> Vec<StreamCard> {
+    let mut patches: Vec<(String, String)> = Vec::new();
+    for input in inputs.iter().filter(|input| input.len() <= MAX_BYTES) {
+        if input.lines().next() != Some("*** Begin Patch")
+            || !input.trim_end().ends_with("*** End Patch")
+        {
+            continue;
+        }
+        let mut path: Option<String> = None;
+        let mut body = String::new();
+        for line in input.lines().skip(1) {
+            if let Some(next) = line
+                .strip_prefix("*** Update File: ")
+                .or_else(|| line.strip_prefix("*** Add File: "))
+                .or_else(|| line.strip_prefix("*** Delete File: "))
+            {
+                if let Some(path) = path.take() {
+                    if !body.is_empty() {
+                        patches.push((path, std::mem::take(&mut body)));
+                    }
+                }
+                body.clear();
+                path =
+                    (!next.is_empty() && next.len() <= 4096 && !next.chars().any(char::is_control))
+                        .then(|| next.to_owned());
+            } else if let Some(next) = line.strip_prefix("*** Move to: ") {
+                path =
+                    (!next.is_empty() && next.len() <= 4096 && !next.chars().any(char::is_control))
+                        .then(|| next.to_owned());
+            } else if line == "*** End Patch" {
+                if let Some(path) = path.take() {
+                    if !body.is_empty() {
+                        patches.push((path, std::mem::take(&mut body)));
+                    }
+                }
+            } else if line.starts_with(['+', '-', ' ']) || line.starts_with("@@") {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+    }
+    let key = |path: &str| {
+        let path = Path::new(path);
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+        let absolute = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+        let text = absolute.to_string_lossy().replace('\\', "/");
+        let text = text.strip_prefix("//?/").unwrap_or(&text);
+        if cfg!(windows) {
+            text.to_lowercase()
+        } else {
+            text.to_owned()
+        }
+    };
+    let mut changed = Vec::new();
+    for card in cards {
+        if card.status != super::CardStatus::Done || card.title != "Edit" {
+            continue;
+        }
+        let Some(raw) = card
+            .detail
+            .as_deref()
+            .filter(|raw| raw.contains(UNAVAILABLE))
+        else {
+            continue;
+        };
+        let mut detail = raw.to_owned();
+        for line in raw.lines() {
+            let Some(path) = line.strip_prefix("File: ") else {
+                continue;
+            };
+            let path_key = key(path);
+            let body: String = patches
+                .iter()
+                .filter(|(patch_path, _)| key(patch_path) == path_key)
+                .map(|(_, body)| body.as_str())
+                .collect();
+            if !body.is_empty() && detail.len() + body.len() <= MAX_BYTES {
+                detail = detail.replace(
+                    &format!("File: {path}\n{UNAVAILABLE}"),
+                    &format!("File: {path}\n{body}"),
+                );
+            }
+        }
+        if detail != raw {
+            card.detail = Some(detail);
+            changed.push(card.clone());
+        }
+    }
+    changed
 }
 
 fn replacement(old: &str, new: &str) -> String {

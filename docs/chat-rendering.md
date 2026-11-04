@@ -92,6 +92,18 @@ physical-host check are required to claim working visible pointer shapes.
 
 ## Paste formatting, 2026-11-02a
 
+### Image paste and edit evidence, 2026-11-04e
+
+Standalone pasted PNG/JPEG/WebP paths attach and show a composer thumbnail automatically.
+Normal typing while import runs keeps the attachment. F9 imports a pending file offer, pastes a
+clipboard image, or opens the attachment chooser. The footer exposes this key even when a host
+intercepts Ctrl+V. Clipboard bitmaps still require an input action delivered to Concordia.
+
+Codex exec's path-only edit events are enriched after settlement with successful `apply_patch`
+inputs from the exact account/home/native session and current attempt. Cards then show the native
+added/removed lines and file path. A missing, stale, unsuccessful or out-of-bounds patch record
+stays explicitly unavailable; current file contents are never presented as the historical diff.
+
 Clipboard and bracketed paste preserve LF, CRLF and CR-only logical line breaks, including blank
 lines. Sending, queueing and editing queued prompts retain leading indentation and trailing
 whitespace. Prompt tabs keep four-space expansion; raw files preserve tabs. This preserves plain

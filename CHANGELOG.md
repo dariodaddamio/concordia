@@ -1,5 +1,13 @@
 # Changelog
 
+### Fixed (`2026-11-04e`)
+
+- Standalone pasted image paths attach and preview automatically. Typing while an image imports
+  no longer discards the attachment. Copied Explorer images are recognized. F9 pastes a clipboard
+  image or opens the attachment chooser.
+- Codex edit cards recover successful patch bodies from the exact current native session when
+  its progress events report only changed paths, showing actual added and removed lines.
+
 ### Fixed (`2026-11-04d`)
 
 - Cursor ACP continuation keeps replayed session history out of the new reply, thinking stream

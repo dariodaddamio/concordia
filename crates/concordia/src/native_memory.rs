@@ -560,6 +560,141 @@ pub fn control_checkpoint(
     })
 }
 
+/// Successful native patch inputs from fresh turns only. Exec's public progress stream omits
+/// patch bodies, so edit rendering uses this same account/home/session-verified source reader.
+fn literal_exec_patch(input: &str) -> Option<String> {
+    // The host emits these literal statement batches. This is a finite grammar, not JavaScript
+    // evaluation: comments, dynamic arguments, control flow and other statements are rejected.
+    let mut rest = input.trim();
+    let mut patch = None;
+    while !rest.is_empty() {
+        let statement = rest.strip_prefix("text(await tools.")?;
+        let (argument, is_patch) = if let Some(argument) = statement.strip_prefix("apply_patch(") {
+            (argument, true)
+        } else {
+            (statement.strip_prefix("exec_command(")?, false)
+        };
+        let mut values = serde_json::Deserializer::from_str(argument).into_iter::<Value>();
+        let value = values.next()?.ok()?;
+        rest = argument
+            .get(values.byte_offset()..)?
+            .trim_start()
+            .strip_prefix("));")?
+            .trim_start();
+        if is_patch {
+            if patch.is_some() {
+                return None;
+            }
+            patch = Some(value.as_str()?.to_owned());
+        } else if !value.is_object() {
+            return None;
+        }
+    }
+    patch
+}
+
+pub(crate) fn codex_patch_inputs(
+    root: &Path,
+    binding: &Binding,
+    not_before: i64,
+) -> Result<Vec<String>, String> {
+    if binding.provider != ProviderKind::Codex {
+        return Ok(Vec::new());
+    }
+    let (mut file, index) = open_bound(root, binding)?;
+    let start = index.source_len.saturating_sub(TAIL_BYTES);
+    let bytes = read_at(&mut file, start, (index.source_len - start) as usize)?;
+    let begin = if start > 0 {
+        bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |n| n + 1)
+    } else {
+        0
+    };
+    let mut pending = std::collections::HashMap::<String, (String, bool)>::new();
+    let mut patches = Vec::new();
+    let mut fresh_turn = false;
+    for raw in bytes[begin..].split(|b| *b == b'\n') {
+        if raw.len() > LINE_BYTES {
+            pending.clear();
+            continue;
+        }
+        let Ok(event) = serde_json::from_slice::<Value>(raw) else {
+            continue;
+        };
+        if event["type"] == "turn_context"
+            || event["type"] == "event_msg" && event["payload"]["type"] == "task_started"
+        {
+            fresh_turn = event["timestamp"]
+                .as_str()
+                .and_then(rank::timestamp_ms)
+                .is_some_and(|timestamp| timestamp >= not_before);
+            pending.clear();
+        }
+        if !fresh_turn || event["type"] != "response_item" {
+            continue;
+        }
+        let payload = &event["payload"];
+        let Some(id) = payload["call_id"].as_str().filter(|id| id.len() <= 256) else {
+            continue;
+        };
+        if payload["type"] == "custom_tool_call"
+            && matches!(payload["name"].as_str(), Some("apply_patch" | "exec"))
+        {
+            if let Some(input) = payload["input"]
+                .as_str()
+                .filter(|input| input.len() <= LINE_BYTES)
+            {
+                if pending.len() < 64 {
+                    let direct = payload["name"] == "apply_patch";
+                    let patch = if direct {
+                        Some(input.into())
+                    } else {
+                        literal_exec_patch(input)
+                    };
+                    if let Some(patch) = patch {
+                        pending.insert(id.into(), (patch, direct));
+                    }
+                }
+            }
+        } else if payload["type"] == "custom_tool_call_output" {
+            let Some((input, direct)) = pending.remove(id) else {
+                continue;
+            };
+            let output = &payload["output"];
+            let parsed = output
+                .as_str()
+                .and_then(|text| serde_json::from_str::<Value>(text).ok());
+            let structured = parsed.as_ref().unwrap_or(output);
+            let text = structured["output"]
+                .as_str()
+                .or_else(|| output.as_str())
+                .unwrap_or("");
+            let failed = payload["is_error"] == true
+                || payload["status"] == "failed"
+                || structured
+                    .pointer("/metadata/exit_code")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|code| code != 0);
+            if !failed
+                && (!direct || text.starts_with("Success. Updated the following files:"))
+                && patches.len() < 64
+            {
+                patches.push(input);
+            }
+        }
+    }
+    let (mut check, current) = open_bound(root, binding)?;
+    if current.file_identity != index.file_identity
+        || current.source_len != index.source_len
+        || read_at(&mut check, start, bytes.len())? != bytes
+    {
+        return Err("native patch source changed during read".into());
+    }
+    Ok(patches)
+}
+
 /// Verify source identity and all retained record hashes without retaining conversation text.
 pub fn verify_source(root: &Path, id: &str) -> Result<Summary, String> {
     let index = load(root, id)?;
@@ -1265,6 +1400,43 @@ mod tests {
             &session,
         )
         .unwrap();
+        let start = rank::timestamp_ms("2026-01-02T03:04:05Z").unwrap();
+        let patch = "*** Begin Patch\n*** Update File: src/fixture.rs\n@@\n-before\n+after\n*** End Patch\n";
+        let literal = serde_json::to_string(patch).unwrap();
+        let wrapped = format!("text(await tools.apply_patch({literal}));\ntext(await tools.exec_command({{\"cmd\":\"git status\"}}));");
+        assert_eq!(literal_exec_patch(&wrapped).as_deref(), Some(patch));
+        assert_eq!(literal_exec_patch(&format!("text(await tools.exec_command({{\"cmd\":\"git status\"}}));\ntext(await tools.apply_patch({literal}));")).as_deref(), Some(patch));
+        for source in [
+            format!("// text(await tools.apply_patch({literal}));"),
+            format!("if(false) {{ text(await tools.apply_patch({literal})); }}"),
+            format!("text(await tools.apply_patch({literal} + dynamic));"),
+            format!("text(await tools.apply_patch({literal}));text(await tools.apply_patch({literal}));"),
+        ] {
+            assert!(literal_exec_patch(&source).is_none());
+        }
+        for event in [
+            json!({"timestamp":"2026-01-01T00:00:00Z","type":"turn_context","payload":{"turn_id":"old-turn"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"old","input":patch}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"old","output":"Success. Updated the following files:\nM src/fixture.rs"}}),
+            json!({"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"turn_id":"fresh-turn"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"unmatched","output":"Success. Updated the following files:\nM src/fixture.rs"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"failed","input":patch}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"failed","output":{"output":"Success. Updated the following files:\nM src/fixture.rs","metadata":{"exit_code":1}}}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"unsettled","input":patch}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"success","input":patch}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"success","output":json!({"output":"Success. Updated the following files:\nM src/fixture.rs","metadata":{"exit_code":0}}).to_string()}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"wrapped","input":wrapped}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"wrapped","output":"{}"}}),
+        ] {
+            append(&path, format!("{event}\n").as_bytes());
+        }
+        assert_eq!(
+            codex_patch_inputs(dir.path(), &binding, start).unwrap(),
+            vec![patch, patch]
+        );
+        assert!(codex_patch_inputs(dir.path(), &binding, start + 2000)
+            .unwrap()
+            .is_empty());
         let context =
             json!({"type":"turn_context","payload":{"model":"fixture-model","turn_id":"fixture-turn-1"}}).to_string() + "\n";
         append(&path, context.as_bytes());

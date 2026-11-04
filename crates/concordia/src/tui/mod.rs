@@ -107,7 +107,7 @@ const MAX_INPUT_ROWS: usize = 6;
 const PROMPT_W: usize = 2;
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const FLASH_FOR: Duration = Duration::from_secs(3);
-const FOOTER_HINT: &str = "Enter send \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
+const FOOTER_HINT: &str = "Enter send \u{b7} F9 attach \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
 /// How often (in 200 ms ticks) to look for a finished login, and when to stop looking.
 /// A second idle Ctrl+C within this window exits.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
@@ -776,7 +776,7 @@ impl App {
 
     fn paste_clipboard(&mut self) {
         if !cfg!(test)
-            && clipboard::has_image()
+            && clipboard::has_attachment()
             && self.picker.is_none()
             && self.workspace.focused.is_none()
             && self.queue.edit.is_none()
@@ -794,11 +794,7 @@ impl App {
 
     /// Insert pasted text into the prompt (replacing any selection).
     fn paste_text(&mut self, text: &str) {
-        let revision = self.editor.revision();
         self.paste_text_chunk(text, false);
-        if self.editor.revision() != revision {
-            self.offer_pasted_files(text);
-        }
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
@@ -848,6 +844,9 @@ impl App {
         self.palette.reset();
         self.questions.focused = false;
         self.editor.insert_paste_chunk(text, continues);
+        if !continues {
+            self.offer_pasted_files(text);
+        }
     }
 
     /// Selected text in the transcript, else in the prompt.
@@ -4359,7 +4358,16 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         app.apply_search_action(action);
         return false;
     }
-    if key.code == KeyCode::F(9) && app.accept_pasted_files() {
+    if key.code == KeyCode::F(9)
+        && app.picker.is_none()
+        && app.workspace.focused.is_none()
+        && app.queue.edit.is_none()
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+    {
+        if !app.accept_pasted_files() {
+            app.start_image_import(None, clipboard::has_attachment());
+        }
         return false;
     }
     if key.code == KeyCode::F(10)
@@ -6965,15 +6973,16 @@ fn fit_segments(text: &str, width: usize) -> String {
 }
 
 /// Footer hints as (full label, short label), listed in display order.
-const HINTS: [(&str, &str); 5] = [
+const HINTS: [(&str, &str); 6] = [
     ("Enter send", "Enter send"),
+    ("F9 attach", "F9 attach"),
     ("/ commands", "/ cmds"),
     ("Shift+Tab permissions", "Shift+Tab perms"),
     ("drag to select", "drag select"),
     ("Ctrl+C copy or cancel", "Ctrl+C copy/stop"),
 ];
 /// Priority per hint (0 is kept longest); indexes follow `HINTS`.
-const HINT_RANK: [usize; 5] = [0, 2, 3, 4, 1];
+const HINT_RANK: [usize; 6] = [0, 1, 3, 4, 5, 2];
 
 /// The default hint line for `width` columns: whole hints only, full labels first, then short
 /// ones; lowest-priority hints are dropped first.

@@ -1,5 +1,30 @@
 # Concordia verification status
 
+## Installed image-paste and native-edit correction, 2026-11-04e
+
+Application source `4deeb39` builds the installed executable, SHA-256
+`A9D7F17EBF679BAA44FFBE68B1D9CC28DFC637572CB5280901D87329EFD2B041`.
+The active install pointer resolves to matching bytes. Existing panes need reopening to load e.
+
+Standalone pasted image paths attach and show the composer thumbnail automatically; Explorer
+clipboard file lists use the same bounded snapshot importer. Typing during import preserves the
+attachment and evolving message; restoring a draft cancels the previous import. F9 exposes
+clipboard-image/file input when the host intercepts Ctrl+V. Physical host clipboard/key delivery
+remains distinct from terminal fixtures.
+
+Codex exec's path-only edit cards recover bounded patch evidence from the verified exact native
+session and current attempt after settlement. Direct successful patch calls and the observed
+literal tool-wrapper batch format are covered; unsupported or ambiguous source stays unavailable.
+Delete-only inputs do not contain the removed file body, so no old contents are invented.
+
+All **885 enabled unit tests** pass (six ignored), including import typing/replacement, clipboard
+file-list parsing and native-source freshness/ownership. The extended process scenario passes
+with actual wrapped tool-call records and verifies enriched edit cards reach live progress.
+The image/document/PDF terminal journey passes in **31.86 seconds** across three fake providers,
+now starting with a pasted image path instead of `/attach`, and checks thumbnail pixels plus
+click-to-enlarge. All-target Clippy, release build/smoke and Defender scan pass; signatures are
+`1.463.116.0`. Logs and exact installed-artifact receipt are under ignored `target/image-edit-fix`.
+
 ## Cursor live continuation, 2026-11-03
 
 The owner reaffirmed Cursor live-run authorization. Two bounded read-only model turns ran through
