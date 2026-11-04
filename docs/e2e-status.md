@@ -1,5 +1,22 @@
 # Concordia verification status
 
+## Installed child-window details, 2026-11-04l
+
+Application source `ecf6d58` builds the installed executable, SHA-256
+`D19F5E33F8D50AD9DCF8C527CDC0D6AE22AC89DA3A739AEF71C6872D85C186BD`.
+Installed bytes match the exact checked artifact: 23,191,552 bytes (22.12 MiB), within the 23 MiB
+ceiling. This scoped follow-up changes file titles and shortcut hints only; the broader 04k
+regressions below were not repeated. Final Clippy, optimized build, release smoke and Defender
+(`1.463.119.0`) pass. The actual release desktop probe repeats permission selection, dirty edit,
+signed drag-out, dock/reopen/edit and root-draft preservation; it observes the title
+`* premium-edit.rs | Concordia`. The inspected child screenshot shows the accurate dock shortcut.
+Evidence is ignored under `target/native-window-proof/premium-final-l`.
+
+The separate [Windows guard research](quality/windows-write-guard-research.md) records positive
+AppContainer fixture and native Codex startup proofs. It does not enable a production guard or
+change real account/workspace permissions. Guard scope and live-provider usage budget have been
+requested from the owner. Vendor-missing measurements and publication retain their prior status.
+
 ## Installed native workspace and one-command delivery, 2026-11-04k
 
 Application source `9302b8e` builds the installed executable, SHA-256
