@@ -1,5 +1,18 @@
 # Changelog
 
+### Added (`2026-11-03x`)
+
+- F10 manages selected local integrations: connect a manifest, reconnect, verify, or disconnect
+  one binding after reviewing its revision, target and command. Work runs in the background;
+  stale reviews stop, drafts survive, and cancelled actions require reconciliation.
+- Opt-in Claude native stdio on CLI 2.1.317 routes allow-once/deny decisions through foreground
+  and worker review, with connection ownership, cancellation and duplicate protection.
+- Claude context policy can use post-turn native measurements bound to an explicit model and
+  unchanged native transcript. Changed sources/settings invalidate them; no metadata probe sends
+  a model prompt. Cursor capacity and unverified PDF transports remain unavailable.
+- Completed structured Claude Write/Edit and Cursor write/edit results join the existing file
+  output catalog. Opening still revalidates the current local file and its execution directory.
+
 ### Added (`2026-11-03w`)
 
 - Left Arrow opens Home when the composer is empty; Right Arrow returns to the chat. Alt+Left

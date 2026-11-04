@@ -15,6 +15,8 @@ use crate::provider::stream_json::{Flavor, StreamParser};
 mod acp;
 #[path = "turn_appserver.rs"]
 mod appserver;
+#[path = "turn_claude.rs"]
+mod claude_native;
 use crate::store::{ProviderKind, TrustMode};
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
@@ -392,7 +394,9 @@ pub async fn run_provider_turn_with_transport(
     anyhow::ensure!(
         (mode != crate::native_input::Mode::CursorAcp || req.provider == ProviderKind::Cursor)
             && (mode != crate::native_input::Mode::CodexAppServer
-                || req.provider == ProviderKind::Codex),
+                || req.provider == ProviderKind::Codex)
+            && (mode != crate::native_input::Mode::ClaudeStdio
+                || req.provider == ProviderKind::Claude),
         "native text transport is unsupported for this provider; no fallback was started"
     );
     run_provider_turn_inner(req, Some(owner), mode, on_started, on_progress).await
@@ -423,6 +427,9 @@ async fn run_provider_turn_inner(
     }
     if mode == crate::native_input::Mode::CodexAppServer {
         return appserver::run(req, &plan, owner, on_started, on_progress).await;
+    }
+    if mode == crate::native_input::Mode::ClaudeStdio {
+        return claude_native::run(req, &plan, owner, on_started, on_progress).await;
     }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
     // it explicitly. If that does not work the turn runs unbound, exactly as before.
@@ -580,14 +587,36 @@ async fn run_provider_turn_inner(
                         }
                         out.session_id = Some(sid);
                     }
-                    if !plain_output && plan.provider == ProviderKind::Codex {
+                    if !plain_output {
                         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
-                            if event["type"] == "item.completed" {
+                            if plan.provider == ProviderKind::Codex
+                                && event["type"] == "item.completed"
+                            {
                                 artifacts.report(
                                     owner.as_ref(),
                                     out.session_id.as_deref().or(req.native_session_id),
                                     None,
                                     &event["item"],
+                                    &on_progress,
+                                );
+                            } else if plan.provider == ProviderKind::Cursor {
+                                artifacts.report_cursor(
+                                    owner.as_ref(),
+                                    req.native_session_id
+                                        .or(plan.new_session_id.as_deref())
+                                        .or(out.session_id.as_deref()),
+                                    None,
+                                    &event,
+                                    &on_progress,
+                                );
+                            } else if plan.provider == ProviderKind::Claude {
+                                artifacts.report_claude(
+                                    owner.as_ref(),
+                                    req.native_session_id
+                                        .or(plan.new_session_id.as_deref())
+                                        .or(out.session_id.as_deref()),
+                                    None,
+                                    &event,
                                     &on_progress,
                                 );
                             }

@@ -74,8 +74,11 @@ pasted text and is bound to the same conversation, workspace and draft revision.
 switching conversations invalidates a pending import. Up to four paths and 16 KiB of pasted path
 text are accepted. No shell expansion, host configuration change or dropped-file execution occurs.
 
-PDF and other binary document transports remain unavailable until a native provider capability
-is verified. Typed local-file output records are described in [file outputs](quality/file-output-artifacts.md).
+PDF and other binary document transports remain unavailable. Anthropic's API documents PDF
+`document` blocks, but the version-matched Claude Agent SDK user-content union does not define a
+PDF/document input block, and Claude Code CLI documentation does not establish that subscription
+`stream-json` accepts one. Concordia therefore refuses PDF dispatch rather than converting bytes
+to prompt text or relying on the Read tool. Typed local-file output records are described in [file outputs](quality/file-output-artifacts.md).
 
 ## Mermaid
 
@@ -113,3 +116,12 @@ Primary interfaces: [Codex image flags](https://learn.chatgpt.com/docs/cli/refer
 
 Long histories keep completed diagram rows without re-rendering them after unrelated changes.
 Up to 16 diagrams per message render; additional diagrams retain source.
+
+## Native PDF follow-up
+
+The first Python SDK audit examined an output content union; that did not settle accepted user
+input. The official [TypeScript SDK streamed user-message contract](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusermessage)
+explicitly places images and documents in `message.content` and identifies native support from
+CLI 2.1.277. Installed 2.1.317 exceeds that threshold. This supplies the missing native wire
+contract. The x candidate still refuses binary documents while the next isolated implementation
+adds bounded snapshots and dispatch; schema/fixture support remains distinct from live parity.

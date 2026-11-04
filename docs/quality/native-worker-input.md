@@ -28,8 +28,21 @@ All native-mode tasks disable automatic worker failover; uncertain completion re
 Explicit cancellation with a confirmed process exit can release it.
 
 [Codex app-server input](codex-native-input.md) extends this contract behind explicit account/home
-selection. A provenance-checked Claude permission bridge remains separate. No real provider turn
-or live parity claim is part of these implementations.
+selection. Claude now has a separately gated stdio contract: the source-matched Claude Code
+`2.1.317` CLI accepts `--input-format stream-json --output-format stream-json
+--permission-prompt-tool stdio`; after an `initialize` control exchange, top-level
+`control_request`/`can_use_tool` frames carry a request id, tool name, original input and
+tool-use id, and the only native response is a matching `control_response`. The adapter keeps
+the original input for an allow-once decision and denies unsupported/cancelled requests. This
+is sourced from the official Claude Agent SDK transport/types and the [native permission
+documentation](https://code.claude.com/docs/en/agent-sdk/user-input); no model turn was run.
+The bridge remains opt-in and version/capability gated. An unsupported opted-in version stops
+before dispatch; `/native ACCOUNT off` selects the existing standard adapter. It never silently
+falls back from an approval-capable transport. Duplicate IDs receive no second grant. Native
+cancellation invalidates pending review while stdout continues being consumed; closing or losing
+the provider leaves uncertain completion paused. Image content is preserved. Structured Claude
+`AskUserQuestion` payloads are denied with an instruction to ask in ordinary assistant text;
+this version implements allow-once/deny tool approval rather than full Claude question parity.
 
 ## Activity and navigation
 

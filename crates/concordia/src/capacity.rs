@@ -3,6 +3,9 @@ use crate::{native_memory::Binding, provider::PlannedTurn, store::ProviderKind};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[path = "provider/claude_capacity.rs"]
+pub mod claude_capacity;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Compaction {
     #[default]
@@ -43,7 +46,7 @@ fn validate(provider: ProviderKind, policy: &Policy) -> Result<(), String> {
     {
         return Err("rollover percentage must be 50..95".into());
     }
-    if policy.rollover_percent.is_some() && provider != ProviderKind::Codex {
+    if policy.rollover_percent.is_some() && provider == ProviderKind::Cursor {
         return Err(format!(
             "proactive capacity unavailable: {}",
             unavailable_reason(provider)
@@ -157,7 +160,7 @@ pub fn apply(plan: &mut PlannedTurn, compaction: &Compaction) -> Result<(), Stri
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Measurement {
     pub used: u64,
     pub window: u64,
@@ -173,11 +176,20 @@ pub struct Observation {
     pub transport: &'static str,
     pub evidence_version: &'static str,
     pub source: Option<SourceEvidence>,
+    pub control: Option<ControlEvidence>,
     pub measurement: Option<Measurement>,
     pub invalidation_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// A native control response has connection/request provenance, rather than a file identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlEvidence {
+    pub connection_id: String,
+    pub request_id: String,
+    pub response_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceEvidence {
     pub file_identity: String,
     pub source_bytes: u64,
@@ -191,7 +203,7 @@ pub struct SourceEvidence {
 pub fn unavailable_reason(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Codex => "no fresh, exact-turn Codex rollout last_token_usage/model_context_window evidence",
-        ProviderKind::Claude => "no verified per-launch current-context/window signal for the headless Claude adapter; interactive statusline configuration is not headless evidence",
+        ProviderKind::Claude => "requires native stdio on CLI 2.1.317 and a fresh exact-session/model get_context_usage response",
         ProviderKind::Cursor => "no negotiated current-context/window signal from the selected Cursor transport; schema fields alone are not capability evidence",
     }
 }
@@ -223,7 +235,13 @@ impl Observation {
         let revision = self
             .source
             .as_ref()
-            .map_or("unavailable", |source| &source.tail_sha256);
+            .map(|source| source.tail_sha256.as_str())
+            .or_else(|| {
+                self.control
+                    .as_ref()
+                    .map(|control| control.response_sha256.as_str())
+            })
+            .unwrap_or("unavailable");
         format!("{status}\nEvidence {} · {} · account {} · session {} · turn {} · model {} · source revision {}",
             self.evidence_version, self.transport, self.binding.account, self.binding.session_id,
             self.native_turn_id.as_deref().unwrap_or("unknown"), self.native_model.as_deref().unwrap_or("unknown"), revision)

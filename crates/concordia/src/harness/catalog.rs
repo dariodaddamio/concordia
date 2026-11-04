@@ -29,6 +29,39 @@ pub struct Catalog {
     pub native_registration: Vec<String>,
     pub incomplete: bool,
 }
+
+/// Capture a catalog row's exact mutation identity. The caller must display and confirm the
+/// returned target before passing it to a reviewed command; no adapter is executed here.
+pub fn action_target(
+    root: &Path,
+    id: &str,
+    provider: &str,
+    project: &Path,
+    home: Option<&Path>,
+) -> Result<connections::ActionTarget, String> {
+    let all = connections::load(root)?;
+    let connection = all
+        .into_iter()
+        .find(|connection| {
+            format!(
+                "harness-{}",
+                &hash(format!("{}\n{}", connection.name, connection.manifest_path).as_bytes())
+                    [..16]
+            ) == id
+        })
+        .ok_or("unknown integration id")?;
+    let home = home.map(|path| path.to_string_lossy().into_owned());
+    let project = project.to_string_lossy().into_owned();
+    let entry = connection
+        .entries
+        .iter()
+        .find(|entry| entry.provider == provider && entry.project == project && entry.home == home)
+        .ok_or("integration binding is not connected for this provider/project/home")?;
+    Ok(connections::ActionTarget::from_connection(
+        &connection,
+        entry,
+    ))
+}
 fn display(value: &str, max: usize) -> String {
     crate::chat_cli::terminal_safe(value)
         .chars()
