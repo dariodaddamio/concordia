@@ -1,5 +1,16 @@
 # Concordia verification status
 
+## Corrected native source-use smoke, November 5
+
+The owner doubled the total subscription-only live allowance to 36. Corrected request 19 on the
+installed 05b artifact passed all five decision checks after an actual model-to-MCP original-source
+fetch. The no-model preflight located and verified the real seed before dispatch; the prompt
+contained its pointer, not the answers. Fixture files, selected account and native approval policy
+were unchanged. Nineteen slots are consumed and 17 remain. Publication remains held until ready;
+new Windows confinement is still deferred. This is scoped source-use evidence, not a comparative
+retention/token-saving benchmark or full provider/host qualification.
+[Evidence and limitations](quality/memory-evaluation.md).
+
 ## Long-turn references, explicit migration and MCP effects, 2026-11-05b
 
 The installed artifact matches the checked executable: 24,562,176 bytes (23.42 MiB), SHA-256
@@ -35,7 +46,8 @@ tools unmarked. Its 3,737-byte catalog and unchanged native-reader descriptor pa
 auth-free native MCP checks; no additional model call was made. Request 18's fact trial is invalid
 because the driver selected environment context instead of the decision seed. The corrected
 preflight manually verifies the proper seed; that manual read is not model-effectiveness proof.
-All 18 slots are consumed. [Full evidence and limits](quality/memory-evaluation.md).
+All 18 original slots were consumed before the subsequent allowance and corrected check above.
+[Full evidence and limits](quality/memory-evaluation.md).
 
 All 48 terminal journeys qualify: the original run passed 43, then five corrected fixture
 expectations passed a targeted recheck. Four old predicates expected raw commands in collapsed
