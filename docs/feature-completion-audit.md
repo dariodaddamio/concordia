@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-05b
+# Feature completion audit: 2026-11-05c
 
 The full roadmap is **not complete**. The current board has seven grouped open/deferred workstreams;
 they mix missing capabilities, qualification and release work, so they are not a feature count
@@ -24,22 +24,20 @@ See [E2E status](e2e-status.md) for the exact checks and retained limitations.
    from the qualified import contract. Quotas and Concordia attempt totals remain separate.
 3. **Numeric credits:** when the native response omits the amount, availability cannot establish
    a balance. A supported numeric source is still needed.
-4. **Native provider and host qualification:** broader approval/output/lifecycle formats, live
-   Claude PDF processing and the remaining provider/physical-host matrix stay open. Cursor live
+4. **Native provider and host qualification:** broader approval/output/lifecycle formats, the remaining provider/physical-host matrix stays open. Build 05c qualifies one-page Claude
+   PDF reading through both production transports and scoped native question/cancellation brokers.
+   Strict PDF reply formatting failed; actual worker-window qualification remains open. Cursor live
    exact-session continuation was exercised in 04d; that does not qualify every provider path.
    The earlier 14-dispatch alternative-account smoke adds scoped Codex compaction, image,
    exact-continuation, excerpt-reader and offered allow-once evidence. Request 15 adds ordinary
    application reference-backed recording/recall evidence, not full UI/worker parity.
-5. **Memory effectiveness:** the synthetic retrieval corpus exists and one authorized live Codex
-   handoff smoke passes all six constraint checks. A new three-arm native smoke ran once per
-   arm: compaction retained five decisions, but model-driven pointer fetches were blocked by
-   native launch policy. Compatible-policy pointer use and larger retention/token-saving
-   comparisons remain unqualified. The first 18 authorized dispatch slots were consumed; the
-   final fact trial used the wrong message ordinal and remains invalid. On November 5 the owner
-   doubled the total cap to 36, retaining subscription-only funding and no automatic retries.
-   Corrected request 19 on the installed 05b artifact verified the actual seed before dispatch,
-   fetched it through native MCP and answered all five constraints correctly. Seventeen slots
-   remain. This closes the scoped source-use smoke, not larger retention or savings comparisons.
+5. **Memory effectiveness:** prospective 05c requests 20–27 pass all eight checks in each of three
+   arms, including actual original-source MCP fetches in both pointer arms. Compatible-policy
+   smoke is qualified; larger retention advantage and token savings remain unqualified. One
+   trial per arm and incomplete compaction accounting cannot establish those claims. Earlier
+   request 18 used the wrong source ordinal and remains invalid; corrected request 19 passed.
+   The owner doubled the subscription-only cap to 36. After the broker/PDF checks, 34 requests
+   are consumed and two remain, with no automatic retries or account switches.
    [Evidence](quality/memory-evaluation.md).
 6. **Native filesystem confinement — deferred by owner:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer
@@ -311,8 +309,8 @@ for the implemented campaign. The remaining boundaries below are explicit capabi
 
 Managed worktrees and cwd search/replacement are implemented within their documented guards.
 Image/document input, explicit pasted-path attachment and inline cell rasters are implemented;
-bounded Claude PDF transport is candidate-implemented; process/UI/clipboard fixture checks and
-installed/live qualification remain. Codex/Cursor rejection is an explicit provider limit.
+bounded Claude PDF transport is implemented with scoped one-page live reading evidence on 05c;
+broader documents and physical viewer qualification remain. Codex/Cursor rejection is an explicit provider limit.
 Signing and platform expansion have their own release/roadmap status. They are not silently
 included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.md),
 [workspace requirements](workspace-panes.md), [release blockers](release-blockers.md), and
@@ -324,7 +322,7 @@ included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.
   [campaign disposition](quality/overnight-roadmap-disposition.md), including cwd replacement,
   managed workspace lifecycle and cross-worktree dependency delivery.
 - Live provider/auth/approval parity requires scoped usage under `AGENTS.md`. The current
-  14-dispatch run qualifies specific native paths only; broad application/worker parity stays open.
+  34-dispatch campaign qualifies specific native paths only; broad application/worker parity stays open.
 - Unsupported proactive capacity requires verified native signals for installed versions.
   Unknown signals must remain unknown; documentation/read-only inspection
   can continue without asking the owner to research them.

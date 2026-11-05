@@ -67,3 +67,13 @@ responses, explicit focus, bounded/unarmed paste, multiline answers, unchanged m
 and draft, and refused secret/malformed flags. The real fake-process fixture covers native
 free-form RPC responses. Logs: `target/native-text-r-{proof-final,process,clippy-final,release}.log`.
 These checks do not establish live native-provider parity.
+
+## Scoped 05c native evidence
+
+Production-transport checks qualify Codex offered cancellation and Claude structured Review
+answers with wrong-owner and duplicate-response rejection. The cancelled command was not granted;
+sentinel files and the main selection stayed unchanged. These helper-driven calls do not establish
+physical worker-window parity. A no-model worker-window rehearsal stopped at its fake executable's
+unverified version gate before issuing a native request; no fallback or live retry was started.
+Original driver failures and separate manual corrections are retained in
+[the current evidence record](../e2e-status.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).

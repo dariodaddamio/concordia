@@ -4,14 +4,18 @@ use ratatui::{
     buffer::Buffer,
     style::{Color, Modifier},
 };
-use std::{collections::HashMap, sync::OnceLock};
+use std::collections::HashMap;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 
+#[derive(Clone, Copy)]
 struct Palette {
     enabled: bool,
     terminal: bool,
     background: Rgb,
     foreground: Rgb,
     accent: Rgb,
+    brand_color: Rgb,
     custom_background: Option<Rgb>,
     custom_foreground: Option<Rgb>,
     custom_accent: Option<Rgb>,
@@ -74,6 +78,7 @@ impl Palette {
             background,
             foreground,
             accent,
+            brand_color: ui.brand_color.unwrap_or([255, 176, 0]),
             custom_background: ui.background,
             custom_foreground: ui.foreground,
             custom_accent: ui.accent,
@@ -203,15 +208,48 @@ impl Palette {
     }
 }
 
-fn current() -> &'static Palette {
-    static PALETTE: OnceLock<Palette> = OnceLock::new();
-    PALETTE.get_or_init(|| {
-        if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
-            Palette::from_ui(&crate::config::Config::default().ui)
-        } else {
-            Palette::from_ui(&crate::config::get().ui)
-        }
-    })
+#[cfg(not(test))]
+fn palette_slot() -> &'static std::sync::RwLock<Palette> {
+    static PALETTE: OnceLock<std::sync::RwLock<Palette>> = OnceLock::new();
+    PALETTE.get_or_init(|| std::sync::RwLock::new(Palette::from_ui(&crate::config::get().ui)))
+}
+
+#[cfg(not(test))]
+fn current() -> Palette {
+    *palette_slot()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PALETTE: std::cell::RefCell<Palette> = std::cell::RefCell::new(Palette::from_ui(&crate::config::Config::default().ui));
+}
+
+#[cfg(test)]
+fn current() -> Palette {
+    TEST_PALETTE.with(|slot| *slot.borrow())
+}
+
+pub(super) fn install(ui: &Ui) {
+    let palette = if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+        Palette::from_ui(&crate::config::Config::default().ui)
+    } else {
+        Palette::from_ui(ui)
+    };
+    #[cfg(not(test))]
+    {
+        *palette_slot()
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = palette;
+    }
+    #[cfg(test)]
+    TEST_PALETTE.with(|slot| *slot.borrow_mut() = palette);
+}
+
+#[cfg(windows)]
+pub(super) fn brand_color() -> Rgb {
+    current().brand_color
 }
 
 pub(super) fn apply(buffer: &mut Buffer, no_color: bool, native: bool) {
@@ -277,7 +315,7 @@ pub(super) fn fixture_proof() {
         buffer, original,
         "default theme preserves existing styles and host defaults"
     );
-    for name in ["dark", "light"] {
+    for name in ["dark", "light", "opifex"] {
         let (config, warnings) = crate::config::Config::parse(&format!("[ui]\ntheme='{name}'\n"));
         assert!(warnings.is_empty());
         let palette = Palette::from_ui(&config.ui);

@@ -430,15 +430,14 @@ pub(super) fn draw_attachment(
 }
 
 pub(super) fn draw_brand(f: &mut Frame, area: Rect, app: &App, pixels: Arc<image::RgbaImage>) {
-    static BRAND: std::sync::OnceLock<Thumbnail> = std::sync::OnceLock::new();
-    let thumb = BRAND.get_or_init(|| Thumbnail {
+    let thumb = Thumbnail {
         hash: String::new(),
         width: pixels.width(),
         height: pixels.height(),
         pixels: (*pixels).clone(),
         original: pixels,
-    });
-    paint_view(f, area, thumb, app);
+    };
+    paint_view(f, area, &thumb, app);
 }
 
 fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {

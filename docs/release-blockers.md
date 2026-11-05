@@ -1,6 +1,9 @@
 # Release readiness, 2026-11-03z candidate
 
 Owner direction, 2026-11-04: defer Windows/release work and wait to publish on GitHub.
+Reaffirmed November 5: hold publication for at least the next 2–3 days while GitHub Student
+approval is pending. This is not a scheduled release or permission to publish automatically.
+The separately requested native UI/theme work remains authorized; signing stays declined.
 The repository remains private; no tag, release, upload or visibility change is authorized.
 Existing installed builds and their recorded local evidence remain available.
 
@@ -19,7 +22,7 @@ control, not evidence of passing remote CI or authorization to publish.
 | Gate | Current evidence | Needed before release |
 | --- | --- | --- |
 | Dependency advisories | Unused Syntect YAML/plist import features are removed. Bincode remains under one reviewed maintenance-advisory exception for embedded assets. | Keep all other advisory checks enabled; remove the exception when the upstream dump format migrates. See [dependency review](quality/dependency-security.md). |
-| Artifact size | 05a measured 24,221,184 bytes. 05b streaming capture, revision-bound migration and MCP effects add 340,992 bytes, for 24,562,176 bytes with no new runtime dependencies. | The 05b ceiling is 23.5 MiB. Smoke and candidate collection compare exact bytes; final qualification is recorded in E2E status. |
+| Artifact size | 05b measured 24,562,176 bytes. 05c adds a bundled 170,220-byte CC0 mesh, native renderer and appearance controls; the final binary is 24,919,552 bytes, an increase of 357,376 bytes with no new runtime dependencies. | The 05c ceiling is 23.8 MiB. Smoke and candidate collection compare exact bytes; final qualification is recorded in E2E status. |
 | Privacy preflight | Public repository/package identifiers are now exempt only as exact identifiers in listed metadata/adapter/installer files. A private-project reference in the implementation ledger was removed. | Continue scanning the remaining contents of those files and every other tracked text file. New identifiers require an explicit review. |
 | Source snapshot | Memory/orchestration work is committed; the unsigned release workflow builds precompiled assets and checksum/notices bundles. | CI must pass on the exact committed candidate. Configured workflows do not establish release qualification. |
 | Windows antivirus / publisher trust | Defender quarantined the installed 2026-11-02d executable and release dependency executable as `Trojan:Win32/Bearfoos.A!ml` on 2026-11-02. A locked rebuild passed local scans and installed successfully after intelligence update to `1.463.94.0`; it remains unsigned. | The owner selected unsigned distribution on 2026-11-04; no certificate or paid signing account is required. Pass Defender/install/update checks on the exact final artifact, and pursue vendor review for any detected artifact. Public-feed rehearsal remains pending publication. See [Windows signing](windows-signing.md) for the recovered artifact hash and limits. No antivirus exclusion is a release prerequisite. |

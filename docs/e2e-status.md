@@ -1,12 +1,72 @@
 # Concordia verification status
 
+## Live appearance controls and Concordia sculpture, 2026-11-05c
+
+The checked executable is 24,919,552 bytes (23.77 MiB), SHA256
+`CB81E4C2CE92639BE2EBDBCEF44B7DC2F997D128917ACB78244BE0A87DB95ABD`.
+`/config` opens the existing keyboard/mouse picker for live themes, custom Concordia colors and
+motion. Opifex Studio uses the Studio host's near-black, amber and bone palette. The bundled CC0
+classical mesh is adapted with an olive crown and rendered with smooth normals and a depth buffer;
+the sculpture rotates only on roomy Home screens. Motion-off and Windows animation preferences
+are respected. There is no browser, asset download or new runtime dependency.
+
+The exact-executable owned-window checks selected the theme, verified client-margin pixels,
+changed the sculpture and running-window icon to the custom ice color, stopped motion, restored
+the composer after closing settings, and closed/reopened to verify persisted appearance. They
+also checked `Concordia — Home` and readable Home text. No global input/clipboard, real provider
+turn or user-config rewrite was used. Fixtures and screenshots are under ignored
+`target/native-window-proof/05c-appearance-{final,input}/`. The initial check caught and prompted
+fixes for Home navigation and stale native client margins; those failures remain in the earlier
+fixture folder. The final checks pass.
+
+All 885 enabled library checks passed, with six diagnostic cases ignored. Final focused checks
+cover menu/draft persistence, exact custom hex colors, malformed settings preservation, rotating
+geometry, palette contrast/NO_COLOR and Home retention. All-target Clippy with warnings denied,
+release smoke, exact-artifact Defender and the scoped OSS/privacy gate pass. The previous 05b
+integration and 48-terminal-journey receipts remain separate; they were not rerun for this UI batch.
+The 23.8 MiB ceiling covers the 170,220-byte bundled mesh and native controls. No Actions,
+signing, public publication or global provider-policy change occurred.
+
+On this same artifact, a prospective native three-arm memory smoke used slots 20 through 27:
+compaction alone, fresh context with original-source pointers, and compaction plus pointers.
+All three passed eight checks; both pointer arms performed verified native MCP retrieval.
+One trial per arm and incomplete compaction token coverage establish no superiority or savings.
+[Detailed results](quality/memory-evaluation.md).
+
+## Scoped native questions, cancellations and PDF reading on 05c
+
+The subscription-only ledger now records 34 of 36 authorized requests, leaving two unused.
+The main selected account and global native policies stayed unchanged. Requests 20–29 and 32
+used the explicitly bound alternative Codex account; Claude checks used the existing subscription.
+There were no automatic retries, purchased-credit calls or Actions dispatches.
+
+| Requests | Result and limit |
+| --- | --- |
+| 28 | Native Plan question preserved the offered Review/Skip choices and received Review. |
+| 29 | Offered Cancel declined the harmless command and interrupted the native turn. The original driver incorrectly required normal completion; its failure and original receipt remain, with a separate reconciliation. No retry or command grant occurred. |
+| 30–31 | Standard and native-stdio production Claude transports both read the unique identifier from the one-page PDF. Both added an address prefix, failing the original strict output-format assertion; document-reading and formatting results remain distinct. |
+| 32 | Production Codex broker accepted the rightful offered cancellation, rejected a wrong owner and duplicate answer, and returned cancelled without granting the command. |
+| 33 | Claude broker driver incorrectly compared the decorated display label to the original option ID. It cancelled without answering; the failed receipt is preserved. |
+| 34 | A separate manual corrected case selected the original option ID. Production Claude received Review, rejected wrong-owner/duplicate answers, and completed with sentinel files unchanged. |
+
+The helpers link the checked release library and use the actual provider transport and owned
+interaction broker. These are not physical application-window or universal provider-parity claims.
+Receipts remain under ignored `target/live-qualification-20261104/` in `interaction-05c`,
+`claude-pdf-05c`, `claude-pdf-stdio-05c`, `native-broker-05c` and
+`native-broker-corrected-05c`. Original failures were retained, not overwritten by passing cases.
+
+A no-model worker-window rehearsal stopped before a native request because its fake executable's
+CLI version was unverified. The production gate correctly refused fallback. Its screenshot/log
+remain under `target/native-window-proof/05c-worker-fake`; no live slot was spent and no worker UI
+success is claimed. The broader worker/physical-host qualification boundary stays open.
+
 ## Corrected native source-use smoke, November 5
 
 The owner doubled the total subscription-only live allowance to 36. Corrected request 19 on the
 installed 05b artifact passed all five decision checks after an actual model-to-MCP original-source
 fetch. The no-model preflight located and verified the real seed before dispatch; the prompt
 contained its pointer, not the answers. Fixture files, selected account and native approval policy
-were unchanged. Nineteen slots are consumed and 17 remain. Publication remains held until ready;
+were unchanged. Nineteen slots were consumed and 17 remained at that checkpoint. Publication remains held until ready;
 new Windows confinement is still deferred. This is scoped source-use evidence, not a comparative
 retention/token-saving benchmark or full provider/host qualification.
 [Evidence and limitations](quality/memory-evaluation.md).

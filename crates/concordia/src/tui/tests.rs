@@ -887,16 +887,16 @@ impl Harness {
 fn up_and_down_walk_sent_prompts_and_restore_the_draft() {
     let mut h = Harness::new(80, 24);
     h.send("/version");
-    h.send("/config");
+    h.send("/doctor");
     h.type_str("dra");
     h.key_up();
-    assert_eq!(h.app.editor.text(), "/config");
+    assert_eq!(h.app.editor.text(), "/doctor");
     h.key_up();
     assert_eq!(h.app.editor.text(), "/version");
     h.key_up(); // oldest entry: stays put
     assert_eq!(h.app.editor.text(), "/version");
     h.key_down();
-    assert_eq!(h.app.editor.text(), "/config");
+    assert_eq!(h.app.editor.text(), "/doctor");
     h.key_down(); // past the newest entry: the unsent draft comes back
     assert_eq!(h.app.editor.text(), "dra");
     h.key_down();
@@ -1317,9 +1317,9 @@ fn clicking_a_suggestion_completes_it() {
 fn the_palette_stays_out_of_the_way_while_browsing_history() {
     let mut h = Harness::new(90, 28);
     h.send("/version");
-    h.send("/config");
+    h.send("/doctor");
     h.key_up();
-    assert_eq!(h.app.editor.text(), "/config");
+    assert_eq!(h.app.editor.text(), "/doctor");
     assert_eq!(
         h.app.areas.palette.height, 0,
         "no palette over a recalled prompt"
@@ -4185,23 +4185,22 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     let mut h = Harness::new(100, 20);
     h.app.cwd = PathBuf::from("C:/work/fixture-project");
     let title = h.app.window_title();
+    assert!(title == "Concordia — fixture-project", "{title}");
     assert!(
-        title.starts_with("fixture-project | Ready | Codex"),
+        !title.contains("Codex") && !title.contains("gpt-"),
         "{title}"
     );
-    assert!(title.ends_with(" | Concordia"), "{title}");
-    assert!(title.contains("Ready") && title.contains("fixture-project"));
     h.app.session_ui.title = Some("Fix parser".into());
     h.app.busy = true;
     h.app.phase = Phase::Thinking;
+    assert!(h.app.window_title().contains("Thinking"));
+    assert!(h.app.window_title().contains("Fix parser"));
     assert!(h
         .app
         .window_title()
-        .contains("Working through the next step"));
-    assert!(h.app.window_title().contains("Fix parser"));
-    assert!(h.app.window_title().starts_with("Fix parser | "));
+        .starts_with("Concordia — Fix parser · "));
     h.app.phase = Phase::Writing;
-    assert!(h.app.window_title().contains("Putting the answer together"));
+    assert!(h.app.window_title().contains("Writing"));
     h.app.phase = Phase::Tool("Read".into());
     assert!(h.app.window_title().contains("Read"));
     assert_eq!(h.app.phase.frame(0), "▤");
@@ -4209,6 +4208,49 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     assert_eq!(h.app.phase.frame(0), "✎");
     h.app.cancel_requested = true;
     assert!(h.app.window_title().contains("Stopping"));
+    // Appearance uses the normal keyboard/mouse picker and preserves a working draft.
+    h.app.editor.set_text("preserved draft");
+    h.app.handle_slash("/config");
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Appearance);
+    assert_eq!(h.app.editor.text(), "preserved draft");
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Theme);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.appearance.ui.theme, crate::config::Theme::Opifex);
+    assert_eq!(h.app.editor.text(), "preserved draft");
+    h.app.handle_slash("/config color #78BFFF");
+    assert_eq!(h.app.appearance.color(), [120, 191, 255]);
+    h.app.handle_slash("/config motion off");
+    assert!(!h.app.appearance.ui.motion);
+    let reloaded = appearance::State::load(&h.app.state_root);
+    assert_eq!(reloaded.ui.theme, crate::config::Theme::Opifex);
+    assert_eq!(reloaded.color(), [120, 191, 255]);
+    assert!(!reloaded.ui.motion);
+    assert!(!h.app.state_root.join("config.toml").exists());
+    // Invalid custom input leaves saved settings untouched and is corrected in-place.
+    appearance::choose(&mut h.app, PickerKind::BrandColor, "custom");
+    h.app.picker.as_mut().unwrap().filter = "#nope".into();
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::BrandCustom);
+    assert_eq!(h.app.appearance.color(), [120, 191, 255]);
+    h.app.picker.as_mut().unwrap().filter = "#C9A5FF".into();
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.appearance.color(), [201, 165, 255]);
+    let model = brand_model::render(0, [255, 176, 0], true);
+    let rotated = brand_model::render(22, [255, 176, 0], true);
+    assert_ne!(
+        model, rotated,
+        "real rotated geometry changes its silhouette"
+    );
+    assert!(model.pixels().filter(|pixel| pixel[3] != 0).count() > 2000);
+    assert_ne!(model, brand_model::render(0, [120, 191, 255], true));
+    // An incompatible saved version is reported and never overwritten by a new selection.
+    let path = h.app.state_root.join(".ao/appearance.json");
+    let original = b"{\"version\":99,\"theme\":\"future\"}";
+    std::fs::write(&path, original).unwrap();
+    h.app.handle_slash("/config theme dark");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    theme::install(&crate::config::Config::default().ui);
 }
 
 #[test]
@@ -4218,6 +4260,18 @@ fn slash_completion_keeps_tab_while_the_landing_lists_are_visible() {
     h.key(KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(h.app.editor.text(), "/model");
     assert!(landing::visible(&h.app));
+    h.app.editor.clear();
+    h.send("/config");
+    assert!(
+        h.app.landing.is_some(),
+        "appearance keeps the Home destination"
+    );
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Appearance);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(landing::visible(&h.app));
+    assert_eq!(h.app.window_title(), "Concordia — Home");
 }
 
 #[test]

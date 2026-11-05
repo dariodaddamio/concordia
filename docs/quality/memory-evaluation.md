@@ -204,9 +204,40 @@ approval contract was unchanged.
 This is one successful source-use smoke against an existing synthetic seed, not a new randomized
 three-arm comparison, application broker/physical-host qualification, retention advantage or
 token-saving result. The invalid request 18 remains preserved. The ledger now records 19 of 36
-consumed requests, leaving 17. Hash-bound evidence and the no-retry driver are under ignored
+consumed requests at that checkpoint, leaving 17. Hash-bound evidence and the no-retry driver are under ignored
 `target/live-qualification-20261104/request19-corrected-final05b/` and
 `request19-corrected.py`; the explicit new allowance is in `authorization-20261105.json`.
+
+### Prospective matched three-arm smoke, installed-candidate 05c
+
+Slots 20 through 27 ran one new prospective trial per arm on the same checked 05c executable:
+SHA256 `cb81e4c2ce92639be2ebdbcef44b7dc2f997d128917acb78244be0a87db95abd`.
+The driver pinned Codex CLI 0.166.0, gpt-6.1-sol, the explicitly authorized alternative account,
+read-only/never/Auto policy and the original-source MCP descriptor. Each arm received the same
+new seed with superseded and current decisions, six exact fact fields and two action constraints.
+Before evaluation the reader located the unique original seed by exact text and verified its
+byte range/SHA. The evaluation prompts supplied no expected answers. Included capacity and zero
+purchased credits were checked before every dispatch; no automatic retry/account switch occurred.
+
+| Arm | Dispatches | Checks | Actual original-source fetch |
+| --- | --- | --- | --- |
+| A: native compaction and exact continuation | Seed, compaction, evaluation (20–22) | 8/8 | No tool calls, as required for this arm |
+| B: fresh context with source pointer | Seed, fresh evaluation (23–24) | 8/8 | Verified model-to-MCP call/output for the correct original |
+| C: compaction with source pointer | Seed, compaction, evaluation (25–27) | 8/8 | Verified model-to-MCP call/output for the correct original |
+
+Fixture files and the main selected account were unchanged. All failed/invalid earlier trials
+remain recorded. This closes the previously blocked compatible-policy source-use comparison
+at smoke scope. It is one short-history trial per arm, not a scale benchmark, statistically
+established retention advantage or proof that pointers save tokens. The native compaction snapshots
+reported a `last.totalTokens` value with zero input/output fields and unchanged cumulative totals;
+that incomplete coverage cannot be added as an invented compaction bill. Raw usage observations
+are retained rather than summed into a savings claim. B/C tool discovery and fetching also have
+real overhead. Monetary cost is unknown.
+
+The driver and hash-bound receipts are under ignored
+`target/live-qualification-20261104/controlled-05c.py` and `controlled-05c/`. This memory run ended
+at 27 of 36 consumed dispatch slots, leaving nine for other qualification work. Broader native
+foreground/worker interaction, PDF and physical-host paths remain separate evidence boundaries.
 
 Use three arms on the same synthetic committed repository and pinned constraints: native resume
 with provider compaction, a fresh native session with bounded verified handoff pointers, and

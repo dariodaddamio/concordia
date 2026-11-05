@@ -38,6 +38,19 @@ const SHUTDOWN: u32 = WM_APP + 4;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
 
+pub(super) fn motion_allowed() -> bool {
+    let mut enabled = 1i32;
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut enabled as *mut i32).cast(),
+            0,
+        ) == 0
+            || enabled != 0
+    }
+}
+
 /// Decoded attachment pixels and their cell-aligned viewport. Provider input retains
 /// its separate immutable file snapshot; this is only a display overlay.
 #[derive(Clone)]
@@ -370,6 +383,7 @@ struct Window {
     emoji_fonts: [HFONT; 16],
     glyph_fonts: [std::collections::HashMap<String, u8>; 16],
     icons: [HICON; 2],
+    icon_color: crate::config::Rgb,
     cell_width: i32,
     cell_height: i32,
     surrogate: Option<u16>,
@@ -395,6 +409,7 @@ struct Surface {
     previous_bitmap: HGDIOBJ,
     width: i32,
     height: i32,
+    background: crate::config::Rgb,
     cells: Vec<Cell>,
     columns: u16,
     rows: u16,
@@ -589,11 +604,12 @@ impl Window {
         }
         let mut client: RECT = mem::zeroed();
         GetClientRect(hwnd, &mut client);
-        if self
-            .surface
-            .as_ref()
-            .is_none_or(|surface| surface.width != client.right || surface.height != client.bottom)
-        {
+        let surface_background = super::theme::native_default(false);
+        if self.surface.as_ref().is_none_or(|surface| {
+            surface.width != client.right
+                || surface.height != client.bottom
+                || surface.background != surface_background
+        }) {
             self.surface = None;
             let memory = CreateCompatibleDC(dc);
             let bitmap = CreateCompatibleBitmap(dc, client.right.max(1), client.bottom.max(1));
@@ -618,6 +634,7 @@ impl Window {
                 previous_bitmap,
                 width: client.right,
                 height: client.bottom,
+                background: surface_background,
                 cells: Vec::new(),
                 columns: 0,
                 rows: 0,
@@ -1110,6 +1127,48 @@ unsafe fn paint_glyph(
 /// includes 16/32/48/256-pixel frames shared by Explorer, taskbar and titlebar.
 /// Without LR_SHARED the window owns this handle and releases it on shutdown.
 unsafe fn app_icon(size: i32) -> HICON {
+    if let Some(portrait) = super::brand::portrait() {
+        let mut pixels = image::imageops::resize(
+            &*portrait,
+            size as u32,
+            size as u32,
+            image::imageops::FilterType::Lanczos3,
+        );
+        let color = super::theme::brand_color();
+        let mut data = vec![0u8; 40];
+        let mut header = |offset: usize, value: u32| {
+            data[offset..offset + 4].copy_from_slice(&value.to_le_bytes())
+        };
+        header(0, 40);
+        header(4, size as u32);
+        header(8, (size * 2) as u32);
+        data[12..14].copy_from_slice(&1u16.to_le_bytes());
+        data[14..16].copy_from_slice(&32u16.to_le_bytes());
+        for y in (0..size as u32).rev() {
+            for x in 0..size as u32 {
+                let p = pixels.get_pixel_mut(x, y);
+                let shade = f32::from(p[0].max(p[1]).max(p[2])) / 255.0;
+                let tint = color.map(|v| (f32::from(v) * shade).round() as u8);
+                data.extend_from_slice(&[tint[2], tint[1], tint[0], p[3]]);
+            }
+        }
+        data.resize(
+            data.len() + ((size as usize).div_ceil(32) * 4) * size as usize,
+            0,
+        );
+        let icon = CreateIconFromResourceEx(
+            data.as_mut_ptr(),
+            data.len() as u32,
+            1,
+            0x00030000,
+            size,
+            size,
+            0,
+        );
+        if !icon.is_null() {
+            return icon;
+        }
+    }
     LoadImageW(
         GetModuleHandleW(null()),
         // MAKEINTRESOURCEW(1): resource identifier, never a dereferenced string pointer.
@@ -1151,6 +1210,7 @@ unsafe fn window_thread(
         emoji_fonts: [null_mut(); 16],
         glyph_fonts: std::array::from_fn(|_| std::collections::HashMap::new()),
         icons: [app_icon(32), app_icon(16)],
+        icon_color: super::theme::brand_color(),
         cell_width: 9,
         cell_height: 20,
         surrogate: None,
@@ -1313,6 +1373,25 @@ unsafe extern "system" fn window_proc(
             0
         }
         UPDATE => {
+            let color = super::theme::brand_color();
+            if color != window.icon_color {
+                let next = [app_icon(32), app_icon(16)];
+                for (index, icon) in next.into_iter().enumerate() {
+                    if !icon.is_null() {
+                        SendMessageW(
+                            hwnd,
+                            WM_SETICON,
+                            if index == 0 { ICON_BIG } else { ICON_SMALL } as usize,
+                            icon as LPARAM,
+                        );
+                        if !window.icons[index].is_null() {
+                            DestroyIcon(window.icons[index]);
+                        }
+                        window.icons[index] = icon;
+                    }
+                }
+                window.icon_color = color;
+            }
             window.blink = true;
             InvalidateRect(hwnd, null(), 0);
             0

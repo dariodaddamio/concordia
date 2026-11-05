@@ -108,3 +108,13 @@ separately in 26.11 seconds after correcting its selected-worker gesture and wai
 existing debounced draft persistence before asserting on disk. Those corrections change only the
 test. Its native permission and session-less plan rejection both preserve the main draft, and no
 main turn or print fallback is launched. Final remote CI remains a separate recorded gate.
+
+## Scoped 05c native evidence
+
+Production-transport checks qualify Codex offered cancellation and Claude structured Review
+answers with wrong-owner and duplicate-response rejection. The cancelled command was not granted;
+sentinel files and the main selection stayed unchanged. These helper-driven calls do not establish
+physical worker-window parity. A no-model worker-window rehearsal stopped at its fake executable's
+unverified version gate before issuing a native request; no fallback or live retry was started.
+Original driver failures and separate manual corrections are retained in
+[the current evidence record](../e2e-status.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).

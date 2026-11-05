@@ -28,6 +28,9 @@ Build `2026-11-05b` implements the identified long-turn/large-record capture and
 migration gaps, including background recall. Preserved legacy backups and unfinished recovery are
 intentional retention exceptions. Native-data availability, broader qualification and owner-held
 Windows confinement/publication remain separate boundaries in the completion audit.
+Build `2026-11-05c` adds `/config` appearance controls, Opifex Studio, a compact rotating 3D bust,
+custom sculpture/window-icon color and simpler titles. Publication remains held until the owner
+resumes it after the pending GitHub Student approval; no scheduled or automatic release is authorized.
 The owner's implementation-first campaign gates and X/LinkedIn drafts are in the
 [launch plan](docs/launch-plan.md); unfinished roadmap features are not launch claims.
 The [completion audit](docs/feature-completion-audit.md) records what is closed and what remains;

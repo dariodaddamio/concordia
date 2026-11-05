@@ -173,3 +173,9 @@ explicitly places images and documents in `message.content` and identifies nativ
 CLI 2.1.277. Installed 2.1.318 exceeds that threshold. This supplies the native wire contract;
 the historical z receipt contains the initial bounded snapshot/dispatch evidence. Installed
 qualification is distinct from live provider parity and physical-host behavior.
+
+Build 05c live checks qualify one-page identifier reading on Claude CLI 2.1.318 through Standard
+and native-stdio production transports. Both replies added an address prefix, so strict response
+formatting failed even though the unique PDF identifier was correct. Complex documents, OCR,
+physical viewer behavior and other providers are not qualified by these two calls. See
+[exact results](e2e-status.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).
