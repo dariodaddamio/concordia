@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-05g
+
+- Images in the native window no longer flicker when the caret blinks or the prompt changes.
+  The window now clips image areas out of the text-layer copy instead of briefly showing the
+  blank cells underneath.
+- Short thinking is shown whole without an Expand toggle that revealed nothing new.
+- The header says "view email" instead of "email · click to show".
+- An empty goals pane explains what goals are and how to add one.
+- The `[concordia map]` line shown after a provider switch expands to the full map that was
+  handed to the next provider.
+
 ## 2026-11-05f
 
 - `/model` works before the first chat. It lists current Claude models by name (Opus 5.5,

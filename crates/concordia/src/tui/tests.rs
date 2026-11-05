@@ -2406,9 +2406,11 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     let mut h = Harness::new(100, 36);
     h.app.push_user("why".into());
     h.app.busy = true;
-    h.app.apply_progress(TurnProgress::Thinking(
-        "first   idea\n\n\nsecond idea".into(),
-    ));
+    // Long enough that the collapsed preview hides text, so the accordion has work to do.
+    let long = "x".repeat(600);
+    h.app.apply_progress(TurnProgress::Thinking(format!(
+        "first   idea\n\n\nsecond idea {long}"
+    )));
     h.app.apply_progress(TurnProgress::Text("Because.".into()));
     h.app.apply_progress(TurnProgress::Card(StreamCard {
         id: "streamed-edit".into(),
@@ -2440,7 +2442,10 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
         .iter()
         .find(|m| m.role == MsgRole::Thinking)
         .expect("a thinking line");
-    assert_eq!(thought.text, "first   idea\n\n\nsecond idea\n");
+    assert_eq!(
+        thought.text,
+        format!("first   idea\n\n\nsecond idea {long}\n")
+    );
     assert!(h
         .app
         .pack_messages()
@@ -2494,7 +2499,7 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     assert!(h.screen().contains("first") && h.screen().contains("second idea"));
     assert_eq!(
         h.app.messages[thought_index].text,
-        "first   idea\n\n\nsecond idea\n"
+        format!("first   idea\n\n\nsecond idea {long}\n")
     );
     h.click(x, y);
     h.draw();
@@ -3505,7 +3510,10 @@ fn open_work_comes_from_the_connected_harness() {
         .into_owned();
     assert!(screen.contains("open to-dos"), "{screen}");
     assert!(screen.contains(&format!("{folder} · 2")), "{screen}");
-    assert!(screen.contains("○ Ship the landing page") && screen.contains("○ Parked polish"));
+    assert!(
+        screen.contains("○ Ship the landing page") && screen.contains("○ Parked polish"),
+        "{screen}"
+    );
 }
 
 #[cfg(windows)]
@@ -4468,7 +4476,7 @@ fn active_email_and_nickname_are_visible_in_header_without_a_picker() {
         let header = screen.lines().next().unwrap();
         assert!(header.contains("Work (Codex)"), "{header}");
         assert!(!header.contains("member@example.invalid"), "{header}");
-        assert!(header.contains("click to show"), "{header}");
+        assert!(header.contains("view email"), "{header}");
         let usage = screen.lines().nth(1).unwrap();
         assert!(usage.contains("Credits: 12.5 balance"), "{usage}");
         assert!(usage.contains("Subscription: 5h 80% left"), "{usage}");

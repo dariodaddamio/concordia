@@ -21,7 +21,7 @@ fn setup() -> (App, tempfile::TempDir, PathBuf) {
     ];
     for i in 0..80 {
         if i == 79 {
-            events.push(serde_json::json!({"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Provider reported inspection"}],"encrypted_content":"unreadable-private-data"}}).to_string());
+            events.push(serde_json::json!({"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":format!("Provider reported inspection {}", "y".repeat(600))}],"encrypted_content":"unreadable-private-data"}}).to_string());
             events.push(serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"restored-native-tool","name":"shell_command","arguments":"{\"command\":\"git status\"}"}}).to_string());
             events.push(serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"restored-native-tool","output":"working tree clean"}}).to_string());
         }
@@ -108,7 +108,7 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
         .messages
         .iter()
         .any(|message| message.role == MsgRole::Thinking
-            && message.text == "Provider reported inspection"));
+            && message.text.starts_with("Provider reported inspection")));
     assert!(
         !app.messages.iter().any(|message| {
             message.role == MsgRole::Meta && message.text.contains("Review activity")

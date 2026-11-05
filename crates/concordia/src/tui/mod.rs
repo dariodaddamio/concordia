@@ -240,6 +240,25 @@ struct ChatLine {
     meta: Option<(ProviderKind, String)>,
 }
 
+impl ChatLine {
+    /// A provider switch carries a `[concordia map]`; the transcript shows its header line and
+    /// expands to the full map that was handed to the next provider.
+    fn is_map(&self) -> bool {
+        self.role == MsgRole::System
+            && self.text.starts_with("[concordia map]")
+            && self.text.contains('\n')
+    }
+
+    /// Rows with a working Expand / Collapse toggle.
+    fn toggles(&self) -> bool {
+        match self.role {
+            MsgRole::Card => true,
+            MsgRole::Thinking => thinking_expandable(&self.text),
+            _ => self.is_map(),
+        }
+    }
+}
+
 type ConnectFn = Box<dyn Fn(&Path, ProviderKind) -> Result<AddResult>>;
 
 /// A login window we opened; polled until the home reports a usable login.
@@ -1143,6 +1162,16 @@ impl App {
             card: None,
             meta,
         });
+    }
+
+    fn push_map(&mut self, pack: &crate::context::ContextPack) {
+        let rest = pack.text.split_once('\n').map_or("", |(_, rest)| rest);
+        self.push_system(format!(
+            "{} · ~{} tok\n{}",
+            pack.labeled,
+            pack.est_tokens,
+            rest.trim_end()
+        ));
     }
 
     fn push_card(&mut self, card: StreamCard) {
@@ -2838,7 +2867,7 @@ impl App {
                     self.need_context_pack = decision.pack.is_some();
                     self.log_switch(prev_prov);
                     if let Some(pack) = &decision.pack {
-                        self.push_system(format!("{} · ~{} tok", pack.labeled, pack.est_tokens));
+                        self.push_map(pack);
                     } else if !decision.native_resume
                         && decision.reason != crate::context::NEW_SESSION
                     {
@@ -2932,7 +2961,7 @@ impl App {
                     self.need_context_pack = decision.pack.is_some();
                     self.log_switch(prev_prov);
                     if let Some(pack) = &decision.pack {
-                        self.push_system(format!("{} · ~{} tok", pack.labeled, pack.est_tokens));
+                        self.push_map(pack);
                     }
                     self.prior_provider = self.provider;
                     self.prior_home = self.continuity_home();
@@ -5746,11 +5775,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             if contains(t, x, y) {
                 if x.saturating_sub(t.x) < 2 {
                     if let Some(i) = app.view.identity_at((y - t.y) as usize) {
-                        if app
-                            .messages
-                            .get(i)
-                            .is_some_and(|m| matches!(m.role, MsgRole::Card | MsgRole::Thinking))
-                        {
+                        if app.messages.get(i).is_some_and(ChatLine::toggles) {
                             app.activity.toggle_card(i, app.expanded_activity);
                             app.drag = Drag::None;
                             return;
@@ -6238,7 +6263,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     let email = if app.header_email_revealed {
         app.account_email.as_deref().unwrap_or("email unavailable")
     } else if app.account_email.is_some() {
-        "email · click to show"
+        "view email"
     } else {
         "email unavailable"
     };
@@ -6398,6 +6423,10 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 })
                 .map(Some)
                 .unwrap_or(None),
+            // Short thinking is shown whole; a toggle that reveals nothing new is noise.
+            MsgRole::Thinking if !thinking_expandable(&m.text) => {
+                Some(format!("Thinking\n{}", m.text.trim_end()))
+            }
             MsgRole::Thinking => Some(format!(
                 "Thinking - {}\n{}",
                 if app.activity.is_expanded(idx, app.expanded_activity) {
@@ -6406,11 +6435,19 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                     "Expand"
                 },
                 if app.activity.is_expanded(idx, app.expanded_activity) {
-                    m.text.clone()
+                    m.text.trim_end().to_string()
                 } else {
                     condense_thinking(&m.text)
                 }
             )),
+            MsgRole::System if m.is_map() => {
+                let (heading, rest) = m.text.split_once('\n').unwrap_or((&m.text, ""));
+                Some(if app.activity.is_expanded(idx, app.expanded_activity) {
+                    format!("{heading} - Collapse\n{rest}")
+                } else {
+                    format!("{heading} - Expand")
+                })
+            }
             _ => None,
         })
         .collect();
@@ -6451,7 +6488,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            if m.role == MsgRole::System {
+            if m.is_map() {
+                activity::card_runs(displayed[i].as_deref().unwrap_or(&m.text), None)
+            } else if m.role == MsgRole::System {
                 usage_style::runs(&m.text)
             } else if m.role == MsgRole::Card {
                 activity::card_runs(displayed[i].as_deref().unwrap_or(&m.text), m.card.as_ref())
@@ -6549,7 +6588,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::Indexed(250)),
             ),
         };
-        if matches!(m.role, MsgRole::Card | MsgRole::Thinking) {
+        if m.role == MsgRole::Thinking && !m.toggles() {
+            gutter = "  ";
+        } else if m.toggles() {
             gutter = if app.activity.is_expanded(i, app.expanded_activity) {
                 "▾ "
             } else {
@@ -7870,7 +7911,14 @@ fn fit_hints(width: usize) -> String {
 
 /// Render markup before shortening so a preview never exposes half a Markdown delimiter.
 fn condense_thinking(raw: &str) -> String {
-    markdown::thinking_preview(raw, 600)
+    markdown::thinking_preview(raw, THINKING_PREVIEW_CHARS)
+}
+
+const THINKING_PREVIEW_CHARS: usize = 600;
+
+/// Whether the collapsed preview hides anything: it keeps only the tail and drops code fences.
+fn thinking_expandable(raw: &str) -> bool {
+    raw.trim().chars().count() > THINKING_PREVIEW_CHARS || raw.contains("```")
 }
 
 fn tail_lines(text: &str, n: usize) -> String {

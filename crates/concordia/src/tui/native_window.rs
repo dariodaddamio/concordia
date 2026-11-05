@@ -730,7 +730,18 @@ impl Window {
         SelectObject(memory, original_font);
         // Caret is an overlay, never part of the cached backing image. Expose and
         // blink events therefore only copy cached pixels and repaint this rectangle.
+        // Images are overlays too: clip them out of the copy so the blank cells beneath
+        // never reach the screen between the copy and the image paint (visible flicker).
+        let saved = SaveDC(dc);
+        for image in &screen.images {
+            if let Some(rect) = self.image_rect(image, &client) {
+                ExcludeClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
+            }
+        }
         BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
+        if saved != 0 {
+            RestoreDC(dc, saved);
+        }
         self.paint_images(dc, &screen.images, &client);
         if self.focused
             && self.blink
@@ -752,6 +763,30 @@ impl Window {
         if supplied_dc.is_none() {
             EndPaint(hwnd, &paint);
         }
+    }
+
+    /// Pixel rectangle an image covers: scaled down to fit its cells, never up, top-left aligned.
+    fn image_rect(&self, image: &RasterImage, client: &RECT) -> Option<RECT> {
+        let left = i32::from(image.area.x) * self.cell_width;
+        let top = i32::from(image.area.y) * self.cell_height;
+        let available_width =
+            (i32::from(image.area.width) * self.cell_width).min(client.right - left);
+        let available_height =
+            (i32::from(image.area.height) * self.cell_height).min(client.bottom - top);
+        if available_width <= 0 || available_height <= 0 {
+            return None;
+        }
+        let width = image.pixels.width();
+        let height = image.pixels.height();
+        let scale = (f64::from(available_width) / f64::from(width))
+            .min(f64::from(available_height) / f64::from(height))
+            .min(1.0);
+        Some(RECT {
+            left,
+            top,
+            right: left + (f64::from(width) * scale).floor().max(1.0) as i32,
+            bottom: top + (f64::from(height) * scale).floor().max(1.0) as i32,
+        })
     }
 
     unsafe fn paint_images(&mut self, dc: HDC, images: &[RasterImage], client: &RECT) {
@@ -791,23 +826,12 @@ impl Window {
                 });
                 self.image_pixels.len() - 1
             };
-            let cached = &self.image_pixels[index];
-            let left = i32::from(image.area.x) * self.cell_width;
-            let top = i32::from(image.area.y) * self.cell_height;
-            let available_width =
-                (i32::from(image.area.width) * self.cell_width).min(client.right - left);
-            let available_height =
-                (i32::from(image.area.height) * self.cell_height).min(client.bottom - top);
-            if available_width <= 0 || available_height <= 0 {
+            let Some(target) = self.image_rect(image, client) else {
                 continue;
-            }
+            };
+            let cached = &self.image_pixels[index];
             let width = image.pixels.width();
             let height = image.pixels.height();
-            let scale = (f64::from(available_width) / f64::from(width))
-                .min(f64::from(available_height) / f64::from(height))
-                .min(1.0);
-            let rendered_width = (f64::from(width) * scale).floor().max(1.0) as i32;
-            let rendered_height = (f64::from(height) * scale).floor().max(1.0) as i32;
             let bitmap = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -826,10 +850,10 @@ impl Window {
             SetBrushOrgEx(dc, 0, 0, &mut previous_origin);
             StretchDIBits(
                 dc,
-                left,
-                top,
-                rendered_width,
-                rendered_height,
+                target.left,
+                target.top,
+                target.right - target.left,
+                target.bottom - target.top,
                 0,
                 0,
                 width as i32,
