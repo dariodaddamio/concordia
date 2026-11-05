@@ -49,6 +49,31 @@ pub struct Ui {
     pub persist_history: bool,
     /// Footer memory and CPU figures (`mem 41 MB - cpu 1%`); off by default.
     pub stats: bool,
+    pub theme: Theme,
+    pub background: Option<Rgb>,
+    pub foreground: Option<Rgb>,
+    pub accent: Option<Rgb>,
+}
+
+pub type Rgb = [u8; 3];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Theme {
+    #[default]
+    Default,
+    Dark,
+    Light,
+    Terminal,
+}
+
+impl Theme {
+    pub(crate) fn colors(self) -> [Rgb; 3] {
+        match self {
+            Self::Light => [[247, 247, 244], [36, 40, 47], [28, 86, 180]],
+            Self::Dark => [[11, 13, 17], [232, 234, 240], [107, 180, 245]],
+            Self::Default | Self::Terminal => [[20, 23, 31], [224, 226, 235], [58, 150, 221]],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +106,10 @@ impl Default for Config {
                 persist_history: true,
                 stats: false,
                 file_action: crate::file_open::FileAction::Preview,
+                theme: Theme::Default,
+                background: None,
+                foreground: None,
+                accent: None,
             },
             threads: Threads {
                 enabled: false,
@@ -240,6 +269,16 @@ impl Config {
                         set_bool(v, &full, &mut cfg.ui.persist_history, &mut warnings)
                     }
                     "ui.stats" => set_bool(v, &full, &mut cfg.ui.stats, &mut warnings),
+                    "ui.theme" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
+                        Some("default") => cfg.ui.theme = Theme::Default,
+                        Some("dark") => cfg.ui.theme = Theme::Dark,
+                        Some("light") => cfg.ui.theme = Theme::Light,
+                        Some("terminal") => cfg.ui.theme = Theme::Terminal,
+                        _ => warnings.push("ui.theme must be default, dark, light or terminal; using default".into()),
+                    },
+                    "ui.background" => set_color(v, &full, &mut cfg.ui.background, &mut warnings),
+                    "ui.foreground" => set_color(v, &full, &mut cfg.ui.foreground, &mut warnings),
+                    "ui.accent" => set_color(v, &full, &mut cfg.ui.accent, &mut warnings),
                     "threads.enabled" => {
                         set_bool(v, &full, &mut cfg.threads.enabled, &mut warnings)
                     }
@@ -299,6 +338,26 @@ impl Config {
                 unknown.join(", ")
             ));
         }
+        let background = cfg.ui.background.unwrap_or(cfg.ui.theme.colors()[0]);
+        let known_background = cfg.ui.theme != Theme::Terminal || cfg.ui.background.is_some();
+        if known_background
+            && cfg
+                .ui
+                .foreground
+                .is_some_and(|foreground| contrast(foreground, background) < 4.5)
+        {
+            cfg.ui.foreground = None;
+            warnings.push("ui.foreground has insufficient contrast against the background; using a readable foreground".into());
+        }
+        if known_background
+            && cfg
+                .ui
+                .accent
+                .is_some_and(|accent| contrast(accent, background) < 3.0)
+        {
+            cfg.ui.accent = None;
+            warnings.push("ui.accent has insufficient contrast against the background; using a readable accent".into());
+        }
         (cfg, warnings)
     }
 }
@@ -308,6 +367,47 @@ fn set_bool(v: &toml::Value, key: &str, slot: &mut bool, warnings: &mut Vec<Stri
         Some(b) => *slot = b,
         None => warnings.push(format!("{key} must be true or false; using {slot}")),
     }
+}
+
+fn set_color(v: &toml::Value, key: &str, slot: &mut Option<Rgb>, warnings: &mut Vec<String>) {
+    let parsed = v
+        .as_str()
+        .filter(|value| {
+            value.len() == 7
+                && value.starts_with('#')
+                && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .and_then(|value| {
+            Some([
+                u8::from_str_radix(&value[1..3], 16).ok()?,
+                u8::from_str_radix(&value[3..5], 16).ok()?,
+                u8::from_str_radix(&value[5..7], 16).ok()?,
+            ])
+        });
+    match parsed {
+        Some(color) => *slot = Some(color),
+        None => warnings.push(format!(
+            "{key} must be a quoted #RRGGBB color; using the theme default"
+        )),
+    }
+}
+
+pub(crate) fn luminance(color: Rgb) -> f64 {
+    let channel = |value: u8| {
+        let value = f64::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(color[0]) + 0.7152 * channel(color[1]) + 0.0722 * channel(color[2])
+}
+
+pub(crate) fn contrast(first: Rgb, second: Rgb) -> f64 {
+    let first = luminance(first);
+    let second = luminance(second);
+    (first.max(second) + 0.05) / (first.min(second) + 0.05)
 }
 
 static CONFIG: OnceLock<LoadedConfig> = OnceLock::new();
@@ -453,6 +553,10 @@ mod tests {
 [ui]
 token_line = false
 tips = false
+theme = 'light'
+background = '#fbf9f1'
+foreground = '#232729'
+accent = '#1b5a9e'
 [threads]
 enabled = true
 map_chars = 800
@@ -464,6 +568,37 @@ max_workers = 2
 "#);
         assert!(warn.is_empty(), "{warn:?}");
         assert!(!c.ui.token_line && !c.ui.tips && c.threads.enabled);
+        assert_eq!(c.ui.theme, Theme::Light);
+        assert_eq!(c.ui.background, Some([251, 249, 241]));
+        assert_eq!(c.ui.foreground, Some([35, 39, 41]));
+        assert_eq!(c.ui.accent, Some([27, 90, 158]));
+        for (name, theme) in [
+            ("default", Theme::Default),
+            ("dark", Theme::Dark),
+            ("light", Theme::Light),
+            ("terminal", Theme::Terminal),
+        ] {
+            let (themed, warnings) = w(&format!("[ui]\ntheme='{name}'\n"));
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(themed.ui.theme, theme);
+        }
+        let (invalid, warnings) =
+            w("[ui]\ntheme='missing'\nbackground='#fff'\nforeground='blue'\naccent=42\n");
+        assert_eq!(warnings.len(), 4);
+        assert_eq!(invalid.ui.theme, Theme::Default);
+        assert!(
+            invalid.ui.background.is_none()
+                && invalid.ui.foreground.is_none()
+                && invalid.ui.accent.is_none()
+        );
+        let (unreadable, warnings) =
+            w("[ui]\nbackground='#101010'\nforeground='#111111'\naccent='#121212'\n");
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(unreadable.ui.background, Some([16, 16, 16]));
+        assert!(unreadable.ui.foreground.is_none() && unreadable.ui.accent.is_none());
+        let (host, warnings) = w("[ui]\ntheme='terminal'\nforeground='#111111'\n");
+        assert!(warnings.is_empty(), "terminal host background is unknown");
+        assert_eq!(host.ui.foreground, Some([17, 17, 17]));
         assert_eq!(c.threads.map_chars, 800);
         assert_eq!(c.mode.default, TrustMode::Full);
         assert!(c.delegation.protocol);

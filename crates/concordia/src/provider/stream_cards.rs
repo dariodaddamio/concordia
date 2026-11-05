@@ -912,6 +912,9 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
             }
         }
         prev.status = next.status;
+        // A native result supplies the successful output only after its input was merged.
+        // This also runs during exact-session history hydration.
+        super::edit_display::normalize(prev);
     } else {
         cards.push(next);
     }
@@ -939,9 +942,19 @@ pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
         files: Vec::new(),
     };
     let detail = card.detail.as_deref().unwrap_or("");
-    let input = detail
+    let header_detail = detail
+        .split_once("\n\nNative tool input and output:\n")
+        .map(|(_, native)| native)
+        .filter(|native| {
+            let input = native
+                .split_once("\nOutput: ")
+                .map_or(*native, |(input, _)| input);
+            literal_wrapper_calls(input).is_some()
+        })
+        .unwrap_or(detail);
+    let input = header_detail
         .split_once("\nOutput: ")
-        .map_or(detail, |(input, _)| input);
+        .map_or(header_detail, |(input, _)| input);
     let label = tool_label(&card.title);
     let run = if card.status == CardStatus::Done {
         "Ran"
@@ -1144,10 +1157,21 @@ fn append_patch_summary(summary: &mut CardSummary, patch: &str) {
         }
     }
     append_summary_files(summary, paths.into_iter());
+    let added = patch
+        .lines()
+        .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+        .count();
+    let removed = patch
+        .lines()
+        .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+        .count();
+    if added + removed > 0 {
+        summary.text.push_str(&format!("  +{added} -{removed}"));
+    }
 }
 
 /// Only complete literal host statement batches qualify; no expressions are evaluated.
-fn literal_wrapper_calls(input: &str) -> Option<Vec<(String, Value)>> {
+pub(crate) fn literal_wrapper_calls(input: &str) -> Option<Vec<(String, Value)>> {
     if input.len() > 256 * 1024 {
         return None;
     }
@@ -1175,8 +1199,13 @@ fn literal_wrapper_calls(input: &str) -> Option<Vec<(String, Value)>> {
         rest = argument
             .get(end..)?
             .trim_start()
-            .strip_prefix("));")?
+            .strip_prefix("))")?
             .trim_start();
+        if let Some(next) = rest.strip_prefix(';') {
+            rest = next.trim_start();
+        } else if !rest.is_empty() {
+            return None;
+        }
         calls.push((name.into(), value));
     }
     (!calls.is_empty()).then_some(calls)
@@ -1446,7 +1475,7 @@ mod tests {
         let summary = compact_card_summary(&composite);
         assert_eq!(
             summary.text,
-            "│ ✓ Edit File display_backend.rs + Ran build - 22 output lines"
+            "│ ✓ Edit File display_backend.rs  +1 -1 + Ran build - 22 output lines"
         );
         assert_eq!(summary.files.len(), 1);
         let (range, target) = &summary.files[0];
@@ -1462,6 +1491,43 @@ mod tests {
         assert_eq!(target, "C:/fixture/src/display_backend.rs");
         assert_eq!(composite.detail.as_deref(), Some(detail.as_str()));
         assert_eq!(composite.id, "native-composite-call");
+        let mut restored = vec![StreamCard {
+            id: "restored-wrapper".into(),
+            title: "Edit file + Run command".into(),
+            status: CardStatus::Running,
+            detail: Some(script.clone()),
+        }];
+        let native_output = detail.split_once("\nOutput: ").unwrap().1;
+        upsert_card(
+            &mut restored,
+            StreamCard {
+                id: "restored-wrapper".into(),
+                title: "result".into(),
+                status: CardStatus::Done,
+                detail: Some(native_output.into()),
+            },
+        );
+        let preview = restored[0].detail.as_deref().unwrap();
+        assert!(
+            preview.starts_with("File: C:/fixture/src/display_backend.rs\n@@\n-before\n+after"),
+            "{preview}"
+        );
+        assert!(preview.contains("Native tool input and output:\ntext(await tools.apply_patch("));
+        assert!(format_card_line(&restored[0]).contains("display_backend.rs  +1 -1 + Ran build"));
+        let before_replay = restored[0].clone();
+        upsert_card(
+            &mut restored,
+            StreamCard {
+                id: "restored-wrapper".into(),
+                title: "result".into(),
+                status: CardStatus::Done,
+                detail: Some(native_output.into()),
+            },
+        );
+        assert_eq!(
+            restored[0], before_replay,
+            "result replay must not duplicate the preview"
+        );
         composite.status = CardStatus::Running;
         assert!(compact_card_summary(&composite)
             .text
@@ -1536,7 +1602,7 @@ mod tests {
         };
         let summary = compact_card_summary(&edit);
         assert_eq!(summary.files.len(), 2);
-        assert!(summary.text.ends_with(" + 4 more files"));
+        assert!(summary.text.ends_with(" + 4 more files  +6 -6"));
         for (index, (range, target)) in summary.files.iter().enumerate() {
             assert_eq!(target, &names[index]);
             assert!(range.len() <= 64);
@@ -1927,6 +1993,43 @@ mod tests {
             0,
             "repeated enrichment must not duplicate hunks"
         );
+        let first =
+            "*** Begin Patch\n*** Update File: src/repeated.rs\n@@\n-one\n+two\n*** End Patch";
+        let second =
+            "*** Begin Patch\n*** Update File: src/repeated.rs\n@@\n-two\n+three\n*** End Patch";
+        let unresolved = |id: &str| StreamCard {
+            id: id.into(),
+            title: "Edit".into(),
+            status: CardStatus::Done,
+            detail: Some(
+                "File: src/repeated.rs\nProvider reported a change; line diff unavailable.".into(),
+            ),
+        };
+        let mut repeated = vec![unresolved("first"), unresolved("second")];
+        let changed = super::super::edit_display::enrich_codex(
+            &mut repeated,
+            &[first.into(), second.into()],
+            std::path::Path::new("."),
+        );
+        assert_eq!(changed.len(), 2);
+        assert!(repeated[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("-one\n+two"));
+        assert!(!repeated[0].detail.as_deref().unwrap().contains("+three"));
+        assert!(repeated[1]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("-two\n+three"));
+        let mut ambiguous = [unresolved("only-one-of-two")];
+        assert!(super::super::edit_display::enrich_codex(
+            &mut ambiguous,
+            &[first.into(), second.into()],
+            std::path::Path::new(".")
+        )
+        .is_empty());
     }
 
     #[test]

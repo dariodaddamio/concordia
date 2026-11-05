@@ -427,7 +427,7 @@ impl App {
         }
         rows.push(PickerRow {
             id: "artifact-catalog".into(),
-            label: "Reported file outputs".into(),
+            label: "Reported file changes".into(),
             detail: "Structured native output records · inspect source and current-file actions"
                 .into(),
         });

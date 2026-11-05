@@ -1,5 +1,41 @@
 # Concordia verification status
 
+## Inline patch delivery, themes and Concordia artwork, 2026-11-05a
+
+The installed optimized artifact has matching checked bytes: 24,221,184 bytes (23.10 MiB), SHA-256
+`2AB5C89D395B6B5C36241BCCEC22CEFB9B3892760160CF8C6CD8FC2BC407E968`.
+All 77 focused checks pass, covering verified native patch extraction/identity, active inline
+recovery, restored wrapper normalization, repeated-path ambiguity, failed sibling results,
+theme/contrast/image preservation, grouped/individual headings, glyph pixels, retained thinking,
+history selection and wrapping. All-target Clippy passes with warnings denied. Release smoke,
+Defender and the 404-file OSS/privacy scan pass. No complete-suite claim follows from this batch.
+
+The exact source diagnostic for the reported `tests.rs` call found a successful patch that was
+already parseable. Its missing original-row recovery and restored input/result normalization
+were separate defects from the additionally unsupported multi-patch/pragma/semicolon formats.
+Renderer-only tests in earlier deliveries did not establish this ordinary data path.
+
+Four exact-build owned-window cases pass for default, dark, light and custom palettes. They verify
+client/background pixels, readable Home text, the original portrait's pixel detail and selected
+background transparency. Their receipts/screenshots remain under ignored
+`target/native-window-proof/05a-theme-fixtures/`. No real provider, global input or clipboard was used.
+
+The native inline controller starts with the ordinary path-only edit event, supplies exact native
+source after the row is captured, then verifies recovery and expansion while an owned fake run is
+still held active. It checks counts, red/green full-width pixels and absence of a duplicate metadata
+card; current file contents deliberately differ from the historical patch. Bare patch hunks do not
+establish numeric file positions. Dynamic, ambiguous, failed and unavailable sources remain explicit.
+Controller preparation caught a Windows CRLF-vs-LF assertion mistake; unchanged-file verification
+uses exact before/after bytes rather than a newline assumption. No production fix was needed for it.
+The corrected exact-build inline case passes; its receipt and screenshots remain under ignored
+`target/native-window-proof/05a-inline-checked/`. A fresh owned fixture was used after the newline
+correction; earlier failed controller receipts remain intact. No additional real model request ran.
+
+The 308,736-byte increase from 04r includes bundled portrait resources, palettes and inline recovery;
+the coordinated smoke/collector ceiling is now 23.25 MiB. No new runtime dependency, provider model
+request, Actions dispatch, signing or publication is part of this delivery. The existing live ledger
+remains 15/18. This does not close the remaining storage/effectiveness/provider/host or owner-held work.
+
 ## Native reference storage and durable recall, 2026-11-04r
 
 The installed optimized R artifact has matching checked bytes: 23,912,448 bytes (22.80 MiB), SHA-256

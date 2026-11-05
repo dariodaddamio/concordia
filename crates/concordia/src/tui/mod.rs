@@ -49,6 +49,7 @@ use tokio::sync::mpsc;
 
 mod activity;
 mod artifacts;
+mod brand;
 mod chatref;
 mod clipboard;
 #[cfg(all(windows, not(test)))]
@@ -91,6 +92,7 @@ mod session_ui_tests;
 mod stats_ui;
 mod syntax;
 mod text;
+mod theme;
 mod tips;
 mod token_line;
 mod tokens;
@@ -1165,7 +1167,9 @@ impl App {
                 {
                     self.commit_live_thinking();
                     self.commit_live_text();
-                    self.push_card(record.card());
+                    if !artifacts::record_live(self, &record) {
+                        self.push_card(record.card());
+                    }
                 }
             }
             TurnProgress::Interaction(request) => {
@@ -5913,13 +5917,7 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
             cell.set_symbol(&clean);
         }
     }
-    if app.no_color {
-        // Keep bold/reverse/italic (they carry meaning); drop every colour.
-        for cell in f.buffer_mut().content.iter_mut() {
-            cell.fg = Color::Reset;
-            cell.bg = Color::Reset;
-        }
-    }
+    theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
 }
 
 /// Slash-command suggestions, floating just above the prompt box.

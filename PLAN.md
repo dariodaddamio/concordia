@@ -21,6 +21,9 @@ uncertain recovery remains preserved; source-budget and unsupported-format limit
 Native image inputs for Codex/Claude/Cursor and local Mermaid rendering are implemented;
 [image/diagram limits](docs/images-and-diagrams.md) distinguish fixture proof from live-provider validation.
 Current UI behavior and installed-host pointer limits: [chat rendering](docs/chat-rendering.md).
+Build `2026-11-05a` addresses inline patch delivery, tool status/font consistency and configurable
+themes; the Concordia portrait is bundled locally. These visible follow-ups remain separate from
+the unresolved native-interface, storage-boundary, effectiveness and owner-held release items.
 The owner's implementation-first campaign gates and X/LinkedIn drafts are in the
 [launch plan](docs/launch-plan.md); unfinished roadmap features are not launch claims.
 The [completion audit](docs/feature-completion-audit.md) records what is closed and what remains;

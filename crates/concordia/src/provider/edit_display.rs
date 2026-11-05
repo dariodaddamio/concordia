@@ -45,7 +45,7 @@ pub(crate) fn matches_reported_paths(input: &str, cwd: &Path, reported: &[String
     !paths.is_empty() && paths == reported.iter().map(|path| path_key(path, cwd)).collect()
 }
 
-pub(super) fn needs_codex_patch(cards: &[StreamCard]) -> bool {
+pub(crate) fn needs_codex_patch(cards: &[StreamCard]) -> bool {
     cards.iter().any(|card| {
         card.status == super::CardStatus::Done
             && card.title == "Edit"
@@ -90,8 +90,16 @@ pub(crate) fn enrich_codex(
     inputs: &[String],
     cwd: &Path,
 ) -> Vec<StreamCard> {
-    let mut patches: Vec<(String, String)> = Vec::new();
-    for input in inputs.iter().filter(|input| input.len() <= MAX_BYTES) {
+    let mut patches: Vec<(String, String, usize)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (batch, input) in inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, input)| input.len() <= MAX_BYTES)
+    {
+        if !seen.insert(input) {
+            continue;
+        }
         if input.lines().next() != Some("*** Begin Patch")
             || !input.trim_end().ends_with("*** End Patch")
         {
@@ -106,9 +114,7 @@ pub(crate) fn enrich_codex(
                 .or_else(|| line.strip_prefix("*** Delete File: "))
             {
                 if let Some(path) = path.take() {
-                    if !body.is_empty() {
-                        patches.push((path, std::mem::take(&mut body)));
-                    }
+                    patches.push((path, std::mem::take(&mut body), batch));
                 }
                 body.clear();
                 path =
@@ -120,9 +126,7 @@ pub(crate) fn enrich_codex(
                         .then(|| next.to_owned());
             } else if line == "*** End Patch" {
                 if let Some(path) = path.take() {
-                    if !body.is_empty() {
-                        patches.push((path, std::mem::take(&mut body)));
-                    }
+                    patches.push((path, std::mem::take(&mut body), batch));
                 }
             } else if line.starts_with(['+', '-', ' ']) || line.starts_with("@@") {
                 body.push_str(line);
@@ -130,8 +134,20 @@ pub(crate) fn enrich_codex(
             }
         }
     }
+    let card_paths = cards
+        .iter()
+        .map(|card| {
+            card.detail
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.strip_prefix("File: "))
+                .map(|path| path_key(path, cwd))
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .collect::<Vec<_>>();
     let mut changed = Vec::new();
-    for card in cards {
+    for (card_index, card) in cards.iter_mut().enumerate() {
         if card.status != super::CardStatus::Done || card.title != "Edit" {
             continue;
         }
@@ -142,6 +158,41 @@ pub(crate) fn enrich_codex(
         else {
             continue;
         };
+        let paths = &card_paths[card_index];
+        let candidates = patches
+            .iter()
+            .filter(|(path, _, _)| paths.contains(&path_key(path, cwd)))
+            .map(|(_, _, batch)| *batch)
+            .filter(|batch| {
+                paths.iter().all(|path| {
+                    patches.iter().any(|(reported, _, candidate)| {
+                        candidate == batch && path_key(reported, cwd) == *path
+                    })
+                })
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let peers = card_paths
+            .iter()
+            .enumerate()
+            .filter(|(_, other)| *other == paths)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        // One complete native patch batch produces one completed file-change event. Where
+        // a file changes repeatedly, map only a complete one-to-one ordered set. Never paste
+        // every later same-file patch into an earlier edit row.
+        let batch = if candidates.len() == 1 {
+            candidates.iter().next().copied()
+        } else if candidates.len() == peers.len() {
+            peers
+                .iter()
+                .position(|index| *index == card_index)
+                .and_then(|ordinal| candidates.iter().nth(ordinal).copied())
+        } else {
+            None
+        };
+        let Some(batch) = batch else {
+            continue;
+        };
         let mut detail = raw.to_owned();
         for line in raw.lines() {
             let Some(path) = line.strip_prefix("File: ") else {
@@ -150,8 +201,10 @@ pub(crate) fn enrich_codex(
             let path_key = path_key(path, cwd);
             let body: String = patches
                 .iter()
-                .filter(|(patch_path, _)| self::path_key(patch_path, cwd) == path_key)
-                .map(|(_, body)| body.as_str())
+                .filter(|(patch_path, _, candidate)| {
+                    *candidate == batch && self::path_key(patch_path, cwd) == path_key
+                })
+                .map(|(_, body, _)| body.as_str())
                 .collect();
             if !body.is_empty() && detail.len() + body.len() <= MAX_BYTES {
                 detail = detail.replace(
@@ -182,6 +235,9 @@ fn replacement(old: &str, new: &str) -> String {
 }
 
 pub(super) fn normalize(card: &mut StreamCard) {
+    if normalize_completed_wrapper(card) {
+        return;
+    }
     if !matches!(
         card.title.to_ascii_lowercase().as_str(),
         "edit" | "str_replace" | "replace"
@@ -227,4 +283,83 @@ pub(super) fn normalize(card: &mut StreamCard) {
         "File: {path}\n{}\nNative tool input and output:\n{raw}",
         replacement(old, new)
     ));
+}
+
+fn normalize_completed_wrapper(card: &mut StreamCard) -> bool {
+    if card.status != super::CardStatus::Done {
+        return false;
+    }
+    let Some(raw) = card
+        .detail
+        .as_deref()
+        .filter(|raw| raw.len() <= MAX_BYTES && !raw.starts_with("File: "))
+    else {
+        return false;
+    };
+    let Some((input, output)) = raw.split_once("\nOutput: ") else {
+        return false;
+    };
+    let input = input.strip_prefix("input: ").unwrap_or(input);
+    let Some(calls) = super::stream_cards::literal_wrapper_calls(input) else {
+        return false;
+    };
+    let output = serde_json::from_str(output).unwrap_or_else(|_| Value::String(output.to_owned()));
+    let mut joined = String::from("*** Begin Patch\n");
+    let mut paths = Vec::new();
+    for (index, (name, value)) in calls.into_iter().enumerate() {
+        if name != "apply_patch"
+            || !crate::native_memory::successful_patch_output(&output, Some(index))
+        {
+            continue;
+        }
+        let Some(patch) = value.as_str().filter(|patch| {
+            patch.starts_with("*** Begin Patch\n") && patch.trim_end().ends_with("*** End Patch")
+        }) else {
+            continue;
+        };
+        for line in patch
+            .lines()
+            .skip(1)
+            .take_while(|line| *line != "*** End Patch")
+        {
+            joined.push_str(line);
+            joined.push('\n');
+            if let Some(path) = line
+                .strip_prefix("*** Update File: ")
+                .or_else(|| line.strip_prefix("*** Add File: "))
+                .or_else(|| line.strip_prefix("*** Delete File: "))
+            {
+                paths.push(path.to_owned());
+            } else if let Some(path) = line.strip_prefix("*** Move to: ") {
+                if let Some(previous) = paths.last_mut() {
+                    *previous = path.to_owned();
+                }
+            }
+        }
+    }
+    if paths.is_empty() {
+        return false;
+    }
+    joined.push_str("*** End Patch\n");
+    paths.dedup();
+    let mut preview = [StreamCard {
+        id: card.id.clone(),
+        title: "Edit".into(),
+        status: card.status,
+        detail: Some(
+            paths
+                .iter()
+                .map(|path| format!("File: {path}\n{UNAVAILABLE}"))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        ),
+    }];
+    if enrich_codex(&mut preview, &[joined], Path::new(".")).is_empty() {
+        return false;
+    }
+    card.detail = Some(format!(
+        "{}\n\nNative tool input and output:\n{raw}",
+        preview[0].detail.as_deref().unwrap_or_default()
+    ));
+    true
 }

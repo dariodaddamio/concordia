@@ -23,7 +23,11 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
             CardStatus::Error => Color::Red,
         };
         for symbol in ['◉', '✓', '✗'] {
-            if let Some(start) = heading.find(symbol) {
+            if let Some(start) = heading
+                .strip_prefix("│ ")
+                .filter(|body| body.starts_with(symbol))
+                .map(|_| "│ ".len())
+            {
                 mark(
                     start,
                     start + symbol.len_utf8(),
@@ -40,31 +44,12 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
             .trim_start();
         let mut start = heading.len() - body.len();
         for part in body.split(" + ") {
-            let action = [
-                "Edit File",
-                "Write File",
-                "Read File",
-                "Read command output",
-                "Browse web",
-                "Search web",
-                "Search files",
-                "Ran",
-                "Run",
-            ]
-            .into_iter()
-            .find(|label| {
-                part.strip_prefix(label)
-                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(' '))
-            });
-            let end = action.map_or_else(
-                || {
-                    part.find(" · ")
-                        .or_else(|| part.find(" - "))
-                        .or_else(|| part.find("  "))
-                        .unwrap_or(part.len())
-                },
-                str::len,
-            );
+            // The action and its subject form one heading. Styling only guessed action words
+            // made adjacent words/files change weight with provider label capitalization.
+            let end = part
+                .find(" · ")
+                .or_else(|| part.find(" - "))
+                .unwrap_or(part.len());
             mark(
                 start,
                 start + end,
@@ -171,7 +156,7 @@ pub(super) fn grouped_cards(messages: &[ChatLine], activity: &Activity, all: boo
             end += 1;
         }
         if end - start > 1 {
-            let summary = format!("{category} · {} operations · completed", end - start);
+            let summary = format!("│ ✓ {category} · {} operations · completed", end - start);
             if activity.is_expanded(start, all) {
                 let card = messages[start].card.as_ref().unwrap();
                 grouped.text[start] = Some(format!(

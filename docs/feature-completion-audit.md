@@ -1,8 +1,22 @@
-# Feature completion audit: 2026-11-04r
+# Feature completion audit: 2026-11-05a
 
 The full roadmap is **not complete**. The current board has eight grouped open/deferred workstreams;
 they mix missing capabilities, qualification and release work, so they are not a feature count
 or a percentage of completion:
+
+The actionable distinction is:
+
+| Kind | Remaining work | Completion condition |
+| --- | --- | --- |
+| Implementation | Wider native capture/format coverage for large or long turns; a preservation-first legacy migration path if offered | Exact source-backed recall without losing protected recovery or existing history |
+| Qualification | Broader native UI/worker approvals/output/PDF and physical-host paths; compatible-policy memory comparisons | Reproducible exact-build evidence on the declared provider/host and measured retrieval outcomes |
+| Missing native data | Cursor capacity/external usage and numeric credit amounts when providers omit them | A supported, verified source supplies the missing values |
+| Owner holds | New Windows confinement work and public GitHub publication | Owner resumes that scope; signing remains declined |
+
+The reported inline-edit/status/theme regressions were real UI work after 04r, not vendor-data
+blockers. Build 05a addresses their scoped data/rendering paths. Earlier renderer-only checks did
+not establish that ordinary path-only edit events delivered patches to the original chat rows.
+See [E2E status](e2e-status.md) for the exact checks and retained limitations.
 
 1. **Cursor context capacity:** the supported current-window sensor remains recorded as
    vendor-blocked; reactive error recovery does not supply a proactive measurement.

@@ -11,6 +11,8 @@ use ratatui::{backend::TestBackend, Terminal};
 
 #[test]
 fn expansion_and_detail_use_independent_message_identity() {
+    #[cfg(windows)]
+    super::native_window::status_fixture_proof();
     let mut a = Activity::default();
     a.toggle(2);
     assert!(a.expanded.contains(&2));
@@ -41,6 +43,7 @@ fn expansion_and_detail_use_independent_message_identity() {
         .as_deref()
         .unwrap()
         .contains("Inspect project · 2 operations"));
+    assert!(groups.text[0].as_deref().unwrap().starts_with("│ ✓ "));
     assert_eq!(groups.hidden, vec![false, true, false, false, false, false]);
     a.toggle_card(0, false);
     let groups = grouped_cards(&messages, &a, false);
@@ -49,6 +52,47 @@ fn expansion_and_detail_use_independent_message_identity() {
     assert_eq!(messages[1].card.as_ref().unwrap().id, "read-two");
     a.toggle_card(0, true);
     assert!(grouped_cards(&messages, &a, true).hidden[1]);
+
+    // Action/subject weight is one intentional span, independent of provider capitalization,
+    // filename punctuation and UTF-8 byte widths. Status and disclosure stay separate.
+    for (status, mark, color) in [
+        (CardStatus::Running, '◉', Color::Cyan),
+        (CardStatus::Done, '✓', Color::Green),
+        (CardStatus::Error, '✗', Color::Red),
+    ] {
+        let card = StreamCard {
+            id: "styled".into(),
+            title: "apply_patch".into(),
+            detail: None,
+            status,
+        };
+        for label in ["Edit File", "Edit file", "Ran"] {
+            let heading = format!("│ {mark} {label} src/café.rs - 2 output lines - Expand");
+            let runs = super::activity::card_runs(&heading, Some(&card));
+            let style_at = |index| {
+                runs.iter()
+                    .filter(|(_, start, end, _)| *start <= index && index < *end)
+                    .fold(
+                        ratatui::style::Style::default(),
+                        |style, (_, _, _, next)| style.patch(*next),
+                    )
+            };
+            let chars = heading.chars().collect::<Vec<_>>();
+            let end = heading.split(" - ").next().unwrap().chars().count();
+            for (index, character) in chars.iter().enumerate().take(end).skip(4) {
+                assert!(
+                    style_at(index).add_modifier.contains(Modifier::BOLD),
+                    "unbold heading character {:?} in {heading}",
+                    character
+                );
+            }
+            assert_eq!(style_at(2).fg, Some(color));
+            assert!(!style_at(2).add_modifier.contains(Modifier::BOLD));
+            assert!(!style_at(chars.len() - 1)
+                .add_modifier
+                .contains(Modifier::BOLD));
+        }
+    }
 }
 
 #[test]

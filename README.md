@@ -2,7 +2,7 @@
   <img alt="Concordia: a conversation with tool cards and a markdown reply in the terminal" src="docs/img/hero.svg" width="900">
 </p>
 
-<p align="center"><img alt="Concordia logo" src="crates/concordia/assets/concordia.svg" width="72"></p>
+<p align="center"><img alt="Concordia, Roman goddess of harmony" src="crates/concordia/assets/concordia.png" width="104"></p>
 <h1 align="center">Concordia</h1>
 
 <p align="center">

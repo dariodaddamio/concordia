@@ -124,13 +124,17 @@ clamped). Nothing here is ever fatal.
 
 ```toml
 [ui]
+theme = "default"       # default | dark | light | terminal
+# background = "#101318" # optional #RRGGBB override
+# foreground = "#e5e7eb"
+# accent = "#78b9ef"
 token_line = true        # per-turn "in 12.3k out 1.4k 8.2s" under each reply
 tips = true              # a rotating tip while idle
-persist_history = true   # keep sent prompts in <state>/history.jsonl so Up works after a restart
+persist_history = true   # native-source recall references; legacy prompt history remains readable
 stats = false            # footer: mem 41 MB - cpu 1% (and the provider processes)
 
 [threads]
-enabled = false          # record conversations to <state>/threads (stores prompts)
+enabled = false          # metadata/native references under <state>/threads; legacy logs remain readable
 map_chars = 1600         # size of the [concordia map] block, 200..=8000
 awareness = true         # tell the CLIs in Concordia-created homes about [concordia map] (docs/mcp.md)
 mcp = false              # register `concordia mcp` in Concordia-created homes (opt-in, costs tokens)
@@ -145,17 +149,49 @@ max_workers = 3          # 1..=3
 
 | Key | Default | Notes |
 | --- | --- | --- |
+| `ui.theme` | `"default"` | `default`, `dark`, `light` or `terminal`; read on launch |
+| `ui.background` | Theme default | Optional quoted `#RRGGBB` background, including empty rows and native client margins |
+| `ui.foreground` | Theme default | Optional quoted `#RRGGBB` main text color |
+| `ui.accent` | Theme default | Optional quoted `#RRGGBB` links, focus and navigation color |
 | `ui.token_line` | `true` | Dim usage line after each reply |
 | `ui.tips` | `true` | Tips while the prompt is idle |
-| `ui.persist_history` | `true` | Stores sent prompts locally (last 500); `false` keeps history in memory only |
+| `ui.persist_history` | `true` | Stores native prompt-recall references (last 500); `false` keeps new recall in memory only |
 | `ui.stats` | `false` | Footer memory and CPU for Concordia and the agents it started (`/stats` toggles it) |
-| `threads.enabled` | `false` | Opt-in recording; stores prompts on disk |
+| `threads.enabled` | `false` | Opt-in metadata/native-reference recording; existing legacy bodies are preserved |
 | `threads.map_chars` | `1600` | Out of range is clamped to 200..8000 |
 | `threads.awareness` | `true` | One short block in `CLAUDE.md` / `AGENTS.md` of homes Concordia created; `false` removes it |
 | `threads.mcp` | `false` | Registers the `concordia mcp` server in those homes; `false` removes the entry (see [mcp.md](mcp.md)) |
 | `mode.default` | `"ask"` | Anything else falls back to `ask` |
 | `delegation.protocol` | `false` | Same switch as `/delegate protocol on|off` |
 | `delegation.max_workers` | `3` | 0 becomes 1, above 3 becomes 3 |
+
+### Themes and custom colors
+
+`default` preserves the existing appearance and terminal host colors. `dark` supplies an explicit
+near-black background; `light` supplies a warm light background with dark text. The same palette
+covers chat, menus, file panes, detached file windows and native client margins. Added/removed diff
+rows keep distinct green/red tints; syntax colors are adjusted for readable contrast. Original
+image pixels are preserved, with transparent image areas composited onto the selected background.
+
+For a custom dark palette:
+
+```toml
+[ui]
+theme = "dark"
+background = "#101318"
+foreground = "#e5e7eb"
+accent = "#78b9ef"
+```
+
+Restart Concordia after editing the file. Omit any override to use its preset. Invalid names/colors
+produce `doctor` warnings and fall back. Against a known background, foreground contrast below
+4.5:1 and accent contrast below 3:1 are rejected; the rendered palette also adjusts muted and syntax
+text for contrast rather than dimming it twice. Bold, italic and selection still carry meaning.
+
+`terminal` keeps host colors and applies only explicit overrides to ordinary UI defaults and links;
+it cannot measure a terminal's background. Native Windows has no terminal host and uses its normal
+native colors for omitted overrides. `NO_COLOR` takes precedence over all themes and overrides.
+This changes display colors only, without editing provider settings or authentication.
 
 ### Precedence: store vs config
 
