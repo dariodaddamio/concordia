@@ -566,28 +566,7 @@ impl App {
                         format!("Resumed · {count} recent messages loaded; older history is omitted from this bounded view.")
                     } else { format!("Resumed · {count} messages loaded. Scroll up to review the conversation.") });
                     let meta = Some(self.reply_meta());
-                    let mut turn_has_user = false;
-                    let mut turn_has_activity = false;
-                    let mut ends_with_reply = false;
                     for message in history.messages {
-                        if message.role == "user" {
-                            if turn_has_user && turn_has_activity && ends_with_reply {
-                                self.messages.push(ChatLine {
-                                    role: MsgRole::Meta,
-                                    text: "Recorded turn · Review activity".into(),
-                                    card: None,
-                                    meta: None,
-                                });
-                            }
-                            turn_has_user = true;
-                            turn_has_activity = false;
-                            ends_with_reply = false;
-                        } else if matches!(message.role.as_str(), "thinking" | "card") {
-                            turn_has_activity = true;
-                            ends_with_reply = false;
-                        } else if message.role == "assistant" {
-                            ends_with_reply = true;
-                        }
                         self.messages.push(ChatLine {
                             role: match message.role.as_str() {
                                 "user" => MsgRole::User,
@@ -610,14 +589,6 @@ impl App {
                         {
                             self.native_agents.record(card, self.messages.len() - 1);
                         }
-                    }
-                    if turn_has_user && turn_has_activity && ends_with_reply {
-                        self.messages.push(ChatLine {
-                            role: MsgRole::Meta,
-                            text: "Recorded turn · Review activity".into(),
-                            card: None,
-                            meta: None,
-                        });
                     }
                     if count == 0 {
                         self.push_system(

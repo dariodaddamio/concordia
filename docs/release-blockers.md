@@ -10,6 +10,12 @@ but still needs the concrete gates below. This document does not authorize publi
 
 ## CI repairs and candidate requirements
 
+As of build `2026-11-04o`, routine CI is manual-only (`workflow_dispatch`) to conserve the
+exhausted GitHub Actions allowance. Pushes and pull requests no longer start the CI workflow.
+Its existing checks remain available; manual runs and explicit release-tag jobs can still use
+Actions minutes. Local scoped tests, lint, smoke and artifact checks continue. This is a cost
+control, not evidence of passing remote CI or authorization to publish.
+
 | Gate | Current evidence | Needed before release |
 | --- | --- | --- |
 | Dependency advisories | Unused Syntect YAML/plist import features are removed. Bincode remains under one reviewed maintenance-advisory exception for embedded assets. | Keep all other advisory checks enabled; remove the exception when the upstream dump format migrates. See [dependency review](quality/dependency-security.md). |
@@ -59,8 +65,9 @@ Image paste and internal editing are no longer unimplemented blockers.
 Whole-history indexing/pagination, bounded lexical retrieval and confirmed/observed lineage,
 Cursor ACP readback, optional Codex proactive rollover, native compaction controls, durable worker
 ownership, bounded worker quota failover, cross-worktree dependencies and unified file actions are
-implemented with fixture evidence. Still open: richer goal/file ranking, file/worktree isolation,
-external native usage import and native interactive approval parity. Main/worker attempt accounting
+implemented with fixture evidence. Goal/source associations, bounded file-aware ranking and explicit
+related-chat groups are also implemented. Still open: OS-enforced file/worktree confinement,
+unsupported external native usage fields and broader live interactive-approval qualification. Main/worker attempt accounting
 has fixture evidence with explicit counter/cost coverage. Claude post-turn capacity is candidate-
 qualified with source/settings checks; Cursor proactive capacity remains unknown. Reviewed F10
 integration management is implemented; a general outbound MCP/plugin runtime remains intentionally

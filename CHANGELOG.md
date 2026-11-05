@@ -1,5 +1,14 @@
 # Changelog
 
+### Fixed (`2026-11-04o`)
+
+- Held arrows and navigation/deletion keys repeat normally, including Ctrl/Shift movement.
+  Action shortcuts remain single-press controls.
+- Reopened chats retain their thinking and expandable tool cards without synthetic
+  "Recorded turn" review messages.
+- Routine GitHub CI now runs only by manual dispatch to conserve the exhausted Actions allowance.
+  Existing gates remain available; explicit release-tag jobs are unchanged.
+
 ### Fixed (`2026-11-04n`)
 
 - Thinking renders Markdown consistently, and shortened previews avoid broken formatting.

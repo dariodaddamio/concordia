@@ -1,5 +1,19 @@
 # Concordia verification status
 
+## Held navigation and restored-history cleanup, 2026-11-04o
+
+The shared input handler now accepts repeated navigation/deletion events, including Ctrl/Shift
+arrows. Send/cancel/toggle shortcuts retain their single-press policy. Ctrl+Up at the first
+composer row stays in the editor instead of entering history or the queue. Reopened native chats
+retain their reported thinking, tool cards, statuses and IDs without synthetic "Recorded turn"
+review messages. Existing keyboard and resume cases cover these contracts.
+
+Routine `ci.yml` runs only through manual dispatch. Push/PR triggers were removed; existing jobs
+are preserved, and explicit release-tag behavior is unchanged. All seven local YAML files parsed
+with PyYAML 6.0.3 and job-preservation assertions passed. Five local Harness workflows are ignored
+artifacts and were not added to the repository. No Actions run or provider turn was dispatched.
+Local OSS/privacy gates pass. Exact installed-artifact results follow after local qualification.
+
 ## Transcript and menu follow-up, 2026-11-04n
 
 This scoped UI batch renders reported thinking as Markdown, keeps readable tool summaries when

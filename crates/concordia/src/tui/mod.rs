@@ -4563,10 +4563,27 @@ fn dispatch_key_event(
 }
 
 fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<String>) -> bool {
-    // Prefer Press; allow Repeat for held Backspace only.
+    // Native windows distinguish auto-repeat from a fresh press. Navigation and deletion
+    // must keep moving while held; action shortcuts (send, cancel, toggles) run once.
     match key.kind {
         KeyEventKind::Release => return false,
-        KeyEventKind::Repeat if !matches!(key.code, KeyCode::Backspace) => return false,
+        KeyEventKind::Repeat
+            if !matches!(
+                key.code,
+                KeyCode::Backspace
+                    | KeyCode::Delete
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+            ) =>
+        {
+            return false;
+        }
         _ => {}
     }
     if raster::key(app, &key) {
@@ -5075,7 +5092,12 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         }
         // Up on the first prompt row (and Down on the last, while browsing) walks sent prompts.
         KeyCode::Up => {
-            if !shift && app.editor.selection().is_none() && app.editor.cursor_pos(tw).0 == 0 {
+            if !shift
+                && !ctrl
+                && !alt
+                && app.editor.selection().is_none()
+                && app.editor.cursor_pos(tw).0 == 0
+            {
                 if !queue::focus_on_up(app) {
                     app.history_prev();
                 }
