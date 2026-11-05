@@ -2,7 +2,7 @@
 use super::*;
 use crate::config::{Rgb, Theme, Ui};
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, io};
+use std::io;
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -16,8 +16,6 @@ struct Saved {
 pub(super) struct State {
     pub ui: Ui,
     pub notice: Option<String>,
-    pub frame: RefCell<Option<(u64, Arc<image::RgbaImage>)>>,
-    pub clock: Instant,
 }
 
 fn read(root: &Path) -> io::Result<Saved> {
@@ -103,12 +101,7 @@ impl State {
             Err(error) => notice = Some(format!("Appearance settings: {error}")),
         }
         theme::install(&ui);
-        Self {
-            ui,
-            notice,
-            frame: RefCell::new(None),
-            clock: Instant::now(),
-        }
+        Self { ui, notice }
     }
 
     pub fn color(&self) -> Rgb {
@@ -135,12 +128,7 @@ pub(super) fn open(app: &mut App) {
         row(
             "color",
             format!("Concordia color · {}", color_text(app.appearance.color())),
-            "Application icon and rotating sculpture",
-        ),
-        row(
-            "motion",
-            format!("Motion · {}", if ui.motion { "On" } else { "Off" }),
-            "Toggle sculpture rotation and decorative glitch",
+            "Running-window icon; Home retains the original gold portrait",
         ),
         row(
             "defaults",
@@ -198,11 +186,7 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     match (kind, id) {
         (PickerKind::Appearance, "theme") => {
             let rows = [
-                (
-                    "opifex",
-                    "Opifex Studio",
-                    "Near-black · amber · bone · sculpture glitch",
-                ),
+                ("opifex", "Opifex Studio", "Near-black · amber · bone"),
                 ("default", "Default", "Concordia's original palette"),
                 ("dark", "Dark", "Cool black · blue accents"),
                 ("light", "Light", "Warm white · dark ink"),

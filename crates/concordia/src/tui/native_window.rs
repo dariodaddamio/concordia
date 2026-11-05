@@ -38,19 +38,6 @@ const SHUTDOWN: u32 = WM_APP + 4;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
 
-pub(super) fn motion_allowed() -> bool {
-    let mut enabled = 1i32;
-    unsafe {
-        SystemParametersInfoW(
-            SPI_GETCLIENTAREAANIMATION,
-            0,
-            (&mut enabled as *mut i32).cast(),
-            0,
-        ) == 0
-            || enabled != 0
-    }
-}
-
 /// Decoded attachment pixels and their cell-aligned viewport. Provider input retains
 /// its separate immutable file snapshot; this is only a display overlay.
 #[derive(Clone)]

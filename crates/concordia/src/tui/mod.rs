@@ -51,7 +51,6 @@ mod activity;
 mod appearance;
 mod artifacts;
 mod brand;
-mod brand_model;
 mod chatref;
 mod clipboard;
 #[cfg(all(windows, not(test)))]
@@ -4049,9 +4048,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             }
 
             let mut timeout = tick_rate.saturating_sub(last_tick.elapsed());
-            if landing::visible(&app) && app.appearance.ui.motion {
-                timeout = timeout.min(Duration::from_millis(64));
-            }
             // Input already wakes immediately. Provider channels used to wait for the
             // 200 ms animation tick; drain them at interactive latency during live turns.
             if app.busy || app.deleg.d.any_active() {
