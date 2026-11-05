@@ -918,17 +918,346 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
 }
 
 pub fn format_card_line(card: &StreamCard) -> String {
+    compact_card_summary(card).text
+}
+
+/// Presentation only. File ranges are Unicode characters in this complete header,
+/// mapped to the exact provider-reported path rather than its shortened label.
+pub struct CardSummary {
+    pub text: String,
+    pub files: Vec<(std::ops::Range<usize>, String)>,
+}
+
+pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
     let mark = match card.status {
         CardStatus::Running => "◉",
         CardStatus::Error => "✗",
         CardStatus::Done => "✓",
     };
-    match &card.detail {
-        Some(d) if !d.is_empty() => {
-            format!("│ {mark} {}  {}", tool_label(&card.title), card_preview(d))
+    let mut summary = CardSummary {
+        text: format!("│ {mark} "),
+        files: Vec::new(),
+    };
+    let detail = card.detail.as_deref().unwrap_or("");
+    let input = detail
+        .split_once("\nOutput: ")
+        .map_or(detail, |(input, _)| input);
+    let label = tool_label(&card.title);
+    let run = if card.status == CardStatus::Done {
+        "Ran"
+    } else {
+        "Run"
+    };
+    if let Some(calls) = literal_wrapper_calls(input) {
+        for (index, (name, value)) in calls.iter().take(3).enumerate() {
+            if index > 0 {
+                summary.text.push_str(" + ");
+            }
+            match name.as_str() {
+                "apply_patch" => append_patch_summary(&mut summary, value.as_str().unwrap_or("")),
+                "exec_command" => summary.text.push_str(&format!(
+                    "{run} {}",
+                    command_purpose(
+                        value
+                            .get("cmd")
+                            .or_else(|| value.get("command"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                    )
+                )),
+                "write_stdin" => summary.text.push_str("Read command output"),
+                "web__run" => summary.text.push_str("Browse web"),
+                _ => summary.text.push_str("Run tool"),
+            }
         }
-        _ => format!("│ {mark} {}", tool_label(&card.title)),
+        if calls.len() > 3 {
+            summary
+                .text
+                .push_str(&format!(" + {} more tools", calls.len() - 3));
+        }
+    } else if label == "Ask questions" {
+        let raw = input
+            .strip_prefix("arguments: ")
+            .or_else(|| input.strip_prefix("input: "))
+            .unwrap_or(input);
+        let count = serde_json::from_str::<Value>(raw).ok().and_then(|value| {
+            value
+                .get("questions")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+        });
+        summary.text.push_str(&count.map_or_else(
+            || "Ask questions".to_owned(),
+            |count| {
+                format!(
+                    "Ask {count} {}",
+                    if count == 1 { "question" } else { "questions" }
+                )
+            },
+        ));
+    } else if label == "Run command" {
+        let value = serde_json::from_str::<Value>(
+            input
+                .strip_prefix("arguments: ")
+                .or_else(|| input.strip_prefix("input: "))
+                .unwrap_or(input),
+        )
+        .ok();
+        let command = value
+            .as_ref()
+            .and_then(|value| value.get("cmd").or_else(|| value.get("command")))
+            .and_then(Value::as_str)
+            .unwrap_or(input.strip_prefix("command: ").unwrap_or(input));
+        summary
+            .text
+            .push_str(&format!("{run} {}", command_purpose(command)));
+    } else if input.trim_start().starts_with("*** Begin Patch") {
+        append_patch_summary(&mut summary, input);
+    } else if matches!(label.as_str(), "Edit file" | "Write file" | "Read file") {
+        summary.text.push_str(match label.as_str() {
+            "Edit file" => "Edit File",
+            "Write file" => "Write File",
+            "Read file" => "Read File",
+            _ => &label,
+        });
+        let paths = input
+            .lines()
+            .filter_map(|line| line.strip_prefix("File: "))
+            .collect::<Vec<_>>();
+        if !paths.is_empty() {
+            append_summary_files(&mut summary, paths.into_iter());
+            if input.lines().any(|line| line.starts_with("@@")) {
+                let added = input
+                    .lines()
+                    .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+                    .count();
+                let removed = input
+                    .lines()
+                    .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+                    .count();
+                summary.text.push_str(&format!("  +{added} -{removed}"));
+            }
+        } else if let Ok(value) =
+            serde_json::from_str::<Value>(input.strip_prefix("input: ").unwrap_or(input))
+        {
+            if let Some(path) = value
+                .get("file_path")
+                .or_else(|| value.get("path"))
+                .and_then(Value::as_str)
+            {
+                append_summary_file(&mut summary, path);
+            }
+        }
+    } else if matches!(card.title.as_str(), "exec" | "functions.exec")
+        || input.contains("tools.")
+        || label.contains(" + ")
+    {
+        summary.text.push_str(&format!("{run} tools"));
+    } else {
+        summary.text.push_str(&compact_detail(&label, 64));
+        if !detail.is_empty() && !matches!(label.as_str(), "Run tool" | "apply_patch") {
+            let preview = card_preview(input);
+            if !preview.is_empty() {
+                summary.text.push_str("  ");
+                summary.text.push_str(&preview);
+            }
+        }
     }
+    if let Some(lines) = reported_output_lines(detail).filter(|lines| *lines > 0) {
+        summary.text.push_str(&format!(
+            " - {lines} output {}",
+            if lines == 1 { "line" } else { "lines" }
+        ));
+    }
+    summary
+}
+
+fn append_summary_file(summary: &mut CardSummary, path: &str) {
+    if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
+        return;
+    }
+    let basename = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    if basename.is_empty() {
+        return;
+    }
+    summary.text.push(' ');
+    let start = summary.text.chars().count();
+    let label = if basename.chars().count() > 64 {
+        format!(
+            "{}...{}",
+            basename.chars().take(30).collect::<String>(),
+            basename
+                .chars()
+                .skip(basename.chars().count() - 31)
+                .collect::<String>()
+        )
+    } else {
+        basename.to_owned()
+    };
+    summary.text.push_str(&label);
+    summary
+        .files
+        .push((start..summary.text.chars().count(), path.to_owned()));
+}
+
+fn append_summary_files<'a>(summary: &mut CardSummary, paths: impl Iterator<Item = &'a str>) {
+    let mut known = Vec::new();
+    for path in paths {
+        if !path.is_empty()
+            && path.len() <= 4096
+            && !path.chars().any(char::is_control)
+            && !path.rsplit(['/', '\\']).next().unwrap_or("").is_empty()
+            && !known.contains(&path)
+        {
+            known.push(path);
+        }
+    }
+    for path in known.iter().take(2) {
+        append_summary_file(summary, path);
+    }
+    if known.len() > 2 {
+        let remaining = known.len() - 2;
+        summary.text.push_str(&format!(
+            " + {remaining} more {}",
+            if remaining == 1 { "file" } else { "files" }
+        ));
+    }
+}
+
+fn append_patch_summary(summary: &mut CardSummary, patch: &str) {
+    summary.text.push_str("Edit File");
+    if patch.len() > 256 * 1024 || patch.lines().next() != Some("*** Begin Patch") {
+        return;
+    }
+    let mut paths = Vec::new();
+    for line in patch.lines() {
+        if let Some(path) = line
+            .strip_prefix("*** Update File: ")
+            .or_else(|| line.strip_prefix("*** Add File: "))
+            .or_else(|| line.strip_prefix("*** Delete File: "))
+        {
+            paths.push(path);
+        } else if let Some(path) = line.strip_prefix("*** Move to: ") {
+            if let Some(previous) = paths.last_mut() {
+                *previous = path;
+            }
+        }
+    }
+    append_summary_files(summary, paths.into_iter());
+}
+
+/// Only complete literal host statement batches qualify; no expressions are evaluated.
+fn literal_wrapper_calls(input: &str) -> Option<Vec<(String, Value)>> {
+    if input.len() > 256 * 1024 {
+        return None;
+    }
+    let mut rest = input.trim();
+    if rest.starts_with("// @exec:") {
+        rest = rest.split_once('\n')?.1.trim_start();
+    }
+    let mut calls = Vec::new();
+    while !rest.is_empty() {
+        if calls.len() >= 8 {
+            return None;
+        }
+        let statement = rest.strip_prefix("text(await tools.")?;
+        let end = statement.find('(')?;
+        let name = &statement[..end];
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return None;
+        }
+        let argument = &statement[end + 1..];
+        let (value, end) = crate::native_memory::literal_tool_argument(argument)?;
+        rest = argument
+            .get(end..)?
+            .trim_start()
+            .strip_prefix("));")?
+            .trim_start();
+        calls.push((name.into(), value));
+    }
+    (!calls.is_empty()).then_some(calls)
+}
+
+fn command_purpose(command: &str) -> &'static str {
+    let lower = command.trim().to_ascii_lowercase();
+    let lower = if lower.contains("powershell") || lower.contains("pwsh") {
+        lower
+            .find(" -command ")
+            .map(|index| &lower[index + 10..])
+            .or_else(|| lower.find(" -c ").map(|index| &lower[index + 4..]))
+            .unwrap_or(&lower)
+            .trim_matches('"')
+    } else {
+        lower.as_str()
+    };
+    if lower.contains([';', '\n', '|']) || lower.contains("&&") {
+        return "command";
+    }
+    let mut words = lower.split_whitespace();
+    let program = words.next().unwrap_or("");
+    let action = words.next().unwrap_or("");
+    let action = if matches!(program, "npm" | "pnpm" | "bun") && action == "run" {
+        words.next().unwrap_or("")
+    } else {
+        action
+    };
+    match (program, action) {
+        ("cargo" | "npm" | "pnpm" | "bun", "build") => "build",
+        ("cargo" | "npm" | "pnpm" | "bun", "test") | ("pytest", _) => "tests",
+        ("cargo", "check") | ("npm" | "pnpm" | "bun", "typecheck") => "checks",
+        ("cargo", "clippy") | ("npm" | "pnpm" | "bun", "lint") => "lint",
+        ("cargo", "fmt") | ("npm" | "pnpm" | "bun", "format") => "format",
+        ("rg" | "grep", _) => "search",
+        ("cat" | "get-content", _) => "read files",
+        ("git", "status") => "git status",
+        _ => "command",
+    }
+}
+
+fn reported_output_lines(detail: &str) -> Option<usize> {
+    let (_, output) = detail.split_once("\nOutput: ")?;
+    if output.len() > 1024 * 1024 {
+        return None;
+    }
+    fn count(value: &Value, depth: usize) -> usize {
+        if depth > 5 {
+            return 0;
+        }
+        match value {
+            Value::String(text) => {
+                if let Ok(value) = serde_json::from_str::<Value>(text) {
+                    count(&value, depth + 1)
+                } else if text.starts_with("Script completed\n")
+                    || text.starts_with("Script running with cell ID")
+                {
+                    0
+                } else {
+                    text.lines().count()
+                }
+            }
+            Value::Array(values) if values.len() <= 32 => {
+                values.iter().map(|value| count(value, depth + 1)).sum()
+            }
+            Value::Object(_) => {
+                if let Some(output) = value.get("output").or_else(|| value.get("stdout")) {
+                    output
+                        .as_str()
+                        .map_or_else(|| count(output, depth + 1), |text| text.lines().count())
+                } else {
+                    value.get("text").map_or(0, |value| count(value, depth + 1))
+                }
+            }
+            _ => 0,
+        }
+    }
+    Some(serde_json::from_str::<Value>(output).map_or_else(
+        |_| count(&Value::String(output.into()), 0),
+        |value| count(&value, 0),
+    ))
 }
 
 pub fn tool_label(name: &str) -> String {
@@ -943,6 +1272,11 @@ pub fn tool_label(name: &str) -> String {
         | "search the web" => "Search web".into(),
         "web.run" | "web__run" | "functions.web__run" => "Browse web".into(),
         "webfetch" | "fetch" => "Read web page".into(),
+        "request_user_input"
+        | "request_user_input_async"
+        | "functions.request_user_input"
+        | "functions.request_user_input_async"
+        | "askuserquestion" => "Ask questions".into(),
         "spawn_agent" => "Start agent".into(),
         "wait_agent" | "wait" => "Wait for agents".into(),
         _ => name
@@ -1077,7 +1411,7 @@ mod tests {
             status: CardStatus::Done,
         };
         let row = format_card_line(&card);
-        assert!(row.contains("cargo test -p demo"));
+        assert!(row.contains("Ran tests"));
         assert!(row.contains("2 output lines"));
         assert!(!row.contains("WindowsPowerShell"));
         assert_eq!(card.detail.as_deref(), Some(detail));
@@ -1089,6 +1423,139 @@ mod tests {
             card_preview("{\"command\":\"git status\"}\nOutput: clean"),
             "git status · 1 output line"
         );
+        let patch = "*** Begin Patch\n*** Update File: C:/fixture/src/display_backend.rs\n@@\n-before\n+after\n*** End Patch";
+        let script = format!("text(await tools.apply_patch({}));\ntext(await tools.exec_command({{cmd:\"cargo build -p fixture\",workdir:\"C:/fixture\"}}));", serde_json::to_string(patch).unwrap());
+        let output = (0..22)
+            .map(|line| format!("line-{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let detail = format!(
+            "{script}\nOutput: {}",
+            serde_json::json!([
+                {"type":"text","text":"Script completed\nWall time: 1s"},
+                {"type":"text","text":"{}"},
+                {"type":"text","text":serde_json::json!({"output":output,"exit_code":0}).to_string()}
+            ])
+        );
+        let mut composite = StreamCard {
+            id: "native-composite-call".into(),
+            title: "Edit file + Run command".into(),
+            detail: Some(detail.clone()),
+            status: CardStatus::Done,
+        };
+        let summary = compact_card_summary(&composite);
+        assert_eq!(
+            summary.text,
+            "│ ✓ Edit File display_backend.rs + Ran build - 22 output lines"
+        );
+        assert_eq!(summary.files.len(), 1);
+        let (range, target) = &summary.files[0];
+        assert_eq!(
+            summary
+                .text
+                .chars()
+                .skip(range.start)
+                .take(range.len())
+                .collect::<String>(),
+            "display_backend.rs"
+        );
+        assert_eq!(target, "C:/fixture/src/display_backend.rs");
+        assert_eq!(composite.detail.as_deref(), Some(detail.as_str()));
+        assert_eq!(composite.id, "native-composite-call");
+        composite.status = CardStatus::Running;
+        assert!(compact_card_summary(&composite)
+            .text
+            .contains("+ Run build"));
+        composite.detail = Some(format!("if (dynamic) {{ {script} }}"));
+        let fallback = compact_card_summary(&composite);
+        assert_eq!(fallback.text, "│ ◉ Run tools");
+        assert!(fallback.files.is_empty());
+        composite.detail = Some("text(await tools.exec_command({cmd:dynamic}));".into());
+        assert_eq!(compact_card_summary(&composite).text, "│ ◉ Run tools");
+        composite.detail = Some(
+            "// text(await tools.apply_patch(\"*** Begin Patch\\n*** Update File: fake.rs\"));"
+                .into(),
+        );
+        assert!(compact_card_summary(&composite).files.is_empty());
+        assert!(!compact_card_summary(&composite).text.contains("fake.rs"));
+        let unicode = StreamCard {
+            id: "unicode-path".into(),
+            title: "Read".into(),
+            detail: Some(serde_json::json!({"file_path":"C:/fixture/雪.rs"}).to_string()),
+            status: CardStatus::Done,
+        };
+        let summary = compact_card_summary(&unicode);
+        assert_eq!(summary.files[0].1, "C:/fixture/雪.rs");
+        assert_eq!(
+            summary
+                .text
+                .chars()
+                .skip(summary.files[0].0.start)
+                .take(summary.files[0].0.len())
+                .collect::<String>(),
+            "雪.rs"
+        );
+        let commands = "text(await tools.exec_command({cmd:\"cargo build\"}));\n".repeat(7);
+        let batch = StreamCard {
+            id: "bounded-batch".into(),
+            title: "exec".into(),
+            detail: Some(commands.clone()),
+            status: CardStatus::Done,
+        };
+        let summary = compact_card_summary(&batch);
+        assert_eq!(summary.text.matches("Ran build").count(), 3);
+        assert!(summary.text.ends_with(" + 4 more tools"));
+        assert_eq!(batch.detail.as_deref(), Some(commands.as_str()));
+        let dynamic_tail = StreamCard {
+            detail: Some(format!(
+                "{commands}text(await tools.exec_command({{cmd:dynamic}}));"
+            )),
+            ..batch.clone()
+        };
+        assert_eq!(
+            compact_card_summary(&dynamic_tail).text,
+            "│ ✓ Ran tools",
+            "hidden calls are validated too"
+        );
+        let names = (0..6)
+            .map(|index| format!("src/{}雪{index}.rs", "long".repeat(20)))
+            .collect::<Vec<_>>();
+        let patch = format!(
+            "*** Begin Patch\n{}\n*** End Patch",
+            names
+                .iter()
+                .map(|path| format!("*** Update File: {path}\n@@\n-before\n+after"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let edit = StreamCard {
+            id: "bounded-files".into(),
+            title: "apply_patch".into(),
+            detail: Some(patch.clone()),
+            status: CardStatus::Done,
+        };
+        let summary = compact_card_summary(&edit);
+        assert_eq!(summary.files.len(), 2);
+        assert!(summary.text.ends_with(" + 4 more files"));
+        for (index, (range, target)) in summary.files.iter().enumerate() {
+            assert_eq!(target, &names[index]);
+            assert!(range.len() <= 64);
+            assert!(summary
+                .text
+                .chars()
+                .skip(range.start)
+                .take(range.len())
+                .collect::<String>()
+                .contains("..."));
+        }
+        assert_eq!(edit.detail.as_deref(), Some(patch.as_str()));
+        let unknown = StreamCard {
+            id: "long-name".into(),
+            title: "native-tool-".repeat(100),
+            detail: None,
+            status: CardStatus::Done,
+        };
+        assert!(compact_card_summary(&unknown).text.chars().count() <= 68);
     }
 
     // Synthetic fixtures following codex-rs/exec/src/exec_events.rs CollabToolCall.
@@ -1404,7 +1871,7 @@ mod tests {
         assert_eq!(card.title, "Edit");
         let row = format_card_line(card);
         assert!(row.contains("+1 -1"), "{row}");
-        assert!(row.contains("src/"), "{row}");
+        assert!(row.contains("雪.rs"), "{row}");
         for expected in ["src/雪.rs", "old line", "new line", "@@ -1 +1 @@"] {
             assert!(detail.contains(expected), "missing {expected}: {detail}");
         }
@@ -1419,7 +1886,7 @@ mod tests {
                 status: CardStatus::Running,
             },
         );
-        assert!(format_card_line(&edits[0]).contains("src/parser.rs  +1 -2"));
+        assert!(format_card_line(&edits[0]).contains("parser.rs  +1 -2"));
         let rendered = edits[0].detail.as_deref().unwrap();
         assert!(rendered.contains("-one\n-two\n+three"));
         assert!(rendered.contains(&input));

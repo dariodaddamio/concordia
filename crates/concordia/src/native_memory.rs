@@ -562,7 +562,7 @@ pub fn control_checkpoint(
 
 /// Successful native patch inputs from fresh turns only. Exec's public progress stream omits
 /// patch bodies, so edit rendering uses this same account/home/session-verified source reader.
-fn literal_tool_argument(input: &str) -> Option<(Value, usize)> {
+pub(crate) fn literal_tool_argument(input: &str) -> Option<(Value, usize)> {
     // Normalize only unquoted identifier keys in a static JSON-like literal. Never
     // evaluate JavaScript, expressions, templates, comments, or computed properties.
     let mut at = 0;

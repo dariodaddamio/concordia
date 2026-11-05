@@ -15,6 +15,12 @@ or downloads the update, saves the draft and queued messages, and restarts on th
 build. Other tabs keep running their existing build. Esc closes the preview without
 updating; while installation is running, Esc cancels it.
 
+Release downloads are cached by SHA-256 and rechecked against fresh release checksums before
+reuse. The installer and updater prune a bounded number of verified, owned obsolete artifacts,
+retaining the selected release and one rollback. Active Windows executables and unknown files
+are preserved. Installing identical bytes avoids another executable swap. Source installations
+use Cargo's existing freshness checks to reuse build work.
+
 While this tab's chat or background workers are active, or file edits remain unsaved, the action
 strip turns yellow and says installation is blocked. Finish/cancel work and save or close edited files, then press Enter
 again. Enter does not cancel a task or queue an update for later. New chat/worker sends

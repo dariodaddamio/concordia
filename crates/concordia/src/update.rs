@@ -4,6 +4,7 @@
 use anyhow::{bail, Context, Result};
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +13,52 @@ use std::time::{Duration, Instant};
 
 /// The one file name `concordia` resolves to on PATH. It is always the newest installed build.
 pub const PRIMARY_SLOT: &str = "concordia.exe";
+
+/// Hash bytes, rather than trusting an executable's name, size or reported version.
+pub(crate) fn file_sha256(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut bytes = [0_u8; 65536];
+    loop {
+        let count = file.read(&mut bytes)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&bytes[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+pub(crate) fn regular_owned_file(path: &Path, root: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    let linked = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    let linked = {
+        use std::os::windows::fs::MetadataExt;
+        linked || metadata.file_attributes() & 0x400 != 0
+    };
+    metadata.is_file()
+        && !linked
+        && fs::canonicalize(path)
+            .ok()
+            .is_some_and(|path| path.parent() == Some(root))
+}
+
+pub(crate) fn resolved_directory(path: &Path) -> Option<PathBuf> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    let linked = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    let linked = {
+        use std::os::windows::fs::MetadataExt;
+        linked || metadata.file_attributes() & 0x400 != 0
+    };
+    (metadata.is_dir() && !linked)
+        .then(|| fs::canonicalize(path).ok())
+        .flatten()
+}
 
 #[derive(Debug, Clone)]
 pub struct UpdateResult {
@@ -486,7 +533,7 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
             "already up to date ({current})"
         ))),
         crate::release::Check::Available(rel) => {
-            ctl.say(&format!("downloading {}", rel.tag));
+            ctl.say(&format!("Preparing {} update", rel.tag));
             crate::release::install_release(&cfg, &rel, current, &fetch)
                 .map(UpdateOutcome::Installed)
         }
@@ -719,6 +766,7 @@ pub fn check_for_update(cwd: &Path) -> Result<UpdatePreview> {
 }
 
 fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
+    cleanup_obsolete_installs();
     install_channel()?;
     if let Some(root) = source_root(cwd) {
         return source_preview(&root, ctl);
@@ -868,8 +916,17 @@ pub fn install_binary(built: &Path) -> Result<PathBuf> {
     let bin_dir = install_bin_dir();
     fs::create_dir_all(&bin_dir).with_context(|| format!("mkdir {}", bin_dir.display()))?;
     let dest = bin_dir.join(PRIMARY_SLOT);
-
-    swap_in(built, &dest, built_len, &expected_version)?;
+    let digest = file_sha256(built)?;
+    let same_bytes = resolved_directory(&bin_dir).is_some_and(|root| {
+        regular_owned_file(&dest, &root)
+            && fs::metadata(&dest)
+                .ok()
+                .is_some_and(|m| m.len() == built_len)
+            && file_sha256(&dest).ok().as_deref() == Some(digest.as_str())
+    });
+    if !same_bytes {
+        swap_in(built, &dest, built_len, &expected_version, &digest)?;
+    }
     sweep_leftovers(&bin_dir);
     persist_concordia_exe_env(&dest);
     Ok(dest)
@@ -903,7 +960,13 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// Replace `dest` with a copy of `built`, tolerating `dest` being a running executable.
-fn swap_in(built: &Path, dest: &Path, built_len: u64, expected_version: &str) -> Result<()> {
+fn swap_in(
+    built: &Path,
+    dest: &Path,
+    built_len: u64,
+    expected_version: &str,
+    expected_hash: &str,
+) -> Result<()> {
     let dir = dest.parent().context("install path has no parent")?;
     let tag = unique_tag();
     let staged = dir.join(format!("{PRIMARY_SLOT}.new-{tag}"));
@@ -916,7 +979,9 @@ fn swap_in(built: &Path, dest: &Path, built_len: u64, expected_version: &str) ->
         bail!("copy to {} was incomplete", staged.display());
     }
 
-    if !verify_binary(&staged).is_ok_and(|version| version == expected_version) {
+    if !verify_binary(&staged).is_ok_and(|version| version == expected_version)
+        || file_sha256(&staged).ok().as_deref() != Some(expected_hash)
+    {
         let _ = fs::remove_file(&staged);
         bail!("staged executable changed version or failed verification; existing install kept");
     }
@@ -935,34 +1000,92 @@ fn swap_in(built: &Path, dest: &Path, built_len: u64, expected_version: &str) ->
         let _ = fs::remove_file(&staged);
         bail!("cannot install {}: {e}", dest.display());
     }
+    if had_old {
+        let _ = record_swap_artifact(&aside);
+    }
     Ok(())
 }
 
-/// Delete files left by earlier swaps. A moved-aside exe that a pane is still running cannot be
-/// deleted yet; it is simply retried on the next install. A staged copy is only removed once it
-/// is clearly abandoned, so a concurrent install is never disturbed.
+fn record_swap_artifact(path: &Path) -> Result<()> {
+    use std::io::Write;
+    let record = serde_json::json!({"owner":"concordia-install-artifact-v1", "sha256":file_sha256(path)?, "bytes":fs::metadata(path)?.len()});
+    let receipt = path.with_file_name(format!(
+        "{}.receipt.json",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(receipt)?;
+    output.write_all(serde_json::to_string(&record)?.as_bytes())?;
+    output.sync_all()?;
+    Ok(())
+}
+
+/// Clean only receipt-owned swap files, retaining the latest rollback and live Windows images.
+/// Unknown files, links and in-progress copies are never removed by a name prefix alone.
 fn sweep_leftovers(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
+    let Some(root) = resolved_directory(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let abandoned = if name.starts_with(&format!("{PRIMARY_SLOT}.old-")) {
-            true
-        } else if name.starts_with(&format!("{PRIMARY_SLOT}.new-")) {
-            entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > std::time::Duration::from_secs(600))
-        } else {
-            false
-        };
-        if abandoned {
-            let _ = fs::remove_file(entry.path());
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+    let current = env::current_exe()
+        .ok()
+        .and_then(|path| fs::canonicalize(path).ok());
+    let active = fs::read_to_string(root.join("current"))
+        .ok()
+        .and_then(|path| fs::canonicalize(path.trim()).ok());
+    let mut artifacts = entries
+        .take(64)
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !regular_owned_file(&path, &root) {
+                return None;
+            }
+            let name = entry.file_name();
+            let (pid, nanos) = name
+                .to_str()?
+                .strip_prefix("concordia.exe.old-")?
+                .split_once('-')?;
+            if pid.parse::<u32>().is_err() {
+                return None;
+            }
+            let order = nanos.parse::<u128>().ok()?;
+            let receipt = path.with_file_name(format!("{}.receipt.json", name.to_string_lossy()));
+            if !regular_owned_file(&receipt, &root) || fs::metadata(&receipt).ok()?.len() > 4096 {
+                return None;
+            }
+            let record: serde_json::Value =
+                serde_json::from_slice(&fs::read(&receipt).ok()?).ok()?;
+            if record["owner"] != "concordia-install-artifact-v1"
+                || record["bytes"].as_u64()? != entry.metadata().ok()?.len()
+            {
+                return None;
+            }
+            Some((order, path, receipt, record["sha256"].as_str()?.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by_key(|a| std::cmp::Reverse(a.0));
+    for (_, path, receipt, hash) in artifacts.into_iter().skip(1).take(4) {
+        if current.as_ref() == Some(&path)
+            || active.as_ref() == Some(&path)
+            || file_sha256(&path).ok().as_deref() != Some(hash.as_str())
+        {
+            continue;
+        }
+        if fs::remove_file(&path).is_ok() {
+            let _ = fs::remove_file(receipt);
         }
     }
+}
+
+/// May also be called after a later startup, when older Windows images have exited.
+pub fn cleanup_obsolete_installs() {
+    #[cfg(not(test))]
+    sweep_leftovers(&install_bin_dir());
 }
 
 /// `concordia install`: put *this* executable where `concordia` on PATH finds it, make sure that directory is
@@ -1586,6 +1709,26 @@ mod tests {
     #[test]
     fn source_checkout_identity_is_read_from_text_files() {
         let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let unknown = bin.join("concordia.exe.old-1-0");
+        fs::write(&unknown, b"unowned").unwrap();
+        for order in 1..=4 {
+            let old = bin.join(format!("concordia.exe.old-1-{order}"));
+            fs::write(&old, b"owned fixture bytes").unwrap();
+            record_swap_artifact(&old).unwrap();
+        }
+        let active = bin.join("concordia.exe.old-1-1");
+        fs::write(bin.join("current"), active.to_string_lossy().as_bytes()).unwrap();
+        sweep_leftovers(&bin);
+        assert!(unknown.is_file());
+        assert!(active.is_file(), "current pointer target is retained");
+        assert!(
+            bin.join("concordia.exe.old-1-4").is_file(),
+            "newest rollback is retained"
+        );
+        assert!(!bin.join("concordia.exe.old-1-2").exists());
+        assert!(!bin.join("concordia.exe.old-1-3.receipt.json").exists());
         let crate_dir = dir.path().join("crates/concordia/src");
         fs::create_dir_all(&crate_dir).unwrap();
         fs::write(

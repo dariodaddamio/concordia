@@ -30,6 +30,9 @@ fn is_diff(text: &str) -> bool {
 /// Inline style over part of one line of a block: `(line, start, end, style)`, chars within the line.
 pub type LineRun = (usize, usize, usize, Style);
 
+/// Character range in a plain heading and its exact provider-reported file target.
+pub type HeaderFile = (std::ops::Range<usize>, String);
+
 /// One logical chunk of transcript (a message, a card line, …) before wrapping.
 pub struct Block<'a> {
     pub identity: Option<usize>,
@@ -42,6 +45,7 @@ pub struct Block<'a> {
     pub linkify: bool,
     /// Extra inline styles per line (plain blocks only), e.g. the coloured `/usage` block.
     pub runs: &'a [LineRun],
+    pub header_files: &'a [HeaderFile],
 }
 
 #[derive(Clone)]
@@ -85,6 +89,7 @@ struct BlockKey {
     linkify: bool,
     diagram_revision: Option<u64>,
     runs: Vec<LineRun>,
+    header_files: Vec<HeaderFile>,
 }
 
 impl BlockKey {
@@ -99,6 +104,7 @@ impl BlockKey {
             linkify: b.linkify,
             diagram_revision: None,
             runs: b.runs.to_vec(),
+            header_files: b.header_files.to_vec(),
         }
     }
 
@@ -114,6 +120,7 @@ impl BlockKey {
             && self.gutter == b.gutter
             && self.text == b.text
             && self.runs == b.runs
+            && self.header_files == b.header_files
     }
 }
 
@@ -552,6 +559,32 @@ fn wrap_block(
                 links.push((*a, *b, candidate));
             }
         }
+        if !b.markdown && source_offset == 0 {
+            for (range, target) in b.header_files {
+                let (Some(&start), Some(&end)) = (offsets.get(range.start), offsets.get(range.end))
+                else {
+                    continue;
+                };
+                if start >= end || end > chars.len() {
+                    continue;
+                }
+                let Some(mut candidate) = crate::file_links::explicit_reference(target) else {
+                    continue;
+                };
+                candidate.display = chars[start..end].iter().collect();
+                let byte = |index| {
+                    ml.text
+                        .char_indices()
+                        .nth(index)
+                        .map_or(ml.text.len(), |(i, _)| i)
+                };
+                candidate.range = byte(start)..byte(end);
+                // Structured file paths are exact; they must not use the Markdown docs fallback.
+                candidate.markdown = false;
+                links.retain(|(a, z, _)| !(*a < end && start < *z));
+                links.push((start, end, candidate));
+            }
+        }
         let first_w = width.saturating_sub(gw + ml.indent).max(1);
         let rest_w = width.saturating_sub(gw + ml.indent + ml.hang).max(1);
         for (i, (s, e)) in wrap_ranges_hang(&chars, first_w, rest_w)
@@ -630,6 +663,7 @@ mod tests {
             markdown: false,
             linkify: true,
             runs: &[],
+            header_files: &[],
         }
     }
 
@@ -950,6 +984,7 @@ mod tests {
             markdown: false,
             linkify: true,
             runs: &[],
+            header_files: &[],
         };
         v.rebuild(&[a], 40, 10);
         let red = Style::default().fg(ratatui::style::Color::Red);
@@ -962,9 +997,33 @@ mod tests {
             markdown: false,
             linkify: true,
             runs: &[],
+            header_files: &[],
         };
         v.rebuild(&[b], 40, 10);
         assert_eq!(v.rows[0].style, red);
+        let text = "Read File shared.rs\nshared.rs";
+        for target in ["one/shared.rs", "two/shared.rs"] {
+            let files = [(10..19, target.to_owned())];
+            let mut block = blk("", text);
+            block.header_files = &files;
+            v.rebuild(&[block], 40, 10);
+            assert_eq!(v.rows[0].links.len(), 1);
+            assert_eq!(
+                v.rows[0].links[0].2.target, target,
+                "file metadata invalidates cached headings"
+            );
+            assert!(
+                !v.rows[0].links[0].2.markdown,
+                "structured paths stay exact"
+            );
+            assert!(
+                v.rows[1]
+                    .links
+                    .iter()
+                    .all(|(_, _, link)| link.target != target),
+                "heading links never leak into output"
+            );
+        }
     }
 
     fn md<'a>(gutter: &'a str, text: &'a str) -> Block<'a> {
@@ -1110,6 +1169,7 @@ mod diagram_cache_tests {
                     markdown: true,
                     linkify: false,
                     runs: &[],
+                    header_files: &[],
                 })
                 .collect();
             view.rebuild(&blocks, 90, 40);
@@ -1147,6 +1207,7 @@ mod diagram_cache_tests {
                 markdown: true,
                 linkify: false,
                 runs: &[],
+                header_files: &[],
             })
             .collect();
         view.rebuild(&blocks, 90, 40);

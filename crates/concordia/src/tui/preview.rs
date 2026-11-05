@@ -49,6 +49,7 @@ pub(super) fn run(path: &Path) -> Result<()> {
                     text: &text,
                     markdown: true,
                     runs: &[],
+                    header_files: &[],
                 }],
                 parts[1].width.max(1) as usize,
                 parts[1].height as usize,

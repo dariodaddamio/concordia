@@ -1,5 +1,17 @@
 # Changelog
 
+### Fixed (`2026-11-04p`)
+
+- Tool summaries show filenames, readable command purposes and output counts instead of wrapper
+  JavaScript. Shortened filenames retain their exact clickable targets and full expanded output.
+- Multi-question choice bundles remain selectable despite explanatory text and progress notes,
+  with clear question progress and mouse/keyboard selection across the whole form.
+- The enlarged image preview has the shared top-right X close control.
+- While a turn runs, Enter explains the next action; a second deliberate Enter interrupts and
+  sends the follow-up after the old turn settles. Editing or changing turns resets confirmation.
+- Updates reuse checksum-verified downloads, avoid replacing identical installed bytes and prune
+  bounded owned obsolete artifacts while preserving current/running versions and a rollback.
+
 ### Fixed (`2026-11-04o`)
 
 - Held arrows and navigation/deletion keys repeat normally, including Ctrl/Shift movement.

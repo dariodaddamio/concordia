@@ -10,6 +10,8 @@ $installer = Join-Path $PSScriptRoot 'install.ps1'
 $assetZip = 'concordia-x86_64-pc-windows-msvc.zip'
 $work = Join-Path ([IO.Path]::GetTempPath()) ('concordia-test-install-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
+$savedLocalAppData = $env:LOCALAPPDATA
+$env:LOCALAPPDATA = Join-Path $work 'local-app-data'
 
 $failures = @()
 function Ok([string]$m) { Write-Host "OK   $m" }
@@ -88,6 +90,7 @@ $base = "http://127.0.0.1:$Port"
 while ($true) {
     $ctx = $listener.GetContext()
     $path = $ctx.Request.Url.AbsolutePath
+    [IO.File]::AppendAllText((Join-Path (Split-Path $HappyPath) 'requests.txt'), "$path`n")
     $bytes = $null
     if ($path -eq '/healthz') { $bytes = [Text.Encoding]::UTF8.GetBytes('ok') }
     elseif ($path -like '/repos/test-owner/*/releases*') {
@@ -168,8 +171,52 @@ Write-Output ("SESSION_COMMAND=" + (Get-Command concordia.exe).Source)
     Check ((Get-FileHash (Join-Path $dir7 'concordia.exe')).Hash -eq (Get-FileHash $releaseExe).Hash) "installed executable matches exact downloaded bytes"
     Check ([IO.File]::ReadAllText((Join-Path $dir7 'channel')).Trim() -eq 'release') "public installs select release updates even after old source installs"
     Check ([Environment]::GetEnvironmentVariable('Path', 'User') -eq $userPath) "isolated install leaves the real user PATH unchanged"
+
+    $cacheRoot = Join-Path $env:LOCALAPPDATA 'concordia\cache\releases'
+    $happyHash = (Get-FileHash -LiteralPath $happyZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    $cachedZip = Join-Path $cacheRoot ($happyHash + '.zip')
+    Check ((Test-Path -LiteralPath $cachedZip) -and (Test-Path -LiteralPath ($cachedZip + '.receipt.json'))) 'verified release is retained with an ownership receipt'
+    $requestsPath = Join-Path $work 'requests.txt'
+    $beforeZip = @([IO.File]::ReadAllLines($requestsPath) | Where-Object { $_ -eq '/dl/happy' }).Count
+    $beforeSha = @([IO.File]::ReadAllLines($requestsPath) | Where-Object { $_ -eq '/dl/happy.sha256' }).Count
+    $r = Invoke-Installer @('-Repo', 'test-owner/happy', '-ApiBase', $base, '-Dir', $dir7, '-NoLaunch')
+    $after = [IO.File]::ReadAllLines($requestsPath)
+    Check ($r.Code -eq 0 -and $r.Out -match 'Reusing SHA-256 verified cached' -and @($after | Where-Object { $_ -eq '/dl/happy' }).Count -eq $beforeZip) 'repeat installation rehashes and reuses cached bytes without downloading the zip'
+    Check (@($after | Where-Object { $_ -eq '/dl/happy.sha256' }).Count -eq ($beforeSha + 1)) 'cache reuse still fetches the current release checksum'
+
+    [IO.File]::WriteAllText($cachedZip, 'corrupt synthetic cache')
+    $r = Invoke-Installer @('-Repo', 'test-owner/happy', '-ApiBase', $base, '-Dir', $dir7, '-NoLaunch')
+    $after = [IO.File]::ReadAllLines($requestsPath)
+    Check ($r.Code -eq 0 -and $r.Out -notmatch 'Reusing SHA-256 verified cached' -and @($after | Where-Object { $_ -eq '/dl/happy' }).Count -eq ($beforeZip + 1)) 'corrupt cache is refused and freshly verified download installs successfully'
+    Check ([IO.File]::ReadAllText($cachedZip) -eq 'corrupt synthetic cache') 'corrupt cache files are never overwritten'
+    [IO.File]::WriteAllBytes($cachedZip, [IO.File]::ReadAllBytes($happyZip))
+    $receiptPath = $cachedZip + '.receipt.json'
+    $receiptBytes = [IO.File]::ReadAllBytes($receiptPath)
+    [IO.File]::WriteAllText($receiptPath, '{"owner":"someone-else"}')
+    $r = Invoke-Installer @('-Repo', 'test-owner/happy', '-ApiBase', $base, '-Dir', $dir7, '-NoLaunch')
+    Check ($r.Code -eq 0 -and $r.Out -notmatch 'Reusing SHA-256 verified cached' -and [IO.File]::ReadAllText($receiptPath) -eq '{"owner":"someone-else"}') 'unowned receipts cannot authorize reuse and are preserved'
+    [IO.File]::WriteAllBytes($receiptPath, $receiptBytes)
+
+    $oldOwned = @()
+    for ($i = 0; $i -lt 5; $i++) {
+        $payload = [Text.Encoding]::ASCII.GetBytes("owned-cache-$i")
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = ([BitConverter]::ToString($sha.ComputeHash($payload)) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+        $path = Join-Path $cacheRoot ($digest + '.zip')
+        [IO.File]::WriteAllBytes($path, $payload)
+        @{ owner = 'concordia-release-cache-v1'; sha256 = $digest; bytes = $payload.Length } | ConvertTo-Json -Compress | Set-Content -LiteralPath ($path + '.receipt.json') -Encoding ascii
+        [IO.File]::SetLastWriteTimeUtc($path, [DateTime]::UtcNow.AddDays(-10).AddMinutes($i))
+        $oldOwned += $path
+    }
+    $unknown = Join-Path $cacheRoot 'unknown-user-file.zip'
+    [IO.File]::WriteAllText($unknown, 'preserve me')
+    $r = Invoke-Installer @('-Repo', 'test-owner/happy', '-ApiBase', $base, '-Dir', $dir7, '-NoLaunch')
+    $remaining = @($oldOwned | Where-Object { Test-Path -LiteralPath $_ })
+    Check ($r.Code -eq 0 -and $remaining.Count -eq 1 -and $remaining[0] -eq $oldOwned[4] -and (Test-Path -LiteralPath $cachedZip)) 'bounded cleanup keeps the selected release and latest verified rollback'
+    Check ((Test-Path -LiteralPath $unknown) -and @($oldOwned[0..3] | Where-Object { Test-Path -LiteralPath ($_ + '.receipt.json') }).Count -eq 0) 'cleanup removes only obsolete owned artifact pairs and preserves unknown files'
 }
 finally {
+    $env:LOCALAPPDATA = $savedLocalAppData
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if ([IO.Path]::GetFullPath($work).StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {

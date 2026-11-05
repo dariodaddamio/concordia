@@ -431,12 +431,156 @@ pub fn check(cfg: &Config, current: &str, fetch: &dyn Fetcher) -> Result<Check> 
     }
 }
 
-/// Removes the scratch directory on drop, including on error paths.
+const CACHE_OWNER: &str = "concordia-release-cache-v1";
+
+#[cfg(not(test))]
+fn cache_root() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|root| root.join("concordia/cache/releases"))
+}
+
+#[cfg(test)]
+fn cache_root() -> Option<PathBuf> {
+    None
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+fn receipt_path(path: &Path) -> PathBuf {
+    path.with_file_name(format!(
+        "{}.receipt.json",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+fn cached_release(root: &Path, expected: &str) -> Option<PathBuf> {
+    if !valid_digest(expected) {
+        return None;
+    }
+    let root = crate::update::resolved_directory(root)?;
+    let path = root.join(format!("{expected}.exe"));
+    (crate::update::regular_owned_file(&path, &root)
+        && fs::metadata(&path)
+            .ok()
+            .is_some_and(|m| (MIN_EXE_BYTES..=MAX_EXE_BYTES).contains(&m.len()))
+        && crate::update::file_sha256(&path).ok().as_deref() == Some(expected))
+    .then_some(path)
+}
+
+fn cache_receipt(root: &Path, path: &Path) -> Option<Value> {
+    let receipt = receipt_path(path);
+    if !crate::update::regular_owned_file(&receipt, root)
+        || fs::metadata(&receipt).ok()?.len() > 4096
+    {
+        return None;
+    }
+    let record: Value = serde_json::from_slice(&fs::read(receipt).ok()?).ok()?;
+    let digest = record.get("sha256")?.as_str()?;
+    (record.get("owner")?.as_str()? == CACHE_OWNER
+        && valid_digest(digest)
+        && path.file_name()?.to_str()? == format!("{digest}.exe")
+        && record.get("bytes")?.as_u64()? == fs::metadata(path).ok()?.len())
+    .then_some(record)
+}
+
+/// At most 64 directory entries and four exact verified owned pairs per update.
+fn prune_release_cache(root: &Path, selected: &Path) {
+    let Some(root) = crate::update::resolved_directory(root) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+    let mut artifacts = entries
+        .take(64)
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()? != "exe" || !crate::update::regular_owned_file(&path, &root) {
+                return None;
+            }
+            let record = cache_receipt(&root, &path)?;
+            Some((entry.metadata().ok()?.modified().ok()?, path, record))
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by_key(|a| std::cmp::Reverse(a.0));
+    let previous = artifacts
+        .iter()
+        .find(|(_, path, _)| path != selected)
+        .map(|(_, path, _)| path.clone());
+    for (_, path, record) in artifacts
+        .into_iter()
+        .filter(|(_, path, _)| path != selected && Some(path) != previous.as_ref())
+        .take(4)
+    {
+        if crate::update::file_sha256(&path).ok().as_deref() != record["sha256"].as_str() {
+            continue;
+        }
+        if fs::remove_file(&path).is_ok() {
+            let _ = fs::remove_file(receipt_path(&path));
+        }
+    }
+}
+
+fn remember_release(root: &Path, source: &Path, expected: &str) -> Result<PathBuf> {
+    anyhow::ensure!(valid_digest(expected), "invalid release cache digest");
+    fs::create_dir_all(root)?;
+    let root = crate::update::resolved_directory(root)
+        .context("release cache is not a regular directory")?;
+    let target = root.join(format!("{expected}.exe"));
+    if cached_release(&root, expected).is_none() {
+        // Never overwrite an unrelated or corrupt file which merely has the expected name.
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)?;
+        std::io::copy(&mut fs::File::open(source)?, &mut output)?;
+        output.sync_all()?;
+        anyhow::ensure!(
+            crate::update::file_sha256(&target)? == expected,
+            "release cache copy changed bytes"
+        );
+    }
+    let record = serde_json::json!({"owner":CACHE_OWNER,"sha256":expected,"bytes":fs::metadata(&target)?.len()});
+    let receipt = receipt_path(&target);
+    if !receipt.exists() {
+        use std::io::Write;
+        let mut out = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(receipt)?;
+        out.write_all(serde_json::to_string(&record)?.as_bytes())?;
+        out.sync_all()?;
+    }
+    prune_release_cache(&root, &target);
+    Ok(target)
+}
+
+/// Removes only the unique scratch directory created by this operation.
 struct Scratch(PathBuf);
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let Some(root) = crate::update::resolved_directory(&self.0) else {
+            return;
+        };
+        let Ok(temp) = fs::canonicalize(std::env::temp_dir()) else {
+            return;
+        };
+        if root.parent() != Some(temp.as_path()) {
+            return;
+        }
+        for name in [SUMS_NAME, "concordia.exe"] {
+            let file = root.join(name);
+            if crate::update::regular_owned_file(&file, &root) {
+                let _ = fs::remove_file(file);
+            }
+        }
+        let _ = fs::remove_dir(root);
     }
 }
 
@@ -450,13 +594,9 @@ pub fn install_release(
     cfg.check_url(&rel.asset_url)?;
     cfg.check_url(&rel.sums_url)?;
 
-    let scratch = Scratch(std::env::temp_dir().join(format!(
-        "concordia-update-{}-{}",
-        std::process::id(),
-        rel.version
-    )));
-    let _ = fs::remove_dir_all(&scratch.0);
-    fs::create_dir_all(&scratch.0).context("create scratch dir")?;
+    let scratch =
+        Scratch(std::env::temp_dir().join(format!("concordia-update-{}", uuid::Uuid::new_v4())));
+    fs::create_dir(&scratch.0).context("create scratch dir")?;
 
     let sums_path = scratch.0.join(SUMS_NAME);
     fetch.download(&rel.sums_url, &sums_path)?;
@@ -464,8 +604,16 @@ pub fn install_release(
     let expected = parse_sums(&sums, ASSET_NAME)
         .with_context(|| format!("{SUMS_NAME} has no valid entry for {ASSET_NAME}"))?;
 
-    let exe = scratch.0.join("concordia.exe");
-    fetch.download(&rel.asset_url, &exe)?;
+    let cache = cache_root();
+    let reused = cache
+        .as_deref()
+        .and_then(|root| cached_release(root, &expected));
+    let exe = reused
+        .clone()
+        .unwrap_or_else(|| scratch.0.join("concordia.exe"));
+    if reused.is_none() {
+        fetch.download(&rel.asset_url, &exe)?;
+    }
     let len = fs::metadata(&exe).context("downloaded file missing")?.len();
     if !(MIN_EXE_BYTES..=MAX_EXE_BYTES).contains(&len) {
         bail!("downloaded file is {len} bytes, which is not a plausible concordia binary");
@@ -485,11 +633,20 @@ pub fn install_release(
         );
     }
 
+    // Preserve a successfully verified download even if installation is interrupted or locked.
+    if let Some(root) = cache.as_deref() {
+        let _ = remember_release(root, &exe, &expected);
+    }
+
     let install_path = install_binary(&exe)?;
     Ok(UpdateResult {
         install_path,
         built_from: exe,
-        log_tail: String::new(),
+        log_tail: if reused.is_some() {
+            "Reused a SHA-256 verified download.".into()
+        } else {
+            String::new()
+        },
         summary: format!("updated {current} -> {}", rel.version),
     })
 }
@@ -697,6 +854,37 @@ mod tests {
             parse_sums(&format!("{}  {ASSET_NAME}", "A".repeat(64)), ASSET_NAME).unwrap(),
             "a".repeat(64)
         );
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let source = dir.path().join("source.exe");
+        let mut selected = PathBuf::new();
+        for byte in 0..4 {
+            fs::write(&source, vec![byte; MIN_EXE_BYTES as usize]).unwrap();
+            let digest = crate::update::file_sha256(&source).unwrap();
+            selected = remember_release(&cache, &source, &digest).unwrap();
+            assert_eq!(cached_release(&cache, &digest), Some(selected.clone()));
+            assert_eq!(
+                remember_release(&cache, &source, &digest).unwrap(),
+                selected
+            );
+        }
+        let remaining = fs::read_dir(&cache)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "exe"))
+            .count();
+        assert_eq!(remaining, 2, "selected and one rollback are retained");
+        let digest = crate::update::file_sha256(&selected).unwrap();
+        fs::write(&selected, b"corrupt").unwrap();
+        assert!(cached_release(&cache, &digest).is_none());
+        assert!(remember_release(&cache, &source, &digest).is_err());
+        assert_eq!(
+            fs::read(&selected).unwrap(),
+            b"corrupt",
+            "never clobber unknown bytes"
+        );
+        assert!(cached_release(&cache, "../outside").is_none());
     }
 
     struct FeedOnly(String);
