@@ -14,6 +14,13 @@ Defender checks pass on the exact installed artifact: 23,390,720 bytes, SHA-256
 An identical reinstall preserves those bytes and creates no additional backup. Receipts remain
 under ignored `target/native-window-proof/`; no Actions run, public release or signing occurred.
 
+The exact-build isolated native-window controller also passes the reported two-question form
+(mouse selection, then keyboard selection, one combined reply), image-viewer X closure, the
+compact composite heading and basename navigation to the authoritative full path despite a
+same-name decoy. Only the fixture provider receives these synthetic replies. Screenshots and
+receipts are in ignored `target/native-window-proof/build-p-native-2/`. A controller's initial
+click matched transcript prose instead of the option panel; its corrected attempt passes.
+
 The owner approved up to 18 additional model requests using subscription allowances only.
 None has been dispatched in this batch. Read-only native metadata reports the selected Codex
 account's weekly allowance exhausted; an explicitly identified alternative account awaits owner
