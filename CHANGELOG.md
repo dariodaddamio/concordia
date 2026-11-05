@@ -2,9 +2,10 @@
 
 ## 2026-11-05f
 
-- `/model` works before the first chat. It offers the provider default, models cached by any
-  account for the same provider, and the Claude CLI aliases. You can also type any model id and
-  choose `use <id>`. The empty "no cached models" dead end is gone.
+- `/model` works before the first chat. It lists current Claude models by name (Opus 5.5,
+  Sonnet 5.5, Haiku 5.5, Fable 5.1), the `latest` aliases, and models cached by any account
+  for the same provider. You can also type any model id and choose `use <id>`. The empty "no cached
+  models" dead end is gone.
 
 ## 2026-11-05d
 

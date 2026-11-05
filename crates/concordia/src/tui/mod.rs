@@ -2307,25 +2307,33 @@ impl App {
                 }
             }
         }
-        let mut models: Vec<(String, &str)> = Vec::new();
-        let mut add = |m: String, detail: &'static str| {
-            if !m.is_empty() && !models.iter().any(|(x, _)| *x == m) {
-                models.push((m, detail));
+        // (id, shown name, detail). The detail repeats the id so typing either one filters.
+        let mut models: Vec<(String, String, String)> = Vec::new();
+        let mut add = |id: &str, name: &str, detail: &str| {
+            if !id.is_empty() && !models.iter().any(|(x, _, _)| x == id) {
+                models.push((id.to_string(), name.to_string(), detail.to_string()));
             }
         };
         let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
+        if self.provider == ProviderKind::Claude {
+            // Current Claude models by name, then the CLI aliases that always track the newest.
+            for (id, name) in CLAUDE_MODELS {
+                add(id, name, id);
+            }
+            for (alias, family) in [("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")] {
+                add(
+                    alias,
+                    &format!("latest {family}"),
+                    &format!("{alias} · Claude CLI alias"),
+                );
+            }
+        }
         if let Some(m) = chosen {
-            add(m.to_string(), "current");
+            add(m, m, "current");
         }
         for h in &homes {
             for m in list_models(self.provider, h) {
-                add(m, "cached by the provider CLI");
-            }
-        }
-        if self.provider == ProviderKind::Claude {
-            // Aliases the Claude CLI documents for `--model`; it resolves them to current models.
-            for alias in ["opus", "sonnet", "haiku"] {
-                add(alias.to_string(), "Claude CLI alias");
+                add(&m, &m, &format!("{m} · cached by the provider CLI"));
             }
         }
         let current = |m: &str| chosen == Some(m);
@@ -2337,10 +2345,10 @@ impl App {
             ),
             detail: "the CLI picks its own default model".into(),
         }];
-        rows.extend(models.iter().map(|(m, detail)| PickerRow {
-            id: format!("model:{m}"),
-            label: format!("{m}{}", if current(m) { " · current" } else { "" }),
-            detail: (*detail).into(),
+        rows.extend(models.into_iter().map(|(id, name, detail)| PickerRow {
+            label: format!("{name}{}", if current(&id) { " · current" } else { "" }),
+            id: format!("model:{id}"),
+            detail,
         }));
         let selected = rows
             .iter()
@@ -3930,6 +3938,15 @@ fn select_account(state_root: &Path, account_id: &str) -> anyhow::Result<()> {
 }
 
 const TYPED_MODEL_PREFIX: &str = "typed-model:";
+
+/// Current Claude model ids and display names, listed by name in `/model`. Update when a new
+/// family ships; the `opus` / `sonnet` / `haiku` aliases keep working in between.
+const CLAUDE_MODELS: [(&str, &str); 4] = [
+    ("claude-opus-5-5", "Opus 5.5"),
+    ("claude-sonnet-5-5", "Sonnet 5.5"),
+    ("claude-haiku-5-5", "Haiku 5.5"),
+    ("claude-fable-5-1", "Fable 5.1"),
+];
 
 /// Typed model ids become one `--model` argv entry; keep them to model-id characters.
 fn valid_model_id(model: &str) -> bool {
