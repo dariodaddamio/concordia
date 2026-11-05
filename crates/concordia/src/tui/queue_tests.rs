@@ -775,16 +775,104 @@ fn a_corrupt_draft_file_does_not_crash_launch() {
 
 #[test]
 fn sent_prompts_persist_for_up_after_a_restart_but_slash_commands_do_not() {
+    use crate::native_memory::{references as native, Binding};
+    use serde_json::json;
+    use std::io::Write;
+
     let mut h = H::new(80, 24);
+    let home = h.root().join("queue-history-home");
+    let sessions = home.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    let source = sessions.join(format!("{session}.jsonl"));
+    std::fs::write(
+        &source,
+        format!(
+            "{}\n",
+            json!({"type":"session_meta","payload":{"id":session}})
+        ),
+    )
+    .unwrap();
+    crate::store::upsert_stored_account(
+        h.root(),
+        crate::store::StoredAccount {
+            id: "queue-history-fixture".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(home.to_string_lossy().into_owned()),
+            label: "Synthetic queue history".into(),
+            created_at: "0".into(),
+        },
+    )
+    .unwrap();
+    h.app.provider = ProviderKind::Codex;
+    h.app.account = "queue-history-fixture".into();
+    let binding = Binding::new(
+        ProviderKind::Codex,
+        "queue-history-fixture",
+        &home,
+        &session,
+    )
+    .unwrap();
     h.send("/queue");
-    h.send("first prompt");
-    h.finish_ok();
-    h.send("second\nprompt");
-    h.finish_ok();
-    let file = std::fs::read_to_string(h.root().join("history.jsonl")).unwrap();
+    for prompt in ["first prompt", "second\nprompt"] {
+        let scope = native::begin_scope(h.root(), &binding).unwrap();
+        h.send(prompt);
+        let owner = crate::provider::interaction::InteractionOwner {
+            conversation_id: h.app.deleg.d.conversation_id().into(),
+            workspace: h.app.cwd.clone(),
+            execution_cwd: h.app.cwd.clone(),
+            run_id: h.app.continuation.run_id().into(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Codex,
+            account: "queue-history-fixture".into(),
+            home: Some(home.clone()),
+        };
+        h.app.reference_journal.begin(&owner, prompt, true);
+        let prefix = "FIXTURE_TIME\n";
+        let full = format!("{prefix}{prompt}");
+        let mut native_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&source)
+            .unwrap();
+        writeln!(native_file, "{}", json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":full}]}})).unwrap();
+        writeln!(native_file, "{}", json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}})).unwrap();
+        drop(native_file);
+        h.app
+            .reference_journal
+            .sender()
+            .send(reference_journal::Started {
+                run: owner.run_id.clone(),
+                scope: Ok(Some(native::seal_scope(h.root(), &scope).unwrap())),
+                original: Some(prefix.len()..full.len()),
+                input: full,
+            })
+            .unwrap();
+        h.finish(TurnOutcome {
+            exit_code: Some(0),
+            text: "ok".into(),
+            session_id: Some(session.clone()),
+            ..Default::default()
+        });
+        h.app.reference_journal.settle_for_test(&mut h.app.history);
+        h.app.poll_reference_journal();
+    }
+    let file = std::fs::read_to_string(h.root().join("history.refs.jsonl")).unwrap();
     assert_eq!(file.lines().count(), 2, "{file}");
-    assert!(!file.contains("/queue"));
+    assert!(!file.contains("/queue") && !file.contains("first prompt") && !file.contains("second"));
+    assert!(
+        !h.root().join("history.jsonl").exists(),
+        "new history stores references, not duplicate legacy prompt bodies"
+    );
     h.relaunch();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.app.history.len() != 2 {
+        h.app.poll_reference_journal();
+        assert!(
+            Instant::now() < deadline,
+            "verified native history did not hydrate after restart"
+        );
+        std::thread::yield_now();
+    }
     h.press(KeyCode::Up);
     assert_eq!(h.app.editor.text(), "second\nprompt");
     h.press(KeyCode::Up);

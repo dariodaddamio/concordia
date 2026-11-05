@@ -318,6 +318,17 @@ fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
     Ok(events)
 }
 
+/// Convert one explicitly selected legacy message using the existing referenced-record format.
+pub(crate) fn referenced_legacy_line(
+    root: &Path,
+    event: &ThreadEvent,
+    source: Reference,
+) -> std::result::Result<String, String> {
+    let record =
+        references::Record::referenced(root, event, source).map_err(|error| error.to_string())?;
+    serde_json::to_string(&record).map_err(|error| error.to_string())
+}
+
 fn thread_ids(state_root: &Path) -> Vec<String> {
     let mut ids = Vec::new();
     let Ok(rd) = std::fs::read_dir(threads_dir(state_root)) else {
@@ -808,6 +819,7 @@ pub fn run_cli(state_root: &Path, args: &[String]) -> std::result::Result<String
         return Err((usage, 2));
     };
     match sub.as_str() {
+        "migrate" => crate::legacy_migration::run_cli(state_root, &args[1..]),
         "list" => {
             let json = args[1..].iter().any(|a| a == "--json");
             if let Some(bad) = args[1..].iter().find(|a| *a != "--json") {
@@ -1171,6 +1183,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(a.log_path()).unwrap(), legacy);
         delete(dir.path(), "aaaa1111").unwrap();
         assert_eq!(list(dir.path()).len(), 1);
+        crate::legacy_migration::fixture_proof();
     }
 
     #[test]

@@ -138,18 +138,34 @@ fn an_update_replaces_concordia_exe_even_while_an_older_concordia_is_running_fro
         "the old pane must keep running"
     );
 
-    // Once the old pane exits, the next install sweeps its leftover file.
+    // Once the old pane exits, an identical reinstall keeps one verified rollback.
     running.kill().unwrap();
     running.wait().unwrap();
     install_binary(Path::new(CONCORDIA)).unwrap();
     assert!(
-        eventually(|| !sb
+        eventually(|| sb
             .names()
             .iter()
-            .any(|n| n.starts_with("concordia.exe.old-"))),
-        "leftover not swept: {:?}",
+            .filter(|n| n.starts_with("concordia.exe.old-") && !n.ends_with(".receipt.json"))
+            .count()
+            == 1),
+        "expected one retained rollback: {:?}",
         sb.names()
     );
+    let rollback = sb
+        .names()
+        .into_iter()
+        .find(|n| n.starts_with("concordia.exe.old-") && !n.ends_with(".receipt.json"))
+        .unwrap();
+    assert_eq!(
+        std::fs::read(sb.dir.path().join(&rollback)).unwrap(),
+        std::fs::read(FAKE).unwrap()
+    );
+    assert!(sb
+        .dir
+        .path()
+        .join(format!("{rollback}.receipt.json"))
+        .is_file());
 }
 
 #[test]

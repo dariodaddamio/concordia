@@ -152,7 +152,7 @@ fn initialize(params: &Value) -> Value {
 /// Tool list. Descriptions and schemas are kept terse: they cost tokens on every turn.
 fn tool_list() -> Value {
     let id = json!({"type":"string","description":"thread id or unique prefix"});
-    json!([
+    let mut tools = json!([
         {
             "name": "threads",
             "description": "List recent Concordia chat threads (id, age, title).",
@@ -220,7 +220,27 @@ fn tool_list() -> Value {
                 "id":{"type":"string"},"offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
             }}
         }
-    ])
+    ]);
+    for tool in tools
+        .as_array_mut()
+        .expect("static tool catalog is an array")
+    {
+        if matches!(
+            tool["name"].as_str(),
+            Some(
+                "threads"
+                    | "thread_map"
+                    | "thread_read"
+                    | "native_read"
+                    | "usage"
+                    | "memory"
+                    | "integrations"
+            )
+        ) {
+            tool["annotations"] = json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false});
+        }
+    }
+    tools
 }
 
 fn text_result(text: String, is_error: bool) -> Value {
@@ -993,6 +1013,28 @@ mod tests {
         for t in tools {
             assert!(t["description"].as_str().unwrap().len() < 120);
             assert_eq!(t["inputSchema"]["type"], "object");
+            if matches!(
+                t["name"].as_str(),
+                Some(
+                    "threads"
+                        | "thread_map"
+                        | "thread_read"
+                        | "native_read"
+                        | "usage"
+                        | "memory"
+                        | "integrations"
+                )
+            ) {
+                assert_eq!(
+                    t["annotations"],
+                    json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})
+                );
+            } else if matches!(t["name"].as_str(), Some("goals" | "delegate")) {
+                assert_ne!(
+                    t["annotations"]["readOnlyHint"], true,
+                    "proposal tools must not claim source-read-only behavior"
+                );
+            }
         }
         let (catalog, error) = tool(d.path(), "integrations", json!({}));
         assert!(!error, "{catalog}");

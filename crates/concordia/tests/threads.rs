@@ -119,6 +119,77 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     assert!(text(&grep).contains("#1 user"));
     let range = thread_cmd(state.path(), &["read", id, "--range", "1-1"]);
     assert_eq!(text(&range).lines().count(), 1);
+
+    // The existing CLI migrates explicitly selected legacy rows without a provider turn.
+    let home = state.path().join("migration-native-home");
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    concordia::store::upsert_stored_account(
+        state.path(),
+        concordia::store::StoredAccount {
+            id: "codex".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(home.to_string_lossy().into_owned()),
+            label: "Synthetic migration native source".into(),
+            created_at: "0".into(),
+        },
+    )
+    .unwrap();
+    let session = "00000000-0000-4000-8000-00000000007b";
+    let native = [
+        serde_json::json!({"type":"session_meta","payload":{"id":session}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"say hello"}]}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":outcome.text}]}}),
+    ];
+    std::fs::write(
+        home.join("sessions").join(format!("{session}.jsonl")),
+        native
+            .iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let binding =
+        concordia::native_memory::Binding::new(ProviderKind::Codex, "codex", &home, session)
+            .unwrap();
+    let source = concordia::native_memory::index_bound(state.path(), &binding)
+        .unwrap()
+        .id;
+    let path = concordia::threads::threads_dir(state.path()).join(format!("{id}.jsonl"));
+    let original = std::fs::read(&path).unwrap();
+    let preview = thread_cmd(
+        state.path(),
+        &["migrate", "preview", id, "--source", &source],
+    );
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_str(&text(&preview)).unwrap();
+    assert!(plan["convertible_rows"].as_u64().unwrap() >= 1);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    let plan_id = plan["plan"].as_str().unwrap();
+    let applied = thread_cmd(state.path(), &["migrate", "apply", plan_id]);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert!(text(&applied).contains("\"status\":\"applied\""));
+    let again = thread_cmd(state.path(), &["migrate", "apply", plan_id]);
+    assert!(again.status.success());
+    assert!(text(&thread_cmd(state.path(), &["read", id, "--range", "1-1"])).contains("say hello"));
+    assert_eq!(
+        std::fs::read(
+            state
+                .path()
+                .join(".ao/legacy-migrations")
+                .join(plan_id)
+                .join("original.jsonl")
+        )
+        .unwrap(),
+        original
+    );
 }
 
 #[test]

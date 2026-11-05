@@ -7,6 +7,10 @@ bounded map and shows that map with the submitted prompt. Recording is opt-in th
 `concordia mcp` serves JSON-RPC over newline-delimited stdin/stdout. It exposes `threads`,
 `thread_map`, `thread_read`, `native_read`, `usage`, `memory`, `goals`, `delegate` and `integrations`. Read tools stay local;
 `native_read` resolves revision-checked native-session pointers without transcript recording.
+Build `2026-11-05b` supplies standard read-only, non-destructive, idempotent and closed-world
+effect hints for all seven pure read tools. Derived local index caches may be populated; original sources and
+user work are not changed. These hints describe the tool, not an approval grant. Native prompt,
+strict-review and managed policies remain authoritative. Proposal tools are not marked read-only.
 `delegate` writes a proposal; the user must approve it in the TUI before any worker starts.
 It is available only when delegation protocol is enabled.
 

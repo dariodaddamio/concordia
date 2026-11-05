@@ -17,6 +17,7 @@ pub mod harness;
 pub mod host;
 pub mod identity;
 pub mod integration;
+pub mod legacy_migration;
 pub mod logging;
 pub mod mcp;
 pub mod native_input;

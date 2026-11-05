@@ -4,6 +4,9 @@ use super::*;
 
 const TEXT_BYTES: usize = 1024 * 1024;
 
+#[path = "native_capture.rs"]
+mod capture;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureScope {
@@ -69,31 +72,12 @@ impl Reference {
 /// The caller must have captured `native_session_id=None` BEFORE dispatch and received this
 /// exact session id from that launch. Missing history/resume never authorizes this constructor.
 pub fn fresh_scope(root: &Path, binding: &Binding) -> Result<CaptureScope, String> {
-    let (_, index) = open_bound(root, binding)?;
-    Ok(CaptureScope {
-        version: 1,
-        binding: index.binding,
-        before: None,
-        watermark: 0,
-        sealed: None,
-    })
+    capture::fresh(root, binding)
 }
 
 /// Capture before dispatch, while the exact existing session has no turn in flight.
 pub fn begin_scope(root: &Path, binding: &Binding) -> Result<CaptureScope, String> {
-    let summary = index_bound(root, binding)?;
-    let index = load(root, &summary.id)?;
-    let mut source = open_index_source(root, &index)?;
-    if index.source_len > 0 && read_at(&mut source, index.source_len - 1, 1)? != b"\n" {
-        return Err("native source has an unfinished record at the capture watermark".into());
-    }
-    Ok(CaptureScope {
-        version: 1,
-        binding: index.binding,
-        before: Some(summary.id),
-        watermark: index.source_len,
-        sealed: None,
-    })
+    capture::begin(root, binding)
 }
 
 /// Reserve an explicitly new, exact native session id BEFORE its source exists.
@@ -114,7 +98,7 @@ pub fn begin_fresh_scope(root: &Path, binding: &Binding) -> Result<CaptureScope,
         return Err("fresh native capture refuses an already existing session".into());
     }
     Ok(CaptureScope {
-        version: 1,
+        version: 2,
         binding: binding.clone(),
         before: None,
         watermark: 0,
@@ -312,6 +296,9 @@ fn capture_index(root: &Path, scope: &CaptureScope) -> Result<Summary, String> {
 
 /// Freeze a completed turn before another request may append to the same native session.
 pub fn seal_scope(root: &Path, scope: &CaptureScope) -> Result<CaptureScope, String> {
+    if scope.version == 2 {
+        return capture::seal(root, scope);
+    }
     let captured = capture_index(root, scope)?;
     Ok(CaptureScope {
         sealed: Some(captured.id),
@@ -328,6 +315,9 @@ pub fn capture_text(
 ) -> Result<Reference, String> {
     if !role_valid(role) || expected.is_empty() || expected.len() > TEXT_BYTES {
         return Err("unsupported native capture role or text budget".into());
+    }
+    if scope.version == 2 {
+        return capture::text(root, scope, role, expected);
     }
     let summary = capture_index(root, scope)?;
     let index = load(root, &summary.id)?;
@@ -511,6 +501,9 @@ pub fn capture_tool(root: &Path, scope: &CaptureScope, call_id: &str) -> Result<
     if call_id.is_empty() || call_id.len() > 256 || call_id.chars().any(char::is_control) {
         return Err("invalid native tool capture identity".into());
     }
+    if scope.version == 2 {
+        return capture::tool(root, scope, call_id);
+    }
     let summary = capture_index(root, scope)?;
     let index = load(root, &summary.id)?;
     let mut source = open_index_source(root, &index)?;
@@ -559,23 +552,30 @@ pub fn capture_tool(root: &Path, scope: &CaptureScope, call_id: &str) -> Result<
 
 /// Reconstruct only the originally verified UTF-8 segment; no stale/foreign fallback.
 pub fn hydrate_text(root: &Path, reference: &Reference) -> Result<String, String> {
-    if reference.version != 1 || reference.bytes > TEXT_BYTES || !valid_id(&reference.sha256) {
+    if !matches!(reference.version, 1 | 2)
+        || reference.bytes > TEXT_BYTES
+        || !valid_id(&reference.sha256)
+    {
         return Err("unsupported native text reference".into());
     }
-    let index = load(root, &reference.index)?;
-    if index.binding != reference.binding || index.history.is_some() {
-        return Err("native text reference binding changed".into());
-    }
-    let text = match &reference.projection {
-        Projection::PlainText if role_valid(&reference.role) => {
-            joined(root, &reference.index, &reference.messages, &reference.role)?
+    let text = if reference.version == 2 {
+        capture::hydrate(root, reference)?
+    } else {
+        let index = load(root, &reference.index)?;
+        if index.binding != reference.binding || index.history.is_some() {
+            return Err("native text reference binding changed".into());
         }
-        Projection::RawJsonRecords { call_id }
-            if reference.role == "tool" && reference.start == 0 =>
-        {
-            tool_records(root, &reference.index, &reference.messages, call_id)?
+        match &reference.projection {
+            Projection::PlainText if role_valid(&reference.role) => {
+                joined(root, &reference.index, &reference.messages, &reference.role)?
+            }
+            Projection::RawJsonRecords { call_id }
+                if reference.role == "tool" && reference.start == 0 =>
+            {
+                tool_records(root, &reference.index, &reference.messages, call_id)?
+            }
+            _ => return Err("native reference projector and role disagree".into()),
         }
-        _ => return Err("native reference projector and role disagree".into()),
     };
     match &reference.anchor {
         Some(anchor) if matches!(reference.projection, Projection::PlainText) => {
@@ -617,8 +617,29 @@ pub fn hydrate_text(root: &Path, reference: &Reference) -> Result<String, String
     Ok(projected.to_owned())
 }
 
+/// Explicit historical read intent, pinned to an existing immutable native source index.
+/// This is never a replacement for pre-dispatch/fresh-session ownership checks.
+pub fn historical_scope(root: &Path, source_index: &str) -> Result<CaptureScope, String> {
+    capture::historical_scope(root, source_index)
+}
+
+/// Convenience exact historical lookup under an explicitly supplied source binding.
+/// Use historical_scope plus capture_text when resolving multiple rows from one revision.
+pub fn capture_historical_text(
+    root: &Path,
+    binding: &Binding,
+    role: &str,
+    expected: &str,
+) -> Result<Reference, String> {
+    if !role_valid(role) || expected.is_empty() || expected.len() > TEXT_BYTES {
+        return Err("unsupported historical capture role or text budget".into());
+    }
+    capture::historical(root, binding, role, expected)
+}
+
 #[cfg(test)]
 pub(super) fn fixture_proof() {
+    capture::fixture_proof();
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, session) =

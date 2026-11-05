@@ -27,7 +27,8 @@ fn print_help() {
            concordia preview FILE          read-only Markdown preview in this terminal\n\
            concordia file-edit FILE        independent file editor (Ctrl+Q closes)\n\
            concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
-                               read recorded threads (opt-in: CONCORDIA_THREADS=1); read-only\n\
+                               read recorded threads (opt-in: CONCORDIA_THREADS=1)\n\
+           concordia thread migrate preview <thread|history> --source INDEX | apply PLAN | status PLAN\n\
            concordia mcp       stdio MCP server: threads, thread_map, thread_read, native_read, usage, delegate (docs/mcp.md)\n\
          \n\
          Slash: /use [add] /model /usage /resume /agents /trust /config /new /threads /split /update /version /copy /doctor /exit\n\

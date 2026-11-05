@@ -65,12 +65,15 @@ The following recheck does not turn documentation or static inspection into live
 
 - **Cursor context and external token usage:** the currently published ACP page documents session
   lifecycle, permissions and Cursor extensions, without a current-context/token-counter method.
-  The output-format page documents result/session/request identities and timings, without usage
-  counters. No newly documented source was found that closes either gap. General ACP capabilities
-  alone do not prove Cursor implements an optional extension. Continue reporting unknown rather
-  than deriving tokens from quotas or timing. Sources:
+  The output-format reference omits counters, but a 2026-11-05 recheck found the vendor's explicit
+  confirmation that JSON print results report per-turn `inputTokens`, `outputTokens`,
+  `cacheReadTokens` and `cacheWriteTokens`. Concordia already reads the first three in its print
+  adapter. The remaining gaps are ACP context/usage emission and qualified durable external-history
+  import; all Cursor token data must not be called unavailable. General ACP capabilities alone
+  do not prove optional emissions. Never derive tokens from quotas or timing. Sources:
   [Cursor ACP](https://cursor.com/docs/cli/acp),
   [Cursor output format](https://cursor.com/docs/cli/reference/output-format).
+  [Vendor confirmation of print counters and missing ACP emission](https://forum.cursor.com/t/cursor-agent-acp-never-reports-token-usage-over-acp-though-p-output-format-json-does/171923).
 - **Native filesystem confinement:** Windows job objects manage process groups, limits and
   termination. They do not by themselves establish a writable-path sandbox. AppContainer supplies
   file/network/credential isolation, requiring explicit grants; compatibility with the providers'

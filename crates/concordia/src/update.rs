@@ -1548,7 +1548,7 @@ mod tests {
         w("concordia.exe.new-fresh");
         w("current");
         w("notes.txt");
-        // A staged copy older than the cutoff is abandoned.
+        // Names and age alone do not establish ownership of a staged/rollback executable.
         w("concordia.exe.new-ancient");
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         fs::File::options()
@@ -1567,7 +1567,9 @@ mod tests {
             left,
             [
                 "concordia.exe",
+                "concordia.exe.new-ancient",
                 "concordia.exe.new-fresh",
+                "concordia.exe.old-1-2",
                 "current",
                 "notes.txt"
             ]

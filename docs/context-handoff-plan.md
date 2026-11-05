@@ -43,6 +43,9 @@ collected worker inputs when exact binding succeeds. Legacy logs and pending/unc
 remain preserved. Source-size/format limits can leave protected recovery payloads; see
 [the implemented boundary](native-memory.md). This plan does not authorize deleting or migrating
 existing logs, drafts or queued work automatically.
+Build 2026-11-05b implements streaming larger captures and explicit, source-bound legacy migration
+with original-byte backups. Intentional legacy/pending retention and declared finite limits remain;
+the identified capture/migration implementation gaps are closed within that supported contract.
 
 ## Decisions so far (owner, 2026-10-30)
 

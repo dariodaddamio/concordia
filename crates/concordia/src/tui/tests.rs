@@ -2186,8 +2186,15 @@ fn streamed_commentary_and_commands_keep_arrival_order_without_duplicate_final_r
     h.draw();
     let visible = h.screen();
     assert!(
-        visible.find("Checking the first file.").unwrap() < visible.find("first-check").unwrap()
+        visible.find("Checking the first file.").unwrap() < visible.find("Run command").unwrap()
     );
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.draw();
+    assert!(
+        h.screen().contains("first-check"),
+        "expanded command keeps its exact source"
+    );
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     h.app.apply_progress(card(
         "first",
         "command: first-check\nOutput: passed",
@@ -2377,7 +2384,14 @@ fn the_wait_names_what_the_model_is_doing_and_the_colour_follows_it() {
         },
     ));
     h.draw();
-    assert!(h.screen().contains("cargo test"));
+    assert!(h.screen().contains("Run tests"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.draw();
+    assert!(
+        h.screen().contains("cargo test"),
+        "expanded tool keeps its exact command"
+    );
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     assert_eq!(h.app.phase.color(), Color::Yellow);
 
     h.app.apply_progress(TurnProgress::Text("Done.".into()));

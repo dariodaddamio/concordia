@@ -54,6 +54,7 @@ struct Active {
 
 #[derive(Default)]
 struct Loaded {
+    legacy: Vec<String>,
     messages: Vec<String>,
     unavailable: usize,
 }
@@ -69,7 +70,6 @@ pub(super) struct State {
     deferred_close: Option<String>,
     durable: HashMap<String, bool>,
     load: Option<channel::Receiver<Loaded>>,
-    legacy: Vec<String>,
     added: usize,
 }
 
@@ -95,7 +95,6 @@ impl Default for State {
             deferred_close: None,
             durable: HashMap::new(),
             load: None,
-            legacy: Vec::new(),
             added: 0,
         }
     }
@@ -160,22 +159,32 @@ impl State {
         }
     }
 
-    pub fn load(&mut self, root: PathBuf, legacy: Vec<String>) {
-        self.legacy = legacy;
+    pub fn load(&mut self, root: PathBuf) {
         self.added = 0;
         let (tx, rx) = channel::channel();
         self.load = Some(rx);
         std::thread::spawn(move || {
-            let _ = tx.send(load_references(&root));
+            let legacy = super::persist::load_history_status(&root);
+            let mut loaded = load_references(&root);
+            loaded.legacy = legacy.messages;
+            loaded.unavailable += legacy.unavailable;
+            let _ = tx.send(loaded);
         });
     }
 
     pub fn poll(&mut self, history: &mut Vec<String>) -> Option<&'static str> {
         self.poll_started();
         let mut notice = None;
-        if let Some(result) = self.load.as_ref().and_then(|rx| rx.try_recv().ok()) {
+        if let Some(mut result) = self.load.as_ref().and_then(|rx| match rx.try_recv() {
+            Ok(loaded) => Some(loaded),
+            Err(channel::TryRecvError::Disconnected) => Some(Loaded {
+                unavailable: 1,
+                ..Loaded::default()
+            }),
+            Err(channel::TryRecvError::Empty) => None,
+        }) {
             self.load = None;
-            let mut merged = std::mem::take(&mut self.legacy);
+            let mut merged = result.legacy;
             for message in result.messages {
                 if merged.last() != Some(&message) {
                     merged.push(message);
@@ -190,12 +199,20 @@ impl State {
                     merged.push(message.clone());
                 }
             }
-            if merged.len() > super::HISTORY_MAX {
-                merged.drain(..merged.len() - super::HISTORY_MAX);
+            let mut bytes = merged.iter().map(String::len).sum::<usize>();
+            result.unavailable += usize::from(bytes > super::persist::HISTORY_TEXT_BYTES);
+            let mut remove = 0;
+            while remove < merged.len()
+                && (merged.len() - remove > super::HISTORY_MAX
+                    || bytes > super::persist::HISTORY_TEXT_BYTES)
+            {
+                bytes -= merged[remove].len();
+                remove += 1;
             }
+            merged.drain(..remove);
             *history = merged;
             if result.unavailable > 0 {
-                notice = Some("Some sent-history sources are unavailable; existing history and drafts were kept.");
+                notice = Some("Some sent-history entries could not be loaded; existing history and drafts were kept.");
             }
         }
         self.writes.retain(|(run, rx)| match rx.try_recv() {
@@ -249,7 +266,7 @@ impl State {
     #[cfg(test)]
     pub fn settle_for_test(&mut self, history: &mut Vec<String>) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !self.writes.is_empty() {
+        while !self.writes.is_empty() || self.load.is_some() {
             self.poll(history);
             assert!(
                 Instant::now() < deadline,
@@ -464,14 +481,8 @@ fn load_references(root: &Path) -> Loaded {
         }
     };
     let mut result = Loaded::default();
-    for entry in entries
-        .into_iter()
-        .rev()
-        .take(super::persist::HISTORY_CAP)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-    {
+    let mut bytes = 0usize;
+    for entry in entries.into_iter().rev().take(super::persist::HISTORY_CAP) {
         let text = entry
             .source
             .as_ref()
@@ -486,7 +497,13 @@ fn load_references(root: &Path) -> Loaded {
                     invalid: None,
                 };
                 if message.validate().is_ok() {
-                    result.messages.push(message.encode());
+                    let encoded = message.encode();
+                    if bytes.saturating_add(encoded.len()) > super::persist::HISTORY_TEXT_BYTES {
+                        result.unavailable += 1;
+                        break;
+                    }
+                    bytes += encoded.len();
+                    result.messages.push(encoded);
                 } else {
                     result.unavailable += 1;
                 }
@@ -494,6 +511,7 @@ fn load_references(root: &Path) -> Loaded {
             Err(_) => result.unavailable += 1,
         }
     }
+    result.messages.reverse();
     result
 }
 
