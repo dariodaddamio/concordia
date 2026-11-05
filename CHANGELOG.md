@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-05e (workspace)
+
+- Expanded `/config` into settings for appearance, display, permissions, account/model,
+  continuation, worker results and file behavior, with saved/session scope labels.
+- Added `/skills` and `/hooks` local source inventories with project/account distinctions.
+- Shortened window titles, removed the em dash and added native icon activity animation.
+
 ## 2026-11-05d
 
 - Restored the original gold Concordia portrait on Home at the owner’s request. Removed the

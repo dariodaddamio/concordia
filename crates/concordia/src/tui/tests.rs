@@ -4185,7 +4185,7 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     let mut h = Harness::new(100, 20);
     h.app.cwd = PathBuf::from("C:/work/fixture-project");
     let title = h.app.window_title();
-    assert!(title == "Concordia — fixture-project", "{title}");
+    assert!(title == "Concordia | fixture-project", "{title}");
     assert!(
         !title.contains("Codex") && !title.contains("gpt-"),
         "{title}"
@@ -4198,7 +4198,7 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     assert!(h
         .app
         .window_title()
-        .starts_with("Concordia — Fix parser · "));
+        .starts_with("Concordia | Thinking | Fix parser"));
     h.app.phase = Phase::Writing;
     assert!(h.app.window_title().contains("Writing"));
     h.app.phase = Phase::Tool("Read".into());
@@ -4211,6 +4211,9 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     // Appearance uses the normal keyboard/mouse picker and preserves a working draft.
     h.app.editor.set_text("preserved draft");
     h.app.handle_slash("/config");
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Settings);
+    assert!(!h.app.window_title().contains('—'));
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Appearance);
     assert_eq!(h.app.editor.text(), "preserved draft");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
@@ -4244,6 +4247,53 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     .unwrap()
     .into_rgba8();
     assert_eq!(portrait.as_ref(), &original);
+    // Display preferences and file actions survive rebuilding the application state.
+    appearance::save(&mut h.app, "tokens", "off");
+    appearance::save(&mut h.app, "tips", "off");
+    let reloaded = appearance::State::load(&h.app.state_root);
+    assert!(!reloaded.ui.token_line && !reloaded.ui.tips);
+    settings::choose(&mut h.app, PickerKind::FilePreferences, "preview");
+    assert_eq!(
+        crate::store::get_settings(&h.app.state_root).file_action,
+        Some(crate::file_open::FileAction::Preview)
+    );
+    // Same-named definitions keep their project/account scope; inspection executes nothing.
+    let project = h.app.state_root.join("fixture-project");
+    let home = h.app.state_root.join("fixture-provider");
+    for root in [project.join(".claude"), home.clone()] {
+        std::fs::create_dir_all(root.join("skills/review")).unwrap();
+        std::fs::write(
+            root.join("skills/review/SKILL.md"),
+            "---\nname: review\ndescription: Fixture review\n---\nDo not execute anything.",
+        )
+        .unwrap();
+        std::fs::write(root.join("settings.json"), r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"fixture-never-execute"}]}]}}"#).unwrap();
+    }
+    h.app.cwd = project;
+    h.app.home_path = Some(home);
+    h.app.provider = ProviderKind::Claude;
+    h.app.handle_slash("/skills");
+    let rows = &h.app.picker.as_ref().unwrap().rows;
+    assert!(rows.iter().any(|r| r.label == "Project · review"));
+    assert!(rows
+        .iter()
+        .any(|r| r.label == "User · selected account · review"));
+    h.app.handle_slash("/hooks");
+    let rows = &h.app.picker.as_ref().unwrap().rows;
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.label.contains("PreToolUse"))
+            .count(),
+        2
+    );
+    assert!(rows
+        .iter()
+        .all(|r| !r.detail.contains("fixture-never-execute")));
+    assert_eq!(h.app.editor.text(), "preserved draft");
+    h.app.session_ui.title =
+        Some("A deliberately long chat title with an em dash — and more words than fit".into());
+    assert!(!h.app.window_title().contains('—'));
+    assert!(h.app.window_title().chars().count() < 85);
     // An incompatible saved version is reported and never overwritten by a new selection.
     let path = h.app.state_root.join(".ao/appearance.json");
     let original = b"{\"version\":99,\"theme\":\"future\"}";
@@ -4266,12 +4316,13 @@ fn slash_completion_keeps_tab_while_the_landing_lists_are_visible() {
         h.app.landing.is_some(),
         "appearance keeps the Home destination"
     );
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Appearance);
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Settings);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(landing::visible(&h.app));
-    assert_eq!(h.app.window_title(), "Concordia — Home");
+    assert_eq!(h.app.window_title(), "Concordia | Home");
 }
 
 #[test]

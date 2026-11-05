@@ -371,6 +371,8 @@ struct Window {
     glyph_fonts: [std::collections::HashMap<String, u8>; 16],
     icons: [HICON; 2],
     icon_color: crate::config::Rgb,
+    icon_active: bool,
+    icon_frame: u8,
     cell_width: i32,
     cell_height: i32,
     surrogate: Option<u16>,
@@ -1113,7 +1115,7 @@ unsafe fn paint_glyph(
 /// Load the executable's master icon at the requested native size. The resource
 /// includes 16/32/48/256-pixel frames shared by Explorer, taskbar and titlebar.
 /// Without LR_SHARED the window owns this handle and releases it on shutdown.
-unsafe fn app_icon(size: i32) -> HICON {
+unsafe fn app_icon(size: i32, frame: Option<u8>) -> HICON {
     if let Some(portrait) = super::brand::portrait() {
         let mut pixels = image::imageops::resize(
             &*portrait,
@@ -1122,6 +1124,34 @@ unsafe fn app_icon(size: i32) -> HICON {
             image::imageops::FilterType::Lanczos3,
         );
         let color = super::theme::brand_color();
+        if let Some(frame) = frame {
+            // Native pixels, not a title glyph: a short orbit around the original mark.
+            let inset = (size / 6).max(2) as u32;
+            let inner = image::imageops::resize(
+                &pixels,
+                size as u32 - inset * 2,
+                size as u32 - inset * 2,
+                image::imageops::FilterType::Lanczos3,
+            );
+            pixels = image::RgbaImage::new(size as u32, size as u32);
+            image::imageops::overlay(&mut pixels, &inner, inset.into(), inset.into());
+            let center = (size - 1) as f32 / 2.0;
+            let radius = center - 0.8;
+            for segment in 0..12u8 {
+                let angle = f32::from(segment) * std::f32::consts::TAU / 12.0;
+                let x = (center + radius * angle.cos()).round() as u32;
+                let y = (center + radius * angle.sin()).round() as u32;
+                let behind = (frame + 12 - segment) % 12;
+                let alpha = match behind {
+                    0 => 255,
+                    1 => 200,
+                    2 => 130,
+                    3 => 75,
+                    _ => 25,
+                };
+                pixels.put_pixel(x, y, image::Rgba([255, 255, 255, alpha]));
+            }
+        }
         let mut data = vec![0u8; 40];
         let mut header = |offset: usize, value: u32| {
             data[offset..offset + 4].copy_from_slice(&value.to_le_bytes())
@@ -1167,6 +1197,28 @@ unsafe fn app_icon(size: i32) -> HICON {
     ) as HICON
 }
 
+unsafe fn refresh_icon(hwnd: HWND, window: &mut Window) {
+    let next = [
+        app_icon(32, window.icon_active.then_some(window.icon_frame)),
+        app_icon(16, window.icon_active.then_some(window.icon_frame)),
+    ];
+    for (index, icon) in next.into_iter().enumerate() {
+        if !icon.is_null() {
+            SendMessageW(
+                hwnd,
+                WM_SETICON,
+                if index == 0 { ICON_BIG } else { ICON_SMALL } as usize,
+                icon as LPARAM,
+            );
+            if !window.icons[index].is_null() {
+                DestroyIcon(window.icons[index]);
+            }
+            window.icons[index] = icon;
+        }
+    }
+    window.icon_color = super::theme::brand_color();
+}
+
 unsafe fn window_thread(
     shared: Arc<Shared>,
     events: EventSender,
@@ -1196,8 +1248,10 @@ unsafe fn window_thread(
         symbol_fonts: [null_mut(); 16],
         emoji_fonts: [null_mut(); 16],
         glyph_fonts: std::array::from_fn(|_| std::collections::HashMap::new()),
-        icons: [app_icon(32), app_icon(16)],
+        icons: [app_icon(32, None), app_icon(16, None)],
         icon_color: super::theme::brand_color(),
+        icon_active: false,
+        icon_frame: 0,
         cell_width: 9,
         cell_height: 20,
         surrogate: None,
@@ -1360,39 +1414,42 @@ unsafe extern "system" fn window_proc(
             0
         }
         UPDATE => {
-            let color = super::theme::brand_color();
-            if color != window.icon_color {
-                let next = [app_icon(32), app_icon(16)];
-                for (index, icon) in next.into_iter().enumerate() {
-                    if !icon.is_null() {
-                        SendMessageW(
-                            hwnd,
-                            WM_SETICON,
-                            if index == 0 { ICON_BIG } else { ICON_SMALL } as usize,
-                            icon as LPARAM,
-                        );
-                        if !window.icons[index].is_null() {
-                            DestroyIcon(window.icons[index]);
-                        }
-                        window.icons[index] = icon;
-                    }
-                }
-                window.icon_color = color;
+            if super::theme::brand_color() != window.icon_color {
+                refresh_icon(hwnd, window);
             }
             window.blink = true;
             InvalidateRect(hwnd, null(), 0);
             0
         }
         TITLE => {
-            let title = wide(
-                &window
-                    .shared
-                    .screen
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .title,
-            );
-            SetWindowTextW(hwnd, title.as_ptr());
+            let title = window
+                .shared
+                .screen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .title
+                .clone();
+            let parts = title.split(" | ").collect::<Vec<_>>();
+            let active = parts.len() >= 3
+                && matches!(
+                    parts[1],
+                    "Thinking"
+                        | "Writing"
+                        | "Working"
+                        | "Editing"
+                        | "Reading"
+                        | "Searching"
+                        | "Searching the web"
+                        | "Running command"
+                        | "Workers running"
+                        | "Updating"
+                );
+            if active != window.icon_active {
+                window.icon_active = active;
+                window.icon_frame = 0;
+                refresh_icon(hwnd, window);
+            }
+            SetWindowTextW(hwnd, wide(&title).as_ptr());
             0
         }
         POINTER => {
@@ -1407,6 +1464,20 @@ unsafe extern "system" fn window_proc(
             1
         }
         WM_TIMER => {
+            if window.icon_active && super::theme::motion_enabled() {
+                let mut enabled = 1i32;
+                let animated = SystemParametersInfoW(
+                    SPI_GETCLIENTAREAANIMATION,
+                    0,
+                    (&mut enabled as *mut i32).cast(),
+                    0,
+                ) == 0
+                    || enabled != 0;
+                if animated {
+                    window.icon_frame = (window.icon_frame + 1) % 12;
+                    refresh_icon(hwnd, window);
+                }
+            }
             if window.focused
                 && window
                     .shared

@@ -6,8 +6,8 @@ changes" is the separate metadata catalog: a catalog entry identifies a reported
 native provenance; it does not by itself establish that a historical line diff was supplied.
 Unavailable or ambiguous patches remain explicit rather than being reconstructed from current files.
 
-`/config` opens live appearance settings: Default, Dark, Light, Terminal and Opifex Studio,
-custom running-window icon colors. Choices persist separately from `config.toml`.
+`/config` opens the settings hub; Appearance offers Default, Dark, Light, Terminal and Opifex Studio,
+and custom running-window icon colors. Choices persist separately from `config.toml`.
 Themes also use `[ui] theme` and optional background/foreground/accent overrides in `config.toml`;
 [configuration](config.md) lists the presets and examples. Native checks/status marks are drawn as
 simple strokes, avoiding font-dependent checkmark substitution. Real source Unicode is preserved.
@@ -83,6 +83,9 @@ subdued Esc text. Build 05c simplifies titles to `Concordia — Task · Thinking
 on the landing page, short active phases and no redundant ready/account/model fields. Account and
 model remain in the header. Build 05d restores the original static gold Home portrait and removes
 the 05c 3D renderer and animation wakeups. Opifex Studio retains its palette.
+Build 05e uses compact ASCII-separated titles (`Concordia | Thinking | Short chat name`) and a
+native pixel orbit around the titlebar icon during active work. Idle windows show the original
+mark. Icon animation honors the saved preference and Windows reduced-motion setting.
 The native renderer fits symbol/emoji fallback fonts inside their allocated cells. The same
 Concordia mark appears in the titlebar, taskbar and Windows executable resource.
 

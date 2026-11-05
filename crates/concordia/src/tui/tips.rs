@@ -44,8 +44,8 @@ pub fn launch_seed() -> u64 {
 }
 
 /// `ui.tips` in config.toml; `CONCORDIA_TIPS=0` turns it off regardless.
-pub fn ui_tips_enabled() -> bool {
-    std::env::var("CONCORDIA_TIPS").map_or(true, |v| v.trim() != "0") && crate::config::ui_tips()
+pub fn enabled(preference: bool) -> bool {
+    preference && std::env::var("CONCORDIA_TIPS").map_or(true, |v| v.trim() != "0")
 }
 
 #[cfg(test)]
