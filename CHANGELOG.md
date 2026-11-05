@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-05f
+
+- `/model` works before the first chat. It offers the provider default, models cached by any
+  account for the same provider, and the Claude CLI aliases. You can also type any model id and
+  choose `use <id>`. The empty "no cached models" dead end is gone.
+
 ## 2026-11-05d
 
 - Restored the original gold Concordia portrait on Home at the owner’s request. Removed the

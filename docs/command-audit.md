@@ -43,7 +43,7 @@ remain accepted only as migration routes and print where their behavior moved.
 | Command | Accepted forms / aliases | Actual route |
 | --- | --- | --- |
 | `/use` | Switch, add or remove accounts; the usage-handoff toggle and continuation picker live here. |
-| `/model` | Model picker. |
+| `/model` | Model picker: provider default, cached models from any same-provider account, Claude CLI aliases, or any typed model id. |
 | `/mode` | Permission mode picker/setter, including former trust arguments. |
 | `/usage` | All-account usage screen; `r` refreshes. |
 | `/new` | Starts a fresh chat. |
