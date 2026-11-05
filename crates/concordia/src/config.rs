@@ -53,6 +53,8 @@ pub struct Ui {
     pub background: Option<Rgb>,
     pub foreground: Option<Rgb>,
     pub accent: Option<Rgb>,
+    pub brand_color: Option<Rgb>,
+    pub motion: bool,
 }
 
 pub type Rgb = [u8; 3];
@@ -64,11 +66,13 @@ pub enum Theme {
     Dark,
     Light,
     Terminal,
+    Opifex,
 }
 
 impl Theme {
     pub(crate) fn colors(self) -> [Rgb; 3] {
         match self {
+            Self::Opifex => [[5, 5, 6], [216, 208, 192], [255, 176, 0]],
             Self::Light => [[247, 247, 244], [36, 40, 47], [28, 86, 180]],
             Self::Dark => [[11, 13, 17], [232, 234, 240], [107, 180, 245]],
             Self::Default | Self::Terminal => [[20, 23, 31], [224, 226, 235], [58, 150, 221]],
@@ -110,6 +114,8 @@ impl Default for Config {
                 background: None,
                 foreground: None,
                 accent: None,
+                brand_color: None,
+                motion: true,
             },
             threads: Threads {
                 enabled: false,
@@ -274,11 +280,14 @@ impl Config {
                         Some("dark") => cfg.ui.theme = Theme::Dark,
                         Some("light") => cfg.ui.theme = Theme::Light,
                         Some("terminal") => cfg.ui.theme = Theme::Terminal,
-                        _ => warnings.push("ui.theme must be default, dark, light or terminal; using default".into()),
+                        Some("opifex") | Some("opifex studio") => cfg.ui.theme = Theme::Opifex,
+                        _ => warnings.push("ui.theme must be default, dark, light, terminal or opifex; using default".into()),
                     },
                     "ui.background" => set_color(v, &full, &mut cfg.ui.background, &mut warnings),
                     "ui.foreground" => set_color(v, &full, &mut cfg.ui.foreground, &mut warnings),
                     "ui.accent" => set_color(v, &full, &mut cfg.ui.accent, &mut warnings),
+                    "ui.brand_color" => set_color(v, &full, &mut cfg.ui.brand_color, &mut warnings),
+                    "ui.motion" => set_bool(v, &full, &mut cfg.ui.motion, &mut warnings),
                     "threads.enabled" => {
                         set_bool(v, &full, &mut cfg.threads.enabled, &mut warnings)
                     }
@@ -557,6 +566,8 @@ theme = 'light'
 background = '#fbf9f1'
 foreground = '#232729'
 accent = '#1b5a9e'
+brand_color = '#c9a5ff'
+motion = false
 [threads]
 enabled = true
 map_chars = 800
@@ -572,11 +583,14 @@ max_workers = 2
         assert_eq!(c.ui.background, Some([251, 249, 241]));
         assert_eq!(c.ui.foreground, Some([35, 39, 41]));
         assert_eq!(c.ui.accent, Some([27, 90, 158]));
+        assert_eq!(c.ui.brand_color, Some([201, 165, 255]));
+        assert!(!c.ui.motion);
         for (name, theme) in [
             ("default", Theme::Default),
             ("dark", Theme::Dark),
             ("light", Theme::Light),
             ("terminal", Theme::Terminal),
+            ("opifex", Theme::Opifex),
         ] {
             let (themed, warnings) = w(&format!("[ui]\ntheme='{name}'\n"));
             assert!(warnings.is_empty(), "{warnings:?}");

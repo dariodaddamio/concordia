@@ -6,7 +6,9 @@ changes" is the separate metadata catalog: a catalog entry identifies a reported
 native provenance; it does not by itself establish that a historical line diff was supplied.
 Unavailable or ambiguous patches remain explicit rather than being reconstructed from current files.
 
-Themes use `[ui] theme` and optional background/foreground/accent overrides in `config.toml`;
+`/config` opens live appearance settings: Default, Dark, Light, Terminal and Opifex Studio,
+custom Concordia sculpture/icon colors, and motion. Choices persist separately from `config.toml`.
+Themes also use `[ui] theme` and optional background/foreground/accent overrides in `config.toml`;
 [configuration](config.md) lists the presets and examples. Native checks/status marks are drawn as
 simple strokes, avoiding font-dependent checkmark substitution. Real source Unicode is preserved.
 The compact Home portrait and application icon use [Concordia artwork](brand-direction.md).
@@ -77,7 +79,10 @@ Image previews in the Windows window use original decoded pixels with smooth sca
 mode retains cell-based previews. Preview size and rendering do not alter provider attachments.
 
 Build `2026-11-04j` uses responsive mixed-attachment cards with top-edge close controls,
-subdued Esc text, and window titles ordered as application, account/model, actual phase and task.
+subdued Esc text. Build 05c simplifies titles to `Concordia — Task · Thinking`, with Home shown
+on the landing page, short active phases and no redundant ready/account/model fields. Account and
+model remain in the header. Home's local 3D bust rotates at a bounded cadence; Opifex Studio confines
+its scan/glitch treatment to the sculpture, with motion-off and Windows animation preference support.
 The native renderer fits symbol/emoji fallback fonts inside their allocated cells. The same
 Concordia mark appears in the titlebar, taskbar and Windows executable resource.
 

@@ -317,6 +317,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("/use", "switch, add or remove accounts"),
     ("/model", "choose the model"),
+    ("/config", "appearance: themes, Concordia color and motion"),
     ("/mode", "how much the agent may do without asking"),
     ("/usage", "limits for every account"),
     (
@@ -361,7 +362,7 @@ pub fn format_config_help() -> String {
         "Claude  claude login   (optional CLAUDE_CONFIG_DIR)".into(),
         "Cursor  agent login   (extra accounts: an concordia-api-key file in the account home)".into(),
         String::new(),
-        "in concordia  /use · /model · /mode · /usage · /new · /resume · /delegate · /harness · /open · /copy · /doctor · /update".into(),
+        "in concordia  /use · /model · /config · /mode · /usage · /new · /resume · /delegate · /harness · /open · /copy · /doctor · /update".into(),
     ]
     .join("\n")
 }

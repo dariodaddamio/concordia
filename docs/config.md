@@ -124,10 +124,12 @@ clamped). Nothing here is ever fatal.
 
 ```toml
 [ui]
-theme = "default"       # default | dark | light | terminal
+theme = "default"       # default | dark | light | terminal | opifex
 # background = "#101318" # optional #RRGGBB override
 # foreground = "#e5e7eb"
 # accent = "#78b9ef"
+# brand_color = "#FFB000" # Concordia sculpture and running-window icon
+motion = true           # sculpture rotation; Windows reduced-motion setting is respected
 token_line = true        # per-turn "in 12.3k out 1.4k 8.2s" under each reply
 tips = true              # a rotating tip while idle
 persist_history = true   # native-source recall references; legacy prompt history remains readable
@@ -149,7 +151,9 @@ max_workers = 3          # 1..=3
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `ui.theme` | `"default"` | `default`, `dark`, `light` or `terminal`; read on launch |
+| `ui.theme` | `"default"` | `default`, `dark`, `light`, `terminal` or `opifex`; also selectable live in `/config` |
+| `ui.brand_color` | Amber `#FFB000` | Optional sculpture and running-window icon color |
+| `ui.motion` | `true` | Rotation and decorative glitch; Windows reduced-motion setting takes precedence |
 | `ui.background` | Theme default | Optional quoted `#RRGGBB` background, including empty rows and native client margins |
 | `ui.foreground` | Theme default | Optional quoted `#RRGGBB` main text color |
 | `ui.accent` | Theme default | Optional quoted `#RRGGBB` links, focus and navigation color |
@@ -166,6 +170,26 @@ max_workers = 3          # 1..=3
 | `delegation.max_workers` | `3` | 0 becomes 1, above 3 becomes 3 |
 
 ### Themes and custom colors
+
+Use **`/config`** to open Appearance. Select Theme, Concordia color, or Motion with the mouse or
+arrow keys and Enter. Changes apply immediately and survive reopening. The color menu includes
+presets and a custom `#RRGGBB` input; it changes the Home sculpture and running-window icon.
+The installed executable's Explorer icon remains the bundled original.
+
+Direct commands are `/config theme opifex`, `/config color #78BFFF` and `/config motion off`.
+**Opifex Studio** uses the Studio host's near-black `#050506`, amber `#FFB000` and bone `#D8D0C0`
+palette. Its restrained scan texture and occasional signal tear affect only the decorative model;
+chat, tools, diffs and attachments remain clear. The Home bust uses a bundled CC0 classical mesh
+adapted with an olive crown, rendered with a depth buffer in Rust; no webview, network asset fetch
+or additional runtime is required. [Provenance](../crates/concordia/assets/concordia-model-CREDITS.md).
+It rotates only on Home, caches the current frame, and stops when motion is disabled. Small windows
+omit it to preserve chat space.
+
+UI choices are saved atomically under `<state>/.ao/appearance.json`; Concordia never rewrites
+your `config.toml`. Saved appearance choices override corresponding config defaults. Choosing a
+theme preset replaces configured background/foreground/accent overrides; changing just the
+Concordia color preserves the chosen UI palette. **Use config defaults** clears appearance choices
+and restores the hand-edited defaults. Unsupported saved versions are reported and preserved.
 
 `default` preserves the existing appearance and terminal host colors. `dark` supplies an explicit
 near-black background; `light` supplies a warm light background with dark text. The same palette

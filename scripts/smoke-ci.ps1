@@ -15,11 +15,12 @@ Ok "binary: $Exe"
 # 1. Reviewed distribution budget: native Mermaid, syntax assets, image support and memory
 # orchestration increased the release from the original thin UI. See docs/release-blockers.md.
 # 05b adds streaming capture and revision-bound migration. The measured increase from 05a
-# is 340,992 bytes; a 23.5 MiB ceiling keeps the allowance bounded.
+# is 340,992 bytes. 05c adds a 170,220-byte bundled mesh and native appearance controls;
+# a 23.8 MiB ceiling keeps the allowance bounded without adding a runtime dependency.
 # Compare exact bytes so rounding cannot let an oversized artifact through.
 $sizeBytes = (Get-Item $Exe).Length
 $mb = [math]::Round($sizeBytes / 1MB, 2)
-if ($sizeBytes -gt 23.5MB) { Fail "binary is $mb MiB (budget 23.5 MiB)" } else { Ok "size $mb MiB (budget 23.5 MiB)" }
+if ($sizeBytes -gt 23.8MB) { Fail "binary is $mb MiB (budget 23.8 MiB)" } else { Ok "size $mb MiB (budget 23.8 MiB)" }
 
 # 2. --version: stamp format, and read-only (must not create or change the install pointer).
 $pointer = Join-Path $env:LOCALAPPDATA "concordia\bin\current"

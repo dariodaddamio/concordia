@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-05c
+
+- `/config` now opens live appearance settings with immediate, persistent theme, Concordia color
+  and motion controls; it no longer redirects to diagnostics. Hand-edited config files stay intact.
+- Added Opifex Studio's near-black/amber/bone palette and a rotating, depth-tested classical
+  Concordia bust with local scan/glitch treatment. Motion-off and Windows animation preferences
+  are respected. The compact CC0 source and deterministic mesh conversion have recorded provenance.
+- Concordia color presets/custom hex values tint both the sculpture and running-window icon.
+- Simplified window/tab titles to application, task and short active phase, with Home labeled clearly.
+
 ### Changed (`2026-11-05b`)
 
 - Long native turns use separate streaming, body-free capture manifests. Large attachment records

@@ -2,7 +2,7 @@
 use super::*;
 use std::sync::{Arc, OnceLock};
 
-fn portrait() -> Option<Arc<image::RgbaImage>> {
+pub(super) fn portrait() -> Option<Arc<image::RgbaImage>> {
     static PORTRAIT: OnceLock<Option<Arc<image::RgbaImage>>> = OnceLock::new();
     PORTRAIT
         .get_or_init(|| {
@@ -20,8 +20,27 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) -> Rect {
     if area.width < 76 || area.height < 24 {
         return area;
     }
-    let Some(pixels) = portrait() else {
-        return area;
+    let motion = app.appearance.ui.motion;
+    #[cfg(windows)]
+    let motion = motion && super::native_window::motion_allowed();
+    let frame = if motion {
+        (app.appearance.clock.elapsed().as_millis() / 80 % 180) as u64
+    } else {
+        0
+    };
+    let pixels = {
+        let mut cached = app.appearance.frame.borrow_mut();
+        if cached.as_ref().is_none_or(|(key, _)| *key != frame) {
+            *cached = Some((
+                frame,
+                Arc::new(brand_model::render(
+                    frame,
+                    app.appearance.color(),
+                    app.appearance.ui.theme == crate::config::Theme::Opifex && motion,
+                )),
+            ));
+        }
+        cached.as_ref().unwrap().1.clone()
     };
     let hero = Rect::new(area.x + 1, area.y, 14, 6);
     raster::draw_brand(f, hero, app, pixels);

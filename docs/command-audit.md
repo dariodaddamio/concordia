@@ -59,7 +59,7 @@ Additional TUI intercepts in `tui/mod.rs::handle_slash` do not pass through the 
 
 | Command family | Behavior and evidence |
 | --- | --- |
-| Removed command routes | `/trust`, `/continuation`, `/continue`, `/threads`, `/preview`, `/config`, `/version`, `/agents`, `/usage all`, `/usage refresh` and `/exit` print one line naming their replacement and route to it. `/update check` is rejected; use `/update` then Enter to install. `/workers`, `/queue`, `/edit`, `/close`, `/split`, `/stats` and `/recover` are unlisted but still work, until the screens that replace them exist. |
+| Removed command routes | `/trust`, `/continuation`, `/continue`, `/threads`, `/preview`, `/version`, `/agents`, `/usage all`, `/usage refresh` and `/exit` print one line naming their replacement and route to it. `/config` opens live appearance settings in 05c. `/update check` is rejected; use `/update` then Enter to install. `/workers`, `/queue`, `/edit`, `/close`, `/split`, `/stats` and `/recover` are unlisted but still work, until the screens that replace them exist. |
 | `/queue`, `/queue resume`, `/queue clear`, queue controls | Lists, resumes or clears queued prompts. `queue_controls` and TUI tests cover busy/cancel/edit blocking and state changes. |
 | `/recover`, `/recover legacy`, `/recover retry` | Workspace draft/queue recovery, explicit legacy import, retry local persistence. Recovery TUI tests cover selected missing/corrupt/retry states. |
 | `/stats` | Toggles local process counters; special-cased after the parser returns unknown. TUI tests cover the toggle. |

@@ -49,6 +49,7 @@ current provider, isolated home and policy revision; provider turns cannot creat
 | Pointer | How a model fetches more: `concordia thread read <id>` | printed inside every map |
 | Delivery | Map prepended on a switch or `@chat`; native resume otherwise | `context.rs` |
 | Config | User-edited `config.toml` and `commands/*.md` | `<state>/config.toml`, `<state>/commands/` |
+| Appearance | User-selected live theme, Concordia color and motion; atomically saved without rewriting config defaults | `<state>/.ao/appearance.json` |
 | MCP (opt-in) | `concordia mcp`: the same data as tools | same binary |
 
 `<state>` is `%LOCALAPPDATA%\concordia` (override: `CONCORDIA_STATE_DIR`).

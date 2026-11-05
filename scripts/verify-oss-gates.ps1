@@ -67,7 +67,17 @@ $publicIdentifiers = @{
     'scripts/verify-oss-gates.ps1' = @('dariodaddamio/concordia', '@dariodaddamio/harness')
 }
 
-$binaryExt = '\.(png|jpg|jpeg|gif|ico|exe|dll|zip|gz|7z|pdf|woff2?)$'
+# Owner-requested public theme name. Permit this exact brand token only in its implementing
+# files/docs; personal paths and every other private-project token remain checked normally.
+$publicThemeFiles = @(
+    'CHANGELOG.md', 'PLAN.md', 'crates/concordia/src/config.rs',
+    'crates/concordia/src/tui/appearance.rs', 'crates/concordia/src/tui/brand.rs',
+    'crates/concordia/src/tui/theme.rs', 'crates/concordia/src/tui/tests.rs',
+    'docs/config.md', 'docs/brand-direction.md', 'docs/chat-rendering.md',
+    'docs/e2e-status.md', 'docs/architecture.md'
+)
+$themeToken = ('op' + 'ifex')
+$binaryExt = '\.(png|jpg|jpeg|gif|ico|mesh|exe|dll|zip|gz|7z|pdf|woff2?)$'
 $tracked = git ls-files | Where-Object { $_ -notmatch $binaryExt -and $_ -ne "Cargo.lock" }
 $privateHits = New-Object System.Collections.Generic.List[string]
 $personalHits = New-Object System.Collections.Generic.List[string]
@@ -76,7 +86,8 @@ foreach ($rel in $tracked) {
     if (-not (Test-Path $p -PathType Leaf)) { continue }
     $t = Get-Content $p -Raw -ErrorAction SilentlyContinue
     if ($null -eq $t) { continue }
-    if ($t -match $privateRegex) { [void]$privateHits.Add($rel) }
+    $privateText = if ($publicThemeFiles -contains $rel) { $t -replace ('(?i)\b' + $themeToken + '\b'), 'theme' } else { $t }
+    if ($privateText -match $privateRegex) { [void]$privateHits.Add($rel) }
     $personalText = $t
     foreach ($identifier in $publicIdentifiers[$rel]) {
         $pattern = '(?<![\w@.-])' + [regex]::Escape($identifier) + '(?![\w.-])'

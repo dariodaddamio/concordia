@@ -48,8 +48,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 mod activity;
+mod appearance;
 mod artifacts;
 mod brand;
+mod brand_model;
 mod chatref;
 mod clipboard;
 #[cfg(all(windows, not(test)))]
@@ -252,6 +254,10 @@ struct PendingLogin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PickerKind {
+    Appearance,
+    Theme,
+    BrandColor,
+    BrandCustom,
     CreditDetails,
     /// Tokens through Concordia, opened with `t` from `/usage`.
     Tokens,
@@ -319,6 +325,7 @@ struct BusySendConfirmation {
 }
 
 pub struct App {
+    appearance: appearance::State,
     continuation: continuation::State,
     native_owner: Option<crate::provider::interaction::InteractionOwner>,
     native_usage_model: Option<String>,
@@ -621,45 +628,68 @@ impl App {
 
     fn window_title(&self) -> String {
         let status = if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
-            "Installing update".into()
+            Some("Updating".to_owned())
         } else if self.cancel_requested && self.busy {
-            "Stopping provider turn".into()
+            Some("Stopping".to_owned())
         } else if worker_input::active(self) || (self.busy && self.questions.waiting()) {
-            "Waiting for your input".into()
+            Some("Needs input".to_owned())
         } else if self.busy {
-            self.run_status_label()
+            Some(match &self.phase {
+                Phase::Thinking => "Thinking".into(),
+                Phase::Writing => "Writing".into(),
+                Phase::Waiting => "Working".into(),
+                Phase::Tool(name) => {
+                    let name = name.to_ascii_lowercase();
+                    if name.contains("patch") || name.contains("edit") || name.contains("write") {
+                        "Editing"
+                    } else if name.contains("web") {
+                        "Searching the web"
+                    } else if name.contains("search") || name.contains("find") {
+                        "Searching"
+                    } else if name.contains("read") {
+                        "Reading"
+                    } else if name.contains("shell")
+                        || name.contains("exec")
+                        || name.contains("command")
+                    {
+                        "Running command"
+                    } else {
+                        "Working"
+                    }
+                    .into()
+                }
+            })
         } else if self.continuation.waiting() {
-            "Paused; continuation required".into()
+            Some("Paused".to_owned())
         } else if self.deleg.d.any_active() {
-            "Workers running".into()
+            Some("Workers running".to_owned())
         } else {
-            "Ready".into()
+            None
         };
         let project = self
             .cwd
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "New chat".into());
-        let task = self.session_ui.title.as_deref().unwrap_or(&project);
+        let task = if self.landing.is_some() {
+            "Home"
+        } else {
+            self.session_ui.title.as_deref().unwrap_or(&project)
+        };
         let clean = |value: &str, max: usize| -> String {
             value
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
                 .chars()
                 .filter(|c| !c.is_control())
                 .take(max)
                 .collect()
         };
-        let account = self.account_label();
-        let model = if self.model == "?" {
-            String::new()
-        } else {
-            format!(" / {}", clean(&self.model, 40))
-        };
-        format!(
-            "{} | {} | {}{model} | Concordia",
-            clean(task, 64),
-            clean(&status, 64),
-            clean(&account, 40),
-        )
+        match status {
+            Some(status) => format!("Concordia — {} · {}", clean(task, 72), clean(&status, 40)),
+            None => format!("Concordia — {}", clean(task, 72)),
+        }
     }
 
     fn run_status_label(&self) -> String {
@@ -2540,6 +2570,14 @@ impl App {
     }
 
     fn apply_picker_selection(&mut self, turn_tx: Option<&mpsc::UnboundedSender<String>>) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::BrandCustom)
+        {
+            appearance::accept_custom(self);
+            return;
+        }
         let Some(picker) = self.picker.as_ref() else {
             return;
         };
@@ -2564,6 +2602,10 @@ impl App {
             return;
         }
         match kind {
+            PickerKind::Appearance | PickerKind::Theme | PickerKind::BrandColor => {
+                appearance::choose(self, kind, &id)
+            }
+            PickerKind::BrandCustom => {}
             PickerKind::CreditDetails => match id.as_str() {
                 "credit-dashboard" => self.open_host_target(
                     crate::usage::CREDIT_DASHBOARD_URL.into(),
@@ -2951,8 +2993,11 @@ impl App {
             self.open_agents_picker();
             return true;
         }
-        if trimmed == "/config" || trimmed == "/version" || trimmed == "/ver" || trimmed == "/about"
-        {
+        if trimmed == "/config" || trimmed.starts_with("/config ") {
+            appearance::command(self, trimmed.strip_prefix("/config").unwrap_or("").trim());
+            return true;
+        }
+        if trimmed == "/version" || trimmed == "/ver" || trimmed == "/about" {
             self.push_command(line);
             self.push_system(format!("{} is now /doctor", trimmed));
             for report_line in crate::doctor::run_fast_report().lines() {
@@ -3464,7 +3509,9 @@ impl App {
         self.clear_selections();
         self.persist_draft_now();
         let was_busy = self.busy;
-        landing::close(self);
+        if line != "/config" && !line.starts_with("/config ") {
+            landing::close(self);
+        }
         self.run_line(dispatch, turn_tx);
         if !was_busy && self.busy && self.submitted_prompt.is_some() {
             self.submitted_prompt = Some(original_prompt);
@@ -3660,6 +3707,7 @@ impl App {
         let state_root_for_usage = state_root.clone();
         let state_root_for_cmds = state_root.clone();
         App {
+            appearance: appearance::State::load(&state_root),
             continuation: continuation::State::new(&state_root),
             continuation_target: None,
             state_root,
@@ -4001,6 +4049,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             }
 
             let mut timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if landing::visible(&app) && app.appearance.ui.motion {
+                timeout = timeout.min(Duration::from_millis(64));
+            }
             // Input already wakes immediately. Provider channels used to wait for the
             // 200 ms animation tick; drain them at interactive latency during live turns.
             if app.busy || app.deleg.d.any_active() {
