@@ -305,7 +305,29 @@ impl Picker {
             .collect()
     }
 
+    /// Model picker only: keep a trailing "use <typed id>" row in sync with the filter so any
+    /// model id can be chosen even when the provider has not cached a catalog yet.
+    fn sync_typed_model(&mut self) {
+        if self.kind != PickerKind::Model {
+            return;
+        }
+        self.rows.retain(|r| !r.id.starts_with(TYPED_MODEL_PREFIX));
+        let typed = self.filter.trim();
+        let listed = self
+            .rows
+            .iter()
+            .any(|r| r.id.strip_prefix("model:") == Some(typed));
+        if valid_model_id(typed) && !listed {
+            self.rows.push(PickerRow {
+                id: format!("{TYPED_MODEL_PREFIX}{typed}"),
+                label: format!("use {typed}"),
+                detail: "typed model id".into(),
+            });
+        }
+    }
+
     fn select_clamp(&mut self) {
+        self.sync_typed_model();
         let n = self.filtered().len();
         if n == 0 {
             self.state.select(None);
@@ -2275,30 +2297,65 @@ impl App {
             .home_path
             .clone()
             .or_else(|| get_account(&self.state_root, &self.account).and_then(|a| a.home_path));
-        let models = home
-            .as_ref()
-            .map(|h| list_models(self.provider, h))
-            .unwrap_or_default();
-        let rows: Vec<PickerRow> = if models.is_empty() {
-            vec![PickerRow {
-                id: "none".into(),
-                label: "no cached models".into(),
-                detail: "chat once with the provider CLI to populate cache".into(),
-            }]
-        } else {
-            models
-                .into_iter()
-                .map(|m| {
-                    let cur = if m == self.model { " · current" } else { "" };
-                    PickerRow {
-                        id: format!("model:{m}"),
-                        label: format!("{m}{cur}"),
-                        detail: self.provider.as_str().into(),
-                    }
-                })
-                .collect()
+        // A fresh Concordia-owned home has no catalog until its first turn, so also read the
+        // caches of every other account for the same provider before falling back.
+        let mut homes: Vec<PathBuf> = home.into_iter().collect();
+        for account in crate::accounts::list_all_accounts(&self.state_root) {
+            if account.provider == self.provider {
+                if let Some(h) = account.home_path.filter(|h| !homes.contains(h)) {
+                    homes.push(h);
+                }
+            }
+        }
+        // (id, shown name, detail). The detail repeats the id so typing either one filters.
+        let mut models: Vec<(String, String, String)> = Vec::new();
+        let mut add = |id: &str, name: &str, detail: &str| {
+            if !id.is_empty() && !models.iter().any(|(x, _, _)| x == id) {
+                models.push((id.to_string(), name.to_string(), detail.to_string()));
+            }
         };
-        self.show_picker(PickerKind::Model, "model".into(), rows, true);
+        let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
+        if self.provider == ProviderKind::Claude {
+            // Current Claude models by name, then the CLI aliases that always track the newest.
+            for (id, name) in CLAUDE_MODELS {
+                add(id, name, id);
+            }
+            for (alias, family) in [("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")] {
+                add(
+                    alias,
+                    &format!("latest {family}"),
+                    &format!("{alias} · Claude CLI alias"),
+                );
+            }
+        }
+        if let Some(m) = chosen {
+            add(m, m, "current");
+        }
+        for h in &homes {
+            for m in list_models(self.provider, h) {
+                add(&m, &m, &format!("{m} · cached by the provider CLI"));
+            }
+        }
+        let current = |m: &str| chosen == Some(m);
+        let mut rows = vec![PickerRow {
+            id: "model:".into(),
+            label: format!(
+                "provider default{}",
+                if chosen.is_none() { " · current" } else { "" }
+            ),
+            detail: "the CLI picks its own default model".into(),
+        }];
+        rows.extend(models.into_iter().map(|(id, name, detail)| PickerRow {
+            label: format!("{name}{}", if current(&id) { " · current" } else { "" }),
+            id: format!("model:{id}"),
+            detail,
+        }));
+        let selected = rows
+            .iter()
+            .position(|r| r.label.ends_with(" · current"))
+            .unwrap_or(0);
+        self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
+        self.footer_left = "↑↓ Enter · type any model id · Esc".into();
     }
 
     fn open_usage_picker(&mut self) {
@@ -2802,13 +2859,41 @@ impl App {
                 }
             }
             PickerKind::Model => {
-                if let Some(model) = id.strip_prefix("model:") {
+                if let Some(model) = id
+                    .strip_prefix(TYPED_MODEL_PREFIX)
+                    .or_else(|| id.strip_prefix("model:"))
+                {
+                    if !model.is_empty() && !valid_model_id(model) {
+                        self.push_system("model id must be letters, digits or . _ - : / [ ]");
+                        return;
+                    }
+                    // A first run has no saved selection yet; save the account already shown.
+                    if get_use_selection(&self.state_root).is_none() {
+                        let shown = UseSelection {
+                            provider: self.provider,
+                            account: self.account.clone(),
+                            home_path: self
+                                .home_path
+                                .as_ref()
+                                .map(|p| p.to_string_lossy().into_owned()),
+                            model: None,
+                            updated_at: now_stamp(),
+                        };
+                        if let Err(e) = set_use_selection(&self.state_root, shown) {
+                            self.push_system(format!("model save failed — {e}"));
+                            return;
+                        }
+                    }
                     if let Err(e) = set_model(&self.state_root, model) {
                         self.push_system(format!("model save failed — {e}"));
                         return;
                     }
-                    self.model = model.to_string();
-                    self.push_system(format!("model → {model}"));
+                    self.model = if model.is_empty() { "?" } else { model }.to_string();
+                    if model.is_empty() {
+                        self.push_system("model → provider default");
+                    } else {
+                        self.push_system(format!("model → {model}"));
+                    }
                 }
             }
             PickerKind::Usage => {
@@ -3852,9 +3937,29 @@ fn select_account(state_root: &Path, account_id: &str) -> anyhow::Result<()> {
     )
 }
 
+const TYPED_MODEL_PREFIX: &str = "typed-model:";
+
+/// Current Claude model ids and display names, listed by name in `/model`. Update when a new
+/// family ships; the `opus` / `sonnet` / `haiku` aliases keep working in between.
+const CLAUDE_MODELS: [(&str, &str); 4] = [
+    ("claude-opus-5-5", "Opus 5.5"),
+    ("claude-sonnet-5-5", "Sonnet 5.5"),
+    ("claude-haiku-5-5", "Haiku 5.5"),
+    ("claude-fable-5-1", "Fable 5.1"),
+];
+
+/// Typed model ids become one `--model` argv entry; keep them to model-id characters.
+fn valid_model_id(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 100
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-:/[]".contains(c))
+}
+
 fn set_model(state_root: &Path, model: &str) -> anyhow::Result<()> {
     let mut sel = get_use_selection(state_root).ok_or_else(|| anyhow::anyhow!("no selection"))?;
-    sel.model = Some(model.to_string());
+    sel.model = Some(model.to_string()).filter(|m| !m.is_empty());
     sel.updated_at = now_stamp();
     set_use_selection(state_root, sel)
 }
