@@ -9,15 +9,22 @@ use super::text::{col_to_index, word_bounds, wrap_ranges_hang};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+#[path = "diff_presentation.rs"]
+mod diff_presentation;
+
 pub(super) fn diff_line_style(line: &str) -> Style {
     if line.starts_with("@@") || line.starts_with("---") || line.starts_with("+++") {
         Style::default()
             .fg(ratatui::style::Color::DarkGray)
             .add_modifier(Modifier::DIM)
     } else if line.starts_with('+') {
-        Style::default().fg(ratatui::style::Color::Green)
+        Style::default()
+            .fg(ratatui::style::Color::Indexed(252))
+            .bg(diff_presentation::ADDED)
     } else if line.starts_with('-') {
-        Style::default().fg(ratatui::style::Color::Red)
+        Style::default()
+            .fg(ratatui::style::Color::Indexed(252))
+            .bg(diff_presentation::REMOVED)
     } else {
         Style::default()
     }
@@ -25,6 +32,12 @@ pub(super) fn diff_line_style(line: &str) -> Style {
 
 fn is_diff(text: &str) -> bool {
     text.lines().any(|line| line.starts_with("@@"))
+        || text.lines().any(|line| line.starts_with("File: "))
+            && text.lines().any(|line| {
+                (line.starts_with('+') || line.starts_with('-'))
+                    && !line.starts_with("+++")
+                    && !line.starts_with("---")
+            })
 }
 
 /// Inline style over part of one line of a block: `(line, start, end, style)`, chars within the line.
@@ -411,6 +424,17 @@ impl TranscriptView {
                     spans.push(Span::styled(r.gutter.clone(), r.gutter_style));
                 }
                 spans.extend(row_spans(r, self.row_selection(i)));
+                // Padding is paint-only: copying and source offsets still use the original row.
+                if r.style
+                    .bg
+                    .is_some_and(|color| color != ratatui::style::Color::Reset)
+                {
+                    let used = r.gutter_width() + super::text::slice_width(&r.text);
+                    let padding = self.width.saturating_sub(used);
+                    if padding > 0 {
+                        spans.push(Span::styled(" ".repeat(padding), r.style));
+                    }
+                }
                 Line::from(spans).style(r.style)
             })
             .collect()
@@ -506,19 +530,29 @@ fn wrap_block(
                         .collect(),
                     indent: 0,
                     hang: 0,
-                    base: if diff {
-                        diff_line_style(l)
-                    } else {
-                        Style::default()
-                    },
+                    base: Style::default(),
                     links: Vec::new(),
                 }
             })
             .collect()
     };
+    let presentation = diff.then(|| {
+        diff_presentation::present(
+            &lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+        )
+    });
     let mut first_row = true;
     let mut source_offset = 0usize;
-    for ml in lines {
+    for (line_index, ml) in lines.into_iter().enumerate() {
+        let presentation = presentation
+            .as_ref()
+            .and_then(|lines| lines.get(line_index));
+        let number_gutter =
+            presentation.map_or_else(String::new, |line| line.gutter(width.saturating_sub(gw)));
+        let number_width = number_gutter.chars().count();
         let chars: Vec<char> = ml.text.chars().collect();
         let mut links: Vec<_> = if b.linkify {
             crate::file_links::candidates(&ml.text)
@@ -585,8 +619,10 @@ fn wrap_block(
                 links.push((start, end, candidate));
             }
         }
-        let first_w = width.saturating_sub(gw + ml.indent).max(1);
-        let rest_w = width.saturating_sub(gw + ml.indent + ml.hang).max(1);
+        let first_w = width.saturating_sub(gw + number_width + ml.indent).max(1);
+        let rest_w = width
+            .saturating_sub(gw + number_width + ml.indent + ml.hang)
+            .max(1);
         for (i, (s, e)) in wrap_ranges_hang(&chars, first_w, rest_w)
             .into_iter()
             .enumerate()
@@ -613,6 +649,12 @@ fn wrap_block(
                     (lo < hi).then(|| (lo - s, hi - s, st))
                 })
                 .collect();
+            if let Some(presentation) = presentation {
+                runs.extend(presentation.runs.iter().filter_map(|&(start, end, style)| {
+                    let (start, end) = (start.max(s), end.min(e));
+                    (start < end).then(|| (start - s, end - s, style))
+                }));
+            }
             let row_links: Vec<_> = links
                 .iter()
                 .filter_map(|(a, z, candidate)| {
@@ -628,10 +670,32 @@ fn wrap_block(
             rows.push(Row {
                 identity: b.identity,
                 source_offset: source_offset + s,
-                gutter: format!("{lead}{}", " ".repeat(pad)),
-                gutter_style: b.gutter_style,
+                gutter: format!(
+                    "{lead}{}{}",
+                    " ".repeat(pad),
+                    if i == 0 {
+                        number_gutter.clone()
+                    } else {
+                        number_gutter
+                            .chars()
+                            .map(|c| if c == '│' { c } else { ' ' })
+                            .collect()
+                    }
+                ),
+                gutter_style: if number_width > 0 {
+                    Style::default()
+                        .fg(ratatui::style::Color::Indexed(244))
+                        .bg(presentation
+                            .and_then(|line| line.style.bg)
+                            .unwrap_or(ratatui::style::Color::Reset))
+                } else {
+                    b.gutter_style
+                },
                 text: chars[s..e].to_vec(),
-                style: b.style.patch(ml.base),
+                style: b
+                    .style
+                    .patch(ml.base)
+                    .patch(presentation.map_or(Style::default(), |line| line.style)),
                 joins_prev: i > 0,
                 runs,
                 links: row_links,
@@ -1143,6 +1207,76 @@ mod tests {
         assert!(reversed.iter().any(|(t, r)| t.trim() == "here" && !*r));
         // Copy gives the visible text, without markdown markers.
         assert_eq!(v.selected_text().as_deref(), Some("see code"));
+
+        let patch = "File: src/example.rs\n@@ -41,3 +57,3 @@\n fn example() {\n-    let answer = 1;\n+    let answer = 42; // 雪\n }\nSource: immutable historical fixture\n+not a diff after source metadata";
+        let mut v = view(&[blk("  ", patch)], 72, 20);
+        let removed = v
+            .rows
+            .iter()
+            .position(|row| row.text.iter().collect::<String>().starts_with("-    let"))
+            .unwrap();
+        let added = v
+            .rows
+            .iter()
+            .position(|row| row.text.iter().collect::<String>().starts_with("+    let"))
+            .unwrap();
+        assert_eq!(v.rows[removed].gutter.trim(), "42");
+        assert_eq!(v.rows[added].gutter.trim(), "58");
+        assert_eq!(v.rows[removed].style.bg, Some(diff_presentation::REMOVED));
+        assert_eq!(v.rows[added].style.bg, Some(diff_presentation::ADDED));
+        let context = v
+            .rows
+            .iter()
+            .find(|row| row.text.iter().collect::<String>() == " fn example() {")
+            .unwrap();
+        assert_eq!(context.gutter.trim(), "57");
+        let syntax_colors = v.rows[added]
+            .runs
+            .iter()
+            .filter_map(|(_, _, style)| style.fg)
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            syntax_colors.len() >= 3,
+            "keywords, numbers and comments retain syntax colours"
+        );
+        assert!(
+            v.rows.last().unwrap().style.bg.is_none(),
+            "metadata ends a diff; later + text is prose"
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(72, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new(v.lines()), frame.area())
+            })
+            .unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(71, removed as u16)].bg,
+            diff_presentation::REMOVED
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(71, added as u16)].bg,
+            diff_presentation::ADDED
+        );
+        v.sel = Some((
+            Pos { row: 0, col: 0 },
+            Pos {
+                row: v.rows.len() - 1,
+                col: usize::MAX,
+            },
+        ));
+        assert_eq!(
+            v.selected_text().as_deref(),
+            Some(patch),
+            "numbers and background padding never enter copied source"
+        );
+        for width in [8, 18, 32] {
+            let v = view(&[blk("  ", patch)], width, 200);
+            assert!(v.max_row_width() <= width + 1);
+        }
+        let unknown = view(&[blk("", "File: src/example.rs\n@@\n-old\n+new")], 50, 10);
+        assert_eq!(unknown.rows[2].gutter.trim(), "·");
+        assert_eq!(unknown.rows[3].gutter.trim(), "·");
     }
 }
 

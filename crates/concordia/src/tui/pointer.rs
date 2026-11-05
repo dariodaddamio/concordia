@@ -129,23 +129,12 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
         if super::activity::card_header_at(app, x, y).is_some() {
             return "pointer";
         }
-        if app
-            .view
-            .identity_at((y - t.y) as usize)
-            .and_then(|i| app.messages.get(i))
-            .is_some_and(|message| {
-                message.role == MsgRole::Meta && message.text.contains("Review activity")
-                    || message.role == MsgRole::Thinking && x.saturating_sub(t.x) < 2
-            })
-        {
-            return "pointer";
-        }
         if x.saturating_sub(t.x) < 2
             && app
                 .view
                 .identity_at((y - t.y) as usize)
                 .and_then(|i| app.messages.get(i))
-                .is_some_and(|m| m.role == MsgRole::Card)
+                .is_some_and(|m| matches!(m.role, MsgRole::Card | MsgRole::Thinking))
         {
             return "pointer";
         }

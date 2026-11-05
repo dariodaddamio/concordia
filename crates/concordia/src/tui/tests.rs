@@ -1679,7 +1679,8 @@ fn unified_diff_cards_show_counts_and_review_colours() {
         .iter()
         .find(|row| row.text.iter().collect::<String>().ends_with("+new"))
         .unwrap_or_else(|| panic!("rows: {row_texts:?}"));
-    assert_eq!(added.style.fg, Some(Color::Green));
+    assert_eq!(added.style.bg, Some(Color::Rgb(25, 48, 38)));
+    assert_eq!(added.gutter.trim(), "1");
     let removed = h
         .app
         .view
@@ -1687,7 +1688,8 @@ fn unified_diff_cards_show_counts_and_review_colours() {
         .iter()
         .find(|row| row.text.iter().collect::<String>() == "-old")
         .unwrap();
-    assert_eq!(removed.style.fg, Some(Color::Red));
+    assert_eq!(removed.style.bg, Some(Color::Rgb(54, 31, 36)));
+    assert_eq!(removed.gutter.trim(), "1");
     let header = h
         .app
         .view
@@ -1695,7 +1697,7 @@ fn unified_diff_cards_show_counts_and_review_colours() {
         .iter()
         .find(|row| row.text.iter().collect::<String>() == "@@ -1 +1,2 @@")
         .unwrap();
-    assert_eq!(header.style.fg, Some(Color::DarkGray));
+    assert_eq!(header.style.fg, Some(Color::Indexed(244)));
     assert!(header.style.add_modifier.contains(Modifier::DIM));
     h.app.activity.open(h.app.messages.len() - 1);
     h.draw();
@@ -2386,7 +2388,7 @@ fn the_wait_names_what_the_model_is_doing_and_the_colour_follows_it() {
 #[test]
 fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     let _iso = Isolated::new();
-    let mut h = Harness::new(100, 24);
+    let mut h = Harness::new(100, 36);
     h.app.push_user("why".into());
     h.app.busy = true;
     h.app.apply_progress(TurnProgress::Thinking(
@@ -2443,6 +2445,14 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     );
     assert!(cards.iter().all(|card| card.status == CardStatus::Done));
     h.draw();
+    assert!(!h.screen().contains("Review activity"));
+    assert!(h.screen().contains("Worked for"));
+    let thought_index = h
+        .app
+        .messages
+        .iter()
+        .position(|m| m.role == MsgRole::Thinking)
+        .unwrap();
     let row = h
         .app
         .view
@@ -2452,7 +2462,7 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
             row.text
                 .iter()
                 .collect::<String>()
-                .contains("Review activity")
+                .contains("Thinking - Expand")
         })
         .unwrap();
     let y = h.app.areas.transcript.y + (row - h.app.view.visible().start) as u16;
@@ -2460,21 +2470,25 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     assert_eq!(pointer::shape(&h.app, x, y), "pointer");
     h.click(x, y);
     h.draw();
-    let (_, detail) = h
-        .app
-        .activity
-        .detail_text
-        .as_ref()
-        .expect("clicking completion opens turn activity");
-    assert!(detail.contains("first   idea\n\n\nsecond idea"));
-    assert!(detail.contains("-before\n+after") && detail.contains("File: late.rs"));
-    h.key(KeyCode::Esc, KeyModifiers::NONE);
-    h.key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert!(h.app.activity.is_expanded(thought_index, false));
     assert!(
-        h.app.activity.detail_text.is_some(),
-        "keyboard review remains available after completion"
+        h.app.activity.detail.is_none(),
+        "thinking expands in chat, never a modal"
     );
-    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.screen().contains("Thinking - Collapse"));
+    assert!(h.screen().contains("first") && h.screen().contains("second idea"));
+    assert_eq!(
+        h.app.messages[thought_index].text,
+        "first   idea\n\n\nsecond idea\n"
+    );
+    h.click(x, y);
+    h.draw();
+    assert!(!h.app.activity.is_expanded(thought_index, false));
+    assert!(h.screen().contains("Thinking - Expand"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.draw();
+    assert!(h.screen().contains("Thinking - Collapse"));
+    assert!(h.app.activity.detail.is_none());
     h.app.messages.clear();
     h.app.messages.push(ChatLine {
         role: MsgRole::Thinking,

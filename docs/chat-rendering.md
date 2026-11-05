@@ -1,5 +1,16 @@
 # Chat rendering and input, 2026-11-01f
 
+Build `2026-11-04q` keeps recorded thinking in individual chat accordions. Click its heading or
+gutter to expand the full recorded text in place; Ctrl+O toggles all activity. Restored history
+uses the same rendering and actions. The Worked for footer is duration/time/usage metadata,
+without an activity-review button. Ctrl+E remains a raw tool-output inspector, not a thinking
+viewer. Provider-private encrypted reasoning remains unavailable.
+
+Expanded inline edit cards show line numbers from reported unified hunk ranges, syntax colors,
+and muted red/green backgrounds spanning removed/added rows. Context remains neutral. Unknown
+hunk positions stay unnumbered rather than being inferred from the current disk file. Display
+decoration does not change the copied diff or its original historical source identity.
+
 Build `2026-11-04p` shows compact tool headings such as
 `Edit File example.rs + Ran build - 22 output lines - Expand`. File labels retain their exact
 full targets; expanding retains the raw tool details. Static wrapper calls are summarized only
@@ -20,7 +31,7 @@ incremental freshness checks rather than trusting a version string alone.
 Build `2026-11-04o` accepts held navigation and deletion keys, including Ctrl/Shift arrows,
 without repeating send/cancel/toggle shortcuts. Restored native chats preserve thinking and tool
 cards without appending synthetic "Recorded turn" messages. Ctrl+O and tool headers still expand
-recorded work, and Ctrl+E opens activity details.
+recorded work, and Ctrl+E opens raw tool-output details.
 
 Build `2026-11-04n` renders reported thinking as Markdown, with plain readable shortened previews.
 Tool headings keep their readable action when expanded and distinguish action, status, linked
@@ -160,12 +171,11 @@ physical-host check are required to claim working visible pointer shapes.
 
 ### Image paste and edit evidence, 2026-11-04e
 
-Build `2026-11-04f` adds a clickable **Review activity** completion row. It opens the turn's
-provider-reported thinking and full tool/edit details, with file links and search; Ctrl+E opens
-the latest review. Thinking rows also have a clickable gutter. No reasoning is synthesized or
-added to provider context. Final tool cards reconcile by identity even when earlier cards streamed,
-so late edit details remain visible after completion. The aggregate review is bounded to 256 KiB;
-individual cards remain available above it. This does not enable transcript recording or invent
+Thinking and tool/edit details remain in the chat after completion and native-history restoration.
+Thinking headings and gutters expand recorded text inline; completed tool cards retain their own
+expansion, file links and raw-output inspector. No reasoning is synthesized or added to provider
+context. Final tool cards reconcile by identity even when earlier cards streamed, so late edit
+details remain visible after completion. This does not enable transcript recording or invent
 activity missing from a provider's native history.
 
 Standalone pasted PNG/JPEG/WebP paths attach and show a compact four-row composer thumbnail

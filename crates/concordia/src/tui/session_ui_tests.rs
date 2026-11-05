@@ -142,6 +142,43 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
             .collect::<String>()
     };
     assert!(screen(&terminal).contains("message-79"));
+    assert!(screen(&terminal).contains("Thinking - Expand"));
+    let thought_index = app
+        .messages
+        .iter()
+        .position(|m| m.role == MsgRole::Thinking)
+        .unwrap();
+    let thought_row = app
+        .view
+        .rows
+        .iter()
+        .position(|row| row.identity == Some(thought_index) && row.source_offset == 0)
+        .unwrap();
+    let area = app.areas.transcript;
+    let thought_y = area.y + (thought_row - app.view.visible().start) as u16;
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind,
+                column: area.x + 4,
+                row: thought_y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+    }
+    terminal.draw(|f| draw_ui(f, &mut app)).unwrap();
+    assert!(screen(&terminal).contains("Thinking - Collapse"));
+    assert!(screen(&terminal).contains("Provider reported inspection"));
+    assert!(
+        app.activity.detail.is_none(),
+        "restored thinking expands inside history"
+    );
+    assert_eq!(app.editor.text(), "unsent draft");
+    assert!(rx.try_recv().is_err());
     let old = app.view.visible().start;
     handle_key(
         &mut app,

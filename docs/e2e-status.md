@@ -1,5 +1,36 @@
 # Concordia verification status
 
+## Inline thinking, numbered diffs and bounded live checks, 2026-11-04q
+
+Build Q is installed with matching checked bytes: 23,284,224 bytes, SHA-256
+`9C45D1342A2CFE7117F0C3DC105206CD4E295BB252485B2435D4530D236B1C10`.
+All 42 focused tests pass, covering retained/restored inline thinking, native-history selection,
+diff numbering/syntax/backgrounds/raw copying, narrow wrapping, card expansion and provider
+summary regressions. All-target Clippy, release smoke, Defender and OSS/privacy checks pass.
+This is scoped evidence, not a complete-suite claim.
+
+The exact-build native controller resumes immutable synthetic history and expands thinking in
+the chat without a popup or Review activity footer. It expands an edit and checks old/new line
+numbers, context, syntax colors and full-width muted red/green pixels. The current file contains
+different text, which never replaces the historical diff. Screenshots and the hash-bound receipt
+remain under ignored `target/native-window-proof/build-q-native/`. No provider/model turn,
+global input or global clipboard was used for this UI proof.
+
+A separate authorized live run used an eligible alternative account, preserving the selected
+chat account and subscription-only condition. Fourteen of 18 dispatch slots were consumed;
+four remain unused. Compaction, exact continuation, image recognition and an owned offered
+allow-once action pass their scoped native checks. Pointer-fetch commands were blocked by native
+launch policy; an explicitly initiated native read ran the actual Concordia excerpt reader
+successfully. A structured-question capability mismatch and offered-choice denial mismatch in
+the direct experiment client remain unqualified. [The memory report](quality/memory-evaluation.md)
+records failures and limitations; no savings or full application/worker parity is claimed.
+
+During local preparation a formatting invocation unexpectedly left the UI module empty; checks
+detected this before release/install. It was restored, the change reapplied, and formatting was
+captured and size-checked before replacing files. The scoped wrapping test also caught an eager
+unsigned subtraction in syntax clipping; its lazy intersection fix is included in the passing
+run. No faulty candidate was installed. No CI dispatch, signing or publication occurred.
+
 ## Compact tools, selectable replies and update reuse, 2026-11-04p
 
 The installed optimized build passes 52 focused tests covering provider card summaries, exact
