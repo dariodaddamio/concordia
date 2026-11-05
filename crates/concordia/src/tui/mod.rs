@@ -929,46 +929,14 @@ impl App {
         }
     }
 
-    fn open_activity_review(&mut self, index: usize) {
-        let Some(message) = self.messages.get(index) else {
-            return;
-        };
-        let detail = if message.role == MsgRole::Thinking {
-            Some(("Thinking reported by provider".into(), message.text.clone()))
-        } else if message.role == MsgRole::Meta && message.text.contains("Review activity") {
-            let start = self.messages[..index]
-                .iter()
-                .rposition(|m| m.role == MsgRole::User)
-                .map_or(0, |i| i + 1);
-            let mut body = String::new();
-            for message in &self.messages[start..index] {
-                let (heading, text) = match message.role {
-                    MsgRole::Thinking => ("Thinking reported by provider", message.text.as_str()),
-                    MsgRole::Card => {
-                        let Some(card) = &message.card else { continue };
-                        (
-                            card.title.as_str(),
-                            card.detail.as_deref().unwrap_or(&message.text),
-                        )
-                    }
-                    _ => continue,
-                };
-                const LIMIT: usize = 256 * 1024;
-                if body.len() + heading.len() + text.len() + 4 > LIMIT {
-                    body.push_str("\nFurther activity exceeds this review's display bound; inspect individual cards above.\n");
-                    break;
-                }
-                body.push_str(heading);
-                body.push('\n');
-                body.push_str(text);
-                body.push_str("\n\n");
-            }
-            Some(("Completed turn activity".into(), body))
-        } else {
-            None
-        };
-        self.activity.open(index);
-        self.activity.detail_text = detail;
+    fn open_tool_details(&mut self, index: usize) {
+        if self
+            .messages
+            .get(index)
+            .is_some_and(|message| message.role == MsgRole::Card)
+        {
+            self.activity.open(index);
+        }
     }
 
     fn write_clipboard(&mut self, text: &str) -> bool {
@@ -1541,14 +1509,6 @@ impl App {
             } else {
                 String::new()
             };
-            let start = self
-                .messages
-                .iter()
-                .rposition(|m| m.role == MsgRole::User)
-                .unwrap_or(0);
-            let review = self.messages[start..]
-                .iter()
-                .any(|m| matches!(m.role, MsgRole::Thinking | MsgRole::Card));
             let line = format!(
                 "Worked for {} · stopped {}{}",
                 crate::delegate::fmt_elapsed(elapsed.unwrap_or_default()),
@@ -1559,11 +1519,6 @@ impl App {
                     format!(" · {tokens}")
                 }
             );
-            let line = if review {
-                format!("{line} · Review activity")
-            } else {
-                line
-            };
             if !line.is_empty() {
                 self.messages.push(ChatLine {
                     role: MsgRole::Meta,
@@ -4884,13 +4839,10 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
     }
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('e' | 'E'))
     {
-        if let Some(i) = app.messages.iter().rposition(|m| {
-            matches!(m.role, MsgRole::Card | MsgRole::Thinking)
-                || m.role == MsgRole::Meta && m.text.contains("Review activity")
-        }) {
-            app.open_activity_review(i);
+        if let Some(i) = app.messages.iter().rposition(|m| m.role == MsgRole::Card) {
+            app.open_tool_details(i);
         } else {
-            app.flash("no activity yet");
+            app.flash("no tool output yet; expand thinking in the chat");
         }
         return false;
     }
@@ -5505,19 +5457,13 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 return;
             }
             if contains(t, x, y) {
-                if let Some(i) = app.view.identity_at((y - t.y) as usize) {
-                    if app.messages.get(i).is_some_and(|m| {
-                        m.role == MsgRole::Meta && m.text.contains("Review activity")
-                            || m.role == MsgRole::Thinking && x.saturating_sub(t.x) < 2
-                    }) {
-                        app.open_activity_review(i);
-                        app.drag = Drag::None;
-                        return;
-                    }
-                }
                 if x.saturating_sub(t.x) < 2 {
                     if let Some(i) = app.view.identity_at((y - t.y) as usize) {
-                        if app.messages.get(i).is_some_and(|m| m.role == MsgRole::Card) {
+                        if app
+                            .messages
+                            .get(i)
+                            .is_some_and(|m| matches!(m.role, MsgRole::Card | MsgRole::Thinking))
+                        {
                             app.activity.toggle_card(i, app.expanded_activity);
                             app.drag = Drag::None;
                             return;
@@ -6171,12 +6117,18 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 })
                 .map(Some)
                 .unwrap_or(None),
-            MsgRole::Thinking if !app.expanded_activity => Some(format!(
-                "{} · Ctrl+O expands activity",
-                crate::provider::stream_cards::compact_detail(
-                    &tail_lines(&condense_thinking(&m.text), 1),
-                    100
-                )
+            MsgRole::Thinking => Some(format!(
+                "Thinking - {}\n{}",
+                if app.activity.is_expanded(idx, app.expanded_activity) {
+                    "Collapse"
+                } else {
+                    "Expand"
+                },
+                if app.activity.is_expanded(idx, app.expanded_activity) {
+                    m.text.clone()
+                } else {
+                    condense_thinking(&m.text)
+                }
             )),
             _ => None,
         })
@@ -6304,21 +6256,11 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                     .add_modifier(Modifier::ITALIC),
             ),
             MsgRole::Meta => (
-                if m.text.contains("Review activity") {
-                    "▸ "
-                } else {
-                    "  "
-                },
-                Style::default().fg(Color::Cyan),
-                if m.text.contains("Review activity") {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED)
-                } else {
-                    Style::default()
-                        .fg(Color::Indexed(244))
-                        .add_modifier(Modifier::DIM | Modifier::ITALIC)
-                },
+                "  ",
+                Style::default().fg(Color::Indexed(244)),
+                Style::default()
+                    .fg(Color::Indexed(244))
+                    .add_modifier(Modifier::DIM | Modifier::ITALIC),
             ),
             MsgRole::Card => (
                 "  ",
@@ -6326,7 +6268,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::Indexed(250)),
             ),
         };
-        if m.role == MsgRole::Card {
+        if matches!(m.role, MsgRole::Card | MsgRole::Thinking) {
             gutter = if app.activity.is_expanded(i, app.expanded_activity) {
                 "▾ "
             } else {

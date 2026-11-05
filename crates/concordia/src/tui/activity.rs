@@ -116,8 +116,10 @@ pub(super) fn card_header_at(app: &super::App, x: u16, y: u16) -> Option<usize> 
     while first > 0 && app.view.rows[first].joins_prev {
         first -= 1;
     }
-    if app.messages.get(index)?.role != MsgRole::Card
-        || app.view.rows[first].identity != Some(index)
+    if !matches!(
+        app.messages.get(index)?.role,
+        MsgRole::Card | MsgRole::Thinking
+    ) || app.view.rows[first].identity != Some(index)
         || app.view.rows[first].source_offset != 0
     {
         return None;

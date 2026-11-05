@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (`2026-11-04q`)
+
+- Recorded thinking expands directly in chat, including restored history. The completed-turn
+  duration/token footer no longer offers a separate activity-review popup.
+- Inline edits show reported line numbers, syntax colors and full-width muted red/green
+  backgrounds, while preserving original diff text and exact historical file identities.
+
 ### Fixed (`2026-11-04p`)
 
 - Tool summaries show filenames, readable command purposes and output counts instead of wrapper

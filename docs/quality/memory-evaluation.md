@@ -109,7 +109,47 @@ compare experimental arms, measure token savings, establish another provider/mod
 justify changing ranking defaults. Windows work and GitHub publication remain on hold by owner
 instruction. Broader live experiments require a new explicit allowance.
 
-## Controlled model-retention comparison: prepared, not run
+## Authorized native smoke comparison, 2026-11-04
+
+The owner authorized up to 18 additional subscription-only requests and an alternative Codex
+account. The isolated run conservatively consumed 14 dispatch slots, including one question
+request rejected before generation; four were unused. Codex CLI 0.166.0 used the account's
+configured gpt-6.1-sol through its native ChatGPT Plus login. Read-only before/after metadata
+reported zero credits, and the selected Concordia chat account was unchanged. No automatic
+driver retry, account switch, credential copy or billing change occurred.
+
+One independently seeded trial per arm used five fixed decisions: current port, numbered draft,
+allowed future edit file, no unapproved integration and no replay. All memory-task files and
+sentinels were unchanged. This is a bounded smoke, not an effectiveness benchmark:
+
+| Arm | Observed decisions | Source-fetch evidence |
+| --- | --- | --- |
+| Native compaction and exact continuation | Five of five correct | Native continuation retained the decisions. |
+| Fresh session with exact source pointers | Three unknown; both action refusals correct | Native policy rejected launching the source command before Concordia executed. |
+| Compaction and pointers | Five of five correct | The attempted source command was also blocked; no benefit from pointers is established. |
+
+App-server ordinary item events omitted the custom tool executions. Reading only each exact new
+synthetic native session's originals established the `CreateProcess` policy rejection. A separate
+supported, explicitly initiated native `command/exec` call ran the actual Concordia excerpt
+reader in read-only mode and returned exit zero, the exact synthetic marker, source byte range
+and SHA. The reader works in that scoped check; model-driven fetching under the tested policy
+does not. Unknown values and a blocked fetch are not scored as successful retention.
+
+Other dispatches qualified native image recognition, same-thread image continuation and an
+exact owned offered allow-once decision for a harmless fixture echo. Structured-question setup
+was rejected because the experiment's direct client lacked the experimental capability; the
+application transport already advertises it, so this does not establish an application defect.
+The denial took effect, but the direct driver sent a protocol-valid decision absent from the
+offered list; offered-choice preservation remains unqualified. These direct native checks do
+not qualify the application UI/worker broker, Claude PDF or physical hosts.
+
+Hash-bound receipts, native usage snapshots and the request ledger remain under ignored
+`target/live-qualification-20261104/`; `manifest.json` fingerprints the retained reports and
+drivers. Monetary costs remain unknown. Compaction snapshots overlap turn totals, so they are
+not summed into invented savings. No pointer advantage, token-saving claim or ranking-default
+change follows from this run.
+
+## Larger controlled comparison gates
 
 Use three arms on the same synthetic committed repository and pinned constraints: native resume
 with provider compaction, a fresh native session with bounded verified handoff pointers, and
@@ -125,8 +165,8 @@ task success, source correctness, duplicate side effects, native token/cost cove
 time independently. Inspect the final Git diff and side-effect receipt; assistant claims alone
 cannot establish success. Unknown token/cost fields remain unknown.
 
-Prepare each arm in a separate clean worktree with fake-provider protocol checks first. Model
-trials remain unrun until the owner supplies explicit provider/task scope and usage budget,
-including trial count and a stopping cap. Once authorized, record every attempted/failed trial,
+Prepare each arm in a separate clean worktree with fake-provider protocol checks first. Further
+trials must stay within an explicit provider/task allowance, trial count and stopping cap;
+the smoke above does not authorize an uncapped comparison. Record every attempted/failed trial,
 keep native source evidence, and reconcile uncertain side effects before another attempt. No live
 result or provider-specific recall advantage is claimed by the synthetic evaluation.

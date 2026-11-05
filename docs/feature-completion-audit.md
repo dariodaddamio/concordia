@@ -1,6 +1,6 @@
-# Feature completion audit: 2026-11-04o
+# Feature completion audit: 2026-11-04q
 
-The full roadmap is **not complete**. The current board has seven grouped open/deferred workstreams;
+The full roadmap is **not complete**. The current board has eight grouped open/deferred workstreams;
 they mix missing capabilities, qualification and release work, so they are not a feature count
 or a percentage of completion:
 
@@ -13,9 +13,14 @@ or a percentage of completion:
 4. **Native provider and host qualification:** broader approval/output/lifecycle formats, live
    Claude PDF processing and the remaining provider/physical-host matrix stay open. Cursor live
    exact-session continuation was exercised in 04d; that does not qualify every provider path.
+   The current 14-dispatch alternative-account smoke adds scoped Codex compaction, image,
+   exact-continuation, excerpt-reader and offered allow-once evidence, not full UI/worker parity.
 5. **Memory effectiveness:** the synthetic retrieval corpus exists and one authorized live Codex
-   handoff smoke passes all six constraint checks. Controlled multi-arm retention/token-saving
-   comparisons remain unrun; the one-turn allowance is consumed. [Evidence](quality/memory-evaluation.md).
+   handoff smoke passes all six constraint checks. A new three-arm native smoke ran once per
+   arm: compaction retained five decisions, but model-driven pointer fetches were blocked by
+   native launch policy. Compatible-policy pointer use and larger retention/token-saving
+   comparisons remain unqualified. Four of the new 18 dispatch slots are unused.
+   [Evidence](quality/memory-evaluation.md).
 6. **Native filesystem confinement — deferred by owner:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer
    [mechanism prototype](quality/windows-write-guard-research.md) passes file/crypto/network/cancel
@@ -23,8 +28,13 @@ or a percentage of completion:
    permissions remain unchanged; no additional guard-scope decision is being requested now.
 7. **Unsigned Windows distribution — publication on hold:** the owner chose unsigned delivery, then
    deferred Windows/release work and GitHub publication on 2026-11-04. Fresh exact-artifact
-   antivirus/install/update rehearsal, publication and public-feed checks remain release gates. GitHub's current
-   billing/spending-limit block also prevents a passing remote-CI claim.
+   antivirus/install/update rehearsal, publication and public-feed checks remain release gates.
+   Routine CI is manual-only to conserve Actions usage; no remote-CI pass is claimed.
+8. **Pointer-only storage:** optional thread logs copy conversation text, and enabled-by-default
+   persistent composer history stores submitted prompts. The native-source manager exists, but
+   the target no-copy invariant and a safe preservation/migration
+   path for existing logs, drafts and queued work are not implemented. The earlier seven-group
+   summary omitted this implementation gap. See [the target invariant](context-handoff-plan.md).
 
 Build 04k adds one-command prebuilt installation, a shared original icon, task-first window titles,
 clickable permission selection, descriptive web tools, expandable completed-operation groups,
@@ -42,7 +52,7 @@ The installed 04j delivery fixes the reported native edit extraction, glyph/wind
 Esc emphasis, subagent rows in Home and mixed-attachment presentation. Exact historical file-output
 cards recover on inspection when a unique successful patch batch can be verified; ambiguous old
 Edit rows are preserved. Local source and exact-binary checks qualify this scoped batch, while
-the broader seven workstreams remain open. See [E2E status](e2e-status.md) for installed evidence.
+the broader remaining workstreams stay open. See [E2E status](e2e-status.md) for installed evidence.
 
 Recent UI follow-ups add automatic composer thumbnails, a separate credit row and details view,
 private-by-default header email, concurrent foreground instances and draft-preserving Home
@@ -124,8 +134,8 @@ creation does not change the implementation status recorded here.
 
 - A versioned synthetic retrieval corpus and provider-free collector measure scoped relevance,
   exact excerpt resolution, visible gaps, read cost and resource observations through existing
-  checks. [Evidence and prepared live experiment](quality/memory-evaluation.md). Model-retention
-  trials remain unrun and require an explicit provider/task budget; ranking stays opt-in.
+  checks. [Evidence and live smoke](quality/memory-evaluation.md) now include a bounded three-arm
+  native comparison; blocked pointer fetches leave effectiveness unqualified. Ranking stays opt-in.
 
 - Explicit related-chat groups retain overlapping membership and provenance. A separate discovery
   screen preserves drafts and landing selection, with cross-project context suggestions labelled.
@@ -293,8 +303,8 @@ included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.
 - Local implementation and evidence are mapped in the
   [campaign disposition](quality/overnight-roadmap-disposition.md), including cwd replacement,
   managed workspace lifecycle and cross-worktree dependency delivery.
-- Live provider/auth/approval parity needs an explicit provider/task scope and usage budget under
-  `AGENTS.md`. No model turns have been used to clear this gate.
+- Live provider/auth/approval parity requires scoped usage under `AGENTS.md`. The current
+  14-dispatch run qualifies specific native paths only; broad application/worker parity stays open.
 - Unsupported proactive capacity requires verified native signals for installed versions.
   Unknown signals must remain unknown; documentation/read-only inspection
   can continue without asking the owner to research them.
