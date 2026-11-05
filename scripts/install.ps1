@@ -7,6 +7,8 @@
 #
 # What it does: reads the release feed, downloads the Windows zip and its .sha256, verifies the
 # SHA-256 with .NET (fails closed on any mismatch, nothing is installed), extracts to a temp folder
+# and reuses owned hash-verified downloads under %LOCALAPPDATA%\concordia\cache\releases.
+# Each check fetches a fresh checksum; bounded cleanup keeps the current zip and one rollback.
 # and runs `concordia.exe install`. That copies concordia to %LOCALAPPDATA%\concordia\bin, adds
 # it to PATH and opens Concordia. No compiler or administrator access is needed.
 #
@@ -59,6 +61,85 @@ function Read-ExpectedHash([string]$Path, [string]$Name) {
         }
     }
     Stop-Install "$AssetSha has no SHA-256 entry for $Name"
+}
+
+# Cache entries are owned only by a bounded receipt AND matching bytes. Unknown files stay put.
+function Get-ReleaseCacheRoot {
+    if (-not $env:LOCALAPPDATA) { return $null }
+    $root = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'concordia\cache\releases'))
+    $part = $root
+    while ($part) {
+        if (Test-Path -LiteralPath $part) {
+            $item = Get-Item -LiteralPath $part -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $null }
+        }
+        $parent = [IO.Path]::GetDirectoryName($part)
+        if ($parent -eq $part) { break }
+        $part = $parent
+    }
+    return $root
+}
+
+function Get-OwnedCachedZip([string]$Root, [string]$Hash) {
+    try {
+        if (-not $Root -or (Get-ReleaseCacheRoot) -ne $Root -or $Hash -cnotmatch '^[0-9a-f]{64}$') { return $null }
+        $path = Join-Path $Root ($Hash + '.zip')
+        $receiptPath = $path + '.receipt.json'
+        $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        $receiptFile = Get-Item -LiteralPath $receiptPath -Force -ErrorAction Stop
+        foreach ($item in @($file, $receiptFile)) {
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                [IO.Path]::GetDirectoryName($item.FullName) -ne $Root) { return $null }
+        }
+        if ($file.Length -gt 67108864 -or $receiptFile.Length -gt 4096) { return $null }
+        $receipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
+        if ($receipt.owner -cne 'concordia-release-cache-v1' -or $receipt.sha256 -cne $Hash -or
+            ($receipt.bytes -isnot [int] -and $receipt.bytes -isnot [long]) -or $receipt.bytes -ne $file.Length -or
+            (Get-Sha256Hex $path) -cne $Hash) { return $null }
+        return $file
+    } catch { return $null }
+}
+
+function Save-ReleaseCache([string]$Root, [string]$Hash, [string]$Zip) {
+    if (-not $Root -or (Get-ReleaseCacheRoot) -ne $Root) { return }
+    try {
+        [IO.Directory]::CreateDirectory($Root) | Out-Null
+        if ((Get-ReleaseCacheRoot) -ne $Root) { return }
+        $path = Join-Path $Root ($Hash + '.zip')
+        if (-not (Test-Path -LiteralPath $path) -and -not (Test-Path -LiteralPath ($path + '.receipt.json'))) {
+            $inputFile = [IO.File]::OpenRead($Zip)
+            try {
+                $outputFile = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try { $inputFile.CopyTo($outputFile) } finally { $outputFile.Dispose() }
+            } finally { $inputFile.Dispose() }
+            if ((Get-Sha256Hex $path) -cne $Hash) { return }
+            $receipt = @{ owner = 'concordia-release-cache-v1'; sha256 = $Hash; bytes = (Get-Item -LiteralPath $Zip).Length } | ConvertTo-Json -Compress
+            $outputFile = [IO.File]::Open(($path + '.receipt.json'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try {
+                $bytes = [Text.Encoding]::UTF8.GetBytes($receipt)
+                $outputFile.Write($bytes, 0, $bytes.Length)
+            } finally { $outputFile.Dispose() }
+        }
+        # Scan at most 64 directory entries, keep the selected artifact and newest rollback.
+        $owned = @()
+        $seen = 0
+        foreach ($entry in [IO.Directory]::EnumerateFiles($Root)) {
+            $seen++
+            if ($seen -gt 64) { break }
+            if ([IO.Path]::GetFileName($entry) -cmatch '^([0-9a-f]{64})\.zip$') {
+                $candidate = Get-OwnedCachedZip $Root $matches[1]
+                if ($candidate) { $owned += $candidate }
+            }
+        }
+        $obsolete = @($owned | Where-Object { $_.Name -ne ($Hash + '.zip') } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 1 -First 4)
+        foreach ($entry in $obsolete) {
+            $oldHash = [IO.Path]::GetFileNameWithoutExtension($entry.Name)
+            if (Get-OwnedCachedZip $Root $oldHash) {
+                Remove-Item -LiteralPath $entry.FullName -Force
+                Remove-Item -LiteralPath ($entry.FullName + '.receipt.json') -Force
+            }
+        }
+    } catch { Write-Host 'Release cache unavailable; continuing with the verified temporary download.' }
 }
 
 function Assert-DownloadUrl([string]$Value, [uri]$Api) {
@@ -166,7 +247,7 @@ function Invoke-Main {
         if ($Version) { Write-Host "Version      : v$Version" } else { Write-Host 'Version      : newest published release (drafts skipped)' }
         Write-Host "Assets       : $AssetZip and $AssetSha"
         Write-Host "Install dir  : $installDir"
-        Write-Host 'Steps        : 1 read feed, 2 download zip and .sha256, 3 verify SHA-256 (fail closed),'
+        Write-Host 'Steps        : 1 read feed, 2 fetch checksum and reuse/download zip, 3 verify SHA-256 (fail closed),'
         Write-Host '               4 validate/extract, 5 install prebuilt executable, 6 verify version'
         if (-not $NoLaunch) { Write-Host '               7 open Concordia' }
         if ($Dir) { Write-Host 'PATH         : not changed (-Dir given)' } else { Write-Host 'PATH         : install folder added to the USER PATH if missing' }
@@ -201,11 +282,17 @@ function Invoke-Main {
     try {
         $zipPath = Join-Path $tmp $AssetZip
         $shaPath = Join-Path $tmp $AssetSha
-        Write-Host "Downloading $AssetZip ..."
-        Invoke-WebRequest -UseBasicParsing -Uri $chosen.ZipUrl -Headers $Headers -OutFile $zipPath -TimeoutSec 300
         Invoke-WebRequest -UseBasicParsing -Uri $chosen.ShaUrl -Headers $Headers -OutFile $shaPath -TimeoutSec 60
-
         $expected = Read-ExpectedHash $shaPath $AssetZip
+        $cacheRoot = Get-ReleaseCacheRoot
+        $cached = Get-OwnedCachedZip $cacheRoot $expected
+        if ($cached) {
+            Write-Host "Reusing SHA-256 verified cached $AssetZip ..."
+            [IO.File]::Copy($cached.FullName, $zipPath, $false)
+        } else {
+            Write-Host "Downloading $AssetZip ..."
+            Invoke-WebRequest -UseBasicParsing -Uri $chosen.ZipUrl -Headers $Headers -OutFile $zipPath -TimeoutSec 300
+        }
         $actual = Get-Sha256Hex $zipPath
         if ($actual -ne $expected) {
             Stop-Install "checksum mismatch for $AssetZip (expected $expected, got $actual). Nothing was installed."
@@ -214,6 +301,7 @@ function Invoke-Main {
 
         $stage = Join-Path $tmp 'extract'
         Expand-VerifiedRelease $zipPath $stage
+        Save-ReleaseCache $cacheRoot $expected $zipPath
         $exe = Join-Path $stage 'concordia.exe'
         if (-not (Test-Path -LiteralPath $exe)) { Stop-Install "the zip has no concordia.exe at its root" }
 

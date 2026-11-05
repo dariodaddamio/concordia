@@ -308,6 +308,13 @@ impl Picker {
     }
 }
 
+struct BusySendConfirmation {
+    prompt: String,
+    conversation: String,
+    turn_started: Option<Instant>,
+    armed: Instant,
+}
+
 pub struct App {
     continuation: continuation::State,
     native_owner: Option<crate::provider::interaction::InteractionOwner>,
@@ -354,6 +361,7 @@ pub struct App {
     fresh_draft: bool,
     /// Set by the first idle Ctrl+C; a second one inside QUIT_WINDOW exits.
     quit_armed: Option<Instant>,
+    busy_send_confirmation: Option<BusySendConfirmation>,
     /// First visible prompt row when the prompt is taller than its box.
     input_scroll: usize,
     input_scroll_anchor: Option<(u64, usize, usize, usize)>,
@@ -824,6 +832,7 @@ impl App {
     }
 
     fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        self.busy_send_confirmation = None;
         if self.raster.active() {
             return;
         }
@@ -1413,6 +1422,7 @@ impl App {
     }
 
     fn finalize_turn(&mut self, outcome: TurnOutcome) {
+        self.busy_send_confirmation = None;
         self.submitted_prompt = None;
         let elapsed = self.turn_started.map(|t| t.elapsed());
         let usage = std::mem::take(&mut self.turn_usage);
@@ -3408,9 +3418,43 @@ impl App {
             return;
         }
         if self.busy && (!line.starts_with('/') || user_prompt.is_some()) {
-            self.push_system("a turn is already running - wait for it to finish or cancel it");
+            let confirmed = self.busy_send_confirmation.take().is_some_and(|armed| {
+                armed.prompt == original_prompt
+                    && armed.conversation == self.deleg.d.conversation_id()
+                    && armed.turn_started == self.turn_started
+                    && armed.armed.elapsed() <= Duration::from_secs(5)
+            });
+            if !confirmed {
+                self.busy_send_confirmation = Some(BusySendConfirmation {
+                    prompt: original_prompt,
+                    conversation: self.deleg.d.conversation_id().to_owned(),
+                    turn_started: self.turn_started,
+                    armed: Instant::now(),
+                });
+                self.flash("Enter again to interrupt and send this message; Tab queues it.");
+                return;
+            }
+            if self.queue.force_pending {
+                self.flash("Stopping the active turn before sending the pending message…");
+                return;
+            }
+            let index = self.queue.items.len();
+            let mut followup = crate::attachments::Message::decode(&original_prompt);
+            followup.text = line;
+            self.queue.items.push(followup.encode());
+            let notice = self.force_queued(index);
+            if self.queue.force_pending {
+                self.editor.clear();
+                self.images.draft.clear();
+                self.clear_selections();
+                self.persist_draft_now();
+            } else {
+                self.queue.items.remove(index);
+            }
+            self.flash(notice);
             return;
         }
+        self.busy_send_confirmation = None;
         if !self.busy {
             self.cancel_requested = false;
         }
@@ -3676,6 +3720,7 @@ impl App {
             parked_draft: None,
             fresh_draft: false,
             quit_armed: None,
+            busy_send_confirmation: None,
             input_scroll: 0,
             input_scroll_anchor: None,
             view: TranscriptView::default(),
@@ -4476,6 +4521,9 @@ fn should_accept_key(key: &KeyEvent) -> bool {
     if matches!(key.kind, KeyEventKind::Release) {
         return false;
     }
+    if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter {
+        return false;
+    }
     // Enter also arrives as Char('\r') / '\n' on some hosts — ignore those chars.
     if matches!(key.code, KeyCode::Char('\r') | KeyCode::Char('\n')) {
         return false;
@@ -4534,7 +4582,9 @@ fn dispatch_key_event(
     turn_tx: &mpsc::UnboundedSender<String>,
     now: Instant,
 ) -> bool {
-    if matches!(key.kind, KeyEventKind::Release) {
+    if matches!(key.kind, KeyEventKind::Release)
+        || key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter
+    {
         return false;
     }
     let palette_action = matches!(key.code, KeyCode::Enter | KeyCode::Tab)
@@ -4585,6 +4635,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
             return false;
         }
         _ => {}
+    }
+    if key.code != KeyCode::Enter || !key.modifiers.is_empty() {
+        app.busy_send_confirmation = None;
     }
     if raster::key(app, &key) {
         return false;
@@ -5168,8 +5221,10 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 fn handle_mouse(app: &mut App, m: MouseEvent) {
     if matches!(m.kind, MouseEventKind::Down(_) | MouseEventKind::Drag(_)) {
         app.card_header_pressed = None;
+        app.busy_send_confirmation = None;
     }
     if app.raster.active() && !worker_input::active(app) {
+        modal::mouse(app, &m);
         return;
     }
     if worker_input::active(app) {
@@ -6081,12 +6136,22 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         markdown: false,
         linkify: true,
         runs: &[],
+        header_files: &[],
     };
     let live_thought = if app.expanded_activity {
         app.live_thinking.clone()
     } else {
         tail_lines(&condense_thinking(&app.live_thinking), 3)
     };
+    let summaries: Vec<_> = app
+        .messages
+        .iter()
+        .map(|m| {
+            m.card
+                .as_ref()
+                .map(crate::provider::stream_cards::compact_card_summary)
+        })
+        .collect();
     let mut displayed: Vec<Option<String>> = app
         .messages
         .iter()
@@ -6098,7 +6163,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .map(|c| {
                     format!(
                         "{}\n{}",
-                        format_card_line(c),
+                        summaries[idx]
+                            .as_ref()
+                            .map_or(m.text.as_str(), |summary| summary.text.as_str()),
                         c.detail.as_deref().unwrap_or("")
                     )
                 })
@@ -6124,6 +6191,11 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         if message.role == MsgRole::Card && !groups.hidden[index] {
             let body = displayed[index]
                 .take()
+                .or_else(|| {
+                    summaries[index]
+                        .as_ref()
+                        .map(|summary| summary.text.clone())
+                })
                 .unwrap_or_else(|| message.text.clone());
             let (heading, tail) = body.split_once('\n').unwrap_or((&body, ""));
             let action = if app.activity.is_expanded(index, app.expanded_activity) {
@@ -6132,7 +6204,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 "Expand"
             };
             displayed[index] = Some(format!(
-                "{heading} · {action}{}{}",
+                "{heading} - {action}{}{}",
                 if tail.is_empty() { "" } else { "\n" },
                 tail
             ));
@@ -6153,6 +6225,21 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             } else {
                 Vec::new()
             }
+        })
+        .collect();
+    let msg_files: Vec<&[transcript::HeaderFile]> = summaries
+        .iter()
+        .enumerate()
+        .map(|(i, summary)| {
+            summary
+                .as_ref()
+                .filter(|summary| {
+                    displayed[i]
+                        .as_deref()
+                        .unwrap_or(&app.messages[i].text)
+                        .starts_with(&summary.text)
+                })
+                .map_or(&[][..], |summary| summary.files.as_slice())
         })
         .collect();
     let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 3 + 4);
@@ -6272,6 +6359,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 || m.role == MsgRole::User && m.text.contains("[Image: "),
             linkify: m.role != MsgRole::Meta,
             runs: &msg_runs[i],
+            header_files: msg_files[i],
         });
         let next_is_card = app
             .messages
@@ -6305,6 +6393,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             markdown: true,
             linkify: true,
             runs: &[],
+            header_files: &[],
         });
     }
     // Live assistant text while the turn is still running.
@@ -6318,6 +6407,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             markdown: true,
             linkify: true,
             runs: &[],
+            header_files: &[],
         });
     }
     if let Some(tip) = &tip_text {
@@ -6332,6 +6422,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             markdown: false,
             linkify: false,
             runs: &[],
+            header_files: &[],
         });
     }
     if app.view.link_root.as_deref() != Some(app.cwd.as_path()) {
@@ -7107,6 +7198,14 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
                 " message (paused) "
             } else if app.workspace.focused.is_some() {
                 " message · Esc returns from file "
+            } else if app.busy
+                && app.busy_send_confirmation.as_ref().is_some_and(|armed| {
+                    armed.turn_started == app.turn_started
+                        && armed.conversation == app.deleg.d.conversation_id()
+                        && armed.armed.elapsed() <= Duration::from_secs(5)
+                })
+            {
+                " Enter again to interrupt + send · Tab queues "
             } else {
                 " message "
             },
@@ -7400,6 +7499,7 @@ fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
         markdown: false,
         linkify: false,
         runs: &[],
+        header_files: &[],
     }
 }
 

@@ -1,7 +1,7 @@
 //! Selectable conversational replies. These send messages, never native tool approvals.
 //!
-//! A reply is offered only when the assistant's message ends with a question followed by
-//! top-level choices. The note row lets the user send a choice with a note, or a note alone.
+//! Single questions require trailing choices; explicit bundles may include descriptions and
+//! a trailing progress note. The note row accepts a choice with a note, or a note alone.
 use super::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -209,7 +209,11 @@ pub(super) fn native_questions(
 }
 fn option(line: &str) -> Option<String> {
     let line = line.trim();
-    let value = if let Some(s) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+    let value = if let Some(s) = line
+        .strip_prefix("- ")
+        .or_else(|| line.strip_prefix("* "))
+        .or_else(|| line.strip_prefix("• "))
+    {
         s
     } else {
         let n = line.find(['.', ')'])?;
@@ -311,6 +315,9 @@ fn parse_tool(text: &str) -> Vec<Question> {
 }
 
 fn parse(text: &str) -> Vec<Question> {
+    if let Some(questions) = parse_bundle(text) {
+        return questions;
+    }
     // Choices must immediately follow their question and finish the reply. Intervening or
     // trailing prose makes this ordinary content, not an inferred request for user input.
     let mut found: Option<Question> = None;
@@ -360,6 +367,125 @@ fn parse(text: &str) -> Vec<Question> {
         Some(q) if after == 0 => vec![q],
         _ => Vec::new(),
     }
+}
+
+/// The relaxed form requires at least two complete, explicit question/choice groups.
+/// It never interprets example code or a lone status list as a request for input.
+fn parse_bundle(text: &str) -> Option<Vec<Question>> {
+    if text.len() > 128 * 1024 {
+        return Some(Vec::new());
+    }
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut headings = Vec::new();
+    let mut fenced = false;
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced || line.starts_with([' ', '\t']) || option(line).is_some() {
+            continue;
+        }
+        let prompt = plain(line.trim_start_matches('#').trim());
+        let first = prompt
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if prompt.contains('?')
+            && prompt.len() <= 4096
+            && matches!(
+                first.as_str(),
+                "may"
+                    | "can"
+                    | "should"
+                    | "would"
+                    | "do"
+                    | "does"
+                    | "which"
+                    | "what"
+                    | "how"
+                    | "where"
+                    | "when"
+                    | "are"
+                    | "is"
+                    | "will"
+            )
+        {
+            headings.push((index, prompt));
+        }
+    }
+    if headings.len() < 2 {
+        return None;
+    }
+    if headings.len() > 3 {
+        return Some(Vec::new());
+    }
+    if lines[..headings[0].0]
+        .iter()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| {
+            let lower = line.trim().to_ascii_lowercase();
+            lower.starts_with("example")
+                || lower.starts_with("for example")
+                || lower.starts_with("sample")
+        })
+    {
+        return Some(Vec::new());
+    }
+    let mut questions = Vec::new();
+    for (position, (start, prompt)) in headings.iter().enumerate() {
+        let end = headings
+            .get(position + 1)
+            .map_or(lines.len(), |(index, _)| *index);
+        let mut question = Question {
+            prompt: prompt.clone(),
+            options: Vec::new(),
+        };
+        let mut after_choices = false;
+        for line in &lines[*start + 1..end] {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
+                return Some(Vec::new());
+            }
+            if !line.starts_with([' ', '\t']) {
+                if let Some(choice) = option(line) {
+                    if after_choices || question.options.len() >= 9 {
+                        return Some(Vec::new());
+                    }
+                    question.options.push(choice);
+                    continue;
+                }
+            } else if !after_choices {
+                if let Some(last) = question.options.last_mut() {
+                    let continuation = option(line).unwrap_or_else(|| plain(line));
+                    if last.len() + continuation.len() + 1 > 1200 {
+                        return Some(Vec::new());
+                    }
+                    last.push(' ');
+                    last.push_str(&continuation);
+                    continue;
+                }
+            }
+            if question.options.is_empty() {
+                if question.prompt.len() + line.len() + 1 > 4096 {
+                    return Some(Vec::new());
+                }
+                question.prompt.push(' ');
+                question.prompt.push_str(&plain(line));
+            } else {
+                after_choices = true;
+            }
+        }
+        if question.options.len() < 2 {
+            return Some(Vec::new());
+        }
+        questions.push(question);
+    }
+    Some(questions)
 }
 /// `index` past the last choice is the note row: the note is sent on its own.
 fn choose(app: &mut App, index: usize) {
@@ -623,7 +749,17 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let width = area.width.saturating_sub(2) as usize;
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!(" {}", fit(&q.prompt, width)),
+            format!(
+                " {}",
+                fit(
+                    &if s.questions.len() > 1 {
+                        format!("{} of {} · {}", s.current + 1, s.questions.len(), q.prompt)
+                    } else {
+                        q.prompt.clone()
+                    },
+                    width
+                )
+            ),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -764,6 +900,10 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                         app.questions.focused = true;
                         app.questions.selected = index;
                     } else {
+                        app.questions.focused = true;
+                        app.questions.selected = index;
+                        app.workspace.focused = None;
+                        app.queue.focused = false;
                         choose(app, index);
                     }
                 }
@@ -1267,5 +1407,96 @@ mod tests {
         );
         assert_eq!(app.editor.text(), "keep the current draft");
         assert!(app.questions.native.is_none());
+
+        let text = "May I use up to 18 real CLI test requests total across the currently selected, signed-in Codex/Claude/Cursor accounts? These would use disposable fixtures to check approvals, images/PDFs, exact-session continuation and a three-arm memory comparison. Seeds and compaction requests count toward the cap; no automatic retries or account switching. Mention any provider/account exclusions in your answer.\n- Allow up to 18 requests total\n- Allow up to 6 requests total\n- No additional live requests\n\nWhat provider usage may those tests consume? I will not buy credits, add paid services or change your billing settings.\n- Subscription allowances only\n- Existing purchased credits are also allowed\nThe missing decisions are the live-test allowance and whether existing purchased credits may be used. I’ve asked both together; the previous one-request allowance is consumed.";
+        let parsed = parse(text);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].options.len(), 3);
+        assert_eq!(parsed[1].options.len(), 2);
+        assert!(parse(&format!("Example questions:\n{text}")).is_empty());
+        assert!(parse(&format!("```text\n{text}\n```")).is_empty());
+        assert!(parse("May I use the fixture? This is an explanation.\n- Yes\n- No\nA status paragraph follows.").is_empty());
+        assert_eq!(parse(&text.replace("\n- ", "\n• ")).len(), 2);
+
+        let mut bundle = App::new(dir.path().into(), dir.path().into());
+        bundle.editor.set_text("preserve the unsent draft");
+        bundle.questions.offer(text);
+        assert!(bundle.questions.waiting() && !bundle.questions.focused);
+        assert!(bundle.questions.native.is_none());
+        terminal
+            .draw(|frame| {
+                let mut transcript = frame.area();
+                let area = carve(&mut transcript, &mut bundle);
+                draw(frame, area, &mut bundle);
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("1 of 2"));
+        assert!(screen.contains("Allow up to 18 requests total"));
+        let row = bundle.questions.targets[0].0;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert!(mouse(
+                &mut bundle,
+                &MouseEvent {
+                    kind,
+                    column: row.x + 2,
+                    row: row.y,
+                    modifiers: KeyModifiers::NONE
+                }
+            ));
+        }
+        assert_eq!(bundle.questions.current, 1);
+        assert!(bundle.questions.focused);
+        assert!(
+            bundle.queue.items.is_empty(),
+            "one answer must not send a partial bundle"
+        );
+        terminal
+            .draw(|frame| {
+                let mut transcript = frame.area();
+                let area = carve(&mut transcript, &mut bundle);
+                draw(frame, area, &mut bundle);
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("2 of 2"));
+        assert!(screen.contains("Subscription allowances only"));
+        assert!(handle_key(
+            &mut bundle,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        ));
+        assert!(!bundle.questions.waiting());
+        assert_eq!(bundle.queue.items.len(), 1);
+        assert!(bundle.queue.items[0]
+            .contains("\nAllow up to 18 requests total\n\nWhat provider usage"));
+        assert!(bundle.queue.items[0].ends_with("\nSubscription allowances only"));
+        assert!(!bundle.queue.items[0].contains("missing decisions"));
+        assert_eq!(bundle.editor.text(), "preserve the unsent draft");
+        assert!(bundle.questions.native.is_none());
+
+        let structured = serde_json::json!({"questions":[
+            {"title":"First async question? Explanation.","options":["One","Two"]},
+            {"title":"Second async question? Explanation.","options":["Three","Four"]}
+        ]})
+        .to_string();
+        let mut state = State::default();
+        state.offer_tool(&structured);
+        assert_eq!(state.questions.len(), 2);
+        assert!(state.native.is_none() && !state.focused);
     }
 }

@@ -106,13 +106,100 @@ fn submitting_while_busy_does_not_replace_active_prompt_or_queue_another_turn() 
     app.submit_input(&tx);
     assert_eq!(rx.try_recv().unwrap(), "active prompt");
 
+    let queued = vec!["older queued one".to_owned(), "older queued two".to_owned()];
+    app.queue.items = queued.clone();
     app.editor.set_text("second prompt");
     app.submit_input(&tx);
 
     assert_eq!(app.editor.text(), "second prompt");
     assert!(app.busy);
     assert_eq!(app.submitted_prompt.as_deref(), Some("active prompt"));
+    assert!(!app.cancel_requested && !app.queue.force_pending);
+    assert_eq!(app.queue.items, queued);
+    assert!(app.busy_send_confirmation.is_some());
+    assert!(app.flash.as_ref().unwrap().0.contains("Enter again"));
     assert!(rx.try_recv().is_err());
+
+    let mut repeat = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    repeat.kind = KeyEventKind::Repeat;
+    assert!(!handle_key(&mut app, repeat, &tx));
+    assert!(!app.cancel_requested && !app.queue.force_pending);
+    assert_eq!(app.editor.text(), "second prompt");
+
+    // Text identity, turn identity and conversation identity each require a fresh first press.
+    app.editor.set_text("edited second prompt");
+    app.submit_input(&tx);
+    assert!(!app.cancel_requested);
+    assert_eq!(
+        app.busy_send_confirmation.as_ref().unwrap().prompt,
+        "edited second prompt"
+    );
+    app.turn_started = app
+        .turn_started
+        .map(|started| started + Duration::from_millis(1));
+    app.submit_input(&tx);
+    assert!(!app.cancel_requested);
+    app.deleg.change_conversation();
+    app.submit_input(&tx);
+    assert!(!app.cancel_requested);
+    app.busy_send_confirmation.as_mut().unwrap().armed = Instant::now() - Duration::from_secs(6);
+    app.submit_input(&tx);
+    assert!(
+        !app.cancel_requested,
+        "an expired first press cannot interrupt a turn"
+    );
+
+    assert!(!handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+        &tx
+    ));
+    assert!(app.busy_send_confirmation.is_none());
+    app.submit_input(&tx);
+    assert!(!app.cancel_requested);
+    app.paste_text(" extra");
+    assert!(app.busy_send_confirmation.is_none());
+    let replacement = app.editor.text();
+    app.submit_input(&tx);
+    assert!(!app.cancel_requested);
+    handle_mouse(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: u16::MAX,
+            row: u16::MAX,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(app.busy_send_confirmation.is_none());
+    app.submit_input(&tx);
+    assert!(!app.cancel_requested && !app.queue.force_pending);
+    assert_eq!(app.queue.items, queued);
+
+    // The confirmed press requests cancellation; it cannot dispatch a second native process.
+    app.submit_input(&tx);
+    assert!(app.busy && app.cancel_requested && app.queue.force_pending);
+    assert!(app.editor.text().is_empty());
+    assert_eq!(app.queue.items[0], replacement);
+    assert_eq!(&app.queue.items[1..], queued.as_slice());
+    assert!(rx.try_recv().is_err());
+    app.queue_advance(&tx);
+    assert!(
+        rx.try_recv().is_err(),
+        "forced send waits for the current turn to settle"
+    );
+    assert!(app.busy);
+    app.on_turn_done(
+        TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        },
+        &tx,
+    );
+    assert_eq!(rx.try_recv().unwrap(), replacement);
+    assert!(rx.try_recv().is_err());
+    assert_eq!(app.queue.items, queued);
+    assert!(app.queue.paused);
 }
 
 #[test]

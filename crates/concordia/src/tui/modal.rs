@@ -6,11 +6,18 @@ pub(super) enum Target {
     Picker,
     Activity,
     WorkerInput,
+    Raster,
 }
 
 pub(super) fn draw_close(f: &mut Frame, popup: Rect, app: &mut App, target: Target) {
+    if let Some(rect) = draw_close_button(f, popup) {
+        app.areas.modal_close = Some((rect, target));
+    }
+}
+
+pub(super) fn draw_close_button(f: &mut Frame, popup: Rect) -> Option<Rect> {
     if popup.width < 8 || popup.height == 0 {
-        return;
+        return None;
     }
     let rect = Rect::new(popup.right() - 4, popup.y, 3, 1);
     f.render_widget(
@@ -21,7 +28,7 @@ pub(super) fn draw_close(f: &mut Frame, popup: Rect, app: &mut App, target: Targ
         ),
         rect,
     );
-    app.areas.modal_close = Some((rect, target));
+    Some(rect)
 }
 
 pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
@@ -40,6 +47,7 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
             if hit == Some(pressed) {
                 match pressed {
                     Target::WorkerInput => app.deleg.input = None,
+                    Target::Raster => app.raster.close(),
                     Target::Picker => app.dismiss_picker(),
                     Target::Activity => {
                         app.activity.detail = None;

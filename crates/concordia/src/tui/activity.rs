@@ -33,24 +33,46 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
             }
         }
         let label = tool_label(&card.title);
-        if let Some(start) = heading.find(&label) {
+        let body = heading
+            .strip_prefix("│ ")
+            .unwrap_or(heading)
+            .trim_start_matches(['◉', '✓', '✗'])
+            .trim_start();
+        let mut start = heading.len() - body.len();
+        for part in body.split(" + ") {
+            let action = [
+                "Edit File",
+                "Write File",
+                "Read File",
+                "Read command output",
+                "Browse web",
+                "Search web",
+                "Search files",
+                "Ran",
+                "Run",
+            ]
+            .into_iter()
+            .find(|label| {
+                part.strip_prefix(label)
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(' '))
+            });
+            let end = action.map_or_else(
+                || {
+                    part.find(" · ")
+                        .or_else(|| part.find(" - "))
+                        .or_else(|| part.find("  "))
+                        .unwrap_or(part.len())
+                },
+                str::len,
+            );
             mark(
                 start,
-                start + label.len(),
+                start + end,
                 Style::default()
                     .fg(Color::Indexed(252))
                     .add_modifier(Modifier::BOLD),
             );
-        } else {
-            // A collapsed operation group has a human title of its own.
-            let end = heading.find(" · ").unwrap_or(heading.len());
-            mark(
-                0,
-                end,
-                Style::default()
-                    .fg(Color::Indexed(252))
-                    .add_modifier(Modifier::BOLD),
-            );
+            start += part.len() + 3;
         }
         // Only edit summaries own +/- counts; command flags and output are never coloured as edits.
         if matches!(label.as_str(), "Edit file" | "Write file") {
@@ -68,9 +90,12 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
             }
         }
     }
-    if let Some(start) = heading.rfind(" · ") {
-        if matches!(&heading[start + " · ".len()..], "Expand" | "Collapse") {
-            mark(start, heading.len(), muted);
+    for separator in [" - ", " · "] {
+        if let Some(start) = heading.rfind(separator) {
+            if matches!(&heading[start + separator.len()..], "Expand" | "Collapse") {
+                mark(start, heading.len(), muted);
+                break;
+            }
         }
     }
     runs

@@ -1623,6 +1623,10 @@ fn unified_diff_cards_show_counts_and_review_colours() {
     });
     h.draw();
     assert!(h.screen().contains("+2 -1"));
+    assert!(
+        !h.screen().contains("src/lib.rs"),
+        "collapsed headers show the basename"
+    );
     let heading = h
         .app
         .view
@@ -1631,10 +1635,14 @@ fn unified_diff_cards_show_counts_and_review_colours() {
         .find(|r| r.text.iter().collect::<String>().contains("+2 -1"))
         .unwrap();
     let heading_text: String = heading.text.iter().collect();
+    assert!(heading
+        .links
+        .iter()
+        .any(|(_, _, target)| target.target == "src/lib.rs" && target.display == "lib.rs"));
     for (token, color) in [
         ("+2", Color::Green),
         ("-1", Color::Red),
-        ("Edit file", Color::Indexed(252)),
+        ("Edit File", Color::Indexed(252)),
         ("Expand", Color::Indexed(244)),
     ] {
         let start = heading_text[..heading_text.find(token).unwrap()]
@@ -1653,7 +1661,7 @@ fn unified_diff_cards_show_counts_and_review_colours() {
     h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     h.draw();
     assert!(
-        h.screen().contains("Edit file"),
+        h.screen().contains("Edit File"),
         "expanded headings keep the readable action"
     );
     assert!(!h.screen().contains("edit · Collapse"));
@@ -4111,7 +4119,7 @@ fn expanded_tool_header_stays_reachable_and_collapses_after_scrolling() {
         assert_eq!(pinned_id, id);
         assert!(h.screen().contains("Collapse"));
         let pinned = h.screen().lines().nth(rect.y as usize).unwrap().to_owned();
-        assert!(pinned.contains("cargo test -p concordia"), "{pinned}");
+        assert!(pinned.contains("Ran tests"), "{pinned}");
         assert!(pinned.contains("output lines"), "{pinned}");
         assert_eq!(pointer::shape(&h.app, rect.x + 5, rect.y), "pointer");
         h.click(rect.x + 5, rect.y);

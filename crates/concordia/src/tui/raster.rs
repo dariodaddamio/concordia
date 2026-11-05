@@ -307,6 +307,9 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     let block = Block::bordered().title(" Image preview · Esc back · E system viewer ");
     let inner = block.inner(area);
     f.render_widget(block, area);
+    if let Some(rect) = modal::draw_close_button(f, area) {
+        app.areas.modal_close = Some((rect, modal::Target::Raster));
+    }
     let title = view.path.to_string_lossy();
     f.render_widget(
         Paragraph::new(title.as_ref()),
@@ -589,8 +592,29 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
         .any(|cell| cell.symbol() == "▀"));
     app.paste_text("should not alter draft");
     assert_eq!(app.editor.text(), "preview preserves this draft");
-    assert!(key(app, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    let (close, target) = app
+        .areas
+        .modal_close
+        .expect("image viewer has a visible close control");
+    assert!(target == modal::Target::Raster);
+    assert_eq!(close.right(), terminal.backend().buffer().area.width - 1);
+    assert_eq!(close.y, 0);
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        super::handle_mouse(
+            app,
+            MouseEvent {
+                kind,
+                column: close.x + 1,
+                row: close.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+    }
     assert!(!app.raster.active());
+    assert_eq!(app.editor.text(), "preview preserves this draft");
     app.images.draft = vec![crate::attachments::Attachment::Image(
         crate::attachments::import(&app.state_root, &path).unwrap(),
     )];

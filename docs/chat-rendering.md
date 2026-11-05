@@ -1,5 +1,22 @@
 # Chat rendering and input, 2026-11-01f
 
+Build `2026-11-04p` shows compact tool headings such as
+`Edit File example.rs + Ran build - 22 output lines - Expand`. File labels retain their exact
+full targets; expanding retains the raw tool details. Static wrapper calls are summarized only
+when the entire bounded batch can be parsed without executing it.
+
+Multi-question conversational forms support descriptions and a trailing progress note, display
+question progress and keep mouse/keyboard selection across questions. F8 or a click enters the
+choices. These replies never grant native tool approval. The enlarged image viewer uses the
+shared top-right X close control. During work, the first Enter preserves the draft and explains
+that another Enter within five seconds interrupts and sends it after the active turn settles;
+Tab queues instead. Editing, another key, a mouse action or a changed turn resets confirmation.
+
+Release updates refresh trusted checksums and reuse matching cached bytes. Cleanup is bounded
+to owned artifacts, preserves a rollback and excludes active binaries; unknown files remain.
+Installing identical bytes avoids another executable swap. Source updates retain Cargo's own
+incremental freshness checks rather than trusting a version string alone.
+
 Build `2026-11-04o` accepts held navigation and deletion keys, including Ctrl/Shift arrows,
 without repeating send/cancel/toggle shortcuts. Restored native chats preserve thinking and tool
 cards without appending synthetic "Recorded turn" messages. Ctrl+O and tool headers still expand
@@ -20,7 +37,7 @@ composer, and dismisses on an outside click. Mode changes retain the existing ne
 Completed tool cards show Expand/Collapse on their title row; the title text and gutter expand
 the recorded details. File/web links keep their actions and dragging title text selects it.
 Reopening a Codex or Claude chat restores recorded native tool IDs, inputs/results/status and
-readable provider thinking, with Review activity for completed turns. Encrypted reasoning remains
+readable provider thinking. Encrypted reasoning remains
 opaque. Cursor's current saved-history reader restores text only. Restoration is read-only and
 starts no provider work. Source reads remain bounded to the recent 8 MiB, 200 entries and 1 MiB
 of displayed history; omitted data is reported as truncated.
