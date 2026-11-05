@@ -7,9 +7,10 @@ and approvals. Concordia owns the index/map, orchestration policy, process lifec
 Current source implements explicit resume, bounded maps, optional Concordia thread logs,
 recent Codex/Claude native-source pointers and exact readback, unfinished-request recovery,
 file-backed Harness pins and explicit capacity-error rollover. [Native memory](native-memory.md)
-documents the identities, byte budgets and remaining limits. Whole-history indexing, related-chat
-retrieval, broader worker/run policy and proactive rollover remain target features in the
-[implementation plan](context-handoff-plan.md). This page describes the existing runtime unless
+documents the identities, byte budgets and remaining limits. Whole-history pages, bounded related-chat
+retrieval, worker recovery policy and supported opt-in proactive rollover are implemented with
+documented provider/evidence limits. The [implementation plan](context-handoff-plan.md) separates
+the original target from current contracts. This page describes the existing runtime unless
 a section is explicitly marked planned.
 
 ## Principles
@@ -34,15 +35,16 @@ current provider, isolated home and policy revision; provider turns cannot creat
    runtime and no agent loop in the binary.
 5. **Small and fast.** One binary and no resident inference model. Background provider/worker
    tasks, usage refresh and local reads are bounded and tracked. Budgets are checked in CI.
-6. **Document retention explicitly.** Full Concordia thread logging is opt-in. Prompt history,
-   drafts and queue recovery have separate persistence controls and may store sensitive text;
-   they must not be described as all disabled by default.
+6. **Document retention explicitly.** Thread recording is opt-in; new bodies use verified native
+   references. Prompt recall defaults on and stores references separately. Legacy logs, drafts and
+   queue/unfinished recovery can retain sensitive text and must not be described as all disabled
+   or body-free. Completed worker inputs use references only after exact binding succeeds.
 
 ## Layers
 
 | Layer | What | Where |
 | --- | --- | --- |
-| Thread log | Append-only events of a conversation (opt-in) | `<state>/threads/<thread-id>.jsonl` |
+| Thread log | Append-only metadata/native references (opt-in), legacy read compatibility | `<state>/threads/<thread-id>.jsonl` |
 | Map | Deterministic summary of a thread, <= 1600 chars | built on demand (`threads::build_map`) |
 | Pointer | How a model fetches more: `concordia thread read <id>` | printed inside every map |
 | Delivery | Map prepended on a switch or `@chat`; native resume otherwise | `context.rs` |
@@ -56,21 +58,18 @@ current provider, isolated home and policy revision; provider turns cannot creat
 One file per conversation, created when a conversation starts and `threads.enabled = true`.
 A conversation is the span between `/new` (or launch) and the next `/new`. Thread id: UUID v4.
 
-One JSON object per line. Fields:
+New version-2 records contain event time/kind, provider/account/model, bounded card metadata,
+usage, and a native reference or fixed unavailable reason. Message text and tool-detail bodies
+are hydrated from exact provider-owned sources on read. The transient `ThreadEvent` API and legacy
+JSONL remain readable; they do not describe the new disk format. `ThreadLog::append` accepts only
+metadata, while referenced bodies require validated source bindings. Body-free unavailable rows
+never fall back to copying transcript text.
 
-| Field | Meaning |
-| --- | --- |
-| `t` | unix seconds |
-| `k` | `user`, `assistant`, `card`, `switch`, `note`, `usage` |
-| `text` | message text (`user`, `assistant`, `note`), capped at 20000 chars per event |
-| `provider`, `account`, `model` | who produced it (`assistant`, `card`, `usage`) |
-| `card` | `{title, detail, status}` for `card` events (tool/command cards) |
-| `usage` | `{input, output, cached, cost_usd}` (any may be absent) for `usage` events |
-
-Rules: never log credentials, never log stderr; lines are written with one `write_all` (append
-mode) so concurrent panes do not interleave; the file rotates nothing and is deleted by
-`/threads delete <id>`. A header file `<id>.meta.json` holds `{id, started, title, cwd}` where
-`title` is the first user prompt cut to 60 chars.
+Writes use a bounded stable per-thread lock and complete append writes. A header file
+`<id>.meta.json` holds `{id, started, title, cwd}`; its title remains a bounded display label.
+Existing logs are not migrated or removed. Explicit `/threads delete <id>` remains user-controlled.
+See [native reference bounds](native-memory.md) for exact identity/hash validation, read limits,
+source sealing and protected recovery exceptions.
 
 ## Map
 
@@ -230,9 +229,11 @@ preserving the main draft and queued edit underneath.
   editor and holds dispatch until explicit save/cancel. Save failures stay visible in the footer
   and retry at bounded intervals. `/recover` explains the error; `/recover retry` retries after
   local storage is repaired. Explicit legacy import preserves the current pane's saved record.
-* Sent prompts persist to `<state>/history.jsonl` (cap 500, newest last) so Up still works after a
-  restart. This stores prompts locally; `[ui] persist_history = false` turns it off (default on,
-  same trust boundary as the provider CLIs' own history).
+* Prompt recall writes native references to `<state>/history.refs.jsonl` (cap 500, newest last).
+  Up hydrates original composer text and attachment descriptors after restart. Legacy
+  `history.jsonl` is read-only compatibility input. Missing sources are skipped with a notice,
+  never replaced with another session or placeholder prompt. `[ui] persist_history = false`
+  disables new persistent recall (default on). This is separate from draft/queue recovery.
 
 ## Process stats
 

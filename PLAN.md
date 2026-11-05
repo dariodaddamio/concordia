@@ -15,6 +15,9 @@ measurements and native PDF inputs are implemented. Build `2026-11-04b` qualifie
 and retains local native background work through completion and follow-up output. Native regression
 fixtures pass; Cursor capacity, external usage and live/physical parity remain open.
 Current bounds and controls: [native memory](docs/native-memory.md).
+Build `2026-11-04r` adds verified native references for new recorded bodies and persistent prompt
+recall, plus completed/collected worker inputs where exact binding succeeds. Legacy, pending and
+uncertain recovery remains preserved; source-budget and unsupported-format limits remain explicit.
 Native image inputs for Codex/Claude/Cursor and local Mermaid rendering are implemented;
 [image/diagram limits](docs/images-and-diagrams.md) distinguish fixture proof from live-provider validation.
 Current UI behavior and installed-host pointer limits: [chat rendering](docs/chat-rendering.md).

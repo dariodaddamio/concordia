@@ -768,8 +768,20 @@ impl App {
             self.prepare_usage_continuation(&outcome)
         };
         self.finalize_turn(outcome);
+        self.reference_journal.finish(
+            self.state_root.clone(),
+            self.native_session_id.clone(),
+            turn_closed && scope_closed,
+        );
         self.native_accounting_owner = None;
-        self.save_turn_checkpoint(turn_closed && scope_closed);
+        if turn_closed && scope_closed && self.reference_journal.pending() {
+            // Keep the request recovery transaction until its verified references are durable.
+            self.reference_journal
+                .defer_close(self.continuation.run_id());
+        } else {
+            self.reference_journal.prevent_close();
+            self.save_turn_checkpoint(turn_closed && scope_closed);
+        }
         if self.questions.waiting() {
             self.pause_queue();
             self.queue.advance = false;
@@ -786,6 +798,9 @@ impl App {
 
     /// Send queued prompts through the normal submit path until one starts a turn.
     pub(super) fn queue_advance(&mut self, tx: &mpsc::UnboundedSender<String>) {
+        if self.reference_journal.backlogged() {
+            return;
+        }
         if self.queue.force_pending || self.queue.advance {
             if let Some(line) = self.queue.items.first() {
                 if let Err(error) = crate::attachments::Message::decode(line).validate() {

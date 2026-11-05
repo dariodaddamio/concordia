@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[path = "thread_references.rs"]
+mod references;
+use crate::native_memory::references::{CaptureScope, Reference};
+
 /// Per-event text cap, in characters.
 pub const MAX_EVENT_TEXT: usize = 20_000;
 /// Default map budget, in characters.
@@ -187,32 +191,79 @@ impl ThreadLog {
         self.dir.join(format!("{}.meta.json", self.id))
     }
 
-    /// One `write_all` in append mode so concurrent panes never interleave a line.
+    /// Append structural metadata only. Conversation bodies require an exact native reference.
     pub fn append(&self, ev: &ThreadEvent) -> Result<()> {
-        let mut ev = ev.clone();
-        if let Some(t) = &ev.text {
-            if t.chars().count() > MAX_EVENT_TEXT {
-                ev.text = Some(cap_chars(t, MAX_EVENT_TEXT).to_string());
-            }
-        }
-        let mut line = serde_json::to_string(&ev)?;
+        self.append_record(&references::Record::metadata(ev)?)
+    }
+
+    /// Verify an immutable native projection before persisting its body-free pointer.
+    pub fn append_referenced(&self, ev: &ThreadEvent, reference: Reference) -> Result<()> {
+        self.append_record(&references::Record::referenced(self.root(), ev, reference)?)
+    }
+
+    /// Record a source gap without persisting the original text or an arbitrary error body.
+    pub fn append_unavailable(
+        &self,
+        ev: &ThreadEvent,
+        scope: Option<&CaptureScope>,
+        reason: &str,
+    ) -> Result<()> {
+        self.append_record(&references::Record::unavailable(ev, scope, reason)?)
+    }
+
+    fn root(&self) -> &Path {
+        self.dir
+            .parent()
+            .expect("thread directory has a state root")
+    }
+
+    /// One bounded cross-process append transaction per journal record.
+    fn append_record(&self, record: &references::Record) -> Result<()> {
+        let mut line = serde_json::to_string(record)?;
         line.push('\n');
         std::fs::create_dir_all(&self.dir)?;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.log_path())?;
-        f.write_all(line.as_bytes())?;
+        let root = crate::update::resolved_directory(&self.dir)
+            .ok_or_else(|| anyhow!("thread directory is not regular"))?;
+        let path = self.log_path();
+        let lock = self.dir.join(format!("{}.lock", self.id));
+        if [path.as_path(), lock.as_path()]
+            .into_iter()
+            .any(|path| path.exists() && !crate::update::regular_owned_file(path, &root))
+        {
+            bail!("thread journal or lock is not a regular owned file");
+        }
+        crate::state_io::with_lock(&lock, || {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
+            f.write_all(line.as_bytes())?;
+            f.flush()
+        })?;
         Ok(())
     }
 
     pub fn read_all(&self) -> Result<Vec<ThreadEvent>> {
-        read_events(&self.log_path())
+        read_events(self.root(), &self.log_path())
     }
 
     pub fn write_meta(&self, meta: &ThreadMeta) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        std::fs::write(self.meta_path(), serde_json::to_string(meta)?)?;
+        let root = crate::update::resolved_directory(&self.dir)
+            .ok_or_else(|| anyhow!("thread directory is not regular"))?;
+        if self.meta_path().exists() && !crate::update::regular_owned_file(&self.meta_path(), &root)
+        {
+            bail!("thread metadata is not a regular owned file");
+        }
+        let mut meta = meta.clone();
+        meta.id = self.id.clone();
+        meta.title = cap_chars(&meta.title, 160).to_owned();
+        meta.cwd = cap_chars(&meta.cwd, 4096).to_owned();
+        meta.account = meta
+            .account
+            .as_deref()
+            .map(|a| cap_chars(a, 128).to_owned());
+        std::fs::write(self.meta_path(), serde_json::to_string(&meta)?)?;
         Ok(())
     }
 
@@ -221,6 +272,10 @@ impl ThreadLog {
     }
 
     pub fn read_meta(&self) -> Option<ThreadMeta> {
+        let root = crate::update::resolved_directory(&self.dir)?;
+        if !crate::update::regular_owned_file(&self.meta_path(), &root) {
+            return None;
+        }
         let s = std::fs::read_to_string(self.meta_path()).ok()?;
         serde_json::from_str(&s).ok()
     }
@@ -237,11 +292,30 @@ impl ThreadLog {
     }
 }
 
-fn read_events(path: &Path) -> Result<Vec<ThreadEvent>> {
+fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
+    let directory = path
+        .parent()
+        .and_then(crate::update::resolved_directory)
+        .ok_or_else(|| anyhow!("thread directory unavailable"))?;
+    if !crate::update::regular_owned_file(path, &directory) {
+        bail!("thread journal is not a regular owned file");
+    }
     let s = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    Ok(s.lines()
-        .filter_map(|l| serde_json::from_str::<ThreadEvent>(l).ok())
-        .collect())
+    let mut events = Vec::new();
+    for (ordinal, line) in s.lines().enumerate() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("version").is_some() {
+            let record: references::Record = serde_json::from_value(value)
+                .with_context(|| format!("invalid referenced thread event {}", ordinal + 1))?;
+            events.push(record.hydrate(root)?);
+        } else if let Ok(event) = serde_json::from_value::<ThreadEvent>(value) {
+            // Legacy body-bearing lines remain readable, without rewriting or migrating them.
+            events.push(event);
+        }
+    }
+    Ok(events)
 }
 
 fn thread_ids(state_root: &Path) -> Vec<String> {
@@ -484,6 +558,13 @@ pub fn build_map_with(
             errors.push(one_line(&line, 80));
         }
         if detail.is_empty() {
+            continue;
+        }
+        // Raw native records are source evidence, not the legacy command/path projection.
+        // Never interpret JSON source records or unavailable markers as executed commands.
+        if detail.starts_with(references::RAW_TOOL_LABEL)
+            || detail.starts_with("[native source unavailable:")
+        {
             continue;
         }
         if is_shell_tool(&c.title) {
@@ -953,8 +1034,19 @@ mod tests {
     fn log_roundtrip_list_resolve_delete() {
         let dir = tempfile::tempdir().unwrap();
         let a = ThreadLog::open(dir.path(), "aaaa1111");
-        a.append(&user("hello")).unwrap();
-        a.append(&asst("hi")).unwrap();
+        // Old logs remain readable byte for byte; only new appends use the V2 contract.
+        std::fs::create_dir_all(&a.dir).unwrap();
+        let legacy = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&user("hello")).unwrap(),
+            serde_json::to_string(&asst("hi")).unwrap()
+        );
+        std::fs::write(a.log_path(), &legacy).unwrap();
+        assert!(a.append(&user("must not be copied")).is_err());
+        assert!(a
+            .append(&ThreadEvent::card("shell", Some("secret command"), "done"))
+            .is_err());
+        assert_eq!(std::fs::read_to_string(a.log_path()).unwrap(), legacy);
         a.write_meta(&ThreadMeta {
             id: "aaaa1111".into(),
             started: 100,
@@ -964,7 +1056,26 @@ mod tests {
         })
         .unwrap();
         let b = ThreadLog::open(dir.path(), "aaaa2222");
-        b.append(&user("later")).unwrap();
+        b.append(&ThreadEvent::new("switch").who("codex", "fixture", "model"))
+            .unwrap();
+        let unavailable = user("later sentinel body must never be persisted");
+        b.append_unavailable(
+            &unavailable,
+            None,
+            "arbitrary error sentinel must not persist",
+        )
+        .unwrap();
+        let body_free = std::fs::read_to_string(b.log_path()).unwrap();
+        assert!(body_free.contains("\"version\":2"));
+        assert!(
+            !body_free.contains("sentinel")
+                && !body_free.contains("\"text\"")
+                && !body_free.contains("\"detail\"")
+        );
+        assert_eq!(
+            b.read_all().unwrap()[1].text(),
+            "[native source unavailable: capture_failed]"
+        );
         b.write_meta(&ThreadMeta {
             id: "aaaa2222".into(),
             started: 200,
@@ -979,6 +1090,85 @@ mod tests {
         assert!(resolve_prefix(dir.path(), "aaaa").is_err());
         assert!(resolve_prefix(dir.path(), "zz").is_err());
         assert_eq!(resolve_prefix(dir.path(), "aaaa1").unwrap(), "aaaa1111");
+
+        // Exact native source ownership, successful hydration and stale-source failure.
+        use crate::native_memory::{
+            references::{begin_scope, capture_text},
+            Binding,
+        };
+        use crate::store::{ProviderKind, StoredAccount};
+        let home = dir.path().join("fixture");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        crate::store::upsert_stored_account(
+            dir.path(),
+            StoredAccount {
+                id: "fixture".into(),
+                provider: ProviderKind::Codex,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "fixture".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        let session = "11111111-2222-4333-8444-555555555555";
+        let native_path = home.join("sessions").join(format!("{session}.jsonl"));
+        std::fs::write(
+            &native_path,
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"session_meta","payload":{"id":session}})
+            ),
+        )
+        .unwrap();
+        let binding = Binding::new(ProviderKind::Codex, "fixture", &home, session).unwrap();
+        let scope = begin_scope(dir.path(), &binding).unwrap();
+        let body = "immutable native-only 日本語 sentinel";
+        let native_record = format!(
+            "{}\n",
+            serde_json::json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":body}]}})
+        );
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&native_path)
+            .unwrap()
+            .write_all(native_record.as_bytes())
+            .unwrap();
+        let reference = capture_text(dir.path(), &scope, "user", body).unwrap();
+        let event = user(body).who("codex", "fixture", "model");
+        assert!(b
+            .append_referenced(&user("wrong projection"), reference.clone())
+            .is_err());
+        assert!(b.append_referenced(&asst(body), reference.clone()).is_err());
+        assert!(b
+            .append_referenced(
+                &user(body).who("codex", "different", "model"),
+                reference.clone()
+            )
+            .is_err());
+        b.append_referenced(&event, reference.clone()).unwrap();
+        b.append_unavailable(&user("another private body"), Some(&scope), "missing")
+            .unwrap();
+        // Image-only prompts have empty local text but an explicitly captured native input.
+        b.append_referenced(&user("").who("codex", "fixture", "model"), reference)
+            .unwrap();
+        let journal = std::fs::read_to_string(b.log_path()).unwrap();
+        assert!(!journal.contains(body) && !journal.contains("another private body"));
+        let hydrated = b.read_all().unwrap();
+        assert_eq!(hydrated[2], event);
+        assert_eq!(hydrated[3].account.as_deref(), Some("fixture"));
+        assert_eq!(hydrated[4].text(), body);
+        assert!(build_map(&hydrated, b.id(), 1600, true).contains(body));
+        let original_native = std::fs::read_to_string(&native_path).unwrap();
+        std::fs::write(
+            &native_path,
+            original_native.replace("immutable", "corrupted"),
+        )
+        .unwrap();
+        assert_eq!(
+            b.read_all().unwrap()[2].text(),
+            "[native source unavailable: verification_failed]"
+        );
+        assert_eq!(std::fs::read_to_string(a.log_path()).unwrap(), legacy);
         delete(dir.path(), "aaaa1111").unwrap();
         assert_eq!(list(dir.path()).len(), 1);
     }

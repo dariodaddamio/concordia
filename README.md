@@ -73,10 +73,12 @@ flowchart LR
 ```
 
 Enable the existing optional log with `[threads] enabled = true` in local `config.toml`.
-It stores conversation text; the native pointer index stores metadata and hashes instead. Prompt history,
-drafts and queued prompts have their own persistence and recovery controls. Native provider
-compaction remains active. A recognized terminal capacity error can trigger one fresh-session
-rollover; preemptive rollover remains planned.
+New records store metadata and verified native-source references; reads hydrate the original
+message/tool bodies. Persistent prompt recall also uses native references. Legacy logs remain
+readable, while drafts, queues and unfinished recovery preserve input separately. Native provider
+compaction remains active. Recognized capacity errors support one fresh-session rollover;
+proactive rollover requires an explicitly enabled, verified native capacity signal.
+See [reference storage bounds](docs/native-memory.md) for unsupported or oversized source records.
 See [continuity](docs/continuity.md) and [architecture](docs/architecture.md) for the current
 formats, read limits and storage paths.
 
@@ -299,12 +301,12 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | Click | Place the caret (prompt); release on an underlined file reference to open its internal split pane. Alt+click requests formatted preview; dragging keeps selection |
 | Drag, double-click, triple-click | Select text / a word / a line (prompt or transcript) |
 | `Ctrl+C` | Copy the selection; with nothing selected, cancel the running turn; when idle, press twice to exit |
-| `Up` / `Down` | Walk previously sent prompts (on the first / last prompt row); with an empty box and a non-empty queue, `Up` focuses the queue panel (`Enter` edits, `Delete` removes, `Esc` returns). History is kept in `<state>\history.jsonl` (`[ui] persist_history`) |
+| `Up` / `Down` | Walk previously sent prompts (on the first / last prompt row); with an empty box and a non-empty queue, `Up` focuses the queue panel (`Enter` edits, `Delete` removes, `Esc` returns). Recall uses `<state>\history.refs.jsonl`; legacy history remains readable (`[ui] persist_history`) |
 | `Esc` | Clear a selection, or interrupt a running turn. It never quits |
 | `Ctrl+Shift+C`, `/copy` | Copy the last reply when nothing is selected |
 | `Ctrl+A` / `Ctrl+X` / `Ctrl+V` | Select all / cut / paste in the prompt |
 | `Ctrl+O` | Expand or collapse full received tool activity and reasoning |
-| `Ctrl+E` | Open searchable full activity detail; `Esc` closes and `Ctrl+C` copies |
+| `Ctrl+E` | Open searchable raw tool output; thinking expands inside chat. `Esc` closes and `Ctrl+C` copies |
 | `Ctrl+Up` / `Ctrl+Down` | Focus queued prompts / return to the draft after save or cancel |
 | `Ctrl+R` | Resume a paused queue while preserving the draft |
 | `/open PATH` | Internal file pane; formatted Markdown/JSON by default, raw editable source with syntax colors. Alt+V switches view; Ctrl+S saves; F6 changes focus; Esc returns to chat; X closes with an unsaved-edit decision |

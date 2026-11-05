@@ -61,7 +61,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     }
     assert_eq!(outcome.exit_code, Some(0));
 
-    // Record it the way the TUI does.
+    // Seed the legacy format explicitly to preserve CLI read compatibility coverage.
     let id = "3f9a0000-1111-2222-3333-444444444444";
     let log = ThreadLog::open(state.path(), id);
     log.write_meta(&ThreadMeta {
@@ -72,16 +72,21 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
         account: Some("codex".into()),
     })
     .unwrap();
-    log.append(&ThreadEvent::with_text("user", "say hello"))
-        .unwrap();
+    let mut events = vec![ThreadEvent::with_text("user", "say hello")];
     for c in &outcome.cards {
-        log.append(&ThreadEvent::card(&c.title, c.detail.as_deref(), "done"))
-            .unwrap();
+        events.push(ThreadEvent::card(&c.title, c.detail.as_deref(), "done"));
     }
-    log.append(&ThreadEvent::with_text("assistant", &outcome.text).who("codex", "codex", "m"))
-        .unwrap();
-    log.append(&ThreadEvent::with_text("user", &"long ".repeat(5000)))
-        .unwrap();
+    events.push(ThreadEvent::with_text("assistant", &outcome.text).who("codex", "codex", "m"));
+    events.push(ThreadEvent::with_text("user", &"long ".repeat(5000)));
+    let legacy = events
+        .iter()
+        .map(|ev| serde_json::to_string(ev).unwrap() + "\n")
+        .collect::<String>();
+    std::fs::write(
+        concordia::threads::threads_dir(state.path()).join(format!("{id}.jsonl")),
+        legacy,
+    )
+    .unwrap();
 
     let list = thread_cmd(state.path(), &["list"]);
     assert!(list.status.success());
@@ -121,8 +126,9 @@ fn errors_use_exit_codes_1_and_2() {
     let state = tempfile::tempdir().unwrap();
     let a = ThreadLog::open(state.path(), "abc1");
     let b = ThreadLog::open(state.path(), "abc2");
-    a.append(&ThreadEvent::with_text("user", "x")).unwrap();
-    b.append(&ThreadEvent::with_text("user", "y")).unwrap();
+    // Only distinct log ids are needed for prefix resolution; body-free metadata is sufficient.
+    a.append(&ThreadEvent::new("note")).unwrap();
+    b.append(&ThreadEvent::new("note")).unwrap();
     assert_eq!(
         thread_cmd(state.path(), &["map", "nope"]).status.code(),
         Some(1)

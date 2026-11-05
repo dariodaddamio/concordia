@@ -2850,9 +2850,13 @@ fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread()
     });
     h.app.push_assistant("done".into());
     h.app.push_user("second".into());
+    h.app.reference_journal.finish(root.clone(), None, false);
+    h.app.reference_journal.settle_for_test(&mut h.app.history);
     let log = crate::threads::ThreadLog::open(&root, "tid-one");
     let kinds: Vec<String> = log.read_all().unwrap().into_iter().map(|e| e.k).collect();
     assert_eq!(kinds, ["user", "card", "assistant", "user"]);
+    let stored = std::fs::read_to_string(root.join("threads/tid-one.jsonl")).unwrap();
+    assert!(!stored.contains("fix the redirect") && !stored.contains("src/a.rs"));
     assert_eq!(log.read_meta().unwrap().title, "fix the redirect");
     let out = h.app.threads_command("");
     assert!(out[0].contains("fix the redirect"), "{out:?}");
@@ -4546,6 +4550,10 @@ fn replayed_tool_completion_is_logged_once_but_reused_ids_in_new_turns_are_prese
     h.app.push_user("inspect file".into());
     h.app.push_card(card.clone());
     h.app.push_card(card.clone());
+    h.app
+        .reference_journal
+        .finish(h.app.state_root.clone(), None, false);
+    h.app.reference_journal.settle_for_test(&mut h.app.history);
     let log = crate::threads::ThreadLog::open(&h.app.state_root, "dedup-fixture");
     assert_eq!(
         log.read_all()
@@ -4565,6 +4573,10 @@ fn replayed_tool_completion_is_logged_once_but_reused_ids_in_new_turns_are_prese
     );
     h.app.push_user("inspect again".into());
     h.app.push_card(card);
+    h.app
+        .reference_journal
+        .finish(h.app.state_root.clone(), None, false);
+    h.app.reference_journal.settle_for_test(&mut h.app.history);
     assert_eq!(
         log.read_all()
             .unwrap()

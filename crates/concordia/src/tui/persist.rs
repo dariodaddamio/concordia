@@ -8,7 +8,9 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
+use std::io;
+#[cfg(test)]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::{Arc, Weak};
@@ -136,6 +138,7 @@ fn parse_history(raw: &str) -> (Vec<String>, bool) {
     (out, bad)
 }
 
+#[cfg(test)]
 fn history_text(lines: &[String]) -> String {
     let mut s = String::new();
     for l in lines {
@@ -152,16 +155,9 @@ pub fn load_history(root: &Path) -> (Vec<String>, usize) {
     let Ok(raw) = fs::read(&path) else {
         return (Vec::new(), 0);
     };
-    let (mut lines, bad) = parse_history(&String::from_utf8_lossy(&raw));
+    let (mut lines, _bad) = parse_history(&String::from_utf8_lossy(&raw));
     if lines.len() > HISTORY_CAP {
         lines.drain(..lines.len() - HISTORY_CAP);
-    }
-    if bad {
-        quarantine(&path);
-        if lines.is_empty() {
-            return (lines, 0);
-        }
-        let _ = write_atomic(&path, history_text(&lines).as_bytes());
     }
     let n = lines.len();
     (lines, n)
@@ -169,6 +165,7 @@ pub fn load_history(root: &Path) -> (Vec<String>, usize) {
 
 /// Append one sent prompt. `on_disk` is the running line count; when it passes the cap the file
 /// is compacted (re-read, so other panes' lines are kept) to the newest [`HISTORY_CAP`].
+#[cfg(test)]
 pub fn append_history(root: &Path, line: &str, on_disk: &mut usize) {
     let path = history_path(root);
     if let Some(dir) = path.parent() {
@@ -252,7 +249,6 @@ pub(super) struct Keep {
     pub history: bool,
     pub turn_recovery_notice: bool,
     /// Lines currently in history.jsonl (to know when to compact).
-    on_disk: usize,
     rev_saved: u64,
     rev_seen: u64,
     changed_tick: u64,
@@ -272,7 +268,6 @@ impl Keep {
         Keep {
             history: crate::config::for_root(root).ui.persist_history,
             turn_recovery_notice: false,
-            on_disk: 0,
             rev_saved: 0,
             rev_seen: 0,
             changed_tick: 0,
@@ -332,9 +327,10 @@ impl super::App {
     /// Restore the draft, history and queue left by the previous run (at launch, once).
     pub(super) fn restore_state(&mut self) {
         if self.keep.history {
-            let (h, n) = load_history(&self.state_root);
+            let (h, _) = load_history(&self.state_root);
             self.history = h;
-            self.keep.on_disk = n;
+            self.reference_journal
+                .load(self.state_root.clone(), self.history.clone());
         }
         let root = match super::recovery::recovery_root(&self.state_root, &self.cwd) {
             Ok(root) => Some(root),
@@ -630,11 +626,9 @@ impl super::App {
             return;
         }
         self.history.push(line.to_string());
+        self.reference_journal.remember_added();
         if self.history.len() > super::HISTORY_MAX {
             self.history.remove(0);
-        }
-        if self.keep.history && !line.starts_with('/') {
-            append_history(&self.state_root, line, &mut self.keep.on_disk);
         }
     }
 }
@@ -682,6 +676,7 @@ mod tests {
 
     #[test]
     fn history_appends_loads_and_keeps_multiline_prompts() {
+        super::super::reference_journal::fixture_proof();
         let d = root();
         let mut n = 0;
         append_history(d.path(), "one", &mut n);
@@ -720,18 +715,19 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_history_lines_are_dropped_and_the_file_kept_as_bad() {
+    fn corrupt_history_lines_are_skipped_without_rewriting_legacy_history() {
         let d = root();
         fs::write(
             history_path(d.path()),
             "\"good\"\nnot json\n\"also good\"\n{\"x\":1}\n",
         )
         .unwrap();
+        let original = fs::read(history_path(d.path())).unwrap();
         let (h, n) = load_history(d.path());
         assert_eq!(h, vec!["good".to_string(), "also good".to_string()]);
         assert_eq!(n, 2);
-        assert!(d.path().join("history.jsonl.bad").exists());
-        // rewritten clean: loading again is quiet
+        assert_eq!(fs::read(history_path(d.path())).unwrap(), original);
+        assert!(!d.path().join("history.jsonl.bad").exists());
         let (h2, _) = load_history(d.path());
         assert_eq!(h2, h);
     }
@@ -743,7 +739,10 @@ mod tests {
         let (h, n) = load_history(d.path());
         assert!(h.is_empty());
         assert_eq!(n, 0);
-        assert!(!history_path(d.path()).exists());
+        assert_eq!(
+            fs::read(history_path(d.path())).unwrap(),
+            b"\xff\xfe garbage\n"
+        );
     }
 
     #[test]

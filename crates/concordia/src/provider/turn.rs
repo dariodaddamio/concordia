@@ -158,6 +158,11 @@ pub enum TurnProgress {
     Usage(TurnUsage),
     /// Concordia's own explanation of how it changed the turn (for example, read-only enforcement).
     Notice(String),
+    /// Bounded source maps prepared off the UI thread for this existing user request.
+    ChatReferences {
+        maps: Vec<(String, String)>,
+        notices: Vec<String>,
+    },
 }
 
 /// Why this turn will run read-only instead of with the trust it asked for, if it will.

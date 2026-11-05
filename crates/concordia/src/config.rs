@@ -342,7 +342,7 @@ pub fn threads_enabled() -> bool {
     get().threads.enabled
 }
 
-/// Whether sent prompts are kept in `<state>/history.jsonl` across restarts.
+/// Whether native-source prompt references are kept for recall across restarts.
 pub fn ui_persist_history() -> bool {
     get().ui.persist_history
 }

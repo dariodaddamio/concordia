@@ -37,9 +37,12 @@ execution, authentication and approvals remain authoritative. Memory work may in
 sources and coordinate handoff, with bounded reads and explicit identities. It must not introduce
 an external memory service, summarizer calls or silent changes to compaction policy.
 
-The pointer-only design is a target invariant. Current optional Concordia thread logs still copy
-conversation text. Existing logs, drafts and queued work must be preserved when this design is
-implemented; this document does not authorize deleting or migrating them automatically.
+The pointer-only design remains a target invariant across all storage. Build 2026-11-04r uses
+verified native references for new thread bodies and persistent prompt recall, and for completed,
+collected worker inputs when exact binding succeeds. Legacy logs and pending/uncertain recovery
+remain preserved. Source-size/format limits can leave protected recovery payloads; see
+[the implemented boundary](native-memory.md). This plan does not authorize deleting or migrating
+existing logs, drafts or queued work automatically.
 
 ## Decisions so far (owner, 2026-10-30)
 
@@ -426,12 +429,12 @@ not enable or implement the proposed pointer-only memory manager.
   Start with explicit continuation lineage, project/file identity, timestamps and lexical search.
   Measure retrieval correctness before introducing a graph or changing the architecture.
 
-Current gaps remain: automatic context-capacity rollover, native-file pointer indexing, related
-chat grouping, and comparative retrieval evaluation. Same-account native resume and cross-account
-bounded-map handoff are implemented. Optional Concordia thread logs store transcript copies;
-that existing behavior differs from the owner's proposed pointer-only design. With logs disabled,
-the map explicitly says the full text is not stored. Provider-native compaction is not disabled
-by the current implementation.
+The following paragraphs describe the historical research baseline, not the current feature
+inventory. Native-file indexing, related-chat retrieval and capability-gated context rollover have
+since shipped; build 2026-11-04r adds reference-backed recording/recall. See
+[native memory](native-memory.md) and the [current audit](feature-completion-audit.md) for exact
+bounds, preserved legacy/recovery payloads and missing effectiveness evidence. Provider-native
+compaction remains active unless an explicit supported control changes it.
 
 Usage exhaustion is a separate trigger from context capacity. Automatic quota continuation uses
 an ordered account allowlist and at most three handoffs. Account switching resets the explicit

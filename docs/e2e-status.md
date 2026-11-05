@@ -1,5 +1,38 @@
 # Concordia verification status
 
+## Native reference storage and durable recall, 2026-11-04r
+
+The installed optimized R artifact has matching checked bytes: 23,912,448 bytes (22.80 MiB), SHA-256
+`486DF5360F9149F80A0B66F6E6693620F34D8B00697435FA131CA7A9A708746E`.
+All 56 focused storage/history/worker recovery checks, 42 inline-thinking/diff/UI regressions
+and three thread/MCP integration tests pass. All-target Clippy passes with warnings denied;
+release smoke, Defender and the 399-file OSS/privacy scan pass. These are scoped checks, not
+a new full-suite or provider-parity claim.
+
+Fixtures cover original-text projection, sealed capture ranges followed by identical new input,
+source identity/staleness, unavailable readback, legacy preservation, exact image/PDF envelope
+restoration and changed-snapshot refusal. The prompt-recall fixture verifies body-free new records
+and that unfinished recovery remains until durable recording succeeds. Background preparation
+preserves typed chat references and adds retrieved maps as labelled context.
+
+Authorized live request 15 used the explicitly selected alternative Codex account through the
+ordinary installed-build application path in isolated state. Its native reply completed; two
+thread records and one persistent recall record contain verified references without duplicate
+message bodies. No new legacy `history.jsonl` was written. Exact native readback retains the
+synthetic request's Unicode, internal spaces, newline and trailing spaces. Subscription funding
+was checked before dispatch; no extra model request or account switch followed. This scoped check
+does not qualify every tool/worker/attachment path. Three of the 18 authorized slots remain unused.
+After closing and reopening the owned window, composer history restored the exact original text
+without time/context prefixes. Home was closed before Up; an append/backspace exposed the selected
+history text through normal draft persistence without sending it. Hash-bound receipts remain in
+ignored `target/native-window-proof/r-storage-live/`. Controller guards caught Home routing and a
+Windows-default decoding mistake before dispatch; these corrections consumed no model requests.
+
+New referenced records do not migrate old logs or remove protected unfinished recovery.
+Oversized or unsupported native sources can still prevent exact binding; the
+[storage boundary](native-memory.md) remains conditional. No Actions dispatch, signing or public
+release is part of this delivery.
+
 ## Inline thinking, numbered diffs and bounded live checks, 2026-11-04q
 
 Build Q is installed with matching checked bytes: 23,284,224 bytes, SHA-256

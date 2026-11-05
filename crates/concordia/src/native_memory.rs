@@ -22,6 +22,8 @@ mod cursor_history;
 pub mod files;
 #[path = "memory_rank.rs"]
 pub mod rank;
+#[path = "native_references.rs"]
+pub mod references;
 #[path = "memory_relations.rs"]
 pub mod relations;
 #[path = "memory_retrieval.rs"]
@@ -2322,6 +2324,7 @@ mod tests {
 
     #[test]
     fn exact_native_readback_survives_append_and_never_copies_chat_bodies_into_the_index() {
+        references::fixture_proof();
         for provider in [ProviderKind::Codex, ProviderKind::Claude] {
             let dir = tempfile::tempdir().unwrap();
             let (path, session) = fixture(provider, dir.path(), "fixture-account");
