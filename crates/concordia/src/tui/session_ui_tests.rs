@@ -109,19 +109,20 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
         .iter()
         .any(|message| message.role == MsgRole::Thinking
             && message.text == "Provider reported inspection"));
-    let review = app
-        .messages
-        .iter()
-        .position(|message| {
+    assert!(
+        !app.messages.iter().any(|message| {
             message.role == MsgRole::Meta && message.text.contains("Review activity")
-        })
-        .unwrap();
-    app.open_activity_review(review);
-    let (_, body) = app.activity.detail_text.as_ref().unwrap();
-    assert!(body.contains("Provider reported inspection") && body.contains("working tree clean"));
-    assert!(!body.contains("unreadable-private-data"));
-    app.activity.detail = None;
-    app.activity.detail_text = None;
+        }),
+        "history restores provider activity without adding synthetic completion rows"
+    );
+    assert!(!app.messages.iter().any(|message| {
+        message.text.contains("unreadable-private-data")
+            || message
+                .card
+                .as_ref()
+                .and_then(|card| card.detail.as_ref())
+                .is_some_and(|detail| detail.contains("unreadable-private-data"))
+    }));
     assert_eq!(
         app.messages
             .iter()

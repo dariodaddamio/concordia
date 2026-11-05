@@ -1,5 +1,10 @@
 # Chat rendering and input, 2026-11-01f
 
+Build `2026-11-04o` accepts held navigation and deletion keys, including Ctrl/Shift arrows,
+without repeating send/cancel/toggle shortcuts. Restored native chats preserve thinking and tool
+cards without appending synthetic "Recorded turn" messages. Ctrl+O and tool headers still expand
+recorded work, and Ctrl+E opens activity details.
+
 Build `2026-11-04n` renders reported thinking as Markdown, with plain readable shortened previews.
 Tool headings keep their readable action when expanded and distinguish action, status, linked
 paths, green additions, red removals and subdued Expand/Collapse controls. The footer permissions

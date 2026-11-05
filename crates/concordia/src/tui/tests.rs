@@ -198,6 +198,74 @@ fn distinct_escape_presses_drained_together_close_each_focused_layer() {
         KeyModifiers::NONE,
         KeyEventKind::Release
     )));
+    // A held navigation key must behave like repeated distinct presses, including modifiers.
+    for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
+        for modifiers in [
+            KeyModifiers::NONE,
+            KeyModifiers::CONTROL,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            let mut held = Harness::new(80, 24);
+            let mut pressed = Harness::new(80, 24);
+            for app in [&mut held.app, &mut pressed.app] {
+                app.editor
+                    .set_text("one two three four\nfive six seven eight\nnine ten eleven twelve");
+                if matches!(code, KeyCode::Right | KeyCode::Down) {
+                    handle_key(
+                        app,
+                        KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL),
+                        &tx,
+                    );
+                }
+            }
+            let before = held.app.editor.cursor_pos(74);
+            for _ in 0..3 {
+                dispatch_key_event(
+                    &mut held.app,
+                    KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Repeat),
+                    &mut burst,
+                    &tx,
+                    Instant::now(),
+                );
+                handle_key(&mut pressed.app, KeyEvent::new(code, modifiers), &tx);
+            }
+            assert_eq!(
+                held.app.editor.cursor_pos(74),
+                pressed.app.editor.cursor_pos(74),
+                "{code:?} {modifiers:?}"
+            );
+            assert_eq!(held.app.editor.text(), pressed.app.editor.text());
+            assert!(
+                held.app.editor.cursor_pos(74) != before
+                    || held.app.editor.text()
+                        != "one two three four\nfive six seven eight\nnine ten eleven twelve",
+                "held key changes cursor or history state: {code:?} {modifiers:?}"
+            );
+            assert_eq!(held.app.editor.selection(), pressed.app.editor.selection());
+        }
+    }
+    let mut held = Harness::new(80, 24);
+    held.app.editor.set_text("unsent draft");
+    for code in [
+        KeyCode::Enter,
+        KeyCode::Esc,
+        KeyCode::Char('o'),
+        KeyCode::Char('c'),
+    ] {
+        let modifiers = if matches!(code, KeyCode::Char(_)) {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::NONE
+        };
+        assert!(!handle_key(
+            &mut held.app,
+            KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Repeat),
+            &tx
+        ));
+    }
+    assert_eq!(held.app.editor.text(), "unsent draft");
+    assert!(!held.app.expanded_activity);
+    assert!(held.app.quit_armed.is_none());
 }
 
 struct Harness {

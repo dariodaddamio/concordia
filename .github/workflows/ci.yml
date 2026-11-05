@@ -1,12 +1,11 @@
 name: ci
 
+# Automatic runs are paused while the GitHub Actions allowance is exhausted.
+# Existing checks remain available through an explicit manual run.
 on:
-  push:
-    branches: [main, master]
-  pull_request:
   workflow_dispatch:
 
-# A newer push to the same ref makes the older run pointless.
+# A newer manual run of the same ref supersedes the older run.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

@@ -1,5 +1,46 @@
 # Concordia verification status
 
+## Held navigation and restored-history cleanup, 2026-11-04o
+
+The shared input handler now accepts repeated navigation/deletion events, including Ctrl/Shift
+arrows. Send/cancel/toggle shortcuts retain their single-press policy. Modified Up skips the
+plain-history fallback; the existing explicit Ctrl+Up/Ctrl+Down queue shortcuts remain. Reopened native chats
+retain their reported thinking, tool cards, statuses and IDs without synthetic "Recorded turn"
+review messages. Existing keyboard and resume cases cover these contracts.
+
+Routine `ci.yml` runs only through manual dispatch. Push/PR triggers were removed; existing jobs
+are preserved, and explicit release-tag behavior is unchanged. All seven local YAML files parsed
+with PyYAML 6.0.3 and job-preservation assertions passed. Five local Harness workflows are ignored
+artifacts and were not added to the repository. No Actions run or provider turn was dispatched.
+Local OSS/privacy gates pass. Exact installed-artifact results follow after local qualification.
+
+The optimized application at `85a39fd49eed9120bb5c4766773bc57e78bfdb48` passes smoke checks,
+Defender scanning (signatures `1.463.129.0`) and the native-window probe. Installed bytes match
+the checked artifact: 23,216,128 bytes, SHA-256
+`A6AF2D30CF9D0B969B4070CF1E8B7EAA051856B4ED9C0A51B064538E4B8E0187`.
+All-target Clippy passes with warnings denied, including the subsequent test-only correction.
+
+The isolated controller verifies repeated native arrows and all four Ctrl+arrow combinations:
+left/right move by words, up/down move through a four-line draft, and marker insertion checks
+the resulting caret position. It also verifies restored thinking/tools without the synthetic
+history row, header expansion, retained drafts, the permission popover and a clickable docs link.
+The controller PID-checks its own window, restores modifier state and detaches its fixture input
+queues in `finally`; it uses the [per-thread keyboard-state API](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setkeyboardstate)
+with [owned input-queue attachment](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-attachthreadinput),
+without global keystrokes, clipboard changes or provider turns. Receipts and screenshots remain
+under ignored `target/native-window-proof/held-navigation-04o-qualified/` and
+`target/native-window-proof/install-04o-receipt.json`.
+
+The broad UI run is **not claimed green**: 469 pass, eight fail, five are ignored. One new
+assertion incorrectly required ordinary Down to move the caret even when it opens a fresh
+prompt; its correction is test-only and linted, but was not re-executed. Seven other failures
+concern raster/reader deadlines, double-click timing, asynchronous usage, elapsed-time display,
+the large-history frame budget and concurrent goal-lock acquisition. Image, double-click and
+large-history cases subsequently pass in an isolated serial run (77.68 ms per large-history
+frame); the remaining four are not requalified in this batch. The native probe independently
+qualifies the requested repeat behavior. No complete-suite or physical-keyboard-matrix claim is
+made, and the documented roadmap qualification gaps remain open.
+
 ## Transcript and menu follow-up, 2026-11-04n
 
 This scoped UI batch renders reported thinking as Markdown, keeps readable tool summaries when
