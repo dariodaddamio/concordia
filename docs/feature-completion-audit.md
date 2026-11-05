@@ -34,9 +34,12 @@ See [E2E status](e2e-status.md) for the exact checks and retained limitations.
    handoff smoke passes all six constraint checks. A new three-arm native smoke ran once per
    arm: compaction retained five decisions, but model-driven pointer fetches were blocked by
    native launch policy. Compatible-policy pointer use and larger retention/token-saving
-   comparisons remain unqualified. All 18 authorized dispatch slots are consumed. The final
-   model call proves native MCP retrieval after the metadata fix, but the fact trial used the
-   wrong message ordinal and cannot establish a retention or savings advantage.
+   comparisons remain unqualified. The first 18 authorized dispatch slots were consumed; the
+   final fact trial used the wrong message ordinal and remains invalid. On November 5 the owner
+   doubled the total cap to 36, retaining subscription-only funding and no automatic retries.
+   Corrected request 19 on the installed 05b artifact verified the actual seed before dispatch,
+   fetched it through native MCP and answered all five constraints correctly. Seventeen slots
+   remain. This closes the scoped source-use smoke, not larger retention or savings comparisons.
    [Evidence](quality/memory-evaluation.md).
 6. **Native filesystem confinement — deferred by owner:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer

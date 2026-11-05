@@ -172,7 +172,8 @@ not counted as model qualification. The corrected future runner requires a uniqu
 match and all expected facts from the actual selected source before reserving any request. The
 original as-run driver and failed/partial results remain in the ignored evidence folder.
 
-All 18 authorized slots are consumed; no retry, account switch or additional model call followed.
+At the end of that allowance all 18 authorized slots were consumed; no retry, account switch or
+additional model call followed before the owner's subsequent authorization below.
 Original fixture files and the selected chat account remain unchanged. No retention benefit or
 token-saving claim follows. Reports are under ignored
 `target/live-qualification-20261104/mcp-{memory-readonly,postfix-request18}/`.
@@ -181,7 +182,31 @@ An additional ordinary-application storage check in build 2026-11-04r consumed r
 using the same explicitly authorized alternative account and subscription-only funding. Native
 completion produced body-free user/assistant thread references and one recall reference, with
 exact original Unicode/whitespace verified in native history. This qualifies that bounded
-persistence path, not comparative retrieval effectiveness or savings. Three slots remain unused.
+persistence path, not comparative retrieval effectiveness or savings. At that checkpoint three
+slots remained; requests 16 through 18 subsequently consumed them as recorded above.
+
+### Corrected source-use smoke under doubled allowance, November 5
+
+The owner doubled the total dispatch cap from 18 to 36 at 10:02 local time, retaining
+subscription-only funding, no automatic retries and no automatic account switching. Publication
+remains held until ready; new Windows confinement remains deferred.
+
+Request 19 used the installed 05b executable (SHA256
+`0f7e639ec39d4493d674864e4b9ceb36d271a8333dcedc15bce335e238f0eee9`) in a fresh native
+session. A bounded no-model preflight first identified the unique exact original seed and
+verified all five expected facts; the evaluation prompt supplied its pointer and actual ordinal,
+not the answers. The model invoked Concordia's native MCP reader and answered all five constraints
+correctly. Native original tool-call/output evidence confirms the accepted decision marker was
+returned. The fixture files and selected main account were unchanged. Funding metadata reported
+included subscription capacity and zero purchased credits; the native never/read-only/Auto
+approval contract was unchanged.
+
+This is one successful source-use smoke against an existing synthetic seed, not a new randomized
+three-arm comparison, application broker/physical-host qualification, retention advantage or
+token-saving result. The invalid request 18 remains preserved. The ledger now records 19 of 36
+consumed requests, leaving 17. Hash-bound evidence and the no-retry driver are under ignored
+`target/live-qualification-20261104/request19-corrected-final05b/` and
+`request19-corrected.py`; the explicit new allowance is in `authorization-20261105.json`.
 
 Use three arms on the same synthetic committed repository and pinned constraints: native resume
 with provider compaction, a fresh native session with bounded verified handoff pointers, and
