@@ -234,10 +234,12 @@ fn distinct_escape_presses_drained_together_close_each_focused_layer() {
                 pressed.app.editor.cursor_pos(74),
                 "{code:?} {modifiers:?}"
             );
-            assert_ne!(
-                held.app.editor.cursor_pos(74),
-                before,
-                "held key actually moves: {code:?} {modifiers:?}"
+            assert_eq!(held.app.editor.text(), pressed.app.editor.text());
+            assert!(
+                held.app.editor.cursor_pos(74) != before
+                    || held.app.editor.text()
+                        != "one two three four\nfive six seven eight\nnine ten eleven twelve",
+                "held key changes cursor or history state: {code:?} {modifiers:?}"
             );
             assert_eq!(held.app.editor.selection(), pressed.app.editor.selection());
         }

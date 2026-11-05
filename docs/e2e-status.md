@@ -3,8 +3,8 @@
 ## Held navigation and restored-history cleanup, 2026-11-04o
 
 The shared input handler now accepts repeated navigation/deletion events, including Ctrl/Shift
-arrows. Send/cancel/toggle shortcuts retain their single-press policy. Ctrl+Up at the first
-composer row stays in the editor instead of entering history or the queue. Reopened native chats
+arrows. Send/cancel/toggle shortcuts retain their single-press policy. Modified Up skips the
+plain-history fallback; the existing explicit Ctrl+Up/Ctrl+Down queue shortcuts remain. Reopened native chats
 retain their reported thinking, tool cards, statuses and IDs without synthetic "Recorded turn"
 review messages. Existing keyboard and resume cases cover these contracts.
 
