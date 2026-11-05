@@ -1,5 +1,16 @@
 # Changelog
 
+### Fixed and added (`2026-11-05a`)
+
+- Recover successful static code-mode patch batches into the original inline edit rows; retain
+  exact historical patch content instead of adding a separate file-metadata card where matched.
+- Configurable dark/light/terminal palettes and background/foreground/accent colors share the
+  existing chat, menu, diff, image and native-window rendering paths.
+- Grouped and individual tool rows use consistent status markers and bold action/subject text.
+  Native checks/status marks render independently of font fallback, with style-specific glyph caches.
+- Original gold/bronze Concordia goddess artwork replaces the active geometric icon, with a compact
+  Home portrait on roomy screens. Installation remains one Rust executable with bundled assets.
+
 ### Changed (`2026-11-04r`)
 
 - New recorded message/tool bodies and persistent prompt recall use verified native-source

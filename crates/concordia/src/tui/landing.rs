@@ -758,6 +758,7 @@ pub(super) fn apply_usage(
 }
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
+    let area = super::brand::draw(f, area, app);
     if let Some(landing) = app.landing.as_ref() {
         app.footer_left = if landing.mode == Mode::Browse
             && landing.pane == Pane::Chats

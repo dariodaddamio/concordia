@@ -1,6 +1,8 @@
 //! Discovery and source inspection reuse existing picker/file action surfaces.
 use super::*;
 use crate::file_links;
+#[path = "artifacts_inline.rs"]
+mod inline;
 type ReadResult = Result<Vec<crate::artifacts::Record>, String>;
 type ReadJob = (String, std::sync::mpsc::Receiver<ReadResult>);
 type DetailResult = Result<Option<StreamCard>, String>;
@@ -13,6 +15,7 @@ type ActivityJob = (
 );
 #[derive(Default)]
 pub(super) struct State {
+    inline: inline::State,
     records: Vec<crate::artifacts::Record>,
     selected: Option<crate::artifacts::Record>,
     job: Option<ReadJob>,
@@ -20,9 +23,12 @@ pub(super) struct State {
     activity_attempted: Option<(String, usize, String)>,
     detail_job: Option<DetailJob>,
 }
+pub(super) fn record_live(app: &mut App, record: &crate::artifacts::Record) -> bool {
+    inline::record_live(app, record)
+}
 pub(super) fn open(app: &mut App) {
     if app.artifacts.job.is_some() {
-        app.flash("File output metadata is still loading");
+        app.flash("Reported file metadata is still loading");
         return;
     }
     let conversation = app.deleg.d.conversation_id().to_string();
@@ -37,10 +43,10 @@ pub(super) fn open(app: &mut App) {
     app.artifacts.selected = None;
     app.show_picker(
         PickerKind::Artifacts,
-        "Reported file outputs".into(),
+        "Reported file changes".into(),
         vec![PickerRow {
             id: "none".into(),
-            label: "Reading bounded output metadata…".into(),
+            label: "Reading reported file metadata…".into(),
             detail: "No file contents are read".into(),
         }],
         false,
@@ -48,6 +54,7 @@ pub(super) fn open(app: &mut App) {
     app.footer_left = "Enter inspect source · type to filter · Esc close".into();
 }
 pub(super) fn poll(app: &mut App) {
+    inline::poll(app);
     poll_activity(app);
     poll_detail(app);
     let Some((conversation, rx)) = &app.artifacts.job else {
@@ -61,7 +68,7 @@ pub(super) fn poll(app: &mut App) {
     let result = match rx.try_recv() {
         Ok(result) => result,
         Err(std::sync::mpsc::TryRecvError::Empty) => return,
-        Err(_) => Err("File output metadata reader stopped".into()),
+        Err(_) => Err("Reported file metadata reader stopped".into()),
     };
     app.artifacts.job = None;
     if !valid {
@@ -87,19 +94,19 @@ pub(super) fn poll(app: &mut App) {
                 })
                 .collect::<Vec<_>>();
             if rows.is_empty() {
-                rows.push(PickerRow { id: "none".into(), label: "No structured file output records in this conversation".into(), detail: "Codex completed file-change events are supported; prose paths remain ordinary links".into() });
+                rows.push(PickerRow { id: "none".into(), label: "No structured file change records in this conversation".into(), detail: "Codex completed file-change events are supported; prose paths remain ordinary links".into() });
             }
             rows
         }
         Err(error) => vec![PickerRow {
             id: "none".into(),
-            label: "File output catalog unavailable".into(),
+            label: "Reported file changes unavailable".into(),
             detail: error,
         }],
     };
     app.show_picker(
         PickerKind::Artifacts,
-        "Reported file outputs".into(),
+        "Reported file changes".into(),
         rows,
         false,
     );
@@ -200,7 +207,7 @@ pub(super) fn choose(app: &mut App, id: &str) {
     app.artifacts.selected = Some(record);
     app.show_picker(
         PickerKind::ArtifactDetail,
-        "File output source".into(),
+        "Reported file source".into(),
         Vec::new(),
         false,
     );
@@ -209,7 +216,7 @@ pub(super) fn choose(app: &mut App, id: &str) {
 
 fn show_detail(app: &mut App, record: &crate::artifacts::Record, card: &StreamCard) {
     let detail = card.detail.as_deref().unwrap_or_default();
-    app.update_preview = Some(crate::update::UpdatePreview { history: Vec::new(), history_expanded: false, lines: std::iter::once(crate::update::PreviewLine::Title("Reported file output".into())).chain(detail.lines().map(|line| crate::update::PreviewLine::Text(line.into()))).chain([crate::update::PreviewLine::Text(format!("Execution directory: {}", record.owner.execution_cwd.display())), crate::update::PreviewLine::Hint("O current-file actions · R catalog · Esc close. Opening never reruns the producing tool.".into())]).collect(), install_available: false, release_url: None });
+    app.update_preview = Some(crate::update::UpdatePreview { history: Vec::new(), history_expanded: false, lines: std::iter::once(crate::update::PreviewLine::Title("Reported file change".into())).chain(detail.lines().map(|line| crate::update::PreviewLine::Text(line.into()))).chain([crate::update::PreviewLine::Text(format!("Execution directory: {}", record.owner.execution_cwd.display())), crate::update::PreviewLine::Hint("O current-file actions · R catalog · Esc close. Opening never reruns the producing tool.".into())]).collect(), install_available: false, release_url: None });
 }
 
 fn poll_detail(app: &mut App) {
@@ -458,4 +465,5 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
     std::fs::write(&metadata, future).unwrap();
     assert!(crate::artifacts::save(&app.state_root, &records[0]).is_err());
     assert_eq!(std::fs::read(&metadata).unwrap(), future);
+    inline::fixture_proof(app);
 }

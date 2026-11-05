@@ -147,9 +147,10 @@ impl DetachedWindows {
                     window.terminal.backend_mut().set_title(&title)?;
                 }
                 window.terminal.autoresize()?;
-                window
-                    .terminal
-                    .draw(|frame| workspace::draw_window(frame, app, id))?;
+                window.terminal.draw(|frame| {
+                    workspace::draw_window(frame, app, id);
+                    super::theme::apply(frame.buffer_mut(), app.no_color, true);
+                })?;
                 Ok(())
             })();
             if let Err(error) = result {

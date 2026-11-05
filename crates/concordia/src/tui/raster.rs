@@ -429,6 +429,18 @@ pub(super) fn draw_attachment(
     }
 }
 
+pub(super) fn draw_brand(f: &mut Frame, area: Rect, app: &App, pixels: Arc<image::RgbaImage>) {
+    static BRAND: std::sync::OnceLock<Thumbnail> = std::sync::OnceLock::new();
+    let thumb = BRAND.get_or_init(|| Thumbnail {
+        hash: String::new(),
+        width: pixels.width(),
+        height: pixels.height(),
+        pixels: (*pixels).clone(),
+        original: pixels,
+    });
+    paint_view(f, area, thumb, app);
+}
+
 fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {
     if app.raster.native && !app.no_color {
         // A marker confined to blank image cells lets later modal widgets suppress
@@ -469,8 +481,8 @@ pub(super) fn native_images(f: &mut Frame, app: &App) -> Vec<super::native_windo
                 for x in area.x..area.right() {
                     let cell = &f.buffer_mut()[(x, y)];
                     if cell.symbol() != " "
-                        || cell.fg != Color::Rgb(20, 23, 31)
-                        || cell.bg != Color::Rgb(20, 23, 31)
+                        || cell.fg != super::theme::image_marker()
+                        || cell.bg != super::theme::image_marker()
                     {
                         return None;
                     }
@@ -498,11 +510,17 @@ fn paint(f: &mut Frame, content: Rect, thumb: &Thumbnail, monochrome: bool) {
                     u32::from(x) * thumb.pixels.width() / u32::from(w.max(1)),
                     row.min(thumb.pixels.height() - 1),
                 );
-                let blend = |value: u8| {
-                    ((u16::from(value) * u16::from(px[3]) + 28 * (255 - u16::from(px[3]))) / 255)
-                        as u8
+                let background = super::theme::image_background();
+                let blend = |value: u8, backdrop: u8| {
+                    ((u16::from(value) * u16::from(px[3])
+                        + u16::from(backdrop) * (255 - u16::from(px[3])))
+                        / 255) as u8
                 };
-                Color::Rgb(blend(px[0]), blend(px[1]), blend(px[2]))
+                Color::Rgb(
+                    blend(px[0], background[0]),
+                    blend(px[1], background[1]),
+                    blend(px[2], background[2]),
+                )
             };
             let top = u32::from(y) * 2 * thumb.pixels.height() / u32::from(h.max(1) * 2);
             let bottom = (u32::from(y) * 2 + 1) * thumb.pixels.height() / u32::from(h.max(1) * 2);

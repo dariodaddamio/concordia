@@ -368,7 +368,7 @@ struct Window {
     fonts: [HFONT; 16],
     symbol_fonts: [HFONT; 16],
     emoji_fonts: [HFONT; 16],
-    glyph_fonts: std::collections::HashMap<String, u8>,
+    glyph_fonts: [std::collections::HashMap<String, u8>; 16],
     icons: [HICON; 2],
     cell_width: i32,
     cell_height: i32,
@@ -384,6 +384,7 @@ struct Window {
 
 struct BitmapPixels {
     source: Arc<image::RgbaImage>,
+    background: [u8; 3],
     bgra: Vec<u8>,
 }
 
@@ -444,7 +445,9 @@ impl Window {
     unsafe fn fonts(&mut self, hwnd: HWND, dpi: u32) {
         // Cached glyphs must be regenerated after a DPI/font change.
         self.surface = None;
-        self.glyph_fonts.clear();
+        for cache in &mut self.glyph_fonts {
+            cache.clear();
+        }
         for font in &mut self.fonts {
             if !font.is_null() {
                 DeleteObject(*font);
@@ -607,7 +610,7 @@ impl Window {
                 return;
             }
             let previous_bitmap = SelectObject(memory, bitmap);
-            SetDCBrushColor(memory, rgb(20, 23, 31));
+            SetDCBrushColor(memory, color(Color::Reset, false));
             FillRect(memory, &client, GetStockObject(DC_BRUSH) as HBRUSH);
             self.surface = Some(Surface {
                 dc: memory,
@@ -673,7 +676,9 @@ impl Window {
                     | (usize::from(cell.modifier.contains(Modifier::UNDERLINED)) << 2)
                     | (usize::from(cell.modifier.contains(Modifier::CROSSED_OUT)) << 3);
                 SelectObject(memory, self.fonts[style]);
-                if cell.symbol() == "▀" || cell.symbol() == "█" {
+                if paint_status_symbol(memory, cell.symbol(), &rect) {
+                    // These UI status marks have a fixed outline, independent of font linking.
+                } else if cell.symbol() == "▀" || cell.symbol() == "█" {
                     SetDCBrushColor(memory, bg);
                     FillRect(memory, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
                     let top = RECT {
@@ -709,7 +714,7 @@ impl Window {
                                 self.symbol_fonts[style],
                                 self.emoji_fonts[style],
                             ],
-                            &mut self.glyph_fonts,
+                            &mut self.glyph_fonts[style],
                         );
                     }
                 }
@@ -737,7 +742,7 @@ impl Window {
                 right: left + 2,
                 bottom: top + self.cell_height - 2,
             };
-            SetDCBrushColor(dc, rgb(230, 232, 240));
+            SetDCBrushColor(dc, color(Color::Reset, true));
             FillRect(dc, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
         }
         if supplied_dc.is_none() {
@@ -746,17 +751,17 @@ impl Window {
     }
 
     unsafe fn paint_images(&mut self, dc: HDC, images: &[RasterImage], client: &RECT) {
+        let background = super::theme::native_default(false);
         self.image_pixels.retain(|cached| {
-            images
-                .iter()
-                .any(|image| Arc::ptr_eq(&cached.source, &image.pixels))
+            cached.background == background
+                && images
+                    .iter()
+                    .any(|image| Arc::ptr_eq(&cached.source, &image.pixels))
         });
         for image in images {
-            let index = if let Some(index) = self
-                .image_pixels
-                .iter()
-                .position(|cached| Arc::ptr_eq(&cached.source, &image.pixels))
-            {
+            let index = if let Some(index) = self.image_pixels.iter().position(|cached| {
+                cached.background == background && Arc::ptr_eq(&cached.source, &image.pixels)
+            }) {
                 index
             } else {
                 let mut bgra = image.pixels.as_raw().clone();
@@ -769,14 +774,15 @@ impl Window {
                             / 255) as u8
                     };
                     *pixel = [
-                        composite(blue, 31),
-                        composite(green, 23),
-                        composite(red, 20),
+                        composite(blue, background[2]),
+                        composite(green, background[1]),
+                        composite(red, background[0]),
                         255,
                     ];
                 }
                 self.image_pixels.push(BitmapPixels {
                     source: image.pixels.clone(),
+                    background,
                     bgra,
                 });
                 self.image_pixels.len() - 1
@@ -834,6 +840,113 @@ impl Window {
                 SetStretchBltMode(dc, previous_mode);
             }
         }
+    }
+}
+
+/// Tiny application status marks must never depend on a fallback font or script substitution.
+/// Keep their ordinary Unicode text in the shared UI and copied output; only native paint is geometric.
+unsafe fn paint_status_symbol(dc: HDC, symbol: &str, rect: &RECT) -> bool {
+    if !matches!(symbol, "◉" | "✓" | "✗") {
+        return false;
+    }
+    let width = (rect.right - rect.left).max(1);
+    let height = (rect.bottom - rect.top).max(1);
+    let size = (width - 2).max(1).min((height - 2).max(1));
+    let left = rect.left + (width - size) / 2;
+    let top = rect.top + (height - size) / 2;
+    let stroke = (height / 12).max(1);
+    let saved = SaveDC(dc);
+    if saved == 0 {
+        return false;
+    }
+    let pen = CreatePen(PS_SOLID, stroke, GetTextColor(dc));
+    if pen.is_null() {
+        RestoreDC(dc, saved);
+        return false;
+    }
+    IntersectClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
+    SetDCBrushColor(dc, GetBkColor(dc));
+    FillRect(dc, rect, GetStockObject(DC_BRUSH) as HBRUSH);
+    let old_pen = SelectObject(dc, pen);
+    let old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    match symbol {
+        "✓" => {
+            MoveToEx(dc, left, top + size / 2, null_mut());
+            LineTo(dc, left + size / 3, top + size - 1);
+            LineTo(dc, left + size, top);
+        }
+        "✗" => {
+            MoveToEx(dc, left, top, null_mut());
+            LineTo(dc, left + size, top + size);
+            MoveToEx(dc, left + size, top, null_mut());
+            LineTo(dc, left, top + size);
+        }
+        _ => {
+            Ellipse(dc, left, top, left + size + 1, top + size + 1);
+            SetDCBrushColor(dc, GetTextColor(dc));
+            SelectObject(dc, GetStockObject(DC_BRUSH));
+            let inset = (size / 3).max(1);
+            Ellipse(
+                dc,
+                left + inset,
+                top + inset,
+                left + size - inset + 1,
+                top + size - inset + 1,
+            );
+        }
+    }
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    DeleteObject(pen);
+    RestoreDC(dc, saved);
+    true
+}
+
+#[cfg(test)]
+pub(super) fn status_fixture_proof() {
+    unsafe {
+        let dc = CreateCompatibleDC(null_mut());
+        assert!(!dc.is_null());
+        let bitmap = CreateBitmap(32, 40, 1, 32, null());
+        assert!(!bitmap.is_null());
+        let previous = SelectObject(dc, bitmap);
+        let whole = RECT {
+            left: 0,
+            top: 0,
+            right: 32,
+            bottom: 40,
+        };
+        let rect = RECT {
+            left: 10,
+            top: 8,
+            right: 20,
+            bottom: 30,
+        };
+        let background = rgb(20, 23, 31);
+        let foreground = rgb(100, 210, 130);
+        SetTextColor(dc, foreground);
+        SetBkColor(dc, background);
+        for symbol in ["◉", "✓", "✗"] {
+            SetDCBrushColor(dc, background);
+            FillRect(dc, &whole, GetStockObject(DC_BRUSH) as HBRUSH);
+            assert!(paint_status_symbol(dc, symbol, &rect));
+            let mut ink = 0;
+            for y in 0..40 {
+                for x in 0..32 {
+                    let pixel = GetPixel(dc, x, y);
+                    if x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom {
+                        ink += usize::from(pixel == foreground);
+                    } else {
+                        assert_eq!(pixel, background, "status mark escaped its cell");
+                    }
+                }
+            }
+            assert!(ink > 0, "status mark did not draw: {symbol}");
+        }
+        assert!(!paint_status_symbol(dc, "é", &rect));
+        SelectObject(dc, previous);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
     }
 }
 
@@ -1036,7 +1149,7 @@ unsafe fn window_thread(
         fonts: [null_mut(); 16],
         symbol_fonts: [null_mut(); 16],
         emoji_fonts: [null_mut(); 16],
-        glyph_fonts: std::collections::HashMap::new(),
+        glyph_fonts: std::array::from_fn(|_| std::collections::HashMap::new()),
         icons: [app_icon(32), app_icon(16)],
         cell_width: 9,
         cell_height: 20,
@@ -1545,11 +1658,8 @@ fn dim(foreground: u32, background: u32) -> u32 {
 fn color(color: Color, foreground: bool) -> u32 {
     let index = match color {
         Color::Reset => {
-            return if foreground {
-                rgb(224, 226, 235)
-            } else {
-                rgb(20, 23, 31)
-            }
+            let [red, green, blue] = super::theme::native_default(foreground);
+            return rgb(red, green, blue);
         }
         Color::Rgb(r, g, b) => return rgb(r, g, b),
         Color::Indexed(index) => index,

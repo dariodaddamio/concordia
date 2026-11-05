@@ -51,7 +51,7 @@ function Read-Version([string]$Program) {
 }
 $exePath = (Resolve-Path -LiteralPath $Exe).Path
 # Match the reviewed artifact ceiling in smoke-ci.ps1 and docs/release-blockers.md.
-Assert-Regular $exePath (23MB)
+Assert-Regular $exePath (23.25MB)
 $before = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($before -ne $ExpectedSha256.ToLowerInvariant()) { throw 'Candidate SHA-256 mismatch; no executable was started.' }
 $head = (& git -C $root rev-parse HEAD).Trim()
@@ -94,7 +94,7 @@ if ($ChecksPath) {
         }
     }
 }
-Assert-Regular $exePath (23MB)
+Assert-Regular $exePath (23.25MB)
 if ((Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $before) { throw 'Candidate changed during collection.' }
 & git -C $root diff --quiet $BuildCommit -- Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates
 if ($LASTEXITCODE -ne 0 -or (& git -C $root rev-parse HEAD).Trim() -ne $head) { throw 'Source changed during collection.' }

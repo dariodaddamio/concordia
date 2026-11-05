@@ -1758,6 +1758,7 @@ fn a_running_turn_shows_a_spinner_and_how_to_cancel() {
 
 #[test]
 fn no_color_draws_with_the_terminals_own_colours_but_keeps_emphasis() {
+    super::theme::fixture_proof();
     use ratatui::style::Color;
     let mut h = Harness::new(100, 24);
     h.app.no_color = true;

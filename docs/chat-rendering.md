@@ -1,5 +1,16 @@
 # Chat rendering and input, 2026-11-01f
 
+Build `2026-11-05a` recovers verified static code-mode patch batches into their original edit rows
+and uses one status/bold-heading convention for grouped and individual tool calls. "Reported file
+changes" is the separate metadata catalog: a catalog entry identifies a reported file and its
+native provenance; it does not by itself establish that a historical line diff was supplied.
+Unavailable or ambiguous patches remain explicit rather than being reconstructed from current files.
+
+Themes use `[ui] theme` and optional background/foreground/accent overrides in `config.toml`;
+[configuration](config.md) lists the presets and examples. Native checks/status marks are drawn as
+simple strokes, avoiding font-dependent checkmark substitution. Real source Unicode is preserved.
+The compact Home portrait and application icon use [Concordia artwork](brand-direction.md).
+
 Build `2026-11-04r` preserves the exact typed request when expanding `@chat` references. Retrieved
 maps are labelled source context, appended once during background preparation and shown through
 the existing context notices. Native history hydration and document preparation stay off the UI

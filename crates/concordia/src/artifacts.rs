@@ -103,7 +103,7 @@ impl Record {
                 "Open unavailable: reported path is outside the execution directory or excluded"
                     .into()
             });
-        StreamCard { id: format!("artifact:{}", self.id), title: format!("File output · {name}"), status: CardStatus::Done,
+        StreamCard { id: format!("artifact:{}", self.id), title: format!("Changed file · {name}"), status: CardStatus::Done,
             detail: Some(format!("Provider reported {} · {}\n{}\nSource: {} / {}\nNative session: {}\nNative turn: {}\nRun: {}\nAttempt: {}\nEvent: {}\nSource revision: {}\nCurrent file bytes are unverified; opening reads the current disk version.", self.kind, self.reported_path, path, self.owner.provider.as_str(), self.owner.account, self.native_session, self.native_turn.as_deref().unwrap_or("not reported"), self.owner.run_id, self.owner.attempt_id, self.event_id, self.source_revision)) }
     }
     pub fn open_current(&self) -> Result<PathBuf, String> {
@@ -619,7 +619,7 @@ impl Collector {
             if self.count >= 32 {
                 if !self.limited {
                     if let Some(tx) = progress {
-                        let _ = tx.send(crate::provider::turn::TurnProgress::Notice("File output catalog reached its 32 records per attempt limit; native source events remain authoritative".into()));
+                        let _ = tx.send(crate::provider::turn::TurnProgress::Notice("Reported file changes reached its 32 records per attempt limit; native source events remain authoritative".into()));
                     }
                     self.limited = true;
                 }
@@ -641,7 +641,7 @@ impl Collector {
                 Err(error) => {
                     if let Some(tx) = progress {
                         let _ = tx.send(crate::provider::turn::TurnProgress::Notice(format!(
-                            "File output metadata was not retained: {error}"
+                            "Reported file metadata was not retained: {error}"
                         )));
                     }
                 }

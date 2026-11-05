@@ -631,39 +631,32 @@ pub(crate) fn literal_tool_argument(input: &str) -> Option<(Value, usize)> {
     Some((serde_json::from_str(&json).ok()?, at))
 }
 
+#[cfg(test)]
 fn literal_exec_patch(input: &str) -> Option<(String, usize)> {
-    // The host emits these literal statement batches. This is a finite grammar, not JavaScript
-    // evaluation: comments, dynamic arguments, control flow and other statements are rejected.
-    let mut rest = input.trim();
-    let mut patch = None;
-    let mut result_index = 0;
-    while !rest.is_empty() {
-        let statement = rest.strip_prefix("text(await tools.")?;
-        let (argument, is_patch) = if let Some(argument) = statement.strip_prefix("apply_patch(") {
-            (argument, true)
-        } else {
-            (statement.strip_prefix("exec_command(")?, false)
-        };
-        let (value, end) = literal_tool_argument(argument)?;
-        rest = argument
-            .get(end..)?
-            .trim_start()
-            .strip_prefix("));")?
-            .trim_start();
-        if is_patch {
-            if patch.is_some() {
-                return None;
-            }
-            patch = Some((value.as_str()?.to_owned(), result_index));
-        } else if !value.is_object() {
-            return None;
-        }
-        result_index += 1;
-    }
-    patch
+    let mut patches = literal_exec_patches(input)?;
+    (patches.len() == 1).then(|| patches.remove(0))
 }
 
-fn successful_patch_output(output: &Value, result_index: Option<usize>) -> bool {
+fn literal_exec_patches(input: &str) -> Option<Vec<(String, usize)>> {
+    // Share the complete finite host-batch grammar with compact tool headings. Each patch
+    // keeps its own result index; a successful sibling command cannot validate a failed patch.
+    let calls = crate::provider::stream_cards::literal_wrapper_calls(input)?;
+    let mut patches = Vec::new();
+    for (index, (name, argument)) in calls.into_iter().enumerate() {
+        if name == "apply_patch" {
+            patches.push((argument.as_str()?.to_owned(), index));
+        } else if !argument.is_object() {
+            return None;
+        }
+    }
+    (!patches.is_empty()).then_some(patches)
+}
+
+pub(crate) fn successful_patch_output(output: &Value, result_index: Option<usize>) -> bool {
+    let decoded = output
+        .as_str()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let output = decoded.as_ref().unwrap_or(output);
     let output = if let Some(blocks) = output.as_array() {
         // Each recognized text(await tool(...)) statement publishes one result.
         // Match the patch's own result, not a later successful shell command.
@@ -724,6 +717,51 @@ pub(crate) fn codex_patch_inputs(
     codex_patch_inputs_between(root, binding, not_before, i64::MAX, None)
 }
 
+/// Background inline inspection of one explicitly bound, still-running application attempt.
+/// Reject multiple native starts in its time window rather than guessing the newest turn.
+pub(crate) fn live_codex_patches(
+    root: &Path,
+    binding: &Binding,
+    not_before: i64,
+) -> Result<Vec<String>, String> {
+    let (mut source, index) = open_bound(root, binding)?;
+    let start = index.source_len.saturating_sub(TAIL_BYTES);
+    let bytes = read_at(&mut source, start, (index.source_len - start) as usize)?;
+    let mut turns = std::collections::BTreeMap::new();
+    for raw in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|raw| raw.len() <= LINE_BYTES)
+    {
+        let Ok(event) = serde_json::from_slice::<Value>(raw) else {
+            continue;
+        };
+        if event["type"] == "event_msg" && event["payload"]["type"] == "task_started" {
+            if let (Some(turn), Some(at)) = (
+                event["payload"]["turn_id"]
+                    .as_str()
+                    .filter(|id| id.len() <= 256),
+                event["timestamp"].as_str().and_then(rank::timestamp_ms),
+            ) {
+                if at >= not_before {
+                    turns.insert(turn.to_owned(), at);
+                }
+            }
+        }
+    }
+    if turns.len() != 1 {
+        return Err("inline edit has no unique native turn in its bounded attempt window".into());
+    }
+    let (turn, started) = turns.into_iter().next().unwrap();
+    let (mut check, current) = open_bound(root, binding)?;
+    if current.file_identity != index.file_identity
+        || current.source_len < index.source_len
+        || read_at(&mut check, start, bytes.len())? != bytes
+    {
+        return Err("inline patch source changed during inspection".into());
+    }
+    codex_patch_inputs_between(root, binding, started, i64::MAX, Some(&turn))
+}
+
 fn codex_patch_inputs_between(
     root: &Path,
     binding: &Binding,
@@ -745,7 +783,7 @@ fn codex_patch_inputs_between(
     } else {
         0
     };
-    let mut pending = std::collections::HashMap::<String, (String, Option<usize>)>::new();
+    let mut pending = std::collections::HashMap::<String, Vec<(String, Option<usize>)>>::new();
     let mut patches = Vec::new();
     let mut fresh_turn = false;
     for raw in bytes[begin..].split(|b| *b == b'\n') {
@@ -794,9 +832,14 @@ fn codex_patch_inputs_between(
                         .as_str()
                         .is_some_and(|name| name.rsplit('.').next() == Some("apply_patch"));
                     let patch = if direct {
-                        Some((input.into(), None))
+                        Some(vec![(input.into(), None)])
                     } else {
-                        literal_exec_patch(input).map(|(patch, index)| (patch, Some(index)))
+                        literal_exec_patches(input).map(|patches| {
+                            patches
+                                .into_iter()
+                                .map(|(patch, index)| (patch, Some(index)))
+                                .collect()
+                        })
                     };
                     if let Some(patch) = patch {
                         pending.insert(id.into(), patch);
@@ -804,15 +847,18 @@ fn codex_patch_inputs_between(
                 }
             }
         } else if payload["type"] == "custom_tool_call_output" {
-            let Some((input, result_index)) = pending.remove(id) else {
+            let Some(inputs) = pending.remove(id) else {
                 continue;
             };
             let failed = payload["is_error"] == true || payload["status"] == "failed";
-            if !failed
-                && successful_patch_output(&payload["output"], result_index)
-                && patches.len() < 64
-            {
-                patches.push(input);
+            if !failed {
+                for (input, result_index) in inputs {
+                    if successful_patch_output(&payload["output"], result_index)
+                        && patches.len() < 64
+                    {
+                        patches.push(input);
+                    }
+                }
             }
         }
     }
@@ -1647,12 +1693,21 @@ mod tests {
         assert_eq!(literal_exec_patch(&format!("text(await tools.exec_command({{\"cmd\":\"git status\"}}));\ntext(await tools.apply_patch({literal}));")), Some((patch.into(), 1)));
         let actual = format!("text(await tools.apply_patch({literal}));\ntext(await tools.exec_command({{cmd:\"git status\",workdir:\"C:/fixture\",max_output_tokens:1200}}));");
         assert_eq!(literal_exec_patch(&actual), Some((patch.into(), 0)));
+        let multiple = format!("// @exec: {{\"max_output_tokens\":1000}}\ntext(await tools.apply_patch({literal}));\ntext(await tools.apply_patch({literal}))");
+        assert_eq!(
+            literal_exec_patches(&multiple),
+            Some(vec![(patch.into(), 0), (patch.into(), 1)])
+        );
         let blocks = json!([
             {"type":"input_text","text":"Script completed\nWall time 0.7 seconds\nOutput:\n"},
             {"type":"input_text","text":"{}"},
             {"type":"input_text","text":"{\"exit_code\":0,\"output\":\"shell output\"}"}
         ]);
         assert!(successful_patch_output(&blocks, Some(0)));
+        assert!(successful_patch_output(
+            &Value::String(blocks.to_string()),
+            Some(0)
+        ));
         let failed_blocks = json!([
             {"type":"input_text","text":"Script completed\nOutput:\n"},
             {"type":"input_text","text":"{\"isError\":true,\"error\":\"patch failed\"}"},
@@ -1688,6 +1743,8 @@ mod tests {
             json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"wrapped","output":"{}"}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"functions.exec","call_id":"actual-wrapper","input":actual}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"actual-wrapper","output":blocks}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"functions.exec","call_id":"multiple-wrapper","input":multiple}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"multiple-wrapper","output":[{"type":"input_text","text":"Script completed\nOutput:\n"},{"type":"input_text","text":"{}"},{"type":"input_text","text":"{}"}]}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"failed-wrapper","input":wrapped}}),
             json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"failed-wrapper","output":failed_blocks}}),
         ] {
@@ -1695,7 +1752,7 @@ mod tests {
         }
         assert_eq!(
             codex_patch_inputs(dir.path(), &binding, start).unwrap(),
-            vec![patch, patch, patch]
+            vec![patch, patch, patch, patch, patch]
         );
         assert!(codex_patch_inputs(dir.path(), &binding, start + 2000)
             .unwrap()
@@ -1742,7 +1799,7 @@ mod tests {
         );
         assert_eq!(
             historical_codex_patches(dir.path(), &records[0]).unwrap(),
-            vec![patch, patch, patch]
+            vec![patch, patch, patch, patch, patch]
         );
         let recovered = records[0].inspect_edit(dir.path()).unwrap().unwrap();
         assert!(recovered.detail.unwrap().contains("-before\n+after"));
