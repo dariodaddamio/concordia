@@ -275,7 +275,8 @@ fn progress_drives_the_state_machine() {
     );
     apply_progress(&mut j, TurnProgress::Card(card("c1", CardStatus::Running)));
     assert_eq!(j.state, WorkerState::Tool);
-    assert!(j.snippet.contains("cargo test"));
+    assert!(j.snippet.contains("Run tests"));
+    assert_eq!(j.cards[0].detail.as_deref(), Some("cargo test"));
     apply_progress(&mut j, TurnProgress::Card(card("c1", CardStatus::Done)));
     assert_eq!(j.state, WorkerState::Thinking);
     apply_progress(&mut j, TurnProgress::Text("hello\nworld".into()));

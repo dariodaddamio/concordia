@@ -24,6 +24,10 @@ Current UI behavior and installed-host pointer limits: [chat rendering](docs/cha
 Build `2026-11-05a` addresses inline patch delivery, tool status/font consistency and configurable
 themes; the Concordia portrait is bundled locally. These visible follow-ups remain separate from
 the unresolved native-interface, storage-boundary, effectiveness and owner-held release items.
+Build `2026-11-05b` implements the identified long-turn/large-record capture and explicit legacy
+migration gaps, including background recall. Preserved legacy backups and unfinished recovery are
+intentional retention exceptions. Native-data availability, broader qualification and owner-held
+Windows confinement/publication remain separate boundaries in the completion audit.
 The owner's implementation-first campaign gates and X/LinkedIn drafts are in the
 [launch plan](docs/launch-plan.md); unfinished roadmap features are not launch claims.
 The [completion audit](docs/feature-completion-audit.md) records what is closed and what remains;

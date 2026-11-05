@@ -151,6 +151,32 @@ change follows from this run.
 
 ## Larger controlled comparison gates
 
+### MCP policy and driver qualification, 2026-11-05b
+
+Requests 16 and 17 used the supported local MCP reader instead of the earlier blocked subprocess.
+Direct MCP and an auth-free native MCP rehearsal succeeded, but both model reads were denied with
+`MCP tool call requires approval, but approval policy is never`. The 05a reader omitted effect hints;
+version-matched native Auto policy classified it as requiring approval. B scored two of five
+constraints; compacted C retained five of five from existing context. Neither fetched the facts.
+
+05b declares truthful standard read-only/non-destructive/idempotent/closed-world hints for the
+native reader without changing provider approval policy or marking proposal tools read-only.
+Request 18 then successfully invoked the reader through the model under the same read-only/never
+policy. Its returned record SHA and exact byte range independently match the native original.
+This qualifies the changed model-to-MCP read path, not a manual-RPC substitute for that path.
+
+The fact trial is **invalid**: the experiment driver requested message 1, which was environment
+context. The decision seed was message 2. The model correctly left missing facts unknown; its
+two-of-five result is retained. A no-model read verified all five facts in the actual seed, and is
+not counted as model qualification. The corrected future runner requires a unique exact seed-text
+match and all expected facts from the actual selected source before reserving any request. The
+original as-run driver and failed/partial results remain in the ignored evidence folder.
+
+All 18 authorized slots are consumed; no retry, account switch or additional model call followed.
+Original fixture files and the selected chat account remain unchanged. No retention benefit or
+token-saving claim follows. Reports are under ignored
+`target/live-qualification-20261104/mcp-{memory-readonly,postfix-request18}/`.
+
 An additional ordinary-application storage check in build 2026-11-04r consumed request 15 of 18,
 using the same explicitly authorized alternative account and subscription-only funding. Native
 completion produced body-free user/assistant thread references and one recall reference, with

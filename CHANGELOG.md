@@ -1,5 +1,17 @@
 # Changelog
 
+### Changed (`2026-11-05b`)
+
+- Long native turns use separate streaming, body-free capture manifests. Large attachment records
+  and irrelevant tool bodies no longer exhaust the small interactive-history index budget.
+  Existing references remain readable, and sealed captures exclude subsequent turns.
+- Explicit legacy migration previews bind an exact native source, preserve uncertain rows and
+  original-byte backups, and apply through revision-checked transactions with status reconciliation.
+- Legacy and migrated prompt recall hydrates in the background, preserves newly sent history,
+  and reports unavailable sources without rewriting original files or blocking the composer.
+- All seven pure MCP read tools declare standard effect hints, so native clients can
+  distinguish it from unclassified or destructive tools. Provider approval policy stays authoritative.
+
 ### Fixed and added (`2026-11-05a`)
 
 - Recover successful static code-mode patch batches into the original inline edit rows; retain

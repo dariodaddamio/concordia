@@ -313,7 +313,10 @@ fn workspace_files_complete_without_mentions_and_send_now_interrupts_then_sends_
     });
     s.submit("[wait] active turn");
     s.until("provider is gated", |s| {
-        s.screen().contains("synthetic-command") && s.journal().iter().all(|e| e["kind"] != "done")
+        s.screen()
+            .lines()
+            .any(|row| row.contains("Run command") && row.contains("Expand"))
+            && s.journal().iter().all(|e| e["kind"] != "done")
     });
     for text in ["urgent queued message", "later queued message"] {
         s.paste(text);
@@ -1582,7 +1585,9 @@ fn cancellation_pauses_queued_work_and_restart_restores_both_queue_and_draft() {
         s.submit("[wait] cancel this");
         s.until("turn started", |s| s.prompts().len() == 1);
         s.until("running command visible before provider completion", |s| {
-            s.screen().contains("synthetic-command")
+            s.screen()
+                .lines()
+                .any(|row| row.contains("Run command") && row.contains("Expand"))
         });
         assert!(
             !dir.path().join("gate").exists(),
@@ -2178,7 +2183,9 @@ fn internal_preview_remains_responsive_during_gated_stream() {
     let mut s = Session::launch(dir.path());
     s.submit("[wait] keep streaming");
     s.until("running command visible before preview", |s| {
-        s.screen().contains("synthetic-command")
+        s.screen()
+            .lines()
+            .any(|row| row.contains("Run command") && row.contains("Expand"))
     });
     assert!(!dir.path().join("gate").exists());
     assert!(s.journal().iter().all(|event| event["kind"] != "done"));
@@ -2382,7 +2389,10 @@ fn picker_cancel_does_not_answer_armed_approval_during_gated_stream() {
     let mut s = Session::launch(dir.path());
     s.submit("[wait] keep approval and picker separate");
     s.until("provider stream is gated", |s| {
-        s.screen().contains("synthetic-command") && !s.journal().iter().any(|e| e["kind"] == "done")
+        s.screen()
+            .lines()
+            .any(|row| row.contains("Run command") && row.contains("Expand"))
+            && !s.journal().iter().any(|e| e["kind"] == "done")
     });
 
     // The MCP proposal file is the same state boundary used by the real MCP tool.  Creating it
@@ -2541,17 +2551,22 @@ fn pinned_expanded_tool_header_collapses_through_real_mouse_input() {
     s.until("reply completed", |s| s.screen().contains("FAKE REPLY:"));
     s.send("\x0f");
     s.until("sticky expanded header", |s| {
-        s.screen().contains("Collapse")
+        s.screen()
+            .lines()
+            .any(|line| line.contains("Ran command") && line.contains("Collapse"))
     });
     let y = s
         .screen()
         .lines()
-        .position(|line| line.contains("Collapse"))
+        .position(|line| line.contains("Ran command") && line.contains("Collapse"))
         .unwrap()
         + 1;
     s.send(&format!("\x1b[<0;8;{y}M\x1b[<0;8;{y}m"));
     s.until("pinned header collapsed its card", |s| {
-        !s.screen().contains("Collapse") && !s.screen().contains("synthetic output line")
+        s.screen()
+            .lines()
+            .any(|line| line.contains("Ran command") && line.contains("Expand"))
+            && !s.screen().contains("synthetic output line")
     });
     assert_eq!(s.prompts(), ["inspect [long-tool]"]);
     assert!(s.draft().is_empty());

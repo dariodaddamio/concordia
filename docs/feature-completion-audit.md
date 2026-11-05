@@ -1,6 +1,6 @@
-# Feature completion audit: 2026-11-05a
+# Feature completion audit: 2026-11-05b
 
-The full roadmap is **not complete**. The current board has eight grouped open/deferred workstreams;
+The full roadmap is **not complete**. The current board has seven grouped open/deferred workstreams;
 they mix missing capabilities, qualification and release work, so they are not a feature count
 or a percentage of completion:
 
@@ -8,7 +8,7 @@ The actionable distinction is:
 
 | Kind | Remaining work | Completion condition |
 | --- | --- | --- |
-| Implementation | Wider native capture/format coverage for large or long turns; a preservation-first legacy migration path if offered | Exact source-backed recall without losing protected recovery or existing history |
+| Local implementation | 05b implements streaming long-turn/large-record capture, explicit revision-bound legacy migration and background recall | Declared finite bounds; preserved legacy backups and pending recovery are intentional retention exceptions |
 | Qualification | Broader native UI/worker approvals/output/PDF and physical-host paths; compatible-policy memory comparisons | Reproducible exact-build evidence on the declared provider/host and measured retrieval outcomes |
 | Missing native data | Cursor capacity/external usage and numeric credit amounts when providers omit them | A supported, verified source supplies the missing values |
 | Owner holds | New Windows confinement work and public GitHub publication | Owner resumes that scope; signing remains declined |
@@ -34,7 +34,9 @@ See [E2E status](e2e-status.md) for the exact checks and retained limitations.
    handoff smoke passes all six constraint checks. A new three-arm native smoke ran once per
    arm: compaction retained five decisions, but model-driven pointer fetches were blocked by
    native launch policy. Compatible-policy pointer use and larger retention/token-saving
-   comparisons remain unqualified. Three of the new 18 dispatch slots are unused.
+   comparisons remain unqualified. All 18 authorized dispatch slots are consumed. The final
+   model call proves native MCP retrieval after the metadata fix, but the fact trial used the
+   wrong message ordinal and cannot establish a retention or savings advantage.
    [Evidence](quality/memory-evaluation.md).
 6. **Native filesystem confinement — deferred by owner:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer
@@ -45,11 +47,11 @@ See [E2E status](e2e-status.md) for the exact checks and retained limitations.
    deferred Windows/release work and GitHub publication on 2026-11-04. Fresh exact-artifact
    antivirus/install/update rehearsal, publication and public-feed checks remain release gates.
    Routine CI is manual-only to conserve Actions usage; no remote-CI pass is claimed.
-8. **Pointer-only storage boundary:** 04r implements verified references for new thread bodies,
-   persistent composer recall and completed/collected worker inputs when exact binding succeeds.
-   Legacy logs and unfinished recovery stay intact. Oversized/unsupported native records can
-   leave protected recovery payloads, and automatic legacy migration is not implemented.
-   The full no-copy invariant is therefore not claimed. See [implemented bounds](native-memory.md).
+The earlier pointer-only implementation row is closed within the declared 05b contract:
+new verified bodies use references, larger captures have a streaming manifest, and explicit
+legacy preview/apply/status is implemented. Legacy backups, unmatched rows and unfinished recovery
+remain preserved deliberately. This is not a global no-bodies-on-disk claim or automatic deletion
+authorization. Source/record/projection limits remain explicit. See [implemented bounds](native-memory.md).
 
 Build 04k adds one-command prebuilt installation, a shared original icon, task-first window titles,
 clickable permission selection, descriptive web tools, expandable completed-operation groups,

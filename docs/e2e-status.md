@@ -1,5 +1,54 @@
 # Concordia verification status
 
+## Long-turn references, explicit migration and MCP effects, 2026-11-05b
+
+The installed artifact matches the checked executable: 24,562,176 bytes (23.42 MiB), SHA-256
+`0F7E639EC39D4493D674864E4B9CEB36D271A8333DCEDC15BCE335E238F0EEE9`.
+All 983 enabled checks pass: 885 library checks and 98 integration checks, with the separately
+ignored terminal/manual cases distinguished. All-target Clippy, release smoke, Defender and the
+406-file OSS/privacy scan pass. Source-update installation built this exact release candidate.
+The coordinated artifact ceiling is 23.5 MiB, a 340,992-byte increase over 05a with no new runtime
+dependency. No Actions dispatch, signing or publication occurred.
+
+The exact-build owned-window proof ran one ordinary fake-provider turn with a 10,008,306-byte
+native source, 329 JSONL records and 325 captured records, including a 9 MiB tool output and a
+512 KiB attachment-bearing user record. It persisted body-free v2 references without new legacy
+history, cleared the completed checkpoint after durable recording, and restored the exact 47-byte
+Unicode/multiline/spaced composer input after closing/reopening. The native source and history
+hashes stayed unchanged; no additional provider request, real model, global input or clipboard
+access occurred. Receipts/screenshots remain under ignored
+`target/native-window-proof/05b-long-source-final/`; the earlier F8 candidate proof remains intact.
+
+Capture/migration fixtures verify old reference compatibility, sealed append exclusion, selected
+record staleness, opaque-field UTF-8 rejection, historical cross-request matching refusal, large
+tool projection bounds, exact CRLF backups, partial/ambiguous migration, prepared/applied/conflict
+reconciliation, bounded batch continuation and actual CLI preview/apply/status. New prompts stay
+newest while background history loads. Existing fixture assertions were reconciled with current
+compact headings, reference-backed recall and preservation of one verified installer rollback;
+raw source details and exact-byte preservation remain asserted.
+
+Live requests 16/17 exposed missing native MCP effect hints; model reads were denied by the
+existing approval policy. After the metadata fix, request 18 successfully read an exact source
+record through the model under unchanged read-only/never/Auto policy on the earlier F8 candidate.
+The final candidate extends the identical effect hints to all seven pure readers, leaving proposal
+tools unmarked. Its 3,737-byte catalog and unchanged native-reader descriptor pass direct and
+auth-free native MCP checks; no additional model call was made. Request 18's fact trial is invalid
+because the driver selected environment context instead of the decision seed. The corrected
+preflight manually verifies the proper seed; that manual read is not model-effectiveness proof.
+All 18 slots are consumed. [Full evidence and limits](quality/memory-evaluation.md).
+
+All 48 terminal journeys qualify: the original run passed 43, then five corrected fixture
+expectations passed a targeted recheck. Four old predicates expected raw commands in collapsed
+headings; the fifth confused an expanded Thinking label with the tool's Collapse label. Updated
+predicates target the tool row and retain expanded raw output, real gating, mouse collapse,
+cancellation and restart assertions. No production behavior was weakened to satisfy them.
+
+Legacy originals/backups, unmatched records and uncertain recovery remain intentionally preserved.
+Finite capture/projection limits and historical Cursor chunk-grouping limits remain explicit.
+No actual user-history migration was performed automatically. These retention exceptions differ
+from an unfinished migration implementation; global no-copy and full provider/host parity are not
+claimed.
+
 ## Inline patch delivery, themes and Concordia artwork, 2026-11-05a
 
 The installed optimized artifact has matching checked bytes: 24,221,184 bytes (23.10 MiB), SHA-256

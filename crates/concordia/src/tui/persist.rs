@@ -11,12 +11,14 @@ use std::hash::{Hash, Hasher};
 use std::io;
 #[cfg(test)]
 use std::io::Write;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::{Arc, Weak};
 
 /// Sent prompts kept on disk (newest last).
 pub const HISTORY_CAP: usize = 500;
+pub(super) const HISTORY_TEXT_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn draft_path(root: &Path) -> PathBuf {
     root.join("draft.json")
@@ -126,6 +128,7 @@ fn flush_from(slot: &DraftSlot) {
 // ---- history ---------------------------------------------------------------------------
 
 /// Parse a history file: valid lines (one JSON string each) and whether any line was bad.
+#[cfg(test)]
 fn parse_history(raw: &str) -> (Vec<String>, bool) {
     let mut bad = false;
     let mut out = Vec::new();
@@ -148,17 +151,90 @@ fn history_text(lines: &[String]) -> String {
     s
 }
 
-/// The last [`HISTORY_CAP`] sent prompts, oldest first, and how many lines the file holds.
-/// A file with bad lines is kept aside as `.bad` and rewritten with the good ones.
-pub fn load_history(root: &Path) -> (Vec<String>, usize) {
+#[derive(Default)]
+pub(super) struct HistoryLoad {
+    pub messages: Vec<String>,
+    pub unavailable: usize,
+}
+
+/// Bounded, read-only hydration. Call on a worker: migrated rows read native sources.
+pub(super) fn load_history_status(root: &Path) -> HistoryLoad {
+    const TAIL: u64 = 16 * 1024 * 1024;
+    const LINE: usize = 2 * 1024 * 1024;
+    let mut result = HistoryLoad::default();
     let path = history_path(root);
-    let Ok(raw) = fs::read(&path) else {
-        return (Vec::new(), 0);
-    };
-    let (mut lines, _bad) = parse_history(&String::from_utf8_lossy(&raw));
-    if lines.len() > HISTORY_CAP {
-        lines.drain(..lines.len() - HISTORY_CAP);
+    if !path.exists() {
+        return result;
     }
+    let Some(directory) = crate::update::resolved_directory(root) else {
+        return result;
+    };
+    if !crate::update::regular_owned_file(&path, &directory) {
+        result.unavailable = 1;
+        return result;
+    }
+    let read = (|| -> io::Result<(Vec<u8>, bool)> {
+        let mut file = fs::File::open(&path)?;
+        let length = file.metadata()?.len();
+        let start = length.saturating_sub(TAIL);
+        let skip_partial = if start > 0 {
+            file.seek(SeekFrom::Start(start - 1))?;
+            let mut previous = [0];
+            file.read_exact(&mut previous)?;
+            previous[0] != b'\n'
+        } else {
+            false
+        };
+        file.seek(SeekFrom::Start(start))?;
+        let mut raw = Vec::new();
+        file.take(TAIL).read_to_end(&mut raw)?;
+        if skip_partial {
+            let skip = raw
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(raw.len(), |i| i + 1);
+            raw.drain(..skip);
+        }
+        Ok((raw, start > 0))
+    })();
+    let Ok((raw, truncated)) = read else {
+        result.unavailable = 1;
+        return result;
+    };
+    result.unavailable += usize::from(truncated);
+    let mut text_bytes = 0usize;
+    for bytes in raw.split(|byte| *byte == b'\n').rev() {
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let message = (bytes.len() <= LINE)
+            .then(|| std::str::from_utf8(bytes).ok())
+            .flatten()
+            .and_then(|line| crate::legacy_migration::hydrate_history_line(root, line))
+            .filter(|message| !message.trim().is_empty());
+        match message {
+            Some(message) => {
+                if text_bytes.saturating_add(message.len()) > HISTORY_TEXT_BYTES {
+                    result.unavailable += 1;
+                    break;
+                }
+                text_bytes += message.len();
+                result.messages.push(message);
+            }
+            None => result.unavailable += 1,
+        }
+        if result.messages.len() >= HISTORY_CAP {
+            break;
+        }
+    }
+    result.messages.reverse();
+    result
+}
+
+/// The last [`HISTORY_CAP`] valid sent prompts, oldest first. Existing bytes are never rewritten.
+#[cfg(test)]
+pub fn load_history(root: &Path) -> (Vec<String>, usize) {
+    let lines = load_history_status(root).messages;
     let n = lines.len();
     (lines, n)
 }
@@ -327,10 +403,7 @@ impl super::App {
     /// Restore the draft, history and queue left by the previous run (at launch, once).
     pub(super) fn restore_state(&mut self) {
         if self.keep.history {
-            let (h, _) = load_history(&self.state_root);
-            self.history = h;
-            self.reference_journal
-                .load(self.state_root.clone(), self.history.clone());
+            self.reference_journal.load(self.state_root.clone());
         }
         let root = match super::recovery::recovery_root(&self.state_root, &self.cwd) {
             Ok(root) => Some(root),
@@ -688,6 +761,24 @@ mod tests {
             vec!["one".to_string(), "two\nlines \"quoted\"".to_string()]
         );
         assert_eq!(lines, 2);
+        let mut journal = super::super::reference_journal::State::default();
+        journal.load(d.path().to_path_buf());
+        let mut recent = vec!["sent while recall was loading".to_owned()];
+        journal.remember_added();
+        journal.settle_for_test(&mut recent);
+        assert_eq!(
+            recent,
+            [
+                "one",
+                "two\nlines \"quoted\"",
+                "sent while recall was loading"
+            ]
+        );
+        assert_eq!(
+            load_history(d.path()).0,
+            h,
+            "background recall never rewrites existing history"
+        );
     }
 
     #[test]

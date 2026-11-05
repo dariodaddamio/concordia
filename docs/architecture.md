@@ -70,6 +70,9 @@ Writes use a bounded stable per-thread lock and complete append writes. A header
 Existing logs are not migrated or removed. Explicit `/threads delete <id>` remains user-controlled.
 See [native reference bounds](native-memory.md) for exact identity/hash validation, read limits,
 source sealing and protected recovery exceptions.
+Build 05b uses larger streaming capture manifests independently of the interactive index and
+supports explicit legacy migration with revision checks and original-byte backups. Migrated
+and original recall hydrate on a bounded background worker. [Bounds and migration](native-memory.md).
 
 ## Map
 

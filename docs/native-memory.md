@@ -24,10 +24,47 @@ before retry. Changed or missing snapshots disable retry. Legacy, pending, uncer
 worker recovery is preserved. This is a conditional storage boundary, not a claim that every owned
 state file contains no bodies.
 
-Existing capture limits remain: an 8 MiB turn window, at most 128 recognized records, 256 KiB per
-record and 1 MiB plaintext. Large attachment-bearing records or long turns can exceed those bounds;
-their protected recovery remains rather than silently losing input. Broader format coverage and
-an explicit legacy migration policy remain outside this change.
+Build `2026-11-05b` separates completed capture from the small interactive index. Its versioned,
+body-free manifests stream up to 256 MiB per turn, 64 MiB per record and 8,192 recognized records;
+metadata is capped at 2 MiB and plaintext/raw-tool projections at 1 MiB. Attachment/base64 payloads
+and irrelevant fields are skipped without materializing them as transcript bodies. Capture seals
+before another turn, preserves old reference compatibility and validates selected source hashes
+on hydration. The ordinary recent index keeps its 8 MiB/128-record/256 KiB limits.
+
+These are finite bounds, not an unbounded archive: exceeding them retains protected recovery and
+explicit availability gaps. Legacy originals and pending/uncertain recovery remain intentional
+retention exceptions, not silently discarded input.
+
+## Explicit legacy migration
+
+Old thread logs and `history.jsonl` lack reliable native session identities. Migration therefore
+requires a chosen verified native source; titles, timestamps and the newest chat cannot supply one.
+For example:
+
+```text
+concordia thread migrate preview THREAD_ID --source NATIVE_INDEX_ID
+concordia thread migrate preview history --source NATIVE_INDEX_ID --from-line 1
+concordia thread migrate apply PLAN_ID
+concordia thread migrate status PLAN_ID
+```
+
+Each preview attempts at most 64 eligible rows and returns a continuation line when needed.
+The target is capped at 16 MiB and plan metadata at 4 MiB. Existing converted rows are skipped;
+unmatched batches can continue with the returned `--from-line` value.
+The agent-facing `concordia thread migrate` interface previews a body-free, revision-bound plan,
+applies only unique exact user/assistant matches, and reports transaction status. Unsupported,
+ambiguous, malformed and tool-detail rows remain untouched; native tool IDs are never guessed.
+
+Applying preserves the original bytes in an immutable backup outside the active thread catalog.
+It rechecks target/native references under the existing writer lock, records preparation and
+atomically replaces the active file. Repeated status/reconciliation distinguishes applied,
+unapplied and conflicting changes without replaying uncertain work. Migrated prompt rows replace
+their corresponding original rows, retaining order and attachment envelopes rather than appending
+duplicate recall. Backups still contain legacy bodies; this is not a global no-bodies-on-disk claim.
+
+Startup recall reads/hydrates legacy and migrated rows on a background worker. It retains at most
+500 valid entries from a bounded 16 MiB tail, with a 2 MiB per-line and 16 MiB hydrated-text limit, and reports unavailable
+or omitted data. Existing bytes stay untouched, while prompts sent during loading stay newest.
 
 ## Goals and source relationships
 
