@@ -19,12 +19,19 @@ fn seed(state: &std::path::Path) {
         account: Some("claude-2".into()),
     })
     .unwrap();
-    log.append(&ThreadEvent::with_text("user", "fix the login redirect"))
-        .unwrap();
-    log.append(&ThreadEvent::with_text(
-        "assistant",
-        "The redirect keeps the query string now.",
-    ))
+    // Legacy body-bearing history remains readable; new production writes require references.
+    let events = [
+        ThreadEvent::with_text("user", "fix the login redirect"),
+        ThreadEvent::with_text("assistant", "The redirect keeps the query string now."),
+    ];
+    let legacy = events
+        .iter()
+        .map(|ev| serde_json::to_string(ev).unwrap() + "\n")
+        .collect::<String>();
+    std::fs::write(
+        concordia::threads::threads_dir(state).join(format!("{ID}.jsonl")),
+        legacy,
+    )
     .unwrap();
 }
 

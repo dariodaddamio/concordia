@@ -83,6 +83,7 @@ mod queue_focus;
 mod raster;
 mod recovery;
 mod recovery_ui;
+mod reference_journal;
 mod related_files;
 mod session_ui;
 #[cfg(test)]
@@ -411,6 +412,7 @@ pub struct App {
     /// Opt-in thread log for this conversation (see threads.rs); None when recording is off.
     thread: Option<crate::threads::ThreadLog>,
     thread_meta_done: bool,
+    reference_journal: reference_journal::State,
     usage_summary: String,
     usage_credits: String,
     usage_tone: UsageTone,
@@ -1002,9 +1004,17 @@ impl App {
     }
 
     /// Append to the thread log when recording is on. Errors are ignored: logging is best effort.
-    fn log_event(&mut self, ev: crate::threads::ThreadEvent) {
+    fn log_event(&mut self, mut ev: crate::threads::ThreadEvent) {
         if let Some(t) = &self.thread {
-            let _ = t.append(&ev);
+            if matches!(ev.k.as_str(), "user" | "assistant" | "card") {
+                self.reference_journal.buffer(t.id(), ev, None);
+            } else {
+                ev.text = None;
+                if let Some(card) = &mut ev.card {
+                    card.detail = None;
+                }
+                let _ = t.append(&ev);
+            }
         }
     }
 
@@ -1116,7 +1126,10 @@ impl App {
                 card.detail.as_deref(),
                 status,
             ));
-            self.log_event(ev);
+            if let Some(thread) = &self.thread {
+                self.reference_journal
+                    .buffer(thread.id(), ev, Some(&card.id));
+            }
         }
         let text = format_card_line(&card);
         if let Some(i) = existing_index {
@@ -1276,6 +1289,13 @@ impl App {
                 }
             }
             TurnProgress::Notice(n) => self.push_system(n),
+            TurnProgress::ChatReferences { maps, notices } => {
+                self.show_chat_refs(chatref::Expansion {
+                    maps,
+                    notices,
+                    ..Default::default()
+                });
+            }
             TurnProgress::Error(e) => {
                 if self.continuation.errors.len() < 12 {
                     self.continuation
@@ -1655,6 +1675,7 @@ impl App {
     }
 
     fn on_tick(&mut self) {
+        self.poll_reference_journal();
         self.questions.refresh_native();
         self.poll_images();
         self.raster.poll();
@@ -3417,6 +3438,13 @@ impl App {
             self.push_system("an update is in progress - Esc cancels it, or wait for it to finish");
             return;
         }
+        if !self.busy
+            && (!line.starts_with('/') || user_prompt.is_some())
+            && self.reference_journal.backlogged()
+        {
+            self.flash("Finishing history references; your draft is kept.");
+            return;
+        }
         let dispatch = if line.starts_with('/') && user_prompt.is_none() {
             line.clone()
         } else {
@@ -3554,11 +3582,9 @@ impl App {
             self.persist_draft_now();
             return;
         }
-        let refs = self.expand_chat_refs(&send);
         if !handoff {
             self.push_user(incoming.display());
         }
-        send = self.show_chat_refs(refs);
         self.turn_started = Some(Instant::now());
         self.phase = Phase::Waiting;
         self.live_thinking.clear();
@@ -3719,6 +3745,7 @@ impl App {
             prior_home: None,
             need_context_pack: false,
             thread: crate::threads::start(&state_root_for_usage),
+            reference_journal: reference_journal::State::default(),
             thread_meta_done: false,
             usage_summary: "limits unknown".into(),
             usage_credits: "Credits: not reported".into(),
@@ -4082,24 +4109,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             app.queue_advance(&turn_tx);
             while let Ok(prompt) = turn_rx.try_recv() {
                 let incoming = crate::attachments::Message::decode(&prompt);
-                let prompt = match if incoming.has_pdfs() {
-                    incoming.validate().map(|()| incoming.encode())
-                } else {
-                    incoming.prompt_text()
-                } {
-                    Ok(prompt) => prompt,
-                    Err(error) => {
-                        app.on_turn_done(
-                            TurnOutcome {
-                                failed: true,
-                                stderr_tail: error,
-                                ..Default::default()
-                            },
-                            &turn_tx,
-                        );
-                        continue;
-                    }
-                };
                 let image_inputs = incoming.images();
                 if app.discard_cancelled_pending_turn() {
                     continue;
@@ -4149,6 +4158,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 app.questions.cancel_native();
                 app.native_owner = Some(owner.clone());
                 app.native_accounting_owner = Some(owner.clone());
+                let original_reference_prompt =
+                    app.last_sent.clone().unwrap_or_else(|| prompt.clone());
+                app.reference_journal
+                    .begin(&owner, &original_reference_prompt, app.keep.history);
+                let reference_sender = app.reference_journal.sender();
                 let scope_invoked = app.scope_invocation_flag();
                 let scope_intent = app
                     .scopes
@@ -4191,6 +4205,41 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 app.live_thinking.clear();
                 app.phase = Phase::Waiting;
                 tokio::spawn(async move {
+                    // Native-reference hydration and document reads must not block input/paint.
+                    // Expand only composer text, before appending document contents or PDF inputs.
+                    let reference_root = state_root.clone();
+                    let prepared = tokio::task::spawn_blocking(move || {
+                        let mut incoming = incoming;
+                        let ex = chatref::expand(
+                            &reference_root,
+                            &incoming.text,
+                            crate::config::for_root(&reference_root).threads.map_chars,
+                        );
+                        incoming.text = ex.sent;
+                        let prompt = if incoming.has_pdfs() {
+                            incoming.validate().map(|()| incoming.encode())
+                        } else {
+                            incoming.prompt_text()
+                        }?;
+                        Ok::<_, String>((incoming, prompt, ex.maps, ex.notices))
+                    })
+                    .await
+                    .map_err(|_| "chat reference preparation worker stopped".to_owned())
+                    .and_then(|prepared| prepared);
+                    let (incoming, prompt, maps, notices) = match prepared {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            let _ = done_tx.send(TurnOutcome {
+                                failed: true,
+                                stderr_tail: error,
+                                ..Default::default()
+                            });
+                            return;
+                        }
+                    };
+                    if !maps.is_empty() || !notices.is_empty() {
+                        let _ = progress_tx.send(TurnProgress::ChatReferences { maps, notices });
+                    }
                     let home = launch_home;
                     let home_str = home.as_ref().map(|p| p.to_string_lossy().into_owned());
                     let binding = home.as_ref().and_then(|h| {
@@ -4355,13 +4404,56 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         compaction: policy.compaction,
                     };
                     // Validate plan even if spawn fails (argv safety).
-                    if let Err(e) = plan_provider_turn(&req) {
-                        let _ = done_tx.send(TurnOutcome {
-                            stderr_tail: format!("{e:#}"),
-                            ..Default::default()
-                        });
-                        return;
-                    }
+                    let checked_plan = match plan_provider_turn(&req) {
+                        Ok(plan) => plan,
+                        Err(e) => {
+                            let _ = done_tx.send(TurnOutcome {
+                                stderr_tail: format!("{e:#}"),
+                                ..Default::default()
+                            });
+                            return;
+                        }
+                    };
+                    let original = crate::attachments::Message::decode(&original_reference_prompt);
+                    let raw_reference_prompt = if incoming.has_pdfs() {
+                        crate::attachments::Message::decode(&prompt).text
+                    } else {
+                        prompt.clone()
+                    };
+                    let original_range = reference_journal::original_range(
+                        &checked_plan.prompt,
+                        &raw_reference_prompt,
+                        &original.text,
+                    );
+                    let capture_root = state_root.clone();
+                    let capture_account = account.clone();
+                    let capture_home = home.clone();
+                    let capture_session = session_out.clone();
+                    let capture_scope = tokio::task::spawn_blocking(move || {
+                        let Some(session) = capture_session else {
+                            return Ok(None);
+                        };
+                        let home = capture_home
+                            .as_deref()
+                            .ok_or("native history home unavailable")?;
+                        let binding = crate::native_memory::Binding::new(
+                            provider,
+                            &capture_account,
+                            home,
+                            &session,
+                        )?;
+                        crate::native_memory::references::begin_scope(&capture_root, &binding)
+                            .map(Some)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("native history capture worker stopped".into()));
+                    let reference_run = owner.run_id.clone();
+                    let _ = reference_sender.send(reference_journal::Started {
+                        run: reference_run.clone(),
+                        scope: capture_scope.clone(),
+                        input: checked_plan.prompt.clone(),
+                        original: original_range.clone(),
+                    });
                     // Admission is held before planning, but an input/launch failure is not
                     // evidence of a live process. Mark invocation only when transport reports
                     // its owned child, forwarding cancellation ownership before completion.
@@ -4394,6 +4486,45 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     };
                     match result {
                         Ok(outcome) => {
+                            let seal_root = state_root.clone();
+                            let seal_home = home.clone();
+                            let seal_account = account.clone();
+                            let seal_session = outcome.session_id.clone();
+                            let sealed = tokio::task::spawn_blocking(move || {
+                                let scope = match capture_scope {
+                                    Ok(Some(scope)) => scope,
+                                    Ok(None) => {
+                                        let home = seal_home
+                                            .as_deref()
+                                            .ok_or("native history home unavailable")?;
+                                        let session = seal_session
+                                            .as_deref()
+                                            .ok_or("native history session unavailable")?;
+                                        let binding = crate::native_memory::Binding::new(
+                                            provider,
+                                            &seal_account,
+                                            home,
+                                            session,
+                                        )?;
+                                        crate::native_memory::references::fresh_scope(
+                                            &seal_root, &binding,
+                                        )?
+                                    }
+                                    Err(error) => return Err(error),
+                                };
+                                crate::native_memory::references::seal_scope(&seal_root, &scope)
+                                    .map(Some)
+                            })
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err("native history sealing worker stopped".into())
+                            });
+                            let _ = reference_sender.send(reference_journal::Started {
+                                run: reference_run,
+                                scope: sealed,
+                                input: checked_plan.prompt,
+                                original: original_range,
+                            });
                             let _ = done_tx.send(outcome);
                         }
                         Err(e) => {

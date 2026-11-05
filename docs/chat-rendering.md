@@ -1,5 +1,10 @@
 # Chat rendering and input, 2026-11-01f
 
+Build `2026-11-04r` preserves the exact typed request when expanding `@chat` references. Retrieved
+maps are labelled source context, appended once during background preparation and shown through
+the existing context notices. Native history hydration and document preparation stay off the UI
+thread. Persistent Up/Down recall uses verified native references while leaving old history readable.
+
 Build `2026-11-04q` keeps recorded thinking in individual chat accordions. Click its heading or
 gutter to expand the full recorded text in place; Ctrl+O toggles all activity. Restored history
 uses the same rendering and actions. The Worked for footer is duration/time/usage metadata,

@@ -281,11 +281,32 @@ pub struct JobSpec {
     pub trust: TrustMode,
 }
 
+/// Exact native task projections. No conversation text is serialized here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReferences {
+    prompt: crate::native_memory::references::Reference,
+    attachments: Vec<crate::attachments::Attachment>,
+    prompt_sha256: String,
+    task: TaskProjection,
+    task_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum TaskProjection {
+    Native(Box<crate::native_memory::references::Reference>),
+    OriginalPrompt { chars: usize },
+    MessageDisplay { chars: usize },
+}
+
 pub struct Job {
     input: input::State,
     pub run_id: String,
     pub conversation_id: String,
     pub source_id: Option<String>,
+    reference_storage: bool,
+    task_reference: Option<TaskReferences>,
+    task_reference_unavailable: bool,
     pub routing: Option<crate::routing::Approved>,
     pub route_history: Vec<String>,
     pub workspace: Option<crate::workspaces::Request>,
@@ -427,6 +448,7 @@ pub enum Event {
     Progress(u32, TurnProgress),
     Finished(u32, Box<TurnOutcome>),
     Source(u32, String),
+    TaskReference(u32, Box<TaskReferences>),
     Paused(u32, String),
     DependencyReady(u32, String),
 }
@@ -638,6 +660,9 @@ impl Delegates {
             run_id,
             conversation_id: self.conversation_id.clone(),
             source_id: None,
+            reference_storage: true,
+            task_reference: None,
+            task_reference_unavailable: false,
             routing,
             route_history: Vec::new(),
             workspace,
@@ -691,6 +716,12 @@ impl Delegates {
 
     /// Spawn the turn for a queued job (needs a tokio runtime).
     fn launch(&mut self, id: u32, now: Instant) {
+        if self
+            .get(id)
+            .is_some_and(|job| job.task_reference_unavailable)
+        {
+            return;
+        }
         if self.get(id).is_some_and(|job| {
             job.workspace_next_check
                 .is_some_and(|deadline| now < deadline)
@@ -843,6 +874,8 @@ impl Delegates {
             attempt.home_id = crate::token_log::Attribution::bound_home(canonical.as_deref());
         }
         let mut spec = job.spec.clone();
+        let reference_storage = job.reference_storage;
+        let reference_task = job.task.clone();
         if let Some(workspace) = job
             .workspace
             .as_ref()
@@ -987,17 +1020,31 @@ impl Delegates {
                 local_time: Some(crate::prompt_time::now()),
                 compaction,
             };
-            if let Err(error) = crate::provider::turn::plan_provider_turn(&req) {
-                let _ = tx.send(Event::Finished(
-                    id,
-                    Box::new(TurnOutcome {
-                        failed: true,
-                        stderr_tail: error.to_string(),
-                        ..Default::default()
-                    }),
-                ));
-                return;
-            }
+            let planned_prompt = match crate::provider::turn::plan_provider_turn(&req) {
+                Ok(plan) => plan.prompt,
+                Err(error) => {
+                    let _ = tx.send(Event::Finished(
+                        id,
+                        Box::new(TurnOutcome {
+                            failed: true,
+                            stderr_tail: error.to_string(),
+                            ..Default::default()
+                        }),
+                    ));
+                    return;
+                }
+            };
+            let raw_prompt = if message.has_pdfs() {
+                message.text.as_str()
+            } else {
+                prompt.as_str()
+            };
+            let composer_projection = (planned_prompt.ends_with(raw_prompt)
+                && raw_prompt.starts_with(&message.text))
+            .then(|| {
+                let start = planned_prompt.len() - raw_prompt.len();
+                start..start + message.text.len()
+            });
             if preparation_cancel.load(std::sync::atomic::Ordering::SeqCst) {
                 let _ = tx.send(Event::Finished(
                     id,
@@ -1047,20 +1094,51 @@ impl Delegates {
                 stderr_tail: format!("{e:#}"),
                 ..Default::default()
             });
+            let mut captured_reference = None;
             if let (Some(root), Some(home), Some(session)) =
                 (state_root, spec.home.clone(), outcome.session_id.as_ref())
             {
                 let session = session.clone();
-                if let Ok(Ok(page)) = tokio::task::spawn_blocking(move || {
-                    crate::native_memory::Binding::new(provider, &account, &home, &session)
-                        .and_then(|b| crate::native_memory::index_bound(&root, &b))
+                let completed =
+                    outcome.exit_code == Some(0) && !outcome.failed && !outcome.cancelled;
+                let original_prompt = spec.prompt.clone();
+                if let Ok(Ok((page, reference))) = tokio::task::spawn_blocking(move || {
+                    let binding =
+                        crate::native_memory::Binding::new(provider, &account, &home, &session)?;
+                    let page = crate::native_memory::index_bound(&root, &binding)?;
+                    let reference = if reference_storage && completed {
+                        // Worker ProviderTurnRequest above explicitly requests a new native session.
+                        // This exact returned session is therefore eligible for a fresh scope.
+                        crate::native_memory::references::fresh_scope(&root, &binding)
+                            .and_then(|scope| {
+                                let projection = composer_projection
+                                    .as_ref()
+                                    .ok_or("native worker input projection unavailable")?;
+                                TaskReferences::capture(
+                                    &root,
+                                    &scope,
+                                    &planned_prompt,
+                                    projection,
+                                    &original_prompt,
+                                    &reference_task,
+                                )
+                            })
+                            .ok()
+                    } else {
+                        None
+                    };
+                    Ok::<_, String>((page, reference))
                 })
                 .await
                 {
                     let _ = tx.send(Event::Source(id, page.id));
+                    captured_reference = reference;
                 }
             }
             let _ = tx.send(Event::Finished(id, Box::new(outcome)));
+            if let Some(reference) = captured_reference {
+                let _ = tx.send(Event::TaskReference(id, Box::new(reference)));
+            }
         });
     }
 
@@ -1133,6 +1211,22 @@ impl Delegates {
                             attempt.source = Some(source.clone());
                         }
                         j.source_id = Some(source);
+                    }
+                }
+                Event::TaskReference(id, reference) => {
+                    if let Some(job) = self.get_mut(id) {
+                        if job.reference_storage
+                            && recovery::reference_matches(
+                                &reference,
+                                &job.account,
+                                job.provider,
+                                job.spec.home.as_deref(),
+                                job.session_id.as_deref(),
+                            )
+                        {
+                            job.task_reference = Some(*reference);
+                            job.task_reference_unavailable = false;
+                        }
                     }
                 }
                 Event::Paused(id, error) => self.pause_dependency_job(id, error, now),
@@ -1316,6 +1410,9 @@ impl Delegates {
             run_id: uuid::Uuid::new_v4().to_string(),
             conversation_id: self.conversation_id.clone(),
             source_id: None,
+            reference_storage: true,
+            task_reference: None,
+            task_reference_unavailable: false,
             routing: None,
             route_history: Vec::new(),
             workspace: None,
@@ -1447,6 +1544,7 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
         TurnProgress::Notice(n) => {
             j.snippet = n;
         }
+        TurnProgress::ChatReferences { .. } => {}
     }
 }
 

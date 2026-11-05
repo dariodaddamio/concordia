@@ -151,6 +151,12 @@ change follows from this run.
 
 ## Larger controlled comparison gates
 
+An additional ordinary-application storage check in build 2026-11-04r consumed request 15 of 18,
+using the same explicitly authorized alternative account and subscription-only funding. Native
+completion produced body-free user/assistant thread references and one recall reference, with
+exact original Unicode/whitespace verified in native history. This qualifies that bounded
+persistence path, not comparative retrieval effectiveness or savings. Three slots remain unused.
+
 Use three arms on the same synthetic committed repository and pinned constraints: native resume
 with provider compaction, a fresh native session with bounded verified handoff pointers, and
 compaction plus those pointers. A trial must bind provider executable/version, model, account/home,

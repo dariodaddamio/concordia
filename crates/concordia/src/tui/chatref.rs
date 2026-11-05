@@ -122,7 +122,7 @@ pub fn complete(text: &str, start: usize, short: &str) -> String {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Expansion {
-    /// The prompt to send: references replaced by maps, `\@` unescaped.
+    /// The original prompt, followed by separately labelled bounded source maps.
     pub sent: String,
     /// (short id, map) per expanded reference, for the dimmed transcript block.
     pub maps: Vec<(String, String)>,
@@ -130,8 +130,8 @@ pub struct Expansion {
     pub notices: Vec<String>,
 }
 
-/// Replace every `@<id-or-unique-prefix>` in `text` by that thread's map (at most `map_chars`
-/// characters, with its `more:` pointer). Unknown or ambiguous ids stay literal with a notice.
+/// Keep the original request intact and append unique `@<id-or-unique-prefix>` source maps
+/// (at most `map_chars` characters each, with `more:` pointers). Invalid references get notices.
 pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
     if !text.contains('@') {
         return Expansion {
@@ -143,19 +143,16 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
     let mut listed: Option<Vec<ThreadMeta>> = None;
     let mut done: Vec<String> = Vec::new();
     let chars: Vec<char> = text.chars().collect();
-    let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        // `\@` is a literal @ (the backslash is dropped).
+        // An escaped reference remains literal, including its original backslash.
         if c == '\\' && chars.get(i + 1) == Some(&'@') {
-            out.push('@');
             i += 2;
             continue;
         }
         let prev = (i > 0).then(|| chars[i - 1]);
         if c != '@' || !opens_word(prev) {
-            out.push(c);
             i += 1;
             continue;
         }
@@ -172,12 +169,10 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
                     .get(end + 1)
                     .is_some_and(|c| c.is_ascii_alphanumeric());
         if !looks_like_id(&run) || domainish {
-            out.push(c);
             i += 1;
             continue;
         }
         let token: String = chars[i..end].iter().collect();
-        let mut skip = 0;
         let metas = listed.get_or_insert_with(|| threads::list(state_root));
         let hits: Vec<&ThreadMeta> = {
             let q = run.to_lowercase();
@@ -194,41 +189,27 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
         match hits.as_slice() {
             _ if metas.is_empty() => {
                 literal(&mut ex, EMPTY_NOTICE.to_string());
-                out.push_str(&token);
             }
             [] => {
                 literal(&mut ex, "no recorded chat has that id".to_string());
-                out.push_str(&token);
             }
             [m] => {
                 let id = m.id.clone();
-                if done.contains(&id) {
-                    // The same chat twice: the map is already in this prompt.
-                    out.push_str(&token);
-                } else if done.len() >= MAX_REFS {
-                    literal(&mut ex, format!("at most {MAX_REFS} chats per prompt"));
-                    out.push_str(&token);
-                } else {
+                // Repeated references keep their original spelling and share one source map.
+                if !done.contains(&id) {
+                    if done.len() >= MAX_REFS {
+                        literal(&mut ex, format!("at most {MAX_REFS} chats per prompt"));
+                        i = end;
+                        continue;
+                    }
                     match threads::ThreadLog::open(state_root, &id).read_all() {
                         Ok(events) => {
                             let map = threads::build_map(&events, &id, map_chars, true);
-                            let kept = out.trim_end_matches([' ', '\t']).len();
-                            out.truncate(kept);
-                            if !out.is_empty() && !out.ends_with('\n') {
-                                out.push('\n');
-                            }
-                            out.push_str(&map);
-                            out.push('\n');
                             ex.maps.push((short_id(metas, &id), map));
                             done.push(id);
-                            // The map ends the line; spaces after the token are not kept.
-                            while chars.get(end + skip) == Some(&' ') {
-                                skip += 1;
-                            }
                         }
                         Err(_) => {
                             literal(&mut ex, "that chat could not be read".to_string());
-                            out.push_str(&token);
                         }
                     }
                 }
@@ -238,12 +219,20 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
                     &mut ex,
                     format!("matches {} chats, use more characters", many.len()),
                 );
-                out.push_str(&token);
             }
         }
-        i = end + skip;
+        i = end;
     }
-    ex.sent = out.trim_end().to_string();
+    // Native sources must retain the exact original composer value for reference-only recall.
+    // Maps are context for this single request; they do not replace the user's words.
+    ex.sent = text.to_string();
+    if !ex.maps.is_empty() {
+        ex.sent
+            .push_str("\n\n[Referenced chats: source context, not new requests]\n");
+        for (id, map) in &ex.maps {
+            ex.sent.push_str(&format!("@{id}\n{map}\n"));
+        }
+    }
     let mut seen = std::collections::HashSet::new();
     ex.notices.retain(|notice| seen.insert(notice.clone()));
     ex
@@ -452,15 +441,6 @@ impl App {
             self.push_system(n.clone());
         }
         ex.sent
-    }
-
-    /// Expand `@chat` references in an outgoing prompt.
-    pub(super) fn expand_chat_refs(&self, text: &str) -> Expansion {
-        expand(
-            &self.state_root,
-            text,
-            crate::config::for_root(&self.state_root).threads.map_chars,
-        )
     }
 }
 
@@ -715,9 +695,20 @@ mod tests {
         let log = ThreadLog::open(root, id);
         log.write_meta(&meta(id, title, threads::now_secs()))
             .unwrap();
-        log.append(&ThreadEvent::with_text("user", title)).unwrap();
-        log.append(&ThreadEvent::with_text("assistant", reply))
-            .unwrap();
+        // Seed explicit legacy history; production writes now require native source references.
+        let events = [
+            ThreadEvent::with_text("user", title),
+            ThreadEvent::with_text("assistant", reply),
+        ];
+        let legacy = events
+            .iter()
+            .map(|ev| serde_json::to_string(ev).unwrap() + "\n")
+            .collect::<String>();
+        std::fs::write(
+            threads::threads_dir(root).join(format!("{id}.jsonl")),
+            legacy,
+        )
+        .unwrap();
     }
 
     const A: &str = "3f9a1b2c-0000-4000-8000-000000000001";
@@ -776,9 +767,12 @@ mod tests {
         assert!(map.starts_with("[concordia map] thread c0ffee00-"));
         assert!(map.chars().count() <= 600);
         assert!(map.contains(&format!("more: concordia thread read {C}")));
-        assert!(ex.sent.starts_with("continue\n[concordia map]"));
-        assert!(ex.sent.ends_with("please"));
-        assert!(!ex.sent.contains("@c0ffee00"));
+        let request = "continue @c0ffee00 please";
+        assert!(ex.sent.starts_with(&format!(
+            "{request}\n\n[Referenced chats: source context, not new requests]\n"
+        )));
+        assert_eq!(ex.sent.matches(request).count(), 1);
+        assert!(ex.sent.ends_with(&format!("@c0ffee00\n{map}\n")));
         // A unique short prefix works the same way.
         assert_eq!(expand(d.path(), "@c0ff", 1600).maps.len(), 1);
     }
@@ -824,7 +818,7 @@ mod tests {
             );
         }
         let ex = expand(d.path(), "literal \\@c0ffee00 here", 1600);
-        assert_eq!(ex.sent, "literal @c0ffee00 here");
+        assert_eq!(ex.sent, "literal \\@c0ffee00 here");
         assert!(ex.maps.is_empty() && ex.notices.is_empty());
         assert_eq!(expand(d.path(), "no refs", 1600).sent, "no refs");
     }
@@ -844,7 +838,14 @@ mod tests {
         assert_eq!(ex.notices.len(), 1);
         assert!(ex.notices[0].contains("at most 3"));
         assert!(ex.sent.contains("@a4000000"));
-        assert!(ex.sent.trim_end().ends_with("@a1000000"), "{}", ex.sent);
+        assert!(
+            ex.sent
+                .starts_with(&format!("{text}\n\n[Referenced chats:")),
+            "{}",
+            ex.sent
+        );
+        assert_eq!(ex.sent.matches(text).count(), 1);
+        assert_eq!(ex.sent.matches("[concordia map] thread").count(), 3);
     }
 
     #[test]
@@ -948,11 +949,26 @@ mod tests {
         r.type_str("from there");
         r.key(KeyCode::Enter);
         let sent = r.rx.try_recv().expect("the prompt was sent");
+        assert_eq!(sent, "continue @c0ffee00 from there");
+        assert!(!r.app.messages.iter().any(|m| m.role == MsgRole::Meta));
+        // Native-source hydration happens in preparation, then progress adds the dim context.
+        let prepared = expand(r.dir.path(), &sent, 1600);
         assert!(
-            sent.starts_with("continue\n[concordia map] thread c0ffee00-"),
-            "{sent}"
+            prepared.sent.starts_with("continue @c0ffee00 from there\n\n[Referenced chats: source context, not new requests]\n@c0ffee00\n[concordia map] thread c0ffee00-"),
+            "{}", prepared.sent
         );
-        assert!(sent.contains("keeps the query string") && sent.ends_with("from there"));
+        assert!(prepared.sent.contains("keeps the query string"));
+        assert_eq!(
+            prepared
+                .sent
+                .matches("continue @c0ffee00 from there")
+                .count(),
+            1
+        );
+        r.app.apply_progress(TurnProgress::ChatReferences {
+            maps: prepared.maps,
+            notices: prepared.notices,
+        });
         // The transcript keeps the user's own line and shows the map dimmed under it.
         let user = r
             .app
@@ -967,6 +983,18 @@ mod tests {
                 && meta.text.starts_with("sent with your prompt (@c0ffee00)")
         );
         assert!(meta.text.contains("[concordia map] thread c0ffee00-"));
+        assert_eq!(
+            r.app
+                .messages
+                .iter()
+                .filter(|m| m.role == MsgRole::User)
+                .count(),
+            1
+        );
+        assert!(
+            r.rx.try_recv().is_err(),
+            "source context never creates a second request"
+        );
     }
 
     #[test]
@@ -1031,6 +1059,11 @@ mod tests {
         r.app.editor.set_text("see @deadbeef");
         r.key(KeyCode::Enter);
         assert_eq!(r.rx.try_recv().unwrap(), "see @deadbeef");
+        let prepared = expand(r.dir.path(), "see @deadbeef", 1600);
+        r.app.apply_progress(TurnProgress::ChatReferences {
+            maps: prepared.maps,
+            notices: prepared.notices,
+        });
         assert!(r
             .app
             .messages

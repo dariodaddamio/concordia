@@ -79,7 +79,7 @@ pub(crate) fn managed_references(
         }
         let ledger: Ledger = serde_json::from_slice(&bytes)
             .map_err(|_| "worker ledger unavailable; references unknown")?;
-        if !(1..=8).contains(&ledger.version) {
+        if !(1..=9).contains(&ledger.version) {
             return Err("unknown worker ledger version; references retained".into());
         }
         let hash = format!("{:x}", Sha256::digest(&bytes));
@@ -193,6 +193,7 @@ mod tests {
             0,
         );
         let job = d.get_mut(id).unwrap();
+        job.reference_storage = false; // An existing pre-reference row must remain body-based.
         job.spec.cwd = workspace.clone();
         job.spec.prompt = "original explicit task".into();
         job.spec.prefix = Some("conversation body must not persist".into());
@@ -208,6 +209,7 @@ mod tests {
         assert!(!bytes.contains("conversation body must not persist"));
         assert!(!bytes.contains("native result must not persist"));
         assert!(bytes.contains("original explicit task"));
+        assert!(!bytes.contains("reference_storage"));
         drop(d);
         let mut restored = Delegates::default();
         assert_eq!(
@@ -248,6 +250,271 @@ mod tests {
         assert!(Delegates::default()
             .attach_recovery(&recovery, dir.path(), dir.path())
             .is_err());
+
+        // New, durably returned plain-text jobs retain only exact native references.
+        let home = dir.path().join("native-home");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        crate::store::upsert_stored_account(
+            dir.path(),
+            crate::store::StoredAccount {
+                id: "synthetic".into(),
+                provider: ProviderKind::Codex,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "Synthetic".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        let session = "worker-reference-native";
+        let native = home.join("sessions/worker-reference.jsonl");
+        let original = "NATIVE_WORKER_REFERENCE_TASK_83";
+        let full_expected = format!("[Verified worker prefix]\n{original}");
+        let records = [
+            serde_json::json!({"type":"session_meta","payload":{"id":session,"cwd":workspace}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":full_expected}]}}),
+        ];
+        let native_bytes = records
+            .iter()
+            .map(|record| record.to_string() + "\n")
+            .collect::<String>();
+        std::fs::write(&native, &native_bytes).unwrap();
+        let binding =
+            crate::native_memory::Binding::new(ProviderKind::Codex, "synthetic", &home, session)
+                .unwrap();
+        let scope = crate::native_memory::references::fresh_scope(dir.path(), &binding).unwrap();
+        let projection = full_expected.len() - original.len()..full_expected.len();
+        let reference = TaskReferences::capture(
+            dir.path(),
+            &scope,
+            &full_expected,
+            &projection,
+            original,
+            original,
+        )
+        .unwrap();
+        let mut d = Delegates::default();
+        d.attach_recovery(&recovery, &workspace, dir.path())
+            .unwrap();
+        let complete = d.push_test_job(
+            "synthetic",
+            ProviderKind::Codex,
+            WorkerState::Done,
+            "complete",
+            0,
+        );
+        let job = d.get_mut(complete).unwrap();
+        job.spec.cwd = workspace.clone();
+        job.spec.home = Some(home.clone());
+        job.spec.prompt = original.into();
+        job.task = original.into();
+        job.session_id = Some(session.into());
+        job.task_reference = Some(reference);
+        d.save_recovery().unwrap();
+        assert!(
+            std::fs::read_to_string(recovery.join("workers.json"))
+                .unwrap()
+                .contains(original),
+            "uncollected requests remain protected recovery"
+        );
+        d.reserve_delivery(&[complete]).unwrap();
+        let stored = std::fs::read_to_string(recovery.join("workers.json")).unwrap();
+        assert!(
+            !stored.contains(original),
+            "returned native-backed task bodies are absent"
+        );
+        assert!(
+            stored.contains("task_reference") && stored.contains("original explicit task"),
+            "legacy bodies remain untouched"
+        );
+        drop(d);
+        let mut d = Delegates::default();
+        d.attach_recovery(&recovery, &workspace, dir.path())
+            .unwrap();
+        assert_eq!(
+            d.recovered_task(complete).unwrap(),
+            ("synthetic".into(), original.into())
+        );
+        assert_eq!(d.get(complete).unwrap().task, original);
+        assert!(
+            !std::fs::read_to_string(recovery.join("workers.json"))
+                .unwrap()
+                .contains(original),
+            "hydration never copies text back to owned storage"
+        );
+        drop(d);
+        std::fs::write(
+            &native,
+            native_bytes.replace(original, "REPLACED_WORKER_REFERENCE_TASK"),
+        )
+        .unwrap();
+        let mut d = Delegates::default();
+        d.attach_recovery(&recovery, &workspace, dir.path())
+            .unwrap();
+        assert!(d
+            .recovered_task(complete)
+            .unwrap_err()
+            .contains("retry is disabled"));
+        assert!(d.get(complete).unwrap().task.contains("unavailable"));
+        assert!(d.get(complete).unwrap().spec.prompt.is_empty());
+        assert!(!std::fs::read_to_string(recovery.join("workers.json"))
+            .unwrap()
+            .contains(original));
+        drop(d);
+        for (provider, account, extension) in [
+            (ProviderKind::Codex, "synthetic-image", "png"),
+            (ProviderKind::Claude, "synthetic-document", "pdf"),
+        ] {
+            let home = dir.path().join(account);
+            let folder = home.join(if provider == ProviderKind::Codex {
+                "sessions"
+            } else {
+                "projects/fixture"
+            });
+            std::fs::create_dir_all(&folder).unwrap();
+            crate::store::upsert_stored_account(
+                dir.path(),
+                crate::store::StoredAccount {
+                    id: account.into(),
+                    provider,
+                    home_path: Some(home.to_string_lossy().into_owned()),
+                    label: "Synthetic".into(),
+                    created_at: "0".into(),
+                },
+            )
+            .unwrap();
+            let session = if provider == ProviderKind::Codex {
+                "worker-image-native"
+            } else {
+                "worker-document-native"
+            };
+            let native = folder.join(format!("{session}.jsonl"));
+            let source = dir.path().join(format!("snapshot.{extension}"));
+            let attachment = if provider == ProviderKind::Codex {
+                image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 40, 60, 255]))
+                    .save(&source)
+                    .unwrap();
+                crate::attachments::Attachment::Image(
+                    crate::attachments::import(dir.path(), &source).unwrap(),
+                )
+            } else {
+                std::fs::write(
+                    &source,
+                    b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n",
+                )
+                .unwrap();
+                crate::attachments::Attachment::PdfDocument(
+                    crate::attachments::PdfDocument::import(dir.path(), &source).unwrap(),
+                )
+            };
+            let snapshot = match &attachment {
+                crate::attachments::Attachment::Image(image) => image.path.clone(),
+                crate::attachments::Attachment::PdfDocument(document) => document.path.clone(),
+                _ => unreachable!(),
+            };
+            let message = crate::attachments::Message {
+                text: "ok".into(),
+                attachments: vec![attachment],
+                invalid: None,
+            };
+            let original = message.encode();
+            let raw = if message.has_pdfs() {
+                message.text.clone()
+            } else {
+                message.prompt_text().unwrap()
+            };
+            let full =
+                format!("Worker prefix already mentions ok; source must be anchored.\n{raw}");
+            let projection = full.len() - raw.len()..full.len() - raw.len() + message.text.len();
+            let header = if provider == ProviderKind::Codex {
+                serde_json::json!({"type":"session_meta","payload":{"id":session}})
+            } else {
+                serde_json::json!({"type":"system","sessionId":session})
+            };
+            let event = if provider == ProviderKind::Codex {
+                serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":full}]}})
+            } else {
+                serde_json::json!({"type":"user","message":{"role":"user","content":message.claude_content(&full).unwrap()}})
+            };
+            std::fs::write(&native, format!("{header}\n{event}\n")).unwrap();
+            let binding =
+                crate::native_memory::Binding::new(provider, account, &home, session).unwrap();
+            let scope =
+                crate::native_memory::references::fresh_scope(dir.path(), &binding).unwrap();
+            assert!(
+                crate::native_memory::references::capture_text(dir.path(), &scope, "user", "ok")
+                    .is_err(),
+                "short text alone is ambiguous"
+            );
+            let refs = TaskReferences::capture(
+                dir.path(),
+                &scope,
+                &full,
+                &projection,
+                &original,
+                &cap_chars(original.trim(), TASK_MAX_CHARS),
+            )
+            .unwrap();
+            let mut d = Delegates::default();
+            let recovery = dir.path().join(format!("pane-{extension}"));
+            d.attach_recovery(&recovery, &workspace, dir.path())
+                .unwrap();
+            let id = d.push_test_job(account, provider, WorkerState::Done, "done", 0);
+            let job = d.get_mut(id).unwrap();
+            job.spec.cwd = workspace.clone();
+            job.spec.home = Some(home.clone());
+            job.spec.prompt = original.clone();
+            job.task = cap_chars(original.trim(), TASK_MAX_CHARS);
+            job.session_id = Some(session.into());
+            job.task_reference = Some(refs);
+            d.reserve_delivery(&[id]).unwrap();
+            let bytes = std::fs::read_to_string(recovery.join("workers.json")).unwrap();
+            let saved: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+            assert_eq!(saved["jobs"][0]["spec"]["prompt"], "");
+            assert_eq!(saved["jobs"][0]["task"], "");
+            assert!(
+                !bytes.contains("Worker prefix already mentions") && !bytes.contains("\\\"ok\\\"")
+            );
+            drop(d);
+            let mut d = Delegates::default();
+            d.attach_recovery(&recovery, &workspace, dir.path())
+                .unwrap();
+            assert_eq!(
+                d.recovered_task(id).unwrap(),
+                (account.into(), original.clone())
+            );
+            assert_eq!(
+                d.get(id).unwrap().task,
+                cap_chars(original.trim(), TASK_MAX_CHARS)
+            );
+            drop(d);
+            std::fs::write(&snapshot, b"changed snapshot").unwrap();
+            let mut d = Delegates::default();
+            d.attach_recovery(&recovery, &workspace, dir.path())
+                .unwrap();
+            assert!(d
+                .recovered_task(id)
+                .unwrap_err()
+                .contains("retry is disabled"));
+        }
+        let mut forged: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        let row = forged["jobs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["id"] == complete)
+            .unwrap();
+        row["task_reference"]["prompt"]["binding"]["account"] =
+            serde_json::json!("foreign-account");
+        let forged = serde_json::to_vec(&forged).unwrap();
+        std::fs::write(recovery.join("workers.json"), &forged).unwrap();
+        assert!(Delegates::default()
+            .attach_recovery(&recovery, &workspace, dir.path())
+            .is_err());
+        assert_eq!(
+            std::fs::read(recovery.join("workers.json")).unwrap(),
+            forged,
+            "foreign references never trigger migration or fallback"
+        );
     }
 
     #[test]
@@ -381,6 +648,10 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         legacy["version"] = serde_json::json!(1);
         legacy.as_object_mut().unwrap().remove("schedule");
+        for row in legacy["jobs"].as_array_mut().unwrap() {
+            row.as_object_mut().unwrap().remove("reference_storage");
+            row.as_object_mut().unwrap().remove("task_reference");
+        }
         std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
         let mut restored = Delegates::default();
         restored
@@ -430,6 +701,10 @@ struct SavedJob {
     conversation: String,
     account: String,
     provider: ProviderKind,
+    #[serde(default, skip_serializing_if = "is_false")]
+    reference_storage: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_reference: Option<TaskReferences>,
     task: String,
     spec: JobSpec,
     state: WorkerState,
@@ -447,6 +722,141 @@ struct SavedJob {
     collected: bool,
     attempts: Vec<String>,
     attempt_records: Vec<Attempt>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn task_hash(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+impl TaskReferences {
+    pub(super) fn capture(
+        root: &Path,
+        scope: &crate::native_memory::references::CaptureScope,
+        full_expected: &str,
+        projection: &std::ops::Range<usize>,
+        original: &str,
+        task: &str,
+    ) -> Result<Self, String> {
+        let message = crate::attachments::Message::decode(original);
+        message.validate()?;
+        if message.encode() != original
+            || full_expected.get(projection.clone()) != Some(message.text.as_str())
+        {
+            return Err(
+                "native worker input cannot exactly reconstruct its original envelope".into(),
+            );
+        }
+        let prompt = crate::native_memory::references::capture_projected_text(
+            root,
+            scope,
+            "user",
+            full_expected,
+            projection,
+        )?;
+        let task_projection = if task == cap_chars(original.trim(), TASK_MAX_CHARS) {
+            TaskProjection::OriginalPrompt {
+                chars: TASK_MAX_CHARS,
+            }
+        } else if task == cap_chars(message.display().trim(), TASK_MAX_CHARS) {
+            TaskProjection::MessageDisplay {
+                chars: TASK_MAX_CHARS,
+            }
+        } else {
+            TaskProjection::Native(Box::new(crate::native_memory::references::capture_text(
+                root, scope, "user", task,
+            )?))
+        };
+        Ok(Self {
+            prompt,
+            attachments: message.attachments,
+            prompt_sha256: task_hash(original),
+            task: task_projection,
+            task_sha256: task_hash(task),
+        })
+    }
+
+    fn hydrate(&self, root: &Path) -> Result<(String, String), String> {
+        let text = crate::native_memory::references::hydrate_text(root, &self.prompt)?;
+        let message = crate::attachments::Message {
+            text,
+            attachments: self.attachments.clone(),
+            invalid: None,
+        };
+        message.validate()?;
+        for attachment in &message.attachments {
+            match attachment {
+                crate::attachments::Attachment::Image(image) => {
+                    image.data()?;
+                }
+                crate::attachments::Attachment::TextDocument(document) => {
+                    document.text()?;
+                }
+                crate::attachments::Attachment::PdfDocument(document) => {
+                    document.data()?;
+                }
+            }
+        }
+        let original = message.encode();
+        let task = match &self.task {
+            TaskProjection::Native(reference) => {
+                crate::native_memory::references::hydrate_text(root, reference)?
+            }
+            TaskProjection::OriginalPrompt { chars } => cap_chars(original.trim(), *chars),
+            TaskProjection::MessageDisplay { chars } => cap_chars(message.display().trim(), *chars),
+        };
+        if original.len() > 1024 * 1024
+            || original.trim().is_empty()
+            || task.len() > 32768
+            || task_hash(&original) != self.prompt_sha256
+            || task_hash(&task) != self.task_sha256
+        {
+            return Err("native worker task projection changed or exceeds its bounds".into());
+        }
+        Ok((original, task))
+    }
+}
+
+pub(super) fn reference_matches(
+    reference: &TaskReferences,
+    account: &str,
+    provider: ProviderKind,
+    home: Option<&Path>,
+    session: Option<&str>,
+) -> bool {
+    let Some(home) = home else { return false };
+    let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    let digest_valid =
+        |digest: &str| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if reference.attachments.len() > crate::attachments::MAX_IMAGES
+        || !digest_valid(&reference.prompt_sha256)
+        || !digest_valid(&reference.task_sha256)
+    {
+        return false;
+    }
+    let task = match &reference.task {
+        TaskProjection::Native(reference) => Some(reference.as_ref()),
+        TaskProjection::OriginalPrompt { chars } | TaskProjection::MessageDisplay { chars } => {
+            if *chars == 0 || *chars > TASK_MAX_CHARS {
+                return false;
+            }
+            None
+        }
+    };
+    std::iter::once(&reference.prompt)
+        .chain(task)
+        .all(|reference| {
+            let binding = reference.binding();
+            reference.role() == "user"
+                && binding.account == account
+                && binding.provider == provider
+                && binding.home == home
+                && Some(binding.session_id.as_str()) == session
+        })
 }
 
 impl Delegates {
@@ -496,7 +906,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1..=8)
+            if !matches!(ledger.version, 1..=9)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -518,7 +928,7 @@ impl Delegates {
             }
             let mut ids = std::collections::HashSet::new();
             let mut runs = std::collections::HashSet::new();
-            for saved in ledger.jobs {
+            for mut saved in ledger.jobs {
                 if saved.id == 0
                     || saved.id == u32::MAX
                     || !ids.insert(saved.id)
@@ -527,6 +937,22 @@ impl Delegates {
                     || uuid::Uuid::parse_str(&saved.conversation).is_err()
                     || saved.spec.prompt.len() > 1024 * 1024
                     || saved.task.len() > 32768
+                    || (ledger.version < 9
+                        && (saved.reference_storage || saved.task_reference.is_some()))
+                    || saved.task_reference.as_ref().is_some_and(|reference| {
+                        !saved.reference_storage
+                            || saved.state != WorkerState::Done
+                            || !saved.collected
+                            || !saved.task.is_empty()
+                            || !saved.spec.prompt.is_empty()
+                            || !reference_matches(
+                                reference,
+                                &saved.account,
+                                saved.provider,
+                                saved.spec.home.as_deref(),
+                                saved.native_session.as_deref(),
+                            )
+                    })
                     || saved.attempts.len() > 4
                     || saved.attempt_records.len() > 4
                     || saved.attempt_records.iter().any(|attempt| !attempt.valid())
@@ -572,9 +998,23 @@ impl Delegates {
                 } else {
                     WorkerState::Paused
                 };
+                let mut task_reference_unavailable = false;
+                if let Some(reference) = &saved.task_reference {
+                    let hydrated = reference.hydrate(state_root);
+                    match hydrated {
+                        Ok((prompt, task)) => {
+                            saved.spec.prompt = prompt;
+                            saved.task = task;
+                        }
+                        Err(_) => {
+                            task_reference_unavailable = true;
+                            saved.task = "Task unavailable: native source missing or stale".into();
+                        }
+                    }
+                }
                 jobs.push(Job {
                     input:input::State::default(),
-                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, routing:saved.routing, route_history:saved.route_history,
+                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable, routing:saved.routing, route_history:saved.route_history,
                     workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None, preparation_cancel:Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
                     task:saved.task, model:saved.spec.model.clone(), trust:saved.spec.trust, spec:saved.spec,
@@ -582,7 +1022,7 @@ impl Delegates {
                     created:now, started:None, finished:Some(now),
                     snippet:"Recovered metadata; inspect the native session before retrying or returning a result".into(),
                     cards:Vec::new(),text:String::new(),thinking:String::new(),session_id:saved.native_session,
-                    exit_code:None,error:Some("Recovery is paused. No process or tool action was replayed. /delegate recover ID inspects its source; /delegate retry ID reconciled explicitly starts a fresh task.".into()),
+                    exit_code:None,error:Some(if task_reference_unavailable { "Original worker task is unavailable from its verified native source; retry is disabled." } else { "Recovery is paused. No process or tool action was replayed. /delegate recover ID inspects its source; /delegate retry ID reconciled explicitly starts a fresh task." }.into()),
                     cancel:None,cancel_requested:false,announced:true,
                 });
             }
@@ -638,29 +1078,49 @@ impl Delegates {
         let jobs = self
             .jobs
             .iter()
-            .map(|j| SavedJob {
-                id: j.id,
-                run_id: j.run_id.clone(),
-                conversation: j.conversation_id.clone(),
-                account: j.account.clone(),
-                provider: j.provider,
-                task: j.task.clone(),
-                spec: j.spec.clone(),
-                state: j.state,
-                origin: j.origin,
-                source: j.source_id.clone(),
-                routing: j.routing.clone(),
-                route_history: j.route_history.clone(),
-                workspace: j.workspace.clone(),
-                workspace_notice: j.workspace_notice.clone(),
-                native_session: j.session_id.clone(),
-                collected: j.collected,
-                attempts: j.attempts.clone(),
-                attempt_records: j.attempt_records.clone(),
+            .map(|j| {
+                let redact = j.reference_storage
+                    && j.state == WorkerState::Done
+                    && j.collected
+                    && j.task_reference.is_some();
+                let mut spec = j.spec.clone();
+                if redact {
+                    spec.prompt.clear();
+                }
+                SavedJob {
+                    id: j.id,
+                    run_id: j.run_id.clone(),
+                    conversation: j.conversation_id.clone(),
+                    account: j.account.clone(),
+                    provider: j.provider,
+                    reference_storage: j.reference_storage,
+                    task_reference: redact.then(|| j.task_reference.clone()).flatten(),
+                    task: if redact {
+                        String::new()
+                    } else {
+                        j.task.clone()
+                    },
+                    spec,
+                    state: j.state,
+                    origin: j.origin,
+                    source: j.source_id.clone(),
+                    routing: j.routing.clone(),
+                    route_history: j.route_history.clone(),
+                    workspace: j.workspace.clone(),
+                    workspace_notice: j.workspace_notice.clone(),
+                    native_session: j.session_id.clone(),
+                    collected: j.collected,
+                    attempts: j.attempts.clone(),
+                    attempt_records: j.attempt_records.clone(),
+                }
             })
             .collect();
         let bytes = serde_json::to_vec(&Ledger {
-            version: 8,
+            version: if self.jobs.iter().any(|job| job.reference_storage) {
+                9
+            } else {
+                8
+            },
             owner: recovery.owner.clone(),
             workspace: recovery.workspace.clone(),
             conversation: self.conversation_id.clone(),
@@ -780,6 +1240,9 @@ impl Delegates {
 
     pub fn recovered_task(&self, id: u32) -> Result<(String, String), String> {
         let job = self.get(id).ok_or("unknown worker run")?;
+        if job.task_reference_unavailable || job.spec.prompt.trim().is_empty() {
+            return Err("Original worker task is unavailable from its verified native source; retry is disabled. Restore the source or provide a new explicit task.".into());
+        }
         if job.state.is_running() || job.state == WorkerState::Queued {
             return Err("worker is still active".into());
         }

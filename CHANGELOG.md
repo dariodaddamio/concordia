@@ -1,5 +1,14 @@
 # Changelog
 
+### Changed (`2026-11-04r`)
+
+- New recorded message/tool bodies and persistent prompt recall use verified native-source
+  references. Legacy logs remain readable and untouched; missing sources are explicit.
+- Completed, collected workers with verified references retain source pointers and attachment
+  descriptors instead of duplicate task/prompt bodies. Pending or unbindable recovery stays intact.
+- Source ranges seal before the next turn; ordered background writes keep recovery until durable
+  persistence completes. Chat references preserve the original input and hydrate off the UI thread.
+
 ### Fixed (`2026-11-04q`)
 
 - Recorded thinking expands directly in chat, including restored history. The completed-turn

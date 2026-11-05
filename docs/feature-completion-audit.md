@@ -1,4 +1,4 @@
-# Feature completion audit: 2026-11-04q
+# Feature completion audit: 2026-11-04r
 
 The full roadmap is **not complete**. The current board has eight grouped open/deferred workstreams;
 they mix missing capabilities, qualification and release work, so they are not a feature count
@@ -13,13 +13,14 @@ or a percentage of completion:
 4. **Native provider and host qualification:** broader approval/output/lifecycle formats, live
    Claude PDF processing and the remaining provider/physical-host matrix stay open. Cursor live
    exact-session continuation was exercised in 04d; that does not qualify every provider path.
-   The current 14-dispatch alternative-account smoke adds scoped Codex compaction, image,
-   exact-continuation, excerpt-reader and offered allow-once evidence, not full UI/worker parity.
+   The earlier 14-dispatch alternative-account smoke adds scoped Codex compaction, image,
+   exact-continuation, excerpt-reader and offered allow-once evidence. Request 15 adds ordinary
+   application reference-backed recording/recall evidence, not full UI/worker parity.
 5. **Memory effectiveness:** the synthetic retrieval corpus exists and one authorized live Codex
    handoff smoke passes all six constraint checks. A new three-arm native smoke ran once per
    arm: compaction retained five decisions, but model-driven pointer fetches were blocked by
    native launch policy. Compatible-policy pointer use and larger retention/token-saving
-   comparisons remain unqualified. Four of the new 18 dispatch slots are unused.
+   comparisons remain unqualified. Three of the new 18 dispatch slots are unused.
    [Evidence](quality/memory-evaluation.md).
 6. **Native filesystem confinement — deferred by owner:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer
@@ -30,11 +31,11 @@ or a percentage of completion:
    deferred Windows/release work and GitHub publication on 2026-11-04. Fresh exact-artifact
    antivirus/install/update rehearsal, publication and public-feed checks remain release gates.
    Routine CI is manual-only to conserve Actions usage; no remote-CI pass is claimed.
-8. **Pointer-only storage:** optional thread logs copy conversation text, and enabled-by-default
-   persistent composer history stores submitted prompts. The native-source manager exists, but
-   the target no-copy invariant and a safe preservation/migration
-   path for existing logs, drafts and queued work are not implemented. The earlier seven-group
-   summary omitted this implementation gap. See [the target invariant](context-handoff-plan.md).
+8. **Pointer-only storage boundary:** 04r implements verified references for new thread bodies,
+   persistent composer recall and completed/collected worker inputs when exact binding succeeds.
+   Legacy logs and unfinished recovery stay intact. Oversized/unsupported native records can
+   leave protected recovery payloads, and automatic legacy migration is not implemented.
+   The full no-copy invariant is therefore not claimed. See [implemented bounds](native-memory.md).
 
 Build 04k adds one-command prebuilt installation, a shared original icon, task-first window titles,
 clickable permission selection, descriptive web tools, expandable completed-operation groups,

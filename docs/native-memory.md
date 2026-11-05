@@ -1,5 +1,34 @@
 # Native source pointers and unfinished work
 
+## Reference-backed recording and recall (2026-11-04r)
+
+New optional thread records store metadata and verified native references instead of message/tool
+bodies. Persistent composer recall writes `history.refs.jsonl`; legacy `history.jsonl` and old
+thread logs remain readable without rewriting or migrating them. Drafts, queues and unfinished
+recovery still preserve the input needed to avoid losing work.
+
+Capture binds provider, registered account home, exact native session, source identity, byte ranges
+and hashes. A pre-dispatch watermark excludes older matching messages. Completed ranges seal before
+the following turn, so later identical prompts cannot make an earlier reference ambiguous. Original
+composer text is projected from its verified full native input, preserving whitespace and Unicode;
+time, continuity and referenced-chat context are not inserted into recalled prompts.
+
+One ordered background writer commits recording and recall. The unfinished-turn checkpoint is
+cleared only after successful durable persistence and confirmed process/scope closure. Unavailable
+or ambiguous bindings produce fixed unavailable metadata, without a transcript-copy fallback.
+Hydration never guesses another session or reads encrypted reasoning as text.
+
+Completed, collected worker tasks use references only when the exact original task and prompt can
+be verified. Ordered image/PDF snapshot descriptors reconstruct envelopes, with byte validation
+before retry. Changed or missing snapshots disable retry. Legacy, pending, uncertain and unbindable
+worker recovery is preserved. This is a conditional storage boundary, not a claim that every owned
+state file contains no bodies.
+
+Existing capture limits remain: an 8 MiB turn window, at most 128 recognized records, 256 KiB per
+record and 1 MiB plaintext. Large attachment-bearing records or long turns can exceed those bounds;
+their protected recovery remains rather than silently losing input. Broader format coverage and
+an explicit legacy migration policy remain outside this change.
+
 ## Goals and source relationships
 
 `/memory goals` lists existing goals and stable IDs. `/memory goal-link GOAL SOURCE` confirms an

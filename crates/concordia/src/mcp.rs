@@ -916,16 +916,23 @@ mod tests {
             account: Some("claude-2".into()),
         })
         .unwrap();
-        for ev in [
+        let legacy = [
             ThreadEvent::with_text("user", "fix the login redirect"),
             ThreadEvent::with_text(
                 "assistant",
                 "Done: the redirect now keeps the query string.",
             ),
             ThreadEvent::with_text("user", "add a test for it"),
-        ] {
-            log.append(&ev).unwrap();
-        }
+        ]
+        .iter()
+        .map(|ev| serde_json::to_string(ev).unwrap() + "\n")
+        .collect::<String>();
+        // Deliberately exercise legacy body-bearing history, without a production body writer.
+        std::fs::write(
+            crate::threads::threads_dir(root).join(format!("{id}.jsonl")),
+            legacy,
+        )
+        .unwrap();
         id.into()
     }
 
@@ -1321,11 +1328,17 @@ mod tests {
     fn results_are_capped() {
         let d = tempfile::tempdir().unwrap();
         let id = "aaaa1111-0000-0000-0000-000000000000";
-        let log = ThreadLog::open(d.path(), id);
-        for _ in 0..30 {
-            log.append(&ThreadEvent::with_text("assistant", &"z".repeat(5000)))
-                .unwrap();
-        }
+        std::fs::create_dir_all(crate::threads::threads_dir(d.path())).unwrap();
+        let legacy =
+            (serde_json::to_string(&ThreadEvent::with_text("assistant", &"z".repeat(5000)))
+                .unwrap()
+                + "\n")
+                .repeat(30);
+        std::fs::write(
+            crate::threads::threads_dir(d.path()).join(format!("{id}.jsonl")),
+            legacy,
+        )
+        .unwrap();
         let (t, _) = tool(
             d.path(),
             "thread_read",
