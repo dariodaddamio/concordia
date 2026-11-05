@@ -1,5 +1,19 @@
 # Concordia verification status
 
+## Original portrait restored, 2026-11-05d
+
+At the owner's request, Home again draws the original bundled gold portrait. The mesh, geometry
+renderer and extra animation wakeups are removed. `/config`, Opifex Studio's palette, running-window
+icon color and simpler titles remain. The obsolete motion picker row is hidden; saved preferences
+remain readable. The original portrait bytes are unchanged from 05b.
+
+The existing appearance/title test passes and checks decoded portrait equality with the original
+PNG. All-target Clippy with warnings denied, the 407-file OSS/privacy scan, release smoke and
+exact-artifact Defender pass. The installed executable matches the checked 24,745,984-byte binary,
+SHA256 `DE43ED2813EB683B8FA667CDDEB5B144FD778DEB3585C9762B72E6D0DED88075`.
+Receipt: ignored `target/native-window-proof/05d-install-receipt.json`. No additional model calls,
+Actions dispatches or public release occurred. Broader roadmap boundaries remain as recorded below.
+
 ## Live appearance controls and Concordia sculpture, 2026-11-05c
 
 The checked executable is 24,919,552 bytes (23.77 MiB), SHA256

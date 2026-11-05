@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-05d
+
+- Restored the original gold Concordia portrait on Home at the owner’s request. Removed the
+  3D mesh, renderer and extra animation wakeups. Appearance themes, icon tint and simpler titles remain.
+
 ## 2026-11-05c
 
 - `/config` now opens live appearance settings with immediate, persistent theme, Concordia color

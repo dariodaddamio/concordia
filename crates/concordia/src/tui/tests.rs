@@ -4236,14 +4236,14 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     h.app.picker.as_mut().unwrap().filter = "#C9A5FF".into();
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.appearance.color(), [201, 165, 255]);
-    let model = brand_model::render(0, [255, 176, 0], true);
-    let rotated = brand_model::render(22, [255, 176, 0], true);
-    assert_ne!(
-        model, rotated,
-        "real rotated geometry changes its silhouette"
-    );
-    assert!(model.pixels().filter(|pixel| pixel[3] != 0).count() > 2000);
-    assert_ne!(model, brand_model::render(0, [120, 191, 255], true));
+    let portrait = brand::portrait().expect("bundled original portrait");
+    let original = image::load_from_memory_with_format(
+        include_bytes!("../../assets/concordia.png"),
+        image::ImageFormat::Png,
+    )
+    .unwrap()
+    .into_rgba8();
+    assert_eq!(portrait.as_ref(), &original);
     // An incompatible saved version is reported and never overwritten by a new selection.
     let path = h.app.state_root.join(".ao/appearance.json");
     let original = b"{\"version\":99,\"theme\":\"future\"}";
