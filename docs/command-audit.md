@@ -63,6 +63,10 @@ remain accepted only as migration routes and print where their behavior moved.
 | `/model` | Model picker: provider default, current Claude models by name (Opus 5.5, Sonnet 5.5…), Claude CLI aliases, cached models from any same-provider account, or any typed model id. |
 | `/mode` | Permission mode picker/setter, including former trust arguments. |
 | `/usage` | All-account usage screen; `r` refreshes. |
+
+The `/model` picker orders provider default first, then family-grouped models from CLI reports,
+provider caches, and the embedded catalog. Typing filters display names and ids; `r` refreshes the
+active account in the background and updates the rows when discovery completes.
 | `/new` | Starts a fresh chat. |
 | `/resume` | Explicit session picker; Delete confirms thread removal. |
 | `/delegate` | Worker screen/actions; task text remains a shortcut. |

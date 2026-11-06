@@ -20,6 +20,7 @@ pub mod integration;
 pub mod legacy_migration;
 pub mod logging;
 pub mod mcp;
+pub mod models;
 pub mod native_input;
 pub mod native_memory;
 pub mod process_lifetime;
