@@ -60,6 +60,12 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         env.set(variable, FAKE);
     }
     env.set("CONCORDIA_STATE_DIR", root.join("state"));
+    env.set("CONCORDIA_TEST_GUARD", "1");
+    env.set("CONCORDIA_TEST_HOME", root.join("home"));
+    env.set(
+        "CONCORDIA_RELEASE_CACHE_DIR",
+        root.join("cache").join("releases"),
+    );
     env.set("FAKE_PROVIDER_OUT", root.join("launch.txt"));
     env.set("FAKE_PROVIDER_READ_STDIN", "1");
     let stream = root.join("stream.jsonl");

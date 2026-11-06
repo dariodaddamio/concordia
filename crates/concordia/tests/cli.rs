@@ -38,9 +38,16 @@ fn version_is_read_only_and_never_repoints_the_install() {
 
 #[test]
 fn help_lists_the_surface_users_need() {
+    let scratch = tempfile::tempdir().unwrap();
     let out = Command::new(CONCORDIA)
         .arg("--help")
         .env("CONCORDIA_TEST_GUARD", "1")
+        .env("CONCORDIA_TEST_HOME", scratch.path().join("home"))
+        .env("CONCORDIA_STATE_DIR", scratch.path().join("state"))
+        .env(
+            "CONCORDIA_RELEASE_CACHE_DIR",
+            scratch.path().join("cache").join("releases"),
+        )
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -66,9 +73,16 @@ fn help_lists_the_surface_users_need() {
 
 #[test]
 fn an_unknown_argument_exits_2_with_a_hint() {
+    let scratch = tempfile::tempdir().unwrap();
     let out = Command::new(CONCORDIA)
         .arg("--bogus")
         .env("CONCORDIA_TEST_GUARD", "1")
+        .env("CONCORDIA_TEST_HOME", scratch.path().join("home"))
+        .env("CONCORDIA_STATE_DIR", scratch.path().join("state"))
+        .env(
+            "CONCORDIA_RELEASE_CACHE_DIR",
+            scratch.path().join("cache").join("releases"),
+        )
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));

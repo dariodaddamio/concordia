@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 /// Keep a stable lock file beside data that may be atomically renamed. A stalled
 /// writer produces a visible error after two seconds instead of hanging the UI.
 pub(crate) fn with_lock<T>(path: &Path, write: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    crate::test_guard::check_not_real_state(path);
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -27,6 +28,7 @@ pub(crate) fn with_lock<T>(path: &Path, write: impl FnOnce() -> io::Result<T>) -
 }
 
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    crate::test_guard::check_not_real_state(path);
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

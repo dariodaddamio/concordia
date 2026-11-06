@@ -25,11 +25,20 @@ struct Env {
 
 impl Env {
     fn new() -> Self {
-        Env {
+        let mut env = Env {
             _guard: LOCK.lock().unwrap_or_else(|e| e.into_inner()),
             dir: tempfile::tempdir().unwrap(),
             keys: Vec::new(),
-        }
+        };
+        let root = env.dir.path().to_path_buf();
+        env.set("CONCORDIA_TEST_GUARD", "1");
+        env.set("CONCORDIA_TEST_HOME", root.join("home"));
+        env.set("CONCORDIA_STATE_DIR", root.join("state"));
+        env.set(
+            "CONCORDIA_RELEASE_CACHE_DIR",
+            root.join("cache").join("releases"),
+        );
+        env
     }
     fn set(&mut self, k: &'static str, v: impl AsRef<std::ffi::OsStr>) {
         std::env::set_var(k, v);

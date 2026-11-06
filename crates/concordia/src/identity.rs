@@ -256,6 +256,7 @@ pub fn inspect_cursor_home(home: &Path) -> ProviderIdentity {
 }
 
 pub fn inspect_provider(provider: ProviderKind, home: &Path) -> ProviderIdentity {
+    crate::test_guard::check_not_real_state(home);
     match provider {
         ProviderKind::Codex => inspect_codex_home(home),
         ProviderKind::Claude => inspect_claude_home(home),

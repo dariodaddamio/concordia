@@ -33,6 +33,9 @@ impl Sandbox {
         let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let install = tempfile::tempdir().unwrap();
         std::env::set_var("CONCORDIA_INSTALL_DIR", install.path());
+        std::env::set_var("CONCORDIA_TEST_GUARD", "1");
+        std::env::set_var("CONCORDIA_TEST_HOME", install.path().join("home"));
+        std::env::set_var("CONCORDIA_STATE_DIR", install.path().join("state"));
         // Integration tests use the normal library build, so cfg(test) cannot isolate release's
         // cache. Keep verified downloads under this test's state root as well.
         std::env::set_var(
@@ -63,6 +66,9 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         std::env::remove_var("CONCORDIA_INSTALL_DIR");
         std::env::remove_var("CONCORDIA_RELEASE_CACHE_DIR");
+        std::env::remove_var("CONCORDIA_TEST_GUARD");
+        std::env::remove_var("CONCORDIA_TEST_HOME");
+        std::env::remove_var("CONCORDIA_STATE_DIR");
         // install_binary sets CONCORDIA_EXE in this process.
         std::env::remove_var("CONCORDIA_EXE");
     }
