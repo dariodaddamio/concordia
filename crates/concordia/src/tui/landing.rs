@@ -44,17 +44,12 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
     let current = display_path(&project_root(cwd));
     let probe = crate::cursor_usage::probe_dir();
     let mut groups: BTreeMap<PathBuf, Vec<SessionSummary>> = BTreeMap::new();
-    let mut deleted = Vec::new();
     for session in sessions {
         let folder = match session.cwd.as_deref().map(Path::new) {
             Some(path) if path == probe => continue,
             Some(path) => display_path(&project_root(path)),
             None => PathBuf::from("other"),
         };
-        if cwd.exists() && folder != current && !folder.exists() {
-            deleted.push(session);
-            continue;
-        }
         groups.entry(folder).or_default().push(session);
     }
     let name = |path: &Path| {
@@ -102,16 +97,6 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
             newest(b).cmp(&newest(a))
         })
     });
-    if !deleted.is_empty() {
-        deleted.sort_by_key(|s| std::cmp::Reverse(s.modified_ms));
-        groups.push(ChatGroup {
-            folder: format!("deleted folders ({})", deleted.len()),
-            sessions: deleted,
-            expanded: false,
-            quick_questions: false,
-            quick_sessions: Vec::new(),
-        });
-    }
     groups
 }
 
@@ -150,29 +135,30 @@ fn hidden_workspace(path: &Path, temp_root: Option<&Path>) -> bool {
 
 fn landing_sessions(
     sessions: Vec<SessionSummary>,
+    cwd: &Path,
     show_all: bool,
     temp_root: Option<&Path>,
 ) -> Vec<SessionSummary> {
     sessions
         .into_iter()
-        .filter(|session| {
-            show_all
-                || session
-                    .cwd
-                    .as_deref()
-                    .is_none_or(|cwd| !hidden_workspace(Path::new(cwd), temp_root))
-        })
+        .filter(|session| show_all || !hidden_session(session, cwd, temp_root))
         .collect()
 }
 
-fn hidden_count(sessions: &[SessionSummary], temp_root: Option<&Path>) -> usize {
+fn hidden_session(session: &SessionSummary, cwd: &Path, temp_root: Option<&Path>) -> bool {
+    session.cwd.as_deref().is_some_and(|session_cwd| {
+        let path = Path::new(session_cwd);
+        hidden_workspace(path, temp_root) || {
+            let folder = display_path(&project_root(path));
+            folder != display_path(&project_root(cwd)) && !folder.exists()
+        }
+    })
+}
+
+fn hidden_count(sessions: &[SessionSummary], cwd: &Path, temp_root: Option<&Path>) -> usize {
     sessions
         .iter()
-        .filter(|s| {
-            s.cwd
-                .as_deref()
-                .is_some_and(|cwd| hidden_workspace(Path::new(cwd), temp_root))
-        })
+        .filter(|s| hidden_session(s, cwd, temp_root))
         .count()
 }
 
@@ -377,6 +363,7 @@ pub(crate) fn set_hidden_temp_root(app: &mut App, root: PathBuf) {
         landing.groups = display_groups(
             landing_sessions(
                 landing.all_sessions.clone(),
+                &app.cwd,
                 landing.show_all,
                 landing.hidden_temp_root.as_deref(),
             ),
@@ -411,7 +398,12 @@ fn open_with_mode(
         Some(std::env::temp_dir())
     };
     let groups = display_groups(
-        landing_sessions(sessions.clone(), false, hidden_temp_root.as_deref()),
+        landing_sessions(
+            sessions.clone(),
+            &app.cwd,
+            false,
+            hidden_temp_root.as_deref(),
+        ),
         &app.cwd,
     );
     let work_rx = program.map(|program| {
@@ -825,6 +817,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && landing.all_sessions.len()
                     != landing_sessions(
                         landing.all_sessions.clone(),
+                        &app.cwd,
                         false,
                         landing.hidden_temp_root.as_deref(),
                     )
@@ -834,6 +827,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             landing.groups = display_groups(
                 landing_sessions(
                     landing.all_sessions.clone(),
+                    &app.cwd,
                     landing.show_all,
                     landing.hidden_temp_root.as_deref(),
                 ),
@@ -872,7 +866,11 @@ fn next(selected: usize, count: usize) -> usize {
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     if let Some(landing) = app.landing.as_ref() {
         let label = landing.pane == Pane::Chats
-            && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+            && hidden_count(
+                &landing.all_sessions,
+                &app.cwd,
+                landing.hidden_temp_root.as_deref(),
+            ) > 0
             && app.footer_left.find(" · h").is_some_and(|byte_start| {
                 let start = app.footer_left[..byte_start].chars().count() as u16;
                 y == app.areas.footer.y && x >= start && x < app.footer_left.chars().count() as u16
@@ -900,7 +898,11 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height
     };
     let footer_label = landing.pane == Pane::Chats
-        && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+        && hidden_count(
+            &landing.all_sessions,
+            &app.cwd,
+            landing.hidden_temp_root.as_deref(),
+        ) > 0
         && inside(app.areas.footer)
         && m.row == app.areas.footer.y
         && app.footer_left.find(" · h").is_some_and(|byte_start| {
@@ -912,6 +914,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         landing.groups = display_groups(
             landing_sessions(
                 landing.all_sessions.clone(),
+                &app.cwd,
                 landing.show_all,
                 landing.hidden_temp_root.as_deref(),
             ),
@@ -1006,15 +1009,11 @@ fn meter_window(window: &crate::usage::UsageWindow, cells: usize, include_reset:
     let left = window.left_pct().round() as usize;
     let filled = (left * cells / 100).min(cells);
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(cells - filled));
-    let reset = if window.expired_for_ui() {
-        "reset passed".to_string()
-    } else {
-        window
-            .resets
-            .as_deref()
-            .map(crate::usage::reset_phrase)
-            .unwrap_or_else(|| "reset unavailable".into())
-    };
+    let reset = window
+        .resets
+        .as_deref()
+        .map(|raw| meter_reset_label(raw, window.expired_for_ui()))
+        .unwrap_or_else(|| "reset unavailable".into());
     format!(
         "{} [{bar}] {}%{}",
         window.label,
@@ -1025,6 +1024,17 @@ fn meter_window(window: &crate::usage::UsageWindow, cells: usize, include_reset:
             format!("  {reset}")
         }
     )
+}
+
+fn meter_reset_label(raw: &str, expired: bool) -> String {
+    if raw.starts_with("reset at ") || raw.starts_with("already reset") {
+        return crate::usage::reset_phrase(raw);
+    }
+    if expired {
+        format!("reset at {raw}")
+    } else {
+        format!("resets {raw}")
+    }
 }
 
 fn meter_line(meter: &LandingMeter, width: usize) -> String {
@@ -1121,9 +1131,17 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
         .to_string();
         if landing.pane == Pane::Chats
-            && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+            && hidden_count(
+                &landing.all_sessions,
+                &app.cwd,
+                landing.hidden_temp_root.as_deref(),
+            ) > 0
         {
-            let hidden = hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref());
+            let hidden = hidden_count(
+                &landing.all_sessions,
+                &app.cwd,
+                landing.hidden_temp_root.as_deref(),
+            );
             if landing.show_all {
                 app.footer_left.push_str(" · h hide");
             } else {
@@ -1798,26 +1816,32 @@ mod tests {
     }
 
     #[test]
-    fn past_reset_times_show_reset_passed() {
-        let mut meter = test_meter();
-        meter.snapshot.windows[0].resets = Some("Nov 5, 11:54pm".into());
-        assert!(meter.snapshot.windows[0].expired_for_ui_at((11, 6, 12, 0)));
+    fn reset_times_say_reset_at_when_past_and_resets_when_future() {
+        assert_eq!(
+            meter_reset_label("Nov 5, 11:54pm", true),
+            "reset at Nov 5, 11:54pm"
+        );
+        assert_eq!(meter_reset_label("12:20pm", false), "resets 12:20pm");
     }
 
     #[test]
-    fn groups_for_missing_folders_fold_into_deleted_folders() {
+    fn chats_from_missing_folders_are_hidden_until_show_all() {
         let dir = tempdir().unwrap();
         let missing = dir.path().join("removed-worktree");
-        let groups = group_sessions(
-            vec![SessionSummary {
-                cwd: Some(missing.to_string_lossy().into_owned()),
-                ..session("removed-worktree", "chat", 1)
-            }],
+        let chat = SessionSummary {
+            cwd: Some(missing.to_string_lossy().into_owned()),
+            ..session("removed-worktree", "chat", 1)
+        };
+        assert!(landing_sessions(vec![chat.clone()], dir.path(), false, None).is_empty());
+        let groups = display_groups_at(
+            landing_sessions(vec![chat.clone()], dir.path(), true, None),
             dir.path(),
+            86_400_001,
         );
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].folder, "deleted folders (1)");
-        assert_eq!(groups[0].sessions[0].session_id, "chat");
+        assert_eq!(groups[0].folder, "removed-worktree");
+        assert_eq!(groups[0].quick_sessions[0].session_id, "chat");
+        assert_eq!(hidden_count(&[chat], dir.path(), None), 1);
     }
 
     fn goal_rows_stub(goals: usize, meters: usize) -> usize {
