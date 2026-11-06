@@ -317,7 +317,15 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("/use", "switch, add or remove accounts"),
     ("/model", "choose the model"),
-    ("/config", "appearance: themes, Concordia color and motion"),
+    (
+        "/config",
+        "settings: display, permissions, accounts and behavior",
+    ),
+    (
+        "/skills",
+        "inspect project and user skills for this provider",
+    ),
+    ("/hooks", "inspect project and user hooks for this provider"),
     ("/mode", "how much the agent may do without asking"),
     ("/usage", "limits for every account"),
     (

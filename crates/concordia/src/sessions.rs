@@ -55,6 +55,8 @@ pub struct SessionSummary {
     pub cwd: Option<String>,
     pub preview: Option<String>,
     pub modified_ms: u128,
+    /// Real provider user turns; metadata, setup and command records do not count.
+    pub user_messages: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -338,6 +340,7 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
     let mut session_id = session_id_from_filename(path);
     let mut cwd: Option<String> = None;
     let mut preview: Option<String> = None;
+    let mut user_messages = 0;
     let file = File::open(path).ok()?;
     for line in read_summary_lines(file, 80) {
         let Ok(v) = serde_json::from_slice::<Value>(&line) else {
@@ -373,6 +376,9 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
                         let text = crate::chat_cli::visible_user_history(&joined)
                             .trim()
                             .to_string();
+                        if !text.trim().is_empty() && !text.starts_with('/') {
+                            user_messages += 1;
+                        }
                         if !text.starts_with("# AGENTS.md")
                             && !crate::session_titles::title_from_prompt(&text).is_empty()
                         {
@@ -390,6 +396,7 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
         cwd,
         preview,
         modified_ms,
+        user_messages,
     })
 }
 
@@ -397,6 +404,7 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
     let mut session_id = session_id_from_filename(path);
     let mut cwd = decode_claude_project_cwd(path);
     let mut preview: Option<String> = None;
+    let mut user_messages = 0;
     let file = File::open(path).ok()?;
     for line in read_summary_lines(file, MAX_SUMMARY_LINES) {
         let Ok(v) = serde_json::from_slice::<Value>(&line) else {
@@ -419,6 +427,9 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
                         && !crate::session_titles::title_from_prompt(text).is_empty()
                 })
             {
+                if !text.trim().starts_with('/') {
+                    user_messages += 1;
+                }
                 preview = Some(text);
             }
         }
@@ -430,6 +441,7 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
         cwd,
         preview: preview.map(|s| bounded_text(&s, 512)),
         modified_ms,
+        user_messages,
     })
 }
 
@@ -509,6 +521,7 @@ fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<Sess
         .and_then(|t| t.as_str())
         .map(|s| bounded_text(s, 512));
     let hist_path = dir.join("prompt_history.json");
+    let mut user_messages = 0;
     if preview.as_ref().map(|p| p.len() < 3).unwrap_or(true) && hist_path.is_file() {
         if let Ok(hist) = read_file_capped(&hist_path, 32 * 1024) {
             if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&hist) {
@@ -518,6 +531,7 @@ fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<Sess
                         .map(|t| crate::prompt_time::strip_header(t).trim())
                     {
                         if !t.is_empty() && !t.starts_with('/') {
+                            user_messages += 1;
                             preview = Some(bounded_text(t, 512));
                             break;
                         }
@@ -539,6 +553,7 @@ fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<Sess
         cwd,
         preview,
         modified_ms: updated,
+        user_messages,
     })
 }
 
@@ -691,7 +706,68 @@ fn scan_native_records(
 }
 
 pub fn list_native_records(state_root: &Path, limit: usize) -> Vec<(SessionSummary, PathBuf)> {
-    list_native_records_bounded(state_root, limit, None, None).records
+    list_native_records_bounded(state_root, limit, None, None)
+        .records
+        .into_iter()
+        .filter(|(session, _)| session.user_messages > 0)
+        .collect()
+}
+
+/// Native artifacts that contain no real user turn. These are safe prune candidates, but are
+/// only removed after the CLI prints them and receives an explicit confirmation.
+pub fn list_empty_native_records(
+    state_root: &Path,
+    limit: usize,
+) -> Vec<(SessionSummary, PathBuf)> {
+    list_native_records_bounded(state_root, limit, None, None)
+        .records
+        .into_iter()
+        .filter(|(session, _)| session.user_messages == 0)
+        .collect()
+}
+
+/// Print and, after an explicit confirmation, remove empty native session artifacts.
+pub fn prune_empty_cli(state_root: &Path) -> Result<String, (String, i32)> {
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| (format!("could not read confirmation: {e}"), 1))?;
+    prune_empty_with_answer(state_root, answer.trim_end_matches(['\r', '\n']))
+}
+
+fn prune_empty_with_answer(state_root: &Path, answer: &str) -> Result<String, (String, i32)> {
+    let rows = list_empty_native_records(state_root, MAX_SUMMARIZED_RECORDS);
+    if rows.is_empty() {
+        return Ok("No empty sessions found.\n".into());
+    }
+    let mut out = String::from("Empty sessions to remove:\n");
+    for (session, path) in &rows {
+        out.push_str(&format!(
+            "- {} / {} / {}\n  {}\n",
+            session.provider.as_str(),
+            session.account,
+            session.session_id,
+            path.display()
+        ));
+    }
+    out.push_str("Remove these sessions? Type 'yes' to confirm: ");
+    print!("{out}");
+    if answer != "yes" {
+        return Ok("Cancelled; no sessions were removed.\n".into());
+    }
+    let mut removed = 0;
+    for (_, path) in rows {
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match result {
+            Ok(()) => removed += 1,
+            Err(e) => return Err((format!("could not remove {}: {e}", path.display()), 1)),
+        }
+    }
+    Ok(format!("Removed {removed} empty session(s).\n"))
 }
 
 /// Find one native session by exact id inside one registered account home. If the bounded scan
@@ -775,6 +851,7 @@ pub fn list_recent_sessions(state_root: &Path, limit: usize) -> Vec<SessionSumma
     scan_native_records(state_root, limit.clamp(1, 100), None, None, false)
         .records
         .into_iter()
+        .filter(|(session, _)| session.user_messages > 0)
         .map(|(session, _)| session)
         .collect()
 }
@@ -986,6 +1063,125 @@ mod tests {
                 .as_deref(),
             Some("Repair resumed history")
         );
+    }
+
+    #[test]
+    fn native_artifacts_without_a_user_message_are_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = dir.path().join("codex.jsonl");
+        let claude = dir.path().join("claude.jsonl");
+        let cursor = dir.path().join("cursor");
+        fs::create_dir(&cursor).unwrap();
+
+        fs::write(
+            &codex,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"c\"}}\n",
+        )
+        .unwrap();
+        fs::write(&claude, "{\"type\":\"system\",\"sessionId\":\"a\"}\n").unwrap();
+        fs::write(cursor.join("meta.json"), "{\"id\":\"u\"}").unwrap();
+        fs::write(cursor.join("prompt_history.json"), "[\"/help\"]").unwrap();
+        assert_eq!(summarize_codex("a", &codex, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_claude("a", &claude, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_cursor("a", &cursor, 1).unwrap().user_messages, 0);
+
+        fs::write(&codex, concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"c\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"real request\"}]}}\n"
+        )).unwrap();
+        fs::write(
+            &claude,
+            concat!(
+            "{\"type\":\"system\",\"sessionId\":\"a\"}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"real request\"}}\n"
+        ),
+        )
+        .unwrap();
+        fs::write(
+            cursor.join("prompt_history.json"),
+            "[\"/help\",\"real request\"]",
+        )
+        .unwrap();
+        assert_eq!(summarize_codex("a", &codex, 1).unwrap().user_messages, 1);
+        assert_eq!(summarize_claude("a", &claude, 1).unwrap().user_messages, 1);
+        assert_eq!(summarize_cursor("a", &cursor, 1).unwrap().user_messages, 1);
+
+        fs::write(&codex, concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"c\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"/help\"}]}}\n"
+        )).unwrap();
+        fs::write(&claude, "{\"type\":\"user\",\"message\":{\"content\":\"<local-command-name>/help</local-command-name>\"}}\n").unwrap();
+        fs::write(cursor.join("prompt_history.json"), "[\"/help\"]").unwrap();
+        assert_eq!(summarize_codex("a", &codex, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_claude("a", &claude, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_cursor("a", &cursor, 1).unwrap().user_messages, 0);
+    }
+
+    #[test]
+    fn prune_empty_lists_candidates_and_deletes_only_after_exact_yes() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = [
+            (ProviderKind::Codex, "codex", "sessions"),
+            (
+                ProviderKind::Claude,
+                "claude",
+                "projects/C--Users-synthetic-dev",
+            ),
+            (ProviderKind::Cursor, "cursor", "chats/project"),
+        ];
+        for (provider, account, relative) in providers {
+            let home = dir.path().join(format!("home-{account}"));
+            let base = home.join(relative);
+            fs::create_dir_all(&base).unwrap();
+            let empty = if provider == ProviderKind::Cursor {
+                base.join("empty")
+            } else {
+                base.join("empty.jsonl")
+            };
+            let real = if provider == ProviderKind::Cursor {
+                base.join("real")
+            } else {
+                base.join("real.jsonl")
+            };
+            if provider == ProviderKind::Cursor {
+                fs::create_dir_all(&empty).unwrap();
+                fs::create_dir_all(&real).unwrap();
+                fs::write(empty.join("meta.json"), "{} ").unwrap();
+                fs::write(real.join("meta.json"), "{} ").unwrap();
+                fs::write(real.join("prompt_history.json"), "[\"keep me\"]").unwrap();
+            } else {
+                fs::write(&empty, "{}\n").unwrap();
+                let content = if provider == ProviderKind::Codex {
+                    "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"keep me\"}]}}\n"
+                } else {
+                    "{\"type\":\"user\",\"message\":{\"content\":\"keep me\"}}\n"
+                };
+                fs::write(&real, content).unwrap();
+            }
+            crate::store::upsert_stored_account(
+                dir.path(),
+                crate::store::StoredAccount {
+                    id: account.into(),
+                    provider,
+                    home_path: Some(home.to_string_lossy().into_owned()),
+                    label: account.into(),
+                    created_at: "0".into(),
+                },
+            )
+            .unwrap();
+        }
+        let rows = list_empty_native_records(dir.path(), 10);
+        assert_eq!(rows.len(), 3);
+        assert!(rows
+            .iter()
+            .all(|(_, path)| path.to_string_lossy().contains("empty")));
+        for answer in ["", "y", "YES ", "yes "] {
+            prune_empty_with_answer(dir.path(), answer).unwrap();
+            assert_eq!(list_empty_native_records(dir.path(), 10).len(), 3);
+        }
+        prune_empty_with_answer(dir.path(), "yes").unwrap();
+        assert!(list_empty_native_records(dir.path(), 10).is_empty());
+        assert_eq!(list_native_records(dir.path(), 10).len(), 3);
     }
 
     #[test]

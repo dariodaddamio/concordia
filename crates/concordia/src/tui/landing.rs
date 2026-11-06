@@ -26,18 +26,28 @@ pub struct ChatGroup {
     pub folder: String,
     pub sessions: Vec<SessionSummary>,
     pub expanded: bool,
+    pub quick_questions: bool,
+    pub quick_sessions: Vec<SessionSummary>,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) struct LandingMeter {
+    pub(crate) provider: crate::store::ProviderKind,
+    pub(crate) account: String,
+    pub(crate) snapshot: crate::usage::UsageSnapshot,
 }
 
 /// Sessions grouped by the folder they ran in: the current folder first and expanded, the rest
 /// collapsed and ordered by their newest chat.
 pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
-    let current = project_root(cwd);
+    let current = display_path(&project_root(cwd));
     let probe = crate::cursor_usage::probe_dir();
     let mut groups: BTreeMap<PathBuf, Vec<SessionSummary>> = BTreeMap::new();
     for session in sessions {
         let folder = match session.cwd.as_deref().map(Path::new) {
             Some(path) if path == probe => continue,
-            Some(path) => project_root(path),
+            Some(path) => display_path(&project_root(path)),
             None => PathBuf::from("other"),
         };
         groups.entry(folder).or_default().push(session);
@@ -58,7 +68,11 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
             let expanded = current == root;
             let folder = name(&root);
             let folder = if names[&folder] > 1 {
-                format!("{folder} [{}]", root.display())
+                let parent = root
+                    .parent()
+                    .and_then(Path::file_name)
+                    .map(|p| p.to_string_lossy());
+                format!("{}/{}", parent.as_deref().unwrap_or("?"), folder)
             } else {
                 folder
             };
@@ -66,15 +80,109 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
                 folder,
                 sessions,
                 expanded,
+                quick_questions: false,
+                quick_sessions: Vec::new(),
             }
         })
         .collect();
     groups.sort_by(|a, b| {
-        b.expanded
-            .cmp(&a.expanded)
-            .then_with(|| b.sessions[0].modified_ms.cmp(&a.sessions[0].modified_ms))
+        b.expanded.cmp(&a.expanded).then_with(|| {
+            let newest = |g: &ChatGroup| {
+                g.sessions
+                    .first()
+                    .or(g.quick_sessions.first())
+                    .map(|s| s.modified_ms)
+                    .unwrap_or(0)
+            };
+            newest(b).cmp(&newest(a))
+        })
     });
     groups
+}
+
+fn display_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else {
+        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+    }
+}
+
+fn hidden_workspace(path: &Path, temp_root: Option<&Path>) -> bool {
+    let norm = |p: &Path| {
+        display_path(p)
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    };
+    let text = norm(path);
+    if let Some(temp_root) = temp_root {
+        let temp = norm(temp_root);
+        if text == temp || text.starts_with(&(temp.clone() + "\\")) {
+            return true;
+        }
+    }
+    text.split('\\')
+        .filter(|part| !part.is_empty())
+        .any(|part| {
+            part == "target"
+                || part.starts_with("concordia-test")
+                || part.starts_with("concordia-qual")
+                || part == "live-qualification-20261104"
+        })
+}
+
+fn landing_sessions(
+    sessions: Vec<SessionSummary>,
+    show_all: bool,
+    temp_root: Option<&Path>,
+) -> Vec<SessionSummary> {
+    sessions
+        .into_iter()
+        .filter(|session| {
+            show_all
+                || session
+                    .cwd
+                    .as_deref()
+                    .is_none_or(|cwd| !hidden_workspace(Path::new(cwd), temp_root))
+        })
+        .collect()
+}
+
+fn hidden_count(sessions: &[SessionSummary], temp_root: Option<&Path>) -> usize {
+    sessions
+        .iter()
+        .filter(|s| {
+            s.cwd
+                .as_deref()
+                .is_some_and(|cwd| hidden_workspace(Path::new(cwd), temp_root))
+        })
+        .count()
+}
+
+fn display_groups_at(sessions: Vec<SessionSummary>, cwd: &Path, now_ms: u128) -> Vec<ChatGroup> {
+    let mut groups = group_sessions(sessions, cwd);
+    let mut result = Vec::new();
+    for mut group in groups.drain(..) {
+        let (quick, recent): (Vec<_>, Vec<_>) = group.sessions.into_iter().partition(|session| {
+            session.user_messages <= 2 && now_ms.saturating_sub(session.modified_ms) >= 86_400_000
+        });
+        group.sessions = recent;
+        group.quick_sessions = quick;
+        if !group.sessions.is_empty() || !group.quick_sessions.is_empty() {
+            result.push(group);
+        }
+    }
+    result
+}
+
+fn display_groups(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    display_groups_at(sessions, cwd, now_ms)
 }
 
 /// The project identity, or for a git worktree its main repository: a worktree's
@@ -154,10 +262,15 @@ enum Mode {
 enum ChatRow {
     Group(usize),
     Chat(usize, usize),
+    Quick(usize),
+    QuickChat(usize, usize),
 }
 
 pub struct Landing {
     from_chat: bool,
+    all_sessions: Vec<SessionSummary>,
+    show_all: bool,
+    pub(crate) hidden_temp_root: Option<PathBuf>,
     groups: Vec<ChatGroup>,
     goals: Vec<Goal>,
     pane: Pane,
@@ -168,7 +281,7 @@ pub struct Landing {
     goal_top: usize,
     goal_follow: bool,
     goal_hits: Vec<Option<usize>>,
-    work: Vec<ProjectWork>,
+    pub(crate) work: Vec<ProjectWork>,
     work_rx: Option<mpsc::Receiver<ProjectWork>>,
     /// Where the rows were drawn, for the mouse.
     chats_area: Rect,
@@ -182,6 +295,7 @@ pub struct Landing {
     tokens_ready: bool,
     tokens_partial: bool,
     tokens_error: Option<String>,
+    pub(crate) meters: Vec<LandingMeter>,
 }
 
 impl Landing {
@@ -191,6 +305,14 @@ impl Landing {
             rows.push(ChatRow::Group(g));
             if group.expanded {
                 rows.extend((0..group.sessions.len()).map(|s| ChatRow::Chat(g, s)));
+                if !group.quick_sessions.is_empty() {
+                    rows.push(ChatRow::Quick(g));
+                    if group.quick_questions {
+                        rows.extend(
+                            (0..group.quick_sessions.len()).map(|s| ChatRow::QuickChat(g, s)),
+                        );
+                    }
+                }
             }
         }
         rows
@@ -231,6 +353,21 @@ pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: O
     open_with_mode(app, sessions, program, false);
 }
 
+#[cfg(test)]
+pub(crate) fn set_hidden_temp_root(app: &mut App, root: PathBuf) {
+    if let Some(landing) = app.landing.as_mut() {
+        landing.hidden_temp_root = Some(root);
+        landing.groups = display_groups(
+            landing_sessions(
+                landing.all_sessions.clone(),
+                landing.show_all,
+                landing.hidden_temp_root.as_deref(),
+            ),
+            &app.cwd,
+        );
+    }
+}
+
 pub(super) fn open_home(app: &mut App) {
     let sessions = list_recent_sessions(&app.state_root, RECENT_CHATS);
     let program = harness_program(&app.state_root);
@@ -247,7 +384,15 @@ fn open_with_mode(
         app.landing = None;
         return;
     }
-    let groups = group_sessions(sessions, &app.cwd);
+    let hidden_temp_root = if cfg!(test) {
+        None
+    } else {
+        Some(std::env::temp_dir())
+    };
+    let groups = display_groups(
+        landing_sessions(sessions.clone(), false, hidden_temp_root.as_deref()),
+        &app.cwd,
+    );
     let work_rx = program.map(|program| {
         let mut projects: Vec<PathBuf> = Vec::new();
         for group in &groups {
@@ -297,6 +442,9 @@ fn open_with_mode(
     };
     let landing = Landing {
         from_chat,
+        all_sessions: sessions,
+        show_all: false,
+        hidden_temp_root,
         groups,
         goals,
         pane: Pane::Chats,
@@ -319,9 +467,33 @@ fn open_with_mode(
         tokens_ready: false,
         tokens_partial: false,
         tokens_error: None,
+        meters: Vec::new(),
     };
     app.footer_left = landing.hint().into();
     app.landing = Some(landing);
+    refresh_meters(app);
+}
+
+fn refresh_meters(app: &mut App) {
+    let accounts = crate::accounts::accounts_with_auth(&app.state_root);
+    let meters = accounts
+        .into_iter()
+        .filter_map(|account| {
+            let home = account.home_path?;
+            Some(LandingMeter {
+                provider: account.provider,
+                account: account.account.clone(),
+                snapshot: app.usage_fetcher.cached_snapshot(
+                    account.provider,
+                    &account.account,
+                    &home,
+                ),
+            })
+        })
+        .collect();
+    if let Some(landing) = app.landing.as_mut() {
+        landing.meters = meters;
+    }
 }
 
 pub(super) fn close(app: &mut App) {
@@ -373,6 +545,10 @@ pub(super) fn visible(app: &App) -> bool {
 
 /// Collect open work that arrived from the background reader.
 pub(super) fn poll(app: &mut App) {
+    if app.landing.is_none() {
+        return;
+    }
+    refresh_meters(app);
     let Some(landing) = app.landing.as_mut() else {
         return;
     };
@@ -420,6 +596,14 @@ fn activate_chat(app: &mut App) {
         Some(ChatRow::Group(g)) => landing.groups[g].expanded = !landing.groups[g].expanded,
         Some(ChatRow::Chat(g, s)) => {
             let session = landing.groups[g].sessions[s].clone();
+            close(app);
+            app.resume_session(&session.account, &session.session_id);
+        }
+        Some(ChatRow::Quick(g)) => {
+            landing.groups[g].quick_questions = !landing.groups[g].quick_questions
+        }
+        Some(ChatRow::QuickChat(g, s)) => {
+            let session = landing.groups[g].quick_sessions[s].clone();
             close(app);
             app.resume_session(&session.account, &session.session_id);
         }
@@ -603,6 +787,29 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             landing.mode = Mode::AddGoal(String::new());
             app.footer_left = landing.hint().into();
         }
+        (KeyCode::Char('h'), Pane::Chats)
+            if plain
+                && landing.all_sessions.len()
+                    != landing_sessions(
+                        landing.all_sessions.clone(),
+                        false,
+                        landing.hidden_temp_root.as_deref(),
+                    )
+                    .len() =>
+        {
+            landing.show_all = !landing.show_all;
+            landing.groups = display_groups(
+                landing_sessions(
+                    landing.all_sessions.clone(),
+                    landing.show_all,
+                    landing.hidden_temp_root.as_deref(),
+                ),
+                &app.cwd,
+            );
+            landing.chat_sel = landing.chat_sel.min(landing.rows().len().saturating_sub(1));
+            landing.chat_top = 0;
+            app.footer_left = landing.hint().into();
+        }
         (KeyCode::Char(_), _) if plain => {
             // Drafting keeps chats and goals visible.
             set_pane(app, Pane::Chats);
@@ -630,6 +837,17 @@ fn next(selected: usize, count: usize) -> usize {
 }
 
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
+    if let Some(landing) = app.landing.as_ref() {
+        let label = landing.pane == Pane::Chats
+            && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+            && app.footer_left.find(" · h").is_some_and(|byte_start| {
+                let start = app.footer_left[..byte_start].chars().count() as u16;
+                y == app.areas.footer.y && x >= start && x < app.footer_left.chars().count() as u16
+            });
+        if label {
+            return true;
+        }
+    }
     app.landing.as_ref().is_some_and(|l| {
         (super::contains(l.chats_area, x, y)
             && l.chat_top + ((y - l.chats_area.y) as usize) < l.rows().len())
@@ -648,6 +866,28 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
     let inside = |r: Rect| {
         m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height
     };
+    let footer_label = landing.pane == Pane::Chats
+        && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+        && inside(app.areas.footer)
+        && m.row == app.areas.footer.y
+        && app.footer_left.find(" · h").is_some_and(|byte_start| {
+            let start = app.footer_left[..byte_start].chars().count() as u16;
+            m.column >= start && m.column < app.footer_left.chars().count() as u16
+        });
+    if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) && footer_label {
+        landing.show_all = !landing.show_all;
+        landing.groups = display_groups(
+            landing_sessions(
+                landing.all_sessions.clone(),
+                landing.show_all,
+                landing.hidden_temp_root.as_deref(),
+            ),
+            &app.cwd,
+        );
+        landing.chat_sel = landing.chat_sel.min(landing.rows().len().saturating_sub(1));
+        landing.chat_top = 0;
+        return true;
+    }
     let rows = landing.rows().len();
     match m.kind {
         MouseEventKind::ScrollUp if inside(landing.chats_area) => {
@@ -695,6 +935,11 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
 /// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
 fn goal_rows(landing: &Landing) -> usize {
     let goals = landing.open_goals().len() + usize::from(landing.mode != Mode::Browse);
+    let meters = if landing.meters.is_empty() {
+        0
+    } else {
+        1 + landing.meters.iter().map(|_| 1).sum::<usize>()
+    };
     let work: usize = landing
         .work
         .iter()
@@ -705,9 +950,9 @@ fn goal_rows(landing: &Landing) -> usize {
         })
         .sum();
     if work == 0 {
-        goals
+        goals + meters
     } else {
-        goals + usize::from(goals > 0) + 1 + work
+        goals + meters + usize::from(goals + meters > 0) + 1 + work
     }
 }
 
@@ -768,7 +1013,18 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             landing.hint()
         }
-        .into();
+        .to_string();
+        if landing.pane == Pane::Chats
+            && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+        {
+            let hidden = hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref());
+            if landing.show_all {
+                app.footer_left.push_str(" · h hide");
+            } else {
+                app.footer_left
+                    .push_str(&format!(" · h show {hidden} hidden"));
+            }
+        }
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -877,13 +1133,41 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                         let mark = if group.expanded { "▾" } else { "▸" };
                         (
                             format!("{mark} {} ({})", group.folder, group.sessions.len()),
-                            format_relative_time(group.sessions[0].modified_ms, now),
+                            format_relative_time(
+                                group
+                                    .sessions
+                                    .first()
+                                    .or(group.quick_sessions.first())
+                                    .unwrap()
+                                    .modified_ms,
+                                now,
+                            ),
                             true,
                         )
                     }
                     ChatRow::Chat(g, s) => (
                         format!("  {}", titles[g][s]),
                         format_relative_time(landing.groups[g].sessions[s].modified_ms, now),
+                        false,
+                    ),
+                    ChatRow::Quick(g) => {
+                        let group = &landing.groups[g];
+                        let mark = if group.quick_questions { "▾" } else { "▸" };
+                        (
+                            format!("  {mark} Quick questions ({})", group.quick_sessions.len()),
+                            format_relative_time(group.quick_sessions[0].modified_ms, now),
+                            false,
+                        )
+                    }
+                    ChatRow::QuickChat(g, s) => (
+                        format!(
+                            "    {}",
+                            crate::sessions::clean_preview(
+                                landing.groups[g].quick_sessions[s].preview.as_deref(),
+                                80
+                            )
+                        ),
+                        format_relative_time(landing.groups[g].quick_sessions[s].modified_ms, now),
                         false,
                     ),
                 };
@@ -988,6 +1272,57 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled("▏", selected),
         ]));
         hits.push(None);
+    }
+    if !landing.meters.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+            hits.push(None);
+        }
+        lines.push(Line::styled(
+            "usage",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        hits.push(None);
+        for meter in &landing.meters {
+            if meter.snapshot.windows.is_empty() {
+                lines.push(Line::styled(
+                    format!(
+                        "{} · {} · {}",
+                        meter.provider.as_str(),
+                        meter.account,
+                        meter.snapshot.summary
+                    ),
+                    dim,
+                ));
+            } else {
+                let windows = meter
+                    .snapshot
+                    .windows
+                    .iter()
+                    .map(|window| {
+                        let left = window.left_pct().round() as usize;
+                        let filled = (left * 10 / 100).min(10);
+                        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
+                        format!(
+                            "{} [{bar}] {}% · {}",
+                            window.label,
+                            left,
+                            window.resets.as_deref().unwrap_or("reset unavailable")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                lines.push(Line::styled(
+                    format!(
+                        "{} · {} · {windows}",
+                        meter.provider.as_str(),
+                        meter.account
+                    ),
+                    dim,
+                ));
+            }
+            hits.push(None);
+        }
     }
     if lines.is_empty() && landing.work.is_empty() {
         // An empty pane must still say what it is for and how to fill it. Open work, when
@@ -1158,6 +1493,7 @@ mod tests {
             cwd: Some(format!("C:/work/{folder}")),
             preview: Some(id.into()),
             modified_ms,
+            user_messages: 1,
         }
     }
 
@@ -1178,6 +1514,84 @@ mod tests {
         );
         assert!(groups[0].expanded && !groups[1].expanded);
         assert_eq!(groups[0].sessions[0].session_id, "new");
+    }
+
+    #[test]
+    fn hidden_workspace_rules() {
+        let root = Path::new(r"C:\tmp\fixture");
+        for p in [
+            r"C:\tmp\fixture\x",
+            r"C:\code\target\x",
+            r"C:\concordia-test-1",
+            r"C:\concordia-qual-1",
+            r"C:\live-qualification-20261104",
+        ] {
+            assert!(hidden_workspace(Path::new(p), Some(root)));
+        }
+        for p in [
+            r"C:\code\latest",
+            r"C:\code\contest",
+            r"C:\notes\temp-notes",
+            r"C:\code\pytest-demo",
+            r"\\?\C:\code\latest",
+            "C:/code/latest",
+        ] {
+            assert!(!hidden_workspace(Path::new(p), None));
+        }
+    }
+
+    #[test]
+    fn display_path_strips_extended_and_unc_prefixes() {
+        assert_eq!(display_path(Path::new(r"\\?\C:\x")), PathBuf::from(r"C:\x"));
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\x")),
+            PathBuf::from(r"\\server\share\x")
+        );
+        assert_eq!(display_path(Path::new(r"C:\x")), PathBuf::from(r"C:\x"));
+    }
+
+    #[test]
+    fn duplicate_folder_names_get_their_parent() {
+        let groups = group_sessions(
+            vec![
+                SessionSummary {
+                    cwd: Some(r"C:\dev\concordia".into()),
+                    ..session("concordia", "a", 1)
+                },
+                SessionSummary {
+                    cwd: Some(r"D:\work\concordia".into()),
+                    ..session("concordia", "b", 2)
+                },
+                session("unique", "c", 3),
+            ],
+            Path::new(r"C:\none"),
+        );
+        let names: Vec<_> = groups.iter().map(|g| g.folder.as_str()).collect();
+        assert!(names.contains(&"dev/concordia"));
+        assert!(names.contains(&"work/concordia"));
+        assert!(names.contains(&"unique"));
+    }
+
+    #[test]
+    fn quick_questions_collect_short_old_chats_per_folder() {
+        let now = 10 * 86_400_000u128;
+        let mut old = session("one", "old", now - 2 * 86_400_000);
+        old.user_messages = 2;
+        let mut long = session("one", "long", now - 2 * 86_400_000);
+        long.user_messages = 3;
+        let recent = session("one", "recent", now - 3_600_000);
+        let groups = display_groups_at(vec![old, long, recent], Path::new(r"C:\none"), now);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0]
+                .sessions
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["recent", "long"]
+        );
+        assert_eq!(groups[0].quick_sessions[0].session_id, "old");
+        assert!(!groups[0].quick_questions);
     }
 
     #[test]

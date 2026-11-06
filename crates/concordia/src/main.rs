@@ -19,6 +19,8 @@ fn print_help() {
            concordia --help    this message\n\
            concordia --version build stamp (confirm pane is not stale)\n\
            concordia install   install this exe as the `concordia` on your PATH (new panes get it)\n\
+           concordia shortcut install [--desktop]   create a Windows shortcut (WezTerm when installed)\n\
+           concordia shortcut remove [--desktop]    remove that shortcut\n\
            concordia wezterm   launch WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
            concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
            concordia chat list|read|search  bounded native CLI chats across your own accounts\n\
@@ -26,6 +28,7 @@ fn print_help() {
            concordia chat recall|lineage|link|detach  bounded retrieval and explicit source links\n\
            concordia preview FILE          read-only Markdown preview in this terminal\n\
            concordia file-edit FILE        independent file editor (Ctrl+Q closes)\n\
+           concordia sessions prune --empty  list and optionally remove native sessions with no user turns\n\
            concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
                                read recorded threads (opt-in: CONCORDIA_THREADS=1)\n\
            concordia thread migrate preview <thread|history> --source INDEX | apply PLAN | status PLAN\n\
@@ -151,6 +154,22 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        "shortcut" => {
+            if args.len() < 2 || args.len() > 3 || !matches!(args[1].as_str(), "install" | "remove")
+            {
+                anyhow::bail!("usage: concordia shortcut install|remove [--desktop]");
+            }
+            let desktop = args.get(2).is_some_and(|arg| arg == "--desktop");
+            if args.get(2).is_some_and(|arg| arg != "--desktop") {
+                anyhow::bail!("usage: concordia shortcut install|remove [--desktop]");
+            }
+            let path = if args[1] == "install" {
+                concordia::update::install_shortcut(desktop)?
+            } else {
+                concordia::update::remove_shortcut(desktop)?
+            };
+            println!("{} {}", args[1], path.display());
+        }
         "wezterm" => {
             if let Err(e) = concordia::host::wezterm::launch_window() {
                 eprintln!("{e}");
@@ -171,6 +190,21 @@ async fn main() -> Result<()> {
                 std::process::exit(code);
             }
         },
+        "sessions" => {
+            if args.get(1).map(String::as_str) != Some("prune")
+                || args.get(2).map(String::as_str) != Some("--empty")
+                || args.len() != 3
+            {
+                anyhow::bail!("usage: concordia sessions prune --empty");
+            }
+            match concordia::sessions::prune_empty_cli(&default_store_root()) {
+                Ok(output) => print!("{output}"),
+                Err((message, code)) => {
+                    eprintln!("{message}");
+                    std::process::exit(code);
+                }
+            }
+        }
         "mcp" => {
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();

@@ -11,6 +11,31 @@
 
 use std::io::{Read, Write};
 
+#[cfg(windows)]
+#[allow(clippy::zombie_processes)]
+fn maybe_probe_grandchild() {
+    if std::env::var_os("FAKE_PROVIDER_GRANDCHILD").is_some() {
+        use windows_sys::Win32::System::Console::GetConsoleWindow;
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+        let hwnd = unsafe { GetConsoleWindow() };
+        let visible = !hwnd.is_null() && unsafe { IsWindowVisible(hwnd) != 0 };
+        let out = std::env::var("FAKE_PROVIDER_GRANDCHILD_OUT").unwrap();
+        std::fs::write(out, format!("GRANDCHILD_VISIBLE={}\n", u8::from(visible))).unwrap();
+        std::process::exit(0);
+    }
+    if std::env::var_os("FAKE_PROVIDER_GRANDCHILD_OUT").is_some() {
+        let mut child_env = std::env::vars().collect::<Vec<_>>();
+        child_env.push(("FAKE_PROVIDER_GRANDCHILD".into(), "1".into()));
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .envs(child_env)
+            .spawn()
+            .unwrap();
+    }
+}
+
+#[cfg(not(windows))]
+fn maybe_probe_grandchild() {}
+
 fn hex(s: &str) -> String {
     s.bytes().map(|b| format!("{b:02x}")).collect()
 }
@@ -415,6 +440,7 @@ fn fake_claude_control(args: &[String]) {
 }
 
 fn main() {
+    maybe_probe_grandchild();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|arg| arg == "--version")
         && std::env::var("FAKE_PROVIDER_NATIVE_CLAUDE").as_deref() == Ok("1")

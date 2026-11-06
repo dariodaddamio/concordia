@@ -1,5 +1,19 @@
 # Concordia verification status
 
+## Settings and customization scope, workspace 2026-11-05e
+
+Local changes expand `/config`, add scoped `/skills` and `/hooks` inventories, shorten titles
+without an em dash, and add a native pixel activity orbit around the running-window icon.
+Display preferences persist in the existing bounded appearance transaction; existing controls
+retain their account/default/session ownership. Motion honors the app and Windows preferences.
+
+The extended existing appearance/title check passes, including reload of display/file preferences,
+duplicate project/account skill names, metadata-only hook inspection and draft preservation. The
+focused Home/settings navigation check and final all-target Clippy with warnings denied pass.
+No physical native icon qualification or release build is claimed for this batch. It remains local,
+unmerged and uninstalled so additional owner feedback can be accumulated; the installed executable
+is still 05d. No model calls, Actions runs or publication occurred.
+
 ## Original portrait restored, 2026-11-05d
 
 At the owner's request, Home again draws the original bundled gold portrait. The mesh, geometry

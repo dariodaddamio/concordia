@@ -90,6 +90,7 @@ mod related_files;
 mod session_ui;
 #[cfg(test)]
 mod session_ui_tests;
+mod settings;
 mod stats_ui;
 mod syntax;
 mod text;
@@ -142,6 +143,7 @@ struct Areas {
     transcript: Rect,
     input: Rect,
     bottom_button: Rect,
+    footer: Rect,
     run_cancel: Rect,
     permissions: Rect,
     permissions_popup: Rect,
@@ -229,6 +231,14 @@ impl Phase {
         let f = self.frames();
         f[(tick as usize) % f.len()]
     }
+
+    fn frame_with_motion(&self, tick: u64, motion: bool) -> &'static str {
+        if motion || matches!(self, Phase::Tool(_)) {
+            self.frame(tick)
+        } else {
+            self.frames()[0]
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -272,6 +282,9 @@ struct PendingLogin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PickerKind {
+    Settings,
+    FilePreferences,
+    Customization,
     Appearance,
     Theme,
     BrandColor,
@@ -721,14 +734,21 @@ impl App {
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")
+                .replace(['—', '–'], "-")
                 .chars()
                 .filter(|c| !c.is_control())
                 .take(max)
                 .collect()
         };
+        let task = clean(task, 40);
+        let task = if task.chars().count() == 40 {
+            format!("{}...", task.trim_end())
+        } else {
+            task
+        };
         match status {
-            Some(status) => format!("Concordia — {} · {}", clean(task, 72), clean(&status, 40)),
-            None => format!("Concordia — {}", clean(task, 72)),
+            Some(status) => format!("Concordia | {} | {task}", clean(&status, 24)),
+            None => format!("Concordia | {task}"),
         }
     }
 
@@ -1423,7 +1443,10 @@ impl App {
             && self.pending_login.is_none()
             && self.editor.chars().is_empty();
         let fresh = self.messages.iter().all(|m| m.role == MsgRole::System);
-        if !quiet || !(fresh || self.idle_ticks >= tips::IDLE_TICKS) || !tips::ui_tips_enabled() {
+        if !quiet
+            || !(fresh || self.idle_ticks >= tips::IDLE_TICKS)
+            || !tips::enabled(self.appearance.ui.tips)
+        {
             return None;
         }
         Some(tips::tip_for(self.tip_seed))
@@ -1608,7 +1631,7 @@ impl App {
             self.push_system("(no text in provider stream)");
         }
         if has_reply || had_cards {
-            let tokens = if token_line::ui_token_line_enabled() {
+            let tokens = if token_line::enabled(self.appearance.ui.token_line) {
                 token_line::format_line(&usage, None)
             } else {
                 String::new()
@@ -2648,7 +2671,10 @@ impl App {
         }
         #[cfg(not(test))]
         {
-            let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
+            // Explorer is intentionally visible: this is the requested URL window.
+            let _ = std::process::Command::new("explorer.exe") // visible-spawn: user-requested release page.
+                .arg(url)
+                .spawn();
         }
         #[cfg(test)]
         self.flash("release page opened");
@@ -2687,6 +2713,9 @@ impl App {
             return;
         }
         match kind {
+            PickerKind::Settings | PickerKind::FilePreferences | PickerKind::Customization => {
+                settings::choose(self, kind, &id)
+            }
             PickerKind::Appearance | PickerKind::Theme | PickerKind::BrandColor => {
                 appearance::choose(self, kind, &id)
             }
@@ -3106,8 +3135,19 @@ impl App {
             self.open_agents_picker();
             return true;
         }
+        if trimmed == "/skills" || trimmed == "/hooks" {
+            settings::catalog(self, trimmed == "/hooks");
+            return true;
+        }
         if trimmed == "/config" || trimmed.starts_with("/config ") {
-            appearance::command(self, trimmed.strip_prefix("/config").unwrap_or("").trim());
+            let args = trimmed.strip_prefix("/config").unwrap_or("").trim();
+            match args {
+                "" => settings::open(self),
+                "appearance" => appearance::open(self),
+                "skills" => settings::catalog(self, false),
+                "hooks" => settings::catalog(self, true),
+                _ => appearance::command(self, args),
+            }
             return true;
         }
         if trimmed == "/version" || trimmed == "/ver" || trimmed == "/about" {
@@ -3916,9 +3956,9 @@ impl App {
             usage_credits: "Credits: not reported".into(),
             usage_tone: UsageTone::Mute,
             usage_warning: None,
-            usage_fetcher: UsageFetcher::new(state_root_for_usage),
+            usage_fetcher: UsageFetcher::new(state_root_for_usage.clone()),
             usage_block: None,
-            stats: crate::config::ui_stats().then(crate::sysstats::StatsHandle::start),
+            stats: appearance::State::load(&state_root_for_usage).ui.stats.then(crate::sysstats::StatsHandle::start),
             compat_rx: None,
             picker_tones: HashMap::new(),
             live_cards: Vec::new(),
@@ -6224,7 +6264,11 @@ fn draw_run_status(f: &mut Frame, area: Rect, app: &mut App) {
         status.push(c);
         width += n;
     }
-    let prefix = format!(" {} {status}", app.phase.frame(app.tick_count));
+    let prefix = format!(
+        " {} {status}",
+        app.phase
+            .frame_with_motion(app.tick_count, app.appearance.ui.motion)
+    );
     let x =
         area.x + (Line::from(prefix.clone()).width() + Line::from(right.clone()).width()) as u16;
     if x + 7 <= area.right() {
@@ -7573,6 +7617,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
+    app.areas.footer = area;
     let w = area.width as usize;
     let mode = app.trust;
     let label = if mode == TrustMode::Full {

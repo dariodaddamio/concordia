@@ -117,7 +117,7 @@ pub fn extract_uuid(text: &str) -> Option<String> {
 /// turn simply runs without a bound session as before.
 pub async fn create_chat(command: &str, env: &[(String, String)], cwd: &str) -> Option<String> {
     use std::process::Stdio;
-    let mut cmd = tokio::process::Command::new(command);
+    let mut cmd = crate::process_ui::tokio_command(command);
     crate::process_ui::background(&mut cmd);
     cmd.arg("create-chat")
         .current_dir(cwd)

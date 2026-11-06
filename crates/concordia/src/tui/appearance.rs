@@ -11,6 +11,9 @@ struct Saved {
     theme: Option<String>,
     brand_color: Option<Rgb>,
     motion: Option<bool>,
+    token_line: Option<bool>,
+    tips: Option<bool>,
+    stats: Option<bool>,
 }
 
 pub(super) struct State {
@@ -94,6 +97,15 @@ impl State {
                 if let Some(color) = saved.brand_color {
                     ui.brand_color = Some(color);
                 }
+                if let Some(tokens) = saved.token_line {
+                    ui.token_line = tokens;
+                }
+                if let Some(tips) = saved.tips {
+                    ui.tips = tips;
+                }
+                if let Some(stats) = saved.stats {
+                    ui.stats = stats;
+                }
                 if let Some(motion) = saved.motion {
                     ui.motion = motion;
                 }
@@ -142,7 +154,7 @@ pub(super) fn open(app: &mut App) {
     }
 }
 
-fn save(app: &mut App, key: &str, value: &str) {
+pub(super) fn save(app: &mut App, key: &str, value: &str) {
     let root = &app.state_root;
     let result = (|| -> io::Result<()> {
         std::fs::create_dir_all(root.join(".ao"))?;
@@ -157,7 +169,22 @@ fn save(app: &mut App, key: &str, value: &str) {
                     )
                 }
                 "motion" if matches!(value, "on" | "off") => saved.motion = Some(value == "on"),
-                "defaults" => saved = Saved::default(),
+                "tokens" | "tips" | "stats" if matches!(value, "on" | "off") => {
+                    let preference = Some(value == "on");
+                    match key {
+                        "tokens" => saved.token_line = preference,
+                        "tips" => saved.tips = preference,
+                        _ => saved.stats = preference,
+                    }
+                }
+                "defaults" => {
+                    saved.theme = None;
+                    saved.brand_color = None;
+                    saved.motion = None;
+                    saved.token_line = None;
+                    saved.tips = None;
+                    saved.stats = None;
+                }
                 _ => {
                     return Err(io::Error::other(
                         "choose theme, color #RRGGBB, or motion on/off",
@@ -174,6 +201,9 @@ fn save(app: &mut App, key: &str, value: &str) {
     match result {
         Ok(()) => {
             app.appearance = State::load(root);
+            if app.appearance.ui.stats != app.stats.is_some() {
+                app.toggle_stats();
+            }
             raster::begin_frame(app);
             app.flash("Appearance saved");
         }

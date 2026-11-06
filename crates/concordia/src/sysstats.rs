@@ -517,7 +517,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn tree_enumeration_finds_a_spawned_child_and_its_memory() {
-        let mut child = std::process::Command::new("ping")
+        let mut child = crate::process_ui::command("ping")
             .args(["-n", "4", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .spawn()
