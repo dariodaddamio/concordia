@@ -1495,8 +1495,8 @@ unsafe extern "system" fn window_proc(
                     0,
                     (&mut enabled as *mut i32).cast(),
                     0,
-                ) == 0
-                    || enabled != 0;
+                ) != 0
+                    && enabled != 0;
                 if animated {
                     window.icon_frame = (window.icon_frame + 1) % 12;
                     refresh_icon(hwnd, window);

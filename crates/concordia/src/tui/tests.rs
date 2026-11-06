@@ -4209,6 +4209,8 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
         .starts_with("Concordia | Thinking | Fix parser"));
     h.app.phase = Phase::Writing;
     assert!(h.app.window_title().contains("Writing"));
+    assert_eq!(h.app.phase.frame_with_motion(1, false), "▁");
+    assert_ne!(h.app.phase.frame_with_motion(1, true), "▁");
     h.app.phase = Phase::Tool("Read".into());
     assert!(h.app.window_title().contains("Read"));
     assert_eq!(h.app.phase.frame(0), "▤");
@@ -4260,6 +4262,15 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     appearance::save(&mut h.app, "tips", "off");
     let reloaded = appearance::State::load(&h.app.state_root);
     assert!(!reloaded.ui.token_line && !reloaded.ui.tips);
+    appearance::save(&mut h.app, "stats", "off");
+    appearance::save(&mut h.app, "defaults", "");
+    let reloaded = appearance::State::load(&h.app.state_root);
+    assert_eq!(
+        reloaded.ui.token_line,
+        crate::config::Config::default().ui.token_line
+    );
+    assert_eq!(reloaded.ui.tips, crate::config::Config::default().ui.tips);
+    assert_eq!(reloaded.ui.stats, crate::config::Config::default().ui.stats);
     settings::choose(&mut h.app, PickerKind::FilePreferences, "preview");
     assert_eq!(
         crate::store::get_settings(&h.app.state_root).file_action,

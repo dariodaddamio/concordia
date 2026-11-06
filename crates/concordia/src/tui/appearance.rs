@@ -181,6 +181,9 @@ pub(super) fn save(app: &mut App, key: &str, value: &str) {
                     saved.theme = None;
                     saved.brand_color = None;
                     saved.motion = None;
+                    saved.token_line = None;
+                    saved.tips = None;
+                    saved.stats = None;
                 }
                 _ => {
                     return Err(io::Error::other(

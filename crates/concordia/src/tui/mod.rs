@@ -230,6 +230,14 @@ impl Phase {
         let f = self.frames();
         f[(tick as usize) % f.len()]
     }
+
+    fn frame_with_motion(&self, tick: u64, motion: bool) -> &'static str {
+        if motion || matches!(self, Phase::Tool(_)) {
+            self.frame(tick)
+        } else {
+            self.frames()[0]
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -6252,7 +6260,11 @@ fn draw_run_status(f: &mut Frame, area: Rect, app: &mut App) {
         status.push(c);
         width += n;
     }
-    let prefix = format!(" {} {status}", app.phase.frame(app.tick_count));
+    let prefix = format!(
+        " {} {status}",
+        app.phase
+            .frame_with_motion(app.tick_count, app.appearance.ui.motion)
+    );
     let x =
         area.x + (Line::from(prefix.clone()).width() + Line::from(right.clone()).width()) as u16;
     if x + 7 <= area.right() {
