@@ -278,6 +278,10 @@ impl Harness {
     fn new(w: u16, h: u16) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
+        // These rendering fixtures assert the historical terminal palette; pin it so
+        // changing the product default does not change what they exercise.
+        app.appearance.ui.theme = crate::config::Theme::Default;
+        super::theme::install(&app.appearance.ui);
         app.no_color = false; // Fixtures choose color explicitly, independent of the caller's env.
         let term = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hn = Harness {

@@ -60,7 +60,12 @@ fn readable(foreground: Rgb, background: Rgb, minimum: f64) -> Rgb {
 
 impl Palette {
     fn from_ui(ui: &Ui) -> Self {
-        let [background, foreground, accent] = ui.theme.colors();
+        let [mut background, mut foreground, mut accent] = ui.theme.colors();
+        if let Some(theme) = &ui.library_theme {
+            background = theme.background;
+            foreground = theme.foreground;
+            accent = theme.accent;
+        }
         let background = ui.background.unwrap_or(background);
         let foreground = readable(ui.foreground.unwrap_or(foreground), background, 4.5);
         let accent = readable(ui.accent.unwrap_or(accent), background, 4.5);
@@ -68,7 +73,10 @@ impl Palette {
         let semantic = |dark: Rgb, light_color: Rgb| {
             readable(if light { light_color } else { dark }, background, 4.5)
         };
-        let success = semantic([104, 197, 139], [23, 111, 57]);
+        let success = ui.library_theme.as_ref().map_or_else(
+            || semantic([104, 197, 139], [23, 111, 57]),
+            |t| readable(t.success, background, 4.5),
+        );
         let error = semantic([239, 118, 129], [176, 40, 57]);
         Self {
             enabled: !matches!(ui.theme, Theme::Default | Theme::Terminal)
@@ -87,8 +95,14 @@ impl Palette {
             panel: mix(background, foreground, if light { 0.065 } else { 0.11 }),
             muted: readable(mix(background, foreground, 0.62), background, 4.5),
             success,
-            warning: semantic([230, 193, 111], [136, 89, 15]),
-            error,
+            warning: ui.library_theme.as_ref().map_or_else(
+                || semantic([230, 193, 111], [136, 89, 15]),
+                |t| readable(t.warning, background, 4.5),
+            ),
+            error: ui
+                .library_theme
+                .as_ref()
+                .map_or(error, |t| readable(t.error, background, 4.5)),
             purple: semantic([193, 155, 234], [119, 68, 164]),
             added: mix(background, success, if light { 0.12 } else { 0.16 }),
             removed: mix(background, error, if light { 0.11 } else { 0.16 }),
@@ -266,7 +280,9 @@ pub(super) fn apply(buffer: &mut Buffer, no_color: bool, native: bool) {
 
 #[cfg(windows)]
 pub(super) fn image_marker() -> Color {
-    color(current().background)
+    // Native overlays are collected before the frame-wide theme pass. Keep this
+    // marker stable so an installed theme cannot make a valid overlay invisible.
+    Color::Rgb(20, 23, 31)
 }
 
 pub(super) fn image_background() -> Rgb {
@@ -318,7 +334,9 @@ pub(super) fn fixture_proof() {
         .set_fg(Color::Rgb(20, 23, 31))
         .set_bg(Color::Rgb(20, 23, 31));
     let original = buffer.clone();
-    Palette::from_ui(&crate::config::Config::default().ui).apply(&mut buffer, false, false);
+    let (config, warnings) = crate::config::Config::parse("[ui]\ntheme='default'\n");
+    assert!(warnings.is_empty());
+    Palette::from_ui(&config.ui).apply(&mut buffer, false, false);
     assert_eq!(
         buffer, original,
         "default theme preserves existing styles and host defaults"

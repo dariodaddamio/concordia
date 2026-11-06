@@ -36,6 +36,7 @@ pub mod state_security;
 pub mod store;
 pub mod sysstats;
 pub mod test_guard;
+pub mod theme_library;
 pub mod threads;
 pub mod token_log;
 pub mod tui;
