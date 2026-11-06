@@ -1,5 +1,9 @@
 # Changelog
 
+- Home hygiene now strips extended Windows path prefixes, hides generated test/temp/target
+  workspaces until `h` shows all, groups older short chats under collapsed Quick questions rows,
+  and displays cached per-account 5h/7d usage meters beneath goals.
+
 ## 2026-11-05h
 
 - Home ignores provider-native session artifacts until they contain a real user message.

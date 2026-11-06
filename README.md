@@ -410,6 +410,10 @@ is empty. `Esc` goes straight to chat; `/new` opens the page again. The page sho
 not reconstructed. Copying with right-click or Ctrl+C keeps the selection highlighted. Clickable
 rows, buttons and file links request a hand cursor on terminals supporting OSC 22.
 
+Generated test, qualification, temporary and repository `target` workspaces are hidden by default;
+press `h` to show all. Older one- or two-turn chats collapse into per-folder Quick questions rows.
+Cached connected-account 5h and 7d usage meters, including reset times, appear beneath goals.
+
 
 - **Continuing on the same account** resumes the session id Concordia recorded (`--resume <id>`). Nothing is added to your prompt.
 - **Switching account or provider** starts a new session on the other side, with bounded recent context in front of your next prompt. Tool state, approvals and the provider's own memory are not carried over, and the pack says so in its header.

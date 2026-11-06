@@ -28,16 +28,23 @@ pub struct ChatGroup {
     pub expanded: bool,
 }
 
+#[derive(Debug, Clone)]
+struct LandingMeter {
+    provider: crate::store::ProviderKind,
+    account: String,
+    snapshot: crate::usage::UsageSnapshot,
+}
+
 /// Sessions grouped by the folder they ran in: the current folder first and expanded, the rest
 /// collapsed and ordered by their newest chat.
 pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
-    let current = project_root(cwd);
+    let current = display_path(&project_root(cwd));
     let probe = crate::cursor_usage::probe_dir();
     let mut groups: BTreeMap<PathBuf, Vec<SessionSummary>> = BTreeMap::new();
     for session in sessions {
         let folder = match session.cwd.as_deref().map(Path::new) {
             Some(path) if path == probe => continue,
-            Some(path) => project_root(path),
+            Some(path) => display_path(&project_root(path)),
             None => PathBuf::from("other"),
         };
         groups.entry(folder).or_default().push(session);
@@ -58,7 +65,11 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
             let expanded = current == root;
             let folder = name(&root);
             let folder = if names[&folder] > 1 {
-                format!("{folder} [{}]", root.display())
+                let parent = root
+                    .parent()
+                    .and_then(Path::file_name)
+                    .map(|p| p.to_string_lossy());
+                format!("{}/{}", parent.as_deref().unwrap_or("?"), folder)
             } else {
                 folder
             };
@@ -75,6 +86,65 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
             .then_with(|| b.sessions[0].modified_ms.cmp(&a.sessions[0].modified_ms))
     });
     groups
+}
+
+fn display_path(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().trim_start_matches(r"\\?\"))
+}
+
+fn hidden_workspace(path: &Path) -> bool {
+    let path = display_path(path);
+    let text = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    let parts: Vec<_> = text.split('\\').filter(|part| !part.is_empty()).collect();
+    text.contains("\\target\\")
+        || parts.iter().any(|part| *part == "tmp" || *part == "temp")
+        || parts.iter().any(|part| {
+            part.contains("test") || part.contains("qualif") || part.contains("fixture")
+        })
+}
+
+fn landing_sessions(sessions: Vec<SessionSummary>, show_all: bool) -> Vec<SessionSummary> {
+    sessions
+        .into_iter()
+        .filter(|session| {
+            show_all
+                || session.cwd.as_deref().is_none_or(|cwd| {
+                    session.modified_ms <= 1_000_000_000_000 || !hidden_workspace(Path::new(cwd))
+                })
+        })
+        .collect()
+}
+
+fn display_groups(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
+    let mut groups = group_sessions(sessions, cwd);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let mut result = Vec::new();
+    for mut group in groups.drain(..) {
+        let folder = group.folder.clone();
+        let (quick, recent): (Vec<_>, Vec<_>) = group.sessions.into_iter().partition(|session| {
+            session.user_messages <= 2
+                && session.modified_ms > 1_000_000_000_000
+                && now_ms.saturating_sub(session.modified_ms) >= 86_400_000
+        });
+        if !recent.is_empty() {
+            group.sessions = recent;
+            result.push(group);
+        }
+        if !quick.is_empty() {
+            result.push(ChatGroup {
+                folder: format!("{} · Quick questions", folder),
+                sessions: quick,
+                expanded: false,
+            });
+        }
+    }
+    result
 }
 
 /// The project identity, or for a git worktree its main repository: a worktree's
@@ -158,6 +228,8 @@ enum ChatRow {
 
 pub struct Landing {
     from_chat: bool,
+    all_sessions: Vec<SessionSummary>,
+    show_all: bool,
     groups: Vec<ChatGroup>,
     goals: Vec<Goal>,
     pane: Pane,
@@ -182,6 +254,7 @@ pub struct Landing {
     tokens_ready: bool,
     tokens_partial: bool,
     tokens_error: Option<String>,
+    meters: Vec<LandingMeter>,
 }
 
 impl Landing {
@@ -247,7 +320,7 @@ fn open_with_mode(
         app.landing = None;
         return;
     }
-    let groups = group_sessions(sessions, &app.cwd);
+    let groups = display_groups(landing_sessions(sessions.clone(), false), &app.cwd);
     let work_rx = program.map(|program| {
         let mut projects: Vec<PathBuf> = Vec::new();
         for group in &groups {
@@ -297,6 +370,8 @@ fn open_with_mode(
     };
     let landing = Landing {
         from_chat,
+        all_sessions: sessions,
+        show_all: false,
         groups,
         goals,
         pane: Pane::Chats,
@@ -319,9 +394,31 @@ fn open_with_mode(
         tokens_ready: false,
         tokens_partial: false,
         tokens_error: None,
+        meters: Vec::new(),
     };
     app.footer_left = landing.hint().into();
     app.landing = Some(landing);
+    refresh_meters(app);
+}
+
+fn refresh_meters(app: &mut App) {
+    let accounts = crate::accounts::accounts_with_auth(&app.state_root);
+    let meters = accounts
+        .into_iter()
+        .filter_map(|account| {
+            let home = account.home_path?;
+            Some(LandingMeter {
+                provider: account.provider,
+                account: account.account.clone(),
+                snapshot: app
+                    .usage_fetcher
+                    .snapshot(account.provider, &account.account, &home),
+            })
+        })
+        .collect();
+    if let Some(landing) = app.landing.as_mut() {
+        landing.meters = meters;
+    }
 }
 
 pub(super) fn close(app: &mut App) {
@@ -373,6 +470,10 @@ pub(super) fn visible(app: &App) -> bool {
 
 /// Collect open work that arrived from the background reader.
 pub(super) fn poll(app: &mut App) {
+    if app.landing.is_none() {
+        return;
+    }
+    refresh_meters(app);
     let Some(landing) = app.landing.as_mut() else {
         return;
     };
@@ -603,6 +704,20 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             landing.mode = Mode::AddGoal(String::new());
             app.footer_left = landing.hint().into();
         }
+        (KeyCode::Char('h'), Pane::Chats)
+            if plain
+                && landing.all_sessions.len()
+                    != landing_sessions(landing.all_sessions.clone(), false).len() =>
+        {
+            landing.show_all = !landing.show_all;
+            landing.groups = display_groups(
+                landing_sessions(landing.all_sessions.clone(), landing.show_all),
+                &app.cwd,
+            );
+            landing.chat_sel = landing.chat_sel.min(landing.rows().len().saturating_sub(1));
+            landing.chat_top = 0;
+            app.footer_left = landing.hint().into();
+        }
         (KeyCode::Char(_), _) if plain => {
             // Drafting keeps chats and goals visible.
             set_pane(app, Pane::Chats);
@@ -695,6 +810,11 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
 /// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
 fn goal_rows(landing: &Landing) -> usize {
     let goals = landing.open_goals().len() + usize::from(landing.mode != Mode::Browse);
+    let meters = if landing.meters.is_empty() || !landing.work.is_empty() {
+        0
+    } else {
+        1 + landing.meters.iter().map(|_| 1).sum::<usize>()
+    };
     let work: usize = landing
         .work
         .iter()
@@ -705,9 +825,9 @@ fn goal_rows(landing: &Landing) -> usize {
         })
         .sum();
     if work == 0 {
-        goals
+        goals + meters
     } else {
-        goals + usize::from(goals > 0) + 1 + work
+        goals + meters + usize::from(goals + meters > 0) + 1 + work
     }
 }
 
@@ -988,6 +1108,57 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled("▏", selected),
         ]));
         hits.push(None);
+    }
+    if !landing.meters.is_empty() && landing.work.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+            hits.push(None);
+        }
+        lines.push(Line::styled(
+            "usage",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        hits.push(None);
+        for meter in &landing.meters {
+            if meter.snapshot.windows.is_empty() {
+                lines.push(Line::styled(
+                    format!(
+                        "{} · {} · {}",
+                        meter.provider.as_str(),
+                        meter.account,
+                        meter.snapshot.summary
+                    ),
+                    dim,
+                ));
+            } else {
+                let windows = meter
+                    .snapshot
+                    .windows
+                    .iter()
+                    .map(|window| {
+                        let left = window.left_pct().round() as usize;
+                        let filled = (left * 10 / 100).min(10);
+                        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
+                        format!(
+                            "{} [{bar}] {}% · {}",
+                            window.label,
+                            left,
+                            window.resets.as_deref().unwrap_or("reset unavailable")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                lines.push(Line::styled(
+                    format!(
+                        "{} · {} · {windows}",
+                        meter.provider.as_str(),
+                        meter.account
+                    ),
+                    dim,
+                ));
+            }
+            hits.push(None);
+        }
     }
     if lines.is_empty() && landing.work.is_empty() {
         // An empty pane must still say what it is for and how to fill it. Open work, when
