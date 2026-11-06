@@ -27,6 +27,7 @@ pub mod process_lifetime;
 pub mod process_ui;
 pub mod prompt_time;
 pub mod provider;
+pub mod redact;
 pub mod release;
 pub mod routing;
 pub mod session_titles;

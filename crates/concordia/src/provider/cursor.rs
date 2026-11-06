@@ -66,6 +66,9 @@ pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
     argv.push(req.prompt.to_string());
     assert_safe_cursor_argv(&argv, req.trust == TrustMode::Full)?;
     let mut env = Vec::new();
+    if let Ok(key) = std::env::var("CURSOR_API_KEY") {
+        crate::redact::register_runtime_secret(&key);
+    }
     let mut env_remove = vec!["CURSOR_API_KEY".to_string()];
     if let Some(home) = req.home_path {
         if let Some(key) = cursor_api_key_for_home(home) {
@@ -220,5 +223,20 @@ mod tests {
             extract_uuid("zzzzzzzz-7b44-4d0a-9e51-0a1b2c3d4e5f").is_none(),
             "not hex"
         );
+    }
+
+    #[test]
+    fn runtime_cursor_key_is_registered_and_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "cursor-runtime-secret-0123456789";
+        std::fs::write(dir.path().join("api-key"), key).unwrap();
+        assert_eq!(
+            crate::identity::cursor_api_key_for_home(dir.path()).as_deref(),
+            Some(key)
+        );
+        let text = format!("key={key}");
+        let redacted = crate::redact::redact(&text);
+        assert!(!redacted.contains(key));
+        assert!(redacted.contains("[REDACTED:runtime_secret:"));
     }
 }

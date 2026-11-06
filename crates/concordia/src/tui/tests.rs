@@ -3541,6 +3541,7 @@ fn landing_harness() -> Harness {
     let mut h = Harness::new(100, 24);
     let here = h.app.cwd.clone();
     let lock = here.parent().unwrap().join("lock");
+    std::fs::create_dir_all(&lock).unwrap();
     let sessions = vec![
         landing_session("acct-x", &here, "first", 3),
         landing_session("acct-x", &here, "second", 2),
@@ -3961,13 +3962,12 @@ fn meters_show_under_goals_for_every_provider_account() {
     let screen = h.screen();
     for expected in [
         "usage",
-        "codex · codex-fixture",
-        "claude · claude-fixture",
-        "cursor · cursor-fixture",
+        "codex codex-fixture",
+        "claude claude-fixture",
+        "cursor cursor-fixture",
         "5h",
         "7d",
         "3h",
-        "4d",
     ] {
         assert!(screen.contains(expected), "missing {expected}: {screen}");
     }

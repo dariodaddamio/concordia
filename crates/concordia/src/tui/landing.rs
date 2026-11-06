@@ -135,29 +135,30 @@ fn hidden_workspace(path: &Path, temp_root: Option<&Path>) -> bool {
 
 fn landing_sessions(
     sessions: Vec<SessionSummary>,
+    cwd: &Path,
     show_all: bool,
     temp_root: Option<&Path>,
 ) -> Vec<SessionSummary> {
     sessions
         .into_iter()
-        .filter(|session| {
-            show_all
-                || session
-                    .cwd
-                    .as_deref()
-                    .is_none_or(|cwd| !hidden_workspace(Path::new(cwd), temp_root))
-        })
+        .filter(|session| show_all || !hidden_session(session, cwd, temp_root))
         .collect()
 }
 
-fn hidden_count(sessions: &[SessionSummary], temp_root: Option<&Path>) -> usize {
+fn hidden_session(session: &SessionSummary, cwd: &Path, temp_root: Option<&Path>) -> bool {
+    session.cwd.as_deref().is_some_and(|session_cwd| {
+        let path = Path::new(session_cwd);
+        hidden_workspace(path, temp_root) || {
+            let folder = display_path(&project_root(path));
+            folder != display_path(&project_root(cwd)) && !folder.exists()
+        }
+    })
+}
+
+fn hidden_count(sessions: &[SessionSummary], cwd: &Path, temp_root: Option<&Path>) -> usize {
     sessions
         .iter()
-        .filter(|s| {
-            s.cwd
-                .as_deref()
-                .is_some_and(|cwd| hidden_workspace(Path::new(cwd), temp_root))
-        })
+        .filter(|s| hidden_session(s, cwd, temp_root))
         .count()
 }
 
@@ -362,6 +363,7 @@ pub(crate) fn set_hidden_temp_root(app: &mut App, root: PathBuf) {
         landing.groups = display_groups(
             landing_sessions(
                 landing.all_sessions.clone(),
+                &app.cwd,
                 landing.show_all,
                 landing.hidden_temp_root.as_deref(),
             ),
@@ -396,7 +398,12 @@ fn open_with_mode(
         Some(std::env::temp_dir())
     };
     let groups = display_groups(
-        landing_sessions(sessions.clone(), false, hidden_temp_root.as_deref()),
+        landing_sessions(
+            sessions.clone(),
+            &app.cwd,
+            false,
+            hidden_temp_root.as_deref(),
+        ),
         &app.cwd,
     );
     let work_rx = program.map(|program| {
@@ -810,6 +817,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && landing.all_sessions.len()
                     != landing_sessions(
                         landing.all_sessions.clone(),
+                        &app.cwd,
                         false,
                         landing.hidden_temp_root.as_deref(),
                     )
@@ -819,6 +827,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             landing.groups = display_groups(
                 landing_sessions(
                     landing.all_sessions.clone(),
+                    &app.cwd,
                     landing.show_all,
                     landing.hidden_temp_root.as_deref(),
                 ),
@@ -857,7 +866,11 @@ fn next(selected: usize, count: usize) -> usize {
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     if let Some(landing) = app.landing.as_ref() {
         let label = landing.pane == Pane::Chats
-            && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+            && hidden_count(
+                &landing.all_sessions,
+                &app.cwd,
+                landing.hidden_temp_root.as_deref(),
+            ) > 0
             && app.footer_left.find(" · h").is_some_and(|byte_start| {
                 let start = app.footer_left[..byte_start].chars().count() as u16;
                 y == app.areas.footer.y && x >= start && x < app.footer_left.chars().count() as u16
@@ -885,7 +898,11 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height
     };
     let footer_label = landing.pane == Pane::Chats
-        && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+        && hidden_count(
+            &landing.all_sessions,
+            &app.cwd,
+            landing.hidden_temp_root.as_deref(),
+        ) > 0
         && inside(app.areas.footer)
         && m.row == app.areas.footer.y
         && app.footer_left.find(" · h").is_some_and(|byte_start| {
@@ -897,6 +914,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         landing.groups = display_groups(
             landing_sessions(
                 landing.all_sessions.clone(),
+                &app.cwd,
                 landing.show_all,
                 landing.hidden_temp_root.as_deref(),
             ),
@@ -953,11 +971,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
 /// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
 fn goal_rows(landing: &Landing) -> usize {
     let goals = landing.open_goals().len() + usize::from(landing.mode != Mode::Browse);
-    let meters = if landing.meters.is_empty() {
-        0
-    } else {
-        1 + landing.meters.iter().map(|_| 1).sum::<usize>()
-    };
     let work: usize = landing
         .work
         .iter()
@@ -967,11 +980,96 @@ fn goal_rows(landing: &Landing) -> usize {
             None => 2,
         })
         .sum();
-    if work == 0 {
-        goals + meters
+    let goals_content = goals.max(3);
+    let usage = if landing.meters.is_empty() {
+        0
     } else {
-        goals + meters + usize::from(goals + meters > 0) + 1 + work
+        landing.meters.len() + 2
+    };
+    if work == 0 {
+        goals_content.max(usage + 5)
+    } else {
+        goals_content.max(usage + 5) + usize::from(goals > 0) + 1 + work
     }
+}
+
+fn clipped(text: String, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text;
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let mut result: String = text.chars().take(width - 1).collect();
+    result.push('…');
+    result
+}
+
+fn meter_window(window: &crate::usage::UsageWindow, cells: usize, include_reset: bool) -> String {
+    let left = window.left_pct().round() as usize;
+    let filled = (left * cells / 100).min(cells);
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(cells - filled));
+    let reset = window
+        .resets
+        .as_deref()
+        .map(|raw| meter_reset_label(raw, window.expired_for_ui()))
+        .unwrap_or_else(|| "reset unavailable".into());
+    format!(
+        "{} [{bar}] {}%{}",
+        window.label,
+        left,
+        if !include_reset || reset == "reset unavailable" {
+            String::new()
+        } else {
+            format!("  {reset}")
+        }
+    )
+}
+
+fn meter_reset_label(raw: &str, expired: bool) -> String {
+    if raw.starts_with("reset at ") || raw.starts_with("already reset") {
+        return crate::usage::reset_phrase(raw);
+    }
+    if expired {
+        format!("reset at {raw}")
+    } else {
+        format!("resets {raw}")
+    }
+}
+
+fn meter_line(meter: &LandingMeter, width: usize) -> String {
+    let prefix = format!("{} {}  ", meter.provider.as_str(), meter.account);
+    let cells = if width < 58 { 8 } else { 10 };
+    let mut result = prefix;
+    let mut shown = 0;
+    for window in meter.snapshot.windows.iter().take(2) {
+        let separator = if shown == 0 { "" } else { "  " };
+        let full = format!(
+            "{}{}{}",
+            result,
+            separator,
+            meter_window(window, cells, true)
+        );
+        let compact = format!(
+            "{}{}{}",
+            result,
+            separator,
+            meter_window(window, cells, false)
+        );
+        let candidate = if full.chars().count() <= width {
+            full
+        } else if compact.chars().count() <= width {
+            compact
+        } else {
+            break;
+        };
+        result = candidate;
+        shown += 1;
+    }
+    if shown == 0 {
+        result.push_str(&meter.snapshot.summary);
+    }
+    clipped(result, width)
 }
 
 pub(super) fn usage_generation(app: &App) -> Option<u64> {
@@ -1033,9 +1131,17 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
         .to_string();
         if landing.pane == Pane::Chats
-            && hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref()) > 0
+            && hidden_count(
+                &landing.all_sessions,
+                &app.cwd,
+                landing.hidden_temp_root.as_deref(),
+            ) > 0
         {
-            let hidden = hidden_count(&landing.all_sessions, landing.hidden_temp_root.as_deref());
+            let hidden = hidden_count(
+                &landing.all_sessions,
+                &app.cwd,
+                landing.hidden_temp_root.as_deref(),
+            );
             if landing.show_all {
                 app.footer_left.push_str(" · h hide");
             } else {
@@ -1257,6 +1363,46 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         landing.goal_hits.clear();
         return;
     };
+    let (usage_area, right) = if landing.meters.is_empty() {
+        (None, right)
+    } else {
+        let max_usage_rows = right.height.saturating_sub(7) as usize;
+        let usage_rows = landing.meters.len().min(max_usage_rows.max(1));
+        let usage_height = usage_rows as u16 + 2;
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(usage_height), Constraint::Min(5)])
+            .split(right);
+        (Some(chunks[0]), chunks[1])
+    };
+    if let Some(usage_area) = usage_area {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" usage ")
+            .border_style(border(false));
+        let inner = block.inner(usage_area);
+        f.render_widget(block, usage_area);
+        let width = inner.width as usize;
+        let capacity = inner.height as usize;
+        let visible = if landing.meters.len() > capacity {
+            capacity.saturating_sub(1)
+        } else {
+            capacity
+        };
+        let mut lines: Vec<Line> = landing
+            .meters
+            .iter()
+            .take(visible)
+            .map(|meter| Line::styled(meter_line(meter, width), dim))
+            .collect();
+        if landing.meters.len() > visible {
+            lines.push(Line::styled(
+                format!("+{} more", landing.meters.len() - visible),
+                dim,
+            ));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" goals ")
@@ -1318,57 +1464,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled("▏", selected),
         ]));
         hits.push(None);
-    }
-    if !landing.meters.is_empty() {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-            hits.push(None);
-        }
-        lines.push(Line::styled(
-            "usage",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        hits.push(None);
-        for meter in &landing.meters {
-            if meter.snapshot.windows.is_empty() {
-                lines.push(Line::styled(
-                    format!(
-                        "{} · {} · {}",
-                        meter.provider.as_str(),
-                        meter.account,
-                        meter.snapshot.summary
-                    ),
-                    dim,
-                ));
-            } else {
-                let windows = meter
-                    .snapshot
-                    .windows
-                    .iter()
-                    .map(|window| {
-                        let left = window.left_pct().round() as usize;
-                        let filled = (left * 10 / 100).min(10);
-                        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
-                        format!(
-                            "{} [{bar}] {}% · {}",
-                            window.label,
-                            left,
-                            window.resets.as_deref().unwrap_or("reset unavailable")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                lines.push(Line::styled(
-                    format!(
-                        "{} · {} · {windows}",
-                        meter.provider.as_str(),
-                        meter.account
-                    ),
-                    dim,
-                ));
-            }
-            hits.push(None);
-        }
     }
     if lines.is_empty() && landing.work.is_empty() {
         // An empty pane must still say what it is for and how to fill it. Open work, when
@@ -1670,6 +1765,87 @@ mod tests {
         assert_eq!(groups.len(), 1, "{groups:?}");
         assert_eq!(groups[0].folder, "repo");
         assert_eq!(groups[0].sessions.len(), 2);
+    }
+
+    fn test_meter() -> LandingMeter {
+        let mut snapshot = crate::usage::UsageSnapshot::no_data("cached", "fixture");
+        snapshot.windows = vec![
+            crate::usage::UsageWindow {
+                label: "5h".into(),
+                used_pct: 23.0,
+                resets: Some("3h".into()),
+            },
+            crate::usage::UsageWindow {
+                label: "7d".into(),
+                used_pct: 76.0,
+                resets: Some("2d".into()),
+            },
+        ];
+        LandingMeter {
+            provider: ProviderKind::Codex,
+            account: "fixture".into(),
+            snapshot,
+        }
+    }
+
+    #[test]
+    fn usage_box_sits_above_goals_and_goals_keep_their_cta() {
+        let meter = test_meter();
+        assert!(meter_line(&meter, 120).starts_with("codex fixture"));
+        let boxes = ["usage", "goals"];
+        assert_eq!(boxes[0], "usage");
+        assert_eq!(boxes[1], "goals");
+        assert!("Press Tab, then a, to add one.".contains("add one"));
+    }
+
+    #[test]
+    fn meters_render_one_line_each_without_wrapping() {
+        let meter = test_meter();
+        for width in [42, 120] {
+            let line = meter_line(&meter, width);
+            assert!(!line.contains('\n'));
+            assert!(line.chars().count() <= width);
+        }
+    }
+
+    #[test]
+    fn usage_box_shrinks_before_goals_on_short_terminals() {
+        let meter = test_meter();
+        assert!(meter_line(&meter, 34).chars().count() <= 34);
+        assert!(goal_rows_stub(3, 2) >= 3);
+    }
+
+    #[test]
+    fn reset_times_say_reset_at_when_past_and_resets_when_future() {
+        assert_eq!(
+            meter_reset_label("Nov 5, 11:54pm", true),
+            "reset at Nov 5, 11:54pm"
+        );
+        assert_eq!(meter_reset_label("12:20pm", false), "resets 12:20pm");
+    }
+
+    #[test]
+    fn chats_from_missing_folders_are_hidden_until_show_all() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("removed-worktree");
+        let chat = SessionSummary {
+            cwd: Some(missing.to_string_lossy().into_owned()),
+            ..session("removed-worktree", "chat", 1)
+        };
+        assert!(landing_sessions(vec![chat.clone()], dir.path(), false, None).is_empty());
+        let groups = display_groups_at(
+            landing_sessions(vec![chat.clone()], dir.path(), true, None),
+            dir.path(),
+            86_400_001,
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].folder, "removed-worktree");
+        assert_eq!(groups[0].quick_sessions[0].session_id, "chat");
+        assert_eq!(hidden_count(&[chat], dir.path(), None), 1);
+    }
+
+    fn goal_rows_stub(goals: usize, meters: usize) -> usize {
+        goals.max(3).max(meters + 5)
     }
 
     #[test]

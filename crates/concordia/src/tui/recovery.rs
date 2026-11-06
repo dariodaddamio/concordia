@@ -62,7 +62,8 @@ impl RecoveryLease {
         if bytes.len() > 32 * 1024 * 1024 {
             return Err(io::Error::other("file recovery exceeds 32 MiB"));
         }
-        crate::state_io::write_atomic(&self.directory.join("files.json"), bytes)
+        let safe = crate::redact::redact_bytes(bytes);
+        crate::state_io::write_atomic(&self.directory.join("files.json"), &safe)
     }
     pub fn files(&self) -> io::Result<Vec<u8>> {
         use std::io::Read;
@@ -86,7 +87,8 @@ impl RecoveryLease {
         if bytes.len() > 2 * 1024 * 1024 {
             return Err(io::Error::other("unfinished request exceeds 2 MiB"));
         }
-        crate::state_io::write_atomic(&self.directory.join("turn.json"), &bytes)
+        let safe = crate::redact::redact_bytes(&bytes);
+        crate::state_io::write_atomic(&self.directory.join("turn.json"), &safe)
     }
 
     pub fn turn(&self) -> io::Result<Option<super::turn_checkpoint::Checkpoint>> {

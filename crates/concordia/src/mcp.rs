@@ -77,7 +77,8 @@ pub fn serve<R: BufRead, W: Write>(
 // ---------------------------------------------------------------------------------------------
 
 fn error_reply(id: Value, code: i64, message: &str) -> String {
-    json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}).to_string()
+    let message = crate::redact::redact(message);
+    json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message.as_ref()}}).to_string()
 }
 
 fn result_reply(id: Value, result: Value) -> String {
@@ -244,7 +245,16 @@ fn tool_list() -> Value {
 }
 
 fn text_result(text: String, is_error: bool) -> Value {
-    json!({"content":[{"type":"text","text":cap(&text, MAX_RESULT_CHARS)}],"isError":is_error})
+    let redacted = crate::redact::redact(&text);
+    let changed = redacted.as_ref() != text;
+    let mut result = json!({"content":[{"type":"text","text":cap(redacted.as_ref(), MAX_RESULT_CHARS)}],"isError":is_error});
+    if changed {
+        result["redacted"] = json!(true);
+        result["content"].as_array_mut().unwrap().push(
+            json!({"type":"text","text":"Some stored text was redacted before returning it."}),
+        );
+    }
+    result
 }
 
 fn cap(s: &str, max: usize) -> String {
@@ -1387,5 +1397,16 @@ mod tests {
             json!({"id":"aaaa","max_chars":999_999}),
         );
         assert!(t.chars().count() <= MAX_RESULT_CHARS + 40);
+    }
+
+    #[test]
+    fn mcp_results_are_flagged_when_redacted_on_the_fly() {
+        let result = text_result("token=ghp_abcdefghijklmnop".into(), false);
+        assert_eq!(result["redacted"], true);
+        assert!(result["content"].as_array().unwrap().iter().any(|part| {
+            part["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Some stored text was redacted"))
+        }));
     }
 }

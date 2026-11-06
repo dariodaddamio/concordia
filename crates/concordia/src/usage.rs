@@ -42,6 +42,22 @@ impl UsageWindow {
         self.expired_at(local_now())
     }
 
+    pub(crate) fn expired_for_ui(&self) -> bool {
+        local_now()
+            .map(|now| self.expired_for_ui_at((now.month, now.day, now.hour, now.minute)))
+            .unwrap_or_else(|| self.expired())
+    }
+
+    /// Deterministic clock seam for UI rendering tests: `(month, day, hour, minute)` local time.
+    pub(crate) fn expired_for_ui_at(&self, now: (u32, u32, u32, u32)) -> bool {
+        self.expired_at(Some(WallTime {
+            month: now.0,
+            day: now.1,
+            hour: now.2,
+            minute: now.3,
+        }))
+    }
+
     fn expired_at(&self, now: Option<WallTime>) -> bool {
         self.resets.as_deref().is_some_and(|r| {
             r.starts_with("already reset")

@@ -221,6 +221,8 @@ struct VersionProbeCache {
     size: u64,
     modified_secs: u64,
     modified_nanos: u32,
+    #[serde(default)]
+    target: String,
     version: String,
 }
 
@@ -258,19 +260,73 @@ fn save_version_cache(state_root: &Path, entry: VersionProbeCache) {
     });
 }
 
-fn cached_version(state_root: &Path, bin: &Path) -> Option<String> {
+fn shim_target(provider: ProviderKind, bin: &Path) -> Option<String> {
+    if !is_batch_shim(&bin.to_string_lossy()) {
+        return Some("binary".into());
+    }
+    match provider {
+        ProviderKind::Codex | ProviderKind::Claude => {
+            let package = super::npm::package_for_shim(&bin.to_string_lossy(), provider)?;
+            let manifest = package.join("package.json");
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest).ok()?).ok()?;
+            let version = value["version"].as_str()?;
+            let modified = std::fs::metadata(&manifest)
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?;
+            Some(format!(
+                "npm:{}@{}:{}:{}",
+                package.display(),
+                version,
+                modified.as_secs(),
+                modified.subsec_nanos()
+            ))
+        }
+        ProviderKind::Cursor => {
+            let versions = bin.parent()?.join("versions");
+            let newest = std::fs::read_dir(&versions)
+                .ok()?
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().ok().is_some_and(|t| t.is_dir()))
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .max()?;
+            let modified = std::fs::metadata(&versions)
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?;
+            Some(format!(
+                "cursor:{}:{}:{}",
+                newest,
+                modified.as_secs(),
+                modified.subsec_nanos()
+            ))
+        }
+    }
+}
+
+fn cached_version(state_root: &Path, provider: ProviderKind, bin: &Path) -> Option<String> {
     let (path, size, modified_secs, modified_nanos) = binary_fingerprint(bin)?;
+    let target = shim_target(provider, bin)?;
     let entry = load_version_cache(state_root).remove(&path)?;
     (entry.path == path
         && entry.size == size
         && entry.modified_secs == modified_secs
-        && entry.modified_nanos == modified_nanos)
+        && entry.modified_nanos == modified_nanos
+        && entry.target == target)
         .then_some(entry.version)
 }
 
 /// Refresh the version cache after an explicit live probe, such as `concordia doctor`.
-pub fn cache_version_probe(state_root: &Path, bin: &Path, version: &str) {
+pub fn cache_version_probe(state_root: &Path, provider: ProviderKind, bin: &Path, version: &str) {
     let Some((path, size, modified_secs, modified_nanos)) = binary_fingerprint(bin) else {
+        return;
+    };
+    let Some(target) = shim_target(provider, bin) else {
         return;
     };
     save_version_cache(
@@ -280,6 +336,7 @@ pub fn cache_version_probe(state_root: &Path, bin: &Path, version: &str) {
             size,
             modified_secs,
             modified_nanos,
+            target,
             version: version.to_string(),
         },
     );
@@ -330,7 +387,7 @@ pub fn detect_with_mode(
     cache_mode: CacheMode,
 ) -> Option<Compat> {
     let version = state_root
-        .and_then(|root| cached_version(root, bin))
+        .and_then(|root| cached_version(root, provider, bin))
         .or_else(|| {
             let out = runner(bin, &["--version"]).ok()?;
             let version = out
@@ -340,7 +397,7 @@ pub fn detect_with_mode(
                 .to_string();
             if cache_mode == CacheMode::Persist {
                 if let Some(root) = state_root {
-                    cache_version_probe(root, bin, &version);
+                    cache_version_probe(root, provider, bin, &version);
                 }
             }
             Some(version)
@@ -867,6 +924,90 @@ mod tests {
 
         std::fs::write(&bin, b"rewritten-binary").unwrap();
         detect(ProviderKind::Claude, &bin, &run, Some(dir.path())).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn shim_cache_invalidates_when_npm_package_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("codex.cmd");
+        let package = dir.path().join("node_modules/@openai/codex");
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::write(
+            &shim,
+            "@echo off\r\nnode_modules\\@openai\\codex\\bin\\codex.js %*\r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@openai/codex","version":"1.0.0","bin":{"codex":"bin/codex.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(package.join("bin/codex.js"), "fixture").unwrap();
+        let calls = AtomicUsize::new(0);
+        let run = |_: &Path, args: &[&str]| {
+            if args == ["--version"] {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok("codex-cli 0.163.0".into())
+            } else {
+                Ok(CODEX_EXEC_HELP.into())
+            }
+        };
+        detect(ProviderKind::Codex, &shim, &run, Some(dir.path())).unwrap();
+        detect(ProviderKind::Codex, &shim, &run, Some(dir.path())).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@openai/codex","version":"1.0.1","bin":{"codex":"bin/codex.js"}}"#,
+        )
+        .unwrap();
+        detect(ProviderKind::Codex, &shim, &run, Some(dir.path())).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn shim_cache_invalidates_when_cursor_version_dir_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("cursor-agent");
+        let versions = install.join("versions");
+        std::fs::create_dir_all(versions.join("2026.10.14-old")).unwrap();
+        let shim = install.join("agent.cmd");
+        std::fs::write(&shim, "cursor shim").unwrap();
+        let calls = AtomicUsize::new(0);
+        let run = |_: &Path, args: &[&str]| {
+            if args == ["--version"] {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok("2026.10.14-0f9edde".into())
+            } else {
+                Ok(CURSOR_HELP.into())
+            }
+        };
+        detect(ProviderKind::Cursor, &shim, &run, Some(dir.path())).unwrap();
+        detect(ProviderKind::Cursor, &shim, &run, Some(dir.path())).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::create_dir(versions.join("2026.11.01-new")).unwrap();
+        detect(ProviderKind::Cursor, &shim, &run, Some(dir.path())).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn unknown_shim_target_is_never_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("unknown.cmd");
+        std::fs::write(&shim, "@echo off\r\nunknown target\r\n").unwrap();
+        let calls = AtomicUsize::new(0);
+        let run = |_: &Path, args: &[&str]| {
+            if args == ["--version"] {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok("codex-cli 0.163.0".into())
+            } else {
+                Ok(CODEX_EXEC_HELP.into())
+            }
+        };
+        detect(ProviderKind::Codex, &shim, &run, Some(dir.path())).unwrap();
+        detect(ProviderKind::Codex, &shim, &run, Some(dir.path())).unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 

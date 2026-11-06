@@ -120,8 +120,9 @@ impl ThreadEvent {
     pub fn card(title: &str, detail: Option<&str>, status: &str) -> Self {
         let mut e = Self::new("card");
         e.card = Some(EventCard {
-            title: title.to_string(),
-            detail: detail.map(|d| cap_chars(d, MAX_EVENT_TEXT).to_string()),
+            title: crate::redact::redact(title).into_owned(),
+            detail: detail
+                .map(|d| cap_chars(&crate::redact::redact(d), MAX_EVENT_TEXT).to_string()),
             status: Some(status.to_string()),
         });
         e
@@ -219,7 +220,7 @@ impl ThreadLog {
 
     /// One bounded cross-process append transaction per journal record.
     fn append_record(&self, record: &references::Record) -> Result<()> {
-        let mut line = serde_json::to_string(record)?;
+        let mut line = crate::redact::redact(&serde_json::to_string(record)?).into_owned();
         line.push('\n');
         std::fs::create_dir_all(&self.dir)?;
         let root = crate::update::resolved_directory(&self.dir)
@@ -263,7 +264,8 @@ impl ThreadLog {
             .account
             .as_deref()
             .map(|a| cap_chars(a, 128).to_owned());
-        std::fs::write(self.meta_path(), serde_json::to_string(&meta)?)?;
+        let encoded = serde_json::to_string(&meta)?;
+        std::fs::write(self.meta_path(), crate::redact::redact(&encoded).as_bytes())?;
         Ok(())
     }
 

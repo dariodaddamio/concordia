@@ -223,7 +223,7 @@ fn sddl_is_owner_only_with_mode(sddl: &str, child: bool) -> bool {
     let principals: Vec<_> = aces.iter().filter_map(|ace| ace.get(5).copied()).collect();
     (!child && protected && aces.len() == 2 || child && !aces.is_empty())
         && aces.iter().all(|ace| {
-            ace.get(0) == Some(&"A")
+            ace.first() == Some(&"A")
                 && ace.get(2) == Some(&"FA")
                 && (child || ace.get(1) == Some(&"OICI"))
         })
