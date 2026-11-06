@@ -68,6 +68,9 @@ async fn run_default_chat() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(warning) = concordia::store::outside_profile_warning(&default_store_root()) {
+        eprintln!("warn: {warning}");
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         run_default_chat().await?;

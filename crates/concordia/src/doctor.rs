@@ -51,6 +51,7 @@ pub fn next_action(row: &Check) -> Option<String> {
         "clipboard" => "install or restore powershell.exe on PATH".into(),
         "install" => "re-run scripts\\install-dev.ps1".into(),
         "store" => "move the corrupt store aside, then restart Concordia".into(),
+        "state" if row.detail.contains("not owner-only") => "concordia doctor --fix-acl".into(),
         "state" => "choose a writable Concordia state directory".into(),
         "config" => "/config to review the setting".into(),
         "commands" => "rename or remove the conflicting custom command".into(),
@@ -286,11 +287,19 @@ fn check_state_dir(root: &Path) -> Check {
         );
     }
     let probe = root.join(format!(".doctor-{}", std::process::id()));
+    let warning = crate::store::outside_profile_warning(root);
+    let acl_status = crate::state_security::is_owner_only(root);
+    let acl_warning = acl_status.as_ref().ok().filter(|ok| !**ok);
+    let acl_unknown = acl_status.is_err();
     match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
         Ok(()) => check(
-            Level::Ok,
+            if warning.is_some() || acl_warning.is_some() || acl_unknown { Level::Warn } else { Level::Ok },
             "state",
-            format!("{} is writable", root.display()),
+            warning.unwrap_or_else(|| if acl_unknown {
+                format!("{}: could not read permissions", root.display())
+            } else if acl_warning.is_some() {
+                format!("{} is writable; state directory is not owner-only; run icacls \"{}\" /inheritance:r /grant:r \"%USERNAME%\":F SYSTEM:F", root.display(), root.display())
+            } else { format!("{} is writable", root.display()) }),
         ),
         Err(e) => check(
             Level::Fail,

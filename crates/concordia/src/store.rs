@@ -210,6 +210,53 @@ pub fn default_store_root() -> PathBuf {
     }
 }
 
+pub fn outside_profile_warning(root: &Path) -> Option<String> {
+    if crate::test_guard::is_enabled() {
+        return None;
+    }
+    let profile = if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+    } else {
+        std::env::var_os("HOME")
+    };
+    let profile = profile.map(PathBuf::from)?.canonicalize().ok()?;
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    (!root.starts_with(profile)).then(|| {
+        format!(
+            "state directory is outside your user profile: {}",
+            root.display()
+        )
+    })
+}
+
+#[cfg(test)]
+mod state_hygiene_tests {
+    #[test]
+    fn state_dir_outside_profile_warns() {
+        // The test guard intentionally exempts isolated test roots from this user-facing warning.
+        let root = tempfile::tempdir().unwrap();
+        assert!(super::outside_profile_warning(root.path()).is_none());
+    }
+}
+
+/// Ensure the product-owned state root has restrictive permissions when it is first created.
+pub fn ensure_state_root(root: &Path) -> std::io::Result<()> {
+    if root.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(windows)]
+    if let Err(error) = crate::state_security::set_owner_only(root) {
+        eprintln!("warning: could not restrict state directory permissions: {error}");
+    }
+    Ok(())
+}
+
 /// State directory of the product before it was renamed (`%LOCALAPPDATA%\orc`).
 pub fn legacy_state_root() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("orc"))
@@ -225,6 +272,7 @@ pub fn adopt_state_from(legacy_root: &Path, root: &Path) -> Result<bool> {
         return Ok(false);
     }
     let dir = store_dir(root);
+    ensure_state_root(root).with_context(|| format!("create {}", root.display()))?;
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     fs::copy(&old_store, &new_store).with_context(|| format!("copy {}", old_store.display()))?;
     Ok(true)
