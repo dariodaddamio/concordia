@@ -543,7 +543,7 @@ fn main() {
             println!("Usage ? Pro\nIncluded 1% used\nOn-Demand Disabled");
             return;
         }
-        if args.last().is_some_and(|a| a == "/usage") {
+        if args.iter().any(|a| a == "/usage") {
             println!("Current session\n1% used\nCurrent week\n2% used");
             return;
         }
