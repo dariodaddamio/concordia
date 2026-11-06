@@ -4,6 +4,17 @@ use crate::provider::{interaction::InteractionConnection, CardStatus};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
+const TOOL_MAP_MAX: usize = 4096;
+
+fn remember_delta(deltas: &mut HashSet<String>, id: String) -> bool {
+    if deltas.contains(&id) || deltas.len() < TOOL_MAP_MAX {
+        deltas.insert(id);
+        true
+    } else {
+        false
+    }
+}
+
 struct Connection {
     input: tokio::process::ChildStdin,
     output: mpsc::Receiver<Result<Value>>,
@@ -18,6 +29,7 @@ struct Connection {
     answer_tx: mpsc::UnboundedSender<(Value, Option<Value>)>,
     waiters: tokio::task::JoinSet<()>,
     deltas: HashSet<String>,
+    dropped_deltas: usize,
     buffered: Vec<Value>,
     artifacts: crate::artifacts::Collector,
 }
@@ -210,7 +222,9 @@ impl Connection {
                 if let (Some(id), Some(delta)) =
                     (params["itemId"].as_str(), params["delta"].as_str())
                 {
-                    self.deltas.insert(id.into());
+                    if !remember_delta(&mut self.deltas, id.into()) {
+                        self.dropped_deltas += 1;
+                    }
                     self.out.text.push_str(delta);
                     self.emit(TurnProgress::TextDelta(delta.into()));
                 }
@@ -503,6 +517,7 @@ pub(super) async fn run(
         answer_tx,
         waiters: tokio::task::JoinSet::new(),
         deltas: HashSet::new(),
+        dropped_deltas: 0,
         buffered: Vec::new(),
         artifacts: crate::artifacts::Collector::default(),
     };
@@ -557,4 +572,20 @@ pub(super) async fn run(
     }
     conn.out.exit_code = reaped.then_some(if conn.out.failed { 1 } else { 0 });
     Ok(conn.out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delta_ids_are_capped_and_new_events_remain_safe() {
+        let mut deltas = HashSet::new();
+        for n in 0..5000 {
+            let _ = remember_delta(&mut deltas, format!("tool-{n}"));
+        }
+        assert!(deltas.len() <= TOOL_MAP_MAX);
+        let _ = remember_delta(&mut deltas, "new-tool".into());
+        assert!(deltas.len() <= TOOL_MAP_MAX);
+    }
 }

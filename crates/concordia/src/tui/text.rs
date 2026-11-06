@@ -28,6 +28,10 @@ pub fn terminal_text(input: &str) -> (String, Vec<usize>) {
     let mut offsets = vec![0];
     let mut count = 0;
     for c in input.chars() {
+        if is_terminal_unsafe(c) {
+            offsets.push(count);
+            continue;
+        }
         match state {
             State::Text => match c {
                 '\u{1b}' => state = State::Escape,
@@ -81,6 +85,10 @@ pub fn terminal_text(input: &str) -> (String, Vec<usize>) {
         offsets.push(count);
     }
     (out, offsets)
+}
+
+fn is_terminal_unsafe(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{061c}' | '\u{feff}')
 }
 
 /// Terminal columns a char occupies (control chars count as 0, wide CJK/emoji as 2).
@@ -242,6 +250,12 @@ pub fn next_word(chars: &[char], idx: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tui_text_strips_bidi_and_zero_width() {
+        let spoofed = "invoice\u{202e}fdp.exe\u{200b}\u{2066}🙂";
+        assert_eq!(terminal_text(spoofed).0, "invoicefdp.exe🙂");
+    }
 
     fn c(s: &str) -> Vec<char> {
         s.chars().collect()

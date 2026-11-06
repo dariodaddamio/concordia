@@ -10,6 +10,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+const TOOL_MAP_MAX: usize = 4096;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
     Claude,
@@ -21,6 +23,8 @@ pub struct StreamParser {
     flavor: Flavor,
     tools: HashMap<String, (String, Option<String>)>,
     partial_tools: HashMap<u64, (String, String, bool)>,
+    dropped_tools: usize,
+    dropped_partial_tools: usize,
     saw_text: bool,
     /// Cursor is mid-way through a run of stamped text (see `parse_line`).
     streaming_text: bool,
@@ -30,12 +34,26 @@ pub struct StreamParser {
     cwd: Option<PathBuf>,
 }
 
+fn remember_tool<K, V>(map: &mut HashMap<K, V>, key: K, value: V) -> bool
+where
+    K: std::hash::Hash + Eq,
+{
+    if map.contains_key(&key) || map.len() < TOOL_MAP_MAX {
+        map.insert(key, value);
+        true
+    } else {
+        false
+    }
+}
+
 impl StreamParser {
     pub fn new(flavor: Flavor) -> Self {
         Self {
             flavor,
             tools: HashMap::new(),
             partial_tools: HashMap::new(),
+            dropped_tools: 0,
+            dropped_partial_tools: 0,
             saw_text: false,
             streaming_text: false,
             segment: String::new(),
@@ -147,10 +165,16 @@ impl StreamParser {
                     .get("input")
                     .filter(|v| !v.is_null() && *v != &Value::Object(Default::default()))
                     .and_then(|i| self.input_detail(i));
-                self.partial_tools
-                    .insert(index, (id.clone(), String::new(), false));
-                self.tools
-                    .insert(id.clone(), (name.clone(), detail.clone()));
+                if !remember_tool(
+                    &mut self.partial_tools,
+                    index,
+                    (id.clone(), String::new(), false),
+                ) {
+                    self.dropped_partial_tools += 1;
+                }
+                if !remember_tool(&mut self.tools, id.clone(), (name.clone(), detail.clone())) {
+                    self.dropped_tools += 1;
+                }
                 out.push(StreamPart::Card(StreamCard {
                     id,
                     title: name,
@@ -193,8 +217,10 @@ impl StreamParser {
                             ""
                         }
                     ));
-                    self.tools
-                        .insert(id.clone(), (title.clone(), detail.clone()));
+                    if !remember_tool(&mut self.tools, id.clone(), (title.clone(), detail.clone()))
+                    {
+                        self.dropped_tools += 1;
+                    }
                     out.push(StreamPart::Card(StreamCard {
                         id: id.clone(),
                         title,
@@ -252,8 +278,13 @@ impl StreamParser {
                     let id = b.get("id").and_then(Value::as_str).unwrap_or("tool");
                     let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
                     let detail = b.get("input").and_then(|i| self.input_detail(i));
-                    self.tools
-                        .insert(id.to_string(), (name.to_string(), detail.clone()));
+                    if !remember_tool(
+                        &mut self.tools,
+                        id.to_string(),
+                        (name.to_string(), detail.clone()),
+                    ) {
+                        self.dropped_tools += 1;
+                    }
                     out.push(StreamPart::Card(StreamCard {
                         id: id.to_string(),
                         title: name.to_string(),
@@ -742,6 +773,27 @@ mod tests {
         let detail = card.detail.as_deref().unwrap();
         assert!(detail.ends_with("[input limited to 256 KiB]"));
         assert!(detail.len() <= 256 * 1024 + 64);
+    }
+
+    #[test]
+    fn tool_maps_are_capped() {
+        let mut parser = StreamParser::new(Flavor::Claude);
+        for n in 0..5000 {
+            let line = serde_json::json!({
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "id": format!("tool-{n}"), "name": "Read", "input": {}}]}
+            });
+            parser.parse_line(&line.to_string());
+        }
+        assert!(parser.tools.len() <= TOOL_MAP_MAX);
+        let parts = parser.parse_line(
+            &serde_json::json!({
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "id": "new-tool", "name": "Read", "input": {}}]}
+            })
+            .to_string(),
+        );
+        assert!(matches!(parts.first(), Some(StreamPart::Card(card)) if card.id == "new-tool"));
     }
 }
 
