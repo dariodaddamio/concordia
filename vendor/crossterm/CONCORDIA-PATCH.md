@@ -1,6 +1,6 @@
 # Concordia patch
 
-Base: crates.io `crossterm` **0.28.1**, with its source, examples, documentation and MIT license.
+Base: crates.io `crossterm` **0.29.0**, with its source, examples, documentation and MIT license.
 `src/event/sys/windows/parse.rs` fixes a key-record behavior. The manifest also recognizes
 existing upstream cfg names and suppresses its unused internal event-filter diagnostic,
 which were suppressed when Cargo built the registry dependency.
