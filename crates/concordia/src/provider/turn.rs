@@ -188,8 +188,7 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
     let mut plan = plan_provider_turn_raw(req)?;
     crate::capacity::apply(&mut plan, &req.compaction).map_err(anyhow::Error::msg)?;
     // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
-    crate::provider::compat::degrade_planned(&mut plan, req.trust);
-    // That fallback can drop the plan switch (Claude to manual, Cursor without --mode plan).
+    crate::provider::compat::degrade_planned(&mut plan, req.trust)?;
     // A turn the gate made read-only must still be read-only, or it does not start.
     if lowered.is_some() {
         enforcement::ensure_read_only(plan.provider, &plan.argv)?;
@@ -1253,7 +1252,7 @@ mod gate_tests {
         let dir = tempfile::tempdir().unwrap();
         locked(dir.path());
         let before = caps_for(ProviderKind::Cursor);
-        // A Cursor CLI without plan mode: the compatibility fallback would drop `--mode plan`.
+        // A Cursor CLI without plan mode must fail closed when the locked-code gate lowers Full.
         set_caps(
             ProviderKind::Cursor,
             Caps {
@@ -1284,7 +1283,7 @@ mod gate_tests {
             .expect_err("must refuse to plan a write-capable turn")
             .to_string();
         assert!(
-            text.contains("cursor") && text.contains("read-only"),
+            text.contains("Cursor") && text.contains("can't enforce Plan mode"),
             "{text}"
         );
     }

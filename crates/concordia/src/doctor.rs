@@ -691,7 +691,7 @@ pub fn run_cli_report() -> (String, bool) {
     .collect();
     for (k, h) in detections {
         if let Ok(Some(c)) = h.join() {
-            compat::set_caps(k, c.caps);
+            compat::set_compat(k, &c);
         }
     }
     let version_of = |p: &Path| {

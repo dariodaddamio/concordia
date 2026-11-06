@@ -2,8 +2,8 @@
 //!
 //! Concordia never pins or updates the provider CLIs. For each one it reads `--version` and, once
 //! per version (cached in `<state>/compat.json`), `--help`, and records which flags exist. Turn
-//! planning then degrades instead of failing: stream-json falls back to plain text, plan mode to
-//! ask. [`TESTED`] holds the versions the parsers and flag sets were last verified against;
+//! planning degrades stream-json to plain text, but fails closed when known help cannot enforce
+//! Plan mode. [`TESTED`] holds the versions the parsers and flag sets were last verified against;
 //! `concordia doctor` warns (never fails) when the installed one differs.
 //!
 //! Detection never runs a turn. The runner is injectable so tests use fake output; the real one
@@ -383,6 +383,7 @@ pub fn start_real_detection(state_root: PathBuf) -> Receiver<(ProviderKind, Comp
 // ---- what planning does with it -----------------------------------------------------------
 
 static CAPS: Mutex<Vec<(&'static str, Caps)>> = Mutex::new(Vec::new());
+static VERSIONS: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
 
 /// Record what was detected so turn planning can degrade; also used by `concordia doctor`.
 pub fn set_caps(provider: ProviderKind, caps: Caps) {
@@ -390,6 +391,47 @@ pub fn set_caps(provider: ProviderKind, caps: Caps) {
         v.retain(|(p, _)| *p != provider.as_str());
         v.push((provider.as_str(), caps));
     }
+}
+
+/// Record the version alongside detected capabilities for actionable Plan refusals.
+pub fn set_compat(provider: ProviderKind, compat: &Compat) {
+    set_caps(provider, compat.caps);
+    if let Ok(mut v) = VERSIONS.lock() {
+        v.retain(|(p, _)| *p != provider.as_str());
+        v.push((provider.as_str(), compat.version.clone()));
+    }
+}
+
+fn version_for(provider: ProviderKind) -> String {
+    VERSIONS
+        .lock()
+        .ok()
+        .and_then(|v| {
+            v.iter()
+                .find(|(p, _)| *p == provider.as_str())
+                .map(|(_, s)| s.clone())
+        })
+        .unwrap_or_else(|| "unknown version".into())
+}
+
+fn plan_enforcement_error(provider: ProviderKind) -> String {
+    let (cli, flag) = match provider {
+        ProviderKind::Claude => ("Claude Code", "--permission-mode plan"),
+        ProviderKind::Cursor => ("Cursor", "--mode plan"),
+        ProviderKind::Codex => ("Codex", "--sandbox read-only"),
+    };
+    format!("{cli} {} can't enforce Plan mode (its help has no {flag}). Update the CLI, or switch to Ask with Shift+Tab to run with approvals.", version_for(provider))
+}
+
+fn ensure_plan_supported(
+    provider: ProviderKind,
+    trust: TrustMode,
+    caps: &Caps,
+) -> anyhow::Result<()> {
+    if trust == TrustMode::Plan && caps.known && !caps.plan_mode {
+        anyhow::bail!("{}", plan_enforcement_error(provider));
+    }
+    Ok(())
 }
 
 pub fn caps_for(provider: ProviderKind) -> Option<Caps> {
@@ -423,6 +465,8 @@ impl Degrade {
     }
 }
 
+/// Rewrite a planned argv for a CLI that lacks a flag. The prompt (always last) is never
+/// touched. Returns what was degraded.
 fn set_value(argv: &mut [String], flag: &str, value: &str) -> bool {
     match argv.iter().position(|a| a == flag) {
         Some(i) if i + 1 < argv.len() => {
@@ -433,22 +477,10 @@ fn set_value(argv: &mut [String], flag: &str, value: &str) -> bool {
     }
 }
 
-fn remove_pair(argv: &mut Vec<String>, flag: &str, value: &str) -> bool {
-    match argv.windows(2).position(|w| w[0] == flag && w[1] == value) {
-        Some(i) => {
-            argv.drain(i..i + 2);
-            true
-        }
-        None => false,
-    }
-}
-
-/// Rewrite a planned argv for a CLI that lacks a flag. The prompt (always last) is never
-/// touched. Returns what was degraded.
 pub fn degrade_argv(
     provider: ProviderKind,
     argv: &mut Vec<String>,
-    trust: TrustMode,
+    _trust: TrustMode,
     caps: &Caps,
 ) -> Vec<Degrade> {
     let mut out = Vec::new();
@@ -472,29 +504,12 @@ pub fn degrade_argv(
         }
         _ => {}
     }
-    match provider {
-        ProviderKind::Claude => {
-            if !caps.permission_mode {
-                let pos = argv.iter().position(|a| a == "--permission-mode");
-                if let Some(i) = pos.filter(|i| i + 1 < argv.len()) {
-                    argv.drain(i..i + 2);
-                    out.push(Degrade::NoPermissionMode);
-                }
-            } else if trust == TrustMode::Plan
-                && !caps.plan_mode
-                && set_value(argv, "--permission-mode", "manual")
-            {
-                out.push(Degrade::NoPlanMode);
-            }
+    if provider == ProviderKind::Claude && !caps.permission_mode {
+        let pos = argv.iter().position(|a| a == "--permission-mode");
+        if let Some(i) = pos.filter(|i| i + 1 < argv.len()) {
+            argv.drain(i..i + 2);
+            out.push(Degrade::NoPermissionMode);
         }
-        ProviderKind::Cursor
-            if trust == TrustMode::Plan
-                && !caps.plan_mode
-                && remove_pair(argv, "--mode", "plan") =>
-        {
-            out.push(Degrade::NoPlanMode);
-        }
-        _ => {}
     }
     // Partial output only exists with stream-json; without it the reply arrives whole (no notice).
     if provider == ProviderKind::Cursor && !(caps.partial_messages && caps.stream_json) {
@@ -540,27 +555,36 @@ pub fn take_notices() -> Vec<String> {
 }
 
 /// Apply detected capabilities to a planned turn. No-op until detection has landed.
-pub fn degrade_planned(plan: &mut PlannedTurn, trust: TrustMode) {
+pub fn degrade_planned(plan: &mut PlannedTurn, trust: TrustMode) -> anyhow::Result<()> {
     let Some(caps) = caps_for(plan.provider) else {
-        return;
+        return Ok(());
     };
-    let done = apply_caps(plan, trust, &caps);
+    let done = apply_caps(plan, trust, &caps)?;
     if done.is_empty() {
-        return;
+        return Ok(());
     }
     if let Ok(mut g) = NOTICES.lock() {
         g.get_or_insert_with(NoticeLog::default)
             .note(plan.provider, &done);
     }
+    Ok(())
 }
 
 /// Degrade `plan` for `caps`; returns what changed (no notice is queued).
-pub fn apply_caps(plan: &mut PlannedTurn, trust: TrustMode, caps: &Caps) -> Vec<Degrade> {
-    degrade_argv(plan.provider, &mut plan.argv, trust, caps)
+pub fn apply_caps(
+    plan: &mut PlannedTurn,
+    trust: TrustMode,
+    caps: &Caps,
+) -> anyhow::Result<Vec<Degrade>> {
+    ensure_plan_supported(plan.provider, trust, caps)?;
+    Ok(degrade_argv(plan.provider, &mut plan.argv, trust, caps))
 }
 
 /// The part of a doctor row that explains degradations (empty when nothing is missing).
 pub fn degradation_summary(provider: ProviderKind, caps: &Caps) -> String {
+    if caps.known && !caps.plan_mode {
+        return plan_enforcement_error(provider);
+    }
     let mut argv = vec![
         "--output-format".to_string(),
         "stream-json".into(),
@@ -741,8 +765,8 @@ mod tests {
             "x",
             "do it",
         ]);
-        let d = degrade_argv(ProviderKind::Claude, &mut a, TrustMode::Plan, &caps);
-        assert_eq!(d, vec![Degrade::NoStreamJson, Degrade::NoPlanMode]);
+        let d = degrade_argv(ProviderKind::Claude, &mut a, TrustMode::Ask, &caps);
+        assert_eq!(d, vec![Degrade::NoStreamJson]);
         assert_eq!(
             a,
             argv(&[
@@ -750,7 +774,7 @@ mod tests {
                 "--output-format",
                 "text",
                 "--permission-mode",
-                "manual",
+                "plan",
                 "--session-id",
                 "x",
                 "do it"
@@ -782,9 +806,12 @@ mod tests {
         caps.plan_mode = false;
         caps.stream_json = false;
         let mut a = original.clone();
-        let d = degrade_argv(ProviderKind::Cursor, &mut a, TrustMode::Plan, &caps);
-        assert_eq!(d, vec![Degrade::NoStreamJson, Degrade::NoPlanMode]);
-        assert_eq!(a, argv(&["--print", "--output-format", "text", "p"]));
+        let d = degrade_argv(ProviderKind::Cursor, &mut a, TrustMode::Ask, &caps);
+        assert_eq!(d, vec![Degrade::NoStreamJson]);
+        assert_eq!(
+            a,
+            argv(&["--print", "--output-format", "text", "--mode", "plan", "p"])
+        );
 
         let mut c = argv(&["exec", "--json", "-s", "read-only", "p"]);
         let d = degrade_argv(ProviderKind::Codex, &mut c, TrustMode::Plan, &caps);
@@ -796,6 +823,61 @@ mod tests {
         let mut unknown = Caps::assume_all();
         unknown.stream_json = false;
         assert!(degrade_argv(ProviderKind::Cursor, &mut u, TrustMode::Plan, &unknown).is_empty());
+    }
+
+    #[test]
+    fn known_help_without_plan_flag_refuses_plan_for_each_provider_but_ask_works() {
+        let cases = [
+            (
+                ProviderKind::Claude,
+                CLAUDE_HELP.replace("\"plan\"", "\"auto\""),
+                "--permission-mode",
+            ),
+            (
+                ProviderKind::Cursor,
+                CURSOR_HELP.replace("plan", "review"),
+                "--mode",
+            ),
+            (
+                ProviderKind::Codex,
+                CODEX_EXEC_HELP.replace("--sandbox", "--policy"),
+                "-s",
+            ),
+        ];
+        for (provider, help, flag) in cases {
+            let caps = parse_help(provider, &help).unwrap();
+            assert!(!caps.plan_mode, "fixture must omit plan support");
+            let mut argv = argv(&[flag, "plan", "prompt"]);
+            let err = apply_caps(
+                &mut PlannedTurn {
+                    command: "fixture".into(),
+                    argv: argv.clone(),
+                    prompt: "prompt".into(),
+                    new_session_id: None,
+                    env: vec![],
+                    cwd: ".".into(),
+                    provider,
+                },
+                TrustMode::Plan,
+                &caps,
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("can't enforce Plan mode"));
+            assert!(apply_caps(
+                &mut PlannedTurn {
+                    command: "fixture".into(),
+                    argv: std::mem::take(&mut argv),
+                    prompt: "prompt".into(),
+                    new_session_id: None,
+                    env: vec![],
+                    cwd: ".".into(),
+                    provider,
+                },
+                TrustMode::Ask,
+                &caps,
+            )
+            .is_ok());
+        }
     }
 
     #[test]
@@ -850,7 +932,7 @@ mod planning_tests {
     use crate::provider::turn::{plan_provider_turn, ProviderTurnRequest};
 
     #[test]
-    fn a_planned_claude_turn_falls_back_to_text_and_ask() {
+    fn a_planned_claude_turn_keeps_plan_and_refuses_missing_plan_support() {
         let cwd = std::env::temp_dir();
         let req = ProviderTurnRequest {
             images: &[],
@@ -880,16 +962,16 @@ mod planning_tests {
             ..caps
         };
         let done = apply_caps(&mut plan, TrustMode::Plan, &caps);
-        assert_eq!(done, vec![Degrade::NoStreamJson, Degrade::NoPlanMode]);
+        assert!(done.is_err());
         assert!(plan
             .argv
             .windows(2)
-            .any(|w| w == ["--output-format", "text"]));
+            .any(|w| w == ["--output-format", "stream-json"]));
         assert!(plan
             .argv
             .windows(2)
-            .any(|w| w == ["--permission-mode", "manual"]));
-        assert!(!plan.argv.contains(&"--verbose".to_string()));
+            .any(|w| w == ["--permission-mode", "plan"]));
+        assert!(plan.argv.contains(&"--verbose".to_string()));
         assert_eq!(plan.argv.last().map(String::as_str), Some("hello"));
         assert_eq!(plan.prompt, "hello");
     }

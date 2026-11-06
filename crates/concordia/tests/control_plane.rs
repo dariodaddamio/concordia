@@ -205,6 +205,52 @@ fn cursor_print_argv_requires_explicit_resume() {
 }
 
 #[test]
+fn cursor_trust_modes_have_explicit_safe_argv() {
+    let cwd = PathBuf::from(".");
+    let plan = |trust| {
+        plan_cursor_turn(&CursorTurnRequest {
+            prompt: "hi",
+            cwd: &cwd,
+            home_path: None,
+            model: None,
+            native_session_id: Some("chat-1"),
+            trust,
+        })
+        .unwrap()
+        .argv
+    };
+    let common = vec![
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--stream-partial-output",
+    ];
+    let mut expected = common.clone();
+    expected.extend(["--mode", "plan", "--resume", "chat-1", "hi"]);
+    assert_eq!(
+        plan(TrustMode::Plan),
+        expected.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+    let mut ask = common.clone();
+    ask.extend(["--resume", "chat-1", "hi"]);
+    assert_eq!(
+        plan(TrustMode::Ask),
+        ask.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        plan(TrustMode::Workspace),
+        ask.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+    let mut full = common;
+    full.extend(["--force", "--resume", "chat-1", "hi"]);
+    assert_eq!(
+        plan(TrustMode::Full),
+        full.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+    assert!(!plan(TrustMode::Workspace).contains(&"disabled".to_string()));
+}
+
+#[test]
 fn unified_planner_never_emits_last() {
     let cwd = PathBuf::from(".");
     for provider in [

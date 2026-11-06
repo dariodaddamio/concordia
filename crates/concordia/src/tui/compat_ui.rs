@@ -12,7 +12,7 @@ impl App {
     pub(super) fn poll_compat(&mut self) {
         if let Some(rx) = &self.compat_rx {
             while let Ok((provider, found)) = rx.try_recv() {
-                compat::set_caps(provider, found.caps);
+                compat::set_compat(provider, &found);
             }
         }
         for notice in compat::take_notices() {
