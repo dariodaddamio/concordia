@@ -6,24 +6,36 @@ pub fn find_wezterm() -> Option<PathBuf> {
     if let Some(path) = env::var_os("CONCORDIA_WEZTERM_BIN").filter(|p| !p.is_empty()) {
         return Some(path.into());
     }
-    if let Ok(p) = which::which_in("wezterm", env::var_os("PATH"), "") {
-        if p.parent()
-            .is_some_and(|parent| env::current_dir().ok().as_deref() != Some(parent))
-        {
-            return Some(p);
-        }
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(p) = find_wezterm_on_path(env::var_os("PATH"), &cwd) {
+        return Some(p);
     }
+    find_wezterm_off_path(
+        env::var_os("LOCALAPPDATA").map(PathBuf::from),
+        env::var_os("ProgramFiles").map(PathBuf::from),
+    )
+}
+
+fn find_wezterm_on_path(path: Option<std::ffi::OsString>, cwd: &Path) -> Option<PathBuf> {
+    let safe = path.map(|raw| {
+        std::env::split_paths(&raw)
+            .filter(|dir| dir.is_absolute() && dir != cwd)
+            .collect::<Vec<_>>()
+    })?;
+    let safe = std::env::join_paths(safe).ok()?;
+    which::which_in("wezterm", Some(safe), "").ok()
+}
+
+fn find_wezterm_off_path(
+    localappdata: Option<PathBuf>,
+    programfiles: Option<PathBuf>,
+) -> Option<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(local) = env::var_os("LOCALAPPDATA") {
-        candidates.push(
-            PathBuf::from(local)
-                .join("Programs")
-                .join("WezTerm")
-                .join("wezterm.exe"),
-        );
+    if let Some(local) = localappdata {
+        candidates.push(local.join("Programs").join("WezTerm").join("wezterm.exe"));
     }
-    if let Some(pf) = env::var_os("ProgramFiles") {
-        candidates.push(PathBuf::from(pf).join("WezTerm").join("wezterm.exe"));
+    if let Some(pf) = programfiles {
+        candidates.push(pf.join("WezTerm").join("wezterm.exe"));
     }
     candidates.into_iter().find(|p| p.exists())
 }
@@ -235,5 +247,32 @@ mod tests {
             Some(r"C:\state\wezterm.lua".into())
         )));
         assert!(envs.contains(&("CONCORDIA_EXE".into(), Some(r"C:\bin\concordia.exe".into()))));
+    }
+
+    #[test]
+    fn wezterm_lookup_ignores_current_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let wez = d.path().join("wezterm.exe");
+        std::fs::write(&wez, b"").unwrap();
+        let path = std::env::join_paths([d.path().as_os_str()]).unwrap();
+        assert_eq!(find_wezterm_on_path(Some(path), d.path()), None);
+    }
+
+    #[test]
+    fn doctor_finds_wezterm_off_path() {
+        let d = tempfile::tempdir().unwrap();
+        let program_files = d.path().join("Program Files");
+        let wez = program_files.join("WezTerm").join("wezterm.exe");
+        std::fs::create_dir_all(wez.parent().unwrap()).unwrap();
+        std::fs::write(&wez, b"").unwrap();
+        let path_without_wezterm = d.path().join("bin");
+        std::fs::create_dir_all(&path_without_wezterm).unwrap();
+        let path = std::env::join_paths([path_without_wezterm.as_os_str()]).unwrap();
+        assert_eq!(
+            find_wezterm_on_path(Some(path), d.path()),
+            None,
+            "the injected PATH does not contain WezTerm"
+        );
+        assert_eq!(find_wezterm_off_path(None, Some(program_files)), Some(wez));
     }
 }

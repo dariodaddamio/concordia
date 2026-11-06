@@ -42,6 +42,34 @@ pub struct LocateEnv {
     pub workspace_root: Option<PathBuf>,
 }
 
+/// Whether a PATH directory must be excluded from executable discovery.
+///
+/// Project directories are untrusted because a checked-out project can plant a provider name,
+/// but a user's home directory is a normal place for CLI installations. Relative PATH entries
+/// are rejected by the caller before this predicate is used.
+pub(crate) fn is_untrusted_path_dir(
+    dir: &std::path::Path,
+    cwd: &std::path::Path,
+    workspace_root: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+) -> bool {
+    let normalize =
+        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let dir = normalize(dir);
+    let cwd = normalize(cwd);
+    if dir == cwd {
+        return true;
+    }
+    let Some(root) = workspace_root.map(normalize) else {
+        return false;
+    };
+    let root_is_home_or_ancestor = home
+        .map(normalize)
+        .is_some_and(|home| home == root || home.starts_with(&root));
+    let root_is_drive = root.parent().is_none_or(|parent| parent == root);
+    !root_is_home_or_ancestor && !root_is_drive && dir.starts_with(root)
+}
+
 pub fn locate(kind: ProviderKind, env: &LocateEnv) -> Result<Located, NotFound> {
     let (name, fallback): (&str, Vec<PathBuf>) = match kind {
         ProviderKind::Claude => (
@@ -100,21 +128,17 @@ pub fn locate(kind: ProviderKind, env: &LocateEnv) -> Result<Located, NotFound> 
     } else {
         &[name]
     };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let safe_path = env.path.as_deref().map(|raw| {
         std::env::split_paths(raw)
-            .filter(|p| !p.as_os_str().is_empty() && p != std::path::Path::new("."))
+            .filter(|p| p.is_absolute() && !p.as_os_str().is_empty())
             .filter(|dir| {
-                let cwd = std::env::current_dir().ok();
-                let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-                if cwd
-                    .as_ref()
-                    .is_some_and(|c| dir == c.canonicalize().unwrap_or_else(|_| c.clone()))
-                {
-                    return false;
-                }
-                !env.workspace_root.as_ref().is_some_and(|root| {
-                    dir.starts_with(root.canonicalize().unwrap_or_else(|_| root.clone()))
-                })
+                !is_untrusted_path_dir(
+                    dir,
+                    &cwd,
+                    env.workspace_root.as_deref(),
+                    env.userprofile.as_deref(),
+                )
             })
             .collect::<Vec<_>>()
     });
@@ -126,13 +150,12 @@ pub fn locate(kind: ProviderKind, env: &LocateEnv) -> Result<Located, NotFound> 
         .find_map(|n| which::which_in(n, safe_path.as_deref(), "").ok())
     {
         let parent = candidate.parent().unwrap_or(candidate.as_path());
-        let cwd = std::env::current_dir().ok();
-        let unsafe_hit = cwd.as_ref().is_some_and(|c| parent == c)
-            || env
-                .workspace_root
-                .as_ref()
-                .is_some_and(|r| parent.starts_with(r));
-        if !unsafe_hit {
+        if !is_untrusted_path_dir(
+            parent,
+            &cwd,
+            env.workspace_root.as_deref(),
+            env.userprofile.as_deref(),
+        ) {
             return Ok(Located {
                 path: candidate,
                 source: LocateSource::Path,
@@ -157,12 +180,13 @@ pub fn locate_real(kind: ProviderKind) -> Result<Located, NotFound> {
         ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
         ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
     };
+    let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
     locate(
         kind,
         &LocateEnv {
             override_path: std::env::var(override_var).ok(),
             path: std::env::var("PATH").ok(),
-            userprofile: std::env::var_os("USERPROFILE").map(PathBuf::from),
+            userprofile: home,
             appdata: std::env::var_os("APPDATA").map(PathBuf::from),
             localappdata: std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
             workspace_root: std::env::current_dir().ok(),
@@ -190,6 +214,7 @@ pub fn bin_override(var: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
     fn path_fixture(dir: &std::path::Path, name: &str) -> PathBuf {
         #[cfg(windows)]
@@ -301,6 +326,143 @@ mod tests {
 
         let agent = path_fixture(&dir, "agent");
         assert_eq!(locate(ProviderKind::Cursor, &e).unwrap().path, agent);
+    }
+
+    #[test]
+    fn planted_binary_in_workspace_is_not_used() {
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let project_bin = root.path().join("bin");
+        fs::create_dir_all(&project_bin).unwrap();
+        for name in ["codex", "claude", "agent"] {
+            path_fixture(root.path(), name);
+        }
+        let relative = root.path().join("relative");
+        fs::create_dir_all(&relative).unwrap();
+        let path = std::env::join_paths([
+            root.path().as_os_str(),
+            relative.as_os_str(),
+            Path::new(".").as_os_str(),
+        ])
+        .unwrap();
+        let mut e = env(root.path());
+        e.userprofile = Some(home.path().to_path_buf());
+        e.path = Some(path.to_string_lossy().into_owned());
+        e.workspace_root = Some(root.path().to_path_buf());
+        for kind in [
+            ProviderKind::Codex,
+            ProviderKind::Claude,
+            ProviderKind::Cursor,
+        ] {
+            assert!(
+                locate(kind, &e).is_err(),
+                "{kind:?} was planted in the project"
+            );
+        }
+    }
+
+    #[test]
+    fn home_as_workspace_still_finds_clis_on_path() {
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let claude = path_fixture(&bin, "claude");
+        let mut e = env(home.path());
+        e.userprofile = Some(home.path().to_path_buf());
+        e.workspace_root = Some(home.path().to_path_buf());
+        e.path = Some(bin.to_string_lossy().into_owned());
+        assert_eq!(locate(ProviderKind::Claude, &e).unwrap().path, claude);
+    }
+
+    #[test]
+    fn is_untrusted_path_dir_rules() {
+        let root = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        let project = cwd.clone();
+        let inside = project.join("bin");
+        let home = home_dir.path().to_path_buf();
+        let home_bin = home.join("bin");
+        let home_parent = home.parent().unwrap().to_path_buf();
+        let drive_root = Path::new(std::path::MAIN_SEPARATOR_STR).to_path_buf();
+        let cases = [
+            (cwd.clone(), true),
+            (inside, true),
+            (home.clone(), false),
+            (home_bin, false),
+            (home_parent, false),
+            (drive_root, false),
+            (Path::new("relative").to_path_buf(), false),
+            (Path::new(".").to_path_buf(), false),
+        ];
+        for (dir, expected) in cases {
+            let actual =
+                dir.is_absolute() && is_untrusted_path_dir(&dir, &cwd, Some(&project), Some(&home));
+            assert_eq!(actual, expected, "{dir:?}");
+        }
+    }
+
+    #[test]
+    fn missing_cli_fails_instead_of_spawning_a_bare_name() {
+        let _lock = crate::accounts::TEST_ENV.lock().unwrap();
+        let names = [
+            "CONCORDIA_CODEX_BIN",
+            "CONCORDIA_CLAUDE_BIN",
+            "CONCORDIA_AGENT_BIN",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+        ];
+        let saved: Vec<_> = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect();
+        for name in names {
+            std::env::remove_var(name);
+        }
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", "");
+        let cwd = tempfile::tempdir().unwrap();
+        let codex = crate::provider::codex::plan_turn_argv(&crate::provider::codex::TurnRequest {
+            prompt: "x",
+            cwd: cwd.path(),
+            codex_home: None,
+            model: None,
+            native_session_id: None,
+            trust: crate::store::TrustMode::Plan,
+        });
+        let claude = crate::provider::claude::plan_claude_turn(
+            &crate::provider::claude::ClaudeTurnRequest {
+                prompt: "x",
+                cwd: cwd.path(),
+                config_dir: None,
+                model: None,
+                native_session_id: None,
+                trust: crate::store::TrustMode::Plan,
+            },
+        );
+        let cursor = crate::provider::cursor::plan_cursor_turn(
+            &crate::provider::cursor::CursorTurnRequest {
+                prompt: "x",
+                cwd: cwd.path(),
+                home_path: None,
+                model: None,
+                native_session_id: None,
+                trust: crate::store::TrustMode::Plan,
+            },
+        );
+        assert!(codex.is_err() && claude.is_err() && cursor.is_err());
+        assert!(!format!("{codex:?}{claude:?}{cursor:?}").contains("command: \"codex\""));
+        match old_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+        for (name, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
     }
 }
 pub(crate) mod edit_display;
