@@ -200,11 +200,14 @@ impl Default for OrchestratorStore {
 
 pub fn default_store_root() -> PathBuf {
     if let Ok(dir) = std::env::var("CONCORDIA_STATE_DIR") {
-        return PathBuf::from(dir);
+        PathBuf::from(dir)
+    } else if crate::test_guard::is_enabled() {
+        crate::test_guard::test_state_root()
+    } else {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+            .join("concordia")
     }
-    dirs::data_local_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join("concordia")
 }
 
 /// State directory of the product before it was renamed (`%LOCALAPPDATA%\orc`).
@@ -264,6 +267,7 @@ fn fresh_store(root: &Path) -> OrchestratorStore {
 }
 
 pub fn load_store(root: &Path) -> OrchestratorStore {
+    crate::test_guard::check_not_real_state(root);
     let path = store_path(root);
     let Ok(raw) = fs::read_to_string(&path) else {
         return fresh_store(root);
@@ -296,6 +300,7 @@ pub fn delegation_protocol_on(root: &Path) -> bool {
 /// Write the store atomically (temp file + rename) so a crash cannot leave half a file. An
 /// existing file that no longer parses is copied aside first rather than silently destroyed.
 pub fn save_store(root: &Path, store: &OrchestratorStore) -> Result<()> {
+    crate::test_guard::check_not_real_state(root);
     let dir = store_dir(root);
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = store_path(root);
@@ -481,7 +486,7 @@ pub fn ensure_default_selection(root: &Path) -> Result<()> {
     if get_use_selection(root).is_some() {
         return Ok(());
     }
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = crate::accounts::profile_home();
     let codex_home = std::env::var("CODEX_HOME")
         .ok()
         .map(PathBuf::from)

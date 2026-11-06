@@ -404,7 +404,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
         }
     }
     if !hooks && provider == ProviderKind::Codex {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = Some(crate::test_guard::test_home()) {
             skill_rows(
                 &home.join(".agents/skills"),
                 "User · shared",

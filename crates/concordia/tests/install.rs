@@ -26,6 +26,13 @@ impl Sandbox {
         let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("CONCORDIA_INSTALL_DIR", dir.path());
+        std::env::set_var("CONCORDIA_TEST_GUARD", "1");
+        std::env::set_var("CONCORDIA_TEST_HOME", dir.path().join("home"));
+        std::env::set_var("CONCORDIA_STATE_DIR", dir.path().join("state"));
+        std::env::set_var(
+            "CONCORDIA_RELEASE_CACHE_DIR",
+            dir.path().join("cache").join("releases"),
+        );
         Sandbox { _guard: guard, dir }
     }
 
@@ -48,6 +55,10 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         std::env::remove_var("CONCORDIA_INSTALL_DIR");
         std::env::remove_var("CONCORDIA_EXE");
+        std::env::remove_var("CONCORDIA_TEST_GUARD");
+        std::env::remove_var("CONCORDIA_TEST_HOME");
+        std::env::remove_var("CONCORDIA_STATE_DIR");
+        std::env::remove_var("CONCORDIA_RELEASE_CACHE_DIR");
     }
 }
 

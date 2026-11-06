@@ -17,7 +17,14 @@ fn version_is_read_only_and_never_repoints_the_install() {
     // Running any copy of concordia (a debug build, an old slot) with --version must not change which
     // binary every launcher uses. This is the stale-build bug the pointer exists to prevent.
     let before = pointer_state();
-    let out = Command::new(CONCORDIA).arg("--version").output().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let out = Command::new(CONCORDIA)
+        .arg("--version")
+        .env("CONCORDIA_STATE_DIR", scratch.path())
+        .env("CONCORDIA_RELEASE_CACHE_DIR", scratch.path().join("cache"))
+        .env("CONCORDIA_TEST_GUARD", "1")
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.starts_with("concordia "), "{text}");
@@ -31,7 +38,18 @@ fn version_is_read_only_and_never_repoints_the_install() {
 
 #[test]
 fn help_lists_the_surface_users_need() {
-    let out = Command::new(CONCORDIA).arg("--help").output().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let out = Command::new(CONCORDIA)
+        .arg("--help")
+        .env("CONCORDIA_TEST_GUARD", "1")
+        .env("CONCORDIA_TEST_HOME", scratch.path().join("home"))
+        .env("CONCORDIA_STATE_DIR", scratch.path().join("state"))
+        .env(
+            "CONCORDIA_RELEASE_CACHE_DIR",
+            scratch.path().join("cache").join("releases"),
+        )
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     for needle in [
@@ -55,7 +73,18 @@ fn help_lists_the_surface_users_need() {
 
 #[test]
 fn an_unknown_argument_exits_2_with_a_hint() {
-    let out = Command::new(CONCORDIA).arg("--bogus").output().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let out = Command::new(CONCORDIA)
+        .arg("--bogus")
+        .env("CONCORDIA_TEST_GUARD", "1")
+        .env("CONCORDIA_TEST_HOME", scratch.path().join("home"))
+        .env("CONCORDIA_STATE_DIR", scratch.path().join("state"))
+        .env(
+            "CONCORDIA_RELEASE_CACHE_DIR",
+            scratch.path().join("cache").join("releases"),
+        )
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--help"));
 }

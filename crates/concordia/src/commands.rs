@@ -356,10 +356,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
 ];
 
 pub fn format_config_help() -> String {
-    let home = dirs::home_dir()
-        .unwrap_or_else(|| Path::new(".").to_path_buf())
-        .display()
-        .to_string();
+    let home = crate::test_guard::test_home().display().to_string();
     [
         "config  local CLIs — no concordia cloud".to_string(),
         "connect /use add            pick a provider; concordia makes an isolated home and opens its login".into(),

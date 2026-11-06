@@ -32,6 +32,7 @@ pub mod session_titles;
 pub mod sessions;
 pub mod store;
 pub mod sysstats;
+pub mod test_guard;
 pub mod threads;
 pub mod token_log;
 pub mod tui;

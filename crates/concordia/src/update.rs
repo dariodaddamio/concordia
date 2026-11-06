@@ -1210,7 +1210,11 @@ pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
             .map(|_| crate::host::wezterm::config_path())
             .transpose()
             .map_err(|e| anyhow::anyhow!(e))?;
-        let home = dirs::home_dir().context("cannot locate the home directory")?;
+        let home = if crate::test_guard::is_enabled() {
+            crate::test_guard::test_home()
+        } else {
+            dirs::home_dir().context("cannot locate the home directory")?
+        };
         let spec = shortcut_spec(
             wezterm.as_deref(),
             &target,

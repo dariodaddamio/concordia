@@ -19,7 +19,7 @@ pub(crate) static TEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub fn profile_home() -> PathBuf {
     std::env::var("CONCORDIA_CODEX_HOME_BASE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+        .unwrap_or_else(|_| crate::test_guard::test_home())
 }
 
 pub fn normalize_account_id(id: &str) -> String {
@@ -71,6 +71,7 @@ pub fn set_nickname(root: &Path, account: &str, name: &str) -> anyhow::Result<()
 
 /// Whether `home` holds a usable login for `provider` (existence/shape check only).
 pub fn is_logged_in(provider: ProviderKind, home: &Path) -> bool {
+    crate::test_guard::check_not_real_state(home);
     dir_logged_in(provider, home)
 }
 

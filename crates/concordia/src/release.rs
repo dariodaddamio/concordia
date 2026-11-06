@@ -436,7 +436,9 @@ const CACHE_OWNER: &str = "concordia-release-cache-v1";
 fn cache_root() -> Option<PathBuf> {
     if let Ok(root) = std::env::var("CONCORDIA_RELEASE_CACHE_DIR") {
         if !root.trim().is_empty() {
-            return Some(PathBuf::from(root));
+            let root = PathBuf::from(root);
+            crate::test_guard::check_not_real_state(&root);
+            return Some(root);
         }
     }
     #[cfg(test)]
@@ -445,7 +447,11 @@ fn cache_root() -> Option<PathBuf> {
     }
     #[cfg(not(test))]
     {
-        dirs::data_local_dir().map(|root| root.join("concordia/cache/releases"))
+        let root = dirs::data_local_dir().map(|root| root.join("concordia/cache/releases"));
+        if let Some(root) = &root {
+            crate::test_guard::check_not_real_state(root);
+        }
+        root
     }
 }
 

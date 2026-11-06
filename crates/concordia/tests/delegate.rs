@@ -26,6 +26,14 @@ impl Env {
             dir: tempfile::tempdir().unwrap(),
             keys: Vec::new(),
         };
+        let root = e.dir.path().to_path_buf();
+        e.set("CONCORDIA_TEST_GUARD", "1");
+        e.set("CONCORDIA_TEST_HOME", root.join("home"));
+        e.set("CONCORDIA_STATE_DIR", root.join("state"));
+        e.set(
+            "CONCORDIA_RELEASE_CACHE_DIR",
+            root.join("cache").join("releases"),
+        );
         e.set("CONCORDIA_CODEX_BIN", FAKE);
         e
     }
