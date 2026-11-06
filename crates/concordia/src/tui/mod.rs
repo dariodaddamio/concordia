@@ -303,6 +303,7 @@ enum PickerKind {
     ArtifactDetail,
     Resume,
     Trust,
+    FullModeConfirm,
     Use,
     AddProvider,
     Remove,
@@ -428,6 +429,7 @@ pub struct App {
     /// Set by the first idle Ctrl+C; a second one inside QUIT_WINDOW exits.
     quit_armed: Option<Instant>,
     busy_send_confirmation: Option<BusySendConfirmation>,
+    full_mode_confirmed: bool,
     /// First visible prompt row when the prompt is taller than its box.
     input_scroll: usize,
     input_scroll_anchor: Option<(u64, usize, usize, usize)>,
@@ -2106,13 +2108,37 @@ impl App {
         true
     }
 
-    /// Shift+Tab: plan -> ask -> workspace (auto-edit) -> full -> plan.
+    /// Shift+Tab cycles only the non-dangerous modes.
     fn cycle_mode(&mut self) {
         let next = next_mode(self.trust);
         if self.set_mode(next) {
             let note = if self.busy { " (next turn)" } else { "" };
             self.flash(format!("mode \u{2192} {}{note}", mode_label(next)));
         }
+    }
+
+    fn request_full_mode(&mut self) {
+        if self.full_mode_confirmed {
+            let _ = self.set_mode(TrustMode::Full);
+            return;
+        }
+        self.show_picker(
+            PickerKind::FullModeConfirm,
+            "enable full access?".into(),
+            vec![
+                PickerRow {
+                    id: "full-yes".into(),
+                    label: "Yes, enable Full".into(),
+                    detail: "Skip provider permission checks for this session.".into(),
+                },
+                PickerRow {
+                    id: "full-no".into(),
+                    label: "No, keep current mode".into(),
+                    detail: String::new(),
+                },
+            ],
+            false,
+        );
     }
 
     fn run_mode_command(&mut self, arg: Option<&str>) {
@@ -2123,10 +2149,14 @@ impl App {
                     mode_label(self.trust),
                     mode_blurb(self.trust)
                 ));
-                self.push_system("set with /mode plan | ask | auto | full  (Shift+Tab cycles)");
+                self.push_system("set with /mode plan | ask | auto | full  (Shift+Tab cycles plan/ask/workspace)");
             }
             Some(a) => match parse_mode(a) {
                 Some(mode) => {
+                    if mode == TrustMode::Full && !self.full_mode_confirmed {
+                        self.request_full_mode();
+                        return;
+                    }
                     if self.set_mode(mode) {
                         self.push_system(format!(
                             "mode \u{2192} {} - {}{}",
@@ -2933,6 +2963,12 @@ impl App {
                     if self.busy {
                         self.push_system("permission change applies to the next turn; the running turn keeps its original permissions");
                     }
+                }
+            }
+            PickerKind::FullModeConfirm => {
+                if id == "full-yes" {
+                    self.full_mode_confirmed = true;
+                    let _ = self.set_mode(TrustMode::Full);
                 }
             }
             PickerKind::Remove => {
@@ -4041,6 +4077,7 @@ impl App {
             fresh_draft: false,
             quit_armed: None,
             busy_send_confirmation: None,
+            full_mode_confirmed: false,
             input_scroll: 0,
             input_scroll_anchor: None,
             view: TranscriptView::default(),
@@ -7978,13 +8015,12 @@ fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
     }
 }
 
-/// Next permission mode for Shift+Tab: plan -> ask -> workspace (auto-edit) -> full -> plan.
+/// Next permission mode for Shift+Tab: plan -> ask -> workspace -> plan.
 fn next_mode(m: TrustMode) -> TrustMode {
     match m {
         TrustMode::Plan => TrustMode::Ask,
         TrustMode::Ask => TrustMode::Workspace,
-        TrustMode::Workspace => TrustMode::Full,
-        TrustMode::Full => TrustMode::Plan,
+        TrustMode::Workspace | TrustMode::Full => TrustMode::Plan,
     }
 }
 

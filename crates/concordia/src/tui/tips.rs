@@ -3,7 +3,7 @@
 
 /// Every tip names a feature that exists today.
 pub const TIPS: &[&str] = &[
-    "Shift+Tab cycles the mode: plan, ask, auto, full.",
+    "Shift+Tab cycles plan, ask and workspace; use /mode full with confirmation.",
     "/usage all shows the limits of every account at a glance.",
     "/use switches account or provider; the conversation carries over.",
     "/delegate hands a task to a background worker; the main chat stays free.",

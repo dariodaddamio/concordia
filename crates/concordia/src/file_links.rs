@@ -141,7 +141,9 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
                 i += bounded[i..].chars().next().map_or(1, char::len_utf8);
                 continue;
             }
-            let ch = bounded[i..].chars().next().unwrap();
+            let Some(ch) = bounded[i..].chars().next() else {
+                break;
+            };
             let looks_rooted = ch.is_ascii_alphabetic()
                 && bounded[i + 1..content_end].starts_with(":\\")
                 || ch == '/' && !bounded[i..content_end].starts_with("//")
@@ -168,7 +170,9 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
                     if end == content_end {
                         break;
                     }
-                    let next = bounded[end..content_end].chars().next().unwrap();
+                    let Some(next) = bounded[end..content_end].chars().next() else {
+                        break;
+                    };
                     if !next.is_whitespace() {
                         break;
                     }
@@ -377,7 +381,9 @@ fn decode_markdown_target(raw: &str) -> String {
         if ch == '\\' {
             if let Some(next) = chars.peek().copied() {
                 if next.is_whitespace() || matches!(next, '(' | ')' | '<' | '>') {
-                    out.push(chars.next().unwrap());
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
                     continue;
                 }
             }
@@ -533,7 +539,9 @@ fn is_start_boundary(s: &str, i: usize) -> bool {
 fn scan_word_end(s: &str, start: usize, end: usize) -> usize {
     let mut i = start;
     while i < end {
-        let c = s[i..end].chars().next().unwrap();
+        let Some(c) = s[i..end].chars().next() else {
+            break;
+        };
         if c.is_whitespace() || "()<>\"'`".contains(c) {
             break;
         }
@@ -553,6 +561,13 @@ fn char_boundary_at_or_before(s: &str, mut i: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_and_one_character_inputs_do_not_panic() {
+        assert!(candidates("").is_empty());
+        assert!(candidates("x").is_empty());
+        assert!(candidates(" ").is_empty());
+    }
 
     #[cfg(windows)]
     #[test]

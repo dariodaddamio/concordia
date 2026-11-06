@@ -44,6 +44,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.flush()?;
+        f.sync_all()?;
         drop(f);
         // Another pane may hold the destination open for a moment (Windows): try a few times.
         let mut last = Ok(());
@@ -60,4 +61,24 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_atomic_syncs_before_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        write_atomic(&path, b"complete payload").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete payload");
+        assert!(!dir.path().read_dir().unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
+    }
 }

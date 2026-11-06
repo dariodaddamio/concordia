@@ -2715,24 +2715,19 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
 }
 
 #[test]
-fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
+fn shift_tab_never_reaches_full() {
     use ratatui::style::Color;
     let mut h = Harness::new(100, 12);
     assert_eq!(h.app.trust, TrustMode::Workspace);
     let mut seen = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..3 {
         h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
         seen.push(h.app.trust);
         assert_eq!(get_settings(&h.app.state_root).trust, h.app.trust);
     }
     assert_eq!(
         seen,
-        [
-            TrustMode::Full,
-            TrustMode::Plan,
-            TrustMode::Ask,
-            TrustMode::Workspace
-        ]
+        [TrustMode::Plan, TrustMode::Ask, TrustMode::Workspace]
     );
     for (mode, want) in [
         (TrustMode::Plan, Color::Cyan),
@@ -2809,6 +2804,19 @@ fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
 }
 
 #[test]
+fn full_mode_badge_is_red() {
+    use ratatui::style::Color;
+    let mut h = Harness::new(100, 12);
+    h.app.trust = TrustMode::Full;
+    h.draw();
+    let buf = h.term.backend().buffer();
+    assert_eq!(
+        buf[(buf.area.width - 3, buf.area.height - 1)].fg,
+        Color::Red
+    );
+}
+
+#[test]
 fn shift_tab_moves_the_palette_up_and_tab_still_completes() {
     let _iso = Isolated::new();
     let mut h = Harness::new(100, 24);
@@ -2844,6 +2852,80 @@ fn mode_command_shows_and_sets_the_mode() {
     h.type_str("/mode auto");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.trust, TrustMode::Workspace);
+}
+
+#[test]
+fn mode_full_requires_confirmation_once_per_session() {
+    let mut h = Harness::new(100, 24);
+    assert_eq!(h.app.trust, TrustMode::Workspace);
+
+    h.send("/mode full");
+    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(
+        h.app.picker.as_ref().unwrap().kind,
+        PickerKind::FullModeConfirm
+    );
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(h.app.trust, TrustMode::Workspace);
+
+    h.send("/mode full");
+    assert_eq!(
+        h.app.picker.as_ref().unwrap().kind,
+        PickerKind::FullModeConfirm
+    );
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.trust, TrustMode::Full);
+    assert!(h.app.full_mode_confirmed);
+
+    h.send("/mode plan");
+    assert_eq!(h.app.trust, TrustMode::Plan);
+    h.send("/mode full");
+    assert_eq!(h.app.trust, TrustMode::Full);
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
+fn closing_a_pane_with_a_queued_edit_event_does_not_panic() {
+    let mut h = Harness::new(120, 24);
+    std::fs::write(h._dir.path().join("queued-edit.md"), "fixture\n").unwrap();
+    h.send("/open @queued-edit.md");
+    let id = h.app.workspace.panes[0].id;
+    assert!(h.app.workspace.close(id));
+    let before = (h.app.workspace.panes.len(), h.app.workspace.focused);
+    h.app.workspace.focused = Some(id);
+
+    h.key(KeyCode::Char('x'), KeyModifiers::NONE);
+
+    assert_eq!(
+        (h.app.workspace.panes.len(), h.app.workspace.focused),
+        (before.0, Some(id)),
+        "a queued edit for a closed pane must not mutate workspace state"
+    );
+}
+
+#[test]
+fn with_lock_timeout_is_reported_not_dropped() {
+    let mut h = Harness::new(100, 24);
+    let lock_path = h.app.state_root.join(".ao/appearance.lock");
+    std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
+    lock.lock().unwrap();
+
+    appearance::save(&mut h.app, "motion", "off");
+
+    assert!(
+        h.app
+            .flash
+            .as_ref()
+            .is_some_and(|(message, _)| message.starts_with("Appearance not saved:")),
+        "tui/appearance::save must surface a with_lock timeout"
+    );
 }
 
 #[test]

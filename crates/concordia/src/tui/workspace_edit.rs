@@ -447,7 +447,9 @@ pub(super) fn poll(ws: &mut Workspace) {
     }
     if let Some((_, job)) = &ws.editor.persistence {
         if job.is_finished() {
-            let (sig, job) = ws.editor.persistence.take().unwrap();
+            let Some((sig, job)) = ws.editor.persistence.take() else {
+                return;
+            };
             match job
                 .join()
                 .unwrap_or_else(|_| Err("file recovery writer failed".into()))
@@ -600,24 +602,22 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     {
         match key.code {
             KeyCode::Esc => {
-                app.workspace
-                    .panes
-                    .iter_mut()
-                    .find(|p| p.id == id)
-                    .unwrap()
-                    .prompt = None;
+                if let Some(pane) = app.workspace.panes.iter_mut().find(|p| p.id == id) {
+                    pane.prompt = None;
+                }
             }
             KeyCode::Char('s' | 'S') => start_save(&mut app.workspace, id, &app.state_root),
             KeyCode::Char('d' | 'D')
-                if !app
+                if app
                     .workspace
                     .panes
                     .iter()
                     .find(|p| p.id == id)
-                    .unwrap()
-                    .saving =>
+                    .is_some_and(|p| !p.saving) =>
             {
-                let p = app.workspace.panes.iter_mut().find(|p| p.id == id).unwrap();
+                let Some(p) = app.workspace.panes.iter_mut().find(|p| p.id == id) else {
+                    return true;
+                };
                 p.prompt = None;
                 if let Some(d) = &mut p.document {
                     *d = crate::file_document::Document::new(d.baseline().to_owned());
@@ -693,8 +693,12 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         app.flash("file recovery unavailable; fix local storage before editing");
         return true;
     }
-    let p = app.workspace.panes.iter_mut().find(|p| p.id == id).unwrap();
-    let d = p.document.as_mut().unwrap();
+    let Some(p) = app.workspace.panes.iter_mut().find(|p| p.id == id) else {
+        return true;
+    };
+    let Some(d) = p.document.as_mut() else {
+        return true;
+    };
     let mut result = Ok(());
     let mut cut_chars = None;
     match key.code {
@@ -767,7 +771,9 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if let Err(e) = result {
         app.flash(e);
     } else {
-        follow(app.workspace.panes.iter_mut().find(|p| p.id == id).unwrap());
+        if let Some(p) = app.workspace.panes.iter_mut().find(|p| p.id == id) {
+            follow(p);
+        }
         if let Some(chars) = cut_chars {
             app.flash(format!("cut {chars} chars"));
         }
@@ -795,7 +801,9 @@ pub(super) fn paste(app: &mut App, text: &str) -> bool {
         app.flash("file recovery unavailable; editing paused");
         return true;
     }
-    let p = app.workspace.panes.iter_mut().find(|p| p.id == id).unwrap();
+    let Some(p) = app.workspace.panes.iter_mut().find(|p| p.id == id) else {
+        return true;
+    };
     if let Some(d) = &mut p.document {
         if let Err(e) = d.insert(text) {
             app.flash(e);
