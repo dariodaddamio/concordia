@@ -41,6 +41,9 @@ impl H {
     fn new(w: u16, h: u16) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
+        // Worker color assertions cover the legacy semantic palette explicitly.
+        app.appearance.ui.theme = crate::config::Theme::Default;
+        crate::tui::theme::install(&app.appearance.ui);
         app.no_color = false;
         app.account = "codex-o".into();
         let term = Terminal::new(TestBackend::new(w, h)).unwrap();

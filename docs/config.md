@@ -180,6 +180,18 @@ arrow keys and Enter. Changes apply immediately and survive reopening. The color
 presets and a custom `#RRGGBB` input; it changes the running-window icon; Home retains the original gold portrait.
 The installed executable's Explorer icon remains the bundled original.
 
+Themes are local TOML files under `<state>/themes`; there is no marketplace or network lookup. A
+theme file is at most 16 KiB and must contain `name`, `author`, `background`, `foreground`,
+`accent`, `dim`, `success`, `warning`, `error`, `selection`, and `border`, each as `#RRGGBB`.
+`portrait_tint` is optional. Unknown keys and malformed colors are rejected with a line-aware
+error. Built-in Dark, Light, and Opifex Studio themes use this same parser. Foreground contrast
+below WCAG AA 4.5:1, or dim contrast below 3:1, loads with a warning in the picker.
+
+In `/config` → Appearance → Theme, choose a built-in or imported library theme. **Import theme...**
+validates a `.toml` before copying it into `<state>/themes`; **Export current** writes the active
+theme there or to a path supplied by the user. Opifex Studio is the default for new installs and
+is applied once to older unset/old-default appearance state; later user choices are preserved.
+
 Direct commands are `/config theme opifex`, `/config color #78BFFF` and `/config motion off`.
 **Opifex Studio** uses the Studio host's near-black `#050506`, amber `#FFB000` and bone `#D8D0C0`
 palette. Build 05d restores the original static gold Home portrait and removes the 3D renderer.

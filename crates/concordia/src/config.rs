@@ -62,6 +62,7 @@ pub struct Ui {
     pub accent: Option<Rgb>,
     pub brand_color: Option<Rgb>,
     pub motion: bool,
+    pub library_theme: Option<crate::theme_library::ThemeFile>,
 }
 
 pub type Rgb = [u8; 3];
@@ -79,9 +80,15 @@ pub enum Theme {
 impl Theme {
     pub(crate) fn colors(self) -> [Rgb; 3] {
         match self {
-            Self::Opifex => [[5, 5, 6], [216, 208, 192], [255, 176, 0]],
-            Self::Light => [[247, 247, 244], [36, 40, 47], [28, 86, 180]],
-            Self::Dark => [[11, 13, 17], [232, 234, 240], [107, 180, 245]],
+            Self::Opifex => crate::theme_library::builtin("opifex")
+                .map(|t| [t.background, t.foreground, t.accent])
+                .unwrap_or([[5, 5, 6], [216, 208, 192], [255, 176, 0]]),
+            Self::Light => crate::theme_library::builtin("light")
+                .map(|t| [t.background, t.foreground, t.accent])
+                .unwrap_or([[247, 247, 244], [36, 40, 47], [28, 86, 180]]),
+            Self::Dark => crate::theme_library::builtin("dark")
+                .map(|t| [t.background, t.foreground, t.accent])
+                .unwrap_or([[11, 13, 17], [232, 234, 240], [107, 180, 245]]),
             Self::Default | Self::Terminal => [[20, 23, 31], [224, 226, 235], [58, 150, 221]],
         }
     }
@@ -117,12 +124,13 @@ impl Default for Config {
                 persist_history: true,
                 stats: false,
                 file_action: crate::file_open::FileAction::Preview,
-                theme: Theme::Default,
+                theme: Theme::Opifex,
                 background: None,
                 foreground: None,
                 accent: None,
                 brand_color: None,
                 motion: true,
+                library_theme: None,
             },
             threads: Threads {
                 enabled: false,
@@ -613,7 +621,7 @@ max_workers = 2
         let (invalid, warnings) =
             w("[ui]\ntheme='missing'\nbackground='#fff'\nforeground='blue'\naccent=42\n");
         assert_eq!(warnings.len(), 4);
-        assert_eq!(invalid.ui.theme, Theme::Default);
+        assert_eq!(invalid.ui.theme, Theme::Opifex);
         assert!(
             invalid.ui.background.is_none()
                 && invalid.ui.foreground.is_none()

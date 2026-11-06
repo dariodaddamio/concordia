@@ -291,6 +291,8 @@ enum PickerKind {
     Theme,
     BrandColor,
     BrandCustom,
+    ThemeImport,
+    ThemeExport,
     CreditDetails,
     /// Tokens through Concordia, opened with `t` from `/usage`.
     Tokens,
@@ -2883,11 +2885,12 @@ impl App {
     }
 
     fn apply_picker_selection(&mut self, turn_tx: Option<&mpsc::UnboundedSender<String>>) {
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|picker| picker.kind == PickerKind::BrandCustom)
-        {
+        if self.picker.as_ref().is_some_and(|picker| {
+            matches!(
+                picker.kind,
+                PickerKind::BrandCustom | PickerKind::ThemeImport | PickerKind::ThemeExport
+            )
+        }) {
             appearance::accept_custom(self);
             return;
         }
@@ -2940,6 +2943,7 @@ impl App {
                 appearance::choose(self, kind, &id)
             }
             PickerKind::BrandCustom => {}
+            PickerKind::ThemeImport | PickerKind::ThemeExport => {}
             PickerKind::CreditDetails => match id.as_str() {
                 "credit-dashboard" => self.open_host_target(
                     crate::usage::CREDIT_DASHBOARD_URL.into(),

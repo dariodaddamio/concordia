@@ -47,6 +47,28 @@ fn read(root: &Path) -> io::Result<Saved> {
     Ok(saved)
 }
 
+fn migrate_opifex(root: &Path) -> io::Result<()> {
+    let marker = root.join(".ao/opifex-theme-migration-v1");
+    if marker.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(root.join(".ao"))?;
+    let mut saved = read(root)?;
+    if saved
+        .theme
+        .as_deref()
+        .is_none_or(|theme| parse_theme(theme) == Some(Theme::Default))
+    {
+        saved.theme = Some("opifex".into());
+        saved.version = 1;
+        crate::state_io::write_atomic(
+            &root.join(".ao/appearance.json"),
+            &serde_json::to_vec_pretty(&saved)?,
+        )?;
+    }
+    crate::state_io::write_atomic(&marker, b"migrated\n")
+}
+
 pub(super) fn parse_theme(value: &str) -> Option<Theme> {
     match value.to_ascii_lowercase().as_str() {
         "default" => Some(Theme::Default),
@@ -85,6 +107,9 @@ impl State {
     pub fn load(root: &Path) -> Self {
         let mut ui = crate::config::for_root(root).ui;
         let mut notice = None;
+        if let Err(error) = migrate_opifex(root) {
+            notice = Some(format!("Theme migration: {error}"));
+        }
         match read(root) {
             Ok(saved) => {
                 if let Some(theme) = saved.theme.as_deref().and_then(parse_theme) {
@@ -93,6 +118,20 @@ impl State {
                     ui.background = None;
                     ui.foreground = None;
                     ui.accent = None;
+                    ui.library_theme = None;
+                } else if let Some(name) = saved
+                    .theme
+                    .as_deref()
+                    .and_then(|s| s.strip_prefix("library:"))
+                {
+                    let path = crate::theme_library::library_dir(root).join(format!("{name}.toml"));
+                    match crate::theme_library::load(&path) {
+                        Ok(theme) => {
+                            ui.library_theme = Some(theme);
+                            ui.theme = Theme::Opifex;
+                        }
+                        Err(error) => notice = Some(format!("Theme library: {error}")),
+                    }
                 }
                 if let Some(color) = saved.brand_color {
                     ui.brand_color = Some(color);
@@ -161,7 +200,9 @@ pub(super) fn save(app: &mut App, key: &str, value: &str) {
         crate::state_io::with_lock(&root.join(".ao/appearance.lock"), || {
             let mut saved = read(root)?;
             match key {
-                "theme" if parse_theme(value).is_some() => saved.theme = Some(value.into()),
+                "theme" if parse_theme(value).is_some() || value.starts_with("library:") => {
+                    saved.theme = Some(value.into())
+                }
                 "color" => {
                     saved.brand_color = Some(
                         parse_color(value)
@@ -215,7 +256,7 @@ pub(super) fn save(app: &mut App, key: &str, value: &str) {
 pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     match (kind, id) {
         (PickerKind::Appearance, "theme") => {
-            let rows = [
+            let mut rows: Vec<PickerRow> = [
                 ("opifex", "Opifex Studio", "Near-black · amber · bone"),
                 ("default", "Default", "Concordia's original palette"),
                 ("dark", "Dark", "Cool black · blue accents"),
@@ -224,7 +265,36 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             ]
             .into_iter()
             .map(|(id, title, detail)| row(id, title, detail))
+            .chain([
+                row("import", "Import theme...", "Type a .toml path"),
+                row("export", "Export current", "Type a destination path"),
+            ])
             .collect();
+            if let Ok(entries) =
+                std::fs::read_dir(crate::theme_library::library_dir(&app.state_root))
+            {
+                for entry in entries
+                    .flatten()
+                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "toml"))
+                {
+                    if let Ok(theme) = crate::theme_library::load(&entry.path()) {
+                        let id = format!(
+                            "library:{}",
+                            entry
+                                .path()
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        );
+                        let detail = if theme.contrast_warning().is_some() {
+                            "Library · low contrast warning"
+                        } else {
+                            "Library theme"
+                        };
+                        rows.push(row(&id, theme.name, detail));
+                    }
+                }
+            }
             app.show_picker(PickerKind::Theme, "theme".into(), rows, false);
         }
         (PickerKind::Appearance, "color") => {
@@ -261,6 +331,26 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             },
         ),
         (PickerKind::Appearance, "defaults") => save(app, "defaults", ""),
+        (PickerKind::Theme, "import") => {
+            app.show_picker(
+                PickerKind::ThemeImport,
+                "theme · import path".into(),
+                vec![row(
+                    "path",
+                    "Type a .toml path",
+                    "Enter validates and imports",
+                )],
+                true,
+            );
+        }
+        (PickerKind::Theme, "export") => {
+            app.show_picker(
+                PickerKind::ThemeExport,
+                "theme · export path".into(),
+                vec![row("path", "Optional destination path", "Enter exports")],
+                true,
+            );
+        }
         (PickerKind::Theme, value) => save(app, "theme", value),
         (PickerKind::BrandColor, "custom") => {
             app.show_picker(
@@ -281,11 +371,36 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
 }
 
 pub(super) fn accept_custom(app: &mut App) {
+    let kind = app.picker.as_ref().map(|picker| picker.kind);
     let value = app
         .picker
         .as_ref()
         .map(|picker| picker.filter.clone())
         .unwrap_or_default();
+    if kind == Some(PickerKind::ThemeImport) {
+        app.dismiss_picker();
+        match crate::theme_library::import(&app.state_root, Path::new(value.trim())) {
+            Ok(theme) => app.flash(format!("Imported theme {}", theme.name)),
+            Err(error) => app.flash(format!("Theme not imported: {error}")),
+        }
+        return;
+    }
+    if kind == Some(PickerKind::ThemeExport) {
+        app.dismiss_picker();
+        let name = match app.appearance.ui.theme {
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+            _ => "opifex",
+        };
+        let destination = (!value.trim().is_empty()).then(|| Path::new(value.trim()).to_path_buf());
+        match crate::theme_library::builtin(name).and_then(|theme| {
+            crate::theme_library::export(&app.state_root, &theme, destination.as_deref())
+        }) {
+            Ok(path) => app.flash(format!("Exported theme to {}", path.display())),
+            Err(error) => app.flash(format!("Theme not exported: {error}")),
+        }
+        return;
+    }
     if parse_color(&value).is_none() {
         app.flash("Use six hex digits, for example #FFB000");
         return;
@@ -303,5 +418,64 @@ pub(super) fn command(app: &mut App, args: &str) {
         _ => {
             app.flash("/config · /config theme opifex · /config color #FFB000 · /config motion off")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_state_root_defaults_to_opifex() {
+        let root = tempfile::tempdir().unwrap();
+
+        let state = State::load(root.path());
+
+        assert_eq!(state.ui.theme, Theme::Opifex);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(root.path().join(".ao/appearance.json")).unwrap()
+            )
+            .unwrap()["theme"],
+            "opifex"
+        );
+        assert!(root.path().join(".ao/opifex-theme-migration-v1").exists());
+    }
+
+    #[test]
+    fn existing_install_switches_to_opifex_once() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".ao")).unwrap();
+        std::fs::write(
+            root.path().join(".ao/appearance.json"),
+            br#"{"version":1,"theme":"default"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(State::load(root.path()).ui.theme, Theme::Opifex);
+        let migrated = std::fs::read(root.path().join(".ao/appearance.json")).unwrap();
+        assert!(String::from_utf8_lossy(&migrated).contains("opifex"));
+        assert!(root.path().join(".ao/opifex-theme-migration-v1").exists());
+
+        std::fs::write(
+            root.path().join(".ao/appearance.json"),
+            br#"{"version":1,"theme":"dark"}"#,
+        )
+        .unwrap();
+        assert_eq!(State::load(root.path()).ui.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn user_choice_after_migration_sticks() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(State::load(root.path()).ui.theme, Theme::Opifex);
+        std::fs::write(
+            root.path().join(".ao/appearance.json"),
+            br#"{"version":1,"theme":"light"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(State::load(root.path()).ui.theme, Theme::Light);
+        assert_eq!(State::load(root.path()).ui.theme, Theme::Light);
     }
 }
