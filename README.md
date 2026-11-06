@@ -402,7 +402,7 @@ latest saved response, rather than a live balance request.
 Concordia opens on a landing page when this machine has recorded chats. The left pane lists recent
 chats grouped by the folder they ran in, with this folder first. Enter resumes a chat, or expands a
 folder; a double-click does the same. The right pane holds your goals: `Tab` to it, `a` adds one,
-and Enter marks one done. When a Harness is connected (`/harness connect harness`), the pane also
+and Enter marks one done. An empty pane explains what goals are and how to add one. When a Harness is connected (`/harness connect harness`), the pane also
 lists each project's open work from its plan ledger. Chats and goals stay visible while you type or
 paste a draft; Enter sends it. Up/Down wrap between the first and last list entries when the draft
 is empty. `Esc` goes straight to chat; `/new` opens the page again. The page shows all-time and rolling

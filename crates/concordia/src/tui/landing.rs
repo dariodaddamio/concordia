@@ -989,6 +989,30 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         ]));
         hits.push(None);
     }
+    if lines.is_empty() && landing.work.is_empty() {
+        // An empty pane must still say what it is for and how to fill it. Open work, when
+        // present, already fills the pane and keeps its rows.
+        for (text, style) in [
+            (
+                "No goals yet.",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            ("", dim),
+            (
+                "Goals are the outcomes you are working toward across chats.",
+                dim,
+            ),
+            (
+                "Agents can read them and propose new ones for you to approve.",
+                dim,
+            ),
+            ("", dim),
+            ("Press Tab, then a, to add one.", Style::default()),
+        ] {
+            lines.push(Line::styled(text, style));
+            hits.push(None);
+        }
+    }
     if !landing.work.is_empty() {
         if !lines.is_empty() {
             lines.push(Line::default());

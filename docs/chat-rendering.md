@@ -24,6 +24,11 @@ uses the same rendering and actions. The Worked for footer is duration/time/usag
 without an activity-review button. Ctrl+E remains a raw tool-output inspector, not a thinking
 viewer. Provider-private encrypted reasoning remains unavailable.
 
+Build `2026-11-05g` shows short thinking whole, without a toggle, when the collapsed preview would
+hide nothing. The `[concordia map]` line shown after a provider switch is an accordion over the full
+map handed to the next provider. Native-window images are clipped out of the text-layer copy so
+they no longer flicker on caret blinks or prompt edits.
+
 Expanded inline edit cards show line numbers from reported unified hunk ranges, syntax colors,
 and muted red/green backgrounds spanning removed/added rows. Context remains neutral. Unknown
 hunk positions stay unnumbered rather than being inferred from the current disk file. Display
