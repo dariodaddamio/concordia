@@ -15,7 +15,10 @@ fn seed(state: &std::path::Path) {
         id: ID.into(),
         started: concordia::threads::now_secs(),
         title: "fix the login redirect".into(),
-        cwd: String::new(),
+        cwd: std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
         account: Some("claude-2".into()),
     })
     .unwrap();
@@ -61,6 +64,14 @@ fn a_client_can_initialize_list_tools_and_call_them() {
     let mut child = Command::new(CONCORDIA)
         .arg("mcp")
         .env("CONCORDIA_STATE_DIR", state.path())
+        .env(
+            concordia::integration::SCOPE_ENV,
+            serde_json::json!({
+                "account": "claude-2",
+                "workspace": std::env::current_dir().unwrap(),
+            })
+            .to_string(),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

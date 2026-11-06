@@ -21,6 +21,9 @@ for the checked scope, old local automation installations, and the Harness audit
 Set `[threads] mcp = true` in `config.toml` to register the server in Concordia-created
 Claude and Codex homes. Registration is off by default; schemas add provider context usage.
 Existing personal provider homes are never edited. Cursor registration is not supported.
+Each registration also sets `CONCORDIA_MCP_SCOPE` to JSON `{\"account\":\"...\",\"workspace\":\"...\"}`.
+The server rejects history reads outside that account and workspace, and fails closed when the
+variable is absent or malformed. Cross-scope selection remains a local TUI action (`/resume`).
 
 `[threads] awareness = true` adds a short explanation of Concordia maps to instructions in
 Concordia-created homes. Turn it off to remove Concordia's marked block. `/use` refreshes
