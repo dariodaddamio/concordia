@@ -76,6 +76,7 @@ pub struct PlannedTurn {
     /// conversation's session once the turn succeeds.
     pub new_session_id: Option<String>,
     pub env: Vec<(String, String)>,
+    pub env_remove: Vec<String>,
     pub cwd: String,
     pub provider: ProviderKind,
 }
@@ -243,6 +244,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 command: plan.command,
                 argv: plan.argv,
                 env,
+                env_remove: Vec::new(),
                 cwd: plan.cwd,
                 prompt: prompt.clone(),
                 new_session_id: None,
@@ -262,6 +264,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 command: plan.command,
                 argv: plan.argv,
                 env: plan.env,
+                env_remove: Vec::new(),
                 cwd: plan.cwd,
                 prompt: prompt.clone(),
                 new_session_id: plan.new_session_id,
@@ -281,6 +284,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 command: plan.command,
                 argv: plan.argv,
                 env: plan.env,
+                env_remove: plan.env_remove,
                 cwd: plan.cwd,
                 prompt: prompt.clone(),
                 new_session_id: None,
@@ -584,6 +588,9 @@ async fn run_provider_turn_inner(
         .kill_on_drop(true);
     for (k, v) in plan.env.iter().chain(launch.env.iter()) {
         cmd.env(k, v);
+    }
+    for key in &plan.env_remove {
+        cmd.env_remove(key);
     }
     // Do not echo argv here: it contains the whole prompt.
     let setup_ms = timing.elapsed().as_millis();

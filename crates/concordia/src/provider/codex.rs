@@ -40,6 +40,13 @@ pub fn find_codex_bin() -> Result<String, String> {
 }
 
 pub fn plan_turn_argv(req: &TurnRequest<'_>) -> Result<TurnPlan> {
+    plan_turn_argv_with(
+        req,
+        &super::LocateEnv::from_process(super::ProviderKind::Codex),
+    )
+}
+
+pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Result<TurnPlan> {
     let mut argv = vec!["exec".into(), "--json".into()];
     if let Some(model) = req.model.map(str::trim).filter(|m| !m.is_empty()) {
         argv.push("-m".into());
@@ -71,7 +78,10 @@ pub fn plan_turn_argv(req: &TurnRequest<'_>) -> Result<TurnPlan> {
     }
     argv.push(req.prompt.to_string());
     Ok(TurnPlan {
-        command: find_codex_bin().map_err(anyhow::Error::msg)?,
+        command: super::locate(super::ProviderKind::Codex, env)
+            .map(|p| p.path.to_string_lossy().into_owned())
+            .map_err(|e| crate::doctor::format_not_found_turn_error(super::ProviderKind::Codex, &e))
+            .map_err(anyhow::Error::msg)?,
         argv,
         cwd: req.cwd.to_string_lossy().into_owned(),
     })

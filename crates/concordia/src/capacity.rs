@@ -277,6 +277,7 @@ mod tests {
                 prompt: "literal prompt".into(),
                 new_session_id: None,
                 env: Vec::new(),
+                env_remove: Vec::new(),
                 cwd: dir.path().display().to_string(),
             };
             apply(&mut plan, &Compaction::Native).unwrap();

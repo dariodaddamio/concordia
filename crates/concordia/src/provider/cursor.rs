@@ -18,6 +18,7 @@ pub struct CursorPlan {
     pub command: String,
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
+    pub env_remove: Vec<String>,
     pub cwd: String,
 }
 
@@ -28,6 +29,16 @@ pub fn find_agent_bin() -> Result<String, String> {
 }
 
 pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
+    plan_cursor_turn_with(
+        req,
+        &super::LocateEnv::from_process(super::ProviderKind::Cursor),
+    )
+}
+
+pub fn plan_cursor_turn_with(
+    req: &CursorTurnRequest<'_>,
+    locate_env: &super::LocateEnv,
+) -> Result<CursorPlan> {
     let mut argv = vec![
         "--print".into(),
         "--output-format".into(),
@@ -68,15 +79,23 @@ pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
     if let Ok(key) = std::env::var("CURSOR_API_KEY") {
         crate::redact::register_runtime_secret(&key);
     }
+    let mut env_remove = vec!["CURSOR_API_KEY".to_string()];
     if let Some(home) = req.home_path {
         if let Some(key) = cursor_api_key_for_home(home) {
             env.push(("CURSOR_API_KEY".into(), key));
+            env_remove.clear();
         }
     }
     Ok(CursorPlan {
-        command: find_agent_bin().map_err(anyhow::Error::msg)?,
+        command: super::locate(super::ProviderKind::Cursor, locate_env)
+            .map(|p| p.path.to_string_lossy().into_owned())
+            .map_err(|e| {
+                crate::doctor::format_not_found_turn_error(super::ProviderKind::Cursor, &e)
+            })
+            .map_err(anyhow::Error::msg)?,
         argv,
         env,
+        env_remove,
         cwd: req.cwd.to_string_lossy().into_owned(),
     })
 }
@@ -132,6 +151,9 @@ pub async fn create_chat(command: &str, env: &[(String, String)], cwd: &str) -> 
     for (k, v) in env {
         cmd.env(k, v);
     }
+    if !env.iter().any(|(k, _)| k == "CURSOR_API_KEY") {
+        cmd.env_remove("CURSOR_API_KEY");
+    }
     let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
         .await
         .ok()?
@@ -168,6 +190,22 @@ pub fn assert_safe_cursor_argv(argv: &[String], allow_force: bool) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::extract_uuid;
+
+    #[test]
+    fn cursor_child_without_key_file_gets_no_cursor_api_key() {
+        let root = tempfile::tempdir().unwrap();
+        let req = super::CursorTurnRequest {
+            prompt: "x",
+            cwd: root.path(),
+            home_path: Some(root.path()),
+            model: None,
+            native_session_id: None,
+            trust: crate::store::TrustMode::Ask,
+        };
+        let plan = super::plan_cursor_turn(&req).unwrap();
+        assert!(plan.env.iter().all(|(key, _)| key != "CURSOR_API_KEY"));
+        assert!(plan.env_remove.iter().any(|key| key == "CURSOR_API_KEY"));
+    }
 
     #[test]
     fn finds_a_chat_id_in_plain_json_or_noisy_output() {
