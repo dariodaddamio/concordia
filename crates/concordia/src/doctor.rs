@@ -676,12 +676,7 @@ pub fn run_cli_report() -> (String, bool) {
         .into_iter()
         .map(|(p, h)| (p, h.join().unwrap_or_else(|_| Err("probe panicked".into()))))
         .collect();
-    for (path, result) in &results {
-        if let Ok(version) = result {
-            compat::cache_version_probe(&crate::store::default_store_root(), path, version);
-        }
-    }
-    // Capabilities (one `--help` per CLI version, cached) so the rows can say what degrades.
+    // Doctor is read-only: use existing caches, but do not create or refresh Concordia state.
     let detections: Vec<_> = [
         ProviderKind::Codex,
         ProviderKind::Claude,
@@ -691,8 +686,15 @@ pub fn run_cli_report() -> (String, bool) {
     .filter_map(|k| resolve_provider_bin(k).ok().map(|l| (k, l.path)))
     .map(|(k, p)| {
         let state_root = crate::store::default_store_root();
-        let h =
-            std::thread::spawn(move || compat::detect(k, &p, &compat::run_cli, Some(&state_root)));
+        let h = std::thread::spawn(move || {
+            compat::detect_with_mode(
+                k,
+                &p,
+                &compat::run_cli,
+                Some(&state_root),
+                compat::CacheMode::ReadOnly,
+            )
+        });
         (k, h)
     })
     .collect();

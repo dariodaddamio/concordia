@@ -305,6 +305,12 @@ fn save_cache(state_root: &Path, map: &BTreeMap<String, Caps>) {
 
 // ---- detection ----------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheMode {
+    Persist,
+    ReadOnly,
+}
+
 /// Version and capabilities of one CLI. With a state root, a matching binary fingerprint avoids
 /// both provider probes; `--help` is only run when this version is not in the help cache.
 pub fn detect(
@@ -312,6 +318,16 @@ pub fn detect(
     bin: &Path,
     runner: Runner<'_>,
     state_root: Option<&Path>,
+) -> Option<Compat> {
+    detect_with_mode(provider, bin, runner, state_root, CacheMode::Persist)
+}
+
+pub fn detect_with_mode(
+    provider: ProviderKind,
+    bin: &Path,
+    runner: Runner<'_>,
+    state_root: Option<&Path>,
+    cache_mode: CacheMode,
 ) -> Option<Compat> {
     let version = state_root
         .and_then(|root| cached_version(root, bin))
@@ -322,8 +338,10 @@ pub fn detect(
                 .map(str::trim)
                 .find(|l| !l.is_empty())?
                 .to_string();
-            if let Some(root) = state_root {
-                cache_version_probe(root, bin, &version);
+            if cache_mode == CacheMode::Persist {
+                if let Some(root) = state_root {
+                    cache_version_probe(root, bin, &version);
+                }
             }
             Some(version)
         })?;
@@ -338,9 +356,11 @@ pub fn detect(
             .and_then(|h| parse_help(provider, &h))
         {
             Some(c) => {
-                if let Some(root) = state_root {
-                    cache.insert(key, c);
-                    save_cache(root, &cache);
+                if cache_mode == CacheMode::Persist {
+                    if let Some(root) = state_root {
+                        cache.insert(key, c);
+                        save_cache(root, &cache);
+                    }
                 }
                 c
             }
@@ -687,6 +707,7 @@ pub fn degradation_summary(provider: ProviderKind, caps: &Caps) -> String {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const CLAUDE_HELP: &str = "Usage: claude [options]\n  --output-format <format>  Output format: \"text\" (default), or \"stream-json\"\n  --include-partial-messages  Include partial chunks\n  --permission-mode <mode>  Permission mode (choices: \"acceptEdits\", \"plan\")\n  --model <model>  Model\n";
@@ -804,6 +825,24 @@ mod tests {
         assert_eq!(c.tested, Tested::Newer);
         assert!(!c.caps.stream_json);
         assert_eq!(calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn doctor_detection_never_writes_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls: FakeRun = RefCell::new(Vec::new());
+        let run = fake(&calls, "2.1.301 (Claude Code)\n", CLAUDE_HELP);
+
+        let detected = detect_with_mode(
+            ProviderKind::Claude,
+            Path::new("claude"),
+            &run,
+            Some(dir.path()),
+            CacheMode::ReadOnly,
+        );
+
+        assert!(detected.is_some());
+        assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
     }
 
     #[test]
