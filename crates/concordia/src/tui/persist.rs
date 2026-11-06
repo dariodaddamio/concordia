@@ -34,7 +34,8 @@ pub fn queue_path(root: &Path) -> PathBuf {
 
 /// Write `bytes` to `path` through a temp file in the same directory, then rename over it.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    crate::state_io::write_atomic(path, bytes)
+    let safe = crate::redact::redact_bytes(bytes);
+    crate::state_io::write_atomic(path, &safe)
 }
 
 /// Move an unreadable file aside as `<name>.bad` (replacing an older one) so it is kept for
@@ -251,11 +252,12 @@ pub fn append_history(root: &Path, line: &str, on_disk: &mut usize) {
         return;
     };
     entry.push('\n');
+    let safe_entry = crate::redact::redact(&entry);
     let appended = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .and_then(|mut f| f.write_all(entry.as_bytes()));
+        .and_then(|mut f| f.write_all(safe_entry.as_bytes()));
     if appended.is_err() {
         return;
     }
@@ -1104,5 +1106,90 @@ mod tests {
             "legacy draft"
         );
         assert_eq!(app.queue.items, vec!["legacy queued"]);
+    }
+
+    #[test]
+    fn golden_seeded_secrets_never_reach_disk_or_mcp() {
+        let d = root();
+        let secret = "sk-ant-abcdefghijklmnop";
+        let token = "ghp_abcdefghijklmnop";
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\nprivate\n-----END RSA PRIVATE KEY-----";
+        let database = "postgres://user:passphrase@db.test/app";
+        let body = format!("{secret} {token} {pem} {database}");
+
+        save_draft(d.path(), &body);
+        save_queue(d.path(), std::slice::from_ref(&body));
+        let mut count = 0;
+        append_history(d.path(), &body, &mut count);
+        let log = crate::threads::ThreadLog::open(d.path(), "golden1111");
+        log.append_unavailable(
+            &crate::threads::ThreadEvent::with_text("assistant", "safe"),
+            None,
+            &body,
+        )
+        .unwrap();
+        log.write_meta(&crate::threads::ThreadMeta {
+            id: "golden1111".into(),
+            started: 0,
+            title: body.clone(),
+            cwd: String::new(),
+            account: None,
+        })
+        .unwrap();
+
+        let mut cards = Vec::new();
+        crate::provider::upsert_card(
+            &mut cards,
+            crate::provider::StreamCard {
+                id: "golden".into(),
+                title: body.clone(),
+                detail: Some(body.clone()),
+                status: crate::provider::CardStatus::Done,
+            },
+        );
+        let recovery = d.path().join("editor-recovery.json");
+        write_atomic(&recovery, body.as_bytes()).unwrap();
+
+        for path in [
+            draft_path(d.path()),
+            queue_path(d.path()),
+            history_path(d.path()),
+            crate::threads::threads_dir(d.path()).join("golden1111.jsonl"),
+            crate::threads::threads_dir(d.path()).join("golden1111.meta.json"),
+            recovery,
+        ] {
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(!text.contains(secret));
+            assert!(!text.contains(token));
+            assert!(!text.contains("PRIVATE KEY"));
+            assert!(!text.contains("passphrase"));
+            if !path.ends_with("golden1111.jsonl") {
+                assert!(
+                    text.contains("[REDACTED:"),
+                    "no token in {}: {text}",
+                    path.display()
+                );
+            }
+        }
+        assert!(!cards[0].title.contains(secret));
+        assert!(!cards[0].detail.as_deref().unwrap().contains(token));
+
+        let legacy = crate::threads::ThreadEvent::with_text("assistant", &body);
+        fs::write(
+            crate::threads::threads_dir(d.path()).join("legacy1111.jsonl"),
+            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        )
+        .unwrap();
+        let reply = crate::mcp::handle_line(
+            d.path(),
+            &serde_json::json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{"name":"thread_read","arguments":{"id":"legacy"}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!reply.contains(secret));
+        assert!(reply.contains("[REDACTED:"));
     }
 }
