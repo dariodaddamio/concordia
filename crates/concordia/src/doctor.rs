@@ -24,6 +24,42 @@ pub struct Check {
     pub detail: String,
 }
 
+/// The one concrete action shown below every warning or failure in the doctor report.
+pub fn next_action(row: &Check) -> Option<String> {
+    if row.level == Level::Ok {
+        return None;
+    }
+    let action = match row.name {
+        "codex" if row.detail.contains("not found") => "npm install -g @openai/codex".into(),
+        "claude" if row.detail.contains("not found") => {
+            "irm https://claude.ai/install.ps1 | iex".into()
+        }
+        "cursor" if row.detail.contains("not found") => {
+            "irm 'https://cursor.com/install?win32=true' | iex".into()
+        }
+        "codex" | "claude" | "cursor" if row.detail.contains("not on PATH") => row
+            .detail
+            .split_once("append with ")
+            .map(|(_, action)| action.to_string())
+            .unwrap_or_else(|| "append the provider CLI directory to PATH".into()),
+        "account" if row.detail.contains("not signed in") || row.detail.contains("missing") => {
+            "/use to sign in again (or choose + add account)".into()
+        }
+        "accounts" => "/use to add an account".into(),
+        "path" => "concordia install".into(),
+        "wezterm" => "winget install --id wez.wezterm -e".into(),
+        "clipboard" => "install or restore powershell.exe on PATH".into(),
+        "install" => "re-run scripts\\install-dev.ps1".into(),
+        "store" => "move the corrupt store aside, then restart Concordia".into(),
+        "state" => "choose a writable Concordia state directory".into(),
+        "config" => "/config to review the setting".into(),
+        "commands" => "rename or remove the conflicting custom command".into(),
+        "providers" => "install at least one provider CLI, then run concordia doctor".into(),
+        _ => "run concordia doctor and follow the diagnostic details".into(),
+    };
+    Some(action)
+}
+
 fn check(level: Level, name: &'static str, detail: impl Into<String>) -> Check {
     Check {
         level,
@@ -509,6 +545,9 @@ pub fn format_report(checks: &[Check]) -> String {
             Level::Fail => "FAIL",
         };
         lines.push(format!("{tag}  {:<9} {}", c.name, c.detail));
+        if let Some(action) = next_action(c) {
+            lines.push(format!("          next: {action}"));
+        }
     }
     let (w, f) = summary(checks);
     lines.push(if f > 0 {
@@ -519,6 +558,19 @@ pub fn format_report(checks: &[Check]) -> String {
         "all good".to_string()
     });
     lines.join("\n")
+}
+
+/// Fast, local provider health used by the first-launch panel. It resolves the same binaries as
+/// doctor but deliberately does not run `--version` or contact a provider.
+pub fn fast_provider_status() -> Vec<(ProviderKind, bool)> {
+    [
+        ProviderKind::Codex,
+        ProviderKind::Claude,
+        ProviderKind::Cursor,
+    ]
+    .into_iter()
+    .map(|kind| (kind, resolve_provider_bin(kind).is_ok()))
+    .collect()
 }
 
 pub fn summary(checks: &[Check]) -> (usize, usize) {
@@ -1129,6 +1181,31 @@ mod tests {
         assert!(r.ends_with("1 problem(s), 1 warning(s)"));
         assert!(format_report(&checks[..1]).ends_with("all good"));
         assert!(format_report(&checks[..2]).ends_with("no problems, 1 warning(s)"));
+    }
+
+    #[test]
+    fn doctor_rows_have_one_next_action_each() {
+        let rows = [
+            check(Level::Warn, "codex", "not found"),
+            check(Level::Warn, "claude", "not found"),
+            check(Level::Warn, "cursor", "not found"),
+            check(
+                Level::Warn,
+                "codex",
+                "not on PATH; append with PATH command",
+            ),
+            check(Level::Warn, "account", "not signed in"),
+            check(Level::Warn, "accounts", "none"),
+            check(Level::Warn, "path", "not on PATH"),
+            check(Level::Warn, "wezterm", "missing"),
+            check(Level::Fail, "install", "broken"),
+        ];
+        for row in rows {
+            assert!(next_action(&row).is_some(), "missing action for {row:?}");
+            let rendered = format_report(std::slice::from_ref(&row));
+            assert_eq!(rendered.matches("next: ").count(), 1, "{rendered}");
+        }
+        assert!(next_action(&check(Level::Ok, "build", "fine")).is_none());
     }
 
     #[test]

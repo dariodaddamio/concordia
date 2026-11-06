@@ -3739,10 +3739,123 @@ fn an_old_harness_says_so_and_no_harness_shows_no_to_dos() {
 #[test]
 fn there_is_no_landing_page_without_chats() {
     let mut h = Harness::new(100, 24);
+    crate::store::upsert_stored_account(
+        &h.app.state_root,
+        crate::store::StoredAccount {
+            id: "codex-test".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(h._dir.path().join("codex").to_string_lossy().into()),
+            label: "Codex test".into(),
+            created_at: "test".into(),
+        },
+    )
+    .unwrap();
     landing::open_with(&mut h.app, Vec::new(), None);
     assert!(h.app.landing.is_none());
     h.draw();
     assert!(!h.screen().contains(" chats "));
+}
+
+#[test]
+fn first_launch_without_accounts_shows_welcome_and_use_action() {
+    let mut h = Harness::new(100, 24);
+    landing::open_with(&mut h.app, Vec::new(), None);
+    h.draw();
+    assert!(h.screen().contains("Welcome to Concordia"));
+    assert!(h.screen().contains("/use to add an account"));
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(h.app.picker.is_some(), "Enter should open the /use flow");
+    assert!(h.screen().contains("+ add account"));
+}
+
+#[test]
+fn welcome_is_gone_once_an_account_exists() {
+    let mut h = Harness::new(100, 24);
+    crate::store::upsert_stored_account(
+        &h.app.state_root,
+        crate::store::StoredAccount {
+            id: "codex-test".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(h._dir.path().join("codex").to_string_lossy().into()),
+            label: "Codex test".into(),
+            created_at: "test".into(),
+        },
+    )
+    .unwrap();
+    let cwd = h.app.cwd.clone();
+    landing::open_with(
+        &mut h.app,
+        vec![landing_session("codex-test", &cwd, "chat", 1)],
+        None,
+    );
+    h.draw();
+    assert!(!h.screen().contains("Welcome to Concordia"));
+}
+
+#[test]
+fn signed_out_account_blocks_the_turn_and_keeps_the_prompt() {
+    let mut h = Harness::new(100, 24);
+    h.app.provider = ProviderKind::Codex;
+    h.app.account = "codex-test".into();
+    h.app.home_path = Some(h._dir.path().join("missing-login"));
+    crate::store::set_use_selection(
+        &h.app.state_root,
+        crate::store::UseSelection {
+            provider: ProviderKind::Codex,
+            account: "codex-test".into(),
+            home_path: h.app.home_path.as_ref().map(|p| p.to_string_lossy().into()),
+            model: None,
+            updated_at: "test".into(),
+        },
+    )
+    .unwrap();
+    h.app.editor.set_text("keep this prompt");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    h.app.submit_input(&tx);
+    assert!(
+        rx.try_recv().is_err(),
+        "signed-out submission must not dispatch"
+    );
+    assert_eq!(h.app.editor.text(), "keep this prompt");
+    assert!(h.app.messages.iter().any(|m| m.text.contains(
+        "codex-test looks signed out. Use /use to sign in, or press Enter again to send anyway."
+    )));
+    h.app.submit_input(&tx);
+    assert_eq!(rx.try_recv().unwrap(), "keep this prompt");
+    assert!(h.app.editor.text().is_empty());
+}
+
+#[test]
+fn signed_out_warning_never_duplicates_the_draft() {
+    let mut h = Harness::new(100, 24);
+    h.app.provider = ProviderKind::Codex;
+    h.app.account = "codex-test".into();
+    h.app.home_path = Some(h._dir.path().join("missing-login"));
+    crate::store::set_use_selection(
+        &h.app.state_root,
+        crate::store::UseSelection {
+            provider: ProviderKind::Codex,
+            account: "codex-test".into(),
+            home_path: h.app.home_path.as_ref().map(|p| p.to_string_lossy().into()),
+            model: None,
+            updated_at: "test".into(),
+        },
+    )
+    .unwrap();
+    h.app.editor.set_text("keep this prompt");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    h.app.submit_input(&tx);
+    assert!(rx.try_recv().is_err());
+    assert_eq!(h.app.editor.text(), "keep this prompt");
+    assert_eq!(h.app.editor.text().matches("keep this prompt").count(), 1);
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.text.contains("looks signed out"))
+            .count(),
+        1
+    );
 }
 
 #[test]

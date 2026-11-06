@@ -3,7 +3,8 @@
 #![cfg(windows)]
 
 use concordia::store::{
-    save_store, set_delegation_protocol, set_workers, OrchestratorStore, ProviderKind, UseSelection,
+    save_store, set_delegation_protocol, set_workers, OrchestratorStore, ProviderKind,
+    StoredAccount, UseSelection,
 };
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde_json::Value;
@@ -1038,6 +1039,25 @@ fn setup(root: &Path, provider: ProviderKind) {
             model: Some("synthetic-model".into()),
             updated_at: "0".into(),
         }),
+        accounts: [
+            ("codex", ProviderKind::Codex),
+            ("claude", ProviderKind::Claude),
+            ("cursor", ProviderKind::Cursor),
+        ]
+        .into_iter()
+        .map(|(id, provider)| StoredAccount {
+            id: id.into(),
+            provider,
+            home_path: Some(
+                profile
+                    .join(format!(".{}", provider.as_str()))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            label: provider.as_str().into(),
+            created_at: "0".into(),
+        })
+        .collect(),
         ..Default::default()
     };
     save_store(root, &store).unwrap();
