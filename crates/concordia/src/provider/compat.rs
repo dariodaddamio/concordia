@@ -1,7 +1,7 @@
 //! Provider compatibility: feature detection, not version pinning.
 //!
 //! Concordia never pins or updates the provider CLIs. For each one it reads `--version` and, once
-//! per version (cached in `<state>/compat.json`), `--help`, and records which flags exist. Turn
+//! per binary revision (cached in `<state>/version-probes.json`), `--help`, and records which flags exist. Turn
 //! planning degrades stream-json to plain text, but fails closed when known help cannot enforce
 //! Plan mode. [`TESTED`] holds the versions the parsers and flag sets were last verified against;
 //! `concordia doctor` warns (never fails) when the installed one differs.
@@ -211,6 +211,80 @@ fn cache_path(state_root: &Path) -> PathBuf {
     state_root.join("compat.json")
 }
 
+fn version_cache_path(state_root: &Path) -> PathBuf {
+    state_root.join("version-probes.json")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VersionProbeCache {
+    path: String,
+    size: u64,
+    modified_secs: u64,
+    modified_nanos: u32,
+    version: String,
+}
+
+fn binary_fingerprint(bin: &Path) -> Option<(String, u64, u64, u32)> {
+    let path = std::fs::canonicalize(bin).ok()?;
+    let metadata = std::fs::metadata(&path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some((
+        path.to_string_lossy().into_owned(),
+        metadata.len(),
+        modified.as_secs(),
+        modified.subsec_nanos(),
+    ))
+}
+
+fn load_version_cache(state_root: &Path) -> BTreeMap<String, VersionProbeCache> {
+    std::fs::read_to_string(version_cache_path(state_root))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_version_cache(state_root: &Path, entry: VersionProbeCache) {
+    let path = version_cache_path(state_root);
+    let lock = path.with_extension("lock");
+    let _ = crate::state_io::with_lock(&lock, || {
+        let mut cache = load_version_cache(state_root);
+        cache.insert(entry.path.clone(), entry);
+        let json = serde_json::to_vec_pretty(&cache).map_err(std::io::Error::other)?;
+        crate::state_io::write_atomic(&path, &json)
+    });
+}
+
+fn cached_version(state_root: &Path, bin: &Path) -> Option<String> {
+    let (path, size, modified_secs, modified_nanos) = binary_fingerprint(bin)?;
+    let entry = load_version_cache(state_root).remove(&path)?;
+    (entry.path == path
+        && entry.size == size
+        && entry.modified_secs == modified_secs
+        && entry.modified_nanos == modified_nanos)
+        .then_some(entry.version)
+}
+
+/// Refresh the version cache after an explicit live probe, such as `concordia doctor`.
+pub fn cache_version_probe(state_root: &Path, bin: &Path, version: &str) {
+    let Some((path, size, modified_secs, modified_nanos)) = binary_fingerprint(bin) else {
+        return;
+    };
+    save_version_cache(
+        state_root,
+        VersionProbeCache {
+            path,
+            size,
+            modified_secs,
+            modified_nanos,
+            version: version.to_string(),
+        },
+    );
+}
+
 fn cache_key(provider: ProviderKind, version: &str) -> String {
     format!("{}@{version}@r{PARSER_REV}", provider.as_str())
 }
@@ -231,20 +305,46 @@ fn save_cache(state_root: &Path, map: &BTreeMap<String, Caps>) {
 
 // ---- detection ----------------------------------------------------------------------------
 
-/// Version and capabilities of one CLI. `--version` always runs; `--help` only when this version
-/// is not in the cache under `state_root`. `None` when the CLI cannot report a version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheMode {
+    Persist,
+    ReadOnly,
+}
+
+/// Version and capabilities of one CLI. With a state root, a matching binary fingerprint avoids
+/// both provider probes; `--help` is only run when this version is not in the help cache.
 pub fn detect(
     provider: ProviderKind,
     bin: &Path,
     runner: Runner<'_>,
     state_root: Option<&Path>,
 ) -> Option<Compat> {
-    let out = runner(bin, &["--version"]).ok()?;
-    let version = out
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())?
-        .to_string();
+    detect_with_mode(provider, bin, runner, state_root, CacheMode::Persist)
+}
+
+pub fn detect_with_mode(
+    provider: ProviderKind,
+    bin: &Path,
+    runner: Runner<'_>,
+    state_root: Option<&Path>,
+    cache_mode: CacheMode,
+) -> Option<Compat> {
+    let version = state_root
+        .and_then(|root| cached_version(root, bin))
+        .or_else(|| {
+            let out = runner(bin, &["--version"]).ok()?;
+            let version = out
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())?
+                .to_string();
+            if cache_mode == CacheMode::Persist {
+                if let Some(root) = state_root {
+                    cache_version_probe(root, bin, &version);
+                }
+            }
+            Some(version)
+        })?;
     let tested = assess(provider, &version);
     let token = version_token(&version).unwrap_or_else(|| version.clone());
     let key = cache_key(provider, &token);
@@ -256,9 +356,11 @@ pub fn detect(
             .and_then(|h| parse_help(provider, &h))
         {
             Some(c) => {
-                if let Some(root) = state_root {
-                    cache.insert(key, c);
-                    save_cache(root, &cache);
+                if cache_mode == CacheMode::Persist {
+                    if let Some(root) = state_root {
+                        cache.insert(key, c);
+                        save_cache(root, &cache);
+                    }
                 }
                 c
             }
@@ -605,6 +707,8 @@ pub fn degradation_summary(provider: ProviderKind, caps: &Caps) -> String {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const CLAUDE_HELP: &str = "Usage: claude [options]\n  --output-format <format>  Output format: \"text\" (default), or \"stream-json\"\n  --include-partial-messages  Include partial chunks\n  --permission-mode <mode>  Permission mode (choices: \"acceptEdits\", \"plan\")\n  --model <model>  Model\n";
     const CURSOR_HELP: &str = "Usage: agent [options]\n  --output-format <format>  text | json | stream-json\n  --stream-partial-output  Stream deltas\n  --mode <mode>  plan or ask (choices: \"plan\", \"ask\")\n  --sandbox <mode>  sandbox\n";
@@ -710,7 +814,7 @@ mod tests {
         assert_eq!(
             *calls.borrow(),
             vec![vec!["--version".to_string()]],
-            "help is cached"
+            "help is cached; a non-filesystem test path cannot fingerprint the binary"
         );
 
         // A new CLI version is read again.
@@ -721,6 +825,130 @@ mod tests {
         assert_eq!(c.tested, Tested::Newer);
         assert!(!c.caps.stream_json);
         assert_eq!(calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn doctor_detection_never_writes_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls: FakeRun = RefCell::new(Vec::new());
+        let run = fake(&calls, "2.1.301 (Claude Code)\n", CLAUDE_HELP);
+
+        let detected = detect_with_mode(
+            ProviderKind::Claude,
+            Path::new("claude"),
+            &run,
+            Some(dir.path()),
+            CacheMode::ReadOnly,
+        );
+
+        assert!(detected.is_some());
+        assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn version_probe_is_cached_by_path_size_and_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("fake-provider.exe");
+        std::fs::write(&bin, b"a").unwrap();
+        let calls = AtomicUsize::new(0);
+        let run = |_: &Path, args: &[&str]| {
+            if args == ["--version"] {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok("2.1.301 (Claude Code)".to_string())
+            } else {
+                Ok(CLAUDE_HELP.to_string())
+            }
+        };
+
+        detect(ProviderKind::Claude, &bin, &run, Some(dir.path())).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        detect(ProviderKind::Claude, &bin, &run, Some(dir.path())).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        std::fs::write(&bin, b"rewritten-binary").unwrap();
+        detect(ProviderKind::Claude, &bin, &run, Some(dir.path())).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn launch_detection_spawns_nothing_when_cache_is_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let bins = [
+            (
+                ProviderKind::Codex,
+                "codex.exe",
+                "codex-cli 0.163.0",
+                CODEX_EXEC_HELP,
+            ),
+            (
+                ProviderKind::Claude,
+                "claude.exe",
+                "2.1.301 (Claude Code)",
+                CLAUDE_HELP,
+            ),
+            (
+                ProviderKind::Cursor,
+                "agent.exe",
+                "2026.10.14-0f9edde",
+                CURSOR_HELP,
+            ),
+        ];
+        let paths: Vec<_> = bins
+            .iter()
+            .map(|(_, name, _, _)| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, b"fake provider binary").unwrap();
+                path
+            })
+            .collect();
+        for ((provider, _, version, help), path) in bins.iter().zip(&paths) {
+            let run = |_: &Path, args: &[&str]| {
+                if args == ["--version"] {
+                    Ok((*version).to_string())
+                } else {
+                    Ok((*help).to_string())
+                }
+            };
+            detect(*provider, path, &run, Some(dir.path())).unwrap();
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner_calls = Arc::clone(&calls);
+        let runner: SharedRunner = Arc::new(move |_, _| {
+            runner_calls.fetch_add(1, Ordering::SeqCst);
+            Err("fresh cache should not invoke runner".into())
+        });
+        let rx = start_detection(
+            bins.iter()
+                .zip(paths)
+                .map(|((provider, _, _, _), path)| (*provider, path))
+                .collect(),
+            dir.path().to_path_buf(),
+            runner,
+        );
+        for _ in 0..3 {
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn corrupt_version_cache_is_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("fake.exe");
+        std::fs::write(&bin, b"fake").unwrap();
+        std::fs::write(version_cache_path(dir.path()), b"not json").unwrap();
+        let calls = AtomicUsize::new(0);
+        let run = |_: &Path, args: &[&str]| {
+            if args == ["--version"] {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok("2.1.301 (Claude Code)".into())
+            } else {
+                Ok(CLAUDE_HELP.into())
+            }
+        };
+        assert!(detect(ProviderKind::Claude, &bin, &run, Some(dir.path())).is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
