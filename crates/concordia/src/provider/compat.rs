@@ -277,14 +277,14 @@ pub fn detect(
 /// `program args...` with a 5 s deadline; the whole process tree is killed on timeout. Arguments
 /// are an array, never a shell string; a Cursor `.cmd` shim is bypassed the way a turn does.
 pub fn run_cli(program: &Path, args: &[&str]) -> Result<String, String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let mut cmd;
     match is_batch_shim(&program.to_string_lossy())
         .then(|| cursor_ps1_beside(program))
         .flatten()
     {
         Some(ps1) => {
-            cmd = Command::new("powershell.exe");
+            cmd = crate::process_ui::command("powershell.exe");
             cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
                 .arg(ps1)
                 .args(args)
@@ -292,7 +292,9 @@ pub fn run_cli(program: &Path, args: &[&str]) -> Result<String, String> {
         }
         None => {
             let native = super::npm::codex(&program.to_string_lossy());
-            cmd = Command::new(native.as_ref().map_or(program, |n| n.program.as_path()));
+            cmd = crate::process_ui::command(
+                native.as_ref().map_or(program, |n| n.program.as_path()),
+            );
             if let Some(native) = native {
                 cmd.envs(native.env);
             }
@@ -369,7 +371,11 @@ pub fn start_real_detection(state_root: PathBuf) -> Receiver<(ProviderKind, Comp
         ProviderKind::Cursor,
     ]
     .into_iter()
-    .filter_map(|p| crate::doctor::resolve_provider_bin(p).map(|b| (p, b)))
+    .filter_map(|p| {
+        crate::doctor::resolve_provider_bin(p)
+            .ok()
+            .map(|l| (p, l.path))
+    })
     .collect();
     start_detection(bins, state_root, Arc::new(run_cli))
 }

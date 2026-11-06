@@ -26,7 +26,7 @@ pub(crate) fn fetch(home: &Path) -> Result<String, String> {
 pub(crate) async fn fetch_with(bin: &str, home: &Path) -> Result<String, String> {
     use std::process::Stdio;
     let native = crate::provider::npm::codex(bin);
-    let mut cmd = tokio::process::Command::new(
+    let mut cmd = crate::process_ui::tokio_command(
         native
             .as_ref()
             .map_or(Path::new(bin), |n| n.program.as_path()),

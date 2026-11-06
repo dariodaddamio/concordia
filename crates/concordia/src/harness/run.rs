@@ -3,7 +3,7 @@
 use super::RunOutcome;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -68,7 +68,8 @@ pub fn run_command_cancellable(
         };
     };
     // Resolve as a shell would, so npm-style `.cmd` shims start; the stored name is unchanged.
-    let mut command = Command::new(which::which(program).unwrap_or_else(|_| program.into()));
+    let mut command =
+        crate::process_ui::command(which::which(program).unwrap_or_else(|_| program.into()));
     command
         .args(args)
         .current_dir(cwd)
@@ -133,7 +134,7 @@ pub fn run_command_cancellable(
                         job.terminate();
                     } else {
                         use std::os::windows::process::CommandExt;
-                        let _ = std::process::Command::new("taskkill.exe")
+                        let _ = crate::process_ui::command("taskkill.exe")
                             .args(["/PID", &child.id().to_string(), "/T", "/F"])
                             .creation_flags(0x0800_0000)
                             .status();
@@ -141,7 +142,7 @@ pub fn run_command_cancellable(
                 }
                 #[cfg(unix)]
                 {
-                    let _ = std::process::Command::new("kill")
+                    let _ = crate::process_ui::command("kill")
                         .args(["-TERM", &format!("-{}", child.id())])
                         .status();
                 }

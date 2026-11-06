@@ -105,7 +105,7 @@ pub fn config_path() -> Result<PathBuf, String> {
 
 /// A WezTerm window whose first pane runs Concordia, using the bundled config.
 pub fn launch_command(wez: &Path, config: &Path, exe: &Path, cwd: &Path) -> Command {
-    let mut cmd = Command::new(wez);
+    let mut cmd = crate::process_ui::command(wez);
     cmd.env("WEZTERM_CONFIG_FILE", config)
         .env("CONCORDIA_EXE", exe)
         .arg("start")
@@ -138,7 +138,7 @@ pub fn split_concordia_pane(vertical: bool) -> Result<(), String> {
     let config = config_path()?;
     let dir = if vertical { "--bottom" } else { "--right" };
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut cmd = Command::new(wez);
+    let mut cmd = crate::process_ui::command(wez);
     cmd.env("WEZTERM_CONFIG_FILE", &config);
     let concordia = find_concordia_exe();
     cmd.env("CONCORDIA_EXE", &concordia);
