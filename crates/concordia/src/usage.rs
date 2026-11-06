@@ -1181,10 +1181,20 @@ impl UsageFetcher {
     ) -> UsageSnapshot {
         match provider {
             crate::store::ProviderKind::Codex => {
-                self.fetched_snapshot(provider, account, home, false)
+                self.fetched_snapshot(provider, account, home, false, true)
             }
-            p => self.fetched_snapshot(p, account, home, false),
+            p => self.fetched_snapshot(p, account, home, false, true),
         }
+    }
+
+    /// Return the cached reading without starting a provider usage read.
+    pub fn cached_snapshot(
+        &mut self,
+        provider: crate::store::ProviderKind,
+        account: &str,
+        home: &Path,
+    ) -> UsageSnapshot {
+        self.fetched_snapshot(provider, account, home, false, false)
     }
 
     /// Like [`snapshot`](Self::snapshot) but refreshes Claude even if the cache is fresh (`/usage`).
@@ -1196,9 +1206,9 @@ impl UsageFetcher {
     ) -> UsageSnapshot {
         match provider {
             crate::store::ProviderKind::Codex => {
-                self.fetched_snapshot(provider, account, home, true)
+                self.fetched_snapshot(provider, account, home, true, true)
             }
-            p => self.fetched_snapshot(p, account, home, true),
+            p => self.fetched_snapshot(p, account, home, true, true),
         }
     }
 
@@ -1209,6 +1219,7 @@ impl UsageFetcher {
         account: &str,
         home: &Path,
         force: bool,
+        allow_start: bool,
     ) -> UsageSnapshot {
         let cursor = provider == crate::store::ProviderKind::Cursor;
         let codex = provider == crate::store::ProviderKind::Codex;
@@ -1236,7 +1247,7 @@ impl UsageFetcher {
             .is_none_or(|c| now.saturating_sub(c.fetched_at) >= USAGE_TTL_SECS);
         let stale = stale || e.dirty;
         let retry_ok = force || e.dirty || now.saturating_sub(e.last_attempt) >= USAGE_TTL_SECS;
-        let start = !e.pending && (force || (stale && retry_ok));
+        let start = allow_start && !e.pending && (force || (stale && retry_ok));
         if start {
             e.pending = true;
             e.dirty = false;

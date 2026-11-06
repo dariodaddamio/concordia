@@ -728,6 +728,14 @@ pub fn list_empty_native_records(
 
 /// Print and, after an explicit confirmation, remove empty native session artifacts.
 pub fn prune_empty_cli(state_root: &Path) -> Result<String, (String, i32)> {
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| (format!("could not read confirmation: {e}"), 1))?;
+    prune_empty_with_answer(state_root, answer.trim_end_matches(['\r', '\n']))
+}
+
+fn prune_empty_with_answer(state_root: &Path, answer: &str) -> Result<String, (String, i32)> {
     let rows = list_empty_native_records(state_root, MAX_SUMMARIZED_RECORDS);
     if rows.is_empty() {
         return Ok("No empty sessions found.\n".into());
@@ -744,11 +752,7 @@ pub fn prune_empty_cli(state_root: &Path) -> Result<String, (String, i32)> {
     }
     out.push_str("Remove these sessions? Type 'yes' to confirm: ");
     print!("{out}");
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|e| (format!("could not read confirmation: {e}"), 1))?;
-    if answer.trim() != "yes" {
+    if answer != "yes" {
         return Ok("Cancelled; no sessions were removed.\n".into());
     }
     let mut removed = 0;
@@ -1059,6 +1063,125 @@ mod tests {
                 .as_deref(),
             Some("Repair resumed history")
         );
+    }
+
+    #[test]
+    fn native_artifacts_without_a_user_message_are_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = dir.path().join("codex.jsonl");
+        let claude = dir.path().join("claude.jsonl");
+        let cursor = dir.path().join("cursor");
+        fs::create_dir(&cursor).unwrap();
+
+        fs::write(
+            &codex,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"c\"}}\n",
+        )
+        .unwrap();
+        fs::write(&claude, "{\"type\":\"system\",\"sessionId\":\"a\"}\n").unwrap();
+        fs::write(cursor.join("meta.json"), "{\"id\":\"u\"}").unwrap();
+        fs::write(cursor.join("prompt_history.json"), "[\"/help\"]").unwrap();
+        assert_eq!(summarize_codex("a", &codex, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_claude("a", &claude, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_cursor("a", &cursor, 1).unwrap().user_messages, 0);
+
+        fs::write(&codex, concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"c\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"real request\"}]}}\n"
+        )).unwrap();
+        fs::write(
+            &claude,
+            concat!(
+            "{\"type\":\"system\",\"sessionId\":\"a\"}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"real request\"}}\n"
+        ),
+        )
+        .unwrap();
+        fs::write(
+            cursor.join("prompt_history.json"),
+            "[\"/help\",\"real request\"]",
+        )
+        .unwrap();
+        assert_eq!(summarize_codex("a", &codex, 1).unwrap().user_messages, 1);
+        assert_eq!(summarize_claude("a", &claude, 1).unwrap().user_messages, 1);
+        assert_eq!(summarize_cursor("a", &cursor, 1).unwrap().user_messages, 1);
+
+        fs::write(&codex, concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"c\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"/help\"}]}}\n"
+        )).unwrap();
+        fs::write(&claude, "{\"type\":\"user\",\"message\":{\"content\":\"<local-command-name>/help</local-command-name>\"}}\n").unwrap();
+        fs::write(cursor.join("prompt_history.json"), "[\"/help\"]").unwrap();
+        assert_eq!(summarize_codex("a", &codex, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_claude("a", &claude, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_cursor("a", &cursor, 1).unwrap().user_messages, 0);
+    }
+
+    #[test]
+    fn prune_empty_lists_candidates_and_deletes_only_after_exact_yes() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = [
+            (ProviderKind::Codex, "codex", "sessions"),
+            (
+                ProviderKind::Claude,
+                "claude",
+                "projects/C--Users-synthetic-dev",
+            ),
+            (ProviderKind::Cursor, "cursor", "chats/project"),
+        ];
+        for (provider, account, relative) in providers {
+            let home = dir.path().join(format!("home-{account}"));
+            let base = home.join(relative);
+            fs::create_dir_all(&base).unwrap();
+            let empty = if provider == ProviderKind::Cursor {
+                base.join("empty")
+            } else {
+                base.join("empty.jsonl")
+            };
+            let real = if provider == ProviderKind::Cursor {
+                base.join("real")
+            } else {
+                base.join("real.jsonl")
+            };
+            if provider == ProviderKind::Cursor {
+                fs::create_dir_all(&empty).unwrap();
+                fs::create_dir_all(&real).unwrap();
+                fs::write(empty.join("meta.json"), "{} ").unwrap();
+                fs::write(real.join("meta.json"), "{} ").unwrap();
+                fs::write(real.join("prompt_history.json"), "[\"keep me\"]").unwrap();
+            } else {
+                fs::write(&empty, "{}\n").unwrap();
+                let content = if provider == ProviderKind::Codex {
+                    "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"keep me\"}]}}\n"
+                } else {
+                    "{\"type\":\"user\",\"message\":{\"content\":\"keep me\"}}\n"
+                };
+                fs::write(&real, content).unwrap();
+            }
+            crate::store::upsert_stored_account(
+                dir.path(),
+                crate::store::StoredAccount {
+                    id: account.into(),
+                    provider,
+                    home_path: Some(home.to_string_lossy().into_owned()),
+                    label: account.into(),
+                    created_at: "0".into(),
+                },
+            )
+            .unwrap();
+        }
+        let rows = list_empty_native_records(dir.path(), 10);
+        assert_eq!(rows.len(), 3);
+        assert!(rows
+            .iter()
+            .all(|(_, path)| path.to_string_lossy().contains("empty")));
+        for answer in ["", "y", "YES ", "yes "] {
+            prune_empty_with_answer(dir.path(), answer).unwrap();
+            assert_eq!(list_empty_native_records(dir.path(), 10).len(), 3);
+        }
+        prune_empty_with_answer(dir.path(), "yes").unwrap();
+        assert!(list_empty_native_records(dir.path(), 10).is_empty());
+        assert_eq!(list_native_records(dir.path(), 10).len(), 3);
     }
 
     #[test]

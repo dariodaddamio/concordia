@@ -142,6 +142,7 @@ struct Areas {
     transcript: Rect,
     input: Rect,
     bottom_button: Rect,
+    footer: Rect,
     run_cancel: Rect,
     permissions: Rect,
     permissions_popup: Rect,
@@ -7573,6 +7574,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
+    app.areas.footer = area;
     let w = area.width as usize;
     let mode = app.trust;
     let label = if mode == TrustMode::Full {

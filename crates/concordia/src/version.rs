@@ -1,8 +1,8 @@
-//! Build identity so users can tell which binary a pane is running.
+﻿//! Build identity so users can tell which binary a pane is running.
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Bumped when everyday behavior changes; shown in header + `--version`.
-pub const BUILD_STAMP: &str = "2026-11-05h";
+pub const BUILD_STAMP: &str = "2026-11-05i";
 
 pub fn version_line() -> String {
     format!("concordia {VERSION} ({BUILD_STAMP})")
