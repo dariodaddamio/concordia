@@ -212,10 +212,13 @@ From source today:
 ```powershell
 git clone <this-repo> concordia
 cd concordia
-.\scripts\install-dev.ps1
+.\scripts\install-dev.ps1 -Install
 ```
 
-The script builds a release binary, installs it to `%LOCALAPPDATA%\concordia\bin`, writes a `current` pointer so every launcher agrees on the active build, and prints the version.
+The script preflights and installs missing dependencies, builds a release binary, and installs it
+to `%LOCALAPPDATA%\concordia\bin`. Use `.\scripts\install-dev.ps1 -CheckOnly` to inspect
+prerequisites without building. A missing `dbghelp.lib` means the Windows SDK is not installed or
+is still installing.
 
 ```powershell
 concordia --version
