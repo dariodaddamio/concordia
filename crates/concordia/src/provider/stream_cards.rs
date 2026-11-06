@@ -853,6 +853,11 @@ pub fn compact_detail(raw: &str, max: usize) -> String {
 
 pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
     super::edit_display::normalize(&mut next);
+    next.title = crate::redact::redact(&next.title).into_owned();
+    next.detail = next
+        .detail
+        .as_deref()
+        .map(|detail| crate::redact::redact(detail).into_owned());
     if let Some(prev) = cards.iter_mut().find(|c| c.id == next.id) {
         let is_result_update = next.title == "result";
         let search_heartbeat = next.title == "Search web"

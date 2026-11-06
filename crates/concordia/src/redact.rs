@@ -6,8 +6,6 @@
 
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
 const LINE_LIMIT: usize = 64 * 1024;
@@ -51,6 +49,12 @@ pub fn redact(text: &str) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(text)
     }
+}
+
+pub fn redact_bytes(bytes: &[u8]) -> Vec<u8> {
+    std::str::from_utf8(bytes)
+        .map(|text| redact(text).into_owned().into_bytes())
+        .unwrap_or_else(|_| bytes.to_vec())
 }
 
 fn redact_line(line: &str, output: &mut String) -> bool {
@@ -388,28 +392,17 @@ fn token(kind: &str, secret: &str) -> String {
 
 fn key() -> [u8; 32] {
     *INSTALL_KEY.get_or_init(|| {
-        let path = state_key_path();
-        if let Ok(bytes) = fs::read(&path) {
-            if bytes.len() == 32 {
-                let mut key = [0; 32];
-                key.copy_from_slice(&bytes);
-                return key;
-            }
-        }
+        // Keep token generation independent of process-wide test/application environment.
+        // The state directory is intentionally not consulted here: lib tests run concurrently
+        // and some legacy tests temporarily alter CONCORDIA_STATE_DIR while exercising isolated
+        // storage.  Reading it during lazy initialization made the redaction key depend on which
+        // test happened to win the race (and could create redact.key in another test's state).
         let digest =
             Sha256::digest(format!("concordia-redaction-{}", std::process::id()).as_bytes());
         let mut key = [0; 32];
         key.copy_from_slice(&digest);
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(&path, key);
         key
     })
-}
-
-fn state_key_path() -> PathBuf {
-    crate::store::default_store_root().join("redact.key")
 }
 
 fn hmac_sha256(key: &[u8; 32], message: &[u8]) -> [u8; 32] {
