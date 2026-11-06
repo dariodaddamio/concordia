@@ -213,6 +213,7 @@ pub fn cursor_api_key_for_home(home: &Path) -> Option<String> {
         if let Ok(t) = fs::read_to_string(&p) {
             let t = t.trim();
             if !t.is_empty() {
+                crate::redact::register_runtime_secret(t);
                 return Some(t.to_string());
             }
         }
