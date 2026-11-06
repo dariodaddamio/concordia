@@ -122,10 +122,13 @@ Needs the Rust toolchain pinned by `rust-toolchain.toml` and the Visual Studio C
 ```powershell
 git clone https://github.com/OWNER/concordia
 cd concordia
-.\scripts\install-dev.ps1
+.\scripts\install-dev.ps1 -Install
 ```
 
-This builds `concordia` in release mode and runs the same `concordia install` as route 5.
+This preflights and installs missing Rust, MSVC, and Windows SDK dependencies, then builds
+`concordia` in release mode and runs the same `concordia install` as route 5. Use
+`\.\scripts\install-dev.ps1 -CheckOnly` to inspect prerequisites without building. If the linker
+reports `dbghelp.lib` missing, the Windows SDK is not installed or is still installing.
 
 ## What `concordia install` changes
 
