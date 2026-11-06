@@ -44,8 +44,9 @@ pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
             argv.push("--force".into());
         }
         TrustMode::Workspace => {
-            argv.push("--sandbox".into());
-            argv.push("disabled".into());
+            // Cursor agent 2026.10.22 trust table: Plan=`--mode plan`, Ask=default,
+            // Workspace=default workspace sandbox, Full=`--force`. Its help only offers
+            // `--sandbox enabled|disabled`; Workspace must never use `disabled`.
         }
         TrustMode::Plan => {
             argv.push("--mode".into());

@@ -46,6 +46,7 @@ pub fn plan_claude_turn(req: &ClaudeTurnRequest<'_>) -> Result<ClaudePlan> {
             argv.push("plan".into());
         }
         TrustMode::Ask => {
+            // Claude 2.1.319 help accepts manual; this is its prompting mode for Ask.
             argv.push("--permission-mode".into());
             argv.push("manual".into());
         }
