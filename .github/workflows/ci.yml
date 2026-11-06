@@ -24,6 +24,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Check hidden child-process constructors
+        shell: pwsh
+        run: ./scripts/check-hidden-process-spawns.ps1
 
       # rust-toolchain.toml pins the compiler (and clippy/rustfmt) so lints cannot drift.
       - name: Install pinned toolchain

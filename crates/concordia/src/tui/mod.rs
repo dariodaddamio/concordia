@@ -2649,7 +2649,10 @@ impl App {
         }
         #[cfg(not(test))]
         {
-            let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
+            // Explorer is intentionally visible: this is the requested URL window.
+            let _ = std::process::Command::new("explorer.exe") // visible-spawn: user-requested release page.
+                .arg(url)
+                .spawn();
         }
         #[cfg(test)]
         self.flash("release page opened");

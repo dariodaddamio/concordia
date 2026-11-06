@@ -931,8 +931,8 @@ fn strip_ansi(s: &str) -> String {
 /// process tree killed after `timeout`. The `.cmd` shim case is handled by `Command` itself; the
 /// arguments are fixed and shell-safe.
 pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<String, String> {
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new(bin);
+    use std::process::Stdio;
+    let mut cmd = crate::process_ui::command(bin);
     // A usage read must not leave a native session behind (it showed as "untitled session").
     cmd.args(["-p", "/usage", "--no-session-persistence"])
         .env("CLAUDE_CONFIG_DIR", home)

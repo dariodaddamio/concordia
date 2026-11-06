@@ -3,7 +3,7 @@ use super::{Binding, Source};
 use serde_json::{json, Value};
 use std::{io::Cursor, process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 
 const WIRE_LIMIT: usize = 16 * 1024 * 1024;
 const FRAME_LIMIT: usize = 1024 * 1024;
@@ -136,7 +136,7 @@ pub(super) fn open(root: &std::path::Path, binding: &Binding) -> Result<Source, 
                 prompt: "acp".into(), new_session_id: None, provider: crate::store::ProviderKind::Cursor,
             };
             let launch = crate::provider::launch::prepare(&plan).map_err(|e|e.to_string())?;
-            let mut command = Command::new(&launch.program);
+        let mut command = crate::process_ui::tokio_command(&launch.program);
             crate::process_ui::background(&mut command);
             command.args(&launch.args).envs(launch.env)
                 .env("CURSOR_CONFIG_DIR", &home)
