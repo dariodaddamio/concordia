@@ -1,6 +1,6 @@
 # UI glossary
 
-The maintained [README icon and animation table](../README.md#icons-and-animations) lists each
+This glossary lists each
 visible run phase, tool toggle, worker mark, transcript gutter, notice and terminal-tab state.
 The phase text is authoritative when a terminal font cannot render a symbol.
 
@@ -29,7 +29,7 @@ not each phase, and is neither a countdown nor a billing measure.
 
 ## File and chat references
 
-[README controls](../README.md#files-beside-chat-and-chat-references) cover both routes. Clickable
+The [workspace pane guide](workspace-panes.md) covers both routes. Clickable
 paths and `/open FILE[:LINE[:COLUMN]]` share the same internal file pane. Prefixing a path with `@`
 is accepted, including `/open @README.md`. A click opens a pane; a drag selects text. File references
 in the prompt remain provider-visible text, rather than silently reading/attaching local contents.
