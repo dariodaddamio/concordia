@@ -29,6 +29,15 @@ fn read_local_cache(home: &Path, relative: &str) -> Option<String> {
 }
 
 pub fn list_models(provider: ProviderKind, home: &Path) -> Vec<String> {
+    list_model_details(provider, home)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Read provider-owned model ids and their safe display names.  This deliberately selects only
+/// model fields from the Codex cache; in particular, identity metadata is never inspected.
+pub fn list_model_details(provider: ProviderKind, home: &Path) -> Vec<(String, String)> {
     match provider {
         ProviderKind::Codex => list_codex_models(home),
         ProviderKind::Claude => list_claude_models(home),
@@ -36,7 +45,7 @@ pub fn list_models(provider: ProviderKind, home: &Path) -> Vec<String> {
     }
 }
 
-fn list_codex_models(home: &Path) -> Vec<String> {
+fn list_codex_models(home: &Path) -> Vec<(String, String)> {
     let Some(raw) = read_local_cache(home, "models_cache.json") else {
         return Vec::new();
     };
@@ -56,20 +65,26 @@ fn list_codex_models(home: &Path) -> Vec<String> {
             .or_else(|| item.get("model"))
             .and_then(|x| x.as_str())
         {
-            if !id.is_empty() && !out.iter().any(|x| x == id) {
-                out.push(id.to_string());
+            if !id.is_empty() && !out.iter().any(|x: &(String, String)| x.0 == id) {
+                let name = item
+                    .get("display_name")
+                    .and_then(|x| x.as_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(id)
+                    .to_string();
+                out.push((id.to_string(), name));
             }
         } else if let Some(s) = item.as_str() {
-            if !s.is_empty() && !out.iter().any(|x| x == s) {
-                out.push(s.to_string());
+            if !s.is_empty() && !out.iter().any(|x: &(String, String)| x.0 == s) {
+                out.push((s.to_string(), s.to_string()));
             }
         }
     }
     out
 }
 
-fn list_claude_models(home: &Path) -> Vec<String> {
-    let mut out = Vec::new();
+fn list_claude_models(home: &Path) -> Vec<(String, String)> {
+    let mut ids = Vec::new();
     for rel in [
         "cache/model-catalog.json",
         "cache/additionalModelOptionsCache.json",
@@ -80,12 +95,12 @@ fn list_claude_models(home: &Path) -> Vec<String> {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else {
             continue;
         };
-        collect_model_ids(&v, &mut out);
+        collect_model_ids(&v, &mut ids);
     }
-    out
+    ids.into_iter().map(|id| (id.clone(), id)).collect()
 }
 
-fn list_cursor_models(home: &Path) -> Vec<String> {
+fn list_cursor_models(home: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if let Some(raw) = read_local_cache(home, "cli-config.json") {
         if let Ok(v) = serde_json::from_str::<Value>(&raw) {
@@ -94,15 +109,15 @@ fn list_cursor_models(home: &Path) -> Vec<String> {
                 .and_then(|m| m.get("modelId").or_else(|| m.get("displayModelId")))
                 .and_then(|x| x.as_str())
             {
-                out.push(id.to_string());
+                out.push((id.to_string(), id.to_string()));
             }
             if out.is_empty() {
-                out.push("auto".into());
+                out.push(("auto".into(), "auto".into()));
             }
         }
     }
     if out.is_empty() {
-        out.push("auto".into());
+        out.push(("auto".into(), "auto".into()));
     }
     out
 }
@@ -150,7 +165,7 @@ mod tests {
         )
         .unwrap();
         let m = list_codex_models(d.path());
-        assert!(m.contains(&"gpt-5.6-sol".into()));
-        assert!(m.contains(&"o3".into()));
+        assert!(m.iter().any(|(id, _)| id == "gpt-5.6-sol"));
+        assert!(m.iter().any(|(id, _)| id == "o3"));
     }
 }

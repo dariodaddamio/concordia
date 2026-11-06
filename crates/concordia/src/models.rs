@@ -52,8 +52,12 @@ fn available_at(root: &Path, provider: ProviderKind, account: &str) -> Vec<Model
         .filter(|a| a.provider == provider)
     {
         if let Some(home) = candidate.home_path {
-            for id in catalog::list_models(provider, &home) {
-                add(&mut out, &mut ids, entry(id, ModelSource::Cached));
+            for (id, display_name) in catalog::list_model_details(provider, &home) {
+                add(
+                    &mut out,
+                    &mut ids,
+                    entry_named(id, display_name, ModelSource::Cached),
+                );
             }
         }
     }
@@ -127,8 +131,12 @@ fn parse_list_output(raw: &str) -> Vec<ModelEntry> {
 }
 
 fn entry(id: String, source: ModelSource) -> ModelEntry {
+    entry_named(id.clone(), id, source)
+}
+
+fn entry_named(id: String, display_name: String, source: ModelSource) -> ModelEntry {
     ModelEntry {
-        display_name: id.clone(),
+        display_name,
         family: family(&id),
         id,
         source,
@@ -260,6 +268,15 @@ mod tests {
                 "missing {provider:?}"
             );
         }
+    }
+
+    #[test]
+    fn codex_catalog_lists_current_models() {
+        let ids: Vec<_> = catalog_entries(ProviderKind::Codex)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
     }
 
     #[test]

@@ -43,6 +43,7 @@ use ratatui::{Frame, Terminal};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -324,6 +325,12 @@ struct Picker {
     state: ListState,
 }
 
+struct ModelRefresh {
+    provider: ProviderKind,
+    account: String,
+    rx: std_mpsc::Receiver<Vec<crate::models::ModelEntry>>,
+}
+
 impl Picker {
     fn filtered(&self) -> Vec<&PickerRow> {
         let q = self.filter.to_ascii_lowercase();
@@ -462,6 +469,7 @@ pub struct App {
     native_agents: native_agents::State,
     footer_left: String,
     picker: Option<Picker>,
+    model_refresh: Option<ModelRefresh>,
     token_reads: tokens::State,
     integrations: integrations::State,
     artifacts: artifacts::State,
@@ -1952,6 +1960,7 @@ impl App {
             }
         }
         self.poll_pending_login();
+        self.poll_model_refresh();
         self.poll_job();
         landing::poll(self);
         tokens::poll(self);
@@ -1967,6 +1976,33 @@ impl App {
             self.update_usage_block();
             self.update_usage_picker();
         }
+    }
+
+    fn poll_model_refresh(&mut self) {
+        let Some(refresh) = self.model_refresh.as_ref() else {
+            return;
+        };
+        let Ok(models) = refresh.rx.try_recv() else {
+            return;
+        };
+        let provider = refresh.provider;
+        let account = refresh.account.clone();
+        self.model_refresh = None;
+        if self.provider != provider || self.account != account {
+            return;
+        }
+        let Some(picker) = self.picker.as_mut().filter(|p| p.kind == PickerKind::Model) else {
+            return;
+        };
+        let filter = picker.filter.clone();
+        let selected = picker.state.selected().unwrap_or(0);
+        let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
+        picker.rows = model_picker_rows(models, chosen);
+        picker.title = "model".into();
+        picker.filter = filter;
+        picker.state.select(Some(selected));
+        picker.select_clamp();
+        self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
     }
 
     /// Announce when a login we launched has completed (cheap file-existence checks, ~2 s apart).
@@ -2485,6 +2521,45 @@ impl App {
     }
 
     fn open_model_picker(&mut self) {
+        let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
+        let rows = model_picker_rows(
+            crate::models::available(self.provider, &self.account),
+            chosen,
+        );
+        let selected = rows
+            .iter()
+            .position(|r| r.label.ends_with(" · current"))
+            .unwrap_or(0);
+        self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
+        self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
+    }
+
+    fn refresh_model_picker(&mut self) {
+        if self.model_refresh.is_some() {
+            return;
+        }
+        let provider = self.provider;
+        let account = self.account.clone();
+        let (tx, rx) = std_mpsc::channel();
+        std::thread::spawn({
+            let account = account.clone();
+            move || {
+                let _ = tx.send(crate::models::refresh(provider, &account));
+            }
+        });
+        self.model_refresh = Some(ModelRefresh {
+            provider,
+            account,
+            rx,
+        });
+        if let Some(picker) = self.picker.as_mut() {
+            picker.title = "model · refreshing...".into();
+        }
+        self.footer_left = "refreshing... · Esc closes · UI remains responsive".into();
+    }
+
+    /*
+    fn open_model_picker_old(&mut self) {
         // (id, shown name, detail). The detail repeats the id so typing either one filters.
         let mut models: Vec<(String, String, String)> = Vec::new();
         let mut add = |id: &str, name: &str, detail: &str| {
@@ -2525,6 +2600,7 @@ impl App {
         self.footer_left = "↑↓ Enter · type any model id · Esc".into();
     }
 
+    */
     fn open_usage_picker(&mut self) {
         self.request_account_usage();
         self.build_usage_picker();
@@ -2828,6 +2904,9 @@ impl App {
         let id = row.id.clone();
         let label = row.label.clone();
         let kind = picker.kind;
+        if kind == PickerKind::Model && id.starts_with("model-group:") {
+            return;
+        }
         self.dismiss_picker();
         if self.busy
             && matches!(
@@ -4110,6 +4189,7 @@ impl App {
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            model_refresh: None,
             token_reads: tokens::State::default(),
             integrations: integrations::State::default(),
             artifacts: artifacts::State::default(),
@@ -4183,6 +4263,66 @@ fn select_account(state_root: &Path, account_id: &str) -> anyhow::Result<()> {
 }
 
 const TYPED_MODEL_PREFIX: &str = "typed-model:";
+
+fn model_source_tag(source: crate::models::ModelSource) -> &'static str {
+    match source {
+        crate::models::ModelSource::ListedByCli => "reported by CLI",
+        crate::models::ModelSource::Cached => "cached",
+        crate::models::ModelSource::Catalog => "catalog",
+        crate::models::ModelSource::Typed => "typed",
+    }
+}
+
+fn model_picker_rows(
+    models: Vec<crate::models::ModelEntry>,
+    chosen: Option<&str>,
+) -> Vec<PickerRow> {
+    let mut rows = vec![PickerRow {
+        id: "model:".into(),
+        label: format!(
+            "provider default{}",
+            if chosen.is_none() { " · current" } else { "" }
+        ),
+        detail: "the CLI picks its own default model".into(),
+    }];
+    let mut families = std::collections::BTreeMap::<String, Vec<crate::models::ModelEntry>>::new();
+    for model in models {
+        families
+            .entry(model.family.clone())
+            .or_default()
+            .push(model);
+    }
+    for (family, mut entries) in families {
+        entries.sort_by_key(|m| (m.deprecated, m.display_name.to_ascii_lowercase()));
+        rows.push(PickerRow {
+            id: format!("model-group:{family}"),
+            label: family,
+            detail: String::new(),
+        });
+        for model in entries {
+            let current = chosen == Some(model.id.as_str());
+            rows.push(PickerRow {
+                id: format!("model:{}", model.id),
+                label: format!(
+                    "{}{}",
+                    model.display_name,
+                    if current { " · current" } else { "" }
+                ),
+                detail: format!(
+                    "{} · {}{}",
+                    model.id,
+                    model_source_tag(model.source),
+                    if model.deprecated {
+                        " · deprecated"
+                    } else {
+                        ""
+                    }
+                ),
+            });
+        }
+    }
+    rows
+}
 
 /// Typed model ids become one `--model` argv entry; keep them to model-id characters.
 fn valid_model_id(model: &str) -> bool {
@@ -5350,6 +5490,9 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
                     app.usage_fetcher.invalidate(&account.account);
                 }
                 app.open_usage_picker();
+            }
+            KeyCode::Char('r') if picker.kind == PickerKind::Model && picker.filter.is_empty() => {
+                app.refresh_model_picker()
             }
             KeyCode::Up => {
                 let n = picker.filtered().len();
@@ -7622,13 +7765,20 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .filtered()
         .into_iter()
         .map(|r| {
-            let label_style = match tones.get(&r.id) {
+            let mut label_style = match tones.get(&r.id) {
                 Some(UsageTone::Ok) => Style::default().fg(Color::Green),
                 Some(UsageTone::Warn) => Style::default().fg(Color::Yellow),
                 Some(UsageTone::Bad) => Style::default().fg(Color::Red),
                 Some(UsageTone::Mute) => Style::default().fg(Color::DarkGray),
                 None => Style::default(),
             };
+            if r.id.starts_with("model-group:")
+                || (picker.kind == PickerKind::Model && r.detail.contains("deprecated"))
+            {
+                label_style = Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM);
+            }
             if r.label.contains('\n') {
                 let mut lines = Vec::new();
                 for line in r.label.lines() {
@@ -7663,10 +7813,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(Color::Green),
                 ));
             }
-            spans.extend([Span::styled(
-                format!("  {}", r.detail),
-                Style::default().fg(Color::DarkGray),
-            )]);
+            if !r.detail.is_empty() {
+                spans.extend([Span::styled(
+                    format!("  {}", r.detail),
+                    Style::default().fg(Color::DarkGray),
+                )]);
+            }
             ListItem::new(Line::from(spans))
         })
         .collect();

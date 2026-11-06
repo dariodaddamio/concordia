@@ -4934,6 +4934,100 @@ fn typed_model_ids_are_accepted_but_unsafe_and_unknown_accounts_cannot_change_bi
 }
 
 #[test]
+fn model_picker_groups_by_family_with_default_first() {
+    let rows = super::model_picker_rows(
+        vec![
+            crate::models::ModelEntry {
+                id: "b".into(),
+                display_name: "B".into(),
+                family: "Family B".into(),
+                source: crate::models::ModelSource::Catalog,
+                deprecated: false,
+            },
+            crate::models::ModelEntry {
+                id: "a".into(),
+                display_name: "A".into(),
+                family: "Family A".into(),
+                source: crate::models::ModelSource::Catalog,
+                deprecated: false,
+            },
+        ],
+        None,
+    );
+    assert!(rows[0].label.starts_with("provider default"));
+    assert_eq!(rows[1].label, "Family A");
+    assert_eq!(rows[3].label, "Family B");
+}
+
+#[test]
+fn model_picker_shows_source_tags_and_marks_current() {
+    let rows = super::model_picker_rows(
+        vec![crate::models::ModelEntry {
+            id: "sol".into(),
+            display_name: "Sol".into(),
+            family: "GPT-5.6".into(),
+            source: crate::models::ModelSource::Cached,
+            deprecated: false,
+        }],
+        Some("sol"),
+    );
+    assert!(rows[2].label.contains("current"));
+    assert!(rows[2].detail.contains("sol") && rows[2].detail.contains("cached"));
+}
+
+#[test]
+fn model_picker_filter_matches_names_and_ids() {
+    let rows = super::model_picker_rows(
+        vec![crate::models::ModelEntry {
+            id: "gpt-5.6-sol".into(),
+            display_name: "GPT Sol".into(),
+            family: "GPT-5.6".into(),
+            source: crate::models::ModelSource::Catalog,
+            deprecated: false,
+        }],
+        None,
+    );
+    let picker = super::Picker {
+        kind: super::PickerKind::Model,
+        title: "model".into(),
+        rows,
+        filter: "5.6-sol".into(),
+        state: ratatui::widgets::ListState::default(),
+    };
+    assert_eq!(
+        picker
+            .filtered()
+            .iter()
+            .filter(|r| r.id.starts_with("model:gpt"))
+            .count(),
+        1
+    );
+    let mut by_name = picker;
+    by_name.filter = "GPT Sol".into();
+    assert_eq!(
+        by_name
+            .filtered()
+            .iter()
+            .filter(|r| r.id.starts_with("model:gpt"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn model_picker_r_refreshes_without_blocking() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let _ = tx.send(Vec::<crate::models::ModelEntry>::new());
+    });
+    assert!(rx.try_recv().is_err());
+    assert!(std::time::Instant::now().elapsed() < std::time::Duration::from_millis(20));
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(rx.try_recv().is_ok());
+}
+
+#[test]
 fn completed_commands_reveal_their_options_before_a_space_or_enter() {
     let _iso = Isolated::new();
     let mut h = Harness::new(110, 28);

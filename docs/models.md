@@ -16,7 +16,7 @@ Research performed 2026-11-06 with help/version only:
 The Cursor list command is the only discovered provider-owned listing command and is run with a
 five-second timeout, hidden through Concordia's process wrapper. It is never run by `available`.
 Catalog entries are intentionally conservative: the Claude entries preserve the prior shipped
-list, Cursor's `auto` is documented by the CLI help, and Codex's `gpt-5`/`o3` are verified model
-arguments in the current provider surface but are not a complete live service catalog. Future
-refresh output or provider caches supersede them. `opus`, `sonnet`, and `haiku` remain valid typed
+list, Cursor's `auto` is documented by the CLI help, and Codex's current fallback entries are
+`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` (family `GPT-5.6`). Future refresh output or
+provider caches supersede them. `opus`, `sonnet`, and `haiku` remain valid typed
 Claude aliases but are not catalog claims.
