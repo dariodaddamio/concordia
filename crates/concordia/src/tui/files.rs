@@ -107,10 +107,30 @@ impl App {
             self.build_related_files_picker();
             return;
         }
-        let mut candidates = file_links::candidates(reference);
         if let Some(explicit) = file_links::explicit_reference(reference) {
-            candidates.push(explicit);
+            match file_links::resolve_explicit(&explicit, &self.cwd) {
+                Ok(file) => {
+                    if external {
+                        self.perform_file_action(
+                            file,
+                            crate::file_open::FileAction::Editor,
+                            self.cwd.clone(),
+                            None,
+                        );
+                    } else {
+                        self.perform_file_action(
+                            file,
+                            crate::file_open::FileAction::Preview,
+                            self.cwd.clone(),
+                            None,
+                        );
+                    }
+                }
+                Err(error) => self.flash(error),
+            }
+            return;
         }
+        let mut candidates = file_links::candidates(reference);
         candidates.sort_by_key(|c| std::cmp::Reverse(c.range.len()));
         if let Some(candidate) = candidates
             .into_iter()
