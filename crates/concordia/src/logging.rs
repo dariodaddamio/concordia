@@ -84,7 +84,7 @@ fn append(path: &Path, level: &str, msg: &str, secs: u64) -> std::io::Result<()>
         let _ = fs::rename(path, rotated);
     }
     // Keep it to one line per event.
-    let flat = msg.replace(['\r', '\n'], " | ");
+    let flat = crate::redact::redact(msg).replace(['\r', '\n'], " | ");
     let line = format!(
         "{} {level:<5} pid={} {flat}\n",
         iso_utc(secs),
