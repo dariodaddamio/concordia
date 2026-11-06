@@ -76,6 +76,35 @@ fn handle_surrogate(surrogate_buffer: &mut Option<u16>, new_surrogate: u16) -> O
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::handle_key_event;
+    use crate::event::{Event, KeyCode};
+    use crossterm_winapi::{ControlKeyState, KeyEventRecord};
+
+    fn key(key_down: bool, u_char: u16) -> KeyEventRecord {
+        KeyEventRecord {
+            key_down,
+            repeat_count: 1,
+            virtual_key_code: 0,
+            virtual_scan_code: 0,
+            u_char,
+            control_key_state: ControlKeyState(0),
+        }
+    }
+
+    #[test]
+    fn surrogate_pair_release_records_do_not_drop_emoji() {
+        let mut surrogate_buffer = None;
+        assert!(handle_key_event(key(true, 0xD83D), &mut surrogate_buffer).is_none());
+        assert!(handle_key_event(key(false, 0xD83D), &mut surrogate_buffer).is_none());
+        assert!(matches!(
+            handle_key_event(key(true, 0xDE00), &mut surrogate_buffer),
+            Some(Event::Key(key_event)) if key_event.code == KeyCode::Char('😀')
+        ));
+    }
+}
+
 impl From<&ControlKeyState> for KeyModifiers {
     fn from(state: &ControlKeyState) -> Self {
         let shift = state.has_state(SHIFT_PRESSED);

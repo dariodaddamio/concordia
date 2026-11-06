@@ -15,7 +15,7 @@ are used unmodified; exact source links and license texts are included in THIRD-
 If any are vendored or modified, those files must retain their applicable MPL notices and source
 availability obligations. The exceptions are crate-specific in deny.toml.
 
-Crossterm 0.28.1 is vendored under vendor/crossterm (MIT; see its LICENSE).
+Crossterm 0.29.0 is vendored under vendor/crossterm (MIT; see its LICENSE).
 Concordia changes src/event/sys/windows/parse.rs to ignore key-release surrogate halves,
 so Windows emoji input reaches the editor. Patch rationale and removal criteria: vendor/crossterm/CONCORDIA-PATCH.md.
 It also exposes the shared ANSI parser to Concordia's Windows VT byte-stream input
