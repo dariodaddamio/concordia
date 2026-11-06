@@ -28,6 +28,16 @@ pub fn find_agent_bin() -> Result<String, String> {
 }
 
 pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
+    plan_cursor_turn_with(
+        req,
+        &super::LocateEnv::from_process(super::ProviderKind::Cursor),
+    )
+}
+
+pub fn plan_cursor_turn_with(
+    req: &CursorTurnRequest<'_>,
+    locate_env: &super::LocateEnv,
+) -> Result<CursorPlan> {
     let mut argv = vec![
         "--print".into(),
         "--output-format".into(),
@@ -74,7 +84,12 @@ pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
         }
     }
     Ok(CursorPlan {
-        command: find_agent_bin().map_err(anyhow::Error::msg)?,
+        command: super::locate(super::ProviderKind::Cursor, locate_env)
+            .map(|p| p.path.to_string_lossy().into_owned())
+            .map_err(|e| {
+                crate::doctor::format_not_found_turn_error(super::ProviderKind::Cursor, &e)
+            })
+            .map_err(anyhow::Error::msg)?,
         argv,
         env,
         cwd: req.cwd.to_string_lossy().into_owned(),

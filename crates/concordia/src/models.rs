@@ -312,16 +312,28 @@ mod tests {
 
     #[test]
     fn hung_list_command_times_out_without_blocking() {
-        let started = std::time::Instant::now();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+
         let result = run_bounded(
-            || {
-                std::thread::sleep(Duration::from_millis(100));
+            move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                finished_tx.send(()).unwrap();
                 42
             },
-            Duration::from_millis(10),
+            Duration::from_millis(50),
         );
-        assert!(result.is_none());
-        assert!(started.elapsed() < Duration::from_millis(80));
+        started_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("fake list runner did not start");
+        assert!(result.is_none(), "bounded list call waited for the runner");
+
+        release_tx.send(()).unwrap();
+        finished_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("fake list runner did not finish after release");
     }
 
     #[test]
