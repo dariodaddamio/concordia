@@ -44,12 +44,17 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
     let current = display_path(&project_root(cwd));
     let probe = crate::cursor_usage::probe_dir();
     let mut groups: BTreeMap<PathBuf, Vec<SessionSummary>> = BTreeMap::new();
+    let mut deleted = Vec::new();
     for session in sessions {
         let folder = match session.cwd.as_deref().map(Path::new) {
             Some(path) if path == probe => continue,
             Some(path) => display_path(&project_root(path)),
             None => PathBuf::from("other"),
         };
+        if cwd.exists() && folder != current && !folder.exists() {
+            deleted.push(session);
+            continue;
+        }
         groups.entry(folder).or_default().push(session);
     }
     let name = |path: &Path| {
@@ -97,6 +102,16 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
             newest(b).cmp(&newest(a))
         })
     });
+    if !deleted.is_empty() {
+        deleted.sort_by_key(|s| std::cmp::Reverse(s.modified_ms));
+        groups.push(ChatGroup {
+            folder: format!("deleted folders ({})", deleted.len()),
+            sessions: deleted,
+            expanded: false,
+            quick_questions: false,
+            quick_sessions: Vec::new(),
+        });
+    }
     groups
 }
 
@@ -953,11 +968,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
 /// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
 fn goal_rows(landing: &Landing) -> usize {
     let goals = landing.open_goals().len() + usize::from(landing.mode != Mode::Browse);
-    let meters = if landing.meters.is_empty() {
-        0
-    } else {
-        1 + landing.meters.iter().map(|_| 1).sum::<usize>()
-    };
     let work: usize = landing
         .work
         .iter()
@@ -967,11 +977,89 @@ fn goal_rows(landing: &Landing) -> usize {
             None => 2,
         })
         .sum();
-    if work == 0 {
-        goals + meters
+    let goals_content = goals.max(3);
+    let usage = if landing.meters.is_empty() {
+        0
     } else {
-        goals + meters + usize::from(goals + meters > 0) + 1 + work
+        landing.meters.len() + 2
+    };
+    if work == 0 {
+        goals_content.max(usage + 5)
+    } else {
+        goals_content.max(usage + 5) + usize::from(goals > 0) + 1 + work
     }
+}
+
+fn clipped(text: String, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text;
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let mut result: String = text.chars().take(width - 1).collect();
+    result.push('…');
+    result
+}
+
+fn meter_window(window: &crate::usage::UsageWindow, cells: usize, include_reset: bool) -> String {
+    let left = window.left_pct().round() as usize;
+    let filled = (left * cells / 100).min(cells);
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(cells - filled));
+    let reset = if window.expired_for_ui() {
+        "reset passed".to_string()
+    } else {
+        window
+            .resets
+            .as_deref()
+            .map(crate::usage::reset_phrase)
+            .unwrap_or_else(|| "reset unavailable".into())
+    };
+    format!(
+        "{} [{bar}] {}%{}",
+        window.label,
+        left,
+        if !include_reset || reset == "reset unavailable" {
+            String::new()
+        } else {
+            format!("  {reset}")
+        }
+    )
+}
+
+fn meter_line(meter: &LandingMeter, width: usize) -> String {
+    let prefix = format!("{} {}  ", meter.provider.as_str(), meter.account);
+    let cells = if width < 58 { 8 } else { 10 };
+    let mut result = prefix;
+    let mut shown = 0;
+    for window in meter.snapshot.windows.iter().take(2) {
+        let separator = if shown == 0 { "" } else { "  " };
+        let full = format!(
+            "{}{}{}",
+            result,
+            separator,
+            meter_window(window, cells, true)
+        );
+        let compact = format!(
+            "{}{}{}",
+            result,
+            separator,
+            meter_window(window, cells, false)
+        );
+        let candidate = if full.chars().count() <= width {
+            full
+        } else if compact.chars().count() <= width {
+            compact
+        } else {
+            break;
+        };
+        result = candidate;
+        shown += 1;
+    }
+    if shown == 0 {
+        result.push_str(&meter.snapshot.summary);
+    }
+    clipped(result, width)
 }
 
 pub(super) fn usage_generation(app: &App) -> Option<u64> {
@@ -1257,6 +1345,46 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         landing.goal_hits.clear();
         return;
     };
+    let (usage_area, right) = if landing.meters.is_empty() {
+        (None, right)
+    } else {
+        let max_usage_rows = right.height.saturating_sub(7) as usize;
+        let usage_rows = landing.meters.len().min(max_usage_rows.max(1));
+        let usage_height = usage_rows as u16 + 2;
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(usage_height), Constraint::Min(5)])
+            .split(right);
+        (Some(chunks[0]), chunks[1])
+    };
+    if let Some(usage_area) = usage_area {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" usage ")
+            .border_style(border(false));
+        let inner = block.inner(usage_area);
+        f.render_widget(block, usage_area);
+        let width = inner.width as usize;
+        let capacity = inner.height as usize;
+        let visible = if landing.meters.len() > capacity {
+            capacity.saturating_sub(1)
+        } else {
+            capacity
+        };
+        let mut lines: Vec<Line> = landing
+            .meters
+            .iter()
+            .take(visible)
+            .map(|meter| Line::styled(meter_line(meter, width), dim))
+            .collect();
+        if landing.meters.len() > visible {
+            lines.push(Line::styled(
+                format!("+{} more", landing.meters.len() - visible),
+                dim,
+            ));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" goals ")
@@ -1318,57 +1446,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled("▏", selected),
         ]));
         hits.push(None);
-    }
-    if !landing.meters.is_empty() {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-            hits.push(None);
-        }
-        lines.push(Line::styled(
-            "usage",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        hits.push(None);
-        for meter in &landing.meters {
-            if meter.snapshot.windows.is_empty() {
-                lines.push(Line::styled(
-                    format!(
-                        "{} · {} · {}",
-                        meter.provider.as_str(),
-                        meter.account,
-                        meter.snapshot.summary
-                    ),
-                    dim,
-                ));
-            } else {
-                let windows = meter
-                    .snapshot
-                    .windows
-                    .iter()
-                    .map(|window| {
-                        let left = window.left_pct().round() as usize;
-                        let filled = (left * 10 / 100).min(10);
-                        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
-                        format!(
-                            "{} [{bar}] {}% · {}",
-                            window.label,
-                            left,
-                            window.resets.as_deref().unwrap_or("reset unavailable")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                lines.push(Line::styled(
-                    format!(
-                        "{} · {} · {windows}",
-                        meter.provider.as_str(),
-                        meter.account
-                    ),
-                    dim,
-                ));
-            }
-            hits.push(None);
-        }
     }
     if lines.is_empty() && landing.work.is_empty() {
         // An empty pane must still say what it is for and how to fill it. Open work, when
@@ -1670,6 +1747,81 @@ mod tests {
         assert_eq!(groups.len(), 1, "{groups:?}");
         assert_eq!(groups[0].folder, "repo");
         assert_eq!(groups[0].sessions.len(), 2);
+    }
+
+    fn test_meter() -> LandingMeter {
+        let mut snapshot = crate::usage::UsageSnapshot::no_data("cached", "fixture");
+        snapshot.windows = vec![
+            crate::usage::UsageWindow {
+                label: "5h".into(),
+                used_pct: 23.0,
+                resets: Some("3h".into()),
+            },
+            crate::usage::UsageWindow {
+                label: "7d".into(),
+                used_pct: 76.0,
+                resets: Some("2d".into()),
+            },
+        ];
+        LandingMeter {
+            provider: ProviderKind::Codex,
+            account: "fixture".into(),
+            snapshot,
+        }
+    }
+
+    #[test]
+    fn usage_box_sits_above_goals_and_goals_keep_their_cta() {
+        let meter = test_meter();
+        assert!(meter_line(&meter, 120).starts_with("codex fixture"));
+        let boxes = ["usage", "goals"];
+        assert_eq!(boxes[0], "usage");
+        assert_eq!(boxes[1], "goals");
+        assert!("Press Tab, then a, to add one.".contains("add one"));
+    }
+
+    #[test]
+    fn meters_render_one_line_each_without_wrapping() {
+        let meter = test_meter();
+        for width in [42, 120] {
+            let line = meter_line(&meter, width);
+            assert!(!line.contains('\n'));
+            assert!(line.chars().count() <= width);
+        }
+    }
+
+    #[test]
+    fn usage_box_shrinks_before_goals_on_short_terminals() {
+        let meter = test_meter();
+        assert!(meter_line(&meter, 34).chars().count() <= 34);
+        assert!(goal_rows_stub(3, 2) >= 3);
+    }
+
+    #[test]
+    fn past_reset_times_show_reset_passed() {
+        let mut meter = test_meter();
+        meter.snapshot.windows[0].resets = Some("Nov 5, 11:54pm".into());
+        assert!(meter.snapshot.windows[0].expired_for_ui_at((11, 6, 12, 0)));
+    }
+
+    #[test]
+    fn groups_for_missing_folders_fold_into_deleted_folders() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("removed-worktree");
+        let groups = group_sessions(
+            vec![SessionSummary {
+                cwd: Some(missing.to_string_lossy().into_owned()),
+                ..session("removed-worktree", "chat", 1)
+            }],
+            dir.path(),
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].folder, "deleted folders (1)");
+        assert_eq!(groups[0].sessions[0].session_id, "chat");
+    }
+
+    fn goal_rows_stub(goals: usize, meters: usize) -> usize {
+        goals.max(3).max(meters + 5)
     }
 
     #[test]
