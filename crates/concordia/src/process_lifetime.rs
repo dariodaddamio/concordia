@@ -52,9 +52,10 @@ mod windows {
 
     pub fn bind_to_concordia(child: &tokio::process::Child) {
         let Some(job) = job() else { return };
-        let process = child
-            .raw_handle()
-            .expect("spawned child has a process handle") as HANDLE;
+        let Some(raw) = child.raw_handle() else {
+            return;
+        };
+        let process = raw as HANDLE;
         if unsafe { AssignProcessToJobObject(job, process) } == 0
             && !ASSIGNMENT_FAILURE_LOGGED.swap(true, Ordering::Relaxed)
         {
