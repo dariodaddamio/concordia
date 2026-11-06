@@ -4904,7 +4904,7 @@ fn account_argument_completion_switches_only_to_a_connected_fixture() {
 }
 
 #[test]
-fn unknown_model_and_account_arguments_cannot_change_the_binding() {
+fn typed_model_ids_are_accepted_but_unsafe_and_unknown_accounts_cannot_change_binding() {
     let _iso = Isolated::new();
     let mut h = Harness::new(100, 24);
     let home = h.app.state_root.join("fixture-catalog");
@@ -4917,15 +4917,17 @@ fn unknown_model_and_account_arguments_cannot_change_the_binding() {
     h.app.home_path = Some(home);
     h.app.model = "fixture-model".into();
     let account = h.app.account.clone();
+    assert!(h.app.handle_slash("/model extra"));
+    assert_eq!(h.app.model, "extra");
+    assert!(h.app.picker.is_none());
     for line in [
-        "/model extra",
         "/model ../outside",
         "/model \"quoted\"",
         "/model && echo unsafe",
         "/use not-connected",
     ] {
         assert!(h.app.handle_slash(line));
-        assert_eq!(h.app.model, "fixture-model");
+        assert_eq!(h.app.model, "extra");
         assert_eq!(h.app.account, account);
         assert!(h.app.picker.is_none());
     }

@@ -2485,20 +2485,6 @@ impl App {
     }
 
     fn open_model_picker(&mut self) {
-        let home = self
-            .home_path
-            .clone()
-            .or_else(|| get_account(&self.state_root, &self.account).and_then(|a| a.home_path));
-        // A fresh Concordia-owned home has no catalog until its first turn, so also read the
-        // caches of every other account for the same provider before falling back.
-        let mut homes: Vec<PathBuf> = home.into_iter().collect();
-        for account in crate::accounts::list_all_accounts(&self.state_root) {
-            if account.provider == self.provider {
-                if let Some(h) = account.home_path.filter(|h| !homes.contains(h)) {
-                    homes.push(h);
-                }
-            }
-        }
         // (id, shown name, detail). The detail repeats the id so typing either one filters.
         let mut models: Vec<(String, String, String)> = Vec::new();
         let mut add = |id: &str, name: &str, detail: &str| {
@@ -2507,26 +2493,15 @@ impl App {
             }
         };
         let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
-        if self.provider == ProviderKind::Claude {
-            // Current Claude models by name, then the CLI aliases that always track the newest.
-            for (id, name) in CLAUDE_MODELS {
-                add(id, name, id);
-            }
-            for (alias, family) in [("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")] {
-                add(
-                    alias,
-                    &format!("latest {family}"),
-                    &format!("{alias} · Claude CLI alias"),
-                );
-            }
+        for model in crate::models::available(self.provider, &self.account) {
+            add(
+                &model.id,
+                &model.display_name,
+                &format!("{} · {:?}", model.family, model.source),
+            );
         }
         if let Some(m) = chosen {
             add(m, m, "current");
-        }
-        for h in &homes {
-            for m in list_models(self.provider, h) {
-                add(&m, &m, &format!("{m} · cached by the provider CLI"));
-            }
         }
         let current = |m: &str| chosen == Some(m);
         let mut rows = vec![PickerRow {
@@ -3494,15 +3469,8 @@ impl App {
             return true;
         }
         if let SlashCommand::ModelSet(model) = &cmd {
-            let models = self
-                .home_path
-                .as_deref()
-                .map(|h| list_models(self.provider, h))
-                .unwrap_or_default();
-            if model != &self.model && !models.contains(model) {
-                self.push_system(
-                    "model is not in this account's local catalog; /model lists available models",
-                );
+            if !valid_model_id(model) {
+                self.push_system("model id contains unsupported characters");
                 return true;
             }
             self.show_picker(
@@ -4216,19 +4184,11 @@ fn select_account(state_root: &Path, account_id: &str) -> anyhow::Result<()> {
 
 const TYPED_MODEL_PREFIX: &str = "typed-model:";
 
-/// Current Claude model ids and display names, listed by name in `/model`. Update when a new
-/// family ships; the `opus` / `sonnet` / `haiku` aliases keep working in between.
-const CLAUDE_MODELS: [(&str, &str); 4] = [
-    ("claude-opus-5-5", "Opus 5.5"),
-    ("claude-sonnet-5-5", "Sonnet 5.5"),
-    ("claude-haiku-5-5", "Haiku 5.5"),
-    ("claude-fable-5-1", "Fable 5.1"),
-];
-
 /// Typed model ids become one `--model` argv entry; keep them to model-id characters.
 fn valid_model_id(model: &str) -> bool {
     !model.is_empty()
         && model.len() <= 100
+        && !model.contains("..")
         && model
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "._-:/[]".contains(c))
