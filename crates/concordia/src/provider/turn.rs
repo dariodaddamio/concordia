@@ -308,6 +308,19 @@ impl RunningTurn {
         }
     }
 
+    /// Process id of the provider child, once it has been spawned.
+    pub fn process_id(&self) -> u32 {
+        self.pid.load(Ordering::SeqCst)
+    }
+
+    pub async fn child_is_alive(&self) -> bool {
+        let mut guard = self.child.lock().await;
+        guard
+            .as_mut()
+            .and_then(|child| child.try_wait().ok())
+            .is_some_and(|status| status.is_none())
+    }
+
     /// Cancel the turn: mark it, wake the reader, and kill the provider **and everything it
     /// started**. On Windows the CLI is usually a `.cmd` shim in front of node, so killing only
     /// the direct child would leave the real agent running (and spending tokens).
@@ -349,8 +362,7 @@ pub(crate) fn kill_process_tree(pid: u32) {
     }
     #[cfg(not(windows))]
     {
-        // Direct child only; Linux/macOS are not a supported target yet.
-        let _ = pid;
+        crate::process_lifetime::kill_process_group(pid, libc::SIGTERM);
     }
 }
 
@@ -558,6 +570,8 @@ async fn run_provider_turn_inner(
 
     let mut cmd = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut cmd);
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd.args(&launch.args)
         .current_dir(&plan.cwd)
         .stdin(if launch.stdin.is_some() {
@@ -587,6 +601,7 @@ async fn run_provider_turn_inner(
         }
         Err(error) => return Err(error).with_context(|| format!("spawn {}", launch.program)),
     };
+    crate::process_lifetime::bind_to_concordia(&child);
     let spawn_ms = spawning.elapsed().as_millis();
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     // Counted in the footer stats (when on) until this turn ends.
@@ -784,6 +799,11 @@ async fn run_provider_turn_inner(
             match tokio::time::timeout(KILL_GRACE, child.wait()).await {
                 Ok(Ok(status)) => out.exit_code = status.code(),
                 _ => {
+                    #[cfg(unix)]
+                    crate::process_lifetime::kill_process_group(
+                        handle.pid.load(Ordering::SeqCst),
+                        libc::SIGKILL,
+                    );
                     // Tree kill did not finish the job: terminate the direct child.
                     let _ = child.start_kill();
                     if let Ok(Ok(status)) = tokio::time::timeout(REAP_TIMEOUT, child.wait()).await {
