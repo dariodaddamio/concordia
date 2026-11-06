@@ -46,6 +46,10 @@ pub(super) fn run(arguments: &[String]) -> Result<()> {
         requested.canonicalize()?
     };
     anyhow::ensure!(
+        !crate::workspace_paths::reserved_device_name(&path),
+        "reserved device name is not a file"
+    );
+    anyhow::ensure!(
         !crate::workspace_paths::sensitive(&path),
         "File is excluded by workspace policy"
     );

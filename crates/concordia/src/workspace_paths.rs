@@ -3,6 +3,16 @@ use std::path::{Path, PathBuf};
 
 /// Classify by path alone: never open credentials to decide whether they are sensitive.
 pub fn sensitive(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    if normalized.split('/').any(|part| part == ".docker") && normalized.ends_with("/config.json")
+        || normalized.split('/').any(|part| part == ".config")
+            && normalized.contains("/.config/gh/")
+    {
+        return true;
+    }
     path.components().any(|c| {
         let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
         matches!(
@@ -19,18 +29,54 @@ pub fn sensitive(path: &Path) -> bool {
                 | "concordia-api-key"
                 | ".npmrc"
                 | ".netrc"
+                | ".pgpass"
+                | ".kube"
+                | ".git-credentials"
+                | ".pypirc"
         ) || name == ".env"
             || name.starts_with(".env.")
             || name.starts_with(".codex")
             || name.starts_with(".claude")
             || name == ".cursor"
             || name.starts_with(".cursor-")
+            || name.contains("secret")
+            // SSH public keys are commonly stored beside their private key as
+            // `id_*.pub`; only the private-key name belongs in this exclusion.
+            || (name.starts_with("id_") && !name.ends_with(".pub"))
+            || (name.starts_with("service-account") && name.ends_with(".json"))
     }) || path.extension().is_some_and(|e| {
         matches!(
             e.to_string_lossy().to_ascii_lowercase().as_str(),
-            "pem" | "key" | "p12" | "pfx"
+            "pem" | "key" | "p12" | "pfx" | "tfstate" | "jks" | "ppk" | "kdbx" | "p8" | "keystore"
         )
     })
+}
+
+pub fn contained_file(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|_| "workspace is unavailable")?;
+    let canonical = path.canonicalize().map_err(|_| "file is unavailable")?;
+    if !canonical.starts_with(&root) {
+        return Err("file is outside the workspace (outside workspace)".into());
+    }
+    if !canonical.is_file() {
+        return Err("reference does not name a file".into());
+    }
+    Ok(canonical)
+}
+
+pub fn reserved_device_name(path: &Path) -> bool {
+    let Some(name) = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    let stem = name.split('.').next().unwrap_or_default();
+    matches!(stem, "con" | "prn" | "aux" | "nul")
+        || ((stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem[3..].parse::<u8>().is_ok_and(|n| (1..=9).contains(&n)))
 }
 
 pub fn discoverable(path: &Path, directory: bool) -> bool {
@@ -91,6 +137,93 @@ pub fn regular_file(root: &Path, path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sensitive_matches_each_new_pattern() {
+        for path in [
+            "id_rsa",
+            "id_ed25519",
+            ".pgpass",
+            ".kube/config",
+            ".docker/config.json",
+            ".git-credentials",
+            ".pypirc",
+            "state.tfstate",
+            "x.jks",
+            "x.ppk",
+            "x.kdbx",
+            "x.p8",
+            "x.keystore",
+            "service-account-prod.json",
+            "my-secret-notes.txt",
+        ] {
+            assert!(sensitive(Path::new(path)), "{path}");
+        }
+        assert!(!sensitive(Path::new("id_rsa.pub")));
+        assert!(!sensitive(Path::new("id_ed25519.pub")));
+    }
+
+    #[test]
+    fn reserved_device_names_rejected_without_fs_calls() {
+        for name in ["CON", "nul.txt", "Com1", "LPT9.log", "normal.txt"] {
+            assert_eq!(reserved_device_name(Path::new(name)), name != "normal.txt");
+        }
+    }
+
+    #[test]
+    fn symlink_out_of_workspace_is_not_opened_or_saved() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let outside = temp.path().join("outside.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        let link = root.join("notes.md");
+        #[cfg(windows)]
+        {
+            let status = crate::process_ui::command("cmd")
+                .args([
+                    "/c",
+                    "mklink",
+                    "/J",
+                    link.to_str().unwrap(),
+                    outside.parent().unwrap().to_str().unwrap(),
+                ])
+                .status()
+                .unwrap();
+            if !status.success() {
+                eprintln!("skipped: junction creation requires privilege");
+                return;
+            }
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(contained_file(&root, &link).is_err());
+        assert!(crate::file_document::save_contained(&root, &link, "outside", "changed").is_err());
+    }
+
+    #[test]
+    fn save_rechecks_containment() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let outside = temp.path().join("file.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&outside, "before").unwrap();
+        assert!(crate::file_document::save_contained(&root, &outside, "before", "after").is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "before");
+    }
+
+    #[test]
+    fn explicitly_typed_out_of_tree_path_still_opens() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("typed.txt");
+        std::fs::write(&outside, "typed").unwrap();
+        let candidate = crate::file_links::explicit_reference(outside.to_str().unwrap()).unwrap();
+        assert!(crate::file_links::resolve_explicit(
+            &candidate,
+            temp.path().join("missing").as_path()
+        )
+        .is_ok());
+    }
     #[test]
     fn automatic_discovery_excludes_provider_homes_credentials_and_build_outputs() {
         let _environment = crate::config::env_guard();

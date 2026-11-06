@@ -425,6 +425,16 @@ pub fn save(path: &Path, expected: &str, replacement: &str) -> Result<(), String
     Ok(())
 }
 
+pub fn save_contained(
+    root: &Path,
+    path: &Path,
+    expected: &str,
+    replacement: &str,
+) -> Result<(), String> {
+    crate::workspace_paths::contained_file(root, path)?;
+    save(path, expected, replacement)
+}
+
 #[cfg(windows)]
 fn replace_file(path: &Path, temp: &Path, backup: &Path) -> std::io::Result<()> {
     use std::ffi::c_void;
