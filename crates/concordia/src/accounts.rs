@@ -121,6 +121,14 @@ fn cursor_home_ready(home: &Path) -> bool {
 
 pub fn builtin_accounts() -> Vec<AccountDef> {
     let home = profile_home();
+    for path in [
+        home.join(".codex"),
+        home.join(".codex-2"),
+        home.join(".claude"),
+        home.join(".cursor"),
+    ] {
+        crate::test_guard::check_not_real_state(&path);
+    }
     vec![
         AccountDef {
             provider: ProviderKind::Codex,

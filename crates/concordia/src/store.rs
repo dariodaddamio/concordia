@@ -199,12 +199,15 @@ impl Default for OrchestratorStore {
 }
 
 pub fn default_store_root() -> PathBuf {
-    if let Ok(dir) = std::env::var("CONCORDIA_STATE_DIR") {
-        return PathBuf::from(dir);
-    }
-    dirs::data_local_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join("concordia")
+    let root = if let Ok(dir) = std::env::var("CONCORDIA_STATE_DIR") {
+        PathBuf::from(dir)
+    } else {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+            .join("concordia")
+    };
+    crate::test_guard::check_not_real_state(&root);
+    root
 }
 
 /// State directory of the product before it was renamed (`%LOCALAPPDATA%\orc`).
