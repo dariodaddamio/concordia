@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-05h
+## 2026-11-05j
 
 - Expanded `/config` into settings for appearance, display, permissions, account/model,
   continuation, worker results and file behavior, with saved/session scope labels.
