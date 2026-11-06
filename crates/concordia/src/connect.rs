@@ -139,11 +139,13 @@ pub fn login_command(plan: &LoginPlan, wezterm: Option<&Path>) -> Command {
     let ps = ["-NoLogo", "-NoProfile", "-NoExit", "-Command", plan.script];
     let mut cmd = match wezterm {
         Some(w) => {
+            // Provider login must be visible so the user can complete native authentication.
             let mut c = Command::new(w);
             c.args(["start", "--", "powershell.exe"]).args(ps);
             c
         }
         None => {
+            // Provider login must be visible so the user can complete native authentication.
             let mut c = Command::new("powershell.exe");
             c.args(ps);
             #[cfg(windows)]

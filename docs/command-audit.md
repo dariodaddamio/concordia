@@ -5,6 +5,11 @@ targeted behavior audit, not proof over every possible input or every provider s
 mentioned here use pure parser/dispatch paths, temporary synthetic state, or existing fake-based
 suites. No login, real provider turn, real account change, or update/restart was run.
 
+Child-process launches are routed through `process_ui::{command,tokio_command}` so Windows
+background children inherit `CREATE_NO_WINDOW`. The source gate is
+`scripts/check-hidden-process-spawns.ps1`; the only visible launches are native provider login
+and explicit Explorer URL/file opens.
+
 Follow-up integration on build `2026-10-16c` added native-chat/preview CLI routes, strict extra
 argument checks before top-level actions, stricter slash/delegation validation, and usage identity/
 freshness checks. Local build/install checks are recorded separately in interaction-audit.md;

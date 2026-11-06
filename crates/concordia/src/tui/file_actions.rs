@@ -211,7 +211,7 @@ impl App {
 #[cfg(not(test))]
 async fn launch(plan: file_open::LaunchPlan, detached: bool) -> Result<String, String> {
     use tokio::io::AsyncReadExt;
-    let mut command = tokio::process::Command::new(&plan.program);
+    let mut command = crate::process_ui::tokio_command(&plan.program);
     crate::process_ui::background(&mut command);
     command
         .args(plan.args)

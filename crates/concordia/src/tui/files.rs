@@ -27,6 +27,7 @@ impl App {
             let (tx, rx) = mpsc::unbounded_channel();
             self.file_jobs.push(rx);
             tokio::spawn(async move {
+                // Explorer is intentionally visible: this is the requested URL/file window.
                 let result = tokio::process::Command::new("explorer.exe")
                     .arg(target)
                     .stdin(std::process::Stdio::null())

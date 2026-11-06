@@ -340,8 +340,8 @@ const PS_PREAMBLE: &str = "$ErrorActionPreference='Stop'; $ProgressPreference='S
     [Console]::OutputEncoding=[Text.Encoding]::UTF8; ";
 
 fn run_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new("powershell.exe");
+    use std::process::Stdio;
+    let mut cmd = crate::process_ui::command("powershell.exe");
     cmd.args([
         "-NoProfile",
         "-NonInteractive",

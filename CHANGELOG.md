@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Route Concordia child processes through hidden-console constructors on Windows, with a CI gate
+  protecting provider, hook, MCP, and diagnostic launches.
+
 ## 2026-11-05g
 
 - Images in the native window no longer flicker when the caret blinks or the prompt changes.

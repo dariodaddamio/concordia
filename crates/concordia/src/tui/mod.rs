@@ -2648,6 +2648,7 @@ impl App {
         }
         #[cfg(not(test))]
         {
+            // Explorer is intentionally visible: this is the requested URL window.
             let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
         }
         #[cfg(test)]

@@ -105,7 +105,7 @@ mod system {
     fn hide_window(_cmd: &mut Command) {}
 
     fn powershell(script: &str) -> Command {
-        let mut cmd = Command::new("powershell.exe");
+        let mut cmd = crate::process_ui::command("powershell.exe");
         cmd.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script]);
         hide_window(&mut cmd);
         cmd
@@ -281,7 +281,7 @@ mod tests {
     use super::*;
 
     fn ps(script: &str) -> Command {
-        let mut c = Command::new("powershell.exe");
+        let mut c = crate::process_ui::command("powershell.exe");
         c.args(["-NoProfile", "-NonInteractive", "-Command", script]);
         c
     }
@@ -328,7 +328,7 @@ mod tests {
     fn a_failing_helper_is_an_error() {
         assert!(run_with_timeout(ps("exit 3"), None, Duration::from_secs(20)).is_err());
         assert!(run_with_timeout(
-            Command::new("definitely-not-a-real-program"),
+            crate::process_ui::command("definitely-not-a-real-program"),
             None,
             Duration::from_secs(5)
         )

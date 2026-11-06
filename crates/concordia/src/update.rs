@@ -541,7 +541,7 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
 }
 
 fn git_text(root: &Path, args: &[&str], ctl: &JobControl) -> Result<String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::process_ui::command("git");
     cmd.arg("-C").arg(root).args(args);
     let (ok, _, output) = run_child_with_cancel(cmd, ctl)?;
     if !ok {
@@ -1189,7 +1189,7 @@ pub fn path_with_dir(existing: &str, dir: &Path) -> Option<String> {
 }
 
 fn user_path_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
-    let mut cmd = Command::new("powershell.exe");
+    let mut cmd = crate::process_ui::command("powershell.exe");
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1247,7 +1247,7 @@ pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<i32> {
 
 pub fn reexec_into_mode(new_exe: &Path, cwd: &Path, terminal: bool) -> Result<i32> {
     persist_concordia_exe_env(new_exe);
-    let mut command = Command::new(new_exe);
+    let mut command = crate::process_ui::command(new_exe);
     if terminal {
         command.arg("--terminal");
     }
@@ -1268,7 +1268,7 @@ fn run_cargo_build(
     target_dir: Option<&Path>,
     ctl: &JobControl,
 ) -> Result<(PathBuf, String)> {
-    let mut cmd = Command::new(cargo);
+    let mut cmd = crate::process_ui::command(cargo);
     cmd.args([
         "build",
         "-p",
@@ -1334,7 +1334,7 @@ fn persist_concordia_exe_env(path: &Path) {
         return;
     }
     // Best-effort User env so new WezTerm panes / shells pick it up.
-    let _ = Command::new("setx")
+    let _ = crate::process_ui::command("setx")
         .args(["CONCORDIA_EXE", &s])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1622,7 +1622,7 @@ mod tests {
     }
 
     fn ps(script: &str) -> Command {
-        let mut c = Command::new("powershell.exe");
+        let mut c = crate::process_ui::command("powershell.exe");
         c.args(["-NoProfile", "-NonInteractive", "-Command", script]);
         c
     }
@@ -1772,7 +1772,7 @@ mod tests {
         )
         .unwrap();
         let git = |args: &[&str]| {
-            let ok = Command::new("git")
+            let ok = crate::process_ui::command("git")
                 .arg("-C")
                 .arg(dir.path())
                 .args(args)

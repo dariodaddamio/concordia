@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use which::which;
 
 #[derive(Debug, Clone)]
@@ -118,7 +117,7 @@ pub fn apply_stream_parts(parts: Vec<StreamPart>, out: &mut StreamOutcome) {
 pub async fn run_turn(req: &TurnRequest<'_>) -> Result<StreamOutcome> {
     let plan = plan_turn_argv(req);
     assert_safe_argv(&plan.argv)?;
-    let mut cmd = Command::new(&plan.command);
+    let mut cmd = crate::process_ui::tokio_command(&plan.command);
     crate::process_ui::background(&mut cmd);
     cmd.args(&plan.argv)
         .current_dir(&plan.cwd)
