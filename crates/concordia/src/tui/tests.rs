@@ -2855,6 +2855,80 @@ fn mode_command_shows_and_sets_the_mode() {
 }
 
 #[test]
+fn mode_full_requires_confirmation_once_per_session() {
+    let mut h = Harness::new(100, 24);
+    assert_eq!(h.app.trust, TrustMode::Workspace);
+
+    h.send("/mode full");
+    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(
+        h.app.picker.as_ref().unwrap().kind,
+        PickerKind::FullModeConfirm
+    );
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(h.app.trust, TrustMode::Workspace);
+
+    h.send("/mode full");
+    assert_eq!(
+        h.app.picker.as_ref().unwrap().kind,
+        PickerKind::FullModeConfirm
+    );
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.trust, TrustMode::Full);
+    assert!(h.app.full_mode_confirmed);
+
+    h.send("/mode plan");
+    assert_eq!(h.app.trust, TrustMode::Plan);
+    h.send("/mode full");
+    assert_eq!(h.app.trust, TrustMode::Full);
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
+fn closing_a_pane_with_a_queued_edit_event_does_not_panic() {
+    let mut h = Harness::new(120, 24);
+    std::fs::write(h._dir.path().join("queued-edit.md"), "fixture\n").unwrap();
+    h.send("/open @queued-edit.md");
+    let id = h.app.workspace.panes[0].id;
+    assert!(h.app.workspace.close(id));
+    let before = (h.app.workspace.panes.len(), h.app.workspace.focused);
+    h.app.workspace.focused = Some(id);
+
+    h.key(KeyCode::Char('x'), KeyModifiers::NONE);
+
+    assert_eq!(
+        (h.app.workspace.panes.len(), h.app.workspace.focused),
+        (before.0, Some(id)),
+        "a queued edit for a closed pane must not mutate workspace state"
+    );
+}
+
+#[test]
+fn with_lock_timeout_is_reported_not_dropped() {
+    let mut h = Harness::new(100, 24);
+    let lock_path = h.app.state_root.join(".ao/appearance.lock");
+    std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
+    lock.lock().unwrap();
+
+    appearance::save(&mut h.app, "motion", "off");
+
+    assert!(
+        h.app
+            .flash
+            .as_ref()
+            .is_some_and(|(message, _)| message.starts_with("Appearance not saved:")),
+        "tui/appearance::save must surface a with_lock timeout"
+    );
+}
+
+#[test]
 fn command_output_is_a_barred_block_and_agent_replies_carry_a_label() {
     use ratatui::style::Color;
     let mut h = Harness::new(100, 24);

@@ -602,15 +602,13 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     {
         match key.code {
             KeyCode::Esc => {
-                app.workspace
-                    .panes
-                    .iter_mut()
-                    .find(|p| p.id == id)
-                    .map(|p| p.prompt = None);
+                if let Some(pane) = app.workspace.panes.iter_mut().find(|p| p.id == id) {
+                    pane.prompt = None;
+                }
             }
             KeyCode::Char('s' | 'S') => start_save(&mut app.workspace, id, &app.state_root),
             KeyCode::Char('d' | 'D')
-                if !app
+                if app
                     .workspace
                     .panes
                     .iter()
