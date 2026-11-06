@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-05h
+
+- Home ignores provider-native session artifacts until they contain a real user message.
+- Added `concordia sessions prune --empty`, which lists candidates and requires confirmation before removal.
+
 ## 2026-11-05g
 
 - Images in the native window no longer flicker when the caret blinks or the prompt changes.

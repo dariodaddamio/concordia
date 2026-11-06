@@ -3327,6 +3327,7 @@ fn landing_session(
         cwd: Some(cwd.to_string_lossy().into_owned()),
         preview: Some(format!("chat {id}")),
         modified_ms: ms,
+        user_messages: 1,
     }
 }
 

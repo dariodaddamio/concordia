@@ -1158,6 +1158,7 @@ mod tests {
             cwd: Some(format!("C:/work/{folder}")),
             preview: Some(id.into()),
             modified_ms,
+            user_messages: 1,
         }
     }
 
