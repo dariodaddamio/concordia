@@ -5020,15 +5020,25 @@ fn model_picker_filter_matches_names_and_ids() {
 
 #[test]
 fn model_picker_r_refreshes_without_blocking() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(40));
-        let _ = tx.send(Vec::<crate::models::ModelEntry>::new());
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (models_tx, models_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        let _ = models_tx.send(Vec::<crate::models::ModelEntry>::new());
     });
-    assert!(rx.try_recv().is_err());
-    assert!(std::time::Instant::now().elapsed() < std::time::Duration::from_millis(20));
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    assert!(rx.try_recv().is_ok());
+
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("fake model refresh did not start");
+    assert!(models_rx.try_recv().is_err());
+
+    release_tx.send(()).unwrap();
+    assert!(models_rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .is_ok());
+    worker.join().unwrap();
 }
 
 #[test]

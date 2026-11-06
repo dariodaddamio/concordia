@@ -27,6 +27,8 @@ const TOML_END: &str = "# concordia:end";
 pub const SERVER_NAME: &str = "concordia";
 /// Env var that points the server at the state folder (the one `store::default_store_root` reads).
 pub const STATE_ENV: &str = "CONCORDIA_STATE_DIR";
+/// JSON object containing the account id and workspace root fixed at registration time.
+pub const SCOPE_ENV: &str = "CONCORDIA_MCP_SCOPE";
 
 /// The awareness text, at most 45 words.
 pub const AWARE_TEXT: &str = "You are running inside Concordia, a terminal app that runs several accounts. A [concordia map] block is a pointer to an earlier conversation; run `concordia thread read <id>` (add --grep TEXT or --tail N) to read details. Do not paste whole threads.";
@@ -85,7 +87,7 @@ fn run(state_root: &Path, exe: &Path, write: bool) -> Vec<HomeReport> {
         .into_iter()
         .map(|(account, provider, home)| HomeReport {
             awareness: sync_awareness(&home, provider, cfg.awareness, write),
-            mcp: sync_mcp(&home, provider, cfg.mcp, exe, state_root, write),
+            mcp: sync_mcp_for_account(&home, provider, cfg.mcp, exe, state_root, &account, write),
             account,
             provider,
             home,
@@ -307,19 +309,44 @@ pub fn sync_mcp(
     state_root: &Path,
     write: bool,
 ) -> Outcome {
+    sync_mcp_for_account(home, provider, want, exe, state_root, "unknown", write)
+}
+
+fn registration_workspace() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|path| fs::canonicalize(path).ok())
+        .unwrap_or_else(|| PathBuf::from(".").to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn scope_json(account: &str) -> String {
+    serde_json::json!({"account": account, "workspace": registration_workspace()}).to_string()
+}
+
+fn sync_mcp_for_account(
+    home: &Path,
+    provider: ProviderKind,
+    want: bool,
+    exe: &Path,
+    state_root: &Path,
+    account: &str,
+    write: bool,
+) -> Outcome {
     match provider {
-        ProviderKind::Claude => sync_claude_json(home, want, exe, state_root, write),
-        ProviderKind::Codex => sync_codex_toml(home, want, exe, state_root, write),
+        ProviderKind::Claude => sync_claude_json(home, want, exe, state_root, account, write),
+        ProviderKind::Codex => sync_codex_toml(home, want, exe, state_root, account, write),
         ProviderKind::Cursor => Outcome::Blocked("not supported for this provider".into()),
     }
 }
 
-fn entry_json(exe: &Path, state_root: &Path) -> serde_json::Value {
+fn entry_json(exe: &Path, state_root: &Path, account: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "stdio",
         "command": exe.to_string_lossy(),
         "args": ["mcp"],
-        "env": { STATE_ENV: state_root.to_string_lossy() },
+        "env": { STATE_ENV: state_root.to_string_lossy(), SCOPE_ENV: scope_json(account) },
     })
 }
 
@@ -357,6 +384,7 @@ fn sync_claude_json(
     want: bool,
     exe: &Path,
     state_root: &Path,
+    account: &str,
     write: bool,
 ) -> Outcome {
     let file = home.join(".claude.json");
@@ -380,7 +408,7 @@ fn sync_claude_json(
         return Outcome::Blocked("mcpServers is not an object; left alone".into());
     }
     if want {
-        let desired = entry_json(exe, state_root);
+        let desired = entry_json(exe, state_root, account);
         if existing.as_ref() == Some(&desired) {
             return Outcome::Current;
         }
@@ -426,7 +454,14 @@ fn toml_str(s: &str) -> String {
     out
 }
 
-fn sync_codex_toml(home: &Path, want: bool, exe: &Path, state_root: &Path, write: bool) -> Outcome {
+fn sync_codex_toml(
+    home: &Path,
+    want: bool,
+    exe: &Path,
+    state_root: &Path,
+    account: &str,
+    write: bool,
+) -> Outcome {
     let file = home.join("config.toml");
     let text = match read_configuration(&file) {
         Ok(b) => match String::from_utf8(b) {
@@ -462,6 +497,7 @@ fn sync_codex_toml(home: &Path, want: bool, exe: &Path, state_root: &Path, write
         String::new(),
         "[mcp_servers.concordia.env]".to_string(),
         format!("{STATE_ENV} = {}", toml_str(&state_root.to_string_lossy())),
+        format!("{SCOPE_ENV} = {}", toml_str(&scope_json(account))),
     ];
     let body_refs: Vec<&str> = body.iter().map(String::as_str).collect();
     // The new text must still be valid TOML with a single concordia server, or nothing is written.
@@ -637,6 +673,63 @@ mod tests {
             sync_mcp(&h, ProviderKind::Claude, false, moved, st, true),
             Outcome::Absent
         );
+    }
+
+    #[test]
+    fn registration_writes_the_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex3_home = home(tmp.path(), "codex-3");
+        let exe = Path::new("C:/bin/concordia.exe");
+        let state = Path::new("C:/state");
+        assert_eq!(
+            sync_mcp_for_account(
+                &codex3_home,
+                ProviderKind::Claude,
+                true,
+                exe,
+                state,
+                "codex-3",
+                true
+            ),
+            Outcome::Updated
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(codex3_home.join(".claude.json")).unwrap())
+                .unwrap();
+        let scope: serde_json::Value = serde_json::from_str(
+            value["mcpServers"][SERVER_NAME]["env"][SCOPE_ENV]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scope["account"], "codex-3");
+        assert!(scope["workspace"]
+            .as_str()
+            .is_some_and(|workspace| !workspace.is_empty()));
+        let codex_home = home(tmp.path(), "codex-config");
+        assert_eq!(
+            sync_mcp_for_account(
+                &codex_home,
+                ProviderKind::Codex,
+                true,
+                exe,
+                state,
+                "codex-3",
+                true
+            ),
+            Outcome::Updated
+        );
+        let codex: toml::Table = fs::read_to_string(codex_home.join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let codex_scope: serde_json::Value = serde_json::from_str(
+            codex["mcp_servers"][SERVER_NAME]["env"][SCOPE_ENV]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(codex_scope["account"], "codex-3");
     }
 
     #[test]

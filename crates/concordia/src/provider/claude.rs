@@ -29,6 +29,16 @@ pub fn find_claude_bin() -> Result<String, String> {
 }
 
 pub fn plan_claude_turn(req: &ClaudeTurnRequest<'_>) -> Result<ClaudePlan> {
+    plan_claude_turn_with(
+        req,
+        &super::LocateEnv::from_process(super::ProviderKind::Claude),
+    )
+}
+
+pub fn plan_claude_turn_with(
+    req: &ClaudeTurnRequest<'_>,
+    locate_env: &super::LocateEnv,
+) -> Result<ClaudePlan> {
     let mut new_session_id = None;
     let mut argv = vec![
         "-p".into(),
@@ -83,7 +93,12 @@ pub fn plan_claude_turn(req: &ClaudeTurnRequest<'_>) -> Result<ClaudePlan> {
         ));
     }
     Ok(ClaudePlan {
-        command: find_claude_bin().map_err(anyhow::Error::msg)?,
+        command: super::locate(super::ProviderKind::Claude, locate_env)
+            .map(|p| p.path.to_string_lossy().into_owned())
+            .map_err(|e| {
+                crate::doctor::format_not_found_turn_error(super::ProviderKind::Claude, &e)
+            })
+            .map_err(anyhow::Error::msg)?,
         argv,
         env,
         cwd: req.cwd.to_string_lossy().into_owned(),

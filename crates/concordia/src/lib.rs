@@ -32,6 +32,7 @@ pub mod release;
 pub mod routing;
 pub mod session_titles;
 pub mod sessions;
+pub mod state_security;
 pub mod store;
 pub mod sysstats;
 pub mod test_guard;

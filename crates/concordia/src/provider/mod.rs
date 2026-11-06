@@ -42,6 +42,24 @@ pub struct LocateEnv {
     pub workspace_root: Option<PathBuf>,
 }
 
+impl LocateEnv {
+    pub fn from_process(kind: ProviderKind) -> Self {
+        let override_var = match kind {
+            ProviderKind::Codex => "CONCORDIA_CODEX_BIN",
+            ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
+            ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
+        };
+        Self {
+            override_path: std::env::var(override_var).ok(),
+            path: std::env::var("PATH").ok(),
+            userprofile: std::env::var_os("USERPROFILE").map(PathBuf::from),
+            appdata: std::env::var_os("APPDATA").map(PathBuf::from),
+            localappdata: std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+            workspace_root: std::env::current_dir().ok(),
+        }
+    }
+}
+
 /// Whether a PATH directory must be excluded from executable discovery.
 ///
 /// Project directories are untrusted because a checked-out project can plant a provider name,
@@ -175,23 +193,7 @@ pub fn locate(kind: ProviderKind, env: &LocateEnv) -> Result<Located, NotFound> 
 }
 
 pub fn locate_real(kind: ProviderKind) -> Result<Located, NotFound> {
-    let override_var = match kind {
-        ProviderKind::Codex => "CONCORDIA_CODEX_BIN",
-        ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
-        ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
-    };
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
-    locate(
-        kind,
-        &LocateEnv {
-            override_path: std::env::var(override_var).ok(),
-            path: std::env::var("PATH").ok(),
-            userprofile: home,
-            appdata: std::env::var_os("APPDATA").map(PathBuf::from),
-            localappdata: std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
-            workspace_root: std::env::current_dir().ok(),
-        },
-    )
+    locate(kind, &LocateEnv::from_process(kind))
 }
 
 pub use stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
@@ -404,34 +406,27 @@ mod tests {
 
     #[test]
     fn missing_cli_fails_instead_of_spawning_a_bare_name() {
-        let _lock = crate::accounts::TEST_ENV.lock().unwrap();
-        let names = [
-            "CONCORDIA_CODEX_BIN",
-            "CONCORDIA_CLAUDE_BIN",
-            "CONCORDIA_AGENT_BIN",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-        ];
-        let saved: Vec<_> = names
-            .iter()
-            .map(|name| (*name, std::env::var_os(name)))
-            .collect();
-        for name in names {
-            std::env::remove_var(name);
-        }
-        let old_path = std::env::var_os("PATH");
-        std::env::set_var("PATH", "");
+        let env = LocateEnv {
+            override_path: None,
+            path: Some(String::new()),
+            userprofile: None,
+            appdata: None,
+            localappdata: None,
+            workspace_root: None,
+        };
         let cwd = tempfile::tempdir().unwrap();
-        let codex = crate::provider::codex::plan_turn_argv(&crate::provider::codex::TurnRequest {
-            prompt: "x",
-            cwd: cwd.path(),
-            codex_home: None,
-            model: None,
-            native_session_id: None,
-            trust: crate::store::TrustMode::Plan,
-        });
-        let claude = crate::provider::claude::plan_claude_turn(
+        let codex = crate::provider::codex::plan_turn_argv_with(
+            &crate::provider::codex::TurnRequest {
+                prompt: "x",
+                cwd: cwd.path(),
+                codex_home: None,
+                model: None,
+                native_session_id: None,
+                trust: crate::store::TrustMode::Plan,
+            },
+            &env,
+        );
+        let claude = crate::provider::claude::plan_claude_turn_with(
             &crate::provider::claude::ClaudeTurnRequest {
                 prompt: "x",
                 cwd: cwd.path(),
@@ -440,8 +435,9 @@ mod tests {
                 native_session_id: None,
                 trust: crate::store::TrustMode::Plan,
             },
+            &env,
         );
-        let cursor = crate::provider::cursor::plan_cursor_turn(
+        let cursor = crate::provider::cursor::plan_cursor_turn_with(
             &crate::provider::cursor::CursorTurnRequest {
                 prompt: "x",
                 cwd: cwd.path(),
@@ -450,19 +446,10 @@ mod tests {
                 native_session_id: None,
                 trust: crate::store::TrustMode::Plan,
             },
+            &env,
         );
         assert!(codex.is_err() && claude.is_err() && cursor.is_err());
         assert!(!format!("{codex:?}{claude:?}{cursor:?}").contains("command: \"codex\""));
-        match old_path {
-            Some(path) => std::env::set_var("PATH", path),
-            None => std::env::remove_var("PATH"),
-        }
-        for (name, value) in saved {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
     }
 }
 pub(crate) mod edit_display;

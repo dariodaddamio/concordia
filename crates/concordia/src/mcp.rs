@@ -22,6 +22,44 @@ const DEFAULT_READ_CHARS: usize = threads::READ_CHARS;
 pub const MAX_PENDING_PROPOSALS: usize = 10;
 const MAX_PROPOSAL_FILE: u64 = 16 * 1024;
 
+#[derive(Debug, Clone)]
+pub struct Scope {
+    pub account: String,
+    pub workspace: PathBuf,
+    unrestricted: bool,
+}
+
+impl Scope {
+    fn from_env() -> Result<Self, String> {
+        let raw = std::env::var(crate::integration::SCOPE_ENV)
+            .map_err(|_| "MCP server is unscoped; history reads are disabled".to_string())?;
+        let value: Value = serde_json::from_str(&raw)
+            .map_err(|_| "MCP server scope is malformed; history reads are disabled".to_string())?;
+        let account = value
+            .get("account")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or("MCP server scope has no account; history reads are disabled")?;
+        let workspace = value
+            .get("workspace")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or("MCP server scope has no workspace; history reads are disabled")?;
+        let workspace = std::fs::canonicalize(workspace)
+            .map_err(|_| "MCP server scope workspace is unavailable; history reads are disabled")?;
+        if !workspace.is_dir() {
+            return Err(
+                "MCP server scope workspace is not a directory; history reads are disabled".into(),
+            );
+        }
+        Ok(Self {
+            account: account.into(),
+            workspace,
+            unrestricted: false,
+        })
+    }
+}
+
 pub fn proposals_dir(state_root: &Path) -> PathBuf {
     state_root.join("proposals")
 }
@@ -36,6 +74,7 @@ pub fn serve<R: BufRead, W: Write>(
     mut output: W,
     state_root: &Path,
 ) -> std::io::Result<()> {
+    let scope = Scope::from_env();
     loop {
         let mut buf = Vec::new();
         let n = (&mut input)
@@ -60,7 +99,7 @@ pub fn serve<R: BufRead, W: Write>(
         } else {
             match std::str::from_utf8(&buf) {
                 Ok(line) if line.trim().is_empty() => None,
-                Ok(line) => handle_line(state_root, line),
+                Ok(line) => handle_line_scoped(state_root, line, scope.as_ref().ok()),
                 Err(_) => Some(error_reply(Value::Null, -32700, "parse error: not UTF-8")),
             }
         };
@@ -87,6 +126,15 @@ fn result_reply(id: Value, result: Value) -> String {
 
 /// One request line in, the reply line out (None for notifications).
 pub fn handle_line(state_root: &Path, line: &str) -> Option<String> {
+    let legacy = Scope {
+        account: String::new(),
+        workspace: PathBuf::new(),
+        unrestricted: true,
+    };
+    handle_line_scoped(state_root, line, Some(&legacy))
+}
+
+fn handle_line_scoped(state_root: &Path, line: &str, scope: Option<&Scope>) -> Option<String> {
     if line.len() > MAX_REQUEST_BYTES {
         return Some(error_reply(Value::Null, -32600, "request too large"));
     }
@@ -129,7 +177,7 @@ pub fn handle_line(state_root: &Path, line: &str) -> Option<String> {
         "initialize" => result_reply(id, initialize(&params)),
         "ping" => result_reply(id, json!({})),
         "tools/list" => result_reply(id, json!({"tools": tool_list()})),
-        "tools/call" => match call_tool(state_root, &params) {
+        "tools/call" => match call_tool(state_root, &params, scope) {
             Ok(r) => result_reply(id, r),
             Err(m) => error_reply(id, -32602, &m),
         },
@@ -373,7 +421,7 @@ fn tool_goals(root: &Path, args: &Value) -> Result<String, String> {
     serde_json::to_string(&value).map_err(|e| e.to_string())
 }
 
-fn tool_memory(root: &Path, args: &Value) -> Result<String, String> {
+fn tool_memory(root: &Path, args: &Value, scope: &Scope) -> Result<String, String> {
     let object = args.as_object().ok_or("memory needs an object")?;
     let action = str_arg(args, "action").ok_or("memory needs an action")?;
     let allowed: &[&str] = match action {
@@ -410,13 +458,40 @@ fn tool_memory(root: &Path, args: &Value) -> Result<String, String> {
     };
     let offset = uint_arg(args, "offset").unwrap_or(0);
     let revision = str_arg(args, "revision");
+    if !scope.unrestricted && matches!(action, "files" | "groups" | "members") {
+        return Err("this memory read is unavailable through scoped MCP".into());
+    }
+    if !scope.unrestricted {
+        if let Some(account) = str_arg(args, "account") {
+            if account != scope.account {
+                return Err("MCP scope rejects account outside the registered scope".into());
+            }
+        }
+    }
+    if !scope.unrestricted {
+        if let Some(workspace) = str_arg(args, "workspace") {
+            let requested =
+                std::fs::canonicalize(workspace).map_err(|_| "workspace is unavailable")?;
+            if !requested.starts_with(&scope.workspace) {
+                return Err("MCP scope rejects workspace outside the registered scope".into());
+            }
+        }
+    }
     let value = match action {
         "recall" => serde_json::to_value(crate::native_memory::retrieval::recall(
             root,
             required("query")?,
             str_arg(args, "source"),
-            str_arg(args, "account"),
-            str_arg(args, "workspace").map(Path::new),
+            if scope.unrestricted {
+                str_arg(args, "account")
+            } else {
+                Some(&scope.account)
+            },
+            if scope.unrestricted {
+                str_arg(args, "workspace").map(Path::new)
+            } else {
+                Some(&scope.workspace)
+            },
         )?)
         .map_err(|error| error.to_string())?,
         "ranked" => serde_json::to_value(crate::native_memory::rank::recall(
@@ -424,8 +499,16 @@ fn tool_memory(root: &Path, args: &Value) -> Result<String, String> {
             crate::native_memory::rank::Request {
                 text: required("query")?,
                 source: str_arg(args, "source"),
-                account: str_arg(args, "account"),
-                workspace: str_arg(args, "workspace").map(Path::new),
+                account: if scope.unrestricted {
+                    str_arg(args, "account")
+                } else {
+                    Some(&scope.account)
+                },
+                workspace: if scope.unrestricted {
+                    str_arg(args, "workspace").map(Path::new)
+                } else {
+                    Some(&scope.workspace)
+                },
                 goal: str_arg(args, "goal"),
                 file: str_arg(args, "file"),
                 from: None,
@@ -465,7 +548,7 @@ fn tool_memory(root: &Path, args: &Value) -> Result<String, String> {
 }
 
 /// Err is a protocol error (unknown tool, bad params shape); tool failures are `isError` results.
-fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
+fn call_tool(state_root: &Path, params: &Value, scope: Option<&Scope>) -> Result<Value, String> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -477,13 +560,41 @@ fn call_tool(state_root: &Path, params: &Value) -> Result<Value, String> {
     if !args.is_object() {
         return Err("arguments must be an object".into());
     }
+    let read_scope = if matches!(
+        name,
+        "threads"
+            | "thread_map"
+            | "thread_read"
+            | "native_read"
+            | "usage"
+            | "memory"
+            | "goals"
+            | "integrations"
+    ) {
+        Some(scope.ok_or("MCP server is unscoped; history reads are disabled")?)
+    } else {
+        None
+    };
+    if matches!(name, "goals" | "integrations") && !read_scope.unwrap().unrestricted {
+        return Err("this read surface is unavailable through scoped MCP".into());
+    }
+    if matches!(name, "thread_map" | "thread_read") {
+        ensure_thread_scope(state_root, &args, read_scope.unwrap())?;
+    }
+    if name == "native_read" {
+        ensure_native_scope(state_root, &args, read_scope.unwrap())?;
+    }
     let out = match name {
-        "threads" => Ok(tool_threads(state_root, uint_arg(&args, "limit"))),
+        "threads" => Ok(tool_threads(
+            state_root,
+            uint_arg(&args, "limit"),
+            read_scope.unwrap(),
+        )),
         "thread_map" => tool_thread_map(state_root, &args),
         "thread_read" => tool_thread_read(state_root, &args),
         "native_read" => tool_native_read(state_root, &args),
-        "usage" => Ok(tool_usage(state_root)),
-        "memory" => tool_memory(state_root, &args),
+        "usage" => Ok(tool_usage(state_root, read_scope.unwrap())),
+        "memory" => tool_memory(state_root, &args, read_scope.unwrap()),
         "goals" => tool_goals(state_root, &args),
         "delegate" => tool_delegate(state_root, &args),
         "integrations" => {
@@ -558,9 +669,106 @@ fn tool_native_read(root: &Path, args: &Value) -> Result<String, String> {
     crate::native_memory::command(root, &command)
 }
 
-fn tool_threads(state_root: &Path, limit: Option<usize>) -> String {
+fn normalized_scope_path(path: &Path) -> Option<String> {
+    let path = std::fs::canonicalize(path).ok()?;
+    let mut value = path.to_string_lossy().replace('/', "\\");
+    while value.len() > 3 && value.ends_with('\\') {
+        value.pop();
+    }
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = value.strip_prefix(r"\\?\") {
+            value = stripped.to_owned();
+        }
+        value.make_ascii_lowercase();
+    }
+    Some(value)
+}
+
+fn in_workspace(root: &Path, path: &str, scope: &Scope) -> bool {
+    let Some(candidate) = normalized_scope_path(Path::new(path)) else {
+        return false;
+    };
+    if normalized_scope_path(&scope.workspace).is_some_and(|workspace| {
+        candidate == workspace
+            || candidate
+                .strip_prefix(&workspace)
+                .is_some_and(|rest| rest.starts_with('\\'))
+    }) {
+        return true;
+    }
+    let Ok(registry) = crate::managed_workspaces::load(root) else {
+        return false;
+    };
+    registry.records.iter().any(|record| {
+        normalized_scope_path(&record.owner)
+            .zip(normalized_scope_path(&scope.workspace))
+            .is_some_and(|(owner, workspace)| owner == workspace)
+            && normalized_scope_path(&record.execution).is_some_and(|worktree| {
+                candidate == worktree
+                    || candidate
+                        .strip_prefix(&worktree)
+                        .is_some_and(|rest| rest.starts_with('\\'))
+            })
+    })
+}
+
+fn ensure_thread_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), String> {
+    if scope.unrestricted {
+        return Ok(());
+    }
+    let prefix = str_arg(args, "id").ok_or("missing id")?;
+    let id = threads::resolve_prefix(root, prefix).map_err(|e| e.to_string())?;
+    let meta = threads::list(root)
+        .into_iter()
+        .find(|m| m.id == id)
+        .ok_or("thread is outside the registered MCP scope")?;
+    if meta.account.as_deref() != Some(scope.account.as_str())
+        || !in_workspace(root, &meta.cwd, scope)
+    {
+        return Err("MCP scope rejects this thread".into());
+    }
+    Ok(())
+}
+
+fn ensure_native_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), String> {
+    if scope.unrestricted {
+        return Ok(());
+    }
+    let id = str_arg(args, "id").ok_or("native_read requires id")?;
+    let summary = crate::native_memory::verify_source(root, id)?;
+    if summary.account != scope.account {
+        return Err("MCP scope rejects this native session account".into());
+    }
+    let record = crate::sessions::find_native_record(
+        root,
+        &summary.account,
+        Some(summary.provider),
+        &summary.session_id,
+    )?
+    .ok_or("native session is outside the registered MCP scope")?;
+    if record.0.account != scope.account
+        || !record
+            .0
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| in_workspace(root, cwd, scope))
+    {
+        return Err("MCP scope rejects this native session workspace".into());
+    }
+    Ok(())
+}
+
+fn tool_threads(state_root: &Path, limit: Option<usize>, scope: &Scope) -> String {
     let limit = limit.unwrap_or(10).clamp(1, 30);
-    let metas = threads::list(state_root);
+    let metas: Vec<_> = threads::list(state_root)
+        .into_iter()
+        .filter(|m| {
+            scope.unrestricted
+                || (m.account.as_deref() == Some(scope.account.as_str())
+                    && in_workspace(state_root, &m.cwd, scope))
+        })
+        .collect();
     if metas.is_empty() {
         return "no recorded threads (the user enables recording with [threads] enabled = true)"
             .into();
@@ -615,7 +823,7 @@ fn tool_thread_read(state_root: &Path, args: &Value) -> Result<String, String> {
 }
 
 /// Cached readings only. Never starts a refresh or infers an account from an unbound legacy file.
-fn tool_usage(state_root: &Path) -> String {
+fn tool_usage(state_root: &Path, scope: &Scope) -> String {
     let dir = state_root.join("usage-cache");
     let mut rows: Vec<String> = Vec::new();
     let mut files: Vec<_> = std::fs::read_dir(&dir)
@@ -629,6 +837,9 @@ fn tool_usage(state_root: &Path) -> String {
         let Some(account) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        if !scope.unrestricted && account != scope.account {
+            continue;
+        }
         let Ok(raw) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -936,13 +1147,17 @@ mod tests {
     }
 
     fn seed(root: &Path) -> String {
+        seed_at(root, String::new())
+    }
+
+    fn seed_at(root: &Path, cwd: String) -> String {
         let id = "3f9a0000-aaaa-bbbb-cccc-111122223333";
         let log = ThreadLog::open(root, id);
         log.write_meta(&ThreadMeta {
             id: id.into(),
             started: threads::now_secs(),
             title: "fix the login redirect".into(),
-            cwd: String::new(),
+            cwd,
             account: Some("claude-2".into()),
         })
         .unwrap();
@@ -964,6 +1179,192 @@ mod tests {
         )
         .unwrap();
         id.into()
+    }
+
+    fn managed_fixture(state: &Path, owner: &Path, execution: &Path) {
+        let id = "11111111-1111-4111-8111-111111111111";
+        let state = state.canonicalize().unwrap();
+        let owner = owner.canonicalize().unwrap();
+        std::fs::create_dir_all(state.join("managed-worktrees").join(id)).unwrap();
+        let execution = execution.canonicalize().unwrap();
+        let record = json!({
+            "id": id,
+            "revision": 1,
+            "owner": owner,
+            "owner_identity": "1",
+            "common_git": owner,
+            "common_identity": "1",
+            "base": "0123456789012345678901234567890123456789",
+            "branch": format!("concordia/work-{id}"),
+            "execution": execution,
+            "execution_identity": null,
+            "phase": "creating",
+            "note": "fixture",
+            "operation": null
+        });
+        std::fs::write(
+            state.join("managed-workspaces.json"),
+            serde_json::to_vec(&json!({"version": 1, "revision": 1, "records": [record]})).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn scoped(root: &Path, account: &str, workspace: &Path, req: Value) -> Value {
+        let scope = Scope {
+            account: account.into(),
+            workspace: workspace.to_path_buf(),
+            unrestricted: false,
+        };
+        serde_json::from_str(&handle_line_scoped(root, &req.to_string(), Some(&scope)).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn scoped_server_cannot_read_another_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let id = seed(root.path());
+        let req = rpc(
+            1,
+            "tools/call",
+            json!({"name":"thread_read","arguments":{"id":id}}),
+        );
+        let response = scoped(root.path(), "claude-2", other.path(), req);
+        assert!(response["error"]["message"].is_string());
+    }
+
+    #[test]
+    fn scoped_server_cannot_read_another_account() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let id = seed(root.path());
+        let response = scoped(
+            root.path(),
+            "codex-3",
+            workspace.path(),
+            rpc(
+                1,
+                "tools/call",
+                json!({"name":"thread_read","arguments":{"id":id}}),
+            ),
+        );
+        assert!(response["error"]["message"].is_string());
+    }
+
+    #[test]
+    fn scoped_server_reads_its_managed_worktrees() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let worktree = root
+            .path()
+            .join("managed-worktrees/11111111-1111-4111-8111-111111111111");
+        managed_fixture(root.path(), workspace.path(), &worktree);
+        let id = seed_at(root.path(), worktree.to_string_lossy().into_owned());
+        let scope = Scope {
+            account: "claude-2".into(),
+            workspace: workspace.path().to_path_buf(),
+            unrestricted: false,
+        };
+        assert!(in_workspace(
+            root.path(),
+            &worktree.to_string_lossy(),
+            &scope
+        ));
+        let request = rpc(
+            1,
+            "tools/call",
+            json!({"name":"thread_read","arguments":{"id":id}}),
+        );
+        let response = scoped(root.path(), "claude-2", workspace.path(), request);
+        assert!(
+            response["result"]["content"][0]["text"].is_string(),
+            "{response:?}"
+        );
+
+        let other_workspace = tempfile::tempdir().unwrap();
+        let other_worktree = root
+            .path()
+            .join("managed-worktrees/22222222-2222-4222-8222-222222222222");
+        let other_id = "22222222-2222-4222-8222-222222222222";
+        std::fs::create_dir_all(&other_worktree).unwrap();
+        let mut registry: crate::managed_workspaces::Registry =
+            crate::managed_workspaces::load(root.path()).unwrap();
+        registry.records.push(serde_json::from_value(json!({
+            "id": other_id, "revision": 1, "owner": other_workspace.path(), "owner_identity": "1",
+            "common_git": other_workspace.path(), "common_identity": "1", "base": "0123456789012345678901234567890123456789",
+            "branch": format!("concordia/work-{other_id}"), "execution": other_worktree, "execution_identity": null,
+            "phase": "creating", "note": "fixture", "operation": null
+        })).unwrap());
+        std::fs::write(
+            root.path().join("managed-workspaces.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let other_thread = seed_at(root.path(), other_worktree.to_string_lossy().into_owned());
+        let rejected = scoped(
+            root.path(),
+            "claude-2",
+            workspace.path(),
+            rpc(
+                1,
+                "tools/call",
+                json!({"name":"thread_read","arguments":{"id":other_thread}}),
+            ),
+        );
+        assert!(rejected["error"]["message"].is_string());
+    }
+
+    #[test]
+    fn scope_matches_extended_and_case_variant_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let scope = Scope {
+            account: "a".into(),
+            workspace: workspace.path().to_path_buf(),
+            unrestricted: false,
+        };
+        let plain = workspace.path().to_string_lossy().into_owned();
+        let variant = if cfg!(windows) {
+            format!(r"\\?\{}", plain.to_uppercase())
+        } else {
+            format!("{}{}", plain, std::path::MAIN_SEPARATOR)
+        };
+        assert!(in_workspace(root.path(), &variant, &scope));
+    }
+
+    #[test]
+    fn unscoped_server_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let request = rpc(1, "tools/call", json!({"name":"threads","arguments":{}}));
+        let response = serde_json::from_str::<Value>(
+            &handle_line_scoped(root.path(), &request.to_string(), None).unwrap(),
+        )
+        .unwrap();
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unscoped"));
+    }
+
+    #[test]
+    fn explicit_cross_scope_argument_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let response = scoped(
+            root.path(),
+            "claude-2",
+            workspace.path(),
+            rpc(
+                1,
+                "tools/call",
+                json!({"name":"memory","arguments":{"action":"recall","query":"needle","account":"codex-3"}}),
+            ),
+        );
+        assert_eq!(response["result"]["isError"], true);
+        assert!(response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("account"));
     }
 
     #[test]
