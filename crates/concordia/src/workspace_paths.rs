@@ -231,7 +231,7 @@ mod tests {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            let result = std::process::Command::new("powershell.exe")
+            let result = crate::process_ui::command("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:CONCORDIA_RELIABILITY_JUNCTION_LINK -Target $env:CONCORDIA_RELIABILITY_JUNCTION_TARGET | Out-Null"])
                 .env("CONCORDIA_RELIABILITY_JUNCTION_LINK", &alias)
                 .env("CONCORDIA_RELIABILITY_JUNCTION_TARGET", &outside)
@@ -333,7 +333,7 @@ mod tests {
         std::fs::write(repository.join("src/input.txt"), "committed fixture\n").unwrap();
         std::fs::write(repository.join(".gitattributes"), "*.txt filter=fixture\n").unwrap();
         let git = |cwd: &Path, args: &[&str]| {
-            let mut command = std::process::Command::new(which::which("git").unwrap());
+            let mut command = crate::process_ui::command(which::which("git").unwrap());
             command
                 .current_dir(cwd)
                 .args([

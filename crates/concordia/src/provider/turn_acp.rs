@@ -214,7 +214,7 @@ pub(super) async fn run(
     for image in req.images {
         content.push(image.acp().map_err(anyhow::Error::msg)?);
     }
-    let mut command = Command::new(&plan.command);
+    let mut command = crate::process_ui::tokio_command(&plan.command);
     crate::process_ui::background(&mut command);
     command
         .arg("acp")

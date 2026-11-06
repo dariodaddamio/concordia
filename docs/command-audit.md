@@ -11,6 +11,15 @@ targeted behavior audit, not proof over every possible input or every provider s
 mentioned here use pure parser/dispatch paths, temporary synthetic state, or existing fake-based
 suites. No login, real provider turn, real account change, or update/restart was run.
 
+Child-process launches are routed through `process_ui::{command,tokio_command}` so Windows
+background children inherit `CREATE_NO_WINDOW`. The source gate is
+`scripts/check-hidden-process-spawns.ps1`; the only visible launches are native provider login
+and explicit Explorer URL/file opens.
+
+Shortcut installation writes the bundled WezTerm config and passes it with `--config-file`,
+launching `wezterm-gui.exe` without a console flash when available. If WezTerm is unavailable,
+the shortcut targets the active Concordia executable and lets the default terminal open it.
+
 Follow-up integration on build `2026-10-16c` added native-chat/preview CLI routes, strict extra
 argument checks before top-level actions, stricter slash/delegation validation, and usage identity/
 freshness checks. Local build/install checks are recorded separately in interaction-audit.md;
@@ -27,6 +36,8 @@ Defined in `crates/concordia/src/main.rs`:
 | `--help`, `-h`, `help` | Prints help and active paths | Can be run read-only. Help omits several TUI commands documented below. |
 | `--version`, `-V`, `version` | Prints build stamp and executable | Read-only behavior is documented in source; smoke script covers binary contract. |
 | `install` | Installs executable, may alter PATH/adopt old state | Not invoked; this changes machine state. Release smoke exercises controlled install fixtures. |
+| `shortcut install [--desktop]` | Creates a per-user Start menu shortcut; `--desktop` selects the Desktop | Windows-only; uses the shell shortcut API through a hidden PowerShell helper and the running executable as its icon. |
+| `shortcut remove [--desktop]` | Removes Concordia's exact Start menu/Desktop shortcut | Windows-only and bounded to the owned `Concordia.lnk` path. |
 | `wezterm` | Launches a WezTerm window | Not invoked; no direct command behavior test found. |
 | `doctor`, `--doctor` | Prints diagnostics and exits nonzero when unhealthy | Fast-report tests exist; process exit contract is in smoke scripts. |
 | `thread list [--json]` | Lists recorded Concordia threads | `threads` unit tests exercise formatting and errors; list accepts only `--json`. |
