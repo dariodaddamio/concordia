@@ -1,62 +1,66 @@
 # Changelog
 
-## 2026-11-05h
+## 2026-11-06a
 
-- No more console windows flashing on Windows: every background child process (providers, hooks,
-  MCP, git, diagnostics) starts hidden, and a CI gate rejects any new unhidden spawn. Login
-  windows, Explorer and the relaunch after `/update` stay visible on purpose.
-- `concordia shortcut install [--desktop]` adds a Start menu (or Desktop) shortcut. With WezTerm
-  installed it opens Concordia in WezTerm with no console flash; otherwise it opens in your
-  default terminal. `concordia shortcut remove [--desktop]` removes it.
-- Release-update tests no longer read or write the real release cache.
+### Works on a fresh Windows machine
+- `.\scripts\install-dev.ps1 -Install` takes a clean machine from clone to a running Concordia: it
+  checks Rust, the pinned toolchain, MSVC, the Windows SDK, a running Visual Studio installer and
+  WezTerm, installs what is missing, builds, installs, adds the Start menu shortcut and runs
+  `concordia doctor`. `-CheckOnly` reports without changing anything.
+- Concordia finds the Codex, Claude Code and Cursor agent CLIs at their standard install folders
+  even when those folders are not on PATH (for example Claude Code's `%USERPROFILE%\.local\bin`).
+- `concordia doctor` shows where each CLI was found and prints one concrete next action for every
+  warning or failure: an install command, the PATH fix, `/use` to sign in, `concordia install`, or
+  the WezTerm install command. It finds WezTerm even when it is not on PATH, and it stays read-only.
+- First launch with no accounts shows a short welcome with a local check of which CLIs were found
+  and "/use to add an account".
+- `concordia shortcut install [--desktop]` adds a Start menu (or Desktop) shortcut that opens
+  Concordia in WezTerm with no console flash, or in your default terminal without WezTerm.
 
-- Home hygiene now strips extended Windows path prefixes, hides generated test/temp/target
-  workspaces until `h` shows all, groups older short chats under collapsed Quick questions rows,
-  and displays cached per-account 5h/7d usage meters beneath goals.
+### Safety
+- A delegated worker can never do more than you can: its mode is capped at your own.
+- Plan mode fails closed: if an installed CLI can't enforce Plan, the turn is refused with an
+  explanation instead of silently running under the CLI's default behaviour.
+- Cursor's Workspace mode no longer turns Cursor's sandbox off.
+- Shift+Tab cycles Plan, Ask and Workspace only. Full needs `/mode full`, asks once per session,
+  and its badge is red.
+- Provider CLIs are never launched by bare name, and copies planted in a project folder or the
+  current directory are ignored.
+- Provider processes die with Concordia, even if Concordia crashes (a kill-on-close job object on
+  Windows, process groups on Unix).
+- Logs never contain panic payload text; provider stderr and per-turn tool bookkeeping are
+  bounded; bidi and zero-width spoofing characters are stripped from file names and card text.
 
-## 2026-11-05i
+### Reliability
+- A turn that produces no output for 10 minutes (`[turn] idle_timeout_minutes`, 0 turns it off)
+  shows "No output from <provider> for N minutes", updating in place. Concordia never cancels on
+  its own: Esc cancels, or click the notice (Ctrl+K) for keep waiting, cancel or hand off to
+  another signed-in account. Quiet workers show "silent N min".
+- No more console windows flashing on Windows: every background child process starts hidden.
+- Closing a pane mid-edit can no longer crash Concordia; state files are flushed to disk before
+  they replace the old copy.
+- A signed-out account warns before sending ("press Enter again to send anyway") and keeps your
+  prompt.
+- One patched crossterm (0.29) for the whole UI, so emoji typed on Windows and bracketed paste
+  behave the same everywhere.
+- Launch no longer runs `--version` for every provider each time; results are cached per binary.
 
-- #86: landing visibility is testable with an explicit temp-root policy, hidden rows can be
-  toggled by clicking the footer label, and cached account meters remain visible while work loads.
-- Home ignores provider-native session artifacts until they contain a real user message.
-- Added `concordia sessions prune --empty`, which lists candidates and requires confirmation before removal.
+### Home, settings and models
+- Home shows only chats with a real message, folder names without `\\?\` prefixes, hides test,
+  temp and `target` workspaces until `h` (or a click on the footer), folds short older chats into
+  a "Quick questions" row per folder, and shows a usage meter per account under goals.
+- `concordia sessions prune --empty` removes empty native sessions after an exact `yes`, and
+  Claude usage reads no longer create "untitled session" entries.
+- `/config` is a full settings screen; `/skills` and `/hooks` list project and account sources.
+- Shorter window titles and an animated window icon that respects the motion setting.
+- `/model` lists every model each provider offers: Cursor's own list, the models Codex and Claude
+  Code have cached, and a shipped catalog, grouped by family with where each came from. Type to
+  filter, `r` to refresh.
 
-## 2026-11-05j
-
-- Expanded `/config` into settings for appearance, display, permissions, account/model,
-  continuation, worker results and file behavior, with saved/session scope labels.
-- Added `/skills` and `/hooks` local source inventories with project/account distinctions.
-- Shortened window titles, removed the em dash and added native icon activity animation.
-
-- Resetting appearance defaults now also clears saved display preferences.
-- Active-turn status glyphs respect the motion preference, and native icon animation stops
-  when Windows reports client-area animation disabled.
-
-## 2026-11-05k
-
-- Concordia finds the Codex, Claude Code and Cursor agent CLIs at their standard Windows install
-  locations even when those folders are not on PATH (for example Claude Code's native installer
-  puts `claude.exe` in `%USERPROFILE%\.local\bin`).
-- `concordia doctor` shows where each CLI was found. One found outside PATH is a warning with the
-  one-line command that adds its folder to your user PATH; a missing one lists every folder searched.
-- A turn whose CLI cannot be found says which CLI, where Concordia looked, and to run
-  `concordia doctor`, instead of `spawn claude: program not found`.
-
-## 2026-11-05l
-
-- A delegated worker can no longer do more than you can: its mode is capped at your own. Before,
-  a worker could edit files while you were in Plan or Ask mode if `childTrust` asked for Workspace
-  or Full. When a worker's requested mode is lowered, the delegation message says so.
-
-## 2026-11-05m
-
-- A turn that stops producing output no longer waits silently forever. After 10 minutes without
-  output (`[turn] idle_timeout_minutes`; 0 turns it off) the chat shows "No output from Claude Code
-  for 10 minutes", updating as the silence continues and clearing when output resumes. Concordia
-  never cancels on its own: press Esc to cancel, or click the notice (or Ctrl+K) for keep waiting,
-  cancel or hand off. Hand off cancels the quiet turn and offers your request to another signed-in
-  account, with a warning that the turn may have partly run tools.
-- Workers that go quiet show "silent N min" in the workers list.
+### For contributors
+- Tests can no longer touch your real Concordia state or provider homes: defaults are redirected
+  to temp folders and a guard fails any test that reaches the real ones.
+- All 48 PTY journeys pass again (a usage-probe check in the test fake, and a stale header text).
 
 ## 2026-11-05g
 
