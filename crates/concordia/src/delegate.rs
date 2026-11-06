@@ -150,8 +150,9 @@ pub fn remove_worker(state_root: &Path, id: &str) -> Result<String, String> {
     }
 }
 
-/// The trust mode a worker runs with: the user's, optionally tightened by the `childTrust`
-/// setting, and never Full unless the user's own mode is Full.
+/// The trust mode a worker runs with: the requested child mode, capped at the user's mode.
+/// `Inherit` selects the user's mode, and the explicit security ordering ensures a worker can
+/// never receive more capability than the person who started it.
 pub fn worker_trust(user: TrustMode, child: ChildTrust) -> TrustMode {
     let want = match child {
         ChildTrust::Inherit => user,
@@ -159,10 +160,10 @@ pub fn worker_trust(user: TrustMode, child: ChildTrust) -> TrustMode {
         ChildTrust::Workspace => TrustMode::Workspace,
         ChildTrust::Full => TrustMode::Full,
     };
-    if want == TrustMode::Full && user != TrustMode::Full {
-        TrustMode::Workspace
-    } else {
+    if want.rank() <= user.rank() {
         want
+    } else {
+        user
     }
 }
 

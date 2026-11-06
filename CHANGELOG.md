@@ -42,6 +42,12 @@
 - A turn whose CLI cannot be found says which CLI, where Concordia looked, and to run
   `concordia doctor`, instead of `spawn claude: program not found`.
 
+## 2026-11-05l
+
+- A delegated worker can no longer do more than you can: its mode is capped at your own. Before,
+  a worker could edit files while you were in Plan or Ask mode if `childTrust` asked for Workspace
+  or Full. When a worker's requested mode is lowered, the delegation message says so.
+
 ## 2026-11-05g
 
 - Images in the native window no longer flicker when the caret blinks or the prompt changes.
