@@ -1487,6 +1487,9 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
         }
         TurnProgress::Thinking(t) => {
             j.state = WorkerState::Thinking;
+            if j.snippet.starts_with("silent ") {
+                j.snippet.clear();
+            }
             j.thinking.push_str(&t);
             let l = last_line(&t);
             if !l.is_empty() {
@@ -1495,14 +1498,23 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
         }
         TurnProgress::ThinkingDelta(t) => {
             j.state = WorkerState::Thinking;
+            if j.snippet.starts_with("silent ") {
+                j.snippet.clear();
+            }
             j.thinking.push_str(&t);
         }
         TurnProgress::TextDelta(t) => {
             j.state = WorkerState::Writing;
+            if j.snippet.starts_with("silent ") {
+                j.snippet.clear();
+            }
             j.text.push_str(&t);
         }
         TurnProgress::Text(t) => {
             j.state = WorkerState::Writing;
+            if j.snippet.starts_with("silent ") {
+                j.snippet.clear();
+            }
             j.text.push_str(&t);
             if !t.ends_with('\n') {
                 j.text.push('\n');
@@ -1513,6 +1525,9 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
             }
         }
         TurnProgress::Card(c) => {
+            if j.snippet.starts_with("silent ") {
+                j.snippet.clear();
+            }
             j.snippet = format_card_line(&c)
                 .trim_start_matches('\u{2502}')
                 .trim()
@@ -1543,6 +1558,9 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
         }
         TurnProgress::Notice(n) => {
             j.snippet = n;
+        }
+        TurnProgress::Idle { minutes, .. } => {
+            j.snippet = format!("silent {minutes} min");
         }
         TurnProgress::ChatReferences { .. } => {}
     }

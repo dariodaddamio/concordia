@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -158,6 +158,12 @@ pub enum TurnProgress {
     Usage(TurnUsage),
     /// Concordia's own explanation of how it changed the turn (for example, read-only enforcement).
     Notice(String),
+    /// The provider has produced no output for the configured interval. This never cancels.
+    Idle {
+        provider: ProviderKind,
+        minutes: u64,
+        silent_for: Duration,
+    },
     /// Bounded source maps prepared off the UI thread for this existing user request.
     ChatReferences {
         maps: Vec<(String, String)>,
@@ -369,6 +375,25 @@ pub async fn run_provider_turn_with_progress(
         crate::native_input::Mode::Standard,
         on_started,
         on_progress,
+        idle_timeout_from_config(),
+    )
+    .await
+}
+
+/// Testable/configurable variant of the standard turn runner. A zero timeout disables notices.
+pub async fn run_provider_turn_with_idle_timeout(
+    req: &ProviderTurnRequest<'_>,
+    on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
+    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    idle_timeout: Duration,
+) -> Result<TurnOutcome> {
+    run_provider_turn_inner(
+        req,
+        None,
+        crate::native_input::Mode::Standard,
+        on_started,
+        on_progress,
+        idle_timeout,
     )
     .await
 }
@@ -408,7 +433,24 @@ pub async fn run_provider_turn_with_transport(
                 || req.provider == ProviderKind::Claude),
         "native text transport is unsupported for this provider; no fallback was started"
     );
-    run_provider_turn_inner(req, Some(owner), mode, on_started, on_progress).await
+    run_provider_turn_inner(
+        req,
+        Some(owner),
+        mode,
+        on_started,
+        on_progress,
+        idle_timeout_from_config(),
+    )
+    .await
+}
+
+fn idle_timeout_from_config() -> Duration {
+    Duration::from_secs(
+        crate::config::get()
+            .turn
+            .idle_timeout_minutes
+            .saturating_mul(60),
+    )
 }
 
 fn pdf_message(req: &ProviderTurnRequest<'_>) -> Result<Option<crate::attachments::Message>> {
@@ -437,6 +479,7 @@ async fn run_provider_turn_inner(
     mode: crate::native_input::Mode,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    idle_timeout: Duration,
 ) -> Result<TurnOutcome> {
     let timing = Instant::now();
     let source_started = std::time::SystemTime::now()
@@ -548,11 +591,14 @@ async fn run_provider_turn_inner(
             let _ = stdin.shutdown().await;
         });
     }
+    let last_activity_ms = Arc::new(AtomicU64::new(timing.elapsed().as_millis() as u64));
+    let stderr_activity = last_activity_ms.clone();
     // Always drain stderr: an unread pipe blocks a chatty child, and it is where failures go.
     let mut stderr_task = tokio::spawn(async move {
         let mut tail: VecDeque<String> = VecDeque::new();
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(l)) = lines.next_line().await {
+            stderr_activity.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
             if tail.len() == STDERR_KEEP_LINES {
                 tail.pop_front();
             }
@@ -587,6 +633,8 @@ async fn run_provider_turn_inner(
     let mut first_event_ms = None;
     let mut parse_time = Duration::ZERO;
     let mut events = 0_u64;
+    let idle = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle);
     loop {
         if handle.cancel_flag.load(Ordering::SeqCst) {
             out.cancelled = true;
@@ -601,9 +649,29 @@ async fn run_provider_turn_inner(
             n = read_line_bounded(&mut reader, &mut line_buf) => {
                 n.map(|n| (n > 0).then(|| decode_line(&line_buf)))
             }
+            _ = &mut idle, if idle_timeout != Duration::ZERO => {
+                let elapsed_ms = timing.elapsed().as_millis() as u64;
+                let activity_ms = last_activity_ms.load(Ordering::SeqCst);
+                let silent_for = Duration::from_millis(elapsed_ms.saturating_sub(activity_ms));
+                if silent_for >= idle_timeout {
+                    if let Some(tx) = &on_progress {
+                        let minutes = silent_for.as_secs().div_ceil(60).max(1);
+                        let _ = tx.send(TurnProgress::Idle { provider: plan.provider, minutes, silent_for });
+                    }
+                    idle.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
+                } else {
+                    idle.as_mut().reset(tokio::time::Instant::now() + (idle_timeout - silent_for));
+                }
+                continue;
+            }
         };
         match next {
             Ok(Some(line)) => {
+                if idle_timeout != Duration::ZERO {
+                    last_activity_ms.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
+                    idle.as_mut()
+                        .reset(tokio::time::Instant::now() + idle_timeout);
+                }
                 first_event_ms.get_or_insert_with(|| timing.elapsed().as_millis());
                 let parsing = Instant::now();
                 if !plain_output && completed_events.repeated(&line) {

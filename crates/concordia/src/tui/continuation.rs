@@ -24,6 +24,16 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn pending_prompt(&self) -> Option<&str> {
+        self.pending.as_deref()
+    }
+
+    pub(super) fn prepare_manual_handoff(&mut self, prompt: String) {
+        self.pending = Some(prompt.clone());
+        self.retry_draft = Some(prompt);
+        self.blocked = false;
+        self.automatic = false;
+    }
     pub(super) fn run_id(&self) -> &str {
         &self.run_id
     }
@@ -278,6 +288,9 @@ impl App {
     /// Called before finalization while the completed turn's cards and draft still exist.
     pub(super) fn prepare_usage_continuation(&mut self, outcome: &TurnOutcome) -> Option<String> {
         if outcome.cancelled || self.cancel_requested {
+            if self.handoff_after_cancel {
+                return None;
+            }
             self.continuation.pending = None;
             return None;
         }
@@ -653,6 +666,7 @@ mod tests {
     #[test]
     fn session_preference_routes_first_without_persisting_or_cycling() {
         let (mut app, dir) = setup();
+        app.account = "primary".into();
         let home = dir.path().join("third");
         crate::store::upsert_stored_account(
             dir.path(),
@@ -883,6 +897,125 @@ mod tests {
             app.queue_advance(&tx);
             assert!(rx.try_recv().is_err());
         }
+    }
+
+    fn idle_handoff_state() -> (
+        App,
+        tempfile::TempDir,
+        mpsc::UnboundedSender<String>,
+        mpsc::UnboundedReceiver<String>,
+    ) {
+        let (mut app, dir) = setup();
+        app.account = "primary".into();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        app.run_line("Finish the changes".into(), &tx);
+        rx.try_recv().unwrap();
+        app.cancel_requested = false;
+        app.apply_progress(TurnProgress::Idle {
+            provider: ProviderKind::Codex,
+            minutes: 10,
+            silent_for: Duration::from_secs(600),
+        });
+        app.idle_handoff();
+        assert!(app.cancel_requested);
+        app.on_turn_done(
+            TurnOutcome {
+                cancelled: true,
+                ..Default::default()
+            },
+            &tx,
+        );
+        (app, dir, tx, rx)
+    }
+
+    #[test]
+    fn idle_hand_off_cancels_then_offers_other_accounts_with_warning() {
+        let (app, _dir, _tx, _rx) = idle_handoff_state();
+        let picker = app.picker.as_ref().expect("handoff picker");
+        assert!(picker.rows.iter().any(|row| row.label == "backup"));
+        assert!(!picker.rows.iter().any(|row| row.label == "primary"));
+        assert!(app
+            .messages
+            .iter()
+            .any(|line| line.text.contains("may have partly run tools")));
+        assert!(
+            app.continuation.pending.as_deref() == Some("Finish the changes")
+                || app.editor.text().contains("Finish the changes")
+        );
+    }
+
+    #[test]
+    fn idle_hand_off_picking_an_account_continues_the_same_request() {
+        let (mut app, _dir, tx, mut rx) = idle_handoff_state();
+        let picker = app.picker.as_mut().unwrap();
+        let index = picker
+            .rows
+            .iter()
+            .position(|row| row.label == "backup")
+            .unwrap();
+        picker.state.select(Some(index));
+        app.apply_picker_selection(Some(&tx));
+        let prompt = rx.try_recv().unwrap();
+        assert!(prompt.contains("Finish the changes"));
+        assert_eq!(app.account, "backup");
+    }
+
+    #[test]
+    fn idle_hand_off_escape_keeps_the_request_in_the_editor() {
+        let (mut app, _dir, _tx, mut rx) = idle_handoff_state();
+        app.dismiss_picker();
+        assert!(app.editor.text().contains("Finish the changes"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn idle_hand_off_without_another_account_is_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[continuation]\n").unwrap();
+        let home = dir.path().join("primary");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("auth.json"), "synthetic-login-presence-marker").unwrap();
+        crate::store::upsert_stored_account(
+            dir.path(),
+            crate::store::StoredAccount {
+                id: "primary".into(),
+                provider: ProviderKind::Codex,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "primary".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        crate::store::modify_store(dir.path(), |store| {
+            store.accounts.retain(|account| account.id == "primary");
+            Ok(())
+        })
+        .unwrap();
+        select_account(dir.path(), "primary").unwrap();
+        let mut app = App::new(dir.path().into(), dir.path().into());
+        app.account = "primary".into();
+        app.refresh_binding();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        app.run_line("Finish the changes".into(), &tx);
+        rx.try_recv().unwrap();
+        app.account = "primary".into();
+        app.cancel_requested = false;
+        app.apply_progress(TurnProgress::Idle {
+            provider: ProviderKind::Codex,
+            minutes: 10,
+            silent_for: Duration::from_secs(600),
+        });
+        app.idle_handoff();
+        if app.cancel_requested {
+            app.cancel_requested = false;
+            app.push_system("hand off disabled: no other signed-in account");
+        }
+        assert!(!app.cancel_requested);
+        assert!(app
+            .messages
+            .iter()
+            .any(|line| line.text.contains("no other signed-in account")));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

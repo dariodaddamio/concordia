@@ -616,6 +616,23 @@ fn main() {
             let _ = stdout.flush();
             std::thread::sleep(std::time::Duration::from_secs(120));
         }
+        "drip-stdout" | "drip-stderr" => {
+            if mode == "drip-stderr" {
+                let mut stream = std::io::stderr();
+                for i in 0..12 {
+                    let _ = writeln!(stream, "drip {i}");
+                    let _ = stream.flush();
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            } else {
+                for i in 0..12 {
+                    let _ = writeln!(stdout, "drip {i}");
+                    let _ = stdout.flush();
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(120));
+        }
         // Megabytes of stderr before and after normal output: deadlocks a runner that never
         // drains the pipe (the OS pipe buffer is only ~64 KB).
         "flood" => {

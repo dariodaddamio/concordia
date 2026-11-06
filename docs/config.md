@@ -147,6 +147,9 @@ default = "ask"          # plan | ask | workspace | full
 [delegation]
 protocol = false         # let the orchestrator propose delegations (you still approve)
 max_workers = 3          # 1..=3
+
+[turn]
+idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables it
 ```
 
 | Key | Default | Notes |
@@ -168,6 +171,7 @@ max_workers = 3          # 1..=3
 | `mode.default` | `"ask"` | Anything else falls back to `ask` |
 | `delegation.protocol` | `false` | Same switch as `/delegate protocol on|off` |
 | `delegation.max_workers` | `3` | 0 becomes 1, above 3 becomes 3 |
+| `turn.idle_timeout_minutes` | `10` | Notification interval for provider stdout/stderr silence; `0` disables notifications. |
 
 ### Themes and custom colors
 

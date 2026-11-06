@@ -767,7 +767,15 @@ impl App {
         } else {
             self.prepare_usage_continuation(&outcome)
         };
+        let idle_handoff = outcome.cancelled && self.handoff_after_cancel;
         self.finalize_turn(outcome);
+        if idle_handoff {
+            self.handoff_after_cancel = false;
+            self.push_system(
+                "The quiet turn may have partly run tools. Check your files before continuing.",
+            );
+            self.open_continuation_picker();
+        }
         self.reference_journal.finish(
             self.state_root.clone(),
             self.native_session_id.clone(),

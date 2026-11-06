@@ -1078,6 +1078,129 @@ fn a_failed_provider_explains_itself_instead_of_showing_an_empty_reply() {
 }
 
 #[test]
+fn idle_notice_updates_in_place_and_clears_on_output() {
+    let _iso = Isolated::new();
+    let mut h = Harness::new(160, 24);
+    h.type_str("draft");
+    h.app.busy = true;
+    h.app.busy = true;
+    h.app.apply_progress(TurnProgress::Idle {
+        provider: ProviderKind::Claude,
+        minutes: 10,
+        silent_for: Duration::from_secs(600),
+    });
+    h.app.apply_progress(TurnProgress::Idle {
+        provider: ProviderKind::Claude,
+        minutes: 20,
+        silent_for: Duration::from_secs(1200),
+    });
+    let t = h.transcript_text();
+    assert_eq!(t.matches("No output from Claude Code").count(), 1, "{t}");
+    assert!(t.contains("20 minutes"), "{t}");
+    h.app.apply_progress(TurnProgress::Text("back".into()));
+    assert!(!h.transcript_text().contains("No output from"));
+}
+
+#[test]
+fn idle_footer_hint_only_while_notice_is_shown() {
+    let mut h = Harness::new(160, 24);
+    h.type_str("draft");
+    assert!(!h.screen().contains("Ctrl+K options"));
+    h.app.apply_progress(TurnProgress::Idle {
+        provider: ProviderKind::Codex,
+        minutes: 10,
+        silent_for: Duration::from_secs(600),
+    });
+    h.app.busy = true;
+    h.draw();
+    assert!(h.screen().contains("Ctrl+K options"), "{}", h.screen());
+    h.app.apply_progress(TurnProgress::Text("output".into()));
+    h.draw();
+    assert!(!h.screen().contains("Ctrl+K options"));
+}
+
+#[test]
+fn idle_notice_never_steals_focus() {
+    let mut h = Harness::new(100, 24);
+    h.type_str("draft");
+    h.app.apply_progress(TurnProgress::Idle {
+        provider: ProviderKind::Claude,
+        minutes: 10,
+        silent_for: Duration::from_secs(600),
+    });
+    h.draw();
+    assert!(h.app.picker.is_none());
+    assert_eq!(h.app.editor.text(), "draft");
+    h.type_str(" more");
+    assert_eq!(h.app.editor.text(), "draft more");
+}
+
+#[test]
+fn idle_notice_key_and_click_open_options_and_cancel_cancels() {
+    let mut h = Harness::new(100, 24);
+    h.app.apply_progress(TurnProgress::Idle {
+        provider: ProviderKind::Claude,
+        minutes: 10,
+        silent_for: Duration::from_secs(600),
+    });
+    h.key(KeyCode::Char('k'), KeyModifiers::CONTROL);
+    let picker = h.app.picker.as_ref().expect("idle picker open");
+    assert!(picker.rows.iter().any(|r| r.label == "keep waiting"));
+    assert!(picker.rows.iter().any(|r| r.label == "cancel"));
+    assert!(picker.rows.iter().any(|r| r.label == "hand off"));
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!h.app.busy);
+    assert!(h.transcript_text().contains("cancelled"));
+
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    h.app.cancel_requested = false;
+    h.app.apply_progress(TurnProgress::Idle {
+        provider: ProviderKind::Claude,
+        minutes: 11,
+        silent_for: Duration::from_secs(660),
+    });
+    h.draw();
+    let row = h
+        .app
+        .view
+        .rows
+        .iter()
+        .position(|r| {
+            r.text
+                .iter()
+                .collect::<String>()
+                .contains("No output from Claude Code")
+        })
+        .expect("idle notice rendered row");
+    let (x, y) = h.t_cell(row, 2);
+    h.click(x, y);
+    assert!(h.app.picker.is_some());
+}
+
+#[test]
+fn idle_notice_removes_only_itself() {
+    let mut h = Harness::new(100, 24);
+    h.app.push_system("system before");
+    h.app.push_user("user line".into());
+    h.app.apply_progress(TurnProgress::Idle {
+        provider: ProviderKind::Claude,
+        minutes: 10,
+        silent_for: Duration::from_secs(600),
+    });
+    h.app.push_system("system after");
+    h.app.apply_progress(TurnProgress::Text("reply".into()));
+    let t = h.transcript_text();
+    assert!(!t.contains("No output from"), "{t}");
+    let positions =
+        ["system before", "user line", "system after"].map(|line| t.find(line).expect(line));
+    assert!(
+        positions[0] < positions[1] && positions[1] < positions[2],
+        "{t}"
+    );
+}
+
+#[test]
 fn a_provider_that_could_not_start_says_so() {
     let _iso = Isolated::new();
     let mut h = Harness::new(80, 24);
