@@ -3817,9 +3817,45 @@ fn signed_out_account_blocks_the_turn_and_keeps_the_prompt() {
         "signed-out submission must not dispatch"
     );
     assert_eq!(h.app.editor.text(), "keep this prompt");
-    assert!(h.app.messages.iter().any(|m| m
-        .text
-        .contains("codex-test is signed out. Use /use to sign in again.")));
+    assert!(h.app.messages.iter().any(|m| m.text.contains(
+        "codex-test looks signed out. Use /use to sign in, or press Enter again to send anyway."
+    )));
+    h.app.submit_input(&tx);
+    assert_eq!(rx.try_recv().unwrap(), "keep this prompt");
+    assert!(h.app.editor.text().is_empty());
+}
+
+#[test]
+fn signed_out_warning_never_duplicates_the_draft() {
+    let mut h = Harness::new(100, 24);
+    h.app.provider = ProviderKind::Codex;
+    h.app.account = "codex-test".into();
+    h.app.home_path = Some(h._dir.path().join("missing-login"));
+    crate::store::set_use_selection(
+        &h.app.state_root,
+        crate::store::UseSelection {
+            provider: ProviderKind::Codex,
+            account: "codex-test".into(),
+            home_path: h.app.home_path.as_ref().map(|p| p.to_string_lossy().into()),
+            model: None,
+            updated_at: "test".into(),
+        },
+    )
+    .unwrap();
+    h.app.editor.set_text("keep this prompt");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    h.app.submit_input(&tx);
+    assert!(rx.try_recv().is_err());
+    assert_eq!(h.app.editor.text(), "keep this prompt");
+    assert_eq!(h.app.editor.text().matches("keep this prompt").count(), 1);
+    assert_eq!(
+        h.app
+            .messages
+            .iter()
+            .filter(|m| m.text.contains("looks signed out"))
+            .count(),
+        1
+    );
 }
 
 #[test]

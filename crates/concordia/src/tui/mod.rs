@@ -40,7 +40,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget};
 use ratatui::{Frame, Terminal};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -529,6 +529,10 @@ pub struct App {
     last_sent: Option<String>,
     /// What the draft/history persistence has written (see persist.rs).
     keep: persist::Keep,
+    /// A signed-out turn awaiting the user's second Enter confirmation.
+    signed_out_confirmation: Option<(String, String)>,
+    /// Accounts for which the user chose to send despite the presence warning this session.
+    signed_out_overrides: HashSet<String>,
 }
 
 impl App {
@@ -3931,20 +3935,33 @@ impl App {
         let selected_account = get_use_selection(&self.state_root).is_some_and(|selection| {
             selection.provider == self.provider && selection.account == self.account
         });
+        let signed_out_key = format!("{}:{}", self.provider.as_str(), self.account);
         if !line.starts_with('/')
             && selected_account
             && self
                 .home_path
                 .as_ref()
                 .is_some_and(|home| !is_logged_in(self.provider, home))
+            && !self.signed_out_overrides.contains(&signed_out_key)
         {
-            self.push_system(format!(
-                "{} is signed out. Use /use to sign in again.",
-                self.account_label()
-            ));
-            self.restore_composer(&original_line);
-            self.persist_draft_now();
-            return;
+            let confirmed = self
+                .signed_out_confirmation
+                .as_ref()
+                .is_some_and(|(key, prompt)| key == &signed_out_key && prompt == &original_line);
+            if !confirmed {
+                self.signed_out_confirmation = Some((signed_out_key, original_line.clone()));
+                self.push_system(format!(
+                    "{} looks signed out. Use /use to sign in, or press Enter again to send anyway.",
+                    self.account_label()
+                ));
+                self.restore_composer(&original_line);
+                self.persist_draft_now();
+                return;
+            }
+            self.signed_out_confirmation = None;
+            self.signed_out_overrides.insert(signed_out_key);
+        } else if !line.starts_with('/') {
+            self.signed_out_confirmation = None;
         }
         let handoff = self.continuation.dispatch_request().is_some();
         let request = self
@@ -4172,6 +4189,8 @@ impl App {
             queue: queue::Queue::default(),
             last_sent: None,
             keep: persist::Keep::new(&state_root_for_cmds),
+            signed_out_confirmation: None,
+            signed_out_overrides: HashSet::new(),
         }
     }
 }
