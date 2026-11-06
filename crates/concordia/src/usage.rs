@@ -927,13 +927,14 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Run `<bin> -p /usage` with `CLAUDE_CONFIG_DIR=<home>`: no window, stdin closed, and the whole
+/// Run `<bin> -p /usage --no-session-persistence` with `CLAUDE_CONFIG_DIR=<home>`: no window, stdin closed, and the whole
 /// process tree killed after `timeout`. The `.cmd` shim case is handled by `Command` itself; the
 /// arguments are fixed and shell-safe.
 pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<String, String> {
     use std::process::{Command, Stdio};
     let mut cmd = Command::new(bin);
-    cmd.args(["-p", "/usage"])
+    // A usage read must not leave a native session behind (it showed as "untitled session").
+    cmd.args(["-p", "/usage", "--no-session-persistence"])
         .env("CLAUDE_CONFIG_DIR", home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
