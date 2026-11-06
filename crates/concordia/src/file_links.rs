@@ -235,6 +235,9 @@ pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String
     #[cfg(windows)]
     let target = normalized_local_path(target);
     let raw = PathBuf::from(target);
+    if crate::workspace_paths::reserved_device_name(&raw) {
+        return Err("reserved device name is not a file".into());
+    }
     let path = if raw.is_absolute() {
         raw
     } else {
@@ -254,6 +257,32 @@ pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String
             fallback.ok_or_else(|| format!("file is unavailable: {error}"))?
         }
     };
+    if !path.is_file() {
+        return Err("reference does not name a file".into());
+    }
+    if !path.starts_with(cwd.canonicalize().map_err(|_| "workspace is unavailable")?) {
+        return Err("file is outside the workspace (outside workspace)".into());
+    }
+    Ok(ResolvedFile {
+        path,
+        line: candidate.line,
+        column: candidate.column,
+    })
+}
+
+pub fn resolve_explicit(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String> {
+    let target = normalized_local_path(&candidate.target);
+    let raw = PathBuf::from(target);
+    if crate::workspace_paths::reserved_device_name(&raw) {
+        return Err("reserved device name is not a file".into());
+    }
+    let path = if raw.is_absolute() {
+        raw
+    } else {
+        cwd.join(raw)
+    }
+    .canonicalize()
+    .map_err(|e| format!("file is unavailable: {e}"))?;
     if !path.is_file() {
         return Err("reference does not name a file".into());
     }
