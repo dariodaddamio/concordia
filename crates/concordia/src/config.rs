@@ -22,6 +22,13 @@ pub struct Config {
     pub delegation: Delegation,
     pub editor: EditorConfig,
     pub continuation: Continuation,
+    pub turn: TurnConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnConfig {
+    /// Minutes without provider output before Concordia notifies the user. Zero disables it.
+    pub idle_timeout_minutes: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -132,6 +139,9 @@ impl Default for Config {
             },
             editor: EditorConfig::default(),
             continuation: Continuation::default(),
+            turn: TurnConfig {
+                idle_timeout_minutes: 10,
+            },
         }
     }
 }
@@ -224,7 +234,7 @@ impl Config {
             let Some(sub) = value.as_table() else {
                 if matches!(
                     section.as_str(),
-                    "ui" | "threads" | "mode" | "delegation" | "editor" | "continuation"
+                    "ui" | "threads" | "mode" | "delegation" | "editor" | "continuation" | "turn"
                 ) {
                     warnings.push(format!("[{section}] must be a table; ignored"));
                 } else {
@@ -251,6 +261,10 @@ impl Config {
                             cfg.continuation.accounts = accounts.iter().filter_map(|a| a.as_str().map(str::to_owned)).collect();
                         }
                         _ => warnings.push("continuation.accounts must be an array of account ids".into()),
+                    },
+                    "turn.idle_timeout_minutes" => match v.as_integer() {
+                        Some(n) if n >= 0 => cfg.turn.idle_timeout_minutes = n as u64,
+                        _ => warnings.push("turn.idle_timeout_minutes must be a nonnegative integer; using 10".into()),
                     },
                     "editor.program" => match v.as_str() {
                         Some(program) if !program.trim().is_empty() => cfg.editor.program = program.into(),

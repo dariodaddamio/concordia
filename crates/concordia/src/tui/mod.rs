@@ -285,6 +285,7 @@ enum PickerKind {
     Settings,
     FilePreferences,
     Customization,
+    Idle,
     Appearance,
     Theme,
     BrandColor,
@@ -402,6 +403,8 @@ pub struct App {
     card_header_pressed: Option<usize>,
     header_credits_pressed: bool,
     messages: Vec<ChatLine>,
+    idle_notice: Option<ProviderKind>,
+    handoff_after_cancel: bool,
     editor: Editor,
     /// The visible prompt for the active turn; cancellation never inserts it into the editor.
     submitted_prompt: Option<String>,
@@ -1091,6 +1094,79 @@ impl App {
         });
     }
 
+    fn clear_idle_notice(&mut self) {
+        if self.idle_notice.take().is_some() {
+            if let Some(index) = self.messages.iter().position(|line| {
+                line.meta
+                    .as_ref()
+                    .is_some_and(|(_, label)| label == "__concordia_idle_notice__")
+            }) {
+                self.messages.remove(index);
+            }
+        }
+    }
+
+    fn idle_handoff(&mut self) {
+        let has_other = accounts_with_auth(&self.state_root)
+            .iter()
+            .any(|a| a.account != self.account && a.home_path.is_some());
+        if !has_other {
+            self.push_system("hand off disabled: no other signed-in account");
+            return;
+        }
+        let Some(prompt) = self
+            .submitted_prompt
+            .clone()
+            .or_else(|| self.last_sent.clone())
+        else {
+            self.push_system("hand off unavailable: the original request is not available");
+            return;
+        };
+        self.continuation.prepare_manual_handoff(prompt);
+        self.handoff_after_cancel = true;
+        self.request_cancel();
+    }
+
+    fn open_idle_picker(&mut self) {
+        let has_other = accounts_with_auth(&self.state_root)
+            .iter()
+            .any(|a| a.account != self.account && a.home_path.is_some());
+        self.show_picker(
+            PickerKind::Idle,
+            "turn is quiet".into(),
+            vec![
+                PickerRow {
+                    id: "idle:wait".into(),
+                    label: "keep waiting".into(),
+                    detail: "leave the notice and continue waiting".into(),
+                },
+                PickerRow {
+                    id: "idle:cancel".into(),
+                    label: "cancel".into(),
+                    detail: "stop this turn".into(),
+                },
+                PickerRow {
+                    id: "idle:handoff".into(),
+                    label: "hand off".into(),
+                    detail: if has_other {
+                        "choose another account".into()
+                    } else {
+                        "disabled: no other signed-in account".into()
+                    },
+                },
+            ],
+            false,
+        );
+    }
+
+    fn idle_provider_name(provider: ProviderKind) -> &'static str {
+        match provider {
+            ProviderKind::Codex => "Codex",
+            ProviderKind::Claude => "Claude Code",
+            ProviderKind::Cursor => "Cursor",
+        }
+    }
+
     fn thread_id(&self) -> Option<&str> {
         self.thread.as_ref().map(|t| t.id())
     }
@@ -1353,6 +1429,7 @@ impl App {
                 self.persist_session_title();
             }
             TurnProgress::Thinking(t) => {
+                self.clear_idle_notice();
                 self.commit_live_text();
                 self.phase = Phase::Thinking;
                 self.live_thinking.push_str(&t);
@@ -1361,11 +1438,13 @@ impl App {
                 }
             }
             TurnProgress::ThinkingDelta(t) => {
+                self.clear_idle_notice();
                 self.commit_live_text();
                 self.phase = Phase::Thinking;
                 self.live_thinking.push_str(&t);
             }
             TurnProgress::Text(t) => {
+                self.clear_idle_notice();
                 self.commit_live_thinking();
                 self.phase = Phase::Writing;
                 self.live_text.push_str(&t);
@@ -1374,11 +1453,13 @@ impl App {
                 }
             }
             TurnProgress::TextDelta(t) => {
+                self.clear_idle_notice();
                 self.commit_live_thinking();
                 self.phase = Phase::Writing;
                 self.live_text.push_str(&t);
             }
             TurnProgress::Card(card) => {
+                self.clear_idle_notice();
                 self.commit_live_thinking();
                 self.commit_live_text();
                 self.phase = if card.status == CardStatus::Running {
@@ -1393,6 +1474,30 @@ impl App {
                 }
             }
             TurnProgress::Notice(n) => self.push_system(n),
+            TurnProgress::Idle {
+                provider, minutes, ..
+            } => {
+                let text = format!(
+                    "No output from {} for {} minutes. Esc cancels; click here (or press Ctrl+K) for options.",
+                    Self::idle_provider_name(provider),
+                    minutes
+                );
+                if let Some(line) = self.messages.iter_mut().find(|line| {
+                    line.meta
+                        .as_ref()
+                        .is_some_and(|(_, label)| label == "__concordia_idle_notice__")
+                }) {
+                    line.text = text;
+                } else {
+                    self.messages.push(ChatLine {
+                        role: MsgRole::System,
+                        text,
+                        card: None,
+                        meta: Some((provider, "__concordia_idle_notice__".into())),
+                    });
+                    self.idle_notice = Some(provider);
+                }
+            }
             TurnProgress::ChatReferences { maps, notices } => {
                 self.show_chat_refs(chatref::Expansion {
                     maps,
@@ -1517,6 +1622,7 @@ impl App {
     }
 
     fn finalize_turn(&mut self, outcome: TurnOutcome) {
+        self.clear_idle_notice();
         self.busy_send_confirmation = None;
         self.submitted_prompt = None;
         let elapsed = self.turn_started.map(|t| t.elapsed());
@@ -2632,6 +2738,12 @@ impl App {
     }
 
     fn dismiss_picker(&mut self) {
+        let restore_handoff = self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Continuation)
+            && self.continuation.pending_prompt().is_some()
+            && self.editor.text().trim().is_empty();
         self.permission_row_pressed = None;
         if self
             .picker
@@ -2655,6 +2767,11 @@ impl App {
         self.picker = None;
         self.update_preview = None;
         self.footer_left = FOOTER_HINT.into();
+        if restore_handoff {
+            if let Some(prompt) = self.continuation.pending_prompt().map(str::to_owned) {
+                self.restore_composer(&prompt);
+            }
+        }
     }
 
     fn open_update_release(&mut self) {
@@ -2716,6 +2833,21 @@ impl App {
             PickerKind::Settings | PickerKind::FilePreferences | PickerKind::Customization => {
                 settings::choose(self, kind, &id)
             }
+            PickerKind::Idle => match id.as_str() {
+                "idle:wait" => {}
+                "idle:cancel" => self.request_cancel(),
+                "idle:handoff" => {
+                    let has_other = accounts_with_auth(&self.state_root)
+                        .iter()
+                        .any(|a| a.account != self.account && a.home_path.is_some());
+                    if has_other {
+                        self.idle_handoff();
+                    } else {
+                        self.push_system("hand off disabled: no other signed-in account");
+                    }
+                }
+                _ => {}
+            },
             PickerKind::Appearance | PickerKind::Theme | PickerKind::BrandColor => {
                 appearance::choose(self, kind, &id)
             }
@@ -3882,6 +4014,8 @@ impl App {
                 card: None,
             meta: None,
             }],
+            idle_notice: None,
+            handoff_after_cancel: false,
             editor: Editor::default(),
             submitted_prompt: None,
             expanded_activity: false,
@@ -5193,6 +5327,15 @@ fn handle_key(app: &mut App, key: KeyEvent, turn_tx: &mpsc::UnboundedSender<Stri
         });
         return false;
     }
+    if app.idle_notice.is_some()
+        && app.activity.detail.is_none()
+        && ctrl
+        && !alt
+        && matches!(key.code, KeyCode::Char('k' | 'K'))
+    {
+        app.open_idle_picker();
+        return false;
+    }
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('e' | 'E'))
     {
         if let Some(i) = app.messages.iter().rposition(|m| m.role == MsgRole::Card) {
@@ -5813,6 +5956,16 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 return;
             }
             if contains(t, x, y) {
+                if let Some(i) = app.view.identity_at((y - t.y) as usize) {
+                    if app.messages.get(i).is_some_and(|line| {
+                        line.meta
+                            .as_ref()
+                            .is_some_and(|(_, label)| label == "__concordia_idle_notice__")
+                    }) {
+                        app.open_idle_picker();
+                        return;
+                    }
+                }
                 if x.saturating_sub(t.x) < 2 {
                     if let Some(i) = app.view.identity_at((y - t.y) as usize) {
                         if app.messages.get(i).is_some_and(ChatLine::toggles) {
@@ -6652,9 +6805,13 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         }
         // Label the start of each agent turn (its cards, thoughts and reply share one label).
         if let Some((p, label)) = &m.meta {
-            let same = i > 0 && app.messages[i - 1].meta.as_ref().map(|x| &x.1) == Some(label);
-            if !same {
-                blocks.push(reply_header(*p, label));
+            if label == "__concordia_idle_notice__" {
+                // Marker-only metadata: do not render a provider header.
+            } else {
+                let same = i > 0 && app.messages[i - 1].meta.as_ref().map(|x| &x.1) == Some(label);
+                if !same {
+                    blocks.push(reply_header(*p, label));
+                }
             }
         }
         blocks.push(TBlock {
@@ -7655,6 +7812,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         .filter(|(_, at)| at.elapsed() < FLASH_FOR)
         .map(|(m, _)| m.as_str());
     let job_line;
+    let idle_footer_hint = format!("{FOOTER_HINT} \u{b7} Ctrl+K options");
     let scrolled = format!("\u{2191} {} rows up \u{b7} PgDn to follow", app.view.scroll);
     let (left, left_style) = if app.recovery_warning().is_some() {
         (
@@ -7734,12 +7892,20 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
     } else if app.busy {
         (
-            "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel",
+            if app.idle_notice.is_some() {
+                "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel \u{b7} Ctrl+K options"
+            } else {
+                "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel"
+            },
             Style::default().fg(Color::DarkGray),
         )
     } else {
         (
-            app.footer_left.as_str(),
+            if app.idle_notice.is_some() && app.picker.is_none() {
+                idle_footer_hint.as_str()
+            } else {
+                app.footer_left.as_str()
+            },
             Style::default().fg(Color::DarkGray),
         )
     };
@@ -7757,7 +7923,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|s| s.chars().count() + 3)
         .unwrap_or(0);
     let avail = (cols[0].width as usize).saturating_sub(2 + stats_reserve);
-    let shown = if left == FOOTER_HINT {
+    let shown = if left == FOOTER_HINT || left == idle_footer_hint {
         fit_hints(avail)
     } else {
         fit_segments(left, avail)

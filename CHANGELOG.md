@@ -48,6 +48,16 @@
   a worker could edit files while you were in Plan or Ask mode if `childTrust` asked for Workspace
   or Full. When a worker's requested mode is lowered, the delegation message says so.
 
+## 2026-11-05m
+
+- A turn that stops producing output no longer waits silently forever. After 10 minutes without
+  output (`[turn] idle_timeout_minutes`; 0 turns it off) the chat shows "No output from Claude Code
+  for 10 minutes", updating as the silence continues and clearing when output resumes. Concordia
+  never cancels on its own: press Esc to cancel, or click the notice (or Ctrl+K) for keep waiting,
+  cancel or hand off. Hand off cancels the quiet turn and offers your request to another signed-in
+  account, with a warning that the turn may have partly run tools.
+- Workers that go quiet show "silent N min" in the workers list.
+
 ## 2026-11-05g
 
 - Images in the native window no longer flicker when the caret blinks or the prompt changes.

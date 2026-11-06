@@ -308,6 +308,22 @@ fn progress_drives_the_state_machine() {
 }
 
 #[test]
+fn silent_worker_shows_in_workers_list_and_clears_on_output() {
+    let mut j = bare_job(1, "a", WorkerState::Thinking);
+    apply_progress(
+        &mut j,
+        TurnProgress::Idle {
+            provider: ProviderKind::Claude,
+            minutes: 10,
+            silent_for: Duration::from_secs(600),
+        },
+    );
+    assert!(j.snippet.contains("silent"));
+    apply_progress(&mut j, TurnProgress::Text("worker output".into()));
+    assert!(!j.snippet.contains("silent"));
+}
+
+#[test]
 fn failure_and_cancel_outcomes() {
     let mut j = bare_job(1, "a", WorkerState::Writing);
     let out = TurnOutcome {
