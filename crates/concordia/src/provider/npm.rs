@@ -204,6 +204,7 @@ mod tests {
                 argv: vec!["exec".into(), "--json".into(), prompt.into()],
                 prompt: prompt.into(),
                 new_session_id: None,
+                env_remove: Vec::new(),
                 env: vec![],
                 cwd: ".".into(),
                 provider: crate::store::ProviderKind::Codex,
