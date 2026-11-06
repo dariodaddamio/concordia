@@ -661,10 +661,14 @@ fn main() {
         }
         // Megabytes of stderr before and after normal output: deadlocks a runner that never
         // drains the pipe (the OS pipe buffer is only ~64 KB).
-        "flood" => {
+        "flood" | "stderr-flood-no-newline" => {
             let mut stderr = std::io::stderr();
-            for i in 0..40_000 {
-                let _ = writeln!(stderr, "flood line {i} {}", "x".repeat(60));
+            if mode == "stderr-flood-no-newline" {
+                let _ = write!(stderr, "{}", "x".repeat(3 * 1024 * 1024));
+            } else {
+                for i in 0..40_000 {
+                    let _ = writeln!(stderr, "flood line {i} {}", "x".repeat(60));
+                }
             }
             if let Ok(path) = std::env::var("FAKE_PROVIDER_STREAM") {
                 let body = std::fs::read_to_string(path).unwrap_or_default();

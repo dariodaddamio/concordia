@@ -620,13 +620,17 @@ async fn run_provider_turn_inner(
     // Always drain stderr: an unread pipe blocks a chatty child, and it is where failures go.
     let mut stderr_task = tokio::spawn(async move {
         let mut tail: VecDeque<String> = VecDeque::new();
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(l)) = lines.next_line().await {
+        let mut reader = BufReader::new(stderr);
+        let mut line = Vec::new();
+        while read_line_bounded(&mut reader, &mut line)
+            .await
+            .is_ok_and(|n| n > 0)
+        {
             stderr_activity.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
             if tail.len() == STDERR_KEEP_LINES {
                 tail.pop_front();
             }
-            tail.push_back(l);
+            tail.push_back(decode_line(&line));
         }
         tail.into_iter().collect::<Vec<_>>().join("\n")
     });

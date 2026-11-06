@@ -351,6 +351,25 @@ async fn a_provider_flooding_stderr_cannot_deadlock_the_turn() {
 }
 
 #[tokio::test]
+async fn stderr_without_newlines_is_bounded() {
+    let mut env = Env::new();
+    env.use_codex(false);
+    env.set("FAKE_PROVIDER_MODE", "stderr-flood-no-newline");
+    env.set("FAKE_PROVIDER_STREAM", fixture("codex-stream.jsonl"));
+    let cwd = env.path("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_provider_turn(&req("hi", &cwd, None), None),
+    )
+    .await
+    .expect("bounded stderr must not hang")
+    .unwrap();
+    assert_eq!(outcome.exit_code, Some(0));
+    assert!(outcome.stderr_tail.len() <= 1024 * 1024 + 32);
+}
+
+#[tokio::test]
 async fn a_failing_provider_reports_its_exit_code_not_a_panic() {
     let mut env = Env::new();
     env.use_codex(false);

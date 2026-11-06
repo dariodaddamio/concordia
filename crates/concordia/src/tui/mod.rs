@@ -4314,10 +4314,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             );
         }
         persist::flush_on_panic();
-        crate::logging::error(&format!(
-            "panic: {info}\n{}",
-            std::backtrace::Backtrace::force_capture()
-        ));
+        crate::logging::error(&format_panic_log_line(info.payload(), info.location()));
         eprintln!(
             "Concordia crashed; details are in {}",
             crate::logging::log_path(&default_store_root()).display()
@@ -4995,6 +4992,53 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         std::process::exit(code);
     }
     Ok(())
+}
+
+/// Format panic diagnostics without copying arbitrary panic payloads into the log.
+pub(crate) fn format_panic_log_line(
+    payload_value: &(dyn std::any::Any + Send),
+    location_value: Option<&std::panic::Location<'_>>,
+) -> String {
+    let payload = if payload_value.downcast_ref::<&str>().is_some() {
+        ("&str", payload_value.downcast_ref::<&str>().copied())
+    } else if let Some(message) = payload_value.downcast_ref::<String>() {
+        ("String", Some(message.as_str()))
+    } else {
+        ("other", None)
+    };
+    let category = payload.1.map_or("panic", |message| {
+        if message.contains("byte index") && message.contains("char boundary") {
+            "char-boundary slice"
+        } else {
+            "panic"
+        }
+    });
+    let location = location_value
+        .map(|location| {
+            format!(
+                "{}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            )
+        })
+        .unwrap_or_else(|| "<unknown>".into());
+    format!(
+        "panic location={location} payload_type={} category={category}",
+        payload.0
+    )
+}
+
+#[cfg(test)]
+mod panic_log_tests {
+    #[test]
+    fn panic_log_line_never_contains_payload_text() {
+        let secret = "SECRET-PANIC-PAYLOAD";
+        let payload = secret.to_string();
+        let line = super::format_panic_log_line(&payload, Some(std::panic::Location::caller()));
+        assert!(!line.contains(secret));
+        assert!(line.contains("location="));
+    }
 }
 
 /// Releases are identified by the backend. Never infer duplicates from processing time:
