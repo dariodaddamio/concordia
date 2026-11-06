@@ -443,6 +443,60 @@ async fn cancel_scenario(via_cmd_shim: bool, mode: &str) {
 }
 
 #[tokio::test]
+async fn cancelling_one_turn_does_not_kill_another() {
+    let mut env = Env::new();
+    env.use_codex(false);
+    env.set("FAKE_PROVIDER_MODE", "hang");
+    let cwd = env.path("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let (tx1, mut rx1) = mpsc::unbounded_channel::<Arc<RunningTurn>>();
+    let first_cwd = cwd.clone();
+    let first =
+        tokio::spawn(
+            async move { run_provider_turn(&req("first", &first_cwd, None), Some(tx1)).await },
+        );
+    let first_handle = tokio::time::timeout(Duration::from_secs(10), rx1.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let (tx2, mut rx2) = mpsc::unbounded_channel::<Arc<RunningTurn>>();
+    let second_cwd = cwd.clone();
+    let second = tokio::spawn(async move {
+        run_provider_turn(&req("second", &second_cwd, None), Some(tx2)).await
+    });
+    let second_handle = tokio::time::timeout(Duration::from_secs(10), rx2.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    first_handle.cancel();
+    let first_outcome = tokio::time::timeout(Duration::from_secs(10), first)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(first_outcome.cancelled);
+    let other_start = Instant::now();
+    while !second_handle.child_is_alive().await && other_start.elapsed() < Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        second_handle.child_is_alive().await,
+        "the other provider was killed (pid={})",
+        second_handle.process_id()
+    );
+
+    second_handle.cancel();
+    let second_outcome = tokio::time::timeout(Duration::from_secs(10), second)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(second_outcome.cancelled);
+}
+
+#[tokio::test]
 async fn cancel_stops_a_direct_provider() {
     cancel_scenario(false, "hang").await;
 }

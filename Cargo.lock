@@ -272,6 +272,7 @@ dependencies = [
  "dirs",
  "ignore",
  "image",
+ "libc",
  "mermansi",
  "portable-pty",
  "ratatui",
