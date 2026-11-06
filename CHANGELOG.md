@@ -32,6 +32,16 @@
 - Active-turn status glyphs respect the motion preference, and native icon animation stops
   when Windows reports client-area animation disabled.
 
+## 2026-11-05k
+
+- Concordia finds the Codex, Claude Code and Cursor agent CLIs at their standard Windows install
+  locations even when those folders are not on PATH (for example Claude Code's native installer
+  puts `claude.exe` in `%USERPROFILE%\.local\bin`).
+- `concordia doctor` shows where each CLI was found. One found outside PATH is a warning with the
+  one-line command that adds its folder to your user PATH; a missing one lists every folder searched.
+- A turn whose CLI cannot be found says which CLI, where Concordia looked, and to run
+  `concordia doctor`, instead of `spawn claude: program not found`.
+
 ## 2026-11-05g
 
 - Images in the native window no longer flicker when the caret blinks or the prompt changes.

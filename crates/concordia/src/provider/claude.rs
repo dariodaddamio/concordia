@@ -1,6 +1,5 @@
 use crate::store::TrustMode;
 use anyhow::{bail, Result};
-use which::which;
 
 #[derive(Debug, Clone)]
 pub struct ClaudeTurnRequest<'a> {
@@ -24,11 +23,8 @@ pub struct ClaudePlan {
 }
 
 pub fn find_claude_bin() -> String {
-    if let Some(p) = super::bin_override("CONCORDIA_CLAUDE_BIN") {
-        return p;
-    }
-    which("claude")
-        .map(|p| p.to_string_lossy().into_owned())
+    super::locate_real(super::ProviderKind::Claude)
+        .map(|p| p.path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "claude".into())
 }
 

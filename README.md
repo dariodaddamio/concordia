@@ -10,6 +10,8 @@
   A native Rust app that connects tasks, accounts and sessions across Codex, Claude and Cursor.
 </p>
 
+Concordia finds provider CLIs at their standard install locations even when they are not on PATH.
+
 <p align="center">
   <a href="../../actions/workflows/ci.yml"><img alt="CI" src="../../actions/workflows/ci.yml/badge.svg"></a>
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">

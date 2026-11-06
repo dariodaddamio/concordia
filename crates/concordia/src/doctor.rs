@@ -42,7 +42,8 @@ pub struct Env<'a> {
     /// Raw contents of the install pointer file, if present.
     pub pointer: Option<String>,
     /// Resolve a provider CLI the way a turn would (override env first, then PATH).
-    pub provider_bin: &'a dyn Fn(ProviderKind) -> Option<PathBuf>,
+    pub provider_bin:
+        &'a dyn Fn(ProviderKind) -> Result<crate::provider::Located, crate::provider::NotFound>,
     pub which: &'a dyn Fn(&str) -> Option<PathBuf>,
     /// `--version` of a CLI; `None` skips probing (fast mode for the TUI).
     pub version_of: Option<VersionProbe<'a>>,
@@ -358,16 +359,30 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
         ("cursor", ProviderKind::Cursor),
     ] {
         match (env.provider_bin)(kind) {
-            None => rows.push(check(
+            Err(missing) => rows.push(check(
                 Level::Warn,
                 name_static(name),
-                "CLI not found on PATH (set CONCORDIA_*_BIN to point at it)",
+                format!(
+                    "{name} not found; looked in: {}; install it or set {}",
+                    missing
+                        .searched
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    provider_variable(kind)
+                ),
             )),
-            Some(path) => {
+            Ok(located) => {
+                let path = &located.path;
                 found += 1;
-                let mut level = Level::Ok;
+                let mut level = if located.source == crate::provider::LocateSource::Fallback {
+                    Level::Warn
+                } else {
+                    Level::Ok
+                };
                 let version = match env.version_of {
-                    Some(probe) => match probe(&path) {
+                    Some(probe) => match probe(path) {
                         Ok(v) => {
                             // Newer, older or unknown is a warning, never a failure.
                             let t = compat::assess(kind, &v);
@@ -393,7 +408,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
                 rows.push(check(
                     level,
                     name_static(name),
-                    format!("{}{version}{shim}", path.display()),
+                    format_provider_cli(name, &Ok(located.clone())) + &format!("{version}{shim}"),
                 ));
             }
         }
@@ -406,6 +421,14 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
         ));
     }
     rows
+}
+
+fn provider_variable(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Codex => "CONCORDIA_CODEX_BIN",
+        ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
+        ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
+    }
 }
 
 /// Idle memory of this process (working set), as a row.
@@ -505,7 +528,9 @@ pub fn summary(checks: &[Check]) -> (usize, usize) {
 
 /// The real environment. `probe_versions` runs each CLI's `--version` (about a second each).
 pub fn real_env<'a>(
-    provider_bin: &'a dyn Fn(ProviderKind) -> Option<PathBuf>,
+    provider_bin: &'a dyn Fn(
+        ProviderKind,
+    ) -> Result<crate::provider::Located, crate::provider::NotFound>,
     which: &'a dyn Fn(&str) -> Option<PathBuf>,
     version_of: Option<VersionProbe<'a>>,
 ) -> Env<'a> {
@@ -525,17 +550,62 @@ pub fn real_env<'a>(
 }
 
 /// Resolve a provider CLI exactly as a turn would: the `CONCORDIA_*_BIN` override, else PATH.
-pub fn resolve_provider_bin(kind: ProviderKind) -> Option<PathBuf> {
-    let configured = match kind {
-        ProviderKind::Codex => crate::provider::codex::find_codex_bin(),
-        ProviderKind::Claude => crate::provider::claude::find_claude_bin(),
-        ProviderKind::Cursor => crate::provider::cursor::find_agent_bin(),
-    };
-    let p = PathBuf::from(&configured);
-    if p.is_file() {
-        return Some(p);
+pub fn resolve_provider_bin(
+    kind: ProviderKind,
+) -> Result<crate::provider::Located, crate::provider::NotFound> {
+    crate::provider::locate_real(kind)
+}
+
+/// Format one provider CLI lookup without touching the environment or probing a process.
+pub fn format_provider_cli(
+    name: &str,
+    result: &Result<crate::provider::Located, crate::provider::NotFound>,
+) -> String {
+    match result {
+        Ok(located) => {
+            let source = match located.source {
+                crate::provider::LocateSource::Override => "override",
+                crate::provider::LocateSource::Path => "PATH",
+                crate::provider::LocateSource::Fallback => "standard location",
+            };
+            let mut line = format!("{name}: {} ({source})", located.path.display());
+            if located.source == crate::provider::LocateSource::Fallback {
+                if let Some(dir) = located.path.parent() {
+                    line.push_str(&format!("; not on PATH; append with [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';{}', 'User')", dir.display()));
+                }
+            }
+            line
+        }
+        Err(missing) => format!(
+            "{name}: missing; searched: {}",
+            missing
+                .searched
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
-    which::which(&configured).ok()
+}
+
+pub fn format_not_found_turn_error(
+    kind: ProviderKind,
+    missing: &crate::provider::NotFound,
+) -> String {
+    let name = match kind {
+        ProviderKind::Codex => "Codex",
+        ProviderKind::Claude => "Claude Code",
+        ProviderKind::Cursor => "Cursor agent",
+    };
+    format!(
+        "{name} CLI was not found. Concordia looked in: {}. Run `concordia doctor`.",
+        missing
+            .searched
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// `<program> --version` with a deadline, first non-empty line.
@@ -592,7 +662,7 @@ pub fn run_cli_report() -> (String, bool) {
         ProviderKind::Cursor,
     ]
     .into_iter()
-    .filter_map(resolve_provider_bin)
+    .filter_map(|k| resolve_provider_bin(k).ok().map(|l| l.path))
     // Also probe whatever typing `concordia` finds, so a stale copy can be named with its version.
     .chain(which::which("concordia").ok())
     .map(|p| {
@@ -611,7 +681,7 @@ pub fn run_cli_report() -> (String, bool) {
         ProviderKind::Cursor,
     ]
     .into_iter()
-    .filter_map(|k| resolve_provider_bin(k).map(|p| (k, p)))
+    .filter_map(|k| resolve_provider_bin(k).ok().map(|l| (k, l.path)))
     .map(|(k, p)| {
         let h = std::thread::spawn(move || compat::detect(k, &p, &compat::run_cli, None));
         (k, h)
@@ -697,7 +767,10 @@ mod tests {
 
     fn env<'a>(
         fx: &Fx,
-        provider_bin: &'a dyn Fn(ProviderKind) -> Option<PathBuf>,
+        provider_bin: &'a dyn Fn(
+            ProviderKind,
+        )
+            -> Result<crate::provider::Located, crate::provider::NotFound>,
         which: &'a dyn Fn(&str) -> Option<PathBuf>,
     ) -> Env<'a> {
         let active = fx.exe_file("concordia-a.exe");
@@ -721,7 +794,18 @@ mod tests {
         let codex = fx.exe_file("codex.exe");
         fs::create_dir_all(fx.base.path().join(".codex")).unwrap();
         fs::write(fx.base.path().join(".codex").join("auth.json"), "{}").unwrap();
-        let pb = move |k: ProviderKind| (k == ProviderKind::Codex).then(|| codex.clone());
+        let pb = move |k: ProviderKind| {
+            if k == ProviderKind::Codex {
+                {
+                    Ok(crate::provider::Located {
+                        path: codex.clone(),
+                        source: crate::provider::LocateSource::Override,
+                    })
+                }
+            } else {
+                Err(crate::provider::NotFound { searched: vec![] })
+            }
+        };
         let wz = fx.exe_file("wezterm.exe");
         let ps = fx.exe_file("powershell.exe");
         let which = move |n: &str| match n {
@@ -746,7 +830,7 @@ mod tests {
     fn config_and_commands_rows_warn_but_never_fail() {
         let fx = Fx::new();
         let _cfg = crate::config::env_guard();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         let checks = run(&env(&fx, &pb, &which));
         assert!(find(&checks, "config")[0].detail.contains("defaults"));
@@ -772,7 +856,7 @@ mod tests {
     #[test]
     fn no_provider_cli_at_all_is_a_failure() {
         let fx = Fx::new();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         let checks = run(&env(&fx, &pb, &which));
         assert_eq!(find(&checks, "providers")[0].level, Level::Fail);
@@ -782,7 +866,7 @@ mod tests {
     #[test]
     fn a_stale_pane_is_called_out_with_the_fix() {
         let fx = Fx::new();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         let mut e = env(&fx, &pb, &which);
         e.running_exe = Some(fx.exe_file("concordia-old.exe"));
@@ -795,7 +879,7 @@ mod tests {
     #[test]
     fn a_dangling_install_pointer_is_a_failure_and_a_missing_one_a_warning() {
         let fx = Fx::new();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         let mut e = env(&fx, &pb, &which);
         e.pointer = Some("C:\\definitely\\missing\\concordia.exe".into());
@@ -807,7 +891,7 @@ mod tests {
     #[test]
     fn a_corrupt_store_is_reported_and_a_good_one_summarised() {
         let fx = Fx::new();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         fs::create_dir_all(crate::store::store_dir(fx.state.path())).unwrap();
         fs::write(store_path(fx.state.path()), "{ nope").unwrap();
@@ -823,7 +907,7 @@ mod tests {
     #[test]
     fn an_unfinished_concordia_account_says_why_it_is_not_usable() {
         let fx = Fx::new();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         let home = fx.state.path().join("homes").join("codex-3");
         fs::create_dir_all(&home).unwrap();
@@ -854,7 +938,18 @@ mod tests {
     fn provider_rows_show_versions_and_flag_cmd_shims() {
         let fx = Fx::new();
         let shim = fx.exe_file("codex.cmd");
-        let pb = move |k: ProviderKind| (k == ProviderKind::Codex).then(|| shim.clone());
+        let pb = move |k: ProviderKind| {
+            if k == ProviderKind::Codex {
+                {
+                    Ok(crate::provider::Located {
+                        path: shim.clone(),
+                        source: crate::provider::LocateSource::Override,
+                    })
+                }
+            } else {
+                Err(crate::provider::NotFound { searched: vec![] })
+            }
+        };
         let which = |_: &str| None;
         let probe = |_: &Path| Ok("codex-cli 9.9.9".to_string());
         let mut e = env(&fx, &pb, &which);
@@ -872,10 +967,47 @@ mod tests {
     }
 
     #[test]
+    fn doctor_check_providers_warns_and_shows_path_fix_for_fallback() {
+        let fx = Fx::new();
+        let folder = fx.exe_file("fallback").parent().unwrap().to_path_buf();
+        let binary = folder.join("codex.exe");
+        fs::write(&binary, "").unwrap();
+        let path = binary.clone();
+        let pb = move |k: ProviderKind| {
+            if k == ProviderKind::Codex {
+                Ok(crate::provider::Located {
+                    path: path.clone(),
+                    source: crate::provider::LocateSource::Fallback,
+                })
+            } else {
+                Err(crate::provider::NotFound { searched: vec![] })
+            }
+        };
+        let which = |_: &str| None;
+        let checks = run(&env(&fx, &pb, &which));
+        let row = find(&checks, "codex")[0];
+        assert_eq!(row.level, Level::Warn);
+        assert!(row.detail.contains("not on PATH"));
+        assert!(row.detail.contains("SetEnvironmentVariable"));
+        assert!(row.detail.contains(&folder.display().to_string()));
+    }
+
+    #[test]
     fn version_rows_say_tested_same_and_warn_when_it_differs() {
         let fx = Fx::new();
         let exe = fx.exe_file("claude.exe");
-        let pb = move |k: ProviderKind| (k == ProviderKind::Claude).then(|| exe.clone());
+        let pb = move |k: ProviderKind| {
+            if k == ProviderKind::Claude {
+                {
+                    Ok(crate::provider::Located {
+                        path: exe.clone(),
+                        source: crate::provider::LocateSource::Override,
+                    })
+                }
+            } else {
+                Err(crate::provider::NotFound { searched: vec![] })
+            }
+        };
         let which = |_: &str| None;
         let same = |_: &Path| Ok("2.1.301 (Claude Code)".to_string());
         let mut e = env(&fx, &pb, &which);
@@ -905,7 +1037,7 @@ mod tests {
     #[test]
     fn the_report_includes_idle_memory() {
         let fx = Fx::new();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         let c = run(&env(&fx, &pb, &which));
         let m = &find(&c, "memory")[0];
@@ -916,7 +1048,7 @@ mod tests {
     #[test]
     fn the_update_row_explains_which_update_mode_applies() {
         let fx = Fx::new();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         let mut e = env(&fx, &pb, &which);
         // Neither a checkout nor a feed: a warning with the fix.
@@ -937,7 +1069,7 @@ mod tests {
     #[test]
     fn typing_concordia_is_checked_against_the_active_build() {
         let fx = Fx::new();
-        let pb = |_: ProviderKind| None;
+        let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let active = fx.exe_file("concordia-a.exe");
 
         // Resolves to the active build: fine.
@@ -994,5 +1126,52 @@ mod tests {
         // cargo's libtest binary prints nothing useful for --version, so just require it not to hang.
         let _ = probe_version(&exe);
         assert!(probe_version(Path::new("C:\\definitely\\not\\here.exe")).is_err());
+    }
+
+    #[test]
+    fn doctor_cli_lines_cover_path_fallback_and_missing() {
+        let path = PathBuf::from("C:\\bin\\claude.exe");
+        let line = format_provider_cli(
+            "Claude Code",
+            &Ok(crate::provider::Located {
+                path: path.clone(),
+                source: crate::provider::LocateSource::Path,
+            }),
+        );
+        assert!(line.contains("PATH"));
+        let line = format_provider_cli(
+            "Claude Code",
+            &Ok(crate::provider::Located {
+                path: path.clone(),
+                source: crate::provider::LocateSource::Fallback,
+            }),
+        );
+        assert!(
+            line.contains("not on PATH")
+                && line.contains("SetEnvironmentVariable")
+                && line.contains("C:\\bin")
+        );
+        let line = format_provider_cli(
+            "Claude Code",
+            &Err(crate::provider::NotFound {
+                searched: vec![PathBuf::from("C:\\one"), PathBuf::from("C:\\two")],
+            }),
+        );
+        assert!(line.contains("missing") && line.contains("C:\\one") && line.contains("C:\\two"));
+    }
+
+    #[test]
+    fn not_found_turn_error_lists_locations_and_points_to_doctor() {
+        let error = format_not_found_turn_error(
+            ProviderKind::Cursor,
+            &crate::provider::NotFound {
+                searched: vec![PathBuf::from("C:\\cursor")],
+            },
+        );
+        assert!(
+            error.contains("Cursor agent")
+                && error.contains("C:\\cursor")
+                && error.contains("concordia doctor")
+        );
     }
 }

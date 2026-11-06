@@ -371,7 +371,11 @@ pub fn start_real_detection(state_root: PathBuf) -> Receiver<(ProviderKind, Comp
         ProviderKind::Cursor,
     ]
     .into_iter()
-    .filter_map(|p| crate::doctor::resolve_provider_bin(p).map(|b| (p, b)))
+    .filter_map(|p| {
+        crate::doctor::resolve_provider_bin(p)
+            .ok()
+            .map(|l| (p, l.path))
+    })
     .collect();
     start_detection(bins, state_root, Arc::new(run_cli))
 }

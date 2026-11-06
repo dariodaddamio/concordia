@@ -2,7 +2,6 @@ use crate::identity::cursor_api_key_for_home;
 use crate::store::TrustMode;
 use anyhow::{bail, Result};
 use std::path::Path;
-use which::which;
 
 #[derive(Debug, Clone)]
 pub struct CursorTurnRequest<'a> {
@@ -23,12 +22,8 @@ pub struct CursorPlan {
 }
 
 pub fn find_agent_bin() -> String {
-    if let Some(p) = super::bin_override("CONCORDIA_AGENT_BIN") {
-        return p;
-    }
-    which("agent")
-        .or_else(|_| which("cursor-agent"))
-        .map(|p| p.to_string_lossy().into_owned())
+    super::locate_real(super::ProviderKind::Cursor)
+        .map(|p| p.path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "agent".into())
 }
 

@@ -532,9 +532,19 @@ async fn run_provider_turn_inner(
     // Do not echo argv here: it contains the whole prompt.
     let setup_ms = timing.elapsed().as_millis();
     let spawning = Instant::now();
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawn {}", launch.program))?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(missing) = crate::provider::locate_real(plan.provider) {
+                anyhow::bail!(
+                    "{}",
+                    crate::doctor::format_not_found_turn_error(plan.provider, &missing)
+                );
+            }
+            return Err(error).with_context(|| format!("spawn {}", launch.program));
+        }
+        Err(error) => return Err(error).with_context(|| format!("spawn {}", launch.program)),
+    };
     let spawn_ms = spawning.elapsed().as_millis();
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     // Counted in the footer stats (when on) until this turn ends.

@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use which::which;
 
 #[derive(Debug, Clone)]
 pub struct TurnRequest<'a> {
@@ -35,11 +34,8 @@ pub struct StreamOutcome {
 }
 
 pub fn find_codex_bin() -> String {
-    if let Some(p) = super::bin_override("CONCORDIA_CODEX_BIN") {
-        return p;
-    }
-    which("codex")
-        .map(|p| p.to_string_lossy().into_owned())
+    super::locate_real(super::ProviderKind::Codex)
+        .map(|p| p.path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "codex".into())
 }
 
