@@ -37,6 +37,16 @@ pub enum TrustMode {
 }
 
 impl TrustMode {
+    /// Security ordering: a larger rank grants strictly more provider capability.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Plan => 0,
+            Self::Ask => 1,
+            Self::Workspace => 2,
+            Self::Full => 3,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Plan => "plan",
