@@ -2590,7 +2590,7 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     s.until("header email is private by default", |s| {
         let screen = s.screen();
         let header = screen.lines().next().unwrap_or_default();
-        header.contains("click to show") && !header.contains("member@example.invalid")
+        header.contains("view email") && !header.contains("member@example.invalid")
     });
     let x = s.screen().lines().next().unwrap().find("email").unwrap() + 1;
     s.send(&format!("\x1b[<0;{x};1M\x1b[<0;{x};1m"));
