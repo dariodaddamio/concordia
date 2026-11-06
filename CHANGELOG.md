@@ -10,6 +10,17 @@
   default terminal. `concordia shortcut remove [--desktop]` removes it.
 - Release-update tests no longer read or write the real release cache.
 
+- Home hygiene now strips extended Windows path prefixes, hides generated test/temp/target
+  workspaces until `h` shows all, groups older short chats under collapsed Quick questions rows,
+  and displays cached per-account 5h/7d usage meters beneath goals.
+
+## 2026-11-05i
+
+- #86: landing visibility is testable with an explicit temp-root policy, hidden rows can be
+  toggled by clicking the footer label, and cached account meters remain visible while work loads.
+- Home ignores provider-native session artifacts until they contain a real user message.
+- Added `concordia sessions prune --empty`, which lists candidates and requires confirmation before removal.
+
 ## 2026-11-05g
 
 - Images in the native window no longer flicker when the caret blinks or the prompt changes.

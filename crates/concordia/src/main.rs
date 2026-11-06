@@ -28,6 +28,7 @@ fn print_help() {
            concordia chat recall|lineage|link|detach  bounded retrieval and explicit source links\n\
            concordia preview FILE          read-only Markdown preview in this terminal\n\
            concordia file-edit FILE        independent file editor (Ctrl+Q closes)\n\
+           concordia sessions prune --empty  list and optionally remove native sessions with no user turns\n\
            concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
                                read recorded threads (opt-in: CONCORDIA_THREADS=1)\n\
            concordia thread migrate preview <thread|history> --source INDEX | apply PLAN | status PLAN\n\
@@ -189,6 +190,21 @@ async fn main() -> Result<()> {
                 std::process::exit(code);
             }
         },
+        "sessions" => {
+            if args.get(1).map(String::as_str) != Some("prune")
+                || args.get(2).map(String::as_str) != Some("--empty")
+                || args.len() != 3
+            {
+                anyhow::bail!("usage: concordia sessions prune --empty");
+            }
+            match concordia::sessions::prune_empty_cli(&default_store_root()) {
+                Ok(output) => print!("{output}"),
+                Err((message, code)) => {
+                    eprintln!("{message}");
+                    std::process::exit(code);
+                }
+            }
+        }
         "mcp" => {
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();

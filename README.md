@@ -401,7 +401,10 @@ latest saved response, rather than a live balance request.
 
 Concordia opens on a landing page when this machine has recorded chats. The left pane lists recent
 chats grouped by the folder they ran in, with this folder first. Enter resumes a chat, or expands a
-folder; a double-click does the same. The right pane holds your goals: `Tab` to it, `a` adds one,
+folder; a double-click does the same. Older one- or two-turn chats are grouped into collapsed
+`Quick questions` rows under their folder. Generated test, qualification, temporary and repository
+`target` workspaces are hidden by default; press `h` or click the footer's `show N hidden` label to
+reveal them. The right pane holds your goals: `Tab` to it, `a` adds one,
 and Enter marks one done. An empty pane explains what goals are and how to add one. When a Harness is connected (`/harness connect harness`), the pane also
 lists each project's open work from its plan ledger. Chats and goals stay visible while you type or
 paste a draft; Enter sends it. Up/Down wrap between the first and last list entries when the draft
@@ -409,6 +412,10 @@ is empty. `Esc` goes straight to chat; `/new` opens the page again. The page sho
 24-hour token usage recorded through Concordia, including cached input. Older unrecorded usage is
 not reconstructed. Copying with right-click or Ctrl+C keeps the selection highlighted. Clickable
 rows, buttons and file links request a hand cursor on terminals supporting OSC 22.
+
+Generated test, qualification, temporary and repository `target` workspaces are hidden by default;
+press `h` to show all. Older one- or two-turn chats collapse into per-folder Quick questions rows.
+Cached connected-account 5h and 7d usage meters, including reset times, appear beneath goals.
 
 
 - **Continuing on the same account** resumes the session id Concordia recorded (`--resume <id>`). Nothing is added to your prompt.
