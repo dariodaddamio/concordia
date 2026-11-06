@@ -1128,6 +1128,77 @@ pub fn install_self() -> Result<InstallReport> {
     })
 }
 
+/// The per-user Start menu (or Desktop when explicitly requested) shortcut owned by Concordia.
+pub fn shortcut_path(desktop: bool) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let root = if desktop {
+            dirs::desktop_dir().context("cannot locate the Desktop")?
+        } else {
+            dirs::data_dir()
+                .context("cannot locate the per-user application data directory")?
+                .join("Microsoft")
+                .join("Windows")
+                .join("Start Menu")
+                .join("Programs")
+        };
+        Ok(root.join("Concordia.lnk"))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = desktop;
+        bail!("shortcuts are supported on Windows only")
+    }
+}
+
+/// Create a native Windows shell shortcut without launching a visible helper console.
+pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let path = shortcut_path(desktop)?;
+        let target = env::current_exe().context("cannot locate the running executable")?;
+        let parent = path.parent().context("shortcut has no parent")?;
+        fs::create_dir_all(parent)?;
+        let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT);$s.TargetPath=$env:CONCORDIA_TARGET;$s.WorkingDirectory=$env:CONCORDIA_WORKDIR;$s.IconLocation=$env:CONCORDIA_ICON;$s.Save()";
+        let status = crate::process_ui::command("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ])
+            .env("CONCORDIA_SHORTCUT", &path)
+            .env("CONCORDIA_TARGET", &target)
+            .env("CONCORDIA_WORKDIR", parent)
+            .env("CONCORDIA_ICON", &target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .status()
+            .context("create Concordia shortcut")?;
+        anyhow::ensure!(
+            status.success(),
+            "PowerShell could not create the Concordia shortcut"
+        );
+        Ok(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = desktop;
+        bail!("shortcuts are supported on Windows only")
+    }
+}
+
+/// Remove only the exact shortcut path Concordia owns.
+pub fn remove_shortcut(desktop: bool) -> Result<PathBuf> {
+    let path = shortcut_path(desktop)?;
+    if path.is_file() {
+        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    }
+    Ok(path)
+}
+
 /// This product was called `orc` before it was renamed. Its install lived in
 /// `%LOCALAPPDATA%\orc\bin`; left on PATH it would keep answering to `orc` with a stale build.
 pub fn legacy_install_dir() -> Option<PathBuf> {
@@ -1247,7 +1318,7 @@ pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<i32> {
 
 pub fn reexec_into_mode(new_exe: &Path, cwd: &Path, terminal: bool) -> Result<i32> {
     persist_concordia_exe_env(new_exe);
-    let mut command = crate::process_ui::command(new_exe);
+    let mut command = Command::new(new_exe); // visible-spawn: replacement owns the interactive console.
     if terminal {
         command.arg("--terminal");
     }

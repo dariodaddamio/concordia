@@ -4,6 +4,8 @@
 
 - Route Concordia child processes through hidden-console constructors on Windows, with a CI gate
   protecting provider, hook, MCP, and diagnostic launches.
+- Keep self-relaunches and other explicitly interactive launches visible, isolate release caches
+  in release-update tests, and add Windows Start menu/Desktop shortcut install and removal.
 
 ## 2026-11-05g
 

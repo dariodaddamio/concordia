@@ -433,14 +433,13 @@ pub fn check(cfg: &Config, current: &str, fetch: &dyn Fetcher) -> Result<Check> 
 
 const CACHE_OWNER: &str = "concordia-release-cache-v1";
 
-#[cfg(not(test))]
 fn cache_root() -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("CONCORDIA_RELEASE_CACHE_DIR") {
+        if !root.trim().is_empty() {
+            return Some(PathBuf::from(root));
+        }
+    }
     dirs::data_local_dir().map(|root| root.join("concordia/cache/releases"))
-}
-
-#[cfg(test)]
-fn cache_root() -> Option<PathBuf> {
-    None
 }
 
 fn valid_digest(value: &str) -> bool {

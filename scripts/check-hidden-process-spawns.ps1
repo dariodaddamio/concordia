@@ -13,8 +13,7 @@ Get-ChildItem $source -Recurse -Filter '*.rs' | ForEach-Object {
         $lineNumber++
         if ($_ -match 'Command::new\s*\(') {
             $allowed = $relative -eq 'crates/concordia/src/process_ui.rs' -or
-                ($relative -eq 'crates/concordia/src/connect.rs') -or
-                ($_ -match 'explorer\.exe')
+                ($_ -match '//\s*visible-spawn:\s*\S')
             if (-not $allowed) {
                 $violations += "${relative}:${lineNumber}: $_"
             }
