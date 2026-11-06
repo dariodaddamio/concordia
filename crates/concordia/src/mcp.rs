@@ -669,10 +669,48 @@ fn tool_native_read(root: &Path, args: &Value) -> Result<String, String> {
     crate::native_memory::command(root, &command)
 }
 
-fn in_workspace(path: &str, scope: &Scope) -> bool {
-    std::fs::canonicalize(path)
-        .map(|p| p.starts_with(&scope.workspace))
-        .unwrap_or(false)
+fn normalized_scope_path(path: &Path) -> Option<String> {
+    let path = std::fs::canonicalize(path).ok()?;
+    let mut value = path.to_string_lossy().replace('/', "\\");
+    while value.len() > 3 && value.ends_with('\\') {
+        value.pop();
+    }
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = value.strip_prefix(r"\\?\") {
+            value = stripped.to_owned();
+        }
+        value.make_ascii_lowercase();
+    }
+    Some(value)
+}
+
+fn in_workspace(root: &Path, path: &str, scope: &Scope) -> bool {
+    let Some(candidate) = normalized_scope_path(Path::new(path)) else {
+        return false;
+    };
+    if normalized_scope_path(&scope.workspace).is_some_and(|workspace| {
+        candidate == workspace
+            || candidate
+                .strip_prefix(&workspace)
+                .is_some_and(|rest| rest.starts_with('\\'))
+    }) {
+        return true;
+    }
+    let Ok(registry) = crate::managed_workspaces::load(root) else {
+        return false;
+    };
+    registry.records.iter().any(|record| {
+        normalized_scope_path(&record.owner)
+            .zip(normalized_scope_path(&scope.workspace))
+            .is_some_and(|(owner, workspace)| owner == workspace)
+            && normalized_scope_path(&record.execution).is_some_and(|worktree| {
+                candidate == worktree
+                    || candidate
+                        .strip_prefix(&worktree)
+                        .is_some_and(|rest| rest.starts_with('\\'))
+            })
+    })
 }
 
 fn ensure_thread_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), String> {
@@ -685,7 +723,9 @@ fn ensure_thread_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), S
         .into_iter()
         .find(|m| m.id == id)
         .ok_or("thread is outside the registered MCP scope")?;
-    if meta.account.as_deref() != Some(scope.account.as_str()) || !in_workspace(&meta.cwd, scope) {
+    if meta.account.as_deref() != Some(scope.account.as_str())
+        || !in_workspace(root, &meta.cwd, scope)
+    {
         return Err("MCP scope rejects this thread".into());
     }
     Ok(())
@@ -712,7 +752,7 @@ fn ensure_native_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), S
             .0
             .cwd
             .as_deref()
-            .is_some_and(|cwd| in_workspace(cwd, scope))
+            .is_some_and(|cwd| in_workspace(root, cwd, scope))
     {
         return Err("MCP scope rejects this native session workspace".into());
     }
@@ -726,7 +766,7 @@ fn tool_threads(state_root: &Path, limit: Option<usize>, scope: &Scope) -> Strin
         .filter(|m| {
             scope.unrestricted
                 || (m.account.as_deref() == Some(scope.account.as_str())
-                    && in_workspace(&m.cwd, scope))
+                    && in_workspace(state_root, &m.cwd, scope))
         })
         .collect();
     if metas.is_empty() {
@@ -1107,13 +1147,17 @@ mod tests {
     }
 
     fn seed(root: &Path) -> String {
+        seed_at(root, String::new())
+    }
+
+    fn seed_at(root: &Path, cwd: String) -> String {
         let id = "3f9a0000-aaaa-bbbb-cccc-111122223333";
         let log = ThreadLog::open(root, id);
         log.write_meta(&ThreadMeta {
             id: id.into(),
             started: threads::now_secs(),
             title: "fix the login redirect".into(),
-            cwd: String::new(),
+            cwd,
             account: Some("claude-2".into()),
         })
         .unwrap();
@@ -1135,6 +1179,34 @@ mod tests {
         )
         .unwrap();
         id.into()
+    }
+
+    fn managed_fixture(state: &Path, owner: &Path, execution: &Path) {
+        let id = "11111111-1111-4111-8111-111111111111";
+        let state = state.canonicalize().unwrap();
+        let owner = owner.canonicalize().unwrap();
+        std::fs::create_dir_all(state.join("managed-worktrees").join(id)).unwrap();
+        let execution = execution.canonicalize().unwrap();
+        let record = json!({
+            "id": id,
+            "revision": 1,
+            "owner": owner,
+            "owner_identity": "1",
+            "common_git": owner,
+            "common_identity": "1",
+            "base": "0123456789012345678901234567890123456789",
+            "branch": format!("concordia/work-{id}"),
+            "execution": execution,
+            "execution_identity": null,
+            "phase": "creating",
+            "note": "fixture",
+            "operation": null
+        });
+        std::fs::write(
+            state.join("managed-workspaces.json"),
+            serde_json::to_vec(&json!({"version": 1, "revision": 1, "records": [record]})).unwrap(),
+        )
+        .unwrap();
     }
 
     fn scoped(root: &Path, account: &str, workspace: &Path, req: Value) -> Value {
@@ -1177,6 +1249,87 @@ mod tests {
             ),
         );
         assert!(response["error"]["message"].is_string());
+    }
+
+    #[test]
+    fn scoped_server_reads_its_managed_worktrees() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let worktree = root
+            .path()
+            .join("managed-worktrees/11111111-1111-4111-8111-111111111111");
+        managed_fixture(root.path(), workspace.path(), &worktree);
+        let id = seed_at(root.path(), worktree.to_string_lossy().into_owned());
+        let scope = Scope {
+            account: "claude-2".into(),
+            workspace: workspace.path().to_path_buf(),
+            unrestricted: false,
+        };
+        assert!(in_workspace(
+            root.path(),
+            &worktree.to_string_lossy(),
+            &scope
+        ));
+        let request = rpc(
+            1,
+            "tools/call",
+            json!({"name":"thread_read","arguments":{"id":id}}),
+        );
+        let response = scoped(root.path(), "claude-2", workspace.path(), request);
+        assert!(
+            response["result"]["content"][0]["text"].is_string(),
+            "{response:?}"
+        );
+
+        let other_workspace = tempfile::tempdir().unwrap();
+        let other_worktree = root
+            .path()
+            .join("managed-worktrees/22222222-2222-4222-8222-222222222222");
+        let other_id = "22222222-2222-4222-8222-222222222222";
+        std::fs::create_dir_all(&other_worktree).unwrap();
+        let mut registry: crate::managed_workspaces::Registry =
+            crate::managed_workspaces::load(root.path()).unwrap();
+        registry.records.push(serde_json::from_value(json!({
+            "id": other_id, "revision": 1, "owner": other_workspace.path(), "owner_identity": "1",
+            "common_git": other_workspace.path(), "common_identity": "1", "base": "0123456789012345678901234567890123456789",
+            "branch": format!("concordia/work-{other_id}"), "execution": other_worktree, "execution_identity": null,
+            "phase": "creating", "note": "fixture", "operation": null
+        })).unwrap());
+        std::fs::write(
+            root.path().join("managed-workspaces.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let other_thread = seed_at(root.path(), other_worktree.to_string_lossy().into_owned());
+        let rejected = scoped(
+            root.path(),
+            "claude-2",
+            workspace.path(),
+            rpc(
+                1,
+                "tools/call",
+                json!({"name":"thread_read","arguments":{"id":other_thread}}),
+            ),
+        );
+        assert!(rejected["error"]["message"].is_string());
+    }
+
+    #[test]
+    fn scope_matches_extended_and_case_variant_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let scope = Scope {
+            account: "a".into(),
+            workspace: workspace.path().to_path_buf(),
+            unrestricted: false,
+        };
+        let plain = workspace.path().to_string_lossy().into_owned();
+        let variant = if cfg!(windows) {
+            format!(r"\\?\{}", plain.to_uppercase())
+        } else {
+            format!("{}{}", plain, std::path::MAIN_SEPARATOR)
+        };
+        assert!(in_workspace(root.path(), &variant, &scope));
     }
 
     #[test]
