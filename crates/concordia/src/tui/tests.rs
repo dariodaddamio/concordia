@@ -2715,24 +2715,19 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
 }
 
 #[test]
-fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
+fn shift_tab_never_reaches_full() {
     use ratatui::style::Color;
     let mut h = Harness::new(100, 12);
     assert_eq!(h.app.trust, TrustMode::Workspace);
     let mut seen = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..3 {
         h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
         seen.push(h.app.trust);
         assert_eq!(get_settings(&h.app.state_root).trust, h.app.trust);
     }
     assert_eq!(
         seen,
-        [
-            TrustMode::Full,
-            TrustMode::Plan,
-            TrustMode::Ask,
-            TrustMode::Workspace
-        ]
+        [TrustMode::Plan, TrustMode::Ask, TrustMode::Workspace]
     );
     for (mode, want) in [
         (TrustMode::Plan, Color::Cyan),
@@ -2806,6 +2801,19 @@ fn shift_tab_cycles_the_mode_and_is_persisted_and_coloured() {
         "description clicks select the same choice"
     );
     assert_eq!(roomy.app.editor.text(), "visible draft");
+}
+
+#[test]
+fn full_mode_badge_is_red() {
+    use ratatui::style::Color;
+    let mut h = Harness::new(100, 12);
+    h.app.trust = TrustMode::Full;
+    h.draw();
+    let buf = h.term.backend().buffer();
+    assert_eq!(
+        buf[(buf.area.width - 3, buf.area.height - 1)].fg,
+        Color::Red
+    );
 }
 
 #[test]

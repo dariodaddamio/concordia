@@ -301,7 +301,7 @@ name. Commands execute as argv without a shell and provider homes remain isolate
 | `Enter` | Send turn |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | Newline without sending |
 | `Tab` | Complete a slash command; while a turn runs (or prompts are queued), queue the typed prompt |
-| `Shift+Tab` | Cycle the mode: plan, ask, auto-edit, full (moves the selection up while the palette is open) |
+| `Shift+Tab` | Cycle plan, ask and workspace (moves the selection up while the palette is open); use `/mode full` with confirmation |
 | `Alt+Up` / `Alt+Down` | Select a worker row; `Enter` opens its transcript, `Esc` closes it. In the queue panel, move the selected prompt up or down |
 | Click | Place the caret (prompt); release on an underlined file reference to open its internal split pane. Alt+click requests formatted preview; dragging keeps selection |
 | Drag, double-click, triple-click | Select text / a word / a line (prompt or transcript) |
