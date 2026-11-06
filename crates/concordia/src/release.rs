@@ -119,10 +119,21 @@ fn valid_repo(r: &str) -> bool {
 /// Normal installs use the public project feed. Explicit environment/build overrides remain
 /// available for forks; an invalid override fails instead of silently switching repositories.
 pub fn config_from_env(current: &str) -> Option<Config> {
+    let dev = std::env::var("CONCORDIA_DEV").ok().as_deref() == Some("1");
     config_from(
-        std::env::var("CONCORDIA_UPDATE_REPO").ok().as_deref(),
+        if dev {
+            std::env::var("CONCORDIA_UPDATE_REPO").ok()
+        } else {
+            None
+        }
+        .as_deref(),
         option_env!("CONCORDIA_RELEASE_REPO"),
-        std::env::var("CONCORDIA_UPDATE_API").ok().as_deref(),
+        if dev {
+            std::env::var("CONCORDIA_UPDATE_API").ok()
+        } else {
+            None
+        }
+        .as_deref(),
         std::env::var("CONCORDIA_UPDATE_PRERELEASE").ok().as_deref(),
         current,
     )
@@ -938,4 +949,14 @@ mod tests {
         assert!(check(&cfg(), "0.1.0", &FeedOnly("[]".into())).is_err());
         assert!(check(&cfg(), "garbage", &FeedOnly("[]".into())).is_err());
     }
+}
+#[test]
+fn update_overrides_need_dev_flag() {
+    std::env::set_var("CONCORDIA_UPDATE_REPO", "synthetic/override");
+    std::env::remove_var("CONCORDIA_DEV");
+    assert_eq!(config_from_env("1.0.0").unwrap().repo, DEFAULT_REPO);
+    std::env::set_var("CONCORDIA_DEV", "1");
+    assert_eq!(config_from_env("1.0.0").unwrap().repo, "synthetic/override");
+    std::env::remove_var("CONCORDIA_UPDATE_REPO");
+    std::env::remove_var("CONCORDIA_DEV");
 }
