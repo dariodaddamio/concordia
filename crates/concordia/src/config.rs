@@ -178,6 +178,10 @@ impl Config {
     /// Read `<state>/config.toml`. Never fails, never writes.
     pub fn load(state_root: &Path) -> LoadedConfig {
         let path = config_path(state_root);
+        Self::load_from_path(path)
+    }
+
+    fn load_from_path(path: PathBuf) -> LoadedConfig {
         let mut out = LoadedConfig {
             config: Config::default(),
             warnings: Vec::new(),
@@ -498,9 +502,7 @@ pub fn for_root(state_root: &Path) -> Config {
 #[cfg(test)]
 pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    std::env::remove_var("CONCORDIA_CONFIG");
-    g
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]
@@ -636,8 +638,7 @@ max_workers = 2
     #[test]
     fn missing_file_is_defaults_and_is_not_created() {
         let dir = tempfile::tempdir().unwrap();
-        let _g = env_guard();
-        let l = Config::load(dir.path());
+        let l = Config::load_from_path(dir.path().join("config.toml"));
         assert_eq!(l.config, Config::default());
         assert!(l.warnings.is_empty() && !l.exists);
         assert!(!dir.path().join("config.toml").exists());
@@ -646,10 +647,9 @@ max_workers = 2
     #[test]
     fn malformed_file_gives_defaults_a_position_and_is_left_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        let _g = env_guard();
         let text = "[ui]\ntips = false\n[mode\ndefault = \"plan\"\n";
         std::fs::write(dir.path().join("config.toml"), text).unwrap();
-        let l = Config::load(dir.path());
+        let l = Config::load_from_path(dir.path().join("config.toml"));
         assert_eq!(l.config, Config::default());
         assert_eq!(l.warnings.len(), 1);
         assert!(l.warnings[0].contains("line 3"), "{}", l.warnings[0]);
@@ -699,10 +699,7 @@ max_workers = 2
         let dir = tempfile::tempdir().unwrap();
         let other = dir.path().join("elsewhere.toml");
         std::fs::write(&other, "[ui]\ntips = false\n").unwrap();
-        let _g = env_guard();
-        std::env::set_var("CONCORDIA_CONFIG", &other);
-        let l = Config::load(dir.path());
-        std::env::remove_var("CONCORDIA_CONFIG");
+        let l = Config::load_from_path(other.clone());
         assert!(!l.config.ui.tips && l.exists && l.path == other);
     }
 }

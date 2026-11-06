@@ -51,11 +51,28 @@ pub fn next_action(row: &Check) -> Option<String> {
         "clipboard" => "install or restore powershell.exe on PATH".into(),
         "install" => "re-run scripts\\install-dev.ps1".into(),
         "store" => "move the corrupt store aside, then restart Concordia".into(),
+        "state" if row.detail.contains("not owner-only") => "concordia doctor --fix-acl".into(),
         "state" => "choose a writable Concordia state directory".into(),
         "config" => "/config to review the setting".into(),
         "commands" => "rename or remove the conflicting custom command".into(),
-        "providers" => "install at least one provider CLI, then run concordia doctor".into(),
-        _ => "run concordia doctor and follow the diagnostic details".into(),
+        "providers" => "install at least one provider CLI, then retry the operation".into(),
+        name if matches!(name, "codex" | "claude" | "cursor")
+            && row.detail.contains("(tested: ") =>
+        {
+            let tested = compat::TESTED
+                .iter()
+                .find(|(provider, _)| provider.as_str() == name)
+                .and_then(|(_, versions)| versions.first())
+                .copied()
+                .unwrap_or("the verified release");
+            format!(
+                "works; Concordia was tested with {tested}. Update the CLI if something misbehaves"
+            )
+        }
+        "binary" if row.detail.contains("this process is") => {
+            "close this terminal and open a new one".into()
+        }
+        _ => "review the diagnostic details and address the reported condition".into(),
     };
     Some(action)
 }
@@ -270,11 +287,19 @@ fn check_state_dir(root: &Path) -> Check {
         );
     }
     let probe = root.join(format!(".doctor-{}", std::process::id()));
+    let warning = crate::store::outside_profile_warning(root);
+    let acl_status = crate::state_security::is_owner_only(root);
+    let acl_warning = acl_status.as_ref().ok().filter(|ok| !**ok);
+    let acl_unknown = acl_status.is_err();
     match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
         Ok(()) => check(
-            Level::Ok,
+            if warning.is_some() || acl_warning.is_some() || acl_unknown { Level::Warn } else { Level::Ok },
             "state",
-            format!("{} is writable", root.display()),
+            warning.unwrap_or_else(|| if acl_unknown {
+                format!("{}: could not read permissions", root.display())
+            } else if acl_warning.is_some() {
+                format!("{} is writable; state directory is not owner-only; run icacls \"{}\" /inheritance:r /grant:r \"%USERNAME%\":F SYSTEM:F", root.display(), root.display())
+            } else { format!("{} is writable", root.display()) }),
         ),
         Err(e) => check(
             Level::Fail,
@@ -1199,9 +1224,16 @@ mod tests {
             check(Level::Warn, "path", "not on PATH"),
             check(Level::Warn, "wezterm", "missing"),
             check(Level::Fail, "install", "broken"),
+            check(Level::Warn, "claude", "claude: installed (tested: older)"),
+            check(
+                Level::Warn,
+                "binary",
+                "this process is old but launchers use new; close old panes and open a new tab",
+            ),
         ];
         for row in rows {
-            assert!(next_action(&row).is_some(), "missing action for {row:?}");
+            let action = next_action(&row).expect("missing action");
+            assert!(!action.contains("concordia doctor"), "{action}");
             let rendered = format_report(std::slice::from_ref(&row));
             assert_eq!(rendered.matches("next: ").count(), 1, "{rendered}");
         }

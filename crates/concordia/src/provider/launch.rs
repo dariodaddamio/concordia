@@ -136,6 +136,7 @@ mod tests {
             argv: vec!["--flag".into(), prompt.into()],
             prompt: prompt.into(),
             new_session_id: None,
+            env_remove: Vec::new(),
             env: Vec::new(),
             cwd: ".".into(),
             provider,
