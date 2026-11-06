@@ -6,8 +6,12 @@ pub fn find_wezterm() -> Option<PathBuf> {
     if let Some(path) = env::var_os("CONCORDIA_WEZTERM_BIN").filter(|p| !p.is_empty()) {
         return Some(path.into());
     }
-    if let Ok(p) = which::which("wezterm") {
-        return Some(p);
+    if let Ok(p) = which::which_in("wezterm", env::var_os("PATH"), "") {
+        if p.parent()
+            .is_some_and(|parent| env::current_dir().ok().as_deref() != Some(parent))
+        {
+            return Some(p);
+        }
     }
     let mut candidates = Vec::new();
     if let Some(local) = env::var_os("LOCALAPPDATA") {

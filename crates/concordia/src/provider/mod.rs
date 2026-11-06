@@ -39,6 +39,7 @@ pub struct LocateEnv {
     pub userprofile: Option<PathBuf>,
     pub appdata: Option<PathBuf>,
     pub localappdata: Option<PathBuf>,
+    pub workspace_root: Option<PathBuf>,
 }
 
 pub fn locate(kind: ProviderKind, env: &LocateEnv) -> Result<Located, NotFound> {
@@ -99,14 +100,44 @@ pub fn locate(kind: ProviderKind, env: &LocateEnv) -> Result<Located, NotFound> 
     } else {
         &[name]
     };
+    let safe_path = env.path.as_deref().map(|raw| {
+        std::env::split_paths(raw)
+            .filter(|p| !p.as_os_str().is_empty() && p != std::path::Path::new("."))
+            .filter(|dir| {
+                let cwd = std::env::current_dir().ok();
+                let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+                if cwd
+                    .as_ref()
+                    .is_some_and(|c| dir == c.canonicalize().unwrap_or_else(|_| c.clone()))
+                {
+                    return false;
+                }
+                !env.workspace_root.as_ref().is_some_and(|root| {
+                    dir.starts_with(root.canonicalize().unwrap_or_else(|_| root.clone()))
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let safe_path = safe_path
+        .as_ref()
+        .map(|p| std::env::join_paths(p).unwrap_or_default());
     if let Some(candidate) = names
         .iter()
-        .find_map(|n| which::which_in(n, env.path.as_deref(), ".").ok())
+        .find_map(|n| which::which_in(n, safe_path.as_deref(), "").ok())
     {
-        return Ok(Located {
-            path: candidate,
-            source: LocateSource::Path,
-        });
+        let parent = candidate.parent().unwrap_or(candidate.as_path());
+        let cwd = std::env::current_dir().ok();
+        let unsafe_hit = cwd.as_ref().is_some_and(|c| parent == c)
+            || env
+                .workspace_root
+                .as_ref()
+                .is_some_and(|r| parent.starts_with(r));
+        if !unsafe_hit {
+            return Ok(Located {
+                path: candidate,
+                source: LocateSource::Path,
+            });
+        }
     }
     searched.extend(fallback.iter().cloned());
     for p in fallback {
@@ -134,6 +165,7 @@ pub fn locate_real(kind: ProviderKind) -> Result<Located, NotFound> {
             userprofile: std::env::var_os("USERPROFILE").map(PathBuf::from),
             appdata: std::env::var_os("APPDATA").map(PathBuf::from),
             localappdata: std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+            workspace_root: std::env::current_dir().ok(),
         },
     )
 }

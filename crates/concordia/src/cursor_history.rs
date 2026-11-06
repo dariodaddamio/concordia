@@ -130,7 +130,7 @@ pub(super) fn open(root: &std::path::Path, binding: &Binding) -> Result<Source, 
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()
             .map_err(|_|"Cursor history runtime could not start")?;
         runtime.block_on(async move {
-            let command = crate::provider::cursor::find_agent_bin();
+            let command = crate::provider::cursor::find_agent_bin()?;
             let plan = crate::provider::PlannedTurn {
                 command, argv: vec!["acp".into()], env: Vec::new(), cwd: cwd.to_string_lossy().into_owned(),
                 prompt: "acp".into(), new_session_id: None, provider: crate::store::ProviderKind::Cursor,

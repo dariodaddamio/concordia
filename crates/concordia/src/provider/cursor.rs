@@ -21,10 +21,10 @@ pub struct CursorPlan {
     pub cwd: String,
 }
 
-pub fn find_agent_bin() -> String {
+pub fn find_agent_bin() -> Result<String, String> {
     super::locate_real(super::ProviderKind::Cursor)
         .map(|p| p.path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "agent".into())
+        .map_err(|e| crate::doctor::format_not_found_turn_error(super::ProviderKind::Cursor, &e))
 }
 
 pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
@@ -70,7 +70,7 @@ pub fn plan_cursor_turn(req: &CursorTurnRequest<'_>) -> Result<CursorPlan> {
         }
     }
     Ok(CursorPlan {
-        command: find_agent_bin(),
+        command: find_agent_bin().map_err(anyhow::Error::msg)?,
         argv,
         env,
         cwd: req.cwd.to_string_lossy().into_owned(),
