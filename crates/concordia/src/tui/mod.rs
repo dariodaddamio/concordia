@@ -3928,6 +3928,24 @@ impl App {
             self.flush_delegate_prompt(turn_tx);
             return;
         }
+        let selected_account = get_use_selection(&self.state_root).is_some_and(|selection| {
+            selection.provider == self.provider && selection.account == self.account
+        });
+        if !line.starts_with('/')
+            && selected_account
+            && self
+                .home_path
+                .as_ref()
+                .is_some_and(|home| !is_logged_in(self.provider, home))
+        {
+            self.push_system(format!(
+                "{} is signed out. Use /use to sign in again.",
+                self.account_label()
+            ));
+            self.restore_composer(&original_line);
+            self.persist_draft_now();
+            return;
+        }
         let handoff = self.continuation.dispatch_request().is_some();
         let request = self
             .continuation

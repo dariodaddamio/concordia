@@ -267,6 +267,8 @@ enum ChatRow {
 }
 
 pub struct Landing {
+    welcome: bool,
+    provider_health: Vec<(crate::store::ProviderKind, bool)>,
     from_chat: bool,
     all_sessions: Vec<SessionSummary>,
     show_all: bool,
@@ -380,7 +382,11 @@ fn open_with_mode(
     program: Option<String>,
     from_chat: bool,
 ) {
-    if sessions.is_empty() && !from_chat {
+    let welcome = sessions.is_empty()
+        && crate::store::load_store(&app.state_root)
+            .accounts
+            .is_empty();
+    if sessions.is_empty() && !from_chat && !welcome {
         app.landing = None;
         return;
     }
@@ -441,6 +447,8 @@ fn open_with_mode(
         }
     };
     let landing = Landing {
+        welcome,
+        provider_health: crate::doctor::fast_provider_status(),
         from_chat,
         all_sessions: sessions,
         show_all: false,
@@ -760,6 +768,16 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     {
         return false;
     }
+    if key.code == KeyCode::Enter
+        && landing.welcome
+        && crate::store::load_store(&app.state_root)
+            .accounts
+            .is_empty()
+        && landing.pane == Pane::Chats
+    {
+        app.open_use_picker();
+        return true;
+    }
     let rows = landing.rows().len();
     let goals = landing.open_goals().len();
     match (key.code, landing.pane) {
@@ -1044,10 +1062,15 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     };
     // As tall as the longer pane's content, within the space there is.
+    let welcome_visible = landing.welcome
+        && crate::store::load_store(&app.state_root)
+            .accounts
+            .is_empty();
     let content = landing
         .rows()
         .len()
         .max(goal_rows(landing))
+        .max(if welcome_visible { 7 } else { 0 })
         .min(u16::MAX as usize - 2) as u16;
     let area = Rect {
         height: (content + 2).clamp(3, area.height.max(3)).min(area.height),
@@ -1111,6 +1134,29 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         let inner = block.inner(panes[0]);
         f.render_widget(block, panes[0]);
         landing.chats_area = inner;
+        if welcome_visible {
+            let mut lines = vec![
+                Line::styled("Welcome to Concordia", selected),
+                Line::from(
+                    "Concordia keeps your provider chats, accounts and continuity together.",
+                ),
+                Line::from("Local CLI health check (no network or provider turn):"),
+            ];
+            for (provider, found) in &landing.provider_health {
+                lines.push(Line::from(format!(
+                    "  {} CLI: {}",
+                    provider.as_str(),
+                    if *found { "found" } else { "not found" }
+                )));
+            }
+            lines.push(Line::styled(
+                "Next: /use to add an account (Enter)",
+                selected,
+            ));
+            f.render_widget(Paragraph::new(lines), inner);
+            landing.goals_area = Rect::default();
+            return;
+        }
         let rows = landing.rows();
         let height = inner.height as usize;
         if landing.chat_sel < landing.chat_top {
