@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-11-06b
+
+### Home
+- Usage has its own box above goals, one line per account (never wrapped), so the goals box keeps
+  its "add a goal" prompt. A reset already passed reads "reset at <time>", an upcoming one
+  "resets <time>".
+- Chats from folders that no longer exist (for example deleted git worktrees) are hidden from
+  home; they stay reachable with `/resume` and the `h` show-all toggle.
+- Opifex Studio (near-black, amber, bone) is the default theme; existing installs switch once,
+  and any theme you pick afterwards sticks. Themes can be imported and exported as TOML files
+  from `/config`, with a contrast check.
+
+### Security
+- Secrets are redacted before anything is written (history, drafts, queue, logs, thread logs,
+  card text, editor recovery) and again when served over MCP: API keys, tokens, JWTs, private
+  keys, passwords in URLs and connection strings, and Concordia's own Cursor key.
+- The MCP server only reads the account and workspace (and its managed worktrees) it was
+  registered for, and serves nothing without a scope.
+- The editor and previews stay inside the workspace: a link pointing outside is not opened or
+  saved through, more secret files are treated as sensitive (SSH private keys, cloud and package
+  credentials, keystores, `*secret*`), and Windows device names like `CON` are rejected.
+- Worker output handed to another agent is wrapped in a random per-run fence it cannot close.
+- Concordia's state folder is created owner-only; `doctor` warns if an existing one isn't, and
+  if `CONCORDIA_STATE_DIR` points outside your profile. Update-source overrides need
+  `CONCORDIA_DEV=1`, and a shell `CURSOR_API_KEY` no longer reaches Cursor accounts without a key.
+
+### Reliability
+- The cached `--version` probe now notices CLI updates behind unchanged `.cmd` launchers (npm,
+  Cursor agent).
+- `doctor` no longer suggests running `doctor` from inside `doctor`.
+- README is now a short user guide; internals moved to `docs/`.
+- Tests are deterministic again: no test changes the shared process environment.
 ## 2026-11-06a
 
 ### Works on a fresh Windows machine
