@@ -139,12 +139,14 @@ pub fn login_command(plan: &LoginPlan, wezterm: Option<&Path>) -> Command {
     let ps = ["-NoLogo", "-NoProfile", "-NoExit", "-Command", plan.script];
     let mut cmd = match wezterm {
         Some(w) => {
-            let mut c = Command::new(w);
+            // Provider login must be visible so the user can complete native authentication.
+            let mut c = Command::new(w); // visible-spawn: provider login is an interactive window.
             c.args(["start", "--", "powershell.exe"]).args(ps);
             c
         }
         None => {
-            let mut c = Command::new("powershell.exe");
+            // Provider login must be visible so the user can complete native authentication.
+            let mut c = Command::new("powershell.exe"); // visible-spawn: provider login is interactive.
             c.args(ps);
             #[cfg(windows)]
             {

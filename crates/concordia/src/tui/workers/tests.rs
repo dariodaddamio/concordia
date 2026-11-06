@@ -5,7 +5,9 @@
 
 use super::super::*;
 use crate::delegate::{Origin, WorkerState as S};
-use crate::store::{set_workers, upsert_stored_account, StoredAccount};
+use crate::store::{
+    modify_store, set_workers, upsert_stored_account, ChildTrust, StoredAccount, TrustMode,
+};
 use ratatui::backend::TestBackend;
 
 struct H {
@@ -410,6 +412,25 @@ fn delegating_creates_a_job_with_bounded_context_and_no_runtime_means_a_clean_fa
     assert!(h.messages().contains("delegate result #1"));
     // The result block never claims anything was executed, and is labelled untrusted.
     assert!(h.messages().contains("untrusted worker output"));
+}
+
+#[test]
+fn delegation_entry_point_clamps_workspace_child_to_plan() {
+    let mut h = H::new(100, 24);
+    let root = h.dir.path().to_path_buf();
+    account(&root, "codex-o", "ORCHESTR1");
+    account(&root, "codex-w1", "WORKERAA1");
+    set_workers(&root, vec!["codex-w1".into()]).unwrap();
+    h.app.trust = TrustMode::Plan;
+    modify_store(&root, |store| {
+        store.settings.child_trust = ChildTrust::Workspace;
+        Ok(())
+    })
+    .unwrap();
+    let _ = h.submit("/delegate codex-w1 inspect safely");
+    let job = h.app.deleg.d.get(1).unwrap();
+    assert_eq!(job.trust, TrustMode::Plan);
+    assert!(h.messages().contains("trust plan") && h.messages().contains("your mode is plan"));
 }
 
 #[test]

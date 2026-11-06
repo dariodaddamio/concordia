@@ -15,6 +15,7 @@ fn open_landing(h: &mut Harness) {
         cwd: Some(h.app.cwd.to_string_lossy().into_owned()),
         preview: Some("fixture chat".into()),
         modified_ms: 1,
+        user_messages: 1,
     };
     landing::open_with(&mut h.app, vec![session], None);
     h.draw();
@@ -378,6 +379,7 @@ fn unrelated_projects_with_the_same_folder_name_keep_separate_chat_groups() {
         cwd: Some(cwd.into()),
         preview: Some(id.into()),
         modified_ms: 1,
+        user_messages: 1,
     };
     let groups = landing::group_sessions(
         vec![

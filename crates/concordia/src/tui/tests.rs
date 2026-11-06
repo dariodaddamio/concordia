@@ -3449,7 +3449,8 @@ fn landing_session(
         session_id: id.into(),
         cwd: Some(cwd.to_string_lossy().into_owned()),
         preview: Some(format!("chat {id}")),
-        modified_ms: ms,
+        modified_ms: 1_800_000_000_000 + ms,
+        user_messages: 1,
     }
 }
 
@@ -3660,6 +3661,175 @@ fn there_is_no_landing_page_without_chats() {
     assert!(h.app.landing.is_none());
     h.draw();
     assert!(!h.screen().contains(" chats "));
+}
+
+#[test]
+fn opening_and_quitting_records_no_session_and_one_message_records_one() {
+    let mut h = Harness::new(100, 24);
+    let cwd = h.app.cwd.clone();
+    let session = landing_session("acct-x", &cwd, "landing-only", 1);
+    landing::open_with(&mut h.app, vec![session], None);
+    assert!(!h.key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(crate::threads::list(&h.app.state_root).is_empty());
+
+    let mut fresh = Harness::new(100, 24);
+    fresh.app.state_root = h.app.state_root.clone();
+    fresh.app.cwd = cwd;
+    fresh.app.thread = Some(crate::threads::ThreadLog::open(
+        &fresh.app.state_root,
+        "one-message",
+    ));
+    fresh.app.push_user("one message".into());
+    fresh
+        .app
+        .reference_journal
+        .finish(fresh.app.state_root.clone(), None, false);
+    fresh
+        .app
+        .reference_journal
+        .settle_for_test(&mut fresh.app.history);
+    fresh.app.thread.take();
+    let journal = fresh.app.state_root.join("threads/one-message.jsonl");
+    assert_eq!(std::fs::read_to_string(journal).unwrap().lines().count(), 1);
+}
+
+#[test]
+fn show_all_toggles_with_h_and_with_a_footer_click() {
+    let mut h = Harness::new(110, 24);
+    let visible = h.app.cwd.clone();
+    let hidden_root = h._dir.path().join("hidden-temp");
+    let hidden = hidden_root.join("chat");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let sessions = vec![
+        landing_session("acct-x", &visible, "visible", 2),
+        landing_session("acct-x", &hidden, "hidden", 1),
+    ];
+    landing::open_with(&mut h.app, sessions, None);
+    landing::set_hidden_temp_root(&mut h.app, hidden_root);
+    h.draw();
+    assert!(!h.screen().contains("chat hidden"));
+    assert!(h.app.footer_left.contains("h show 1 hidden"));
+    h.key(KeyCode::Char('h'), KeyModifiers::NONE);
+    assert!(h.screen().contains("chat (1)"));
+    assert!(h.app.footer_left.contains("h hide"));
+    let footer = h.app.footer_left.clone();
+    let marker = footer.find("h hide").unwrap();
+    h.click(marker as u16, h.app.areas.footer.y);
+    assert!(!h.screen().contains("chat (1)"));
+}
+
+#[test]
+fn meters_show_under_goals_for_every_provider_account() {
+    let mut h = Harness::new(180, 40);
+    let here = h.app.cwd.clone();
+    landing::open_with(
+        &mut h.app,
+        vec![landing_session("acct-x", &here, "first", 1)],
+        None,
+    );
+    let snap = |a: &str, b: &str| {
+        let mut s = crate::usage::UsageSnapshot::no_data("cached", "fixture");
+        s.windows = vec![
+            crate::usage::UsageWindow {
+                label: "5h".into(),
+                used_pct: 20.0,
+                resets: Some(a.into()),
+            },
+            crate::usage::UsageWindow {
+                label: "7d".into(),
+                used_pct: 40.0,
+                resets: Some(b.into()),
+            },
+        ];
+        s
+    };
+    h.app.landing.as_mut().unwrap().meters = vec![
+        landing::LandingMeter {
+            provider: ProviderKind::Codex,
+            account: "codex-fixture".into(),
+            snapshot: snap("3h", "2d"),
+        },
+        landing::LandingMeter {
+            provider: ProviderKind::Claude,
+            account: "claude-fixture".into(),
+            snapshot: snap("4h", "3d"),
+        },
+        landing::LandingMeter {
+            provider: ProviderKind::Cursor,
+            account: "cursor-fixture".into(),
+            snapshot: snap("5h", "4d"),
+        },
+    ];
+    h.draw();
+    let screen = h.screen();
+    for expected in [
+        "usage",
+        "codex · codex-fixture",
+        "claude · claude-fixture",
+        "cursor · cursor-fixture",
+        "5h",
+        "7d",
+        "3h",
+        "4d",
+    ] {
+        assert!(screen.contains(expected), "missing {expected}: {screen}");
+    }
+    h.app
+        .landing
+        .as_mut()
+        .unwrap()
+        .work
+        .push(landing::ProjectWork {
+            folder: "fixture".into(),
+            items: Some(vec![landing::WorkItem {
+                text: "work item".into(),
+                queued: false,
+            }]),
+        });
+    h.draw();
+    assert!(h.screen().contains("codex-fixture") && h.screen().contains("work item"));
+}
+
+#[test]
+fn landing_fixture_render_has_no_extended_prefix_or_hidden_workspaces() {
+    let mut h = Harness::new(120, 30);
+    let hidden_root = h._dir.path().join("hidden-temp");
+    let folder = h.app.cwd.clone();
+    let old = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .saturating_sub(86_400_001);
+    let mut sessions = vec![
+        landing_session(
+            "acct-x",
+            std::path::Path::new(r"\\?\C:\fixture\target\chat"),
+            "target",
+            1,
+        ),
+        landing_session(
+            "acct-x",
+            std::path::Path::new(r"\\?\UNC\server\share\chat"),
+            "unc",
+            2,
+        ),
+        landing_session("acct-x", &hidden_root.join("secret"), "hidden", 3),
+    ];
+    let mut q1 = landing_session("acct-x", &folder, "old-a", 4);
+    q1.modified_ms = old;
+    let mut q2 = landing_session("acct-x", &folder, "old-b", 5);
+    q2.modified_ms = old;
+    q2.preview = Some("short question".into());
+    sessions.extend([q1, q2]);
+    landing::open_with(&mut h.app, sessions, None);
+    landing::set_hidden_temp_root(&mut h.app, hidden_root);
+    h.draw();
+    let screen = h.screen();
+    assert!(!screen.contains(r"\\?\"));
+    assert!(!screen.contains("secret"));
+    assert!(screen.contains("Quick questions"));
 }
 
 #[test]
@@ -4316,7 +4486,7 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     let mut h = Harness::new(100, 20);
     h.app.cwd = PathBuf::from("C:/work/fixture-project");
     let title = h.app.window_title();
-    assert!(title == "Concordia — fixture-project", "{title}");
+    assert!(title == "Concordia | fixture-project", "{title}");
     assert!(
         !title.contains("Codex") && !title.contains("gpt-"),
         "{title}"
@@ -4329,9 +4499,11 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     assert!(h
         .app
         .window_title()
-        .starts_with("Concordia — Fix parser · "));
+        .starts_with("Concordia | Thinking | Fix parser"));
     h.app.phase = Phase::Writing;
     assert!(h.app.window_title().contains("Writing"));
+    assert_eq!(h.app.phase.frame_with_motion(1, false), "▁");
+    assert_ne!(h.app.phase.frame_with_motion(1, true), "▁");
     h.app.phase = Phase::Tool("Read".into());
     assert!(h.app.window_title().contains("Read"));
     assert_eq!(h.app.phase.frame(0), "▤");
@@ -4342,6 +4514,9 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     // Appearance uses the normal keyboard/mouse picker and preserves a working draft.
     h.app.editor.set_text("preserved draft");
     h.app.handle_slash("/config");
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Settings);
+    assert!(!h.app.window_title().contains('—'));
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Appearance);
     assert_eq!(h.app.editor.text(), "preserved draft");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
@@ -4375,6 +4550,62 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     .unwrap()
     .into_rgba8();
     assert_eq!(portrait.as_ref(), &original);
+    // Display preferences and file actions survive rebuilding the application state.
+    appearance::save(&mut h.app, "tokens", "off");
+    appearance::save(&mut h.app, "tips", "off");
+    let reloaded = appearance::State::load(&h.app.state_root);
+    assert!(!reloaded.ui.token_line && !reloaded.ui.tips);
+    appearance::save(&mut h.app, "stats", "off");
+    appearance::save(&mut h.app, "defaults", "");
+    let reloaded = appearance::State::load(&h.app.state_root);
+    assert_eq!(
+        reloaded.ui.token_line,
+        crate::config::Config::default().ui.token_line
+    );
+    assert_eq!(reloaded.ui.tips, crate::config::Config::default().ui.tips);
+    assert_eq!(reloaded.ui.stats, crate::config::Config::default().ui.stats);
+    settings::choose(&mut h.app, PickerKind::FilePreferences, "preview");
+    assert_eq!(
+        crate::store::get_settings(&h.app.state_root).file_action,
+        Some(crate::file_open::FileAction::Preview)
+    );
+    // Same-named definitions keep their project/account scope; inspection executes nothing.
+    let project = h.app.state_root.join("fixture-project");
+    let home = h.app.state_root.join("fixture-provider");
+    for root in [project.join(".claude"), home.clone()] {
+        std::fs::create_dir_all(root.join("skills/review")).unwrap();
+        std::fs::write(
+            root.join("skills/review/SKILL.md"),
+            "---\nname: review\ndescription: Fixture review\n---\nDo not execute anything.",
+        )
+        .unwrap();
+        std::fs::write(root.join("settings.json"), r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"fixture-never-execute"}]}]}}"#).unwrap();
+    }
+    h.app.cwd = project;
+    h.app.home_path = Some(home);
+    h.app.provider = ProviderKind::Claude;
+    h.app.handle_slash("/skills");
+    let rows = &h.app.picker.as_ref().unwrap().rows;
+    assert!(rows.iter().any(|r| r.label == "Project · review"));
+    assert!(rows
+        .iter()
+        .any(|r| r.label == "User · selected account · review"));
+    h.app.handle_slash("/hooks");
+    let rows = &h.app.picker.as_ref().unwrap().rows;
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.label.contains("PreToolUse"))
+            .count(),
+        2
+    );
+    assert!(rows
+        .iter()
+        .all(|r| !r.detail.contains("fixture-never-execute")));
+    assert_eq!(h.app.editor.text(), "preserved draft");
+    h.app.session_ui.title =
+        Some("A deliberately long chat title with an em dash — and more words than fit".into());
+    assert!(!h.app.window_title().contains('—'));
+    assert!(h.app.window_title().chars().count() < 85);
     // An incompatible saved version is reported and never overwritten by a new selection.
     let path = h.app.state_root.join(".ao/appearance.json");
     let original = b"{\"version\":99,\"theme\":\"future\"}";
@@ -4397,12 +4628,13 @@ fn slash_completion_keeps_tab_while_the_landing_lists_are_visible() {
         h.app.landing.is_some(),
         "appearance keeps the Home destination"
     );
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Appearance);
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Settings);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(landing::visible(&h.app));
-    assert_eq!(h.app.window_title(), "Concordia — Home");
+    assert_eq!(h.app.window_title(), "Concordia | Home");
 }
 
 #[test]

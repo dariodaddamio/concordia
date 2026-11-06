@@ -161,15 +161,25 @@ fn the_same_login_is_refused_as_a_worker() {
 }
 
 #[test]
-fn a_worker_is_never_full_unless_the_user_is() {
+fn worker_trust_never_exceeds_the_users_mode() {
     use ChildTrust::*;
     use TrustMode as T;
-    assert_eq!(worker_trust(T::Workspace, Inherit), T::Workspace);
+    assert_eq!(worker_trust(T::Plan, Inherit), T::Plan);
+    assert_eq!(worker_trust(T::Plan, Ask), T::Plan);
+    assert_eq!(worker_trust(T::Plan, Workspace), T::Plan);
+    assert_eq!(worker_trust(T::Plan, Full), T::Plan);
     assert_eq!(worker_trust(T::Ask, Inherit), T::Ask);
-    assert_eq!(worker_trust(T::Full, Inherit), T::Full);
+    assert_eq!(worker_trust(T::Ask, Ask), T::Ask);
+    assert_eq!(worker_trust(T::Ask, Workspace), T::Ask);
+    assert_eq!(worker_trust(T::Ask, Full), T::Ask);
+    assert_eq!(worker_trust(T::Workspace, Inherit), T::Workspace);
+    assert_eq!(worker_trust(T::Workspace, Ask), T::Ask);
+    assert_eq!(worker_trust(T::Workspace, Workspace), T::Workspace);
     assert_eq!(worker_trust(T::Workspace, Full), T::Workspace);
-    assert_eq!(worker_trust(T::Ask, Full), T::Workspace);
+    assert_eq!(worker_trust(T::Full, Inherit), T::Full);
     assert_eq!(worker_trust(T::Full, Ask), T::Ask);
+    assert_eq!(worker_trust(T::Full, Workspace), T::Workspace);
+    assert_eq!(worker_trust(T::Full, Full), T::Full);
 }
 
 #[test]

@@ -340,8 +340,8 @@ const PS_PREAMBLE: &str = "$ErrorActionPreference='Stop'; $ProgressPreference='S
     [Console]::OutputEncoding=[Text.Encoding]::UTF8; ";
 
 fn run_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new("powershell.exe");
+    use std::process::Stdio;
+    let mut cmd = crate::process_ui::command("powershell.exe");
     cmd.args([
         "-NoProfile",
         "-NonInteractive",
@@ -433,14 +433,20 @@ pub fn check(cfg: &Config, current: &str, fetch: &dyn Fetcher) -> Result<Check> 
 
 const CACHE_OWNER: &str = "concordia-release-cache-v1";
 
-#[cfg(not(test))]
 fn cache_root() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|root| root.join("concordia/cache/releases"))
-}
-
-#[cfg(test)]
-fn cache_root() -> Option<PathBuf> {
-    None
+    if let Ok(root) = std::env::var("CONCORDIA_RELEASE_CACHE_DIR") {
+        if !root.trim().is_empty() {
+            return Some(PathBuf::from(root));
+        }
+    }
+    #[cfg(test)]
+    {
+        Some(std::env::temp_dir().join("concordia-test-release-cache"))
+    }
+    #[cfg(not(test))]
+    {
+        dirs::data_local_dir().map(|root| root.join("concordia/cache/releases"))
+    }
 }
 
 fn valid_digest(value: &str) -> bool {

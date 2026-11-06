@@ -33,6 +33,9 @@ custom sculpture/window-icon color and simpler titles. Publication remains held 
 resumes it after the pending GitHub Student approval; no scheduled or automatic release is authorized.
 Build `2026-11-05d` restores the original static gold Home portrait at the owner’s request;
 the 05c 3D renderer is removed. Appearance settings and simpler titles remain.
+Workspace build `2026-11-05e` expands `/config` beyond appearance and adds scoped local `/skills`
+and `/hooks` inspection, shorter ASCII-separated titles and an animated native activity icon.
+This batch is not yet built for installation or merged; changes are being accumulated locally.
 The owner's implementation-first campaign gates and X/LinkedIn drafts are in the
 [launch plan](docs/launch-plan.md); unfinished roadmap features are not launch claims.
 The [completion audit](docs/feature-completion-audit.md) records what is closed and what remains;

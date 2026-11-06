@@ -408,7 +408,7 @@ fn capture(root: &Path, clipboard: bool) -> Result<Paste, String> {
         .join("attachments")
         .join(format!("capture-{}.png", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(temp.parent().unwrap()).map_err(|_| "Image storage unavailable")?;
-    let mut cmd = std::process::Command::new("powershell.exe");
+    let mut cmd = crate::process_ui::command("powershell.exe");
     crate::process_ui::background_std(&mut cmd);
     let script = if clipboard {
         "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $image=[Windows.Forms.Clipboard]::GetImage(); if ($null -eq $image) {$data=[Windows.Forms.Clipboard]::GetDataObject(); if ($null -ne $data -and $data.GetDataPresent('PNG',$false)) {$png=$data.GetData('PNG',$false); if ($png -isnot [IO.Stream] -or -not $png.CanSeek -or $png.Length -gt 4194304) {throw 'Clipboard PNG exceeds 4 MiB or has an unsupported stream'}; try {$png.Position=0; $file=[IO.File]::Create($env:CONCORDIA_IMAGE_CAPTURE); try {$png.CopyTo($file)} finally {$file.Dispose()}} finally {$png.Dispose()}; exit 0}; $files=[Windows.Forms.Clipboard]::GetFileDropList(); if ($files.Count -gt 0) {if ($files.Count -gt 4) {throw 'At most four attachments'}; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write('FILES:'); [Console]::Write((ConvertTo-Json -InputObject @($files) -Compress)); exit 0}; [Console]::Write('NO_IMAGE'); exit 0}; try {$image.Save($env:CONCORDIA_IMAGE_CAPTURE,[Drawing.Imaging.ImageFormat]::Png)} finally {$image.Dispose()}"

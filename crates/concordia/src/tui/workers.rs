@@ -15,7 +15,7 @@ use crate::delegate::{
     WorkerState, MAX_PENDING_CONFIRMS,
 };
 use crate::provider::stream_cards::format_card_line;
-use crate::store::{get_settings, set_delegation_protocol, TrustMode};
+use crate::store::{get_settings, set_delegation_protocol, ChildTrust, TrustMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -1389,6 +1389,12 @@ impl App {
             &acct,
             &self.pack_messages(),
         );
+        let requested_trust = match settings.child_trust {
+            ChildTrust::Inherit => self.trust,
+            ChildTrust::Ask => TrustMode::Ask,
+            ChildTrust::Workspace => TrustMode::Workspace,
+            ChildTrust::Full => TrustMode::Full,
+        };
         let trust = worker_trust(self.trust, settings.child_trust);
         let queued_behind = self.deleg.d.running_for(&account).map(|j| j.id);
         let native_input = crate::native_input::for_home(
@@ -1440,10 +1446,12 @@ impl App {
                 None => "running in the background".into(),
             },
             trust.as_str(),
-            if trust == TrustMode::Full {
-                " (your current mode)"
+            if trust != requested_trust {
+                format!(" (your mode is {})", self.trust.as_str())
+            } else if trust == TrustMode::Full {
+                " (your current mode)".to_string()
             } else {
-                ""
+                String::new()
             },
         ))
     }
