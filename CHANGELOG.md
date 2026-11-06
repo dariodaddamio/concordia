@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2026-11-05h
 
-- Route Concordia child processes through hidden-console constructors on Windows, with a CI gate
-  protecting provider, hook, MCP, and diagnostic launches.
-- Keep self-relaunches and other explicitly interactive launches visible, isolate release caches
-  in release-update tests, and add Windows Start menu/Desktop shortcut install and removal.
+- No more console windows flashing on Windows: every background child process (providers, hooks,
+  MCP, git, diagnostics) starts hidden, and a CI gate rejects any new unhidden spawn. Login
+  windows, Explorer and the relaunch after `/update` stay visible on purpose.
+- `concordia shortcut install [--desktop]` adds a Start menu (or Desktop) shortcut. With WezTerm
+  installed it opens Concordia in WezTerm with no console flash; otherwise it opens in your
+  default terminal. `concordia shortcut remove [--desktop]` removes it.
+- Release-update tests no longer read or write the real release cache.
 
 ## 2026-11-05g
 

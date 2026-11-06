@@ -1151,16 +1151,76 @@ pub fn shortcut_path(desktop: bool) -> Result<PathBuf> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutSpec {
+    pub target: PathBuf,
+    pub args: String,
+    pub workdir: PathBuf,
+    pub icon: PathBuf,
+}
+
+fn ps_quote(path: &Path) -> String {
+    format!("\"{}\"", path.to_string_lossy().replace('"', "\\\""))
+}
+
+pub fn shortcut_spec(
+    wezterm: Option<&Path>,
+    concordia_exe: &Path,
+    config: &Path,
+    home: &Path,
+) -> ShortcutSpec {
+    let (target, args) = match wezterm {
+        Some(wez) => {
+            let gui = wez.parent().map(|p| p.join("wezterm-gui.exe"));
+            let target = gui
+                .filter(|p| p.is_file())
+                .unwrap_or_else(|| wez.to_path_buf());
+            let args = format!(
+                "--config-file {} start --cwd {} -- {} --terminal",
+                ps_quote(config),
+                ps_quote(home),
+                ps_quote(concordia_exe)
+            );
+            (target, args)
+        }
+        None => (concordia_exe.to_path_buf(), String::new()),
+    };
+    ShortcutSpec {
+        target,
+        args,
+        workdir: home.to_path_buf(),
+        icon: concordia_exe.to_path_buf(),
+    }
+}
+
 /// Create a native Windows shell shortcut without launching a visible helper console.
 pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
     #[cfg(windows)]
     {
         let path = shortcut_path(desktop)?;
-        let target = env::current_exe().context("cannot locate the running executable")?;
+        let active = resolve_active_exe();
+        let target = if active.is_file() {
+            active
+        } else {
+            env::current_exe().context("cannot locate the running executable")?
+        };
+        let wezterm = crate::host::wezterm::find_wezterm();
+        let config = wezterm
+            .as_ref()
+            .map(|_| crate::host::wezterm::config_path())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let home = dirs::home_dir().context("cannot locate the home directory")?;
+        let spec = shortcut_spec(
+            wezterm.as_deref(),
+            &target,
+            config.as_deref().unwrap_or(Path::new("")),
+            &home,
+        );
         let parent = path.parent().context("shortcut has no parent")?;
         fs::create_dir_all(parent)?;
-        let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT);$s.TargetPath=$env:CONCORDIA_TARGET;$s.WorkingDirectory=$env:CONCORDIA_WORKDIR;$s.IconLocation=$env:CONCORDIA_ICON;$s.Save()";
-        let status = crate::process_ui::command("powershell.exe")
+        let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT);$s.TargetPath=$env:CONCORDIA_TARGET;$s.Arguments=$env:CONCORDIA_ARGS;$s.WorkingDirectory=$env:CONCORDIA_WORKDIR;$s.IconLocation=$env:CONCORDIA_ICON;$s.Save()";
+        let output = crate::process_ui::command("powershell.exe")
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -1169,18 +1229,23 @@ pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
                 script,
             ])
             .env("CONCORDIA_SHORTCUT", &path)
-            .env("CONCORDIA_TARGET", &target)
-            .env("CONCORDIA_WORKDIR", parent)
-            .env("CONCORDIA_ICON", &target)
+            .env("CONCORDIA_TARGET", &spec.target)
+            .env("CONCORDIA_ARGS", &spec.args)
+            .env("CONCORDIA_WORKDIR", &spec.workdir)
+            .env("CONCORDIA_ICON", &spec.icon)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .status()
+            .output()
             .context("create Concordia shortcut")?;
         anyhow::ensure!(
-            status.success(),
-            "PowerShell could not create the Concordia shortcut"
+            output.status.success(),
+            "PowerShell could not create the Concordia shortcut: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
         );
+        if wezterm.is_none() {
+            eprintln!("WezTerm was not found; the shortcut uses the default terminal.");
+        }
         Ok(path)
     }
     #[cfg(not(windows))]
@@ -1696,6 +1761,36 @@ mod tests {
         let mut c = crate::process_ui::command("powershell.exe");
         c.args(["-NoProfile", "-NonInteractive", "-Command", script]);
         c
+    }
+
+    #[test]
+    fn shortcut_specs_choose_wezterm_gui_and_quote_paths() {
+        let d = tempfile::tempdir().unwrap();
+        let wez = d.path().join("Wez Term").join("wezterm.exe");
+        fs::create_dir_all(wez.parent().unwrap()).unwrap();
+        fs::write(wez.parent().unwrap().join("wezterm-gui.exe"), b"").unwrap();
+        let exe = PathBuf::from(r"C:\Concordia Home\concordia.exe");
+        let config = PathBuf::from(r"C:\State Dir\wezterm.lua");
+        let home = PathBuf::from(r"C:\User Home");
+        let spec = shortcut_spec(Some(&wez), &exe, &config, &home);
+        assert_eq!(spec.target, wez.parent().unwrap().join("wezterm-gui.exe"));
+        assert_eq!(
+            spec.args,
+            r#"--config-file "C:\State Dir\wezterm.lua" start --cwd "C:\User Home" -- "C:\Concordia Home\concordia.exe" --terminal"#
+        );
+        assert_eq!(spec.icon, exe);
+    }
+
+    #[test]
+    fn shortcut_specs_fall_back_to_wezterm_or_default_terminal() {
+        let wez = Path::new(r"C:\Wez\wezterm.exe");
+        let exe = Path::new(r"C:\Concordia\concordia.exe");
+        let config = Path::new(r"C:\State\wezterm.lua");
+        let home = Path::new(r"C:\Home");
+        assert_eq!(shortcut_spec(Some(wez), exe, config, home).target, wez);
+        let default = shortcut_spec(None, exe, config, home);
+        assert_eq!(default.target, exe);
+        assert!(default.args.is_empty());
     }
 
     #[test]

@@ -439,7 +439,14 @@ fn cache_root() -> Option<PathBuf> {
             return Some(PathBuf::from(root));
         }
     }
-    dirs::data_local_dir().map(|root| root.join("concordia/cache/releases"))
+    #[cfg(test)]
+    {
+        Some(std::env::temp_dir().join("concordia-test-release-cache"))
+    }
+    #[cfg(not(test))]
+    {
+        dirs::data_local_dir().map(|root| root.join("concordia/cache/releases"))
+    }
 }
 
 fn valid_digest(value: &str) -> bool {

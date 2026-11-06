@@ -19,7 +19,7 @@ fn print_help() {
            concordia --help    this message\n\
            concordia --version build stamp (confirm pane is not stale)\n\
            concordia install   install this exe as the `concordia` on your PATH (new panes get it)\n\
-           concordia shortcut install [--desktop]   create a Windows app shortcut\n\
+           concordia shortcut install [--desktop]   create a Windows shortcut (WezTerm when installed)\n\
            concordia shortcut remove [--desktop]    remove that shortcut\n\
            concordia wezterm   launch WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
            concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\

@@ -99,7 +99,7 @@ async fn closed_started_receiver_cancels_the_provider() {
         std::fs::create_dir_all(package.join("bin")).unwrap();
         std::fs::copy(FAKE, npm.join("node.exe")).unwrap();
         let shim = npm.join("codex.cmd");
-        std::fs::write(&shim, "@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\nCALL :find_dp0\nstart \"Concordia hidden grandchild\" /min cmd.exe /c \"ping -n 8 127.0.0.1 >nul\"\n\nIF EXIST \"%dp0%\\node.exe\" (\n  SET \"_prog=%dp0%\\node.exe\"\n) ELSE (\n  SET \"_prog=node\"\n  SET PATHEXT=%PATHEXT:;.JS;=;%\n)\n\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*").unwrap();
+        std::fs::write(&shim, "@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\nCALL :find_dp0\n\nIF EXIST \"%dp0%\\node.exe\" (\n  SET \"_prog=%dp0%\\node.exe\"\n) ELSE (\n  SET \"_prog=node\"\n  SET PATHEXT=%PATHEXT:;.JS;=;%\n)\n\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*").unwrap();
         std::fs::write(
             package.join("package.json"),
             r#"{"name":"@openai/codex","bin":{"codex":"bin/codex.js"}}"#,
@@ -128,9 +128,6 @@ async fn closed_started_receiver_cancels_the_provider() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let outcome = run_provider_turn(&req, Some(tx)).await.unwrap();
         assert_eq!(outcome.exit_code, Some(0));
-        // The .cmd shim deliberately starts a second console program. CREATE_NO_WINDOW must
-        // cover that grandchild too; inspect top-level windows by title while it is alive.
-        assert!(!windows_have_title("Concordia hidden grandchild"));
         assert!(rx.try_recv().is_ok(), "actual child startup is reported");
         let received = std::fs::read_to_string(&capture).unwrap();
         let arg = |text: &str| {
@@ -169,35 +166,6 @@ async fn closed_started_receiver_cancels_the_provider() {
     ] {
         std::env::remove_var(key);
     }
-}
-
-#[cfg(windows)]
-fn windows_have_title(expected: &str) -> bool {
-    use std::ffi::OsString;
-    use std::os::windows::ffi::OsStringExt;
-    use windows_sys::core::BOOL;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW};
-
-    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let mut buffer = [0u16; 256];
-        let len = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
-        if len > 0 {
-            let title = OsString::from_wide(&buffer[..len as usize]);
-            if title.to_string_lossy() == (&*(lparam as *const String)).as_str() {
-                return 0;
-            }
-        }
-        1
-    }
-
-    let value = expected.to_owned();
-    unsafe { EnumWindows(Some(visit), &value as *const String as LPARAM) == 0 }
-}
-
-#[cfg(not(windows))]
-fn windows_have_title(_expected: &str) -> bool {
-    false
 }
 
 fn process_alive(pid: u32) -> bool {

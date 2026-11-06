@@ -10,6 +10,10 @@ background children inherit `CREATE_NO_WINDOW`. The source gate is
 `scripts/check-hidden-process-spawns.ps1`; the only visible launches are native provider login
 and explicit Explorer URL/file opens.
 
+Shortcut installation writes the bundled WezTerm config and passes it with `--config-file`,
+launching `wezterm-gui.exe` without a console flash when available. If WezTerm is unavailable,
+the shortcut targets the active Concordia executable and lets the default terminal open it.
+
 Follow-up integration on build `2026-10-16c` added native-chat/preview CLI routes, strict extra
 argument checks before top-level actions, stricter slash/delegation validation, and usage identity/
 freshness checks. Local build/install checks are recorded separately in interaction-audit.md;
