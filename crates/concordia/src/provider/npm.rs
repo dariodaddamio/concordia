@@ -11,6 +11,45 @@ pub(crate) struct Native {
     pub env: Vec<(String, String)>,
 }
 
+/// Return the package a stock npm shim declares as its entrypoint. This intentionally only
+/// identifies an existing, matching package manifest; an unrecognized shim must not be cached.
+pub(crate) fn package_for_shim(
+    program: &str,
+    provider: crate::store::ProviderKind,
+) -> Option<PathBuf> {
+    let shim = Path::new(program);
+    let (name, package_name, entrypoint) = match provider {
+        crate::store::ProviderKind::Codex => ("codex", "@openai/codex", "bin/codex.js"),
+        crate::store::ProviderKind::Claude => ("claude", "@anthropic-ai/claude-code", "cli.js"),
+        crate::store::ProviderKind::Cursor => return None,
+    };
+    if !shim
+        .file_name()?
+        .eq_ignore_ascii_case(format!("{name}.cmd"))
+    {
+        return None;
+    }
+    let text = String::from_utf8(read(shim)?).ok()?.replace('\r', "");
+    let declared = format!(
+        "node_modules\\{}\\{}",
+        package_name.replace('/', "\\"),
+        entrypoint.replace('/', "\\")
+    );
+    if !text
+        .to_ascii_lowercase()
+        .contains(&declared.to_ascii_lowercase())
+    {
+        return None;
+    }
+    let package = shim.parent()?.join("node_modules").join(package_name);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&read(&package.join("package.json"))?).ok()?;
+    (manifest["name"] == package_name
+        && manifest["bin"][name] == entrypoint
+        && manifest["version"].as_str().is_some())
+    .then_some(package)
+}
+
 /// Run the declared entrypoint of a stock npm shim without cmd.exe. Unlike bypassing the
 /// bridge, this preserves the installed JavaScript's behavior across package updates.
 pub(crate) fn node_bridge(
