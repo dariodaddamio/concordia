@@ -5,9 +5,13 @@ use crate::provider::stream_cards::TurnUsage;
 use std::time::Duration;
 
 /// `ui.token_line` in config.toml; `CONCORDIA_TOKEN_LINE=0` turns it off regardless.
+#[cfg(test)]
 pub fn ui_token_line_enabled() -> bool {
-    std::env::var("CONCORDIA_TOKEN_LINE").map_or(true, |v| v.trim() != "0")
-        && crate::config::ui_token_line()
+    enabled(crate::config::ui_token_line())
+}
+
+pub fn enabled(preference: bool) -> bool {
+    preference && std::env::var("CONCORDIA_TOKEN_LINE").map_or(true, |v| v.trim() != "0")
 }
 
 /// Compact counts through billions/trillions and scientific notation, without overflow.

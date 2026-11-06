@@ -1,5 +1,11 @@
 # Command and state audit
 
+Workspace 05e adds a broader `/config` hub plus `/skills` and `/hooks` read-only source views.
+The latter distinguish repository, selected-provider account, shared user and installed system
+sources where supported. They do not invoke skills, execute hooks or claim complete plugin/managed
+inventory. Settings label persistent defaults separately from session-only handoff choices.
+See [settings scope](config.md#settings-scope-and-persistence-05e).
+
 Audit scope: repository source and tests as present on 2026-10-16. This is an inventory and a
 targeted behavior audit, not proof over every possible input or every provider state. All tests
 mentioned here use pure parser/dispatch paths, temporary synthetic state, or existing fake-based

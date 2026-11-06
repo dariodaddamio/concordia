@@ -21,6 +21,17 @@
 - Home ignores provider-native session artifacts until they contain a real user message.
 - Added `concordia sessions prune --empty`, which lists candidates and requires confirmation before removal.
 
+## 2026-11-05j
+
+- Expanded `/config` into settings for appearance, display, permissions, account/model,
+  continuation, worker results and file behavior, with saved/session scope labels.
+- Added `/skills` and `/hooks` local source inventories with project/account distinctions.
+- Shortened window titles, removed the em dash and added native icon activity animation.
+
+- Resetting appearance defaults now also clears saved display preferences.
+- Active-turn status glyphs respect the motion preference, and native icon animation stops
+  when Windows reports client-area animation disabled.
+
 ## 2026-11-05g
 
 - Images in the native window no longer flicker when the caret blinks or the prompt changes.
