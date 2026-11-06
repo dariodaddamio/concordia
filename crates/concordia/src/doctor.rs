@@ -45,6 +45,7 @@ pub struct Env<'a> {
     pub provider_bin:
         &'a dyn Fn(ProviderKind) -> Result<crate::provider::Located, crate::provider::NotFound>,
     pub which: &'a dyn Fn(&str) -> Option<PathBuf>,
+    pub wezterm_bin: &'a dyn Fn() -> Option<PathBuf>,
     /// `--version` of a CLI; `None` skips probing (fast mode for the TUI).
     pub version_of: Option<VersionProbe<'a>>,
     pub in_wezterm: bool,
@@ -82,7 +83,7 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
             detail,
         ));
     }
-    out.push(match (env.which)("wezterm") {
+    out.push(match (env.wezterm_bin)() {
         Some(p) => check(
             Level::Ok,
             "wezterm",
@@ -542,6 +543,7 @@ pub fn real_env<'a>(
         pointer: std::fs::read_to_string(crate::update::current_pointer_path()).ok(),
         provider_bin,
         which,
+        wezterm_bin: &|| crate::host::wezterm::find_wezterm(),
         version_of,
         in_wezterm: std::env::var_os("WEZTERM_PANE").is_some(),
         source_checkout: crate::update::source_root(&cwd),
@@ -781,6 +783,7 @@ mod tests {
             active_exe: active,
             provider_bin,
             which,
+            wezterm_bin: &|| None,
             version_of: None,
             in_wezterm: false,
             source_checkout: None,

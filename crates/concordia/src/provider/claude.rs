@@ -22,10 +22,10 @@ pub struct ClaudePlan {
     pub new_session_id: Option<String>,
 }
 
-pub fn find_claude_bin() -> String {
+pub fn find_claude_bin() -> Result<String, String> {
     super::locate_real(super::ProviderKind::Claude)
         .map(|p| p.path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "claude".into())
+        .map_err(|e| crate::doctor::format_not_found_turn_error(super::ProviderKind::Claude, &e))
 }
 
 pub fn plan_claude_turn(req: &ClaudeTurnRequest<'_>) -> Result<ClaudePlan> {
@@ -82,7 +82,7 @@ pub fn plan_claude_turn(req: &ClaudeTurnRequest<'_>) -> Result<ClaudePlan> {
         ));
     }
     Ok(ClaudePlan {
-        command: find_claude_bin(),
+        command: find_claude_bin().map_err(anyhow::Error::msg)?,
         argv,
         env,
         cwd: req.cwd.to_string_lossy().into_owned(),

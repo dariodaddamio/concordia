@@ -30,7 +30,8 @@ fn codex_workspace_argv_is_stable() {
         model: Some("gpt-5.6-sol"),
         native_session_id: Some("sess-1"),
         trust: TrustMode::Workspace,
-    });
+    })
+    .unwrap();
     assert_eq!(
         plan.argv,
         vec![
@@ -63,7 +64,8 @@ fn codex_full_and_ask_trust_flags() {
         model: None,
         native_session_id: None,
         trust: TrustMode::Full,
-    });
+    })
+    .unwrap();
     assert!(full
         .argv
         .iter()
@@ -76,7 +78,8 @@ fn codex_full_and_ask_trust_flags() {
         model: None,
         native_session_id: None,
         trust: TrustMode::Ask,
-    });
+    })
+    .unwrap();
     assert!(ask
         .argv
         .windows(2)

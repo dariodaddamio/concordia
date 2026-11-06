@@ -234,7 +234,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 model: req.model,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
-            });
+            })?;
             codex::assert_safe_argv(&plan.argv)?;
             let mut env = Vec::new();
             if let Some(home) = req.home_path {

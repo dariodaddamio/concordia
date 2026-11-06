@@ -77,7 +77,7 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
         // A test or fake provider stands in for the agent: never drive it interactively.
         return Err("agent binary is overridden".into());
     }
-    let bin = crate::provider::cursor::find_agent_bin();
+    let bin = crate::provider::cursor::find_agent_bin()?;
     let (program, args, mut env) = interactive_launch(&bin);
     if let Some(key) = crate::identity::cursor_api_key_for_home(home) {
         env.push(("CURSOR_API_KEY".into(), key));

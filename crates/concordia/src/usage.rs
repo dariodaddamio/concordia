@@ -1108,7 +1108,7 @@ pub type UsageRunner = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync
 
 fn default_runner() -> UsageRunner {
     Arc::new(|home| {
-        let bin = crate::provider::claude::find_claude_bin();
+        let bin = crate::provider::claude::find_claude_bin()?;
         run_claude_usage(&bin, home, FETCH_TIMEOUT)
     })
 }

@@ -33,13 +33,13 @@ pub struct StreamOutcome {
     pub errors: Vec<String>,
 }
 
-pub fn find_codex_bin() -> String {
+pub fn find_codex_bin() -> Result<String, String> {
     super::locate_real(super::ProviderKind::Codex)
         .map(|p| p.path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "codex".into())
+        .map_err(|e| crate::doctor::format_not_found_turn_error(super::ProviderKind::Codex, &e))
 }
 
-pub fn plan_turn_argv(req: &TurnRequest<'_>) -> TurnPlan {
+pub fn plan_turn_argv(req: &TurnRequest<'_>) -> Result<TurnPlan> {
     let mut argv = vec!["exec".into(), "--json".into()];
     if let Some(model) = req.model.map(str::trim).filter(|m| !m.is_empty()) {
         argv.push("-m".into());
@@ -70,11 +70,11 @@ pub fn plan_turn_argv(req: &TurnRequest<'_>) -> TurnPlan {
         argv.push(sid.to_string());
     }
     argv.push(req.prompt.to_string());
-    TurnPlan {
-        command: find_codex_bin(),
+    Ok(TurnPlan {
+        command: find_codex_bin().map_err(anyhow::Error::msg)?,
         argv,
         cwd: req.cwd.to_string_lossy().into_owned(),
-    }
+    })
 }
 
 pub fn assert_safe_argv(argv: &[String]) -> Result<()> {
@@ -111,7 +111,7 @@ pub fn apply_stream_parts(parts: Vec<StreamPart>, out: &mut StreamOutcome) {
 }
 
 pub async fn run_turn(req: &TurnRequest<'_>) -> Result<StreamOutcome> {
-    let plan = plan_turn_argv(req);
+    let plan = plan_turn_argv(req)?;
     assert_safe_argv(&plan.argv)?;
     let mut cmd = crate::process_ui::tokio_command(&plan.command);
     crate::process_ui::background(&mut cmd);

@@ -14,7 +14,7 @@ pub(crate) fn fetch(home: &Path) -> Result<String, String> {
     }
     #[cfg(not(test))]
     {
-        let bin = crate::provider::codex::find_codex_bin();
+        let bin = crate::provider::codex::find_codex_bin()?;
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
