@@ -32,7 +32,6 @@ impl State {
         self.pending = Some(prompt.clone());
         self.retry_draft = Some(prompt);
         self.blocked = false;
-        self.automatic = false;
     }
     pub(super) fn run_id(&self) -> &str {
         &self.run_id
@@ -942,6 +941,13 @@ mod tests {
             app.continuation.pending.as_deref() == Some("Finish the changes")
                 || app.editor.text().contains("Finish the changes")
         );
+    }
+
+    #[test]
+    fn idle_hand_off_keeps_the_automatic_preference() {
+        let (app, _dir, _tx, mut rx) = idle_handoff_state();
+        assert!(app.continuation.automatic());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
