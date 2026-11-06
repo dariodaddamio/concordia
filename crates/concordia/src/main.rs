@@ -19,6 +19,8 @@ fn print_help() {
            concordia --help    this message\n\
            concordia --version build stamp (confirm pane is not stale)\n\
            concordia install   install this exe as the `concordia` on your PATH (new panes get it)\n\
+           concordia shortcut install [--desktop]   create a Windows shortcut (WezTerm when installed)\n\
+           concordia shortcut remove [--desktop]    remove that shortcut\n\
            concordia wezterm   launch WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
            concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
            concordia chat list|read|search  bounded native CLI chats across your own accounts\n\
@@ -150,6 +152,22 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+        "shortcut" => {
+            if args.len() < 2 || args.len() > 3 || !matches!(args[1].as_str(), "install" | "remove")
+            {
+                anyhow::bail!("usage: concordia shortcut install|remove [--desktop]");
+            }
+            let desktop = args.get(2).is_some_and(|arg| arg == "--desktop");
+            if args.get(2).is_some_and(|arg| arg != "--desktop") {
+                anyhow::bail!("usage: concordia shortcut install|remove [--desktop]");
+            }
+            let path = if args[1] == "install" {
+                concordia::update::install_shortcut(desktop)?
+            } else {
+                concordia::update::remove_shortcut(desktop)?
+            };
+            println!("{} {}", args[1], path.display());
         }
         "wezterm" => {
             if let Err(e) = concordia::host::wezterm::launch_window() {

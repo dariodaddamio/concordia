@@ -419,7 +419,7 @@ pub(super) async fn run(
         "--permission-prompt-tool".into(),
         "stdio".into(),
     ]);
-    let mut command = tokio::process::Command::new(&launch.program);
+    let mut command = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut command);
     command
         .args(&launch.args)

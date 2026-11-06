@@ -4,7 +4,7 @@
 use crate::file_links::ResolvedFile;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -286,7 +286,7 @@ pub fn host_from_environment(
 
 /// Launch an already-built plan without waiting for the child process to exit.
 pub async fn spawn(plan: LaunchPlan) -> Result<Child, String> {
-    Command::new(&plan.program)
+    crate::process_ui::tokio_command(&plan.program)
         .args(&plan.args)
         .current_dir(&plan.cwd)
         .stdin(std::process::Stdio::null())

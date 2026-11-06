@@ -541,9 +541,10 @@ pub fn resolve_provider_bin(kind: ProviderKind) -> Option<PathBuf> {
 /// `<program> --version` with a deadline, first non-empty line.
 pub fn probe_version(program: &Path) -> Result<String, String> {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let native = crate::provider::npm::codex(&program.to_string_lossy());
-    let mut command = Command::new(native.as_ref().map_or(program, |n| n.program.as_path()));
+    let mut command =
+        crate::process_ui::command(native.as_ref().map_or(program, |n| n.program.as_path()));
     if let Some(native) = native {
         command.envs(native.env);
     }
