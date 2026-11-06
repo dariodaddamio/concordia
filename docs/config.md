@@ -171,7 +171,7 @@ max_workers = 3          # 1..=3
 
 ### Themes and custom colors
 
-Use **`/config`** to open Appearance. Select Theme or Concordia color with the mouse or
+Use **`/config`** to open Settings, then Appearance (or `/config appearance`). Select Theme or Concordia color with the mouse or
 arrow keys and Enter. Changes apply immediately and survive reopening. The color menu includes
 presets and a custom `#RRGGBB` input; it changes the running-window icon; Home retains the original gold portrait.
 The installed executable's Explorer icon remains the bundled original.
@@ -180,7 +180,39 @@ Direct commands are `/config theme opifex`, `/config color #78BFFF` and `/config
 **Opifex Studio** uses the Studio host's near-black `#050506`, amber `#FFB000` and bone `#D8D0C0`
 palette. Build 05d restores the original static gold Home portrait and removes the 3D renderer.
 Small windows omit the portrait to preserve chat space. Saved motion preferences remain readable
-for compatibility and do not animate the portrait.
+for compatibility and do not animate the portrait. Build 05e uses the motion preference for
+the native window icon's activity orbit, with Windows reduced-motion taking precedence.
+
+### Settings scope and persistence (05e)
+
+`/config` includes response usage, idle tips, CPU/memory display, icon animation, permissions,
+accounts, models, continuation, worker delivery, file-link behavior, skills, hooks and integrations.
+Display switches save immediately in `.ao/appearance.json` and apply on reopening. Existing
+account/model, permission, worker-return and file-action controls keep their existing app-owned
+storage. Environment switches such as `CONCORDIA_TIPS=0` still take precedence. Changes to
+`config.toml` apply after restart; the UI never rewrites that manually maintained file.
+
+Default limit handoff is saved across sessions; **This session's handoff** is explicitly temporary.
+Changing a default does not grant tools, alter an active turn's permissions or submit pending work.
+Automatic worker-result delivery can start a main-agent turn when idle, as its row explains.
+
+`/skills` and `/hooks` open searchable local source inventories for the selected provider.
+**Project** entries apply to that repository; **User / selected account** entries belong to the
+selected native provider home and apply across its projects. Shared-user and installed-system
+skill locations are labeled separately. These sources are owned by the provider, not a new
+Concordia hook/skill runtime. Enter opens a source file for inspection; it invokes nothing.
+
+Skills scan provider project directories up to the repository root, selected-home skills,
+Codex's installed system folder and shared `.agents/skills` user folder. At most 512 directory
+entries are visited (256 per folder); source files are bounded to 64 KiB. Linked sources are
+not followed. Hooks show event/group metadata from Claude settings or Cursor hook files without
+printing or executing commands. Codex hooks have an explicit unverified-catalog notice.
+Configured sources do not prove activation in an existing native session. Plugin, managed-policy,
+remote and dynamically loaded sources are not exhaustively enumerated. Reopening refreshes locally.
+
+Provider scope references: [Codex skills](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills),
+[Claude skills](https://code.claude.com/docs/en/skills#choose-where-skills-load) and
+[Claude hook locations](https://code.claude.com/docs/en/hooks#hook-locations).
 
 UI choices are saved atomically under `<state>/.ao/appearance.json`; Concordia never rewrites
 your `config.toml`. Saved appearance choices override corresponding config defaults. Choosing a

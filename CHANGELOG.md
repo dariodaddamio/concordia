@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-11-05h
+
+- No more console windows flashing on Windows: every background child process (providers, hooks,
+  MCP, git, diagnostics) starts hidden, and a CI gate rejects any new unhidden spawn. Login
+  windows, Explorer and the relaunch after `/update` stay visible on purpose.
+- `concordia shortcut install [--desktop]` adds a Start menu (or Desktop) shortcut. With WezTerm
+  installed it opens Concordia in WezTerm with no console flash; otherwise it opens in your
+  default terminal. `concordia shortcut remove [--desktop]` removes it.
+- Release-update tests no longer read or write the real release cache.
+
+- Home hygiene now strips extended Windows path prefixes, hides generated test/temp/target
+  workspaces until `h` shows all, groups older short chats under collapsed Quick questions rows,
+  and displays cached per-account 5h/7d usage meters beneath goals.
+
+## 2026-11-05i
+
+- #86: landing visibility is testable with an explicit temp-root policy, hidden rows can be
+  toggled by clicking the footer label, and cached account meters remain visible while work loads.
+- Home ignores provider-native session artifacts until they contain a real user message.
+- Added `concordia sessions prune --empty`, which lists candidates and requires confirmation before removal.
+
+## 2026-11-05j
+
+- Expanded `/config` into settings for appearance, display, permissions, account/model,
+  continuation, worker results and file behavior, with saved/session scope labels.
+- Added `/skills` and `/hooks` local source inventories with project/account distinctions.
+- Shortened window titles, removed the em dash and added native icon activity animation.
+
+- Resetting appearance defaults now also clears saved display preferences.
+- Active-turn status glyphs respect the motion preference, and native icon animation stops
+  when Windows reports client-area animation disabled.
+
+## 2026-11-05k
+
+- Concordia finds the Codex, Claude Code and Cursor agent CLIs at their standard Windows install
+  locations even when those folders are not on PATH (for example Claude Code's native installer
+  puts `claude.exe` in `%USERPROFILE%\.local\bin`).
+- `concordia doctor` shows where each CLI was found. One found outside PATH is a warning with the
+  one-line command that adds its folder to your user PATH; a missing one lists every folder searched.
+- A turn whose CLI cannot be found says which CLI, where Concordia looked, and to run
+  `concordia doctor`, instead of `spawn claude: program not found`.
+
 ## 2026-11-05g
 
 - Images in the native window no longer flicker when the caret blinks or the prompt changes.

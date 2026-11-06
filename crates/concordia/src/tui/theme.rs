@@ -16,6 +16,7 @@ struct Palette {
     foreground: Rgb,
     accent: Rgb,
     brand_color: Rgb,
+    motion: bool,
     custom_background: Option<Rgb>,
     custom_foreground: Option<Rgb>,
     custom_accent: Option<Rgb>,
@@ -79,6 +80,7 @@ impl Palette {
             foreground,
             accent,
             brand_color: ui.brand_color.unwrap_or([255, 176, 0]),
+            motion: ui.motion,
             custom_background: ui.background,
             custom_foreground: ui.foreground,
             custom_accent: ui.accent,
@@ -232,11 +234,12 @@ fn current() -> Palette {
 }
 
 pub(super) fn install(ui: &Ui) {
-    let palette = if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+    let mut palette = if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
         Palette::from_ui(&crate::config::Config::default().ui)
     } else {
         Palette::from_ui(ui)
     };
+    palette.motion = ui.motion;
     #[cfg(not(test))]
     {
         *palette_slot()
@@ -250,6 +253,11 @@ pub(super) fn install(ui: &Ui) {
 #[cfg(windows)]
 pub(super) fn brand_color() -> Rgb {
     current().brand_color
+}
+
+#[cfg(windows)]
+pub(super) fn motion_enabled() -> bool {
+    current().motion
 }
 
 pub(super) fn apply(buffer: &mut Buffer, no_color: bool, native: bool) {

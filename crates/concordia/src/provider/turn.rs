@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex, Notify};
 
 /// Lines of provider stderr kept for error reporting.
@@ -334,7 +334,7 @@ pub(crate) fn kill_process_tree(pid: u32) {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = std::process::Command::new("taskkill")
+        let _ = crate::process_ui::command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -514,7 +514,7 @@ async fn run_provider_turn_inner(
     }
     let handle = Arc::new(RunningTurn::new());
 
-    let mut cmd = Command::new(&launch.program);
+    let mut cmd = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut cmd);
     cmd.args(&launch.args)
         .current_dir(&plan.cwd)
@@ -532,9 +532,19 @@ async fn run_provider_turn_inner(
     // Do not echo argv here: it contains the whole prompt.
     let setup_ms = timing.elapsed().as_millis();
     let spawning = Instant::now();
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawn {}", launch.program))?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(missing) = crate::provider::locate_real(plan.provider) {
+                anyhow::bail!(
+                    "{}",
+                    crate::doctor::format_not_found_turn_error(plan.provider, &missing)
+                );
+            }
+            return Err(error).with_context(|| format!("spawn {}", launch.program));
+        }
+        Err(error) => return Err(error).with_context(|| format!("spawn {}", launch.program)),
+    };
     let spawn_ms = spawning.elapsed().as_millis();
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     // Counted in the footer stats (when on) until this turn ends.
@@ -955,7 +965,7 @@ pub async fn spawn_and_cancel_mock() -> Result<bool> {
     let cancel_flag = handle.cancel_flag.clone();
     let child_slot = handle.child.clone();
     #[cfg(windows)]
-    let child = Command::new("ping")
+    let child = crate::process_ui::tokio_command("ping")
         .args(["-n", "30", "127.0.0.1"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -963,7 +973,7 @@ pub async fn spawn_and_cancel_mock() -> Result<bool> {
         .spawn()
         .context("spawn ping")?;
     #[cfg(not(windows))]
-    let child = Command::new("sleep")
+    let child = crate::process_ui::tokio_command("sleep")
         .arg("30")
         .stdout(Stdio::null())
         .stderr(Stdio::null())

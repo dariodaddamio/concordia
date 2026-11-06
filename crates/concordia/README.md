@@ -16,3 +16,6 @@ Needs Rust + MSVC linker (VS Build Tools C++ workload).
 `/use` `/model` `/usage` `/resume` `/trust` `/config` `/new` `/split` `/exit`
 
 Footer: hints left, **auth {mode}** right. Ctrl+C cancels the tracked provider child.
+
+Home records a chat only after the first user message. Empty provider session artifacts stay hidden;
+`concordia sessions prune --empty` lists them and removes them only after you type `yes`.
