@@ -24,6 +24,313 @@ pub struct Check {
     pub detail: String,
 }
 
+/// A mutation proposed by doctor.  Keeping this separate from `Check` makes the report safe to
+/// render in both the CLI (read-only) and the interactive picker (confirmable).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    pub id: &'static str,
+    pub finding: String,
+    pub before: String,
+    pub after: String,
+    pub impact: &'static str,
+}
+
+/// The mutation boundary for doctor. Implementations own all platform state access; tests can
+/// inject a recorder and therefore never touch PATH, the registry, or ACLs.
+pub trait FixApplier {
+    fn previous_value(&self, fix: &Fix, state_root: &Path) -> Result<String, String>;
+    fn apply(&self, fix: &Fix, state_root: &Path) -> Result<(), String>;
+}
+
+pub struct PathApplier;
+pub struct AclApplier;
+
+/// The UI's default dispatcher; tests replace the app's boxed applier with a fake.
+pub struct DoctorAppliers;
+
+impl FixApplier for DoctorAppliers {
+    fn previous_value(&self, fix: &Fix, state_root: &Path) -> Result<String, String> {
+        if fix.id == "state-acl" {
+            AclApplier.previous_value(fix, state_root)
+        } else {
+            PathApplier.previous_value(fix, state_root)
+        }
+    }
+
+    fn apply(&self, fix: &Fix, state_root: &Path) -> Result<(), String> {
+        if fix.id == "state-acl" {
+            AclApplier.apply(fix, state_root)
+        } else {
+            PathApplier.apply(fix, state_root)
+        }
+    }
+}
+
+impl FixApplier for PathApplier {
+    fn previous_value(&self, _fix: &Fix, _state_root: &Path) -> Result<String, String> {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Registry::{
+                RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+            };
+            let subkey: Vec<u16> = "Environment\0".encode_utf16().collect();
+            let value: Vec<u16> = "Path\0".encode_utf16().collect();
+            let mut key: HKEY = std::ptr::null_mut();
+            let status =
+                unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) };
+            if status != 0 {
+                return Ok(String::new());
+            }
+            let mut bytes = 0u32;
+            let status = unsafe {
+                RegQueryValueExW(
+                    key,
+                    value.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut bytes,
+                )
+            };
+            if status != 0 || bytes == 0 {
+                unsafe {
+                    RegCloseKey(key);
+                }
+                return Ok(String::new());
+            }
+            let mut raw = vec![0u8; bytes as usize];
+            let status = unsafe {
+                RegQueryValueExW(
+                    key,
+                    value.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    raw.as_mut_ptr(),
+                    &mut bytes,
+                )
+            };
+            unsafe {
+                RegCloseKey(key);
+            }
+            if status != 0 {
+                return Err(format!("registry read failed: {status}"));
+            }
+            let wide =
+                unsafe { std::slice::from_raw_parts(raw.as_ptr().cast::<u16>(), raw.len() / 2) };
+            Ok(String::from_utf16_lossy(wide)
+                .trim_end_matches('\0')
+                .to_string())
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(String::new())
+        }
+    }
+    fn apply(&self, fix: &Fix, _state_root: &Path) -> Result<(), String> {
+        let dir = fix.after.strip_prefix("User PATH + ").unwrap_or_default();
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Registry::{
+                RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
+                REG_EXPAND_SZ,
+            };
+            let subkey: Vec<u16> = "Environment\0".encode_utf16().collect();
+            let value: Vec<u16> = "Path\0".encode_utf16().collect();
+            let mut key: HKEY = std::ptr::null_mut();
+            let status = unsafe {
+                RegOpenKeyExW(
+                    HKEY_CURRENT_USER,
+                    subkey.as_ptr(),
+                    0,
+                    KEY_SET_VALUE,
+                    &mut key,
+                )
+            };
+            if status != 0 {
+                return Err(format!("registry open failed: {status}"));
+            }
+            let old = self.previous_value(fix, _state_root)?;
+            let joined = append_path_once(&old, dir);
+            let wide: Vec<u16> = joined.encode_utf16().chain(Some(0)).collect();
+            let status = unsafe {
+                RegSetValueExW(
+                    key,
+                    value.as_ptr(),
+                    0,
+                    REG_EXPAND_SZ,
+                    wide.as_ptr().cast(),
+                    (wide.len() * 2) as u32,
+                )
+            };
+            unsafe {
+                RegCloseKey(key);
+            }
+            if status != 0 {
+                return Err(format!("registry write failed: {status}"));
+            }
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+            };
+            let environment: Vec<u16> = "Environment\0".encode_utf16().collect();
+            unsafe {
+                SendMessageTimeoutW(
+                    HWND_BROADCAST,
+                    WM_SETTINGCHANGE,
+                    0,
+                    environment.as_ptr() as isize,
+                    SMTO_ABORTIFHUNG,
+                    1000,
+                    std::ptr::null_mut(),
+                );
+            }
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = dir;
+            Err("PATH fixes are only supported on Windows; no change applied".into())
+        }
+    }
+}
+
+impl FixApplier for AclApplier {
+    fn previous_value(&self, _fix: &Fix, state_root: &Path) -> Result<String, String> {
+        #[cfg(windows)]
+        {
+            crate::state_security::security_descriptor_sddl(state_root).map_err(|e| e.to_string())
+        }
+        #[cfg(not(windows))]
+        {
+            Ok("unsupported on this platform".into())
+        }
+    }
+    fn apply(&self, _fix: &Fix, state_root: &Path) -> Result<(), String> {
+        crate::state_security::set_owner_only(state_root).map_err(|e| e.to_string())
+    }
+}
+
+pub fn apply_fix_confirmed(
+    state_root: &Path,
+    fix: &Fix,
+    confirmed: bool,
+    applier: &dyn FixApplier,
+) -> Result<String, String> {
+    if !confirmed {
+        return Ok(format!("declined {}", fix.id));
+    }
+    let previous = applier.previous_value(fix, state_root)?;
+    std::fs::create_dir_all(state_root.join("backups")).map_err(|e| e.to_string())?;
+    let stamp = format!(
+        "{}-{}",
+        crate::version::VERSION.replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
+        std::process::id()
+    );
+    let backup_path = state_root
+        .join("backups")
+        .join(format!("doctor-{stamp}.json"));
+    let body = serde_json::json!({ "fix": fix.id, "previous": previous });
+    std::fs::write(
+        &backup_path,
+        serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    applier.apply(fix, state_root)?;
+    Ok(format!(
+        "applied {}; undo from {}",
+        fix.id,
+        backup_path.display()
+    ))
+}
+
+fn append_path_once(old: &str, folder: &str) -> String {
+    if old.split(';').any(|p| p.eq_ignore_ascii_case(folder)) {
+        old.to_string()
+    } else if old.is_empty() {
+        folder.to_string()
+    } else {
+        format!("{old};{folder}")
+    }
+}
+
+/// The small, explicitly authorised mutation surface of doctor.
+pub fn proposed_fixes(state_root: &Path, checks: &[Check]) -> Vec<Fix> {
+    let mut fixes = Vec::new();
+    for row in checks {
+        if (row.name == "codex" || row.name == "claude" || row.name == "cursor")
+            && row.detail.contains("not on PATH")
+        {
+            if let Some(dir) = row.detail.split_once("append with ").and_then(|(_, s)| {
+                s.split_once("', 'User')")
+                    .and_then(|(p, _)| p.rsplit_once(';'))
+                    .map(|(_, p)| p.trim_matches('\''))
+            }) {
+                fixes.push(Fix {
+                    id: "path-provider",
+                    finding: row.detail.clone(),
+                    before: "User PATH without provider folder".into(),
+                    after: format!("User PATH + {dir}"),
+                    impact: "new terminals resolve the provider CLI",
+                });
+            }
+        }
+        if row.name == "state" && row.detail.contains("not owner-only") {
+            fixes.push(Fix {
+                id: "state-acl",
+                finding: row.detail.clone(),
+                before: "inherited or broad state ACL".into(),
+                after: "owner + SYSTEM, inheritable owner-only ACL".into(),
+                impact: "protects local state from other users",
+            });
+        }
+    }
+    if let Some(old) = crate::update::legacy_install_dir() {
+        if checks.iter().any(|c| c.name == "path") {
+            fixes.push(Fix {
+                id: "remove-legacy-orc",
+                finding: format!("legacy orc folder is available: {}", old.display()),
+                before: "User PATH contains legacy orc folder".into(),
+                after: "User PATH with that folder removed".into(),
+                impact: "prevents stale legacy launchers",
+            });
+        }
+    }
+    let _ = state_root;
+    fixes
+}
+
+/// Apply exactly one already-confirmed fix. The callbacks are deliberately injected so tests
+/// cannot touch a real user PATH or ACL. The backup is written before the callback is invoked.
+pub fn apply_confirmed_fix<F, A>(
+    state_root: &Path,
+    fix: &Fix,
+    confirmed: bool,
+    backup: F,
+    apply: A,
+) -> Result<String, String>
+where
+    F: FnOnce(&Path, &Fix) -> Result<(), String>,
+    A: FnOnce(&Fix) -> Result<(), String>,
+{
+    if !confirmed {
+        return Ok(format!("declined {}", fix.id));
+    }
+    std::fs::create_dir_all(state_root).map_err(|e| e.to_string())?;
+    let stamp = crate::version::VERSION.replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+    let backup_path = state_root
+        .join("backups")
+        .join(format!("doctor-{stamp}.json"));
+    if let Some(parent) = backup_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    backup(&backup_path, fix)?;
+    apply(fix)?;
+    Ok(format!(
+        "applied {}; undo from {}",
+        fix.id,
+        backup_path.display()
+    ))
+}
+
 /// The one concrete action shown below every warning or failure in the doctor report.
 pub fn next_action(row: &Check) -> Option<String> {
     if row.level == Level::Ok {
@@ -599,6 +906,24 @@ pub fn format_report(checks: &[Check]) -> String {
     lines.join("\n")
 }
 
+/// Render the report and its proposed, non-applied changes. This is the shared text used by the
+/// CLI and by the TUI before it opens its confirmation picker.
+pub fn format_report_with_fixes(state_root: &Path, checks: &[Check]) -> String {
+    let mut out = format_report(checks);
+    let fixes = proposed_fixes(state_root, checks);
+    if fixes.is_empty() {
+        return out;
+    }
+    out.push_str("\n\nproposed fixes (each requires confirmation):");
+    for f in fixes {
+        out.push_str(&format!(
+            "\n  [{}] {}\n      before: {}\n      after: {}\n      impact: {}",
+            f.id, f.finding, f.before, f.after, f.impact
+        ));
+    }
+    out
+}
+
 /// Fast, local provider health used by the first-launch panel. It resolves the same binaries as
 /// doctor but deliberately does not run `--version` or contact a provider.
 pub fn fast_provider_status() -> Vec<(ProviderKind, bool)> {
@@ -808,9 +1133,13 @@ pub fn run_cli_report() -> (String, bool) {
 
 /// Fast report for the TUI (no subprocess probes, so it cannot stall the event loop).
 pub fn run_fast_report() -> String {
+    format_report(&run_fast_checks())
+}
+
+pub fn run_fast_checks() -> Vec<Check> {
     let provider_bin = resolve_provider_bin;
     let which = |n: &str| which::which(n).ok();
-    format_report(&run(&real_env(&provider_bin, &which, None)))
+    run(&real_env(&provider_bin, &which, None))
 }
 
 #[cfg(test)]
@@ -1320,5 +1649,106 @@ mod tests {
                 && error.contains("C:\\cursor")
                 && error.contains("concordia doctor")
         );
+    }
+
+    struct FakeApplier {
+        previous: String,
+        applied: std::sync::Mutex<Vec<String>>,
+    }
+    impl FixApplier for FakeApplier {
+        fn previous_value(&self, _fix: &Fix, _root: &Path) -> Result<String, String> {
+            Ok(self.previous.clone())
+        }
+        fn apply(&self, fix: &Fix, _root: &Path) -> Result<(), String> {
+            self.applied.lock().unwrap().push(fix.id.into());
+            Ok(())
+        }
+    }
+
+    fn path_fix() -> Fix {
+        Fix {
+            id: "path-provider",
+            finding: "missing provider folder".into(),
+            before: "User PATH".into(),
+            after: "User PATH + C:\\Tools".into(),
+            impact: "provider resolves",
+        }
+    }
+
+    #[test]
+    fn report_lists_fixable_rows() {
+        let rows = vec![check(Level::Warn, "codex", "not on PATH; append with [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';C:\\Tools', 'User')")];
+        let report = format_report_with_fixes(Path::new("C:\\state"), &rows);
+        assert!(
+            report.contains("proposed fixes")
+                && report.contains("before:")
+                && report.contains("after:")
+                && report.contains("impact:")
+        );
+    }
+
+    #[test]
+    fn fix_requires_confirmation() {
+        let fx = Fx::new();
+        let fake = FakeApplier {
+            previous: "A".into(),
+            applied: std::sync::Mutex::new(Vec::new()),
+        };
+        let result = apply_fix_confirmed(fx.state.path(), &path_fix(), false, &fake).unwrap();
+        assert!(result.starts_with("declined"));
+        assert!(fake.applied.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fix_writes_backup_before_applying() {
+        let fx = Fx::new();
+        let fake = FakeApplier {
+            previous: "OLD".into(),
+            applied: std::sync::Mutex::new(Vec::new()),
+        };
+        let result = apply_fix_confirmed(fx.state.path(), &path_fix(), true, &fake).unwrap();
+        let backup = std::fs::read_dir(fx.state.path().join("backups"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(
+            result.contains("undo from")
+                && std::fs::read_to_string(backup).unwrap().contains("OLD")
+        );
+        assert_eq!(&*fake.applied.lock().unwrap(), &["path-provider"]);
+    }
+
+    #[test]
+    fn path_fix_appends_folder_once() {
+        assert_eq!(append_path_once("A;C:\\Tools", "c:\\tools"), "A;C:\\Tools");
+        assert_eq!(append_path_once("A", "C:\\Tools"), "A;C:\\Tools");
+    }
+
+    #[test]
+    fn acl_fix_uses_owner_only_sddl() {
+        assert!(crate::state_security::sddl_is_owner_only(
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;S-1-5-21-1-2-3-4)"
+        ));
+        assert!(!crate::state_security::sddl_is_owner_only(
+            "D:(A;OICI;FA;;;WD)"
+        ));
+    }
+
+    #[test]
+    fn cli_doctor_stays_read_only() {
+        let fx = Fx::new();
+        let fake = FakeApplier {
+            previous: "OLD".into(),
+            applied: std::sync::Mutex::new(Vec::new()),
+        };
+        let before = std::fs::read_dir(fx.state.path()).unwrap().count();
+        let _ = format_report_with_fixes(
+            fx.state.path(),
+            &[check(Level::Warn, "state", "state is not owner-only")],
+        );
+        assert_eq!(std::fs::read_dir(fx.state.path()).unwrap().count(), before);
+        assert!(fake.applied.lock().unwrap().is_empty());
     }
 }

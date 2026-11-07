@@ -240,6 +240,49 @@ pub(super) fn handle_key(
         return false;
     }
     if let Some(picker) = app.picker.as_mut() {
+        // Keep the long-standing command-history affordance when `/doctor` was just submitted.
+        // Once the user has typed or selected a row, the doctor picker owns navigation normally.
+        if picker.kind == PickerKind::Doctor
+            && app.editor.text().is_empty()
+            && app.history.last().is_some_and(|line| line == "/doctor")
+            && matches!(key.code, KeyCode::Up | KeyCode::Down)
+        {
+            app.dismiss_picker();
+            if key.code == KeyCode::Up {
+                app.history_prev();
+            } else {
+                app.history_next();
+            }
+            return false;
+        }
+        if picker.kind == PickerKind::DoctorConfirm {
+            match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    let index = picker
+                        .rows
+                        .first()
+                        .and_then(|row| row.id.strip_prefix("doctor-confirm:"))
+                        .and_then(|s| s.parse().ok());
+                    if let Some(index) = index {
+                        app.apply_doctor_fix(index);
+                    }
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => app.dismiss_picker(),
+                _ => {}
+            }
+            return false;
+        }
+        if picker.kind == PickerKind::Doctor
+            && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace)
+        {
+            app.dismiss_picker();
+            if let KeyCode::Char(c) = key.code {
+                app.editor.insert_char(c);
+            } else {
+                app.editor.backspace();
+            }
+            return false;
+        }
         if matches!(
             picker.kind,
             PickerKind::Update
@@ -308,6 +351,9 @@ pub(super) fn handle_key(
         }
         match key.code {
             KeyCode::Esc => app.dismiss_picker(),
+            KeyCode::Enter if picker.kind == PickerKind::Doctor => {
+                app.apply_picker_selection(Some(turn_tx))
+            }
             KeyCode::Enter => app.apply_picker_selection(Some(turn_tx)),
             KeyCode::Delete if picker.kind == PickerKind::Resume => app.prepare_resume_delete(),
             KeyCode::Char('t') if picker.kind == PickerKind::Usage => tokens::open(app),
