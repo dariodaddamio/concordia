@@ -1321,3 +1321,23 @@ fn ctrl_w_is_left_to_the_terminal() {
     h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "hello there world");
 }
+
+#[test]
+fn two_tabs_draw_a_clickable_strip_on_the_top_row_above_the_header() {
+    let mut h = Harness::new(100, 30);
+    let single = h.screen();
+    assert!(h.app.tab_hits.is_empty());
+    h.app.tab_strip = vec!["Home".into(), "Fix the images …".into()];
+    h.app.tab_index = 1;
+    h.draw();
+    let screen = h.screen();
+    let top = screen.lines().next().unwrap();
+    assert!(
+        top.contains("1 Home") && top.contains("2 Fix the images"),
+        "{top}"
+    );
+    assert_eq!(h.app.tab_hits.len(), 2);
+    assert!(h.app.tab_hits.iter().all(|r| r.y == 0 && r.width > 0));
+    // The header moves down one row instead of being drawn over.
+    assert_eq!(screen.lines().nth(1), single.lines().next());
+}

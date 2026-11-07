@@ -526,7 +526,20 @@ async fn run_provider_turn_inner(
     if req.provider == ProviderKind::Cursor
         && (!req.images.is_empty() || mode == crate::native_input::Mode::CursorAcp)
     {
-        return acp::run(req, &plan, owner, on_started, on_progress).await;
+        let out = acp::run(
+            req,
+            &plan,
+            owner.clone(),
+            on_started.clone(),
+            on_progress.clone(),
+        )
+        .await?;
+        if !(out.failed
+            && req.images.is_empty()
+            && out.stderr_tail.starts_with(acp::SESSION_NOT_IN_ACP))
+        {
+            return Ok(out);
+        }
     }
     if mode == crate::native_input::Mode::CodexAppServer {
         return appserver::run(req, &plan, owner, on_started, on_progress).await;

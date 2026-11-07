@@ -199,6 +199,65 @@ impl Connection {
         }
     }
 }
+/// Cursor keeps print-mode chats (`create-chat`, `--resume`) apart from ACP sessions, so a chat
+/// started before ACP became the default cannot be loaded here. The caller continues it in print
+/// mode; nothing was prompted and nothing was shown.
+pub(super) const SESSION_NOT_IN_ACP: &str = "Cursor ACP has no session with this id";
+
+/// `agent models` lists flat variants (`claude-opus-5-5-high-fast`, `cursor-grok-4.6-low`), while
+/// ACP sessions offer one parameterized entry per base (`claude-opus-5-5[effort=medium,fast=false]`).
+/// Map a flat id onto the session's entry for its base, changing only effort, fast and thinking.
+fn acp_model_id(id: &str, available: &[String]) -> Option<String> {
+    if id.contains('[') || available.iter().any(|m| m == id) {
+        return Some(id.to_owned());
+    }
+    let flat = id.strip_prefix("cursor-").unwrap_or(id);
+    let (base, params, rest) = available
+        .iter()
+        .filter_map(|m| {
+            let (base, params) = m.split_once('[')?;
+            let rest = flat.strip_prefix(base)?;
+            (rest.is_empty() || rest.starts_with('-'))
+                .then(|| (base, params.trim_end_matches(']'), rest))
+        })
+        .max_by_key(|(base, _, _)| base.len())?;
+    let tokens: Vec<&str> = rest.split('-').filter(|t| !t.is_empty()).collect();
+    let effort = tokens
+        .iter()
+        .find(|t| matches!(**t, "low" | "medium" | "high" | "xhigh" | "max"));
+    let params: Vec<String> = params
+        .split(',')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (key, value) = p.split_once('=').unwrap_or((p, ""));
+            let value = match key {
+                "fast" => tokens.contains(&"fast").to_string(),
+                "thinking" => tokens.contains(&"thinking").to_string(),
+                "effort" | "reasoning_effort" | "reasoning" => {
+                    effort.map_or(value.to_owned(), |e| (*e).to_owned())
+                }
+                _ => value.to_owned(),
+            };
+            format!("{key}={value}")
+        })
+        .collect();
+    Some(format!("{base}[{}]", params.join(",")))
+}
+
+/// Trust flags are global options and must precede the `acp` subcommand. Plan mode is set per
+/// session over the protocol instead.
+fn acp_argv(print_argv: &[String]) -> Vec<String> {
+    let mut argv = Vec::new();
+    if print_argv.iter().any(|a| a == "--force") {
+        argv.push("--force".into());
+    }
+    if let Some(i) = print_argv.iter().position(|a| a == "--sandbox") {
+        argv.extend(print_argv[i..].iter().take(2).cloned());
+    }
+    argv.push("acp".into());
+    argv
+}
+
 pub(super) async fn run(
     req: &ProviderTurnRequest<'_>,
     plan: &PlannedTurn,
@@ -214,11 +273,20 @@ pub(super) async fn run(
     for image in req.images {
         content.push(image.acp().map_err(anyhow::Error::msg)?);
     }
-    let mut command = crate::process_ui::tokio_command(&plan.command);
+    let launch = crate::provider::launch::prepare(&PlannedTurn {
+        argv: acp_argv(&plan.argv),
+        prompt: "acp".into(),
+        ..plan.clone()
+    })?;
+    let mut command = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut command);
+    for key in &plan.env_remove {
+        command.env_remove(key);
+    }
     command
-        .arg("acp")
+        .args(&launch.args)
         .envs(plan.env.clone())
+        .envs(launch.env)
         .current_dir(&plan.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -279,7 +347,10 @@ pub(super) async fn run(
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
             ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":[]}))
         }else{("session/new",json!({"cwd":plan.cwd,"mcpServers":[]}))};
-        let session=tokio::time::timeout(Duration::from_secs(12),conn.rpc(2,method,params)).await??;
+        let session=match tokio::time::timeout(Duration::from_secs(12),conn.rpc(2,method,params)).await?{
+            Err(error) if req.native_session_id.is_some() && format!("{error:#}").contains("not found") => anyhow::bail!(SESSION_NOT_IN_ACP),
+            other => other?,
+        };
         anyhow::ensure!(!session.get("sessionId").is_some_and(|id| req.native_session_id.is_some_and(|expected| id.as_str()!=Some(expected))), "Cursor ACP loaded a different native session; prompt withheld");
         let sid=req.native_session_id.map(str::to_owned).or_else(||session["sessionId"].as_str().map(str::to_owned)).context("Cursor ACP returned no session id")?;
         conn.out.session_id=Some(sid.clone());conn.session_id=Some(sid.clone());conn.emit(TurnProgress::Session(sid.clone()));
@@ -287,6 +358,9 @@ pub(super) async fn run(
         let mode=if plan.argv.windows(2).any(|v|v==["--mode","plan"]){"plan"}else{"agent"};
         tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"session/set_mode",json!({"sessionId":sid,"modeId":mode}))).await??;
         if let Some(model)=req.model.filter(|m|!m.is_empty()&&*m!="auto"){
+            let available:Vec<String>=session.pointer("/models/availableModels").and_then(Value::as_array).into_iter().flatten()
+                .filter_map(|m|m["modelId"].as_str().map(str::to_owned)).collect();
+            let model=acp_model_id(model,&available).unwrap_or_else(||model.to_owned());
             tokio::time::timeout(Duration::from_secs(12),conn.rpc(4,"session/set_model",json!({"sessionId":sid,"modelId":model}))).await??;
         }
         conn.prompting = true;
@@ -296,8 +370,11 @@ pub(super) async fn run(
     }.await;
     conn.out.cancelled |= handle.cancel_flag.load(Ordering::SeqCst);
     if let Err(error) = result {
-        if !conn.out.cancelled {
-            let message = format!("{error:#}");
+        let message = format!("{error:#}");
+        if message == SESSION_NOT_IN_ACP {
+            conn.out.stderr_tail = message;
+            conn.out.failed = true;
+        } else if !conn.out.cancelled {
             conn.emit(TurnProgress::Error(message.clone()));
             conn.out.stderr_tail = message;
             conn.out.failed = true;
@@ -323,4 +400,69 @@ pub(super) async fn run(
     }
     conn.out.exit_code = reaped.then_some(if conn.out.failed { 1 } else { 0 });
     Ok(conn.out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{acp_argv, acp_model_id};
+
+    #[test]
+    fn flat_cli_model_ids_map_onto_the_sessions_parameterized_variants() {
+        let available: Vec<String> = [
+            "default[]",
+            "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
+            "grok-4.6[effort=high,fast=true]",
+            "composer-2.5[fast=true]",
+            "claude-opus-5-5[context=300k,effort=medium,fast=false]",
+            "claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+            "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+        ]
+        .map(String::from)
+        .into();
+        let map = |id| acp_model_id(id, &available).unwrap();
+        assert_eq!(
+            map("claude-opus-5-5-high-fast"),
+            "claude-opus-5-5[context=300k,effort=high,fast=true]"
+        );
+        assert_eq!(
+            map("claude-opus-5-5-medium"),
+            "claude-opus-5-5[context=300k,effort=medium,fast=false]"
+        );
+        assert_eq!(
+            map("claude-opus-5-high"),
+            "claude-opus-5[thinking=false,context=300k,effort=high,fast=false]"
+        );
+        assert_eq!(
+            map("claude-opus-5-thinking-max"),
+            "claude-opus-5[thinking=true,context=300k,effort=max,fast=false]"
+        );
+        assert_eq!(
+            map("cursor-grok-4.6-low"),
+            "grok-4.6[effort=low,fast=false]"
+        );
+        assert_eq!(
+            map("grok-4.7-xhigh-fast"),
+            "grok-4.7[context=256k,reasoning_effort=xhigh,fast=true]"
+        );
+        assert_eq!(map("composer-2.5-fast"), "composer-2.5[fast=true]");
+        assert_eq!(
+            map("gpt-5.6-sol-high"),
+            "gpt-5.6-sol[context=272k,reasoning=high,fast=false]"
+        );
+        assert_eq!(map("grok-4.6[effort=low]"), "grok-4.6[effort=low]");
+        assert_eq!(acp_model_id("unknown-model", &available), None);
+    }
+
+    #[test]
+    fn trust_flags_precede_the_acp_subcommand() {
+        let print = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            acp_argv(&print(&["--print", "--force", "hi"])),
+            ["--force", "acp"]
+        );
+        assert_eq!(
+            acp_argv(&print(&["--print", "--mode", "plan", "hi"])),
+            ["acp"]
+        );
+    }
 }

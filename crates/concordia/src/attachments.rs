@@ -320,6 +320,22 @@ pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
     mime(&data).ok_or("attach a PNG, JPEG or WebP image")?;
     Ok(data)
 }
+/// `canonicalize` on Windows returns `\\?\C:\...`; provider CLIs and image viewers handle the
+/// plain drive form. UNC and other verbatim forms are kept as they are.
+fn plain_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest)
+            if rest.as_bytes().get(1) == Some(&b':')
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && rest.len() < 260 =>
+        {
+            PathBuf::from(rest)
+        }
+        _ => path,
+    }
+}
+
 pub fn import(root: &Path, path: &Path) -> Result<Image, String> {
     let data = read(path)?;
     let (mime, ext) = mime(&data).unwrap();
@@ -332,9 +348,11 @@ pub fn import(root: &Path, path: &Path) -> Result<Image, String> {
         crate::state_io::write_atomic(&target, &data).map_err(|_| "could not store image")?;
     }
     Ok(Image {
-        path: target
-            .canonicalize()
-            .map_err(|_| "stored image unavailable")?,
+        path: plain_path(
+            target
+                .canonicalize()
+                .map_err(|_| "stored image unavailable")?,
+        ),
         name: path
             .file_name()
             .unwrap_or_default()

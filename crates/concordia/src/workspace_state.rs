@@ -175,7 +175,8 @@ mod tests {
         let d = tempdir().unwrap();
         git(d.path(), &["init", "-q", "-b", "fixture"]);
         fs::write(d.path().join("a.rs"), "x\n").unwrap();
-        let s = collect(d.path()).unwrap();
+        // The parallel suite can starve git past the interactive 2 s budget.
+        let s = collect_with_git(d.path(), Duration::from_secs(30), super::git).unwrap();
         assert_eq!(s.branch, "fixture");
         assert!(s.files.iter().any(|f| f.contains("a.rs")));
     }

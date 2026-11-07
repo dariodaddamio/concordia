@@ -498,11 +498,9 @@ fn refresh_meters(app: &mut App) {
             Some(LandingMeter {
                 provider: account.provider,
                 account: account.account.clone(),
-                snapshot: app.usage_fetcher.cached_snapshot(
-                    account.provider,
-                    &account.account,
-                    &home,
-                ),
+                snapshot: app
+                    .usage_fetcher
+                    .snapshot(account.provider, &account.account, &home),
             })
         })
         .collect();
@@ -560,9 +558,10 @@ pub(super) fn visible(app: &App) -> bool {
 
 /// The landing usage pane owns subscription facts whenever it is actually drawn.
 pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
-    app.landing.as_ref().is_some_and(|landing| {
-        !landing.meters.is_empty() && width >= TWO_PANES_MIN && landing.pane == Pane::Chats
-    })
+    visible(app)
+        && app.landing.as_ref().is_some_and(|landing| {
+            !landing.meters.is_empty() && (width >= TWO_PANES_MIN || landing.pane == Pane::Goals)
+        })
 }
 
 /// Collect open work that arrived from the background reader.
@@ -775,8 +774,13 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         Mode::Browse => {}
     }
-    // A nonempty draft owns editing and Enter; Tab still reaches the goals.
+    // A nonempty draft owns editing and Enter; Tab still reaches the goals, and Up/Down still
+    // move through the chats while the draft is one line.
+    let list_key = matches!(key.code, KeyCode::Up | KeyCode::Down)
+        && plain
+        && !app.editor.text().contains('\n');
     if !app.editor.text().is_empty()
+        && !list_key
         && !matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc)
         && landing.pane == Pane::Chats
     {
@@ -976,22 +980,32 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
 }
 
 /// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
-fn goal_rows(landing: &Landing) -> usize {
-    let goals = landing.open_goals().len() + usize::from(landing.mode != Mode::Browse);
+fn goal_rows(landing: &Landing, width: usize) -> usize {
+    let open = landing.open_goals();
+    let goals = open
+        .iter()
+        .map(|&i| wrapped_rows(&format!("  {}", goal_label(&landing.goals[i])), width))
+        .sum::<usize>()
+        + usize::from(landing.mode != Mode::Browse);
     let work: usize = landing
         .work
         .iter()
         .map(|p| match &p.items {
             Some(items) if items.is_empty() => 0,
-            Some(items) => 1 + items.len(),
+            Some(items) => {
+                1 + items
+                    .iter()
+                    .map(|item| wrapped_rows(&format!("  ○ {}", item.text), width))
+                    .sum::<usize>()
+            }
             None => 2,
         })
         .sum();
-    let goals_content = goals.max(3);
+    let goals_content = goals.max(if open.is_empty() && work == 0 { 6 } else { 3 });
     let usage = if landing.meters.is_empty() {
         0
     } else {
-        landing.meters.len() + 2
+        meter_rows(&landing.meters, width) + 2
     };
     if work == 0 {
         goals_content.max(usage + 5)
@@ -1044,39 +1058,61 @@ fn meter_reset_label(raw: &str, expired: bool) -> String {
     }
 }
 
-fn meter_line(meter: &LandingMeter, width: usize) -> String {
-    let prefix = format!("{} {}  ", meter.provider.as_str(), meter.account);
-    let cells = if width < 58 { 8 } else { 10 };
-    let mut result = prefix;
-    let mut shown = 0;
-    for window in meter.snapshot.windows.iter().take(2) {
-        let separator = if shown == 0 { "" } else { "  " };
-        let full = format!(
-            "{}{}{}",
-            result,
-            separator,
-            meter_window(window, cells, true)
-        );
-        let compact = format!(
-            "{}{}{}",
-            result,
-            separator,
-            meter_window(window, cells, false)
-        );
-        let candidate = if full.chars().count() <= width {
+/// One heading per account (plan, credits, limit state), then one row per usage window.
+fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
+    let snapshot = &meter.snapshot;
+    let mut heading = format!("{} {}", meter.provider.as_str(), meter.account);
+    if let Some(plan) = snapshot.plan.as_deref().filter(|p| !p.trim().is_empty()) {
+        heading.push_str(&format!(" · {plan}"));
+    }
+    let credits = snapshot.credits_text();
+    if credits != "Credits: not reported" {
+        heading.push_str(&format!(" · {credits}"));
+    }
+    if snapshot.limit_hit {
+        heading.push_str(" · limit reached");
+    }
+    let mut lines = vec![clipped(heading, width)];
+    let cells = if width < 40 { 6 } else { 10 };
+    for window in &snapshot.windows {
+        let full = format!("  {}", meter_window(window, cells, true));
+        lines.push(if full.chars().count() <= width {
             full
-        } else if compact.chars().count() <= width {
-            compact
         } else {
-            break;
-        };
-        result = candidate;
-        shown += 1;
+            clipped(format!("  {}", meter_window(window, cells, false)), width)
+        });
     }
-    if shown == 0 {
-        result.push_str(&meter.snapshot.summary);
+    if snapshot.windows.is_empty() {
+        lines.push(clipped(format!("  {}", snapshot.summary), width));
     }
-    clipped(result, width)
+    lines
+}
+
+fn meter_rows(meters: &[LandingMeter], width: usize) -> usize {
+    meters.iter().map(|m| meter_lines(m, width).len()).sum()
+}
+
+fn goal_label(goal: &Goal) -> String {
+    let proposed = goal.origin.as_ref().is_some_and(|origin| {
+        origin.source == crate::goals::ChangeSource::McpProposalApprovedLocally
+    });
+    format!(
+        "{} {}{}",
+        if proposed { "◇" } else { "○" },
+        goal.text,
+        if proposed {
+            " [MCP proposal · approved locally]"
+        } else {
+            ""
+        }
+    )
+}
+
+/// Rows a line takes once wrapped into the goals pane.
+fn wrapped_rows(text: &str, width: usize) -> usize {
+    wrap_goal_line(Line::from(text.to_string()), width)
+        .len()
+        .max(1)
 }
 
 pub(super) fn usage_generation(app: &App) -> Option<u64> {
@@ -1179,10 +1215,20 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         && crate::store::load_store(&app.state_root)
             .accounts
             .is_empty();
+    let goals_width = if area.width >= TWO_PANES_MIN {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(area)[1]
+            .width
+    } else {
+        area.width
+    }
+    .saturating_sub(2) as usize;
     let content = landing
         .rows()
         .len()
-        .max(goal_rows(landing))
+        .max(goal_rows(landing, goals_width))
         .max(if welcome_visible { 7 } else { 0 })
         .min(u16::MAX as usize - 2) as u16;
     let area = Rect {
@@ -1374,7 +1420,8 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         (None, right)
     } else {
         let max_usage_rows = right.height.saturating_sub(7) as usize;
-        let usage_rows = landing.meters.len().min(max_usage_rows.max(1));
+        let usage_rows = meter_rows(&landing.meters, right.width.saturating_sub(2) as usize)
+            .min(max_usage_rows.max(1));
         let usage_height = usage_rows as u16 + 2;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1391,20 +1438,35 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(block, usage_area);
         let width = inner.width as usize;
         let capacity = inner.height as usize;
-        let visible = if landing.meters.len() > capacity {
+        let all: Vec<Vec<String>> = landing
+            .meters
+            .iter()
+            .map(|meter| meter_lines(meter, width))
+            .collect();
+        let total: usize = all.iter().map(Vec::len).sum();
+        let budget = if total > capacity {
             capacity.saturating_sub(1)
         } else {
             capacity
         };
-        let mut lines: Vec<Line> = landing
-            .meters
-            .iter()
-            .take(visible)
-            .map(|meter| Line::styled(meter_line(meter, width), dim))
-            .collect();
-        if landing.meters.len() > visible {
+        let mut lines: Vec<Line> = Vec::new();
+        let mut shown = 0;
+        for meter in &all {
+            if lines.len() + meter.len() > budget {
+                break;
+            }
+            for (row, text) in meter.iter().enumerate() {
+                lines.push(if row == 0 {
+                    Line::styled(text.clone(), Style::default().add_modifier(Modifier::BOLD))
+                } else {
+                    Line::styled(text.clone(), dim)
+                });
+            }
+            shown += 1;
+        }
+        if shown < all.len() {
             lines.push(Line::styled(
-                format!("+{} more", landing.meters.len() - visible),
+                format!("+{} more accounts · /usage", all.len() - shown),
                 dim,
             ));
         }
@@ -1428,33 +1490,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
         lines.push(Line::from(vec![
             Span::styled(if focused { "> " } else { "  " }, style),
-            Span::styled(
-                format!(
-                    "{} {}{}",
-                    if landing.goals[i]
-                        .origin
-                        .as_ref()
-                        .is_some_and(|origin| origin.source
-                            == crate::goals::ChangeSource::McpProposalApprovedLocally)
-                    {
-                        "◇"
-                    } else {
-                        "○"
-                    },
-                    landing.goals[i].text,
-                    if landing.goals[i]
-                        .origin
-                        .as_ref()
-                        .is_some_and(|origin| origin.source
-                            == crate::goals::ChangeSource::McpProposalApprovedLocally)
-                    {
-                        " [MCP proposal · approved locally]"
-                    } else {
-                        ""
-                    }
-                ),
-                style,
-            ),
+            Span::styled(goal_label(&landing.goals[i]), style),
         ]));
         hits.push(Some(row));
         if focused && landing.mode == Mode::ConfirmDone {
@@ -1798,7 +1834,7 @@ mod tests {
     #[test]
     fn usage_box_sits_above_goals_and_goals_keep_their_cta() {
         let meter = test_meter();
-        assert!(meter_line(&meter, 120).starts_with("codex fixture"));
+        assert!(meter_lines(&meter, 120)[0].starts_with("codex fixture"));
         let boxes = ["usage", "goals"];
         assert_eq!(boxes[0], "usage");
         assert_eq!(boxes[1], "goals");
@@ -1806,19 +1842,33 @@ mod tests {
     }
 
     #[test]
-    fn meters_render_one_line_each_without_wrapping() {
-        let meter = test_meter();
-        for width in [42, 120] {
-            let line = meter_line(&meter, width);
-            assert!(!line.contains('\n'));
-            assert!(line.chars().count() <= width);
+    fn meters_show_a_heading_and_every_window_without_wrapping() {
+        let mut meter = test_meter();
+        meter.snapshot.plan = Some("Max".into());
+        meter.snapshot.windows.push(crate::usage::UsageWindow {
+            label: "7d Opus".into(),
+            used_pct: 10.0,
+            resets: Some("4d".into()),
+        });
+        for width in [34, 42, 120] {
+            let lines = meter_lines(&meter, width);
+            assert_eq!(lines.len(), 4, "{lines:?}");
+            assert!(lines[0].contains("Max"));
+            assert!(lines[3].contains("7d Opus"));
+            assert!(lines
+                .iter()
+                .all(|l| !l.contains('\n') && l.chars().count() <= width));
         }
+        assert!(meter_lines(&meter, 120)[1].contains("resets 3h"));
     }
 
     #[test]
-    fn usage_box_shrinks_before_goals_on_short_terminals() {
-        let meter = test_meter();
-        assert!(meter_line(&meter, 34).chars().count() <= 34);
+    fn a_long_goal_counts_every_wrapped_row() {
+        let goal = Goal {
+            text: "word ".repeat(40),
+            ..Default::default()
+        };
+        assert!(wrapped_rows(&format!("  {}", goal_label(&goal)), 40) >= 5);
         assert!(goal_rows_stub(3, 2) >= 3);
     }
 

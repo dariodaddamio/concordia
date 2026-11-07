@@ -247,8 +247,13 @@ fn current() -> Palette {
     TEST_PALETTE.with(|slot| *slot.borrow())
 }
 
+/// Tests set `no_color` explicitly so a developer shell's `NO_COLOR` cannot change expectations.
+pub(crate) fn env_no_color() -> bool {
+    !cfg!(test) && std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
+}
+
 pub(super) fn install(ui: &Ui) {
-    let mut palette = if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+    let mut palette = if env_no_color() {
         Palette::from_ui(&crate::config::Config::default().ui)
     } else {
         Palette::from_ui(ui)

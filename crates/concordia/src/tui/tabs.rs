@@ -5,61 +5,52 @@
 //! consequently never shared between conversations.
 
 use super::App;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct TabId(u64);
-
-pub(crate) struct ClosedTab {
-    pub id: TabId,
-    pub app: App,
+/// What a tab must answer before it closes.
+pub(crate) trait TabState {
+    fn needs_close_confirmation(&self) -> bool;
 }
 
-pub(crate) struct TabSet {
-    pub tabs: Vec<App>,
+impl TabState for App {
+    fn needs_close_confirmation(&self) -> bool {
+        self.is_busy() || self.has_unsent_work()
+    }
+}
+
+pub(crate) struct TabSet<T = App> {
+    pub tabs: Vec<T>,
     pub active: usize,
-    pub closed: Vec<ClosedTab>,
-    next_id: u64,
-    ids: Vec<TabId>,
+    pub closed: Vec<T>,
 }
 
-impl TabSet {
-    pub(crate) fn new(app: App) -> Self {
+impl<T: TabState> TabSet<T> {
+    pub(crate) fn new(first: T) -> Self {
         Self {
-            tabs: vec![app],
+            tabs: vec![first],
             active: 0,
             closed: Vec::new(),
-            next_id: 1,
-            ids: vec![TabId(0)],
         }
     }
 
-    pub(crate) fn active(&self) -> &App {
+    pub(crate) fn active(&self) -> &T {
         &self.tabs[self.active]
     }
-    pub(crate) fn active_mut(&mut self) -> &mut App {
+    pub(crate) fn active_mut(&mut self) -> &mut T {
         &mut self.tabs[self.active]
-    }
-    pub(crate) fn ids(&self) -> &[TabId] {
-        &self.ids
     }
     pub(crate) fn has_multiple(&self) -> bool {
         self.tabs.len() > 1
     }
 
-    pub(crate) fn add(&mut self, app: App) -> TabId {
-        let id = TabId(self.next_id);
-        self.next_id += 1;
-        self.tabs.push(app);
-        self.ids.push(id);
+    pub(crate) fn add(&mut self, tab: T) {
+        self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
-        id
     }
 
     /// Returns whether the tab may close immediately.  The caller owns the confirmation UI.
     pub(crate) fn needs_close_confirmation(&self) -> bool {
-        let app = self.active();
-        app.is_busy() || app.has_unsent_work()
+        self.active().needs_close_confirmation()
     }
 
     pub(crate) fn close(&mut self, confirmed: bool) -> bool {
@@ -67,20 +58,17 @@ impl TabSet {
             return false;
         }
         let index = self.active;
-        let app = self.tabs.remove(index);
-        let id = self.ids.remove(index);
-        self.closed.push(ClosedTab { id, app });
+        let tab = self.tabs.remove(index);
+        self.closed.push(tab);
         self.active = index.min(self.tabs.len() - 1);
         true
     }
 
     pub(crate) fn reopen(&mut self) -> bool {
-        let Some(closed) = self.closed.pop() else {
+        let Some(tab) = self.closed.pop() else {
             return false;
         };
-        self.tabs.push(closed.app);
-        self.ids.push(closed.id);
-        self.active = self.tabs.len() - 1;
+        self.add(tab);
         true
     }
 
@@ -103,37 +91,45 @@ impl TabSet {
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> TabAction {
-        if !key.modifiers.contains(KeyModifiers::CONTROL) {
-            return TabAction::Unhandled;
+        let action = action_for(key);
+        match action {
+            TabAction::Next => self.next(false),
+            TabAction::Previous => self.next(true),
+            TabAction::Select(n) => self.select_number(n),
+            _ => {}
         }
-        match key.code {
-            KeyCode::Char('t') if !key.modifiers.contains(KeyModifiers::SHIFT) => TabAction::New,
-            KeyCode::Char('w') => TabAction::Close,
-            KeyCode::Char('t') => TabAction::Reopen,
-            KeyCode::Tab | KeyCode::PageDown => {
-                self.next(key.modifiers.contains(KeyModifiers::SHIFT));
-                TabAction::Handled
-            }
-            KeyCode::PageUp => {
-                self.next(true);
-                TabAction::Handled
-            }
-            KeyCode::Char(c @ '1'..='9') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.select_number(c as usize - '0' as usize);
-                TabAction::Handled
-            }
-            _ => TabAction::Unhandled,
-        }
+        action
+    }
+}
+
+/// Tab keys, recognised before any other dispatch so pickers and the editor never see them.
+pub(crate) fn action_for(key: KeyEvent) -> TabAction {
+    if key.kind == KeyEventKind::Release || !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return TabAction::Unhandled;
+    }
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Char('t' | 'T') if shift => TabAction::Reopen,
+        KeyCode::Char('t') => TabAction::New,
+        KeyCode::Char('w') if !shift => TabAction::Close,
+        KeyCode::BackTab => TabAction::Previous,
+        KeyCode::Tab if shift => TabAction::Previous,
+        KeyCode::Tab | KeyCode::PageDown => TabAction::Next,
+        KeyCode::PageUp => TabAction::Previous,
+        KeyCode::Char(c @ '1'..='9') if !shift => TabAction::Select(c as usize - '0' as usize),
+        _ => TabAction::Unhandled,
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TabAction {
     Unhandled,
-    Handled,
     New,
     Close,
     Reopen,
+    Next,
+    Previous,
+    Select(usize),
 }
 
 #[cfg(test)]
@@ -201,8 +197,30 @@ mod tests {
     #[test]
     fn keys_registered_without_conflicts() {
         assert_eq!(
-            TabSet::new(app()).handle_key(key('t', KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
+            action_for(key('t', KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
             TabAction::Reopen
+        );
+        assert_eq!(
+            action_for(key('T', KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
+            TabAction::Reopen
+        );
+        assert_eq!(
+            action_for(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL)),
+            TabAction::Next
+        );
+        assert_eq!(
+            action_for(KeyEvent::new(
+                KeyCode::BackTab,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )),
+            TabAction::Previous
+        );
+        let mut release = key('t', KeyModifiers::CONTROL);
+        release.kind = KeyEventKind::Release;
+        assert_eq!(action_for(release), TabAction::Unhandled);
+        assert_eq!(
+            action_for(key('t', KeyModifiers::NONE)),
+            TabAction::Unhandled
         );
     }
 }

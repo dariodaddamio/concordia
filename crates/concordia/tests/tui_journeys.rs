@@ -1061,6 +1061,8 @@ fn setup(root: &Path, provider: ProviderKind) {
         ..Default::default()
     };
     save_store(root, &store).unwrap();
+    // Journeys script Cursor's print-mode fake; ACP journeys attach images or opt in explicitly.
+    concordia::native_input::command(root, "cursor", "off").unwrap();
 }
 
 fn initialize_git_fixture(workspace: &Path, empty_hooks: &Path) {

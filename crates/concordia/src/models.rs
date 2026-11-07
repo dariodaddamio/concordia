@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-const REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelEntry {
@@ -88,30 +88,56 @@ pub fn refresh(provider: ProviderKind, account: &str) -> Vec<ModelEntry> {
     let Some(home) = def.home_path else {
         return Vec::new();
     };
-    let Some(program) = list_program(provider) else {
+    if provider != ProviderKind::Cursor {
         return available_at(&root, provider, account);
-    };
+    }
     let home = home.clone();
-    let Some(result) = run_bounded(
-        move || {
-            let result = crate::process_ui::command(program)
-                .arg("--list-models")
-                .current_dir(home)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| parse_list_output(&String::from_utf8_lossy(&o.stdout)));
-            result
-        },
-        REFRESH_TIMEOUT,
-    ) else {
-        return available_at(&root, provider, account);
-    };
-    let Some(models) = result else {
+    let Some(Some(models)) = run_bounded(move || list_cursor(&home), REFRESH_TIMEOUT) else {
         return available_at(&root, provider, account);
     };
     let _ = write_refresh_cache(&root, provider, account, &models);
     available_at(&root, provider, account)
+}
+
+/// Refresh only when the account has no listed catalog yet or it is older than a day.
+pub fn needs_refresh(provider: ProviderKind, account: &str) -> bool {
+    provider == ProviderKind::Cursor && {
+        let path = cache_path(&default_store_root(), provider, account);
+        fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_none_or(|age| age > Duration::from_secs(24 * 3600))
+    }
+}
+
+/// `agent models` lists every model the signed-in plan allows; it makes no model call.
+fn list_cursor(home: &Path) -> Option<Vec<ModelEntry>> {
+    let plan = crate::provider::PlannedTurn {
+        command: crate::provider::cursor::find_agent_bin().ok()?,
+        argv: vec!["models".into()],
+        env: Vec::new(),
+        env_remove: Vec::new(),
+        cwd: home.to_string_lossy().into_owned(),
+        prompt: "models".into(),
+        new_session_id: None,
+        provider: ProviderKind::Cursor,
+    };
+    let launch = crate::provider::launch::prepare(&plan).ok()?;
+    let output = crate::process_ui::command(&launch.program)
+        .args(&launch.args)
+        .envs(launch.env)
+        .env("CURSOR_CONFIG_DIR", home)
+        .env("NO_COLOR", "1")
+        .env_remove("CURSOR_API_KEY")
+        .env_remove("CURSOR_AUTH_TOKEN")
+        .current_dir(home)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let models = parse_list_output(&String::from_utf8_lossy(&output.stdout));
+    (!models.is_empty()).then_some(models)
 }
 
 fn run_bounded<F, T>(job: F, timeout: Duration) -> Option<T>
@@ -126,23 +152,24 @@ where
     rx.recv_timeout(timeout).ok()
 }
 
-fn list_program(provider: ProviderKind) -> Option<&'static str> {
-    match provider {
-        ProviderKind::Cursor => Some("agent"),
-        ProviderKind::Codex | ProviderKind::Claude => None,
-    }
-}
-
+/// Lines look like `claude-opus-5-5-high - Claude Opus 5.5 1M High`; headers and notes have no
+/// ` - ` separator or contain spaces in the id part.
 fn parse_list_output(raw: &str) -> Vec<ModelEntry> {
     raw.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|id| entry(id.to_string(), ModelSource::ListedByCli))
+        .filter_map(|line| {
+            let (id, name) = line.trim().split_once(" - ")?;
+            let id = id.trim();
+            let name = name
+                .trim()
+                .trim_end_matches(" (default)")
+                .chars()
+                .filter(|c| !c.is_control() && !matches!(c, '\u{200b}'..='\u{200f}'))
+                .collect::<String>();
+            let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+            (!id.is_empty() && !id.contains(char::is_whitespace) && id.len() <= 120)
+                .then(|| entry_named(id.into(), name, ModelSource::ListedByCli))
+        })
         .collect()
-}
-
-fn entry(id: String, source: ModelSource) -> ModelEntry {
-    entry_named(id.clone(), id, source)
 }
 
 fn entry_named(id: String, display_name: String, source: ModelSource) -> ModelEntry {
@@ -333,6 +360,25 @@ mod tests {
         assert!(models
             .iter()
             .any(|m| m.id == "cached-model" && m.source == ModelSource::Cached));
+    }
+
+    #[test]
+    fn cursor_models_output_lists_every_plan_model_with_names() {
+        let raw = "Available models\n\nauto - Auto (default)\nclaude-opus-5-5-high - Claude Opus 5.5 1M High\ngrok-4.7-low-fast - Grok 4.7  Low Fast\u{200b}\u{200b}\ncursor-grok-4.6-high - Grok 4.6\n\nTip: use --model <id>\n";
+        let models = parse_list_output(raw);
+        let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "auto",
+                "claude-opus-5-5-high",
+                "grok-4.7-low-fast",
+                "cursor-grok-4.6-high"
+            ]
+        );
+        assert_eq!(models[0].display_name, "Auto");
+        assert_eq!(models[2].display_name, "Grok 4.7 Low Fast");
+        assert!(models.iter().all(|m| m.source == ModelSource::ListedByCli));
     }
 
     #[test]

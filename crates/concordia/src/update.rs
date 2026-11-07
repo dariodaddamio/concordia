@@ -56,6 +56,10 @@ pub fn install_bin_dir() -> PathBuf {
             return PathBuf::from(dir);
         }
     }
+    default_install_bin_dir()
+}
+
+fn default_install_bin_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("concordia")
@@ -1708,11 +1712,7 @@ mod tests {
 
     #[test]
     fn install_bin_dir_ends_with_concordia_bin() {
-        let p = install_bin_dir();
-        assert!(
-            p.ends_with(Path::new("concordia").join("bin"))
-                || p.to_string_lossy().contains("concordia")
-        );
+        assert!(default_install_bin_dir().ends_with(Path::new("concordia").join("bin")));
     }
 
     fn ps(script: &str) -> Command {

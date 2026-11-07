@@ -7,6 +7,7 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     app.areas.run_cancel = Rect::default();
     app.areas.pinned_card = None;
     app.areas.modal_close = None;
+    let screen = draw_tab_strip(f, app);
     if app
         .picker
         .as_ref()
@@ -20,23 +21,23 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
             Constraint::Length(3),
             Constraint::Length(1),
         ])
-        .split(f.area());
-        f.render_widget(Clear, f.area());
+        .split(screen);
+        f.render_widget(Clear, screen);
         draw_header(f, page[0], app);
         draw_picker(f, page[1], app);
         draw_input(f, page[2], app);
         draw_footer(f, page[3], app);
     } else {
         let (chat_screen, panel_screen) =
-            if worker_panel::visible(f.area().width, app.worker_panel_open) {
+            if worker_panel::visible(screen.width, app.worker_panel_open) {
                 let areas = Layout::horizontal([
                     Constraint::Min(1),
                     Constraint::Length(worker_panel::DEFAULT_WIDTH),
                 ])
-                .split(f.area());
+                .split(screen);
                 (areas[0], areas[1])
             } else {
-                (f.area(), Rect::default())
+                (screen, Rect::default())
             };
         let chat_area = workspace::draw_in(f, app, chat_screen);
         // The prompt box grows with its content (up to MAX_INPUT_ROWS), so size it first.
@@ -98,11 +99,11 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         .as_ref()
         .is_some_and(|p| p.kind == PickerKind::Trust)
     {
-        draw_picker(f, f.area(), app);
+        draw_picker(f, screen, app);
     }
     if app.project_search.active() {
         app.areas = Areas::default();
-        app.project_search.draw(f, f.area());
+        app.project_search.draw(f, screen);
     }
     // Cover every widget, including provider-controlled titles, menus and detail panes.
     if worker_input::active(app) {
@@ -128,6 +129,40 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         }
     }
     theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
+}
+
+/// Browser-style strip on the top row while two or more tabs are open; returns the rest.
+fn draw_tab_strip(f: &mut Frame, app: &mut App) -> Rect {
+    app.tab_hits.clear();
+    let area = f.area();
+    if app.tab_strip.len() < 2 || area.height < 4 {
+        return area;
+    }
+    let row = Rect::new(area.x, area.y, area.width, 1);
+    f.render_widget(Clear, row);
+    let mut x = row.x;
+    let mut spans = Vec::new();
+    for (index, label) in app.tab_strip.iter().enumerate() {
+        let text = format!(" {} {label} ", index + 1);
+        let width = (text.chars().count() as u16).min(row.right().saturating_sub(x));
+        if width == 0 {
+            break;
+        }
+        let style = if index == app.tab_index {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray).bg(Color::Indexed(236))
+        };
+        app.tab_hits.push(Rect::new(x, row.y, width, 1));
+        spans.push(Span::styled(text, style));
+        spans.push(Span::raw(" "));
+        x = x.saturating_add(width + 1);
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), row);
+    Rect::new(area.x, area.y + 1, area.width, area.height - 1)
 }
 
 fn draw_key_sheet(f: &mut Frame, app: &App) {

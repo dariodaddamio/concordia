@@ -377,6 +377,11 @@ pub(crate) struct App {
     pub(in crate::tui) reexec_path: Option<PathBuf>,
     pub(in crate::tui) deleg: workers::Panel,
     pub(in crate::tui) worker_panel_open: bool,
+    /// Labels of every open tab and the index of this one; empty with a single tab. The runner
+    /// fills it before each frame, and the drawn label rects come back for mouse hits.
+    pub(in crate::tui) tab_strip: Vec<String>,
+    pub(in crate::tui) tab_index: usize,
+    pub(in crate::tui) tab_hits: Vec<Rect>,
     pub(in crate::tui) user_cmds: Vec<crate::user_commands::UserCommand>,
     pub(in crate::tui) queue: queue::Queue,
     pub(in crate::tui) last_sent: Option<String>,
@@ -444,6 +449,29 @@ impl App {
         self.account_email = email;
         self.trust = get_settings(&self.state_root).trust;
         self.refresh_usage();
+    }
+
+    /// Short label for the tab strip: the chat title, a busy marker and a needs-input marker.
+    pub(in crate::tui) fn tab_label(&self) -> String {
+        let title = if self.landing.is_some() {
+            "Home"
+        } else {
+            self.session_ui.title.as_deref().unwrap_or("New chat")
+        };
+        let mut label: String = title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(24)
+            .collect();
+        if self.busy && self.questions.waiting() {
+            label.push_str(" ?");
+        } else if self.busy {
+            label.push_str(" …");
+        }
+        label
     }
 
     pub(in crate::tui) fn window_title(&self) -> String {
@@ -1461,7 +1489,7 @@ impl App {
             live_thinking: String::new(),
             phase: Phase::Waiting,
             job: None,
-            no_color: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
+            no_color: crate::tui::theme::env_no_color(),
             turn_started: None,
             turn_usage: Default::default(),
             session_input: 0,
@@ -1475,6 +1503,9 @@ impl App {
             reexec_path: None,
             deleg: workers::Panel::default(),
             worker_panel_open: false,
+            tab_strip: Vec::new(),
+            tab_index: 0,
+            tab_hits: Vec::new(),
             user_cmds: crate::user_commands::scan(&state_root_for_cmds).commands,
             queue: queue::Queue::default(),
             last_sent: None,
@@ -1523,11 +1554,7 @@ pub(in crate::tui) fn model_picker_rows(
         id: "model:".into(),
         label: format!(
             "provider default{}",
-            if chosen.is_none() {
-                " · current"
-            } else {
-                ""
-            }
+            if chosen.is_none() { " · current" } else { "" }
         ),
         detail: "the CLI picks its own default model".into(),
     }];

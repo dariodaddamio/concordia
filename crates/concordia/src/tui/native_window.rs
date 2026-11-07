@@ -1786,6 +1786,13 @@ fn key(vk: u16, modifiers: KeyModifiers) -> Option<KeyCode> {
             KeyCode::Char((b'a' + (vk - 0x41) as u8) as char)
         }
         VK_SPACE if modifiers == KeyModifiers::CONTROL => KeyCode::Char(' '),
+        // Ctrl+1..9 selects a tab; AltGr (Ctrl+Alt) still types its character.
+        0x31..=0x39
+            if modifiers.contains(KeyModifiers::CONTROL)
+                && !modifiers.contains(KeyModifiers::ALT) =>
+        {
+            KeyCode::Char((b'1' + (vk - 0x31) as u8) as char)
+        }
         _ => return None,
     })
 }

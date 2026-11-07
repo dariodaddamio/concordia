@@ -502,6 +502,9 @@ impl App {
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
         self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
+        if !cfg!(test) && crate::models::needs_refresh(self.provider, &self.account) {
+            self.refresh_model_picker();
+        }
     }
     pub(in crate::tui) fn refresh_model_picker(&mut self) {
         if self.model_refresh.is_some() {
@@ -551,11 +554,7 @@ impl App {
             id: "model:".into(),
             label: format!(
                 "provider default{}",
-                if chosen.is_none() {
-                    " · current"
-                } else {
-                    ""
-                }
+                if chosen.is_none() { " · current" } else { "" }
             ),
             detail: "the CLI picks its own default model".into(),
         }];
@@ -1025,12 +1024,8 @@ impl App {
                     self.trust = trust;
                     self.push_system(match trust {
                         TrustMode::Plan => "trust → plan (read-only: analyse and propose)",
-                        TrustMode::Full => {
-                            "trust → full (skip all permissions — careful)"
-                        }
-                        TrustMode::Workspace => {
-                            "trust → workspace (cwd write, no trust dialogs)"
-                        }
+                        TrustMode::Full => "trust → full (skip all permissions — careful)",
+                        TrustMode::Workspace => "trust → workspace (cwd write, no trust dialogs)",
                         TrustMode::Ask => "trust → ask (may hang headless)",
                     });
                     if self.busy {

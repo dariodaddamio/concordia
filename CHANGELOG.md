@@ -4,8 +4,22 @@
 
 - Pickers, footers, usage, turn summaries and flash messages show `·`, `—` and arrows again
   instead of garbled `Ã‚·` / `Ã¢â‚¬` text.
-- Cursor's model picker lists Claude Opus 5.5 explicitly instead of collapsing to Auto.
+- Cursor's model picker lists every model your plan allows (Claude, GPT, Grok, Gemini, Composer
+  and their effort/fast variants) from `agent models`, refreshed automatically when the picker
+  opens with no list or a day-old one.
+- Cursor turns run over ACP by default, so permission prompts and plan approvals open as popups
+  and images work; `/native ACCOUNT off` goes back to print mode. Full trust carries `--force`,
+  and flat model ids are translated to the session's parameterized variants.
 - Codex's "Ignoring unknown features requirement" notices no longer appear as error cards.
+- A Cursor chat started in print mode still continues after the ACP switch: when ACP has no
+  session with that id, the turn falls back to print mode.
+- Tabs actually work now (they were never connected): a browser-style strip on the top row
+  shows each tab, a click switches to it, and Ctrl+T / Ctrl+W / Ctrl+Shift+T / Ctrl+Tab /
+  Ctrl+1..9 also work in the native window.
+- Images imported with a `\\?\` long-path prefix are sent with a plain path, so Codex can read them.
+- Home page: Up/Down move through the chats even after you started typing; long goals are no
+  longer cut off; the usage box shows each account's plan, credits and every limit window on its
+  own row and refreshes stale accounts; usage is no longer shown twice when the goals pane has focus.
 
 ## 2026-11-07c
 

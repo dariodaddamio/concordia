@@ -49,10 +49,19 @@ fn regular(path: &Path) -> Result<bool, String> {
     }
 }
 
+/// Cursor questions, plans, permission grants and images only exist over ACP, so it is Cursor's
+/// default; `/native ACCOUNT off` saves an explicit opt-out.
+fn default_for(provider: ProviderKind) -> Mode {
+    match provider {
+        ProviderKind::Cursor => Mode::CursorAcp,
+        ProviderKind::Codex | ProviderKind::Claude => Mode::Standard,
+    }
+}
+
 pub fn load(root: &Path, binding: &Binding) -> Result<Mode, String> {
     let path = path(root, binding);
     if !regular(&path)? {
-        return Ok(Mode::Standard);
+        return Ok(default_for(binding.provider));
     }
     let mut bytes = Vec::new();
     fs::File::open(path)
@@ -89,7 +98,7 @@ pub fn for_home(
             root,
             &Binding::new(provider, account, home, "native-input-policy")?,
         ),
-        None => Ok(Mode::Standard),
+        None => Ok(default_for(provider)),
     }
 }
 
