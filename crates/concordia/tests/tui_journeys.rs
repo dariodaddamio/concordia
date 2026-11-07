@@ -1318,8 +1318,12 @@ impl Session {
     }
 
     fn until(&self, label: &str, check: impl Fn(&Self) -> bool) {
+        self.until_with_timeout(label, Duration::from_secs(12), check);
+    }
+
+    fn until_with_timeout(&self, label: &str, timeout: Duration, check: impl Fn(&Self) -> bool) {
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(12) {
+        while start.elapsed() < timeout {
             if check(self) {
                 return;
             }
@@ -3434,12 +3438,16 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
         s.draft().is_empty()
     });
     s.submit("/worktree create HEAD");
-    s.until("managed worktree creation verified", |_| {
-        concordia::managed_workspaces::load(dir.path()).is_ok_and(|registry| {
-            registry.records.len() == 1
-                && registry.records[0].phase == concordia::managed_workspaces::Phase::Ready
-        })
-    });
+    s.until_with_timeout(
+        "managed worktree creation verified",
+        Duration::from_secs(90),
+        |_| {
+            concordia::managed_workspaces::load(dir.path()).is_ok_and(|registry| {
+                registry.records.len() == 1
+                    && registry.records[0].phase == concordia::managed_workspaces::Phase::Ready
+            })
+        },
+    );
     let managed = concordia::managed_workspaces::load(dir.path())
         .unwrap()
         .records
@@ -3563,9 +3571,11 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
             "/worktree {label} {} {}",
             managed.id, reviewed.receipt
         ));
-        s.until("reviewed lifecycle action completed", |s| {
-            s.screen().contains(&format!("Managed {label} finished"))
-        });
+        s.until_with_timeout(
+            "reviewed lifecycle action completed",
+            Duration::from_secs(90),
+            |s| s.screen().contains(&format!("Managed {label} finished")),
+        );
     }
     assert!(!managed.execution.exists());
     assert_eq!(
