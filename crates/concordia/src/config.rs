@@ -664,6 +664,11 @@ pub fn ui_persist_history() -> bool {
     get().ui.persist_history
 }
 
+/// Whether provider question requests should be routed to the foreground popup.
+pub fn ui_question_popups() -> bool {
+    get().ui.question_popups
+}
+
 /// Size of the `[concordia map]` block in characters. Wired by stage 1a.
 pub fn threads_map_chars() -> usize {
     get().threads.map_chars

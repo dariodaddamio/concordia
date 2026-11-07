@@ -13,6 +13,8 @@ struct Connection {
     session_id: Option<String>,
     interactions: InteractionConnection,
     prompting: bool,
+    bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ask_bridge::BridgeRequest>,
+    bridge_task: Option<tokio::task::JoinHandle<()>>,
 }
 impl Connection {
     fn emit(&self, event: TurnProgress) {
@@ -34,6 +36,7 @@ impl Connection {
             let mut bytes = Vec::new();
             let next = tokio::select! {
                 _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
+                Some(request)=self.bridge_rx.recv()=>self.bridge_request(request).await?,
                 next=read_line_bounded(&mut self.output,&mut bytes)=>next,
             };
             let received = next?;
@@ -73,6 +76,36 @@ impl Connection {
                     .context("Cursor ACP response missing result");
             }
         }
+    }
+    async fn bridge_request(&mut self, request: crate::ask_bridge::BridgeRequest) -> Result<()> {
+        let Some(session) = self.session_id.as_deref() else {
+            let _ = request
+                .answer
+                .send(json!({"error":"the user dismissed the question"}));
+            return Ok(());
+        };
+        let Some(questions) = request.questions.as_array() else {
+            return Ok(());
+        };
+        let native = json!({"sessionId":session,"toolCallId":"concordia-ask-user","prompt":"The agent needs a decision","questions":questions.iter().enumerate().map(|(i,q)| json!({"id":format!("question-{i}"),"prompt":q["question"],"options":q["options"].as_array().unwrap_or(&Vec::new()).iter().enumerate().map(|(j,o)| json!({"id":format!("option-{i}-{j}"),"label":o})).collect::<Vec<_>>(),"allowMultiple":q["multiple"].as_bool().unwrap_or(false)})).collect::<Vec<_>>() });
+        let (native_request, rx) = self
+            .interactions
+            .request(
+                session,
+                json!("concordia-ask-user"),
+                "cursor/ask_question".into(),
+                native,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(tx) = &self.progress {
+            let _ = tx.send(TurnProgress::Interaction(Box::new(native_request.clone())));
+        }
+        let answer = rx
+            .await
+            .unwrap_or_else(|_| json!({"outcome":{"outcome":"cancelled"}}));
+        native_request.invalidate();
+        let _ = request.answer.send(answer);
+        Ok(())
     }
     async fn request(&mut self, value: &Value) -> Result<()> {
         let method = value["method"].as_str().unwrap_or("");
@@ -273,6 +306,19 @@ pub(super) async fn run(
     for image in req.images {
         content.push(image.acp().map_err(anyhow::Error::msg)?);
     }
+    let token = uuid::Uuid::new_v4().to_string();
+    let bridge_token = token.clone();
+    let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (endpoint, bridge_task) = if crate::config::ui_question_popups() {
+        crate::ask_bridge::spawn_listener(token.clone(), bridge_tx).await?
+    } else {
+        (String::new(), tokio::spawn(async {}))
+    };
+    let mut env = plan.env.clone();
+    if !endpoint.is_empty() {
+        env.push(("CONCORDIA_ASK_ENDPOINT".into(), endpoint.clone()));
+        env.push(("CONCORDIA_ASK_TOKEN".into(), token));
+    }
     let launch = crate::provider::launch::prepare(&PlannedTurn {
         argv: acp_argv(&plan.argv),
         prompt: "acp".into(),
@@ -285,7 +331,7 @@ pub(super) async fn run(
     }
     command
         .args(&launch.args)
-        .envs(plan.env.clone())
+        .envs(env)
         .envs(launch.env)
         .current_dir(&plan.cwd)
         .stdin(Stdio::piped())
@@ -337,16 +383,20 @@ pub(super) async fn run(
         session_id: req.native_session_id.map(str::to_owned),
         interactions: InteractionConnection::new(owner, handle.cancel_flag.clone()),
         prompting: false,
+        bridge_rx,
+        bridge_task: Some(bridge_task),
     };
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
         conn.interactions.initialized_cursor(&init);
         anyhow::ensure!(init["protocolVersion"] == 1, "Installed Cursor ACP did not negotiate protocol version 1");
         anyhow::ensure!(req.images.is_empty() || init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
+        let ask_server = if endpoint.is_empty() { Value::Null } else { json!({"name":"concordia-ask","command":std::env::current_exe()?.to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":bridge_token}]}) };
+        let mcp_servers = if ask_server.is_null() { json!([]) } else { json!([ask_server]) };
         let (method,params)=if let Some(id)=req.native_session_id{
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
-            ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":[]}))
-        }else{("session/new",json!({"cwd":plan.cwd,"mcpServers":[]}))};
+            ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":mcp_servers}))
+        }else{("session/new",json!({"cwd":plan.cwd,"mcpServers":mcp_servers}))};
         let session=match tokio::time::timeout(Duration::from_secs(12),conn.rpc(2,method,params)).await?{
             Err(error) if req.native_session_id.is_some() && format!("{error:#}").contains("not found") => anyhow::bail!(SESSION_NOT_IN_ACP),
             other => other?,
@@ -381,6 +431,9 @@ pub(super) async fn run(
         }
     }
     kill_process_tree(handle.pid.load(Ordering::SeqCst));
+    if let Some(task) = conn.bridge_task.take() {
+        task.abort();
+    }
     let mut reaped = false;
     if let Some(mut child) = handle.child.lock().await.take() {
         let _ = child.kill().await;

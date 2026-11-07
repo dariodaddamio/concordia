@@ -5,6 +5,9 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_QUESTIONS: usize = 4;
@@ -12,6 +15,67 @@ const MAX_OPTIONS: usize = 8;
 const MAX_TEXT: usize = 2_000;
 const ENDPOINT_ENV: &str = "CONCORDIA_ASK_ENDPOINT";
 const TOKEN_ENV: &str = "CONCORDIA_ASK_TOKEN";
+
+pub struct BridgeRequest {
+    pub questions: Value,
+    pub answer: oneshot::Sender<Value>,
+}
+
+pub async fn spawn_listener(
+    token: String,
+    tx: tokio::sync::mpsc::UnboundedSender<BridgeRequest>,
+) -> std::io::Result<(String, tokio::task::JoinHandle<()>)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = listener.local_addr()?.to_string();
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let token = token.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut reader = AsyncBufReader::new(reader);
+                let mut line = Vec::new();
+                if reader.read_until(b'\n', &mut line).await.is_err()
+                    || line.len() > MAX_REQUEST_BYTES
+                {
+                    return;
+                }
+                let Ok(value) = serde_json::from_slice::<Value>(&line) else {
+                    return;
+                };
+                if value.get("token").and_then(Value::as_str) != Some(token.as_str()) {
+                    return;
+                }
+                let questions = value.get("questions").cloned().unwrap_or(Value::Null);
+                if validate(&json!({"questions": questions})).is_err() {
+                    return;
+                }
+                let (answer_tx, answer_rx) = oneshot::channel();
+                if tx
+                    .send(BridgeRequest {
+                        questions,
+                        answer: answer_tx,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                let answer =
+                    tokio::time::timeout(std::time::Duration::from_secs(120), answer_rx).await;
+                let value = answer
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_else(|| json!({"error":"the user dismissed the question"}));
+                let _ = writer.write_all(value.to_string().as_bytes()).await;
+                let _ = writer.write_all(b"\n").await;
+            });
+        }
+    });
+    Ok((endpoint, task))
+}
 
 fn reply(id: Value, result: Value) -> String {
     json!({"jsonrpc":"2.0", "id":id, "result":result}).to_string()
