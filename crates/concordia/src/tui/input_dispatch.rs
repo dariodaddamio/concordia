@@ -426,6 +426,10 @@ pub(super) fn handle_key(
         app.open_agents_picker();
         return false;
     }
+    if ctrl && !alt && matches!(key.code, KeyCode::Char('n' | 'N')) {
+        app.open_needs_you_picker();
+        return false;
+    }
     let tw = app.areas.input_text_w.max(1);
 
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('o' | 'O'))

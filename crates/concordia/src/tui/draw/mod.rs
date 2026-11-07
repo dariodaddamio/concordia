@@ -325,6 +325,7 @@ pub(super) fn provider_color(p: ProviderKind) -> Color {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
+    app.sync_needs_you();
     app.areas.header_email = None;
     app.areas.header_home = None;
     app.areas.header_credits = None;
@@ -395,6 +396,16 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         let agents = format!("  Ctrl+G agents {agent_count}");
         if left.iter().map(Span::width).sum::<usize>() + agents.len() <= available {
             left.push(Span::styled(agents, bar.fg(Color::Cyan)));
+        }
+    }
+    let needs_you = app.needs_you.len();
+    if needs_you > 0 {
+        let badge = format!("  Ctrl+N needs you {needs_you}");
+        if left.iter().map(Span::width).sum::<usize>() + badge.len() <= available {
+            left.push(Span::styled(
+                badge,
+                bar.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
         }
     }
     let usage_color = match app.usage_tone {
