@@ -76,6 +76,57 @@ pub struct ChatLaunchRecord {
     pub note: Option<String>,
 }
 
+/// A user task is deliberately separate from provider-native sessions.  Native histories remain
+/// owned by their provider; this is only the bounded Concordia link between them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSession {
+    pub provider: ProviderKind,
+    pub account: String,
+    pub native_session_id: String,
+    pub workspace: String,
+    pub linked_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskState {
+    Active,
+    Paused,
+    Done,
+}
+
+impl TaskState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Done => "done",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskMapPointer {
+    pub version: u32,
+    pub thread_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRecord {
+    pub id: String,
+    pub title: String,
+    pub workspace: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub sessions: Vec<TaskSession>,
+    pub state: TaskState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_map: Option<TaskMapPointer>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UseSelection {
@@ -187,6 +238,9 @@ pub struct OrchestratorStore {
     pub selection: Option<UseSelection>,
     #[serde(default)]
     pub chats: Vec<ChatLaunchRecord>,
+    /// Ordered task records. Missing in older stores and lazily populated as sessions are used.
+    #[serde(default)]
+    pub tasks: Vec<TaskRecord>,
     #[serde(default)]
     pub accounts: Vec<StoredAccount>,
     /// Account ids the user removed from view. Used for homes Concordia does not own
@@ -206,6 +260,7 @@ impl Default for OrchestratorStore {
             version: 1,
             selection: None,
             chats: Vec::new(),
+            tasks: Vec::new(),
             accounts: Vec::new(),
             hidden_accounts: Vec::new(),
             account_nicknames: Default::default(),
@@ -461,6 +516,73 @@ pub fn modify_store<T>(
 pub fn get_settings(root: &Path) -> OrchestratorSettings {
     load_store(root).settings
 }
+
+/// Create or update the task containing a native session.  Repeated observations of the same
+/// session are idempotent, while a new provider/account session is appended in order.
+#[allow(clippy::too_many_arguments)]
+pub fn record_task_session(
+    root: &Path,
+    task_id: &str,
+    title: &str,
+    workspace: &str,
+    provider: ProviderKind,
+    account: &str,
+    native_session_id: &str,
+    map: Option<TaskMapPointer>,
+) -> Result<()> {
+    if task_id.trim().is_empty() || native_session_id.trim().is_empty() {
+        anyhow::bail!("task and native session ids must not be empty");
+    }
+    modify_store(root, |store| {
+        let now = chrono_now();
+        let task = if let Some(task) = store.tasks.iter_mut().find(|task| task.id == task_id) {
+            task
+        } else {
+            store.tasks.push(TaskRecord {
+                id: task_id.to_owned(),
+                title: crate::session_titles::title_from_prompt(title),
+                workspace: workspace.to_owned(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                sessions: Vec::new(),
+                state: TaskState::Active,
+                last_map: None,
+            });
+            store.tasks.last_mut().expect("task was just inserted")
+        };
+        if !task.sessions.iter().any(|session| {
+            session.provider == provider
+                && session.account == account
+                && session.native_session_id == native_session_id
+        }) {
+            task.sessions.push(TaskSession {
+                provider,
+                account: account.to_owned(),
+                native_session_id: native_session_id.to_owned(),
+                workspace: workspace.to_owned(),
+                linked_at: now.clone(),
+            });
+        }
+        task.updated_at = now;
+        if let Some(map) = map {
+            task.last_map = Some(map);
+        }
+        Ok(())
+    })
+}
+
+pub fn list_tasks(root: &Path) -> Vec<TaskRecord> {
+    let mut tasks = load_store(root).tasks;
+    tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    tasks
+}
+
+pub fn task(root: &Path, id: &str) -> Option<TaskRecord> {
+    load_store(root)
+        .tasks
+        .into_iter()
+        .find(|task| task.id == id)
+}
 pub fn set_file_action(root: &Path, action: crate::file_open::FileAction) -> Result<()> {
     modify_store(root, |store| {
         store.settings.file_action = Some(action);
@@ -650,6 +772,106 @@ mod tests {
             label: id.into(),
             created_at: "0".into(),
         }
+    }
+
+    #[test]
+    fn handoff_appends_session_to_same_task() {
+        let dir = tempfile::tempdir().unwrap();
+        record_task_session(
+            dir.path(),
+            "task-1",
+            "Fix parser",
+            "C:\\work",
+            ProviderKind::Codex,
+            "a",
+            "s1",
+            None,
+        )
+        .unwrap();
+        record_task_session(
+            dir.path(),
+            "task-1",
+            "Fix parser",
+            "C:\\work",
+            ProviderKind::Claude,
+            "b",
+            "s2",
+            Some(TaskMapPointer {
+                version: 2,
+                thread_id: "thread-1".into(),
+            }),
+        )
+        .unwrap();
+        let task = task(dir.path(), "task-1").unwrap();
+        assert_eq!(task.sessions.len(), 2);
+        assert_eq!(task.sessions[1].provider, ProviderKind::Claude);
+        assert_eq!(task.last_map.unwrap().version, 2);
+    }
+
+    #[test]
+    fn resume_lists_tasks_with_session_chains() {
+        let dir = tempfile::tempdir().unwrap();
+        record_task_session(
+            dir.path(),
+            "task-1",
+            "Review",
+            "C:\\work",
+            ProviderKind::Cursor,
+            "c",
+            "s1",
+            None,
+        )
+        .unwrap();
+        record_task_session(
+            dir.path(),
+            "task-1",
+            "Review",
+            "C:\\work",
+            ProviderKind::Codex,
+            "d",
+            "s2",
+            None,
+        )
+        .unwrap();
+        assert_eq!(list_tasks(dir.path())[0].sessions.len(), 2);
+    }
+
+    #[test]
+    fn legacy_sessions_appear_as_single_session_tasks() {
+        let sessions = vec![crate::sessions::SessionSummary {
+            account: "legacy".into(),
+            provider: ProviderKind::Claude,
+            session_id: "native-1".into(),
+            cwd: Some("C:\\work".into()),
+            preview: Some("Old request".into()),
+            modified_ms: 1,
+            user_messages: 1,
+        }];
+        let tasks = crate::sessions::legacy_session_tasks(&sessions);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].sessions.len(), 1);
+        assert!(tasks[0].id.starts_with("legacy-"));
+    }
+
+    #[test]
+    fn task_survives_app_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        record_task_session(
+            dir.path(),
+            "task-1",
+            "Persist me",
+            "C:\\work",
+            ProviderKind::Codex,
+            "a",
+            "s1",
+            None,
+        )
+        .unwrap();
+        assert_eq!(load_store(dir.path()).tasks[0].title, "Persist me");
+        assert_eq!(
+            list_tasks(dir.path())[0].sessions[0].native_session_id,
+            "s1"
+        );
     }
 
     #[test]

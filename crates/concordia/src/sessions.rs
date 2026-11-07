@@ -66,6 +66,70 @@ pub struct PickerRow {
     pub detail: String,
 }
 
+/// Rows for the durable task view. The latest session is shown inline; the full chain is kept in
+/// the task record and can be inspected without changing provider-native history.
+pub fn tasks_to_picker_rows(tasks: &[crate::store::TaskRecord]) -> Vec<PickerRow> {
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let latest = task.sessions.last()?;
+            // Legacy sessions are projected as task-shaped rows for the picker, but have no
+            // durable task record to reopen. Preserve the pre-ledger row identity so selection
+            // resumes the explicitly bound native session directly.
+            let id = if task.id.starts_with("legacy-") && task.sessions.len() == 1 {
+                format!("resume:{}:{}", latest.account, latest.native_session_id)
+            } else {
+                format!("task:{}", task.id)
+            };
+            Some(PickerRow {
+                id,
+                label: task.title.clone(),
+                detail: format!(
+                    "{} / {} · {} session{} · {}",
+                    latest.provider.as_str(),
+                    latest.account,
+                    task.sessions.len(),
+                    if task.sessions.len() == 1 { "" } else { "s" },
+                    task.state.as_str()
+                ),
+            })
+        })
+        .collect()
+}
+
+/// Lazy migration view for native sessions that predate the task ledger. No provider files are
+/// rewritten; each legacy session is simply presented as a one-session task.
+pub fn legacy_session_tasks(sessions: &[SessionSummary]) -> Vec<crate::store::TaskRecord> {
+    sessions
+        .iter()
+        .map(|session| {
+            let id = format!(
+                "legacy-{}-{}",
+                session.provider.as_str(),
+                session.session_id
+            );
+            let title = clean_preview(session.preview.as_deref(), 60);
+            let workspace = session.cwd.clone().unwrap_or_default();
+            crate::store::TaskRecord {
+                id,
+                title,
+                workspace: workspace.clone(),
+                created_at: session.modified_ms.to_string(),
+                updated_at: session.modified_ms.to_string(),
+                sessions: vec![crate::store::TaskSession {
+                    provider: session.provider,
+                    account: session.account.clone(),
+                    native_session_id: session.session_id.clone(),
+                    workspace,
+                    linked_at: session.modified_ms.to_string(),
+                }],
+                state: crate::store::TaskState::Active,
+                last_map: None,
+            }
+        })
+        .collect()
+}
+
 pub fn format_relative_time(modified_ms: u128, now_ms: u128) -> String {
     let d = now_ms.saturating_sub(modified_ms);
     if d < 45_000 {
