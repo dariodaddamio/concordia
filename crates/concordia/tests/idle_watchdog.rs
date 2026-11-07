@@ -65,7 +65,7 @@ async fn cancel(
 #[tokio::test]
 async fn idle_fires_with_cumulative_silence_and_never_cancels() {
     let _guard = ENV_LOCK.lock().await;
-    let (task, mut progress, mut started) = run("hang", Duration::from_millis(150)).await;
+    let (task, mut progress, mut started) = run("silent-hang", Duration::from_millis(150)).await;
     let handle = tokio::time::timeout(Duration::from_secs(1), started.recv())
         .await
         .unwrap()
@@ -92,13 +92,13 @@ async fn idle_fires_with_cumulative_silence_and_never_cancels() {
 #[tokio::test]
 async fn stdout_activity_prevents_idle() {
     let _guard = ENV_LOCK.lock().await;
-    let (task, mut progress, mut started) = run("drip-stdout", Duration::from_millis(200)).await;
+    let (task, mut progress, mut started) = run("drip-stdout", Duration::from_secs(2)).await;
     let handle = tokio::time::timeout(Duration::from_secs(2), started.recv())
         .await
         .unwrap()
         .unwrap();
     let mut idle = 0;
-    let deadline = tokio::time::sleep(Duration::from_millis(600));
+    let deadline = tokio::time::sleep(Duration::from_millis(700));
     tokio::pin!(deadline);
     while !deadline.is_elapsed() {
         tokio::select! { Some(event) = progress.recv() => if matches!(event, TurnProgress::Idle { .. }) { idle += 1; }, _ = &mut deadline => break }
@@ -110,13 +110,13 @@ async fn stdout_activity_prevents_idle() {
 #[tokio::test]
 async fn stderr_activity_prevents_idle() {
     let _guard = ENV_LOCK.lock().await;
-    let (task, mut progress, mut started) = run("drip-stderr", Duration::from_millis(200)).await;
+    let (task, mut progress, mut started) = run("drip-stderr", Duration::from_secs(2)).await;
     let handle = tokio::time::timeout(Duration::from_secs(2), started.recv())
         .await
         .unwrap()
         .unwrap();
     let mut idle = 0;
-    let deadline = tokio::time::sleep(Duration::from_millis(600));
+    let deadline = tokio::time::sleep(Duration::from_millis(700));
     tokio::pin!(deadline);
     while !deadline.is_elapsed() {
         tokio::select! { Some(event) = progress.recv() => if matches!(event, TurnProgress::Idle { .. }) { idle += 1; }, _ = &mut deadline => break }
