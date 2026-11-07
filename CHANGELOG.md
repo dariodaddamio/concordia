@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-11-07a
+
+### Tabs
+- Browser-style tabs: Ctrl+T opens a new tab, Ctrl+W closes one (asking only if it has an unsent
+  draft or a running turn), Ctrl+Shift+T reopens the last closed tab, Ctrl+Tab or Ctrl+PgDn/PgUp
+  switch. Each tab is an independent session, and background turns keep running.
+
+### Screen
+- Each fact appears once on screen: the usage reset time sits in the header's subscription
+  segment, and on the home page the usage box replaces the header's Subscription segment.
+- Provider questions with choices open a popup (keyboard or mouse, "other" always available),
+  but never over a draft you are typing: then an inline notice waits for you (Ctrl+K).
+- One "needs you" queue collects everything waiting on you across sessions (approvals,
+  questions, paused queues, quiet turns, finished worker results, signed-out warnings); a header
+  badge appears only when it is not empty.
+- A worker side panel shows workers live without ever taking focus; crews (`[crews.<name>]` in
+  config, `/crew use`) set a lead model and enroll workers with theirs.
+- One command registry drives the palette, `/help`, the README command table and tips; a key
+  sheet lists every binding, and tips are contextual and rate-limited.
+- The screen redraws only when something changed; long sessions keep syntax highlighting and the
+  transcript within memory bounds.
+
+### Continuity
+- A task outlives its sessions: `/resume` lists tasks with the chain of sessions each one used
+  across accounts and providers.
+- Handoffs carry workspace state: branch, HEAD, uncommitted files (capped) and running workers.
+- Concordia map v2: deterministic labelled pointers (never summaries), and the transcript spans
+  they point at are pinned (redacted) so they survive provider pruning.
+- Near the context limit, choose provider compaction (default) or a fresh session seeded with the
+  map, per provider.
+- Same-provider automatic handoff is off by default; turning it on shows the terms notice once
+  and caps automatic handoffs per account per day. The next account is ranked by remaining quota,
+  then model tier.
+- Usage limits are recognised from structured provider fields first, with wording only as a last
+  resort.
+
+### Health and setup
+- `/doctor` can apply confirmed fixes (PATH, state-folder permissions, a stale legacy install),
+  each with a before/after, an explicit yes and a backup first. `concordia doctor` stays read-only.
+- The resource governor caps worker concurrency and build parallelism by RAM and cores and warns
+  on low disk.
+- `concordia` subcommands and `--help` come from one table.
+- Releases: a fast everyday build profile and a smaller published one, plus an SBOM, build
+  provenance and a Windows version resource.
+
+### Under the hood
+- `tui/mod.rs` was split from 8,381 lines into draw, input, run-loop and app modules (about 360 left); continuity decisions are pure
+  functions outside the UI; thread logging is a setting; a CI check blocks new module cycles.
+
 ## 2026-11-06b
 
 ### Home
