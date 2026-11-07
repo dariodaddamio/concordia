@@ -1239,6 +1239,51 @@ mod tests {
     }
 
     #[test]
+    fn concordia_awareness_note_is_not_a_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = dir.path().join("codex.jsonl");
+        let claude = dir.path().join("claude.jsonl");
+        let cursor = dir.path().join("cursor");
+        fs::create_dir(&cursor).unwrap();
+        let note = crate::integration::AWARE_TEXT;
+        let wrapped = format!(
+            "{}\n{}\n{}",
+            crate::integration::AWARE_BEGIN,
+            note,
+            crate::integration::AWARE_END
+        );
+        fs::write(
+            &codex,
+            format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"text\":{wrapped:?}}}]}}}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &claude,
+            format!("{{\"type\":\"user\",\"message\":{{\"content\":{note:?}}}}}\n"),
+        )
+        .unwrap();
+        fs::create_dir_all(&cursor).unwrap();
+        fs::write(cursor.join("meta.json"), "{}\n").unwrap();
+        fs::write(
+            cursor.join("prompt_history.json"),
+            format!("[{wrapped:?}, \"Repair the picker\"]"),
+        )
+        .unwrap();
+
+        let codex_summary = summarize_codex("codex", &codex, 1).unwrap();
+        assert_eq!(codex_summary.preview, None);
+        assert_eq!(codex_summary.user_messages, 0);
+        let claude_summary = summarize_claude("claude", &claude, 1).unwrap();
+        assert_eq!(claude_summary.preview, None);
+        assert_eq!(claude_summary.user_messages, 0);
+        let cursor_summary = summarize_cursor("cursor", &cursor, 1).unwrap();
+        assert_eq!(cursor_summary.preview.as_deref(), Some("Repair the picker"));
+        assert_eq!(cursor_summary.user_messages, 1);
+    }
+
+    #[test]
     fn prune_empty_lists_candidates_and_deletes_only_after_exact_yes() {
         let dir = tempfile::tempdir().unwrap();
         let providers = [

@@ -67,6 +67,21 @@ pub fn real_user_text(prompt: &str) -> String {
             text.replace_range(start..start + open.len() + end + close.len(), " ");
         }
     }
+    // Concordia's own awareness note is provider-injected context, not a user request. Remove
+    // the exact text and its exact marker-delimited form; do not fuzzy-match user prose.
+    while let Some(start) = text.find(crate::integration::AWARE_BEGIN) {
+        let after_begin = start + crate::integration::AWARE_BEGIN.len();
+        let Some(rel_end) = text[after_begin..].find(crate::integration::AWARE_END) else {
+            text.truncate(start);
+            break;
+        };
+        let end = after_begin + rel_end + crate::integration::AWARE_END.len();
+        text.replace_range(start..end, " ");
+    }
+    while let Some(start) = text.find(crate::integration::AWARE_TEXT) {
+        let end = start + crate::integration::AWARE_TEXT.len();
+        text.replace_range(start..end, " ");
+    }
     // Codex can prepend a rendered AGENTS.md block without XML delimiters. A blank
     // line is the boundary used by the injected message format; an all-wrapper
     // message therefore remains empty.
