@@ -9,6 +9,28 @@ use crate::usage::picker_row;
 use ratatui::backend::TestBackend;
 
 #[test]
+fn chat_map_row_expands_for_v2_maps() {
+    let map = crate::threads::build_map_v2(
+        &[crate::threads::ThreadEvent::with_text(
+            "user",
+            "continue here",
+        )],
+        "thread-1",
+        1600,
+        true,
+    );
+    let row = ChatLine {
+        role: MsgRole::System,
+        text: map,
+        card: None,
+        meta: None,
+    };
+
+    assert!(row.is_map());
+    assert!(row.toggles());
+}
+
+#[test]
 fn header_and_status_never_repeat_usage() {
     let mut h = Harness::new(120, 30);
     h.app.landing = None;
@@ -1468,8 +1490,8 @@ fn a_very_long_session_still_draws_quickly() {
     h.draw();
     let rows = h.app.view.rows.len();
     assert!(
-        rows > 30_000,
-        "test should build a big transcript, got {rows}"
+        rows <= crate::tui::transcript::MAX_RENDERED_ROWS,
+        "transcript row cache must stay bounded, got {rows}"
     );
 
     let start = Instant::now();
