@@ -9,6 +9,89 @@ use crate::usage::picker_row;
 use ratatui::backend::TestBackend;
 
 #[test]
+fn chat_map_row_expands_for_v2_maps() {
+    let map = crate::threads::build_map_v2(
+        &[crate::threads::ThreadEvent::with_text(
+            "user",
+            "continue here",
+        )],
+        "thread-1",
+        1600,
+        true,
+    );
+    let row = ChatLine {
+        role: MsgRole::System,
+        text: map,
+        card: None,
+        meta: None,
+    };
+
+    assert!(row.is_map());
+    assert!(row.toggles());
+}
+
+#[test]
+fn header_and_status_never_repeat_usage() {
+    let mut h = Harness::new(120, 30);
+    h.app.landing = None;
+    let mut snap = crate::usage::UsageSnapshot::no_data("", "");
+    snap.windows.push(crate::usage::UsageWindow {
+        label: "5h".into(),
+        used_pct: 60.0,
+        resets: Some("3h".into()),
+    });
+    snap.windows.push(crate::usage::UsageWindow {
+        label: "7d".into(),
+        used_pct: 86.0,
+        resets: Some("Nov 11, 8:59am".into()),
+    });
+    h.app.set_usage_footer(&snap);
+    h.app.usage_summary = "5h 40% left \u{b7} 7d 14% left".into();
+    h.draw();
+    let screen = h.screen();
+    assert_eq!(screen.matches("7d 14% left").count(), 1, "{screen}");
+    assert!(screen.contains("Subscription: 5h 40% left · 7d 14% left, resets"));
+    assert!(!screen.contains("checked by the provider"));
+}
+
+#[test]
+fn home_header_omits_subscription_when_usage_box_visible() {
+    let mut h = Harness::new(120, 30);
+    crate::tui::landing::open_home(&mut h.app);
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    let landing = h.app.landing.as_mut().unwrap();
+    let mut snapshot = crate::usage::UsageSnapshot::no_data("", "");
+    snapshot.windows.push(crate::usage::UsageWindow {
+        label: "7d".into(),
+        used_pct: 86.0,
+        resets: Some("Nov 11, 8:59am".into()),
+    });
+    landing.meters.push(crate::tui::landing::LandingMeter {
+        provider: ProviderKind::Codex,
+        account: "codex".into(),
+        snapshot,
+    });
+    h.app.usage_summary = "7d 14% left".into();
+    assert!(crate::tui::landing::usage_box_visible(&h.app, 120));
+    h.draw();
+    let screen = h.screen();
+    assert!(!screen.contains("Subscription:"), "{screen}");
+}
+
+#[test]
+fn chat_header_keeps_credits_text() {
+    let mut h = Harness::new(120, 30);
+    h.app.landing = None;
+    h.draw();
+    assert!(
+        h.screen().contains("Credits: not reported"),
+        "{}",
+        h.screen()
+    );
+}
+
+#[test]
 fn use_picker_shows_every_limit_reset_at_narrow_widths_and_clears_on_close() {
     for width in [40, 64, 80, 120] {
         let mut h = Harness::new(width, 30);
@@ -149,9 +232,12 @@ fn limit_warning_updates_with_account_snapshot_and_unknown_clears_it() {
     h.app.provider = ProviderKind::Codex;
     h.app.set_usage_footer(&snap);
     h.draw();
-    assert!(h.screen().contains("5h 4% left"));
-    assert!(h.screen().contains("06:03 local"));
-    assert!(h.screen().contains("updates after a Codex response"));
+    assert!(h
+        .app
+        .usage_warning
+        .as_deref()
+        .is_some_and(|warning| warning.contains("5h 4% left")));
+    assert!(!h.screen().contains("checked by the provider"));
     h.app.provider = ProviderKind::Claude;
     h.app.set_usage_footer(&snap);
     assert!(h
@@ -272,6 +358,120 @@ struct Harness {
     app: App,
     term: Terminal<TestBackend>,
     _dir: tempfile::TempDir,
+}
+
+struct DoctorFake {
+    applied: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::doctor::FixApplier for DoctorFake {
+    fn previous_value(
+        &self,
+        _fix: &crate::doctor::Fix,
+        _root: &std::path::Path,
+    ) -> Result<String, String> {
+        Ok("old value".into())
+    }
+
+    fn apply(&self, _fix: &crate::doctor::Fix, _root: &std::path::Path) -> Result<(), String> {
+        self.applied
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn doctor_fixture(fixable: bool) -> (Vec<crate::doctor::Check>, Vec<crate::doctor::Fix>) {
+    let check = crate::doctor::Check {
+        level: if fixable {
+            crate::doctor::Level::Warn
+        } else {
+            crate::doctor::Level::Ok
+        },
+        name: "fixture",
+        detail: "synthetic doctor finding".into(),
+    };
+    let fixes = fixable
+        .then(|| crate::doctor::Fix {
+            id: "fixture-fix",
+            finding: check.detail.clone(),
+            before: "old PATH folder".into(),
+            after: "PATH folder to append: C:\\fixture\\bin".into(),
+            impact: "synthetic impact",
+        })
+        .into_iter()
+        .collect();
+    (vec![check], fixes)
+}
+
+fn open_doctor_fixture(
+    h: &mut Harness,
+    fixable: bool,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let (checks, fixes) = doctor_fixture(fixable);
+    let applied = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    h.app.doctor_applier = Box::new(DoctorFake {
+        applied: applied.clone(),
+    });
+    h.app.doctor = Some(DoctorUi {
+        checks,
+        fixes,
+        fixed: HashMap::new(),
+    });
+    h.app.refresh_doctor_picker();
+    applied
+}
+
+#[test]
+fn doctor_enter_on_fixable_row_asks_confirmation() {
+    let mut h = Harness::new(100, 28);
+    open_doctor_fixture(&mut h, true);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        h.app.picker.as_ref().map(|p| p.kind),
+        Some(PickerKind::DoctorConfirm)
+    );
+    assert!(h.screen().contains("old PATH folder") && h.screen().contains("PATH folder to append"));
+    assert!(h.screen().contains("y apply / n cancel"));
+}
+
+#[test]
+fn doctor_y_applies_then_rechecks() {
+    let mut h = Harness::new(100, 28);
+    let applied = open_doctor_fixture(&mut h, true);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(h
+        .app
+        .flash
+        .as_ref()
+        .is_some_and(|(text, _)| text.contains("fixed (backup:")));
+}
+
+#[test]
+fn doctor_n_changes_nothing() {
+    let mut h = Harness::new(100, 28);
+    let applied = open_doctor_fixture(&mut h, true);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Char('n'), KeyModifiers::NONE);
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(h
+        .app
+        .picker
+        .as_ref()
+        .is_none_or(|p| p.kind != PickerKind::DoctorConfirm));
+}
+
+#[test]
+fn doctor_non_fixable_row_has_no_apply() {
+    let mut h = Harness::new(100, 28);
+    let applied = open_doctor_fixture(&mut h, false);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        h.app.picker.as_ref().map(|p| p.kind),
+        Some(PickerKind::Doctor)
+    );
 }
 
 impl Harness {
@@ -1290,8 +1490,8 @@ fn a_very_long_session_still_draws_quickly() {
     h.draw();
     let rows = h.app.view.rows.len();
     assert!(
-        rows > 30_000,
-        "test should build a big transcript, got {rows}"
+        rows <= crate::tui::transcript::MAX_RENDERED_ROWS,
+        "transcript row cache must stay bounded, got {rows}"
     );
 
     let start = Instant::now();
@@ -4945,6 +5145,7 @@ fn model_picker_groups_by_family_with_default_first() {
                 id: "b".into(),
                 display_name: "B".into(),
                 family: "Family B".into(),
+                tier: crate::models::ModelTier::Standard,
                 source: crate::models::ModelSource::Catalog,
                 deprecated: false,
             },
@@ -4952,6 +5153,7 @@ fn model_picker_groups_by_family_with_default_first() {
                 id: "a".into(),
                 display_name: "A".into(),
                 family: "Family A".into(),
+                tier: crate::models::ModelTier::Standard,
                 source: crate::models::ModelSource::Catalog,
                 deprecated: false,
             },
@@ -4970,6 +5172,7 @@ fn model_picker_shows_source_tags_and_marks_current() {
             id: "sol".into(),
             display_name: "Sol".into(),
             family: "GPT-5.6".into(),
+            tier: crate::models::ModelTier::Frontier,
             source: crate::models::ModelSource::Cached,
             deprecated: false,
         }],
@@ -4986,6 +5189,7 @@ fn model_picker_filter_matches_names_and_ids() {
             id: "gpt-5.6-sol".into(),
             display_name: "GPT Sol".into(),
             family: "GPT-5.6".into(),
+            tier: crate::models::ModelTier::Frontier,
             source: crate::models::ModelSource::Catalog,
             deprecated: false,
         }],

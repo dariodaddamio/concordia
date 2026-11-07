@@ -124,6 +124,14 @@ pub struct OrchestratorSettings {
     pub delegation_protocol: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_automatic: Option<bool>,
+    #[serde(default)]
+    pub same_provider_automatic: bool,
+    #[serde(default = "default_handoff_cap")]
+    pub automatic_handoff_cap: usize,
+    #[serde(default)]
+    pub accepted_terms_providers: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub automatic_handoffs_today: std::collections::BTreeMap<String, u8>,
     /// Opt-in: record conversations to `<state>/threads` (stores prompts). Read via `threads::enabled`.
     #[serde(default)]
     pub thread_log: bool,
@@ -131,6 +139,10 @@ pub struct OrchestratorSettings {
 
 fn default_trust() -> TrustMode {
     TrustMode::Workspace
+}
+
+fn default_handoff_cap() -> usize {
+    3
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +170,10 @@ impl Default for OrchestratorSettings {
             delegate_quota_failover: false,
             delegation_protocol: None,
             continuation_automatic: None,
+            same_provider_automatic: false,
+            automatic_handoff_cap: 3,
+            accepted_terms_providers: Default::default(),
+            automatic_handoffs_today: Default::default(),
             thread_log: false,
         }
     }
@@ -459,6 +475,57 @@ pub fn set_continuation_automatic(root: &Path, automatic: bool) -> Result<()> {
     })
 }
 
+pub fn same_provider_automatic(root: &Path) -> bool {
+    get_settings(root).same_provider_automatic
+        || crate::config::for_root(root)
+            .continuation
+            .same_provider_automatic
+}
+
+pub fn accept_same_provider_terms(root: &Path, provider: ProviderKind) -> Result<()> {
+    modify_store(root, |store| {
+        store
+            .settings
+            .accepted_terms_providers
+            .insert(provider.as_str().into());
+        store.settings.same_provider_automatic = true;
+        Ok(())
+    })
+}
+
+pub fn same_provider_terms_accepted(root: &Path, provider: ProviderKind) -> bool {
+    get_settings(root)
+        .accepted_terms_providers
+        .contains(provider.as_str())
+}
+
+pub fn automatic_handoff_allowed(root: &Path, account: &str, day: &str) -> bool {
+    let settings = get_settings(root);
+    let cap = crate::config::for_root(root)
+        .continuation
+        .automatic_handoff_cap
+        .max(settings.automatic_handoff_cap);
+    settings
+        .automatic_handoffs_today
+        .get(&format!("{day}:{account}"))
+        .copied()
+        .unwrap_or(0)
+        < cap as u8
+}
+
+pub fn record_automatic_handoff(root: &Path, account: &str, day: &str) -> Result<()> {
+    modify_store(root, |store| {
+        let key = format!("{day}:{account}");
+        let count = store
+            .settings
+            .automatic_handoffs_today
+            .entry(key)
+            .or_default();
+        *count = count.saturating_add(1);
+        Ok(())
+    })
+}
+
 pub fn set_trust_mode(root: &Path, trust: TrustMode) -> Result<OrchestratorSettings> {
     modify_store(root, |store| {
         store.settings.trust = trust;
@@ -605,6 +672,41 @@ mod tests {
         )
         .unwrap();
         assert!(get_settings(dir.path()).workers.is_empty());
+    }
+
+    #[test]
+    fn same_provider_auto_handoff_off_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!same_provider_automatic(dir.path()));
+        assert!(!same_provider_terms_accepted(
+            dir.path(),
+            ProviderKind::Codex
+        ));
+    }
+
+    #[test]
+    fn enabling_requires_terms_notice_once() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!same_provider_automatic(dir.path()));
+        accept_same_provider_terms(dir.path(), ProviderKind::Claude).unwrap();
+        assert!(same_provider_automatic(dir.path()));
+        assert!(same_provider_terms_accepted(
+            dir.path(),
+            ProviderKind::Claude
+        ));
+        accept_same_provider_terms(dir.path(), ProviderKind::Claude).unwrap();
+    }
+
+    #[test]
+    fn per_account_cap_enforced() {
+        let dir = tempfile::tempdir().unwrap();
+        let day = "2026-11-06";
+        for _ in 0..3 {
+            assert!(automatic_handoff_allowed(dir.path(), "codex-2", day));
+            record_automatic_handoff(dir.path(), "codex-2", day).unwrap();
+        }
+        assert!(!automatic_handoff_allowed(dir.path(), "codex-2", day));
+        assert!(automatic_handoff_allowed(dir.path(), "codex-3", day));
     }
 
     #[test]

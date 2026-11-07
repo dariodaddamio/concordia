@@ -287,6 +287,8 @@ struct PendingLogin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PickerKind {
+    Doctor,
+    DoctorConfirm,
     Settings,
     FilePreferences,
     Customization,
@@ -329,6 +331,12 @@ struct Picker {
     rows: Vec<PickerRow>,
     filter: String,
     state: ListState,
+}
+
+struct DoctorUi {
+    checks: Vec<crate::doctor::Check>,
+    fixes: Vec<crate::doctor::Fix>,
+    fixed: HashMap<usize, String>,
 }
 
 struct ModelRefresh {
@@ -475,6 +483,8 @@ pub struct App {
     native_agents: native_agents::State,
     footer_left: String,
     picker: Option<Picker>,
+    doctor: Option<DoctorUi>,
+    doctor_applier: Box<dyn crate::doctor::FixApplier>,
     model_refresh: Option<ModelRefresh>,
     token_reads: tokens::State,
     integrations: integrations::State,
@@ -496,6 +506,8 @@ pub struct App {
     reference_journal: reference_journal::State,
     usage_summary: String,
     usage_credits: String,
+    /// The primary reset belongs beside the subscription summary, not in a second status line.
+    usage_reset: Option<String>,
     usage_tone: UsageTone,
     usage_warning: Option<String>,
     /// Width-1 ASCII bar drawn before the footer usage text.
@@ -608,6 +620,7 @@ impl App {
         let Some(home) = home else {
             self.usage_summary = "no account yet".into();
             self.usage_credits = "Credits: not reported".into();
+            self.usage_reset = None;
             self.usage_tone = UsageTone::Mute;
             self.usage_warning = None;
             return;
@@ -621,6 +634,13 @@ impl App {
     fn set_usage_footer(&mut self, snap: &crate::usage::UsageSnapshot) {
         self.usage_summary = snap.summary.clone();
         self.usage_credits = snap.credits_text();
+        self.usage_reset = snap
+            .windows
+            .iter()
+            .find(|window| window.label.starts_with("7d"))
+            .or_else(|| snap.windows.first())
+            .and_then(|window| window.resets.as_deref())
+            .map(crate::usage::reset_phrase);
         self.usage_tone = usage_tone(snap);
         self.usage_warning = crate::usage::low_limit_warning(snap, self.provider);
     }
@@ -2324,16 +2344,58 @@ impl App {
     }
 
     fn open_continuation_picker(&mut self) {
-        let mut rows = accounts_with_auth(&self.state_root)
+        let mut accounts = accounts_with_auth(&self.state_root)
             .into_iter()
             .filter(|a| {
                 (a.account != self.account || self.continuation.same_account_allowed())
                     && a.home_path.is_some()
             })
-            .map(|a| PickerRow {
-                id: format!("continue:{}", a.account),
-                label: a.label,
-                detail: "continue the paused request on this account".into(),
+            .collect::<Vec<_>>();
+        accounts.sort_by(|a, b| {
+            let remaining = |account: &crate::accounts::AccountDef| {
+                account.home_path.as_ref().and_then(|home| {
+                    crate::usage::peek_cached_usage(
+                        &self.state_root,
+                        account.provider,
+                        &account.account,
+                        home,
+                    )
+                    .and_then(|o| o.remaining_pct)
+                })
+            };
+            remaining(b)
+                .is_some()
+                .cmp(&remaining(a).is_some())
+                .then_with(|| {
+                    remaining(b)
+                        .partial_cmp(&remaining(a))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| a.account.cmp(&b.account))
+        });
+        let mut rows = accounts
+            .into_iter()
+            .map(|a| {
+                let remaining = a.home_path.as_ref().and_then(|home| {
+                    crate::usage::peek_cached_usage(&self.state_root, a.provider, &a.account, home)
+                        .and_then(|o| o.remaining_pct)
+                });
+                let tier = crate::models::catalog_tier(&self.model);
+                let tier = match tier {
+                    crate::models::ModelTier::Frontier => "frontier",
+                    crate::models::ModelTier::Standard => "standard",
+                    crate::models::ModelTier::Fast => "fast",
+                };
+                PickerRow {
+                    id: format!("continue:{}", a.account),
+                    label: a.label,
+                    detail: format!(
+                        "5h {}% left · {tier} · continue the paused request",
+                        remaining
+                            .map(|p| p.round() as i64)
+                            .map_or("??".into(), |p| p.to_string())
+                    ),
+                }
             })
             .collect::<Vec<_>>();
         if let Some(home) = &self.home_path {
@@ -2745,6 +2807,120 @@ impl App {
         self.show_picker_at(kind, title, rows, filterable, 0);
     }
 
+    fn open_doctor(&mut self) {
+        let checks = crate::doctor::run_fast_checks();
+        let fixes = crate::doctor::proposed_fixes(&self.state_root, &checks);
+        self.doctor = Some(DoctorUi {
+            checks,
+            fixes,
+            fixed: HashMap::new(),
+        });
+        self.refresh_doctor_picker();
+    }
+
+    fn refresh_doctor_picker(&mut self) {
+        let Some(doctor) = self.doctor.as_ref() else {
+            return;
+        };
+        let rows = doctor
+            .checks
+            .iter()
+            .enumerate()
+            .map(|(index, check)| {
+                let tag = match check.level {
+                    crate::doctor::Level::Ok => "ok",
+                    crate::doctor::Level::Warn => "warn",
+                    crate::doctor::Level::Fail => "FAIL",
+                };
+                let fix_index = doctor
+                    .fixes
+                    .iter()
+                    .position(|fix| fix.finding == check.detail);
+                let suffix = doctor
+                    .fixed
+                    .get(&index)
+                    .map(|s| format!(" · fixed ({s})"))
+                    .unwrap_or_default();
+                PickerRow {
+                    id: fix_index.map_or_else(
+                        || format!("doctor:check:{index}"),
+                        |i| format!("doctor:fix:{i}"),
+                    ),
+                    label: format!("{tag}  {}{suffix}", check.name),
+                    detail: fix_index.map_or_else(
+                        || check.detail.clone(),
+                        |i| {
+                            format!(
+                                "before: {} · after: {} · Enter to review fix",
+                                doctor.fixes[i].before, doctor.fixes[i].after
+                            )
+                        },
+                    ),
+                }
+            })
+            .collect();
+        self.show_picker(PickerKind::Doctor, "doctor".into(), rows, false);
+        self.footer_left = "↑↓ select · Enter review fix · Esc".into();
+    }
+
+    fn open_doctor_confirmation(&mut self, fix_index: usize) {
+        let Some(fix) = self.doctor.as_ref().and_then(|d| d.fixes.get(fix_index)) else {
+            return;
+        };
+        let row = PickerRow {
+            id: format!("doctor-confirm:{fix_index}"),
+            label: format!(
+                "Apply {}?\nbefore: {}\nafter: {}",
+                fix.finding, fix.before, fix.after
+            ),
+            detail: format!("impact: {} · y apply / n cancel", fix.impact),
+        };
+        self.show_picker(
+            PickerKind::DoctorConfirm,
+            "confirm doctor fix".into(),
+            vec![row],
+            false,
+        );
+        self.footer_left = "y apply · n cancel · Esc".into();
+    }
+
+    fn apply_doctor_fix(&mut self, fix_index: usize) {
+        let Some(fix) = self
+            .doctor
+            .as_ref()
+            .and_then(|d| d.fixes.get(fix_index))
+            .cloned()
+        else {
+            return;
+        };
+        let result =
+            crate::doctor::apply_fix_confirmed(&self.state_root, &fix, true, &*self.doctor_applier);
+        match result {
+            Ok(message) => {
+                let backup = message
+                    .split("undo from ")
+                    .nth(1)
+                    .unwrap_or("unknown backup")
+                    .to_string();
+                let checks = crate::doctor::run_fast_checks();
+                if let Some(doctor) = self.doctor.as_mut() {
+                    doctor.checks = checks;
+                    doctor.fixes = crate::doctor::proposed_fixes(&self.state_root, &doctor.checks);
+                    if let Some(index) = doctor.checks.iter().position(|c| c.detail == fix.finding)
+                    {
+                        doctor.fixed.insert(index, backup.clone());
+                    }
+                }
+                self.refresh_doctor_picker();
+                self.flash(format!("fixed (backup: {backup})"));
+            }
+            Err(error) => {
+                self.dismiss_picker();
+                self.push_system(format!("doctor fix failed · {error}"));
+            }
+        }
+    }
+
     fn show_picker_at(
         &mut self,
         kind: PickerKind,
@@ -2911,6 +3087,12 @@ impl App {
         let id = row.id.clone();
         let label = row.label.clone();
         let kind = picker.kind;
+        if kind == PickerKind::Doctor {
+            if let Some(index) = id.strip_prefix("doctor:fix:").and_then(|s| s.parse().ok()) {
+                self.open_doctor_confirmation(index);
+            }
+            return;
+        }
         if kind == PickerKind::Model && id.starts_with("model-group:") {
             return;
         }
@@ -3259,7 +3441,9 @@ impl App {
             PickerKind::Update
             | PickerKind::Tokens
             | PickerKind::Related
-            | PickerKind::Integrations => {}
+            | PickerKind::Integrations
+            | PickerKind::Doctor
+            | PickerKind::DoctorConfirm => {}
         }
         let _ = label;
     }
@@ -3674,6 +3858,7 @@ impl App {
             CommandOutcome::OpenRemovePicker => self.open_remove_picker(None),
             CommandOutcome::AddAccount(p) => self.begin_add_account(p),
             CommandOutcome::OpenModel => self.open_model_picker(),
+            CommandOutcome::OpenDoctor => self.open_doctor(),
             CommandOutcome::ShowUsage => self.show_usage(false),
             CommandOutcome::ShowUsageRefresh => self.show_usage(true),
             CommandOutcome::OpenUsage => self.open_usage_picker(),
@@ -4197,6 +4382,8 @@ impl App {
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            doctor: None,
+            doctor_applier: Box::new(crate::doctor::DoctorAppliers),
             model_refresh: None,
             token_reads: tokens::State::default(),
             integrations: integrations::State::default(),
@@ -4216,6 +4403,7 @@ impl App {
             thread_meta_done: false,
             usage_summary: "limits unknown".into(),
             usage_credits: "Credits: not reported".into(),
+            usage_reset: None,
             usage_tone: UsageTone::Mute,
             usage_warning: None,
             usage_fetcher: UsageFetcher::new(state_root_for_usage.clone()),

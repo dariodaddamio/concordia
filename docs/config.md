@@ -24,6 +24,8 @@ codex_context = "provider" # provider | fresh; per-provider override
 claude_context = "provider" # provider | fresh; per-provider override
 cursor_context = "provider" # provider | fresh; fresh is disabled without a native usage signal
 context_threshold = 85 # fresh-session threshold, 50..=95 percent
+same_provider_automatic = false # opt in only after accepting the provider terms notice
+automatic_handoff_cap = 3 # maximum automatic handoffs into one account per local day
 ```
 
 `fresh` uses only the provider's reported current-turn context usage and rotates at a turn

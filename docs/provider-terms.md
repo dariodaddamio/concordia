@@ -6,7 +6,8 @@
 
 Concordia drives the official Codex, Claude Code and Cursor CLIs under **your own** logins. This page
 records what each provider's public documents say about that, what Concordia does to respect it, and
-what remains unresolved. All pages below were fetched on 2026-10-15 unless stated otherwise.
+what remains unresolved. All pages below were fetched on 2026-10-15 unless stated otherwise. The
+account-rotation decision was re-read on 2026-11-05.
 
 ## The use case
 
@@ -151,6 +152,13 @@ Sharing context does not collect credentials. The current engineering data flow 
 - Provider sessions stay provider-native; Concordia binds to an explicit session id and never guesses.
 
 ## Open decision: automatic handoff on exhaustion
+
+As of 2026-11-05, same-provider automatic handoff is disabled by default. Enabling it requires a
+one-time, provider-specific notice: the provider's terms may restrict using multiple accounts to
+extend limits, and the user is responsible for accepting that risk. The default path asks first
+and proposes a different provider before another account of the same provider. Automatic handoffs
+into any account are capped at three per local day; workers are never fanned out across accounts
+to multiply throughput. Accounts must be the user's own, one per person, and must not be shared.
 
 Situation A (move to a *different provider* you also pay for) needs no special care beyond telling
 the user. Situation C (automatic rotation among *same-provider* accounts) is the one place this could

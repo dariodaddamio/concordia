@@ -202,7 +202,7 @@ impl App {
             PickerRow {
                 id: "handoff:automatic".into(),
                 label: "Choose automatically for this session".into(),
-                detail: "use configured preferences, then connected accounts".into(),
+                detail: "use configured preferences; same-provider rotation may conflict with provider terms".into(),
             },
         ];
         rows.extend(
@@ -427,6 +427,25 @@ impl App {
         };
         if let Some(selected) = decision.selected() {
             let target = &selected.candidate.target;
+            let day = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                / 86_400;
+            if !crate::store::automatic_handoff_allowed(
+                &self.state_root,
+                &target.account,
+                &day.to_string(),
+            ) {
+                self.push_system("automatic continuation stopped: this account reached its daily handoff cap; choose explicitly");
+                self.open_continuation_picker();
+                return None;
+            }
+            let _ = crate::store::record_automatic_handoff(
+                &self.state_root,
+                &target.account,
+                &day.to_string(),
+            );
             let target = match &target.model {
                 Some(model) => format!("{} {model}", target.account),
                 None => target.account.clone(),
@@ -450,6 +469,9 @@ impl App {
             self.home_path.clone(),
             Some(self.model.clone()),
         );
+        context.allow_same_provider_automatic =
+            crate::store::same_provider_automatic(&self.state_root)
+                && crate::store::same_provider_terms_accepted(&self.state_root, self.provider);
         for key in &self.continuation.tried {
             if let Some((account, model)) = key.split_once(' ') {
                 context.attempted_accounts.insert(account.into());
@@ -1079,6 +1101,8 @@ mod tests {
             )
             .unwrap();
         }
+        // These fixtures explicitly opt into the terms-sensitive same-provider path.
+        crate::store::accept_same_provider_terms(dir.path(), ProviderKind::Codex).unwrap();
         select_account(dir.path(), "primary").unwrap();
         let mut app = App::new(dir.path().into(), dir.path().into());
         app.refresh_binding();

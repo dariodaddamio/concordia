@@ -55,6 +55,7 @@ pub enum Reason {
     StaleQuota,
     BindingChanged,
     NotWorker,
+    SameProviderAutomaticDisabled,
 }
 
 impl Reason {
@@ -76,6 +77,9 @@ impl Reason {
             Self::StaleQuota => "cached quota observation is stale",
             Self::BindingChanged => "account/home/login binding changed since approval",
             Self::NotWorker => "account is not enrolled as a worker",
+            Self::SameProviderAutomaticDisabled => {
+                "same-provider automatic handoff is off; confirm explicitly"
+            }
         }
     }
 }
@@ -105,6 +109,8 @@ pub struct Candidate {
     pub running: bool,
     pub queued: usize,
     pub quota: QuotaObservation,
+    pub remaining_pct: Option<f64>,
+    pub model_tier: crate::models::ModelTier,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +127,7 @@ pub struct Context {
     pub queued: BTreeMap<String, usize>,
     pub queue_limit: usize,
     pub allow_same_target: bool,
+    pub allow_same_provider_automatic: bool,
     pub workers: Option<BTreeSet<String>>,
 }
 
@@ -145,6 +152,7 @@ impl Context {
             queued: BTreeMap::new(),
             queue_limit: crate::delegate::MAX_QUEUED_PER_WORKER,
             allow_same_target: false,
+            allow_same_provider_automatic: false,
             workers: None,
         }
     }
@@ -178,6 +186,13 @@ pub fn evaluate(candidate: Candidate, context: &Context) -> Evaluated {
     }
     if !candidate.registered {
         blocked.push(Reason::MissingAccount);
+    }
+    if context.purpose == Purpose::MainContinuation
+        && candidate.provider == Some(context.previous_provider)
+        && candidate.target.account != context.previous_account
+        && !context.allow_same_provider_automatic
+    {
+        blocked.push(Reason::SameProviderAutomaticDisabled);
     }
     if candidate.home.is_none() {
         blocked.push(Reason::MissingHome);
@@ -278,6 +293,7 @@ pub fn capture(root: &Path, targets: &[Target], context: &Context) -> Decision {
         let cached = provider.zip(home.as_ref()).and_then(|(provider, home)| {
             crate::usage::peek_cached_usage(root, provider, &target.account, home)
         });
+        let remaining_pct = cached.as_ref().and_then(|o| o.remaining_pct);
         let quota = cached
             .map(|observation| QuotaObservation {
                 observed_at: Some(observation.observed_at),
@@ -307,14 +323,21 @@ pub fn capture(root: &Path, targets: &[Target], context: &Context) -> Decision {
                 }),
             running: context.running.contains(&target.account),
             queued: context.queued.get(&target.account).copied().unwrap_or(0),
+            model_tier: target
+                .model
+                .as_deref()
+                .map(crate::models::catalog_tier)
+                .unwrap_or_default(),
             target,
             home,
             logged_in,
             model_status,
             quota,
+            remaining_pct,
         };
         candidates.push(evaluate(candidate, context));
     }
+    rank_candidates(&mut candidates);
     let policy =
         serde_json::to_vec(&(context.purpose, targets, context.queue_limit)).unwrap_or_default();
     Decision {
@@ -327,6 +350,22 @@ pub fn capture(root: &Path, targets: &[Target], context: &Context) -> Decision {
         candidates,
         incomplete: targets.len() > MAX_CANDIDATES,
     }
+}
+
+pub fn rank_candidates(candidates: &mut [Evaluated]) {
+    candidates.sort_by(|a, b| {
+        b.candidate
+            .remaining_pct
+            .is_some()
+            .cmp(&a.candidate.remaining_pct.is_some())
+            .then_with(|| {
+                b.candidate
+                    .remaining_pct
+                    .partial_cmp(&a.candidate.remaining_pct)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.candidate.model_tier.cmp(&a.candidate.model_tier))
+    });
 }
 
 impl Decision {
@@ -387,6 +426,21 @@ impl Decision {
         } else {
             self.candidates.iter().find(|candidate| candidate.eligible)
         }
+    }
+
+    /// One compact, deterministic explanation suitable for a manual picker row.
+    pub fn suggestion_reason(row: &Evaluated) -> String {
+        let quota = row
+            .candidate
+            .remaining_pct
+            .map(|pct| format!("{pct:.0}%"))
+            .unwrap_or_else(|| "??".into());
+        let tier = match row.candidate.model_tier {
+            crate::models::ModelTier::Frontier => "frontier",
+            crate::models::ModelTier::Standard => "standard",
+            crate::models::ModelTier::Fast => "fast",
+        };
+        format!("5h {quota} left · {tier}")
     }
 
     pub fn report(&self) -> Vec<String> {
@@ -480,4 +534,73 @@ pub fn validate_launch(
         return Err("explicit model cannot be verified in the current native catalog".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ModelTier;
+
+    fn row(account: &str, remaining_pct: Option<f64>, tier: crate::models::ModelTier) -> Evaluated {
+        Evaluated {
+            candidate: Candidate {
+                target: Target {
+                    account: account.into(),
+                    model: Some("fixture".into()),
+                },
+                provider: Some(ProviderKind::Codex),
+                home_id: None,
+                home: None,
+                registered: true,
+                logged_in: true,
+                model_status: ModelStatus::Available,
+                orchestrator: false,
+                same_home: false,
+                same_login: false,
+                attempted: false,
+                running: false,
+                queued: 0,
+                quota: QuotaObservation::default(),
+                remaining_pct,
+                model_tier: tier,
+            },
+            eligible: true,
+            blocked: Vec::new(),
+            observations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ranking_prefers_remaining_quota_then_tier() {
+        let mut rows = vec![
+            row("standard-more", Some(80.0), ModelTier::Standard),
+            row("frontier-less", Some(60.0), ModelTier::Frontier),
+            row("frontier-more", Some(80.0), ModelTier::Frontier),
+        ];
+        rank_candidates(&mut rows);
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.candidate.target.account.as_str())
+                .collect::<Vec<_>>(),
+            ["frontier-more", "standard-more", "frontier-less"]
+        );
+    }
+
+    #[test]
+    fn unknown_quota_ranks_last() {
+        let mut rows = vec![
+            row("unknown", None, ModelTier::Frontier),
+            row("known", Some(1.0), ModelTier::Fast),
+        ];
+        rank_candidates(&mut rows);
+        assert_eq!(rows[1].candidate.target.account, "unknown");
+    }
+
+    #[test]
+    fn suggestion_reason_uses_single_separators() {
+        let row = row("fixture", Some(77.0), ModelTier::Frontier);
+        let reason = Decision::suggestion_reason(&row);
+        assert_eq!(reason, "5h 77% left · frontier");
+        assert!(!reason.contains(&format!("{0}{0}", '·')));
+    }
 }

@@ -1056,6 +1056,7 @@ pub struct CachedObservation {
     pub observed_at: u64,
     pub fresh: bool,
     pub exhausted: bool,
+    pub remaining_pct: Option<f64>,
 }
 
 /// Local, identity-bound cache inspection only. Never constructs a fetcher or starts a provider.
@@ -1089,6 +1090,7 @@ pub fn peek_cached_usage(
         observed_at: cached.fetched_at,
         fresh: now.saturating_sub(cached.fetched_at) < USAGE_TTL_SECS,
         exhausted: cached.windows.iter().any(|window| window.used_pct >= 100.0),
+        remaining_pct: cached.windows.first().map(UsageWindow::left_pct),
     })
 }
 
