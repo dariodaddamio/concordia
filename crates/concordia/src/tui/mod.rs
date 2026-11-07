@@ -10,8 +10,8 @@ use crate::provider::turn::{
     TurnOutcome, TurnProgress,
 };
 use crate::sessions::{
-    count_sessions_here, list_recent_sessions, sessions_to_picker_rows, trust_picker_rows,
-    PickerRow,
+    count_sessions_here, legacy_session_tasks, list_recent_sessions, tasks_to_picker_rows,
+    trust_picker_rows, PickerRow,
 };
 use crate::store::{
     default_store_root, ensure_default_selection, get_settings, get_use_selection, set_trust_mode,
@@ -478,6 +478,8 @@ pub struct App {
     model: String,
     trust: TrustMode,
     native_session_id: Option<String>,
+    /// Concordia task identity; unlike native_session_id it survives provider handoffs.
+    task_id: Option<String>,
     session_chip: Option<String>,
     session_ui: session_ui::State,
     native_agents: native_agents::State,
@@ -500,6 +502,8 @@ pub struct App {
     prior_provider: ProviderKind,
     prior_home: Option<String>,
     need_context_pack: bool,
+    /// A persisted task map waiting to be attached to the first turn on a new provider.
+    task_map: Option<String>,
     /// Opt-in thread log for this conversation (see threads.rs); None when recording is off.
     thread: Option<crate::threads::ThreadLog>,
     thread_meta_done: bool,
@@ -1467,6 +1471,26 @@ impl App {
                 self.remember_native_source();
                 self.save_turn_checkpoint(false);
                 self.persist_session_title();
+                if let (Some(task_id), Some(session_id)) =
+                    (self.task_id.clone(), self.native_session_id.clone())
+                {
+                    let map = Some(crate::store::TaskMapPointer {
+                        version: 2,
+                        thread_id: self.thread_id().unwrap_or(task_id.as_str()).to_owned(),
+                    });
+                    if let Err(error) = crate::store::record_task_session(
+                        &self.state_root,
+                        &task_id,
+                        self.session_ui.title.as_deref().unwrap_or("untitled task"),
+                        &self.cwd.to_string_lossy(),
+                        self.provider,
+                        &self.account,
+                        &session_id,
+                        map,
+                    ) {
+                        self.flash(format!("task link could not be saved: {error}"));
+                    }
+                }
             }
             TurnProgress::Thinking(t) => {
                 self.clear_idle_notice();
@@ -2106,6 +2130,21 @@ impl App {
 
     fn open_resume_picker(&mut self) {
         let sessions = list_recent_sessions(&self.state_root, 40);
+        let mut tasks = crate::store::list_tasks(&self.state_root);
+        let persisted_ids: std::collections::HashSet<String> = tasks
+            .iter()
+            .flat_map(|task| {
+                task.sessions
+                    .iter()
+                    .map(|session| session.native_session_id.clone())
+            })
+            .collect();
+        tasks.extend(legacy_session_tasks(&sessions).into_iter().filter(|task| {
+            !task
+                .sessions
+                .iter()
+                .any(|session| persisted_ids.contains(&session.native_session_id))
+        }));
         let here = count_sessions_here(&sessions, Some(&self.cwd));
         let folder = self
             .cwd
@@ -2117,14 +2156,14 @@ impl App {
         } else {
             format!("chats · {}", sessions.len())
         };
-        let rows = if sessions.is_empty() {
+        let rows = if tasks.is_empty() {
             vec![PickerRow {
                 id: "none".into(),
                 label: "no chats yet".into(),
                 detail: "send a message first — then switch here".into(),
             }]
         } else {
-            sessions_to_picker_rows(&sessions, Some(&self.account), Some(&self.cwd))
+            tasks_to_picker_rows(&tasks)
         };
         self.show_picker(PickerKind::Resume, title, rows, true);
     }
@@ -3188,6 +3227,49 @@ impl App {
                     }
                     self.resume_session(&account, &session_id);
                 }
+                if let Some(task_id) = id.strip_prefix("task:") {
+                    let Some(task) = crate::store::task(&self.state_root, task_id) else {
+                        self.push_system("resume failed: task is no longer present");
+                        return;
+                    };
+                    let Some(session) = task.sessions.last() else {
+                        self.push_system("resume failed: task has no native sessions");
+                        return;
+                    };
+                    self.task_id = Some(task.id);
+                    if session.provider != self.provider || session.account != self.account {
+                        self.native_session_id = None;
+                        self.need_context_pack = true;
+                        self.prior_provider = session.provider;
+                        self.task_map = task
+                            .last_map
+                            .as_ref()
+                            .and_then(|pointer| {
+                                (pointer.version == 2).then(|| {
+                                    let events = crate::threads::ThreadLog::open(
+                                        &self.state_root,
+                                        &pointer.thread_id,
+                                    )
+                                    .read_all()
+                                    .ok()?;
+                                    Some(crate::threads::build_map_v2(
+                                        &events,
+                                        &pointer.thread_id,
+                                        crate::threads::MAP_CHARS,
+                                        true,
+                                    ))
+                                })
+                            })
+                            .flatten();
+                        self.push_system(format!(
+                            "reopened task on {} / {} with a new native session; map v2 attached",
+                            self.provider.as_str(),
+                            self.account
+                        ));
+                    } else {
+                        self.resume_session(&session.account, &session.native_session_id);
+                    }
+                }
             }
             PickerKind::Trust => {
                 if let Some(mode) = id.strip_prefix("trust:") {
@@ -4223,6 +4305,9 @@ impl App {
         }
         self.last_sent = Some(request.clone());
         self.ensure_session_title(&line);
+        if !line.starts_with('/') && self.task_id.is_none() {
+            self.task_id = Some(uuid::Uuid::new_v4().to_string());
+        }
         if !self.save_turn_checkpoint(false) {
             self.restore_composer(&request);
             self.submitted_prompt = None;
@@ -4377,6 +4462,7 @@ impl App {
             model: "?".into(),
             trust: TrustMode::Workspace,
             native_session_id: None,
+            task_id: None,
             session_chip: None,
             session_ui: session_ui::State::default(),
             native_agents: native_agents::State::default(),
@@ -4398,6 +4484,7 @@ impl App {
             prior_provider: ProviderKind::Codex,
             prior_home: None,
             need_context_pack: false,
+            task_map: None,
             thread: crate::threads::start(&state_root_for_usage),
             reference_journal: reference_journal::State::default(),
             thread_meta_done: false,
@@ -4921,6 +5008,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 let preparing_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 app.preparing_cancel = Some(preparing_cancel.clone());
                 let need_pack_hint = app.need_context_pack;
+                let task_map = app.task_map.take();
                 let thread_id = app.thread_id().map(str::to_string);
                 let done_tx = done_tx.clone();
                 let handle_tx = handle_tx.clone();
@@ -5060,7 +5148,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         // Never leak a foreign / cross-home session id.
                         None
                     };
-                    let mut prefix = if need_pack_hint {
+                    let mut prefix = if let Some(task_map) = task_map {
+                        Some(task_map)
+                    } else if need_pack_hint {
                         decision.pack.as_ref().map(|p| p.text.clone())
                     } else {
                         None
