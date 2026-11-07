@@ -174,9 +174,7 @@ impl Palette {
         let mut foregrounds = HashMap::new();
         for cell in &mut buffer.content {
             if cell.symbol() == " " && cell.fg == Color::Rgb(20, 23, 31) && cell.bg == cell.fg {
-                // Keep native image-overlay blanks identifiable after semantic recoloring.
-                cell.fg = color(self.background);
-                cell.bg = color(self.background);
+                // Native image overlays are collected after this pass and match this exact marker.
                 continue;
             }
             // Half-block cell previews represent image data, not UI semantic colors.
@@ -359,8 +357,11 @@ pub(super) fn fixture_proof() {
             "image pixels must be unchanged"
         );
         assert_eq!(themed[(0, 0)].bg, color(palette.background));
-        assert_eq!(themed[(6, 0)].fg, color(palette.background));
-        assert_eq!(themed[(6, 0)].bg, color(palette.background));
+        assert_eq!(
+            themed[(6, 0)],
+            original[(6, 0)],
+            "native image overlay markers survive the theme pass"
+        );
         assert_ne!(themed[(1, 0)].bg, themed[(2, 0)].bg);
         assert_ne!(
             themed[(1, 0)].fg,

@@ -681,6 +681,10 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
             .draw(|f| {
                 begin_frame(app);
                 draw_inline(f, Rect::new(0, 0, 60, 4), app);
+                let (themed, _) = crate::config::Config::parse("[ui]\ntheme='opifex'\n");
+                super::theme::install(&themed.ui);
+                super::theme::apply(f.buffer_mut(), false, true);
+                super::theme::install(&crate::config::Config::default().ui);
                 let overlay = native_images(f, app)
                     .pop()
                     .expect("native thumbnail uses original pixels");
