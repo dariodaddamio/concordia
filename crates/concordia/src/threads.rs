@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 #[path = "thread_references.rs"]
 mod references;
+use crate::context_types::{PackMessage, PackRole};
 use crate::native_memory::references::{CaptureScope, Reference};
 
 /// Per-event text cap, in characters.
@@ -933,11 +934,7 @@ pub fn build_map_with(
 
 /// Map events from the in-memory transcript (thread log off). `Card` messages carry
 /// `title \x1f detail \x1f status` in their text.
-pub fn events_from_messages(
-    messages: &[crate::context::PackMessage],
-    provider: &str,
-) -> Vec<ThreadEvent> {
-    use crate::context::PackRole;
+pub fn events_from_messages(messages: &[PackMessage], provider: &str) -> Vec<ThreadEvent> {
     let mut out = Vec::new();
     for m in messages {
         let text = m.text.trim();

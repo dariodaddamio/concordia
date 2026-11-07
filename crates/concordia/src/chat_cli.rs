@@ -713,15 +713,7 @@ fn read_messages(path: &Path, provider: ProviderKind) -> Result<(Vec<String>, bo
     Ok((messages, truncated))
 }
 
-pub(crate) fn terminal_safe(text: &str) -> String {
-    text.chars()
-        .filter(|c| (!c.is_control() || matches!(*c, '\n' | '\t')) && !is_terminal_unsafe(*c))
-        .collect()
-}
-
-fn is_terminal_unsafe(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{061c}' | '\u{feff}')
-}
+pub(crate) use crate::text_safe::terminal_safe;
 
 #[cfg(test)]
 mod tests {
