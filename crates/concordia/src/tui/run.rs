@@ -124,17 +124,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     // extracts native images.  Keep the wait loop responsive, but only do that work after a
     // state change that can affect the screen.
     let mut dirty = true;
+    let redraw_always = std::env::var_os("CONCORDIA_REDRAW_ALWAYS").is_some();
 
-    let mut previous_title = String::new();
-    let input_result = (|| -> Result<()> {
-        loop {
-            #[cfg(windows)]
-            if let Some(windows) = &mut detached_windows {
-                windows.drain(&mut app);
-                windows.sync(&mut app);
-            }
-            // Drain pending paste chunks before repainting the growing prompt.
-            if dirty && (!key_burst.active() || !terminal_input.poll(Duration::ZERO)?) {
+    macro_rules! draw_if_needed {
+        ($force:expr) => {
+            if $force || (dirty && (!key_burst.active() || !terminal_input.poll(Duration::ZERO)?)) {
                 if !use_window {
                     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 }
@@ -175,6 +169,19 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     mouse_pointer.refresh(&app)?;
                 }
             }
+        };
+    }
+
+    let mut previous_title = String::new();
+    let input_result = (|| -> Result<()> {
+        loop {
+            #[cfg(windows)]
+            if let Some(windows) = &mut detached_windows {
+                windows.drain(&mut app);
+                windows.sync(&mut app);
+            }
+            // Drain pending paste chunks before repainting the growing prompt.
+            draw_if_needed!(redraw_always);
             let title = app.window_title();
             if title != previous_title {
                 terminal.backend_mut().title(&title)?;
@@ -757,6 +764,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             if app.should_quit || app.reexec_path.is_some() {
                 break;
             }
+
+            // Paint state changes handled above before waiting for the next input/tick. This is
+            // intentionally after the event and channel drains: a key burst may defer one frame,
+            // but must never defer the resulting frame until the next poll timeout.
+            if !redraw_always {
+                draw_if_needed!(false);
+            }
         }
         Ok(())
     })();
@@ -903,6 +917,11 @@ mod redraw_tests {
         fn tick(&mut self, running: bool, motion: bool) {
             self.dirty |= running && motion;
         }
+
+        fn handle_event_then_draw(&mut self) {
+            self.input();
+            self.draw_if_dirty();
+        }
     }
 
     #[test]
@@ -929,6 +948,21 @@ mod redraw_tests {
         h.draw_if_dirty();
         h.draw_if_dirty();
         assert_eq!(h.draws, 2);
+    }
+
+    #[test]
+    fn handled_event_draws_before_the_next_wait_iteration() {
+        let mut h = RedrawHarness {
+            dirty: true,
+            ..Default::default()
+        };
+        h.draw_if_dirty();
+        h.handle_event_then_draw();
+        assert_eq!(h.draws, 2);
+        assert!(
+            !h.dirty,
+            "the handled event was painted in its own iteration"
+        );
     }
 
     #[test]
