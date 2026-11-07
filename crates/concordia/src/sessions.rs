@@ -437,16 +437,12 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
                             .filter_map(|c| c.get("text").and_then(|t| t.as_str()))
                             .collect::<Vec<_>>()
                             .join(" ");
-                        let text = crate::chat_cli::visible_user_history(&joined)
-                            .trim()
-                            .to_string();
-                        if !text.trim().is_empty() && !text.starts_with('/') {
+                        let title = crate::session_titles::title_from_prompt(&joined);
+                        if !title.is_empty() && !title.starts_with('/') {
                             user_messages += 1;
                         }
-                        if !text.starts_with("# AGENTS.md")
-                            && !crate::session_titles::title_from_prompt(&text).is_empty()
-                        {
-                            preview = Some(bounded_text(&text, 512));
+                        if !title.is_empty() {
+                            preview = Some(bounded_text(&title, 512));
                         }
                     }
                 }
@@ -484,17 +480,14 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
             if v.get("isMeta").and_then(|m| m.as_bool()).unwrap_or(false) {
                 continue;
             }
-            if let Some(text) = claude_user_text(&v)
-                .map(|text| crate::chat_cli::visible_user_history(&text).to_string())
-                .filter(|text| {
-                    !text.starts_with("# AGENTS.md")
-                        && !crate::session_titles::title_from_prompt(text).is_empty()
-                })
-            {
-                if !text.trim().starts_with('/') {
+            if let Some(text) = claude_user_text(&v) {
+                let title = crate::session_titles::title_from_prompt(&text);
+                if !title.is_empty() && !title.starts_with('/') {
                     user_messages += 1;
                 }
-                preview = Some(text);
+                if !title.is_empty() {
+                    preview = Some(title);
+                }
             }
         }
     }
@@ -590,13 +583,10 @@ fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<Sess
         if let Ok(hist) = read_file_capped(&hist_path, 32 * 1024) {
             if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&hist) {
                 for item in &items {
-                    if let Some(t) = item
-                        .as_str()
-                        .map(|t| crate::prompt_time::strip_header(t).trim())
-                    {
+                    if let Some(t) = item.as_str().map(crate::session_titles::title_from_prompt) {
                         if !t.is_empty() && !t.starts_with('/') {
                             user_messages += 1;
-                            preview = Some(bounded_text(t, 512));
+                            preview = Some(bounded_text(&t, 512));
                             break;
                         }
                     }
@@ -1081,7 +1071,7 @@ mod tests {
         });
         std::fs::write(&path, format!("{meta}\n{user}\n")).unwrap();
         let summary = summarize_codex("synthetic", &path, 1).unwrap();
-        assert_eq!(summary.preview.as_ref().unwrap().chars().count(), 512);
+        assert_eq!(summary.preview.as_ref().unwrap().chars().count(), 80);
         assert_eq!(summary.cwd.as_ref().unwrap().chars().count(), 2000);
 
         std::fs::write(&path, format!("{}\n{meta}\n", "x".repeat(3 * 1024 * 1024))).unwrap();
@@ -1179,6 +1169,73 @@ mod tests {
         assert_eq!(summarize_codex("a", &codex, 1).unwrap().user_messages, 0);
         assert_eq!(summarize_claude("a", &claude, 1).unwrap().user_messages, 0);
         assert_eq!(summarize_cursor("a", &cursor, 1).unwrap().user_messages, 0);
+    }
+
+    #[test]
+    fn codex_injected_context_is_not_a_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("codex.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-codex\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"<recommended_plugins>\\nsynthetic plugin\\n</recommended_plugins>\\n<environment_context>\\nsynthetic setup\\n</environment_context>\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        let summary = summarize_codex("synthetic", &path, 1).unwrap();
+        assert_eq!(summary.preview, None);
+        assert_eq!(summary.user_messages, 0);
+    }
+
+    #[test]
+    fn injected_only_session_counts_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = dir.path().join("codex.jsonl");
+        let claude = dir.path().join("claude.jsonl");
+        let cursor = dir.path().join("cursor");
+        fs::create_dir(&cursor).unwrap();
+        fs::write(&codex, concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"c\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"<environment_context>synthetic</environment_context>\"}]}}\n"
+        )).unwrap();
+        fs::write(&claude, "{\"type\":\"user\",\"message\":{\"content\":\"<user_instructions>synthetic</user_instructions>\"}}\n").unwrap();
+        fs::write(cursor.join("meta.json"), "{}\n").unwrap();
+        fs::write(
+            cursor.join("prompt_history.json"),
+            "[\"<system-reminder>synthetic</system-reminder>\"]",
+        )
+        .unwrap();
+        assert_eq!(summarize_codex("a", &codex, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_claude("a", &claude, 1).unwrap().user_messages, 0);
+        assert_eq!(summarize_cursor("a", &cursor, 1).unwrap().user_messages, 0);
+    }
+
+    #[test]
+    fn real_text_after_injected_block_becomes_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = dir.path().join("codex.jsonl");
+        let claude = dir.path().join("claude.jsonl");
+        let cursor = dir.path().join("cursor");
+        fs::create_dir(&cursor).unwrap();
+        let request =
+            "<recommended_plugins>synthetic</recommended_plugins>\n\nFix the synthetic login";
+        fs::write(&codex, format!("{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"text\":{request:?}}}]}}}}\n")).unwrap();
+        fs::write(
+            &claude,
+            format!("{{\"type\":\"user\",\"message\":{{\"content\":{request:?}}}}}\n"),
+        )
+        .unwrap();
+        fs::write(cursor.join("meta.json"), "{}\n").unwrap();
+        fs::write(cursor.join("prompt_history.json"), format!("[{request:?}]")).unwrap();
+        for summary in [
+            summarize_codex("a", &codex, 1).unwrap(),
+            summarize_claude("a", &claude, 1).unwrap(),
+            summarize_cursor("a", &cursor, 1).unwrap(),
+        ] {
+            assert_eq!(summary.preview.as_deref(), Some("Fix the synthetic login"));
+            assert_eq!(summary.user_messages, 1);
+        }
     }
 
     #[test]

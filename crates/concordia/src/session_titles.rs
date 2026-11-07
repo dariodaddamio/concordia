@@ -7,6 +7,20 @@ use std::path::{Path, PathBuf};
 
 const MAX_TITLE_CHARS: usize = 80;
 const MAX_RECORD_BYTES: u64 = 32 * 1024;
+/// Provider transcripts use these XML blocks for setup/context, not user requests.
+pub const INJECTED_WRAPPER_TAGS: &[&str] = &[
+    "recommended_plugins",
+    "environment_context",
+    "user_instructions",
+    "system-reminder",
+    "task-notification",
+    "local-command-caveat",
+    "system",
+    "developer",
+    "instructions",
+    "context",
+    "concordia_context",
+];
 
 fn clean(raw: &str) -> String {
     let mut plain = String::new();
@@ -36,26 +50,13 @@ fn clean(raw: &str) -> String {
 }
 
 /// First substantive request, without inference or a provider call.
-pub fn title_from_prompt(prompt: &str) -> String {
-    if prompt.trim_start().starts_with("# AGENTS.md") {
-        return String::new();
-    }
+pub fn real_user_text(prompt: &str) -> String {
     // Bound work even when a pasted prompt is enormous.
     let mut text: String = crate::prompt_time::strip_header(prompt)
         .chars()
         .take(64 * 1024)
         .collect();
-    for tag in [
-        "environment_context",
-        "task-notification",
-        "local-command-caveat",
-        "system-reminder",
-        "system",
-        "developer",
-        "instructions",
-        "context",
-        "concordia_context",
-    ] {
+    for tag in INJECTED_WRAPPER_TAGS {
         let open = format!("<{tag}>");
         let close = format!("</{tag}>");
         while let Some(start) = text.find(&open) {
@@ -66,10 +67,21 @@ pub fn title_from_prompt(prompt: &str) -> String {
             text.replace_range(start..start + open.len() + end + close.len(), " ");
         }
     }
-    let request = text
-        .lines()
+    // Codex can prepend a rendered AGENTS.md block without XML delimiters. A blank
+    // line is the boundary used by the injected message format; an all-wrapper
+    // message therefore remains empty.
+    if let Some(start) = text.find("# AGENTS.md instructions") {
+        let before = &text[..start];
+        let after = &text[start..];
+        text = if let Some(boundary) = after.find("\n\n") {
+            format!("{before}{}", &after[boundary + 2..])
+        } else {
+            before.to_string()
+        };
+    }
+    text.lines()
         .map(str::trim)
-        .find(|line| {
+        .filter(|line| {
             !line.is_empty()
                 && !line.starts_with('<')
                 && !line.starts_with("[concordia map]")
@@ -78,8 +90,13 @@ pub fn title_from_prompt(prompt: &str) -> String {
                 && !line.starts_with("# AGENTS.md")
                 && !line.starts_with("```")
         })
-        .unwrap_or("");
-    clean(request.trim_start_matches(['#', ' ', '\t']))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// First substantive request, without inference or a provider call.
+pub fn title_from_prompt(prompt: &str) -> String {
+    clean(real_user_text(prompt).trim_start_matches(['#', ' ', '\t']))
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,7 +234,7 @@ mod tests {
 
     #[test]
     fn titles_strip_context_and_sanitize_unicode_controls() {
-        assert_eq!(title_from_prompt("<environment_context>\nprivate setup\n</environment_context>\nFix the resume picker\nextra detail"), "Fix the resume picker");
+        assert_eq!(title_from_prompt("<environment_context>\nprivate setup\n</environment_context>\nFix the resume picker\nextra detail"), "Fix the resume picker extra detail");
         let title = title_from_prompt(&format!(
             "\u{1b}[31mFix\u{1b}[0m\t日本語\u{202e} {}",
             "🦀".repeat(100)
@@ -230,6 +247,26 @@ mod tests {
         assert_eq!(
             title_from_prompt("# AGENTS.md instructions\nRead PLAN.md"),
             ""
+        );
+    }
+
+    #[test]
+    fn title_is_single_line() {
+        assert_eq!(
+            title_from_prompt("fix the login\nwith the saved token"),
+            "fix the login with the saved token"
+        );
+    }
+
+    #[test]
+    fn real_text_after_injected_block_becomes_title() {
+        let prompt = "<recommended_plugins>\n[synthetic plugin]\n</recommended_plugins>\n\nRepair the resume picker";
+        assert_eq!(title_from_prompt(prompt), "Repair the resume picker");
+        assert_eq!(
+            real_user_text(
+                "<environment_context>synthetic\n</environment_context>\n\nKeep this request"
+            ),
+            "Keep this request"
         );
     }
 
