@@ -52,8 +52,9 @@ cover menu/draft persistence, exact custom hex colors, malformed settings preser
 geometry, palette contrast/NO_COLOR and Home retention. All-target Clippy with warnings denied,
 release smoke, exact-artifact Defender and the scoped OSS/privacy gate pass. The previous 05b
 integration and 48-terminal-journey receipts remain separate; they were not rerun for this UI batch.
-The 23.8 MiB ceiling covers the 170,220-byte bundled mesh and native controls. No Actions,
-signing, public publication or global provider-policy change occurred.
+The current measured budgets are 27.48 MiB for fast owner-facing release builds and 24.09 MiB
+for thin-LTO dist artifacts; see [binary-size.md](binary-size.md). No Actions, signing, public
+publication or global provider-policy change occurred.
 
 On this same artifact, a prospective native three-arm memory smoke used slots 20 through 27:
 compaction alone, fresh context with original-source pointers, and compaction plus pointers.
