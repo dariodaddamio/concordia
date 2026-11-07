@@ -615,6 +615,19 @@ pub fn accept_same_provider_terms(root: &Path, provider: ProviderKind) -> Result
     })
 }
 
+pub fn withdraw_same_provider_terms(root: &Path, provider: ProviderKind) -> Result<()> {
+    modify_store(root, |store| {
+        store
+            .settings
+            .accepted_terms_providers
+            .remove(provider.as_str());
+        if store.settings.accepted_terms_providers.is_empty() {
+            store.settings.same_provider_automatic = false;
+        }
+        Ok(())
+    })
+}
+
 pub fn same_provider_terms_accepted(root: &Path, provider: ProviderKind) -> bool {
     get_settings(root)
         .accepted_terms_providers

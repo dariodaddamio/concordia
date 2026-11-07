@@ -20,6 +20,9 @@
 - Home page: Up/Down move through the chats even after you started typing; long goals are no
   longer cut off; the usage box shows each account's plan, credits and every limit window on its
   own row and refreshes stale accounts; usage is no longer shown twice when the goals pane has focus.
+- Settings has a "Same-provider handoff" switch. Before, nothing could record the consent it needs,
+  so a Claude account running out never continued on your other Claude account. Turning it on
+  also makes limit handoff automatic.
 
 ## 2026-11-07c
 

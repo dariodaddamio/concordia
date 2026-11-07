@@ -67,6 +67,22 @@ pub(super) fn open(app: &mut App) {
             format!("Saved for future sessions; context: {} at {}% (Cursor disables fresh when usage is unreported)", context_label(app), crate::config::for_root(&app.state_root).continuation.context.threshold),
         ),
         row(
+            "same-provider",
+            format!(
+                "Same-provider handoff ({}) · {}",
+                app.provider.as_str(),
+                enabled(
+                    crate::store::same_provider_automatic(&app.state_root)
+                        && crate::store::same_provider_terms_accepted(&app.state_root, app.provider)
+                )
+            ),
+            format!(
+                "Enter: when a {} account runs out, continue on your next {} account without asking. Turning it on confirms the provider's terms allow you to use several accounts",
+                app.provider.as_str(),
+                app.provider.as_str()
+            ),
+        ),
+        row(
             "session-handoff",
             "This session’s handoff",
             "Session only: choose the next provider or automatic/manual behavior",
@@ -180,6 +196,30 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
                     app.continuation.toggle_automatic();
                     app.flash("Continuation preference saved");
                 }
+                Err(error) => app.flash(format!("Not saved: {error}")),
+            }
+            open(app);
+        }
+        "same-provider" => {
+            let root = app.state_root.clone();
+            let on = crate::store::same_provider_automatic(&root)
+                && crate::store::same_provider_terms_accepted(&root, app.provider);
+            let saved = if on {
+                crate::store::withdraw_same_provider_terms(&root, app.provider)
+            } else {
+                crate::store::accept_same_provider_terms(&root, app.provider).and_then(|()| {
+                    if app.continuation.automatic() {
+                        Ok(())
+                    } else {
+                        crate::store::set_continuation_automatic(&root, true).map(|()| {
+                            app.continuation.toggle_automatic();
+                        })
+                    }
+                })
+            };
+            match saved {
+                Ok(()) if on => app.flash("Same-provider handoff off"),
+                Ok(()) => app.flash("Same-provider handoff on; limit handoff is automatic"),
                 Err(error) => app.flash(format!("Not saved: {error}")),
             }
             open(app);
@@ -432,4 +472,33 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
         rows,
         true,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_provider_handoff_toggles_consent_and_turns_on_automatic_handoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().into(), dir.path().into());
+        let root = dir.path();
+        assert!(!crate::store::same_provider_terms_accepted(
+            root,
+            app.provider
+        ));
+        choose(&mut app, PickerKind::Settings, "same-provider");
+        assert!(crate::store::same_provider_automatic(root));
+        assert!(crate::store::same_provider_terms_accepted(
+            root,
+            app.provider
+        ));
+        assert!(app.continuation.automatic());
+        choose(&mut app, PickerKind::Settings, "same-provider");
+        assert!(!crate::store::same_provider_terms_accepted(
+            root,
+            app.provider
+        ));
+        assert!(!crate::store::same_provider_automatic(root));
+    }
 }
