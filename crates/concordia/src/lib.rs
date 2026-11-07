@@ -11,6 +11,7 @@ pub mod continuity;
 pub mod cursor_usage;
 pub mod delegate;
 pub mod doctor;
+pub mod feed;
 pub mod file_document;
 pub mod file_links;
 pub mod file_open;

@@ -2,6 +2,29 @@ use super::super::*;
 
 impl App {
     pub(in crate::tui) fn apply_progress(&mut self, ev: TurnProgress) {
+        let feed = crate::feed::FeedWriter::new(
+            &self.state_root,
+            self.thread_id().unwrap_or("main"),
+            crate::config::for_root(&self.state_root).feed.enabled,
+        );
+        match &ev {
+            TurnProgress::Text(text) => {
+                let _ = feed.emit("text_delta", text);
+            }
+            TurnProgress::Card(card) => {
+                let _ = feed.emit("tool", &card.title);
+            }
+            TurnProgress::Interaction(_) => {
+                let _ = feed.emit("question", "native approval/question waiting");
+            }
+            TurnProgress::Error(error) => {
+                let _ = feed.emit("error", error);
+            }
+            TurnProgress::Usage(usage) => {
+                let _ = feed.emit("usage", format!("{:?}", usage));
+            }
+            _ => {}
+        }
         match ev {
             TurnProgress::Artifact(record) => {
                 if self.native_owner.as_ref() == Some(&record.owner)
