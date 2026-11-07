@@ -27,7 +27,18 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         draw_input(f, page[2], app);
         draw_footer(f, page[3], app);
     } else {
-        let chat_area = workspace::draw(f, app);
+        let (chat_screen, panel_screen) =
+            if worker_panel::visible(f.area().width, app.worker_panel_open) {
+                let areas = Layout::horizontal([
+                    Constraint::Min(1),
+                    Constraint::Length(worker_panel::DEFAULT_WIDTH),
+                ])
+                .split(f.area());
+                (areas[0], areas[1])
+            } else {
+                (f.area(), Rect::default())
+            };
+        let chat_area = workspace::draw_in(f, app, chat_screen);
         // The prompt box grows with its content (up to MAX_INPUT_ROWS), so size it first.
         let text_w = (chat_area.width as usize)
             .saturating_sub(2 + PROMPT_W)
@@ -78,6 +89,9 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         chatref::draw(f, chunks[1], chunks[2], app);
         draw_footer(f, chunks[3], app);
         workers::draw(f, strip, chunks[1], app);
+        if panel_screen.width > 0 {
+            worker_panel::draw(f, panel_screen, app);
+        }
     }
     if app
         .picker
