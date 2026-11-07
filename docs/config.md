@@ -1,5 +1,11 @@
 # Configuration and custom commands
 
+## Provider question popups
+
+Question popups are enabled by default for provider questions and the per-turn `ask_user` MCP
+bridge. Set `[ui] question_popups = false` to disable this UI path; native provider tools remain
+available according to each provider's own behavior.
+
 ## Limit continuation and unfinished work
 
 In `/use`, **next provider for this session** opens choices to pause at a limit, choose

@@ -131,6 +131,7 @@ pub struct Ui {
     pub accent: Option<Rgb>,
     pub brand_color: Option<Rgb>,
     pub motion: bool,
+    pub question_popups: bool,
     pub library_theme: Option<crate::theme_library::ThemeFile>,
 }
 
@@ -201,6 +202,7 @@ impl Default for Config {
                 accent: None,
                 brand_color: None,
                 motion: true,
+                question_popups: true,
                 library_theme: None,
             },
             threads: Threads {
@@ -455,6 +457,7 @@ impl Config {
                     "ui.accent" => set_color(v, &full, &mut cfg.ui.accent, &mut warnings),
                     "ui.brand_color" => set_color(v, &full, &mut cfg.ui.brand_color, &mut warnings),
                     "ui.motion" => set_bool(v, &full, &mut cfg.ui.motion, &mut warnings),
+                    "ui.question_popups" => set_bool(v, &full, &mut cfg.ui.question_popups, &mut warnings),
                     "threads.enabled" => {
                         set_bool(v, &full, &mut cfg.threads.enabled, &mut warnings)
                     }

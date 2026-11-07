@@ -19,6 +19,7 @@ enum Command {
     Sessions,
     Thread,
     Mcp,
+    AskMcp,
     Help,
     Version,
 }
@@ -130,6 +131,13 @@ const CLI_HELP: &[CommandSpec] = &[
         args: "",
         help: "stdio MCP server",
         command: Command::Mcp,
+    },
+    CommandSpec {
+        name: "ask-mcp",
+        aliases: &[],
+        args: "",
+        help: "stdio question MCP server",
+        command: Command::AskMcp,
     },
     CommandSpec {
         name: "--help",
@@ -343,6 +351,9 @@ async fn main() -> Result<()> {
                 eprintln!("mcp: {e}");
                 std::process::exit(1);
             }
+        }
+        Command::AskMcp => {
+            concordia::ask_bridge::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
         }
         Command::Version => {
             println!("{}", version_line());
