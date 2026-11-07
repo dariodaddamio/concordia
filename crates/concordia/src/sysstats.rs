@@ -16,6 +16,19 @@ use std::time::{Duration, Instant};
 
 pub const INTERVAL: Duration = Duration::from_secs(2);
 
+/// Snapshot of host capacity for the resource governor.
+pub fn machine_resources(
+    workspace: &std::path::Path,
+) -> crate::resource_governor::MachineResources {
+    let (total, free, cores) = sys::machine_memory_and_cores();
+    crate::resource_governor::MachineResources {
+        total_ram_bytes: total,
+        free_ram_bytes: free,
+        logical_cores: cores,
+        free_disk_bytes: sys::free_disk_bytes(workspace).unwrap_or(u64::MAX),
+    }
+}
+
 /// One published reading. Memory is working set in bytes; CPU is percent of the whole machine.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Stats {
@@ -186,6 +199,25 @@ mod sys {
         fn Process32FirstW(h: Handle, e: *mut ProcessEntry) -> i32;
         fn Process32NextW(h: Handle, e: *mut ProcessEntry) -> i32;
         fn GetActiveProcessorCount(group: u16) -> u32;
+        fn GlobalMemoryStatusEx(status: *mut MemoryStatus) -> i32;
+        fn GetDiskFreeSpaceExW(
+            path: *const u16,
+            free: *mut u64,
+            total: *mut u64,
+            avail: *mut u64,
+        ) -> i32;
+    }
+    #[repr(C)]
+    struct MemoryStatus {
+        length: u32,
+        load: u32,
+        total: u64,
+        avail: u64,
+        pages: u64,
+        avail_pages: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended: u64,
     }
 
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
@@ -220,6 +252,41 @@ mod sys {
     pub fn ncpu() -> u32 {
         // SAFETY: 0xFFFF is ALL_PROCESSOR_GROUPS.
         unsafe { GetActiveProcessorCount(0xFFFF) }.max(1)
+    }
+    pub fn machine_memory_and_cores() -> (u64, u64, u32) {
+        let mut s = MemoryStatus {
+            length: std::mem::size_of::<MemoryStatus>() as u32,
+            load: 0,
+            total: 0,
+            avail: 0,
+            pages: 0,
+            avail_pages: 0,
+            total_virtual: 0,
+            avail_virtual: 0,
+            avail_extended: 0,
+        };
+        unsafe {
+            GlobalMemoryStatusEx(&mut s);
+        }
+        (s.total, s.avail, ncpu())
+    }
+    pub fn free_disk_bytes(path: &std::path::Path) -> Option<u64> {
+        use std::os::windows::ffi::OsStrExt;
+        let mut p: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut f = 0;
+        (unsafe {
+            GetDiskFreeSpaceExW(
+                p.as_mut_ptr(),
+                &mut f,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        } != 0)
+            .then_some(f)
     }
 
     /// Working set in bytes.
@@ -273,6 +340,12 @@ mod sys {
 mod sys {
     pub fn ncpu() -> u32 {
         1
+    }
+    pub fn machine_memory_and_cores() -> (u64, u64, u32) {
+        (0, 0, 1)
+    }
+    pub fn free_disk_bytes(_path: &std::path::Path) -> Option<u64> {
+        None
     }
     pub fn working_set(_pid: u32) -> Option<u64> {
         None
