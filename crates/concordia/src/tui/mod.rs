@@ -1964,7 +1964,8 @@ impl App {
             .collect()
     }
 
-    fn on_tick(&mut self) {
+    fn on_tick(&mut self) -> bool {
+        let mut visible_change = self.busy && self.appearance.ui.motion;
         self.poll_reference_journal();
         self.questions.refresh_native();
         self.poll_images();
@@ -1980,12 +1981,13 @@ impl App {
         } else {
             self.idle_ticks = self.idle_ticks.saturating_add(1);
         }
+        visible_change |= self.idle_ticks == tips::IDLE_TICKS;
         self.persist_tick();
-        self.poll_file_jobs();
+        visible_change |= self.poll_file_jobs();
         self.poll_session_history();
         self.poll_memory();
         self.poll_project_search();
-        self.workspace.poll();
+        visible_change |= self.workspace.poll();
         if let Some(notice) = self.workspace.take_notice() {
             self.flash(notice);
         }
@@ -2038,7 +2040,9 @@ impl App {
             self.refresh_usage();
             self.update_usage_block();
             self.update_usage_picker();
+            visible_change = true;
         }
+        visible_change
     }
 
     fn poll_model_refresh(&mut self) {
