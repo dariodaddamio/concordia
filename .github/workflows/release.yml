@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -43,18 +45,23 @@ jobs:
       - name: Test (slow PTY journeys)
         run: cargo test -p concordia --test tui_journeys --locked --no-fail-fast -- --ignored
 
+      - name: Install cargo-auditable
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-auditable
+
       - name: Build release
-        run: cargo build -p concordia --release --locked
+        run: cargo auditable build -p concordia --profile dist --locked
 
       - name: Scan the release with current Defender intelligence
         shell: pwsh
         run: |
           Update-MpSignature -ErrorAction Stop
-          ./scripts/scan-release.ps1 -Exe ./target/release/concordia.exe
+          ./scripts/scan-release.ps1 -Exe ./target/dist/concordia.exe
 
       - name: Smoke the exact artifact
         shell: pwsh
-        run: ./scripts/smoke-ci.ps1
+        run: ./scripts/smoke-ci.ps1 -Exe ./target/dist/concordia.exe -BudgetBytes 25260212
 
       - name: Offline one-command installer fixtures
         shell: pwsh
@@ -68,6 +75,10 @@ jobs:
         shell: pwsh
         run: cargo about generate about.hbs --output-file THIRD-PARTY-LICENSES.txt
 
+      - name: Generate CycloneDX SBOM
+        shell: pwsh
+        run: ./scripts/generate-sbom.ps1 -Output bom.json
+
       - name: Stage assets
         shell: pwsh
         run: |
@@ -80,17 +91,18 @@ jobs:
             } finally { $fs.Dispose() }
           }
           $name = "concordia-x86_64-pc-windows-msvc.exe"
-          # Only concordia.exe ships. target\release also holds the test-only concordia-fake-provider.
-          Copy-Item target\release\concordia.exe $name
-          # The zip is what install.ps1, cargo binstall, scoop and winget consume. Its single
+          # Only concordia.exe ships. target\dist also holds the test-only concordia-fake-provider.
+          Copy-Item target\dist\concordia.exe $name
+          # The zip is what install.ps1, scoop and winget consume. Its single
           # exe is at the root so `bin-dir = "concordia.exe"` and nested-installer paths work.
           $zipName = "concordia-x86_64-pc-windows-msvc.zip"
           $stage = Join-Path $env:RUNNER_TEMP "zip-stage"
           if (Test-Path $stage) { if (-not ([IO.Path]::GetFullPath($stage).StartsWith([IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))) { throw 'unsafe stage path' }; Remove-Item -LiteralPath $stage -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item target\release\concordia.exe (Join-Path $stage "concordia.exe")
+          Copy-Item target\dist\concordia.exe (Join-Path $stage "concordia.exe")
           Copy-Item LICENSE $stage
           Copy-Item THIRD-PARTY-LICENSES.txt $stage
+          Copy-Item bom.json $stage
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipName -Force
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $entries = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipName).Path)
@@ -154,6 +166,7 @@ jobs:
             concordia-x86_64-pc-windows-msvc.zip.sha256
             SHA256SUMS
             THIRD-PARTY-LICENSES.txt
+            bom.json
             LICENSE
             ${{ runner.temp }}/dist-packaging/*
           body_path: release-notes.md
@@ -162,6 +175,12 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest release executable provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: concordia-x86_64-pc-windows-msvc.exe
 
       - name: Keep the rehearsal artifacts
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -174,4 +193,5 @@ jobs:
             concordia-x86_64-pc-windows-msvc.zip.sha256
             SHA256SUMS
             THIRD-PARTY-LICENSES.txt
+            bom.json
             ${{ runner.temp }}/dist-packaging/

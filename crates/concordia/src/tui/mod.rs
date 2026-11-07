@@ -506,6 +506,8 @@ pub struct App {
     reference_journal: reference_journal::State,
     usage_summary: String,
     usage_credits: String,
+    /// The primary reset belongs beside the subscription summary, not in a second status line.
+    usage_reset: Option<String>,
     usage_tone: UsageTone,
     usage_warning: Option<String>,
     /// Width-1 ASCII bar drawn before the footer usage text.
@@ -618,6 +620,7 @@ impl App {
         let Some(home) = home else {
             self.usage_summary = "no account yet".into();
             self.usage_credits = "Credits: not reported".into();
+            self.usage_reset = None;
             self.usage_tone = UsageTone::Mute;
             self.usage_warning = None;
             return;
@@ -631,6 +634,13 @@ impl App {
     fn set_usage_footer(&mut self, snap: &crate::usage::UsageSnapshot) {
         self.usage_summary = snap.summary.clone();
         self.usage_credits = snap.credits_text();
+        self.usage_reset = snap
+            .windows
+            .iter()
+            .find(|window| window.label.starts_with("7d"))
+            .or_else(|| snap.windows.first())
+            .and_then(|window| window.resets.as_deref())
+            .map(crate::usage::reset_phrase);
         self.usage_tone = usage_tone(snap);
         self.usage_warning = crate::usage::low_limit_warning(snap, self.provider);
     }
@@ -2334,16 +2344,58 @@ impl App {
     }
 
     fn open_continuation_picker(&mut self) {
-        let mut rows = accounts_with_auth(&self.state_root)
+        let mut accounts = accounts_with_auth(&self.state_root)
             .into_iter()
             .filter(|a| {
                 (a.account != self.account || self.continuation.same_account_allowed())
                     && a.home_path.is_some()
             })
-            .map(|a| PickerRow {
-                id: format!("continue:{}", a.account),
-                label: a.label,
-                detail: "continue the paused request on this account".into(),
+            .collect::<Vec<_>>();
+        accounts.sort_by(|a, b| {
+            let remaining = |account: &crate::accounts::AccountDef| {
+                account.home_path.as_ref().and_then(|home| {
+                    crate::usage::peek_cached_usage(
+                        &self.state_root,
+                        account.provider,
+                        &account.account,
+                        home,
+                    )
+                    .and_then(|o| o.remaining_pct)
+                })
+            };
+            remaining(b)
+                .is_some()
+                .cmp(&remaining(a).is_some())
+                .then_with(|| {
+                    remaining(b)
+                        .partial_cmp(&remaining(a))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| a.account.cmp(&b.account))
+        });
+        let mut rows = accounts
+            .into_iter()
+            .map(|a| {
+                let remaining = a.home_path.as_ref().and_then(|home| {
+                    crate::usage::peek_cached_usage(&self.state_root, a.provider, &a.account, home)
+                        .and_then(|o| o.remaining_pct)
+                });
+                let tier = crate::models::catalog_tier(&self.model);
+                let tier = match tier {
+                    crate::models::ModelTier::Frontier => "frontier",
+                    crate::models::ModelTier::Standard => "standard",
+                    crate::models::ModelTier::Fast => "fast",
+                };
+                PickerRow {
+                    id: format!("continue:{}", a.account),
+                    label: a.label,
+                    detail: format!(
+                        "5h {}% left · {tier} · continue the paused request",
+                        remaining
+                            .map(|p| p.round() as i64)
+                            .map_or("??".into(), |p| p.to_string())
+                    ),
+                }
             })
             .collect::<Vec<_>>();
         if let Some(home) = &self.home_path {
@@ -4351,6 +4403,7 @@ impl App {
             thread_meta_done: false,
             usage_summary: "limits unknown".into(),
             usage_credits: "Credits: not reported".into(),
+            usage_reset: None,
             usage_tone: UsageTone::Mute,
             usage_warning: None,
             usage_fetcher: UsageFetcher::new(state_root_for_usage.clone()),

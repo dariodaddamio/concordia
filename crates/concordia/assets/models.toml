@@ -4,45 +4,53 @@ provider = "codex"
 id = "gpt-5.6-sol"
 display_name = "GPT-5.6-Sol"
 family = "GPT-5.6"
+tier = "frontier"
 
 [[models]]
 provider = "codex"
 id = "gpt-5.6-terra"
 display_name = "GPT-5.6-Terra"
 family = "GPT-5.6"
+tier = "frontier"
 
 [[models]]
 provider = "codex"
 id = "gpt-5.6-luna"
 display_name = "GPT-5.6-Luna"
 family = "GPT-5.6"
+tier = "frontier"
 
 [[models]]
 provider = "claude"
 id = "claude-opus-5-5"
 display_name = "Opus 5.5"
 family = "Opus"
+tier = "frontier"
 
 [[models]]
 provider = "claude"
 id = "claude-sonnet-5-5"
 display_name = "Sonnet 5.5"
 family = "Sonnet"
+tier = "standard"
 
 [[models]]
 provider = "claude"
 id = "claude-haiku-5-5"
 display_name = "Haiku 5.5"
 family = "Haiku"
+tier = "fast"
 
 [[models]]
 provider = "claude"
 id = "claude-fable-5-1"
 display_name = "Fable 5.1"
 family = "Fable"
+tier = "standard"
 
 [[models]]
 provider = "cursor"
 id = "auto"
 display_name = "Auto"
 family = "Cursor"
+tier = "fast"

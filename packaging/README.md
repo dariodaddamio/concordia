@@ -28,13 +28,13 @@ workflow fails if a token is left unrendered or the scoop JSON does not parse.
    `winget validate --manifest <folder>`. `wingetcreate` can also generate and submit the set;
    check its current help for the exact flags before running it.
 
-The zip layout is fixed: `concordia.exe`, `LICENSE` and `THIRD-PARTY-LICENSES.txt` at its root. The
-scoop `bin` entry and the winget `NestedInstallerFiles` entry both depend on `concordia.exe` being
-at the root, so do not change the zip layout without updating these templates and `Cargo.toml`
-(`[package.metadata.binstall]`).
+The zip layout is fixed: `concordia.exe`, `LICENSE`, `THIRD-PARTY-LICENSES.txt` and `bom.json` at
+its root. The scoop `bin` entry and the winget `NestedInstallerFiles` entry both depend on
+`concordia.exe` being at the root, so do not change the zip layout without updating these templates
+and the release workflow.
 
 ## Not in this folder
 
 - `scripts/install.ps1` is the one-liner installer. It has its own placeholder (`$Repo`).
-- `cargo binstall` reads `[package.metadata.binstall]` from the published crate. The crate is
-  `publish = false` today, so that route only works once a crate is published.
+- Cargo package installation is intentionally not offered: the crate is `publish = false`, and
+  the supported distribution is the hash-checked Windows release zip.

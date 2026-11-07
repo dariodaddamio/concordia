@@ -17,9 +17,20 @@ pub struct ModelEntry {
     pub id: String,
     pub display_name: String,
     pub family: String,
+    #[serde(default)]
+    pub tier: ModelTier,
     pub source: ModelSource,
     #[serde(default)]
     pub deprecated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    Fast,
+    #[default]
+    Standard,
+    Frontier,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +149,7 @@ fn entry_named(id: String, display_name: String, source: ModelSource) -> ModelEn
     ModelEntry {
         display_name,
         family: family(&id),
+        tier: catalog_tier(&id),
         id,
         source,
         deprecated: false,
@@ -160,6 +172,8 @@ fn catalog_entries(provider: ProviderKind) -> Vec<ModelEntry> {
         display_name: String,
         family: String,
         #[serde(default)]
+        tier: ModelTier,
+        #[serde(default)]
         deprecated: bool,
     }
     toml::from_str::<File>(include_str!("../assets/models.toml"))
@@ -171,12 +185,23 @@ fn catalog_entries(provider: ProviderKind) -> Vec<ModelEntry> {
                     id: m.id,
                     display_name: m.display_name,
                     family: m.family,
+                    tier: m.tier,
                     source: ModelSource::Catalog,
                     deprecated: m.deprecated,
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub fn catalog_tier(id: &str) -> ModelTier {
+    match id.to_ascii_lowercase().as_str() {
+        id if id.contains("opus") || id.contains("5.6") || id.contains("frontier") => {
+            ModelTier::Frontier
+        }
+        id if id.contains("haiku") || id == "auto" || id.contains("fast") => ModelTier::Fast,
+        _ => ModelTier::Standard,
+    }
 }
 
 fn cache_path(root: &Path, provider: ProviderKind, account: &str) -> PathBuf {

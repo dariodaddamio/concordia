@@ -57,35 +57,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
             Rect::default()
         };
 
-        if let Some(warning) = &app.usage_warning {
-            let text = warning.replace(" | ", "\n");
-            let height = text
-                .lines()
-                .count()
-                .min(2)
-                .min(chunks[1].height.saturating_sub(3) as usize) as u16;
-            if height > 0 {
-                let area = Rect {
-                    height,
-                    ..chunks[1]
-                };
-                chunks[1].y += height;
-                chunks[1].height -= height;
-                f.render_widget(
-                    Paragraph::new(text).alignment(Alignment::Right).style(
-                        Style::default()
-                            .fg(if app.usage_tone == UsageTone::Bad {
-                                Color::Red
-                            } else {
-                                Color::Yellow
-                            })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    area,
-                );
-            }
-        }
-
         draw_header(f, chunks[0], app);
         if landing::visible(app) {
             landing::draw(f, chunks[1], app);
@@ -396,23 +367,44 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
                 .min(area.width as usize) as u16;
             app.areas.header_credits = Some(Rect::new(area.x, area.y + 1, width, 1));
         }
-        let subscription = app
-            .usage_summary
-            .split(" · ")
-            .filter(|part| !part.starts_with("credits "))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let subscription = if subscription.is_empty() {
-            "not reported"
-        } else {
-            &subscription
-        };
-        let line = Line::from(vec![
-            Span::styled(format!(" {}  │  ", app.usage_credits), bar.fg(Color::Cyan)),
-            Span::styled(format!("Subscription: {subscription}"), bar.fg(usage_color)),
-        ]);
+        let home_owns_usage = landing::usage_box_visible(app, area.width);
+        let credits_known = app.usage_credits != "Credits: not reported";
+        let mut line = Vec::new();
+        if !home_owns_usage || credits_known {
+            line.push(Span::styled(
+                format!(" {}", app.usage_credits),
+                bar.fg(Color::Cyan),
+            ));
+        }
+        if !home_owns_usage {
+            let subscription = app
+                .usage_summary
+                .split(" · ")
+                .filter(|part| !part.starts_with("credits "))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let subscription = if subscription.is_empty() {
+                "not reported".to_string()
+            } else {
+                subscription
+            };
+            if subscription != "not reported" || credits_known {
+                let reset = app
+                    .usage_reset
+                    .as_deref()
+                    .map(|reset| format!(", {reset}"))
+                    .unwrap_or_default();
+                line.push(Span::styled(
+                    format!(
+                        "{}│  Subscription: {subscription}{reset}",
+                        if credits_known { "  " } else { " " }
+                    ),
+                    bar.fg(usage_color),
+                ));
+            }
+        }
         f.render_widget(
-            Paragraph::new(line).style(bar),
+            Paragraph::new(Line::from(line)).style(bar),
             Rect {
                 y: area.y + 1,
                 height: 1,
