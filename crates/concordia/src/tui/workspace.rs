@@ -755,9 +755,13 @@ fn read_lines(path: &Path) -> Result<Vec<String>, String> {
 
 /// Draw file panes, returning the remaining chat rectangle. No disk I/O occurs here.
 pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
+    draw_in(f, app, f.area())
+}
+
+pub(super) fn draw_in(f: &mut Frame, app: &mut App, screen: Rect) -> Rect {
     let show_caret = app.picker.is_none() && app.activity.detail.is_none();
     let state = &mut app.workspace;
-    state.screen = f.area();
+    state.screen = screen;
     state.divider = Rect::default();
     state.files = Rect::default();
     for pane in &mut state.panes {
@@ -766,7 +770,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
             pane.horizontal_bar = Rect::default();
         }
     }
-    let area = f.area();
+    let area = screen;
     let count = state.panes.iter().filter(|pane| !pane.detached).count();
     if count == 0 {
         return area;

@@ -71,6 +71,10 @@ pub enum SlashCommand {
     DelegateHelp,
     /// `/delegate protocol [on|off]`.
     DelegateProtocol(Option<bool>),
+    /// `/crew list|use NAME|clear` selects a saved local model arrangement.
+    CrewList,
+    CrewUse(String),
+    CrewClear,
     /// `/harness ...` is executed by the TUI because it needs the live account home.
     Harness(String),
     /// A known command received an unsupported argument. Keeping this distinct prevents
@@ -241,6 +245,28 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     }
     match cmd.as_str() {
         "" => None,
+        "crew" => {
+            let mut crew_words = body[cmd.len()..].split_whitespace();
+            let action = crew_words.next().unwrap_or("").to_ascii_lowercase();
+            if action == "list" || action.is_empty() {
+                Some((SlashCommand::CrewList, false))
+            } else if action == "clear" {
+                Some((SlashCommand::CrewClear, false))
+            } else if action == "use" {
+                match (crew_words.next(), crew_words.next()) {
+                    (Some(name), None) => Some((SlashCommand::CrewUse(name.to_owned()), false)),
+                    _ => Some((
+                        SlashCommand::Invalid("crew use NAME|list|clear".into()),
+                        false,
+                    )),
+                }
+            } else {
+                Some((
+                    SlashCommand::Invalid("crew use NAME|list|clear".into()),
+                    false,
+                ))
+            }
+        }
         "use" => match rest.to_lowercase().as_str() {
             "remove" | "rm" | "delete" | "forget" => Some((
                 SlashCommand::UseRemove(parts.next().map(str::to_lowercase)),
@@ -446,6 +472,28 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         Some("Tab queues your message while a turn runs; Ctrl+R resumes a paused queue.")
     ),
     command!(
+        "/crew",
+        [],
+        "[list|use NAME|clear]",
+        "choose a saved lead and worker preset",
+        "Apply a local crew from config.toml without making a provider call.",
+        true,
+        CommandCategory::Workers,
+        None,
+        None
+    ),
+    command!(
+        "/worker-panel",
+        [],
+        "",
+        "toggle the worker side panel",
+        "Show live worker state in a read-only right-hand panel on wide terminals.",
+        true,
+        CommandCategory::Workers,
+        Some("Ctrl+Shift+G"),
+        None
+    ),
+    command!(
         "/harness",
         [],
         "ACTION",
@@ -633,7 +681,7 @@ mod registry_tests {
 
     #[test]
     fn palette_help_and_readme_come_from_one_registry() {
-        assert_eq!(COMMAND_REGISTRY.iter().filter(|c| c.everyday).count(), 14);
+        assert_eq!(COMMAND_REGISTRY.iter().filter(|c| c.everyday).count(), 16);
         assert!(format_slash_help(false).contains("/use"));
         assert!(format_slash_help(true).contains("/memory"));
     }
@@ -823,6 +871,10 @@ pub fn dispatch_slash(
             CommandOutcome::Ok,
             vec!["delegation commands run inside the Concordia TUI".into()],
         ),
+        SlashCommand::CrewList | SlashCommand::CrewUse(_) | SlashCommand::CrewClear => (
+            CommandOutcome::Ok,
+            vec!["crew commands run inside the Concordia TUI".into()],
+        ),
         SlashCommand::Unknown(name) => (
             CommandOutcome::Ok,
             vec![format!(
@@ -954,6 +1006,12 @@ mod update_tests {
             c("/workers rm codex-2"),
             SlashCommand::WorkersRemove(Some("codex-2".into()))
         );
+        assert_eq!(c("/crew list"), SlashCommand::CrewList);
+        assert_eq!(
+            c("/crew use office"),
+            SlashCommand::CrewUse("office".into())
+        );
+        assert_eq!(c("/crew clear"), SlashCommand::CrewClear);
         assert_eq!(c("/delegate"), SlashCommand::DelegateHelp);
         assert_eq!(c("/delegate help"), SlashCommand::DelegateHelp);
         assert_eq!(c("/delegate graph"), SlashCommand::DelegateGraph);

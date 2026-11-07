@@ -110,6 +110,7 @@ mod usage_style;
 #[cfg(test)]
 mod ux_tests;
 mod worker_input;
+mod worker_panel;
 mod workers;
 mod workspace;
 mod workspace_scope;
@@ -559,6 +560,8 @@ pub struct App {
     reexec_path: Option<PathBuf>,
     /// Delegated workers: the jobs, the strip above the prompt, the viewer.
     deleg: workers::Panel,
+    /// Read-only worker side panel; it never participates in focus routing.
+    worker_panel_open: bool,
     /// `<state>/commands/*.md`, scanned at start (see `user_commands`).
     user_cmds: Vec<crate::user_commands::UserCommand>,
     /// Prompts lined up behind the running turn (see queue.rs).
@@ -4665,6 +4668,7 @@ impl App {
             connect: Box::new(add_account),
             reexec_path: None,
             deleg: workers::Panel::default(),
+            worker_panel_open: false,
             user_cmds: crate::user_commands::scan(&state_root_for_cmds).commands,
             queue: queue::Queue::default(),
             last_sent: None,

@@ -45,6 +45,8 @@ Ask your question and press Enter
 | `/resume` | `` | continue an earlier chat | everyday |
 | `/delegate` | `ACCOUNT TASK` | run tasks on worker accounts | everyday |
 | `/workers` | `[add\|remove]` | manage worker accounts | everyday |
+| `/crew` | `[list\|use NAME\|clear]` | choose a saved lead and worker preset | everyday |
+| `/worker-panel` | `` | toggle the worker side panel | everyday |
 | `/harness` | `ACTION` | connect and run harness tools | advanced |
 | `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
 | `/preview` | `PATH` | preview a file read-only | advanced |

@@ -1460,6 +1460,54 @@ impl App {
     pub(super) fn try_delegate_slash(&mut self, cmd: &SlashCommand) -> bool {
         let root = self.state_root.clone();
         match cmd {
+            SlashCommand::CrewList => {
+                let crews = crate::config::Config::load(&root).config.crews;
+                if crews.is_empty() { self.push_system("No crews configured in config.toml."); }
+                else { self.push_system(format!("Crews: {}", crews.keys().cloned().collect::<Vec<_>>().join(", "))); }
+            }
+            SlashCommand::CrewClear => {
+                match clear_crew(&root) {
+                    Ok(()) => self.push_system("Crew cleared; worker enrollment and preset models reset."),
+                    Err(error) => self.push_system(format!("crew clear failed - {error}")),
+                }
+            }
+            SlashCommand::CrewUse(name) => {
+                let crews = crate::config::Config::load(&root).config.crews;
+                match crews.get(name.trim()) {
+                    Some(crew) => {
+                        match apply_crew(&root, &self.account, crew) {
+                            Ok((lead, workers)) => {
+                                if let Some(account) = crate::accounts::get_account(&root, &lead.0) {
+                                    let mut selection = crate::store::get_use_selection(&root)
+                                        .unwrap_or(crate::store::UseSelection {
+                                            provider: account.provider,
+                                            account: account.account.clone(),
+                                            home_path: account.home_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                                            model: None,
+                                            updated_at: String::new(),
+                                        });
+                                    selection.provider = account.provider;
+                                    selection.account = account.account;
+                                    selection.home_path = account.home_path.map(|p| p.to_string_lossy().into_owned());
+                                    selection.model = lead.1.clone();
+                                    let _ = crate::store::set_use_selection(&root, selection);
+                                }
+                                self.refresh_binding();
+                                self.push_system(format!(
+                                    "Crew '{}' selected: lead {} ({}); enrolled {} worker(s). Worker trust remains capped at {}.",
+                                    name,
+                                    lead.0,
+                                    lead.1.as_deref().unwrap_or("provider default"),
+                                    workers,
+                                    self.trust.as_str()
+                                ));
+                            }
+                            Err(error) => self.push_system(format!("crew failed - {error}")),
+                        }
+                    }
+                    None => self.push_system(format!("Crew '{}' is unavailable; no such crew in config.toml.", name)),
+                }
+            }
             SlashCommand::Workers => {
                 let lines =
                     crate::delegate::workers_report(&root, &self.account, &self.deleg.d, Instant::now());
@@ -1776,6 +1824,85 @@ impl App {
             .join("\n\n");
         self.deleg.outbox = Some((prompt, jobs.iter().map(|j| j.id).collect()));
     }
+}
+
+/// Parse the compact local crew spelling `ACCOUNT:MODEL`. Account-only entries use the provider
+/// default model. The account id is deliberately opaque; only the final separator is meaningful.
+fn crew_target(value: &str) -> Result<(String, Option<String>), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("crew entries cannot be empty".into());
+    }
+    let (account, model) = value
+        .split_once(':')
+        .map_or((value, None), |(account, model)| (account, Some(model)));
+    let account = normalize_account_id(account);
+    if account.is_empty() {
+        return Err(format!("invalid crew account in {value:?}"));
+    }
+    let model = model
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned);
+    if model.as_deref().is_some_and(|m| {
+        !m.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-:/[]".contains(c))
+    }) {
+        return Err(format!("invalid model in {value:?}"));
+    }
+    Ok((account, model))
+}
+
+fn apply_crew(
+    root: &std::path::Path,
+    orchestrator: &str,
+    crew: &crate::config::Crew,
+) -> Result<((String, Option<String>), usize), String> {
+    let lead = crew_target(&crew.lead)?;
+    if crate::accounts::get_account(root, &lead.0).is_none() {
+        return Err(format!("no lead account named {}", lead.0));
+    }
+    let mut workers = Vec::new();
+    for entry in &crew.workers {
+        let target = crew_target(entry)?;
+        if target.0 == lead.0 || target.0 == normalize_account_id(orchestrator) {
+            return Err(format!("{} cannot be both lead and worker", target.0));
+        }
+        if workers
+            .iter()
+            .any(|(account, _): &(String, Option<String>)| account == &target.0)
+        {
+            continue;
+        }
+        crate::delegate::check_add_worker(root, &lead.0, &target.0)?;
+        workers.push(target);
+    }
+    let cap = crate::config::for_root(root).delegation.max_workers;
+    if workers.len() > cap {
+        return Err(format!(
+            "crew has {} workers, but the configured cap is {cap}",
+            workers.len()
+        ));
+    }
+    crate::store::modify_store(root, |store| {
+        store.settings.workers = workers.iter().map(|(account, _)| account.clone()).collect();
+        store.settings.worker_models = workers
+            .iter()
+            .filter_map(|(account, model)| model.clone().map(|model| (account.clone(), model)))
+            .collect();
+        Ok(())
+    })
+    .map_err(|error| format!("could not save crew - {error}"))?;
+    Ok((lead, workers.len()))
+}
+
+fn clear_crew(root: &std::path::Path) -> Result<(), String> {
+    crate::store::modify_store(root, |store| {
+        store.settings.workers.clear();
+        store.settings.worker_models.clear();
+        Ok(())
+    })
+    .map_err(|error| format!("could not save crew - {error}"))
 }
 
 #[cfg(test)]
