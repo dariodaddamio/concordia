@@ -558,6 +558,13 @@ pub(super) fn visible(app: &App) -> bool {
                     .any(|m| matches!(m.role, MsgRole::User | MsgRole::Assistant))))
 }
 
+/// The landing usage pane owns subscription facts whenever it is actually drawn.
+pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
+    app.landing.as_ref().is_some_and(|landing| {
+        !landing.meters.is_empty() && width >= TWO_PANES_MIN && landing.pane == Pane::Chats
+    })
+}
+
 /// Collect open work that arrived from the background reader.
 pub(super) fn poll(app: &mut App) {
     if app.landing.is_none() {
