@@ -45,7 +45,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $fakeZip = Join-Path $work 'fake.zip'
 [IO.Compression.ZipFile]::CreateFromDirectory($zipSrc, $fakeZip)
 $bodyB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($fakeZip))
-$releaseExe = Join-Path $PSScriptRoot '..\target\release\concordia.exe'
+$releaseExe = Join-Path $PSScriptRoot '..\target\dist\concordia.exe'
 if (-not (Test-Path -LiteralPath $releaseExe)) { throw 'build the release executable before running installer fixtures' }
 $happySrc = Join-Path $work 'happy-src'
 New-Item -ItemType Directory -Path $happySrc | Out-Null

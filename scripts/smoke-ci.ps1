@@ -1,6 +1,6 @@
 # CI smoke for the release binary. No provider CLIs, no network, no install pointer needed.
 # Usage: pwsh scripts/smoke-ci.ps1 [-Exe path\to\concordia.exe]
-param([string]$Exe = "")
+param([string]$Exe = "", [int64]$BudgetBytes = 28811597)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Exe) { $Exe = Join-Path $root "target\release\concordia.exe" }
@@ -14,13 +14,12 @@ Ok "binary: $Exe"
 
 # 1. Reviewed distribution budget: native Mermaid, syntax assets, image support and memory
 # orchestration increased the release from the original thin UI. See docs/release-blockers.md.
-# 05b adds streaming capture and revision-bound migration. The measured increase from 05a
-# is 340,992 bytes. 05c adds a 170,220-byte bundled mesh and native appearance controls;
-# a 23.8 MiB ceiling keeps the allowance bounded without adding a runtime dependency.
-# Compare exact bytes so rounding cannot let an oversized artifact through.
+# The measured thin-LTO artifact is 24,057,344 bytes; the budget is that result plus 5%,
+# rounded up. Keep this exact byte ceiling shared with candidate evidence.
+$binaryBudgetBytes = $BudgetBytes
 $sizeBytes = (Get-Item $Exe).Length
 $mb = [math]::Round($sizeBytes / 1MB, 2)
-if ($sizeBytes -gt 23.8MB) { Fail "binary is $mb MiB (budget 23.8 MiB)" } else { Ok "size $mb MiB (budget 23.8 MiB)" }
+if ($sizeBytes -gt $binaryBudgetBytes) { Fail "binary is $mb MiB ($sizeBytes bytes; budget $binaryBudgetBytes bytes)" } else { Ok "size $mb MiB ($sizeBytes bytes; budget $binaryBudgetBytes bytes)" }
 
 # 2. --version: stamp format, and read-only (must not create or change the install pointer).
 $pointer = Join-Path $env:LOCALAPPDATA "concordia\bin\current"

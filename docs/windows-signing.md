@@ -14,7 +14,7 @@ installation. The updater uses the official feed by default and verifies the exe
 
 ```powershell
 Update-MpSignature
-./scripts/scan-release.ps1 -Exe ./target/release/concordia.exe
+./scripts/scan-release.ps1 -Exe ./target/dist/concordia.exe
 ```
 
 A clean scan is evidence for that hash and intelligence version. Rehearse download, install,
