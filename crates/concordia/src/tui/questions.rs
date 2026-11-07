@@ -31,6 +31,29 @@ impl State {
     pub fn waiting(&self) -> bool {
         !self.questions.is_empty()
     }
+
+    /// Whether the visible native panel is waiting for a permission or plan decision.
+    ///
+    /// Conversational questions use the same panel, so callers must distinguish these native
+    /// approvals before publishing attention items.
+    pub(super) fn native_approval_waiting(&self) -> bool {
+        self.native.as_ref().is_some_and(|request| {
+            request.is_active()
+                && matches!(
+                    request.kind(),
+                    crate::provider::interaction::NativeInteraction::Permission { .. }
+                        | crate::provider::interaction::NativeInteraction::CodexPermission { .. }
+                        | crate::provider::interaction::NativeInteraction::PlanApproval { .. }
+                )
+        })
+    }
+
+    pub(super) fn native_session_id(&self) -> Option<String> {
+        self.native
+            .as_ref()
+            .filter(|request| request.is_active())
+            .map(|request| request.envelope().native_session_id.clone())
+    }
     pub fn refresh_native(&mut self) {
         if self
             .native
