@@ -9,6 +9,67 @@ use crate::usage::picker_row;
 use ratatui::backend::TestBackend;
 
 #[test]
+fn header_and_status_never_repeat_usage() {
+    let mut h = Harness::new(120, 30);
+    h.app.landing = None;
+    let mut snap = crate::usage::UsageSnapshot::no_data("", "");
+    snap.windows.push(crate::usage::UsageWindow {
+        label: "5h".into(),
+        used_pct: 60.0,
+        resets: Some("3h".into()),
+    });
+    snap.windows.push(crate::usage::UsageWindow {
+        label: "7d".into(),
+        used_pct: 86.0,
+        resets: Some("Nov 11, 8:59am".into()),
+    });
+    h.app.set_usage_footer(&snap);
+    h.app.usage_summary = "5h 40% left \u{b7} 7d 14% left".into();
+    h.draw();
+    let screen = h.screen();
+    assert_eq!(screen.matches("7d 14% left").count(), 1, "{screen}");
+    assert!(screen.contains("Subscription: 5h 40% left · 7d 14% left, resets"));
+    assert!(!screen.contains("checked by the provider"));
+}
+
+#[test]
+fn home_header_omits_subscription_when_usage_box_visible() {
+    let mut h = Harness::new(120, 30);
+    crate::tui::landing::open_home(&mut h.app);
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    let landing = h.app.landing.as_mut().unwrap();
+    let mut snapshot = crate::usage::UsageSnapshot::no_data("", "");
+    snapshot.windows.push(crate::usage::UsageWindow {
+        label: "7d".into(),
+        used_pct: 86.0,
+        resets: Some("Nov 11, 8:59am".into()),
+    });
+    landing.meters.push(crate::tui::landing::LandingMeter {
+        provider: ProviderKind::Codex,
+        account: "codex".into(),
+        snapshot,
+    });
+    h.app.usage_summary = "7d 14% left".into();
+    assert!(crate::tui::landing::usage_box_visible(&h.app, 120));
+    h.draw();
+    let screen = h.screen();
+    assert!(!screen.contains("Subscription:"), "{screen}");
+}
+
+#[test]
+fn chat_header_keeps_credits_text() {
+    let mut h = Harness::new(120, 30);
+    h.app.landing = None;
+    h.draw();
+    assert!(
+        h.screen().contains("Credits: not reported"),
+        "{}",
+        h.screen()
+    );
+}
+
+#[test]
 fn use_picker_shows_every_limit_reset_at_narrow_widths_and_clears_on_close() {
     for width in [40, 64, 80, 120] {
         let mut h = Harness::new(width, 30);
@@ -149,9 +210,12 @@ fn limit_warning_updates_with_account_snapshot_and_unknown_clears_it() {
     h.app.provider = ProviderKind::Codex;
     h.app.set_usage_footer(&snap);
     h.draw();
-    assert!(h.screen().contains("5h 4% left"));
-    assert!(h.screen().contains("06:03 local"));
-    assert!(h.screen().contains("updates after a Codex response"));
+    assert!(h
+        .app
+        .usage_warning
+        .as_deref()
+        .is_some_and(|warning| warning.contains("5h 4% left")));
+    assert!(!h.screen().contains("checked by the provider"));
     h.app.provider = ProviderKind::Claude;
     h.app.set_usage_footer(&snap);
     assert!(h

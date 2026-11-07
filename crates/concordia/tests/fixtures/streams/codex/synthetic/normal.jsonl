@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"synthetic-codex"}
+{"type":"item.completed","item":{"id":"reply","type":"agent_message","text":"Hello from Codex."}}
+{"type":"turn.completed"}
