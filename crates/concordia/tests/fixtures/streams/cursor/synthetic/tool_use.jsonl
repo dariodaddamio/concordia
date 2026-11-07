@@ -1,0 +1,2 @@
+{"type":"tool_call","call_id":"tool-1","name":"terminal","arguments":{"command":"echo synthetic"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Tool finished."}]}}

@@ -170,16 +170,25 @@ impl State {
 }
 
 fn usage_exhausted(text: &str) -> bool {
-    crate::provider::stream_cards::usage_exhausted(text)
+    matches!(
+        crate::provider::failure::classify_failure_text(
+            crate::store::ProviderKind::Codex,
+            text,
+            Some(1)
+        ),
+        crate::provider::failure::FailureKind::Usage
+    )
 }
 
 fn context_exhausted(text: &str) -> bool {
-    let lower = text.trim().to_ascii_lowercase();
-    let lower = lower.strip_prefix("error: ").unwrap_or(&lower);
-    ["context_length_exceeded", "context_window_exceeded"]
-        .iter()
-        .any(|code| lower == *code || lower.starts_with(&format!("{code}:")))
-        || lower.starts_with("maximum context length exceeded")
+    matches!(
+        crate::provider::failure::classify_failure_text(
+            crate::store::ProviderKind::Codex,
+            text,
+            Some(1)
+        ),
+        crate::provider::failure::FailureKind::Context
+    )
 }
 
 impl App {

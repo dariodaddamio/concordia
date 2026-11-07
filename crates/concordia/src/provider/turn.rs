@@ -636,6 +636,7 @@ async fn run_provider_turn_inner(
     let _stats_guard = crate::sysstats::register(child.id().unwrap_or(0));
     let stdout = child.stdout.take().context("stdout")?;
     let stderr = child.stderr.take().context("stderr")?;
+    let recorder = crate::provider::recording::Recorder::from_env(plan.provider);
     if let (Some(prompt), Some(mut stdin)) = (launch.stdin.clone(), child.stdin.take()) {
         // Written off-thread so a provider that has not started reading cannot stall us.
         tokio::spawn(async move {
@@ -655,6 +656,7 @@ async fn run_provider_turn_inner(
             .is_ok_and(|n| n > 0)
         {
             stderr_activity.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
+            // stderr is retained as a bounded tail; recording is independently opt-in.
             if tail.len() == STDERR_KEEP_LINES {
                 tail.pop_front();
             }
@@ -723,6 +725,9 @@ async fn run_provider_turn_inner(
         };
         match next {
             Ok(Some(line)) => {
+                if let Some(recorder) = &recorder {
+                    recorder.line("stdout", &line);
+                }
                 if idle_timeout != Duration::ZERO {
                     last_activity_ms.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
                     idle.as_mut()
@@ -917,7 +922,15 @@ async fn run_provider_turn_inner(
 fn terminal_failure(line: &str) -> Option<bool> {
     let event: serde_json::Value = serde_json::from_str(line).ok()?;
     match event.get("type")?.as_str()? {
-        "error" if crate::provider::stream_cards::classify_codex_event(&event).iter().any(|part|matches!(part,StreamPart::Error(text) if crate::provider::stream_cards::usage_exhausted(text))) => Some(true),
+        "error"
+            if event
+                .get("message")
+                .and_then(|value| value.as_str())
+                .is_some_and(|message| message.eq_ignore_ascii_case("reconnecting")) =>
+        {
+            None
+        }
+        "error" => Some(true),
         "turn.failed" => Some(true),
         "turn.completed" => Some(false),
         "result" => Some(
