@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-07c
+
+- Chat titles also skip Concordia's own awareness note, so a chat is named after what you typed.
+
 ## 2026-11-07b
 
 - Chat titles no longer show context that Codex injects into the first message (plugin lists,
