@@ -592,6 +592,27 @@ async fn run_provider_turn_inner(
     for key in &plan.env_remove {
         cmd.env_remove(key);
     }
+    // Conservative defaults for build tools. Explicit provider/user environment always wins.
+    let inherited = plan
+        .env
+        .iter()
+        .chain(launch.env.iter())
+        .map(|(k, _)| k.clone())
+        .chain(
+            [
+                "CARGO_BUILD_JOBS",
+                "MAKEFLAGS",
+                "npm_config_jobs",
+                "CMAKE_BUILD_PARALLEL_LEVEL",
+            ]
+            .iter()
+            .filter_map(|k| std::env::var_os(k).map(|_| (*k).to_string())),
+        );
+    let resources = crate::sysstats::machine_resources(std::path::Path::new(&plan.cwd));
+    let build = crate::resource_governor::budget(resources);
+    for (key, value) in crate::resource_governor::default_build_env(build.build_jobs, inherited) {
+        cmd.env(key, value);
+    }
     // Do not echo argv here: it contains the whole prompt.
     let setup_ms = timing.elapsed().as_millis();
     let spawning = Instant::now();
