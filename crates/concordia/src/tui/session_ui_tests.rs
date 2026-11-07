@@ -193,6 +193,24 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
 }
 
 #[test]
+fn resume_of_legacy_session_without_task_record_works() {
+    let (mut app, _dir, home) = setup();
+    app.open_resume_picker();
+    let picker = app.picker.as_ref().expect("resume picker");
+    assert_eq!(picker.rows.len(), 1);
+    assert_eq!(picker.rows[0].id, "resume:synthetic:target-session");
+    assert!(crate::store::list_tasks(&app.state_root).is_empty());
+
+    app.apply_picker_selection(None);
+
+    assert_eq!(app.native_session_id.as_deref(), Some("target-session"));
+    assert_eq!(app.account, "synthetic");
+    assert_eq!(app.home_path.as_ref(), Some(&home));
+    assert!(app.picker.is_none());
+    assert!(app.task_id.is_none());
+}
+
+#[test]
 fn a_new_conversation_rejects_late_history_and_resets_its_title() {
     let (mut app, _dir, _) = setup();
     app.resume_session("synthetic", "target-session");
