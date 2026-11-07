@@ -6,6 +6,7 @@
 //!   at most `MAP_CHARS`), never a transcript dump; never pass a foreign session id into
 //!   another home/provider.
 
+pub use crate::context_types::{PackMessage, PackRole};
 use crate::store::ProviderKind;
 use crate::threads;
 
@@ -15,20 +16,6 @@ pub const MAX_CONTEXT_CHARS: usize = 6000;
 /// Rough estimate only (no live tokenizer / model). ~4 chars per token.
 pub fn estimate_tokens(chars: usize) -> usize {
     chars.div_ceil(4)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackRole {
-    User,
-    Assistant,
-    /// A tool/command card; `text` is `threads::encode_card(title, detail, status)`.
-    Card,
-}
-
-#[derive(Debug, Clone)]
-pub struct PackMessage {
-    pub role: PackRole,
-    pub text: String,
 }
 
 #[derive(Debug, Clone)]
