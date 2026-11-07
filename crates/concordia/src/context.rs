@@ -187,12 +187,11 @@ pub fn build_context_pack(
     sw.provider = Some(to.as_str().to_string());
     events.push(sw);
     let budget = max_chars.min(threads::MAP_CHARS);
-    let text = threads::build_map_with(
+    let text = threads::build_map_v2(
         &events,
         thread_id.unwrap_or(""),
         budget,
         thread_id.is_some(),
-        Some("tools/approvals NOT transferred"),
     );
     let labeled = text.lines().next().unwrap_or("").to_string();
     let pack_chars = text.chars().count();

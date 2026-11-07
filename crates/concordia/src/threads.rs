@@ -1,5 +1,5 @@
-//! Thread log and map: an opt-in, append-only record of a conversation, and a deterministic
-//! summary of it (no model, no network). See docs/architecture.md ("Thread log", "Map").
+//! Thread log and map: an opt-in, append-only record of a conversation, and deterministic
+//! pointer maps (no model, no network). See docs/architecture.md ("Thread log", "Map").
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,10 @@ pub const MAX_EVENT_TEXT: usize = 20_000;
 pub const MAP_CHARS: usize = 1600;
 /// Default cap for `concordia thread read`.
 pub const READ_CHARS: usize = 6000;
+/// Maximum number of locally pinned native spans retained for one thread.
+pub const MAX_PINNED_SPANS: usize = 128;
+/// Maximum UTF-8 bytes retained by one thread's pin journal.
+pub const MAX_PINNED_BYTES: usize = 256 * 1024;
 
 // ---------------------------------------------------------------------------------------------
 // Opt-in switch: the env var, the store setting, or `[threads] enabled` in `<state>/config.toml`.
@@ -171,6 +175,20 @@ pub struct ThreadLog {
     dir: PathBuf,
 }
 
+/// A redacted copy of an exact native span. Pins are deliberately independent of provider
+/// transcript files, so a map remains readable after native pruning or compaction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PinnedSpan {
+    pub version: u32,
+    pub ordinal: usize,
+    pub label: String,
+    pub role: String,
+    pub provider: Option<String>,
+    pub account: Option<String>,
+    pub native_session_id: Option<String>,
+    pub text: String,
+}
+
 impl ThreadLog {
     /// No I/O until the first write.
     pub fn open(state_root: &Path, thread_id: &str) -> ThreadLog {
@@ -192,6 +210,10 @@ impl ThreadLog {
         self.dir.join(format!("{}.meta.json", self.id))
     }
 
+    fn pins_path(&self) -> PathBuf {
+        self.dir.join(format!("{}.pins.jsonl", self.id))
+    }
+
     /// Append structural metadata only. Conversation bodies require an exact native reference.
     pub fn append(&self, ev: &ThreadEvent) -> Result<()> {
         self.append_record(&references::Record::metadata(ev)?)
@@ -199,7 +221,119 @@ impl ThreadLog {
 
     /// Verify an immutable native projection before persisting its body-free pointer.
     pub fn append_referenced(&self, ev: &ThreadEvent, reference: Reference) -> Result<()> {
-        self.append_record(&references::Record::referenced(self.root(), ev, reference)?)
+        let record = references::Record::referenced(self.root(), ev, reference.clone())?;
+        let ordinal = self.read_record_count().saturating_add(1);
+        self.append_record(&record)?;
+        let role = if ev.k == "card" {
+            "tool"
+        } else {
+            ev.k.as_str()
+        };
+        let text = crate::native_memory::references::hydrate_text(self.root(), &reference)
+            .map_err(|error| anyhow!("native span pin failed: {error}"))?;
+        self.pin_span_with_reference(
+            ordinal,
+            role,
+            &format!("{} turn {}", role, ordinal),
+            &text,
+            &reference,
+        )
+    }
+
+    fn read_record_count(&self) -> usize {
+        std::fs::read_to_string(self.log_path())
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// Pin a span after applying the same deterministic redaction used by the journal.
+    pub fn pin_span(&self, ordinal: usize, label: &str, text: &str) -> Result<()> {
+        self.pin_span_inner(PinnedSpan {
+            version: 1,
+            ordinal,
+            label: cap_chars(label, 160).to_owned(),
+            role: "native".into(),
+            provider: None,
+            account: None,
+            native_session_id: None,
+            text: cap_chars(&crate::redact::redact(text), MAX_PINNED_BYTES).to_owned(),
+        })
+    }
+
+    fn pin_span_with_reference(
+        &self,
+        ordinal: usize,
+        role: &str,
+        label: &str,
+        text: &str,
+        reference: &Reference,
+    ) -> Result<()> {
+        let binding = reference.binding();
+        self.pin_span_inner(PinnedSpan {
+            version: 1,
+            ordinal,
+            label: cap_chars(label, 160).to_owned(),
+            role: role.to_owned(),
+            provider: Some(binding.provider.as_str().to_owned()),
+            account: Some(binding.account.clone()),
+            native_session_id: Some(binding.session_id.clone()),
+            text: cap_chars(&crate::redact::redact(text), MAX_PINNED_BYTES).to_owned(),
+        })
+    }
+
+    fn pin_span_inner(&self, span: PinnedSpan) -> Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        let lock = self.dir.join(format!("{}.pins.lock", self.id));
+        crate::state_io::with_lock(&lock, || {
+            let mut spans = self.read_pins_unchecked();
+            spans.retain(|old| old.ordinal != span.ordinal);
+            spans.push(span.clone());
+            spans.sort_by_key(|old| old.ordinal);
+            while spans.len() > MAX_PINNED_SPANS
+                || serde_json::to_vec(&spans).map_or(true, |v| v.len() > MAX_PINNED_BYTES)
+            {
+                if spans.is_empty() {
+                    break;
+                }
+                spans.remove(0);
+            }
+            let body = spans
+                .iter()
+                .map(serde_json::to_string)
+                .collect::<Result<Vec<_>, _>>()?
+                .join("\n");
+            let body = if body.is_empty() {
+                body
+            } else {
+                format!("{body}\n")
+            };
+            std::fs::write(self.pins_path(), crate::redact::redact(&body).as_bytes())?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    fn read_pins_unchecked(&self) -> Vec<PinnedSpan> {
+        std::fs::read_to_string(self.pins_path())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+
+    /// Resolve a map ordinal from the local pin journal, falling back to the native-backed log.
+    pub fn resolve_span(&self, ordinal: usize) -> Result<String> {
+        if let Some(span) = self
+            .read_pins_unchecked()
+            .into_iter()
+            .find(|s| s.ordinal == ordinal)
+        {
+            return Ok(span.text);
+        }
+        self.read_all()?
+            .get(ordinal.saturating_sub(1))
+            .map(|event| event.text().to_owned())
+            .ok_or_else(|| anyhow!("thread span {ordinal} is unavailable"))
     }
 
     /// Record a source gap without persisting the original text or an arbitrary error body.
@@ -338,7 +472,10 @@ fn thread_ids(state_root: &Path) -> Vec<String> {
     };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if let Some(id) = name.strip_suffix(".jsonl") {
+        if let Some(id) = name
+            .strip_suffix(".jsonl")
+            .filter(|id| !id.ends_with(".pins"))
+        {
             ids.push(id.to_string());
         }
     }
@@ -486,6 +623,112 @@ pub fn build_map(
     stored: bool,
 ) -> String {
     build_map_with(events, thread_id, max_chars, stored, None)
+}
+
+/// Version 2 handoff map: user intent is retained verbatim (bounded), while all provider
+/// output is represented by stable, fetchable labels. No assistant/tool body is included.
+pub fn build_map_v2(
+    events: &[ThreadEvent],
+    thread_id: &str,
+    max_chars: usize,
+    stored: bool,
+) -> String {
+    let id = if stored && !thread_id.is_empty() {
+        thread_id
+    } else {
+        "(memory)"
+    };
+    let mut lines = vec![format!(
+        "[concordia map v2] thread {id} - tools/approvals NOT transferred"
+    )];
+    let pointer = if stored && !thread_id.is_empty() {
+        format!("concordia thread read {thread_id}")
+    } else {
+        "native_memory".to_owned()
+    };
+    let user_indices = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.k == "user" && !event.text().trim().is_empty())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    for (index, event) in events.iter().enumerate() {
+        let ordinal = index + 1;
+        let line = match event.k.as_str() {
+            "user" if !event.text().trim().is_empty() => {
+                if user_indices.len() > 2
+                    && Some(&index) != user_indices.first()
+                    && Some(&index) != user_indices.last()
+                {
+                    lines.push(format!(
+                        "user pointer: turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}"
+                    ));
+                    continue;
+                }
+                if ordinal == 1 {
+                    format!("asked: {}", one_line(event.text(), 240))
+                } else {
+                    format!("user turn {ordinal}: {}", one_line(event.text(), 240))
+                }
+            }
+            "assistant" => format!(
+                "assistant pointer: turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}"
+            ),
+            "card" => {
+                let label = event
+                    .card
+                    .as_ref()
+                    .map(|c| one_line(&c.title, 80))
+                    .unwrap_or_else(|| "tool".into());
+                let detail = event
+                    .card
+                    .as_ref()
+                    .and_then(|c| c.detail.as_deref())
+                    .unwrap_or("");
+                if looks_like_path(detail) {
+                    format!("files: {detail}; tool pointer ({label}): turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}")
+                } else {
+                    format!("tool pointer ({label}): turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}")
+                }
+            }
+            "switch" | "note" | "usage" => format!(
+                "{} pointer: turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}",
+                event.k
+            ),
+            _ => continue,
+        };
+        lines.push(line);
+    }
+    if stored && !thread_id.is_empty() {
+        lines.push(format!(
+            "more: concordia thread read {thread_id} [--range A-B | --tail N | --grep TEXT]"
+        ));
+    } else {
+        lines.push("more: native_memory fallback; thread log is off (not stored)".into());
+    }
+    let mut out = lines.join("\n");
+    if out.chars().count() > max_chars {
+        let essential = [
+            lines.first().cloned().unwrap_or_default(),
+            lines
+                .iter()
+                .find(|line| line.starts_with("asked:"))
+                .cloned()
+                .unwrap_or_default(),
+            lines
+                .iter()
+                .rev()
+                .find(|line| line.starts_with("user turn "))
+                .cloned()
+                .unwrap_or_default(),
+            lines.last().cloned().unwrap_or_default(),
+        ]
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+        out = cap_chars(&essential.join("\n"), max_chars).to_owned();
+    }
+    out
 }
 
 /// As [`build_map`]; `note` is an extra header fragment such as "tools/approvals NOT transferred".
@@ -1042,6 +1285,82 @@ mod tests {
             .next()
             .unwrap()
             .contains("tools/approvals NOT transferred"));
+    }
+
+    #[test]
+    fn map_v2_is_deterministic() {
+        let events = vec![
+            user("fix the login"),
+            asst("implementation detail must not leak"),
+        ];
+        assert_eq!(
+            build_map_v2(&events, "thread-1", 1600, true),
+            build_map_v2(&events, "thread-1", 1600, true)
+        );
+    }
+
+    #[test]
+    fn map_never_contains_free_text_summaries() {
+        let events = vec![
+            user("typed decision: keep PKCE"),
+            asst("SECRET_ASSISTANT_REPLY"),
+        ];
+        let map = build_map_v2(&events, "thread-1", 1600, true);
+        assert!(map.contains("typed decision: keep PKCE"));
+        assert!(!map.contains("SECRET_ASSISTANT_REPLY"));
+        assert!(map.contains("assistant pointer"));
+    }
+
+    #[test]
+    fn map_respects_size_cap() {
+        let events = (0..40)
+            .map(|n| {
+                if n % 2 == 0 {
+                    user(&format!("decision {n}"))
+                } else {
+                    asst("reply")
+                }
+            })
+            .collect::<Vec<_>>();
+        for cap in [0, 10, 200, 1600] {
+            assert!(build_map_v2(&events, "thread-1", cap, true).chars().count() <= cap);
+        }
+    }
+
+    #[test]
+    fn pinned_span_survives_native_file_truncation() {
+        let state = tempfile::tempdir().unwrap();
+        let native = state.path().join("native.jsonl");
+        std::fs::write(&native, "native source body").unwrap();
+        let log = ThreadLog::open(state.path(), "pin-survival");
+        log.pin_span(4, "assistant", "native source body").unwrap();
+        std::fs::write(&native, "").unwrap();
+        assert_eq!(log.resolve_span(4).unwrap(), "native source body");
+    }
+
+    #[test]
+    fn pins_are_redacted() {
+        let state = tempfile::tempdir().unwrap();
+        let log = ThreadLog::open(state.path(), "pin-redaction");
+        log.pin_span(1, "tool", "Authorization: Bearer sk-abcdefghijklmnop")
+            .unwrap();
+        let raw = std::fs::read_to_string(log.pins_path()).unwrap();
+        assert!(!raw.contains("sk-abcdefghijklmnop"));
+        assert!(raw.contains("[REDACTED:authorization:"));
+    }
+
+    #[test]
+    fn pins_are_pruned_oldest_first() {
+        let state = tempfile::tempdir().unwrap();
+        let log = ThreadLog::open(state.path(), "pin-pruning");
+        for ordinal in 1..=MAX_PINNED_SPANS + 2 {
+            log.pin_span(ordinal, "assistant", &format!("body {ordinal}"))
+                .unwrap();
+        }
+        let pins = log.read_pins_unchecked();
+        assert_eq!(pins.len(), MAX_PINNED_SPANS);
+        assert_eq!(pins.first().unwrap().ordinal, 3);
+        assert_eq!(pins.last().unwrap().ordinal, MAX_PINNED_SPANS + 2);
     }
 
     #[test]
