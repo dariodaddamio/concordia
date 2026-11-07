@@ -433,6 +433,8 @@ pub struct App {
     expanded_activity: bool,
     activity: activity::Activity,
     palette: Palette,
+    /// Registry-derived key sheet shown by `?` or F1.
+    key_sheet: bool,
     chatref: chatref::ChatRef,
     related_files: related_files::State,
     questions: questions::State,
@@ -544,6 +546,7 @@ pub struct App {
     /// Ticks spent idle with an empty prompt; drives the mid-session tip.
     idle_ticks: u64,
     tip_seed: u64,
+    tip_limiter: tips::RateLimiter,
     pending_login: Option<PendingLogin>,
     /// Account-connect entry point; swapped in tests so no login window ever opens.
     connect: ConnectFn,
@@ -1605,7 +1608,7 @@ impl App {
     }
 
     /// The tip to show dimmed under the transcript, if the moment is right.
-    fn visible_tip(&self) -> Option<&'static str> {
+    fn visible_tip(&mut self) -> Option<&'static str> {
         let quiet = !self.busy
             && self.picker.is_none()
             && self.job.is_none()
@@ -1618,7 +1621,13 @@ impl App {
         {
             return None;
         }
-        Some(tips::tip_for(self.tip_seed))
+        let tip = tips::contextual_tip(
+            !self.queue.items.is_empty(),
+            self.busy,
+            self.usage_warning.is_some(),
+            self.tip_seed,
+        );
+        self.tip_limiter.take(tip)
     }
 
     /// Add a finished turn's tokens to the local token log.
@@ -4439,6 +4448,7 @@ impl App {
             expanded_activity: false,
             activity: activity::Activity::default(),
             palette: Palette::default(),
+            key_sheet: false,
             chatref: chatref::ChatRef::default(),
             related_files,
             questions: questions::State::default(),
@@ -4534,6 +4544,7 @@ impl App {
             session_cost: 0.0,
             idle_ticks: 0,
             tip_seed: tips::launch_seed(),
+            tip_limiter: tips::RateLimiter::new(3),
             pending_login: None,
             connect: Box::new(add_account),
             reexec_path: None,

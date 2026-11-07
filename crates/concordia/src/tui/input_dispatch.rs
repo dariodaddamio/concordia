@@ -102,6 +102,16 @@ pub(super) fn handle_key(
     key: KeyEvent,
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
+    if app.key_sheet {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1)) {
+            app.key_sheet = false;
+        }
+        return false;
+    }
+    if (key.code == KeyCode::F(1) || key.code == KeyCode::Char('?')) && key.modifiers.is_empty() {
+        app.key_sheet = true;
+        return false;
+    }
     // Native windows distinguish auto-repeat from a fresh press. Navigation and deletion
     // must keep moving while held; action shortcuts (send, cancel, toggles) run once.
     match key.kind {

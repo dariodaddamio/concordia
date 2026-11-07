@@ -614,9 +614,9 @@ fn queue_command_lists_and_clears() {
 
 #[test]
 fn queue_commands_are_in_the_palette() {
-    let cmds: Vec<&str> = crate::commands::SLASH_COMMANDS
+    let cmds: Vec<&str> = crate::commands::command_registry()
         .iter()
-        .map(|c| c.0)
+        .map(|c| c.name)
         .collect();
     assert!(!cmds.iter().any(|c| c.starts_with("/queue")));
     let mut h = H::new(100, 24);

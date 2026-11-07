@@ -33,6 +33,33 @@ Ask your question and press Enter
 /model               # choose a model from the active provider
 ```
 
+<!-- COMMANDS:START -->
+| Command | Arguments | Description | View |
+| --- | --- | --- | --- |
+| `/use` | `ACCOUNT\|add PROVIDER\|remove ACCOUNT` | switch, add or remove accounts | everyday |
+| `/model` | `[MODEL]` | choose the model | everyday |
+| `/config` | `[KEY VALUE]` | settings: display, permissions, accounts and behavior | everyday |
+| `/mode` | `[plan\|ask\|auto\|full]` | how much the agent may do without asking | everyday |
+| `/usage` | `[all\|refresh]` | limits for every account | everyday |
+| `/new` | `` | start a fresh chat | everyday |
+| `/resume` | `` | continue an earlier chat | everyday |
+| `/delegate` | `ACCOUNT TASK` | run tasks on worker accounts | everyday |
+| `/workers` | `[add\|remove]` | manage worker accounts | everyday |
+| `/harness` | `ACTION` | connect and run harness tools | advanced |
+| `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
+| `/preview` | `PATH` | preview a file read-only | advanced |
+| `/search` | `TEXT` | search project file contents | advanced |
+| `/scope` | `...` | declare task paths and reservations | advanced |
+| `/worktree` | `...` | manage explicit Git workspaces | advanced |
+| `/memory` | `...` | search original chats and source links | advanced |
+| `/context` | `` | inspect context rollover policy | advanced |
+| `/integrations` | `` | inspect connected integrations | advanced |
+| `/copy` | `` | copy the last reply | everyday |
+| `/doctor` | `` | check your setup | everyday |
+| `/update` | `` | update Concordia | everyday |
+| `/exit` | `` | exit Concordia | everyday |
+<!-- COMMANDS:END -->
+
 Use `/doctor` inside Concordia, or `concordia doctor` in a terminal, when setup or provider
 discovery needs diagnosis.
 

@@ -55,8 +55,8 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::Host,
     },
     CommandSpec {
-        name: "window",
-        aliases: &["--window"],
+        name: "--window",
+        aliases: &["window"],
         args: "",
         help: "native app window (image paste and file drop)",
         command: Command::Window,
@@ -168,7 +168,9 @@ fn print_help() {
     let commands = CLI_HELP
         .iter()
         .map(|spec| {
-            let command = if spec.args.is_empty() {
+            let command = if spec.name == "concordia" {
+                "window".to_string()
+            } else if spec.args.is_empty() {
                 spec.name.to_string()
             } else {
                 format!("{} {}", spec.name, spec.args)

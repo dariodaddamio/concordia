@@ -3,7 +3,7 @@
 //! Pure logic (no terminal I/O): which commands match the text so far, and what selecting one
 //! should put in the prompt. Drawing and key handling live in `tui/mod.rs`.
 
-use crate::commands::SLASH_COMMANDS;
+use crate::commands::command_registry;
 use crate::user_commands::UserCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,10 +15,10 @@ pub struct Entry {
 }
 
 fn everyday(command: &str) -> bool {
-    !matches!(
-        command,
-        "/memory" | "/context" | "/scope" | "/worktree" | "/harness"
-    )
+    command_registry()
+        .iter()
+        .find(|c| c.name == command)
+        .is_some_and(|c| c.everyday)
 }
 
 /// Commands whose full text starts with what the user has typed. Only a single-line prompt that
@@ -34,13 +34,13 @@ pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
         return Vec::new();
     }
     let typed = input.to_ascii_lowercase();
-    let builtin = SLASH_COMMANDS
+    let builtin = command_registry()
         .iter()
-        .filter(|(cmd, _)| cmd.starts_with(&typed))
-        .filter(|(cmd, _)| typed != "/" || everyday(cmd))
-        .map(|&(command, help)| Entry {
-            command: command.to_string(),
-            help: help.to_string(),
+        .filter(|c| c.name.starts_with(&typed))
+        .filter(|c| typed != "/" || everyday(c.name))
+        .map(|c| Entry {
+            command: c.name.to_string(),
+            help: c.description.to_string(),
             custom: false,
         });
     let custom = user
@@ -106,17 +106,14 @@ mod tests {
         let all = cmds("/");
         assert_eq!(
             all.len(),
-            SLASH_COMMANDS
-                .iter()
-                .filter(|(cmd, _)| everyday(cmd))
-                .count()
+            command_registry().iter().filter(|c| c.everyday).count()
         );
         assert_eq!(
             all,
-            SLASH_COMMANDS
+            command_registry()
                 .iter()
-                .filter(|(cmd, _)| everyday(cmd))
-                .map(|(command, _)| *command)
+                .filter(|c| c.everyday)
+                .map(|c| c.name)
                 .collect::<Vec<_>>()
         );
     }
@@ -141,10 +138,14 @@ mod tests {
     #[test]
     fn every_command_has_a_description_and_is_unique() {
         let mut seen = std::collections::HashSet::new();
-        for (cmd, help) in SLASH_COMMANDS {
-            assert!(cmd.starts_with('/'), "{cmd}");
-            assert!(!help.trim().is_empty(), "{cmd} needs a description");
-            assert!(seen.insert(*cmd), "duplicate {cmd}");
+        for command in command_registry() {
+            assert!(command.name.starts_with('/'), "{}", command.name);
+            assert!(
+                !command.description.trim().is_empty(),
+                "{} needs a description",
+                command.name
+            );
+            assert!(seen.insert(command.name), "duplicate {}", command.name);
         }
     }
 
@@ -165,11 +166,7 @@ go",
         let all = matching_with("/", &user);
         assert_eq!(
             all.len(),
-            SLASH_COMMANDS
-                .iter()
-                .filter(|(cmd, _)| everyday(cmd))
-                .count()
-                + 1
+            command_registry().iter().filter(|c| c.everyday).count() + 1
         );
         let last = all.last().unwrap();
         assert_eq!(
