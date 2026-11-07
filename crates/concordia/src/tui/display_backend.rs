@@ -20,7 +20,7 @@ impl DisplayBackend {
     }
     pub fn title(&mut self, title: &str) -> io::Result<()> {
         match self {
-            Self::Terminal(_) => super::write_osc_title(title),
+            Self::Terminal(_) => super::run::write_osc_title(title),
             #[cfg(windows)]
             Self::Window(window) => window.set_title(title),
         }
