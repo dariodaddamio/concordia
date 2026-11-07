@@ -6,6 +6,7 @@ pub mod commands;
 pub mod config;
 pub mod connect;
 pub mod context;
+pub mod continuity;
 pub mod cursor_usage;
 pub mod delegate;
 pub mod doctor;
