@@ -496,6 +496,8 @@ pub struct App {
     reference_journal: reference_journal::State,
     usage_summary: String,
     usage_credits: String,
+    /// The primary reset belongs beside the subscription summary, not in a second status line.
+    usage_reset: Option<String>,
     usage_tone: UsageTone,
     usage_warning: Option<String>,
     /// Width-1 ASCII bar drawn before the footer usage text.
@@ -608,6 +610,7 @@ impl App {
         let Some(home) = home else {
             self.usage_summary = "no account yet".into();
             self.usage_credits = "Credits: not reported".into();
+            self.usage_reset = None;
             self.usage_tone = UsageTone::Mute;
             self.usage_warning = None;
             return;
@@ -621,6 +624,13 @@ impl App {
     fn set_usage_footer(&mut self, snap: &crate::usage::UsageSnapshot) {
         self.usage_summary = snap.summary.clone();
         self.usage_credits = snap.credits_text();
+        self.usage_reset = snap
+            .windows
+            .iter()
+            .find(|window| window.label.starts_with("7d"))
+            .or_else(|| snap.windows.first())
+            .and_then(|window| window.resets.as_deref())
+            .map(crate::usage::reset_phrase);
         self.usage_tone = usage_tone(snap);
         self.usage_warning = crate::usage::low_limit_warning(snap, self.provider);
     }
@@ -4216,6 +4226,7 @@ impl App {
             thread_meta_done: false,
             usage_summary: "limits unknown".into(),
             usage_credits: "Credits: not reported".into(),
+            usage_reset: None,
             usage_tone: UsageTone::Mute,
             usage_warning: None,
             usage_fetcher: UsageFetcher::new(state_root_for_usage.clone()),
