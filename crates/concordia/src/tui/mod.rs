@@ -100,6 +100,8 @@ mod session_ui_tests;
 mod settings;
 mod stats_ui;
 mod syntax;
+#[allow(dead_code)]
+pub(crate) mod tabs;
 mod text;
 mod theme;
 mod tips;
@@ -142,6 +144,16 @@ fn contains(r: Rect, x: u16, y: u16) -> bool {
 }
 
 impl App {
+    #[allow(dead_code)]
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn has_unsent_work(&self) -> bool {
+        !self.editor.text().is_empty() || !self.queue.items.is_empty() || self.queue.edit.is_some()
+    }
+
     fn continuity_home(&self) -> Option<String> {
         self.home_path
             .as_ref()
