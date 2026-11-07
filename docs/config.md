@@ -19,7 +19,18 @@ request offers account and cached-model choices. The toggle is saved for future 
 mode = "manual" # manual | automatic
 accounts = ["codex-2", "claude-1"] # choose ids shown by /use, in preferred order
 models = [] # optional model ids from /model; tried on the current account first
+context = "provider" # provider (native compaction, default) or fresh
+codex_context = "provider" # provider | fresh; per-provider override
+claude_context = "provider" # provider | fresh; per-provider override
+cursor_context = "provider" # provider | fresh; fresh is disabled without a native usage signal
+context_threshold = 85 # fresh-session threshold, 50..=95 percent
 ```
+
+`fresh` uses only the provider's reported current-turn context usage and rotates at a turn
+boundary. The new native session receives the bounded map and resolvable source pointers. If a
+provider does not report a verified context window, fresh mode stays disabled and the reason is
+shown in `/config` and the turn notice. The setting is available in `/config` → Continuation;
+native provider compaction remains the default.
 
 A provider error explicitly reporting an exhausted usage limit triggers quota handoff; ordinary
 errors, cancellation and model prose do not. A recognized terminal context-capacity error can

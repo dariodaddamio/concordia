@@ -64,7 +64,7 @@ pub(super) fn open(app: &mut App) {
                     "Pause"
                 }
             ),
-            "Saved for future sessions; does not dispatch a pending request",
+            format!("Saved for future sessions; context: {} at {}% (Cursor disables fresh when usage is unreported)", context_label(app), crate::config::for_root(&app.state_root).continuation.context.threshold),
         ),
         row(
             "session-handoff",
@@ -115,6 +115,14 @@ pub(super) fn open(app: &mut App) {
         rows,
         true,
     );
+}
+
+fn context_label(app: &App) -> String {
+    let c = crate::config::for_root(&app.state_root)
+        .continuation
+        .context;
+    let (mode, _) = c.for_provider(app.provider);
+    mode.to_owned()
 }
 
 pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
