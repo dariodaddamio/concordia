@@ -166,6 +166,8 @@ impl Theme {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Threads {
     pub enabled: bool,
+    /// Whether Concordia writes its local thread log; `enabled` is retained as a legacy alias.
+    pub logging: bool,
     pub map_chars: usize,
     /// Write the awareness block into homes Concordia created (default on).
     pub awareness: bool,
@@ -203,6 +205,7 @@ impl Default for Config {
             },
             threads: Threads {
                 enabled: false,
+                logging: false,
                 map_chars: 1600,
                 awareness: true,
                 mcp: false,
@@ -455,6 +458,11 @@ impl Config {
                     "threads.enabled" => {
                         set_bool(v, &full, &mut cfg.threads.enabled, &mut warnings)
                     }
+                    "threads.logging" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
+                        Some("on") => cfg.threads.logging = true,
+                        Some("off") => cfg.threads.logging = false,
+                        _ => warnings.push("threads.logging must be 'on' or 'off'; using off".into()),
+                    },
                     "threads.map_chars" => match v.as_integer() {
                         Some(n) if MAP_CHARS_RANGE.contains(&n) => {
                             cfg.threads.map_chars = n as usize
@@ -645,7 +653,7 @@ pub fn ui_stats() -> bool {
 
 /// Whether conversations are recorded to `<state>/threads`. Wired by stage 1a.
 pub fn threads_enabled() -> bool {
-    get().threads.enabled
+    get().threads.enabled || get().threads.logging
 }
 
 /// Whether native-source prompt references are kept for recall across restarts.
@@ -769,6 +777,16 @@ mod tests {
         assert!(!c.threads.awareness && c.threads.mcp);
         let (c, warn) = w("[threads]\nmcp = \"yes\"\n");
         assert!(!c.threads.mcp && warn[0].contains("threads.mcp must be true or false"));
+    }
+
+    #[test]
+    fn thread_logging_accepts_on_and_off() {
+        let (c, warnings) = w("[threads]\nlogging = 'on'\n");
+        assert!(warnings.is_empty());
+        assert!(c.threads.logging);
+        let (c, warnings) = w("[threads]\nlogging = 'off'\n");
+        assert!(warnings.is_empty());
+        assert!(!c.threads.logging);
     }
 
     #[test]

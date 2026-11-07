@@ -22,7 +22,8 @@ pub const MAX_PINNED_SPANS: usize = 128;
 pub const MAX_PINNED_BYTES: usize = 256 * 1024;
 
 // ---------------------------------------------------------------------------------------------
-// Opt-in switch: the env var, the store setting, or `[threads] enabled` in `<state>/config.toml`.
+// The environment variable is an explicit enable override; normal configuration is
+// `[threads] logging = "on"` (with the old `enabled` key retained for compatibility).
 // ---------------------------------------------------------------------------------------------
 pub fn enabled(state_root: &Path) -> bool {
     if std::env::var("CONCORDIA_THREADS").is_ok_and(|v| v == "1") {
@@ -30,6 +31,7 @@ pub fn enabled(state_root: &Path) -> bool {
     }
     crate::store::get_settings(state_root).thread_log
         || crate::config::for_root(state_root).threads.enabled
+        || crate::config::for_root(state_root).threads.logging
 }
 
 /// A new thread log for a conversation, or None when recording is off.
@@ -1176,6 +1178,14 @@ mod tests {
             .unwrap()
             .contains("concordia thread read abc"));
         assert!(m.chars().count() <= 1600);
+    }
+
+    #[test]
+    fn thread_logging_off_writes_no_thread_files() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!enabled(root.path()));
+        assert!(start(root.path()).is_none());
+        assert!(!threads_dir(root.path()).exists());
     }
 
     #[test]
