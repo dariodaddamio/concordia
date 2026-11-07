@@ -370,7 +370,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         let home_owns_usage = landing::usage_box_visible(app, area.width);
         let credits_known = app.usage_credits != "Credits: not reported";
         let mut line = Vec::new();
-        if credits_known {
+        if !home_owns_usage || credits_known {
             line.push(Span::styled(
                 format!(" {}", app.usage_credits),
                 bar.fg(Color::Cyan),

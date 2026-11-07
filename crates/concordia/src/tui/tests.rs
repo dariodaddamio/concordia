@@ -58,6 +58,18 @@ fn home_header_omits_subscription_when_usage_box_visible() {
 }
 
 #[test]
+fn chat_header_keeps_credits_text() {
+    let mut h = Harness::new(120, 30);
+    h.app.landing = None;
+    h.draw();
+    assert!(
+        h.screen().contains("Credits: not reported"),
+        "{}",
+        h.screen()
+    );
+}
+
+#[test]
 fn use_picker_shows_every_limit_reset_at_narrow_widths_and_clears_on_close() {
     for width in [40, 64, 80, 120] {
         let mut h = Harness::new(width, 30);
