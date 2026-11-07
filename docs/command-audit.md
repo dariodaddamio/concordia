@@ -39,7 +39,7 @@ Defined in `crates/concordia/src/main.rs`:
 | `shortcut install [--desktop]` | Creates a per-user Start menu shortcut; `--desktop` selects the Desktop | Windows-only; uses the shell shortcut API through a hidden PowerShell helper and the running executable as its icon. |
 | `shortcut remove [--desktop]` | Removes Concordia's exact Start menu/Desktop shortcut | Windows-only and bounded to the owned `Concordia.lnk` path. |
 | `wezterm` | Launches a WezTerm window | Not invoked; no direct command behavior test found. |
-| `doctor`, `--doctor` | Prints diagnostics and exits nonzero when unhealthy | Fast-report tests exist; process exit contract is in smoke scripts. |
+| `doctor`, `--doctor` | Prints read-only diagnostics, evidence and suggested commands; exits nonzero when unhealthy | Fixes are never applied by the CLI; confirmed interactive fixes back up state first. Fast-report and applier tests cover the boundary. |
 | `thread list [--json]` | Lists recorded Concordia threads | `threads` unit tests exercise formatting and errors; list accepts only `--json`. |
 | `thread map ID [--max-chars N]` | Bounded map of a recorded thread | `threads` tests cover resolver, map, limits and invalid options. |
 | `thread read ID [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]` | Bounded transcript read | `threads` tests cover range/grep/tail parsing and output. Duplicate options currently use the last value; combinations are not exhaustively covered. |
@@ -73,7 +73,7 @@ active account in the background and updates the rows when discovery completes.
 | `/harness` | Harness connect and tool dispatch. |
 | `/open` | File side pane; Esc or X closes it. |
 | `/copy` | Copies the last assistant reply. |
-| `/doctor` | Setup, version and configuration diagnostics. |
+| `/doctor` | Setup, version and configuration diagnostics plus `[fix]` rows with before/after impact; interactive application requires explicit confirmation and a backup. |
 | `/update` | A fresh update page hides the workspace; Enter confirms an available build and Esc returns to chat. `/update check` is removed. |
 
 Additional TUI intercepts in `tui/mod.rs::handle_slash` do not pass through the parser:

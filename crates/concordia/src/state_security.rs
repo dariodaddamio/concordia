@@ -199,6 +199,60 @@ pub fn is_owner_only(path: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// Return the current folder SDDL for doctor backups. This is intentionally Windows-only:
+/// Unix ACLs are not changed by the doctor ACL applier.
+#[cfg(windows)]
+pub fn security_descriptor_sddl(path: &Path) -> std::io::Result<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let error = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if error != 0 {
+        return Err(std::io::Error::from_raw_os_error(error as i32));
+    }
+    let mut sddl: windows_sys::core::PWSTR = std::ptr::null_mut();
+    let ok = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            1,
+            DACL_SECURITY_INFORMATION,
+            &mut sddl,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 || sddl.is_null() {
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(descriptor.cast());
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut length = 0usize;
+    while unsafe { *sddl.add(length) } != 0 {
+        length += 1;
+    }
+    let result = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sddl, length) });
+    unsafe {
+        windows_sys::Win32::Foundation::LocalFree(sddl.cast());
+        windows_sys::Win32::Foundation::LocalFree(descriptor.cast());
+    }
+    Ok(result)
+}
+
 /// Recognize the protected ACL emitted for a state directory. The parser is deliberately
 /// independent of Windows pointers so malformed or future SDDL can only produce `false`.
 pub fn sddl_is_owner_only(sddl: &str) -> bool {
