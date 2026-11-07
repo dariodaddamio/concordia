@@ -2168,6 +2168,17 @@ impl App {
         self.show_picker(PickerKind::Resume, title, rows, true);
     }
 
+    fn resume_explicit_session(&mut self, id: &str) {
+        let Some(session) = list_recent_sessions(&self.state_root, 200)
+            .into_iter()
+            .find(|session| session.session_id == id)
+        else {
+            self.push_system("resume failed: native session is no longer present");
+            return;
+        };
+        self.resume_session(&session.account, &session.session_id);
+    }
+
     fn prepare_resume_delete(&mut self) {
         let Some(picker) = self.picker.as_ref() else {
             return;
@@ -3531,6 +3542,17 @@ impl App {
     }
 
     fn handle_slash(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if let Some(id) = trimmed
+            .strip_prefix("/resume ")
+            .or_else(|| trimmed.strip_prefix("/chats "))
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && !id.chars().any(char::is_whitespace))
+        {
+            self.push_command(line);
+            self.resume_explicit_session(id);
+            return true;
+        }
         if line.trim() == "/native" || line.trim().starts_with("/native ") {
             let parts: Vec<_> = line.split_whitespace().collect();
             let result = match parts.as_slice() {

@@ -73,8 +73,16 @@ pub fn tasks_to_picker_rows(tasks: &[crate::store::TaskRecord]) -> Vec<PickerRow
         .iter()
         .filter_map(|task| {
             let latest = task.sessions.last()?;
+            // Legacy sessions are projected as task-shaped rows for the picker, but have no
+            // durable task record to reopen. Preserve the pre-ledger row identity so selection
+            // resumes the explicitly bound native session directly.
+            let id = if task.id.starts_with("legacy-") && task.sessions.len() == 1 {
+                format!("resume:{}:{}", latest.account, latest.native_session_id)
+            } else {
+                format!("task:{}", task.id)
+            };
             Some(PickerRow {
-                id: format!("task:{}", task.id),
+                id,
                 label: task.title.clone(),
                 detail: format!(
                     "{} / {} · {} session{} · {}",
