@@ -99,6 +99,9 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         app.areas = Areas::default();
         raster::draw(f, app);
     }
+    if app.key_sheet {
+        draw_key_sheet(f, app);
+    }
     // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
     for cell in &mut f.buffer_mut().content {
         if cell.symbol().chars().any(char::is_control) {
@@ -111,6 +114,43 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         }
     }
     theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
+}
+
+fn draw_key_sheet(f: &mut Frame, app: &App) {
+    let bindings: Vec<_> = crate::commands::command_registry()
+        .iter()
+        .filter_map(|c| c.key_binding.map(|key| (key, c.name, c.description)))
+        .collect();
+    let mut lines = vec![Line::from("Key sheet")];
+    let mut last = None;
+    for (key, command, description) in bindings {
+        let category = crate::commands::command_registry()
+            .iter()
+            .find(|c| c.name == command)
+            .map(|c| format!("{:?}", c.category))
+            .unwrap_or_default();
+        if last.as_deref() != Some(category.as_str()) {
+            lines.push(Line::from(format!("  {category}")));
+            last = Some(category);
+        }
+        lines.push(Line::from(format!("  {key:<14} {command} — {description}")));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("  ? / F1 / Esc  close"));
+    let width = lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 4;
+    let height = lines.len() as u16 + 2;
+    let area = Rect::new(
+        f.area().x + f.area().width.saturating_sub(width) / 2,
+        f.area().y + f.area().height.saturating_sub(height) / 2,
+        width.min(f.area().width),
+        height.min(f.area().height),
+    );
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" shortcuts ")),
+        area,
+    );
+    let _ = app;
 }
 
 /// Slash-command suggestions, floating just above the prompt box.
