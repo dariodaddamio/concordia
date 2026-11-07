@@ -174,6 +174,17 @@ pub fn build_context_pack(
     max_chars: usize,
     thread_id: Option<&str>,
 ) -> Option<ContextPack> {
+    build_context_pack_with_workspace(messages, from, to, max_chars, thread_id, None)
+}
+
+pub fn build_context_pack_with_workspace(
+    messages: &[PackMessage],
+    from: ProviderKind,
+    to: ProviderKind,
+    max_chars: usize,
+    thread_id: Option<&str>,
+    workspace: Option<&crate::workspace_state::WorkspaceState>,
+) -> Option<ContextPack> {
     let count = messages
         .iter()
         .filter(|m| m.role != PackRole::Card && !m.text.trim().is_empty())
@@ -187,11 +198,12 @@ pub fn build_context_pack(
     sw.provider = Some(to.as_str().to_string());
     events.push(sw);
     let budget = max_chars.min(threads::MAP_CHARS);
-    let text = threads::build_map_v2(
+    let text = threads::build_map_v2_with_workspace(
         &events,
         thread_id.unwrap_or(""),
         budget,
         thread_id.is_some(),
+        workspace,
     );
     let labeled = text.lines().next().unwrap_or("").to_string();
     let pack_chars = text.chars().count();
