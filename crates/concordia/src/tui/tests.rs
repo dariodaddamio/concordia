@@ -9,6 +9,56 @@ use crate::usage::picker_row;
 use ratatui::backend::TestBackend;
 
 #[test]
+fn pending_approval_is_a_needs_you_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
+    let owner = crate::provider::interaction::InteractionOwner {
+        conversation_id: app.deleg.d.conversation_id().to_owned(),
+        workspace: dir.path().to_path_buf(),
+        execution_cwd: dir.path().to_path_buf(),
+        run_id: uuid::Uuid::new_v4().to_string(),
+        attempt_id: uuid::Uuid::new_v4().to_string(),
+        provider: ProviderKind::Codex,
+        account: "fixture".into(),
+        home: Some(dir.path().to_path_buf()),
+    };
+    app.native_owner = Some(owner.clone());
+    let mut connection = crate::provider::interaction::InteractionConnection::new(
+        Some(owner),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    connection.initialized_codex("0.166.0");
+    let (request, mut rx) = connection
+        .request(
+            "fixture-session",
+            serde_json::json!(1),
+            "item/commandExecution/requestApproval".into(),
+            serde_json::json!({
+                "threadId": "fixture-session",
+                "turnId": "fixture-turn",
+                "itemId": "item-1",
+                "reason": "Run the synthetic command?",
+                "availableDecisions": ["accept", "decline"]
+            }),
+        )
+        .unwrap();
+    app.questions.offer_native(request, true);
+    app.sync_needs_you();
+    assert_eq!(app.needs_you.len(), 1);
+    let item = app.needs_you.item(0).unwrap();
+    assert_eq!(item.kind, crate::needs_you::ItemKind::Approval);
+    assert_eq!(item.session_id, "fixture-session");
+
+    crate::tui::questions::handle_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+    );
+    assert!(rx.try_recv().is_ok());
+    app.sync_needs_you();
+    assert!(app.needs_you.is_empty());
+}
+
+#[test]
 fn chat_map_row_expands_for_v2_maps() {
     let map = crate::threads::build_map_v2(
         &[crate::threads::ThreadEvent::with_text(

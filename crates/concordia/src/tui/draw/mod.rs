@@ -27,7 +27,18 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         draw_input(f, page[2], app);
         draw_footer(f, page[3], app);
     } else {
-        let chat_area = workspace::draw(f, app);
+        let (chat_screen, panel_screen) =
+            if worker_panel::visible(f.area().width, app.worker_panel_open) {
+                let areas = Layout::horizontal([
+                    Constraint::Min(1),
+                    Constraint::Length(worker_panel::DEFAULT_WIDTH),
+                ])
+                .split(f.area());
+                (areas[0], areas[1])
+            } else {
+                (f.area(), Rect::default())
+            };
+        let chat_area = workspace::draw_in(f, app, chat_screen);
         // The prompt box grows with its content (up to MAX_INPUT_ROWS), so size it first.
         let text_w = (chat_area.width as usize)
             .saturating_sub(2 + PROMPT_W)
@@ -78,6 +89,9 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         chatref::draw(f, chunks[1], chunks[2], app);
         draw_footer(f, chunks[3], app);
         workers::draw(f, strip, chunks[1], app);
+        if panel_screen.width > 0 {
+            worker_panel::draw(f, panel_screen, app);
+        }
     }
     if app
         .picker
@@ -311,6 +325,7 @@ pub(super) fn provider_color(p: ProviderKind) -> Color {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
+    app.sync_needs_you();
     app.areas.header_email = None;
     app.areas.header_home = None;
     app.areas.header_credits = None;
@@ -381,6 +396,16 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         let agents = format!("  Ctrl+G agents {agent_count}");
         if left.iter().map(Span::width).sum::<usize>() + agents.len() <= available {
             left.push(Span::styled(agents, bar.fg(Color::Cyan)));
+        }
+    }
+    let needs_you = app.needs_you.len();
+    if needs_you > 0 {
+        let badge = format!("  Ctrl+N needs you {needs_you}");
+        if left.iter().map(Span::width).sum::<usize>() + badge.len() <= available {
+            left.push(Span::styled(
+                badge,
+                bar.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
         }
     }
     let usage_color = match app.usage_tone {

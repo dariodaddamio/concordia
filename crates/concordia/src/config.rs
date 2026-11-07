@@ -7,6 +7,7 @@
 //! wins over the config default (see `docs/config.md`).
 
 use crate::store::{default_store_root, TrustMode};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -23,6 +24,24 @@ pub struct Config {
     pub editor: EditorConfig,
     pub continuation: Continuation,
     pub turn: TurnConfig,
+    /// Named, local provider/account and model arrangements. The values are opaque model ids;
+    /// availability is checked when a crew is selected, never while loading config.
+    pub crews: BTreeMap<String, Crew>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Crew {
+    pub lead: String,
+    pub workers: Vec<String>,
+}
+
+impl Crew {
+    pub fn new(lead: impl Into<String>, workers: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            lead: lead.into(),
+            workers: workers.into_iter().collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +219,7 @@ impl Default for Config {
             turn: TurnConfig {
                 idle_timeout_minutes: 10,
             },
+            crews: BTreeMap::new(),
         }
     }
 }
@@ -300,7 +320,13 @@ impl Config {
             let Some(sub) = value.as_table() else {
                 if matches!(
                     section.as_str(),
-                    "ui" | "threads" | "mode" | "delegation" | "editor" | "continuation" | "turn"
+                    "ui" | "threads"
+                        | "mode"
+                        | "delegation"
+                        | "editor"
+                        | "continuation"
+                        | "turn"
+                        | "crews"
                 ) {
                     warnings.push(format!("[{section}] must be a table; ignored"));
                 } else {
@@ -308,6 +334,37 @@ impl Config {
                 }
                 continue;
             };
+            if section == "crews" {
+                for (name, crew_value) in sub {
+                    let Some(crew) = crew_value.as_table() else {
+                        warnings.push(format!("crews.{name} must be a table; ignored"));
+                        continue;
+                    };
+                    let lead = crew
+                        .get("lead")
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_owned);
+                    let workers = crew
+                        .get("workers")
+                        .and_then(toml::Value::as_array)
+                        .and_then(|a| {
+                            a.iter()
+                                .map(|v| v.as_str().map(str::to_owned))
+                                .collect::<Option<Vec<_>>>()
+                        });
+                    match (lead, workers) {
+                        (Some(lead), Some(workers))
+                            if !name.trim().is_empty() && !lead.trim().is_empty() =>
+                        {
+                            cfg.crews.insert(name.clone(), Crew { lead, workers });
+                        }
+                        _ => warnings.push(format!(
+                            "crews.{name} requires string lead and array workers; ignored"
+                        )),
+                    }
+                }
+                continue;
+            }
             for (key, v) in sub {
                 let full = format!("{section}.{key}");
                 match full.as_str() {
@@ -489,6 +546,25 @@ impl Config {
             warnings.push("ui.accent has insufficient contrast against the background; using a readable accent".into());
         }
         (cfg, warnings)
+    }
+
+    /// Stable TOML for the crew portion of config, useful for editors and round-trip tests.
+    pub fn crews_toml(&self) -> String {
+        let mut out = String::new();
+        for (name, crew) in &self.crews {
+            out.push_str(&format!(
+                "[crews.{name}]\nlead = {:?}\nworkers = [",
+                crew.lead
+            ));
+            for (i, worker) in crew.workers.iter().enumerate() {
+                if i != 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&format!("{worker:?}"));
+            }
+            out.push_str("]\n\n");
+        }
+        out
     }
 }
 
@@ -824,5 +900,16 @@ max_workers = 2
         std::fs::write(&other, "[ui]\ntips = false\n").unwrap();
         let l = Config::load_from_path(other.clone());
         assert!(!l.config.ui.tips && l.exists && l.path == other);
+    }
+
+    #[test]
+    fn crew_config_round_trips() {
+        let text = "[crews.default]\nlead = \"claude:opus\"\nworkers = [\"codex:fast\", \"cursor:small\"]\n";
+        let (config, warnings) = Config::parse(text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.crews["default"].lead, "claude:opus");
+        let (again, warnings) = Config::parse(&config.crews_toml());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(again.crews, config.crews);
     }
 }

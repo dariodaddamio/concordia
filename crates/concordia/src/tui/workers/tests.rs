@@ -10,6 +10,35 @@ use crate::store::{
 };
 use ratatui::backend::TestBackend;
 
+#[test]
+fn crew_use_sets_lead_and_enrolls_workers() {
+    let dir = tempfile::tempdir().unwrap();
+    account(dir.path(), "lead", "lead@example.invalid");
+    account(dir.path(), "worker", "worker@example.invalid");
+    let crew = crate::config::Crew::new("lead:opus", vec!["worker:fast".to_string()]);
+    let (lead, count) = super::apply_crew(dir.path(), "owner", &crew).unwrap();
+    assert_eq!(lead, ("lead".to_string(), Some("opus".to_string())));
+    assert_eq!(count, 1);
+    let settings = crate::store::get_settings(dir.path());
+    assert_eq!(settings.workers, vec!["worker"]);
+    assert_eq!(
+        settings.worker_models.get("worker"),
+        Some(&"fast".to_string())
+    );
+}
+
+#[test]
+fn crew_respects_user_mode_cap() {
+    assert_eq!(
+        crate::delegate::worker_trust(TrustMode::Ask, ChildTrust::Full),
+        TrustMode::Ask
+    );
+    assert_eq!(
+        crate::delegate::worker_trust(TrustMode::Workspace, ChildTrust::Full),
+        TrustMode::Workspace
+    );
+}
+
 struct H {
     app: App,
     term: Terminal<TestBackend>,
