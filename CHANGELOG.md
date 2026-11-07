@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-07b
+
+- Chat titles no longer show context that Codex injects into the first message (plugin lists,
+  AGENTS.md instructions, environment blocks); titles are a single line of what you actually
+  typed, and sessions with only injected context count as empty.
+- `concordia doctor` shows the state-folder permission fix once, as a PowerShell-ready command.
+
 ## 2026-11-07a
 
 ### Tabs

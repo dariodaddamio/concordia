@@ -614,13 +614,24 @@ fn check_state_dir(root: &Path) -> Check {
     let acl_unknown = acl_status.is_err();
     match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
         Ok(()) => check(
-            if warning.is_some() || acl_warning.is_some() || acl_unknown { Level::Warn } else { Level::Ok },
+            if warning.is_some() || acl_warning.is_some() || acl_unknown {
+                Level::Warn
+            } else {
+                Level::Ok
+            },
             "state",
-            warning.unwrap_or_else(|| if acl_unknown {
-                format!("{}: could not read permissions", root.display())
-            } else if acl_warning.is_some() {
-                format!("{} is writable; state directory is not owner-only; run icacls \"{}\" /inheritance:r /grant:r \"%USERNAME%\":F SYSTEM:F", root.display(), root.display())
-            } else { format!("{} is writable", root.display()) }),
+            warning.unwrap_or_else(|| {
+                if acl_unknown {
+                    format!("{}: could not read permissions", root.display())
+                } else if acl_warning.is_some() {
+                    format!(
+                        "{} is writable; state directory is not owner-only",
+                        root.display()
+                    )
+                } else {
+                    format!("{} is writable", root.display())
+                }
+            }),
         ),
         Err(e) => check(
             Level::Fail,
@@ -1581,6 +1592,8 @@ mod tests {
         ];
         for row in rows {
             let action = next_action(&row).expect("missing action");
+            assert!(!row.detail.contains("icacls"), "{}", row.detail);
+            assert!(!row.detail.contains("%USERNAME%"), "{}", row.detail);
             assert!(!action.contains("concordia doctor"), "{action}");
             assert!(!action.contains('%'), "{action}");
             if row.name == "state" {
