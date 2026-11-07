@@ -387,6 +387,8 @@ pub enum CommandOutcome {
     OpenModel,
     /// `/usage`: show the current account's limits in the transcript.
     ShowUsage,
+    /// `/doctor`: open the interactive local diagnostics screen.
+    OpenDoctor,
     ShowUsageRefresh,
     /// `/usage all`: picker with every ready account.
     OpenUsage,
@@ -446,13 +448,7 @@ pub fn dispatch_slash(
         SlashCommand::UsageAll => (CommandOutcome::OpenUsage, Vec::new()),
         SlashCommand::UsageRefresh => (CommandOutcome::ShowUsageRefresh, Vec::new()),
         SlashCommand::Copy => (CommandOutcome::CopyLastReply, Vec::new()),
-        SlashCommand::Doctor => (
-            CommandOutcome::Ok,
-            crate::doctor::run_fast_report()
-                .lines()
-                .map(str::to_string)
-                .collect(),
-        ),
+        SlashCommand::Doctor => (CommandOutcome::OpenDoctor, Vec::new()),
         SlashCommand::Update => (CommandOutcome::Update, Vec::new()),
         SlashCommand::Version => {
             let exe = std::env::current_exe()
