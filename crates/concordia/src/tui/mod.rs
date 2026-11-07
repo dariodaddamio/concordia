@@ -47,8 +47,9 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-
 mod activity;
+mod app;
+pub(in crate::tui) use app::state::*;
 mod appearance;
 mod artifacts;
 mod run;
@@ -115,7 +116,6 @@ mod workers;
 mod workspace;
 mod workspace_scope;
 mod workspace_search;
-
 use editor::Editor;
 #[cfg(test)]
 use input_dispatch::should_accept_key;
@@ -137,444 +137,8 @@ const HISTORY_MAX: usize = persist::HISTORY_CAP;
 const LOGIN_POLL_TICKS: u32 = 10;
 const LOGIN_GIVE_UP_TICKS: u32 = 3000;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Drag {
-    None,
-    Transcript,
-    Input,
-}
-
-/// Screen rectangles from the last draw, for mouse hit-testing.
-#[derive(Default, Clone, Copy)]
-struct Areas {
-    header_home: Option<Rect>,
-    header_credits: Option<Rect>,
-    header_email: Option<Rect>,
-    transcript: Rect,
-    input: Rect,
-    bottom_button: Rect,
-    footer: Rect,
-    run_cancel: Rect,
-    permissions: Rect,
-    permissions_popup: Rect,
-    pinned_card: Option<(Rect, usize)>,
-    modal_close: Option<(Rect, modal::Target)>,
-    /// Columns available for prompt text (inner width minus the `> ` prefix).
-    input_text_w: usize,
-    /// Slash-command suggestions (empty rect when closed); rows start one below `y`.
-    palette: Rect,
-}
-
-/// Counts rapid clicks on the same cell: 1 = click, 2 = double (word), 3 = triple (line).
-#[derive(Default)]
-struct ClickTracker {
-    last: Option<(u16, u16, Instant, u8)>,
-}
-
-impl ClickTracker {
-    fn register(&mut self, x: u16, y: u16, now: Instant) -> u8 {
-        let n = match self.last {
-            Some((lx, ly, at, n))
-                if lx == x && ly == y && now.duration_since(at) <= MULTI_CLICK =>
-            {
-                n % 3 + 1
-            }
-            _ => 1,
-        };
-        self.last = Some((x, y, now, n));
-        n
-    }
-}
-
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MsgRole {
-    User,
-    Assistant,
-    System,
-    /// The echo of a slash command, titling the output block that follows it.
-    Command,
-    Card,
-    /// The model's reasoning for a finished turn: dimmed, never part of the context pack.
-    Thinking,
-    /// The token line under a reply: dim, never part of the context pack or /copy.
-    Meta,
-}
-
-/// What the running turn is doing right now, so the wait is never a blank spinner.
-#[derive(Clone, PartialEq, Eq)]
-enum Phase {
-    /// Sent, nothing back yet.
-    Waiting,
-    Thinking,
-    Tool(String),
-    Writing,
-}
-
-impl Phase {
-    fn color(&self) -> Color {
-        match self {
-            Phase::Waiting => Color::Cyan,
-            Phase::Thinking => Color::Magenta,
-            Phase::Tool(_) => Color::Yellow,
-            Phase::Writing => Color::Green,
-        }
-    }
-
-    /// Each phase has its own animation, so the state reads from motion alone.
-    fn frames(&self) -> &'static [&'static str] {
-        match self {
-            Phase::Waiting => &["✧", "✦", "✧", "✦"],
-            Phase::Thinking => &["◇", "◈", "◆", "◈"],
-            Phase::Tool(_) => &["›", "»", "›", "·"],
-            Phase::Writing => &["▁", "▂", "▃", "▄", "▃", "▂"],
-        }
-    }
-
-    fn frame(&self, tick: u64) -> &'static str {
-        if let Phase::Tool(name) = self {
-            return crate::provider::stream_cards::tool_icon(name);
-        }
-        let f = self.frames();
-        f[(tick as usize) % f.len()]
-    }
-
-    fn frame_with_motion(&self, tick: u64, motion: bool) -> &'static str {
-        if motion || matches!(self, Phase::Tool(_)) {
-            self.frame(tick)
-        } else {
-            self.frames()[0]
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ChatLine {
-    role: MsgRole,
-    text: String,
-    card: Option<StreamCard>,
-    /// Who produced an agent reply (`Provider · account · model`), so each turn is labelled.
-    meta: Option<(ProviderKind, String)>,
-}
-
-impl ChatLine {
-    /// A provider switch carries a `[concordia map]`; the transcript shows its header line and
-    /// expands to the full map that was handed to the next provider.
-    fn is_map(&self) -> bool {
-        self.role == MsgRole::System
-            && self.text.starts_with("[concordia map]")
-            && self.text.contains('\n')
-    }
-
-    /// Rows with a working Expand / Collapse toggle.
-    fn toggles(&self) -> bool {
-        match self.role {
-            MsgRole::Card => true,
-            MsgRole::Thinking => thinking_expandable(&self.text),
-            _ => self.is_map(),
-        }
-    }
-}
-
-type ConnectFn = Box<dyn Fn(&Path, ProviderKind) -> Result<AddResult>>;
-
-/// A login window we opened; polled until the home reports a usable login.
-struct PendingLogin {
-    account: String,
-    provider: ProviderKind,
-    label: String,
-    home: PathBuf,
-    ticks: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PickerKind {
-    Doctor,
-    DoctorConfirm,
-    Settings,
-    FilePreferences,
-    Customization,
-    Idle,
-    Appearance,
-    Theme,
-    BrandColor,
-    BrandCustom,
-    ThemeImport,
-    ThemeExport,
-    CreditDetails,
-    /// Tokens through Concordia, opened with `t` from `/usage`.
-    Tokens,
-    Integrations,
-    Related,
-    Agents,
-    Recovery,
-    Files,
-    FileActions,
-    Artifacts,
-    ArtifactDetail,
-    Resume,
-    Trust,
-    FullModeConfirm,
-    Use,
-    AddProvider,
-    Remove,
-    RemoveConfirm,
-    Model,
-    Usage,
-    Continuation,
-    HandoffSettings,
-    ResumeDeleteConfirm,
-    Update,
-    NeedsYou,
-}
-
-struct Picker {
-    kind: PickerKind,
-    title: String,
-    rows: Vec<PickerRow>,
-    filter: String,
-    state: ListState,
-}
-
-struct DoctorUi {
-    checks: Vec<crate::doctor::Check>,
-    fixes: Vec<crate::doctor::Fix>,
-    fixed: HashMap<usize, String>,
-}
-
-struct ModelRefresh {
-    provider: ProviderKind,
-    account: String,
-    rx: std_mpsc::Receiver<Vec<crate::models::ModelEntry>>,
-}
-
-impl Picker {
-    fn filtered(&self) -> Vec<&PickerRow> {
-        let q = self.filter.to_ascii_lowercase();
-        if q.is_empty() {
-            return self.rows.iter().collect();
-        }
-        self.rows
-            .iter()
-            .filter(|r| {
-                r.label.to_ascii_lowercase().contains(&q)
-                    || r.detail.to_ascii_lowercase().contains(&q)
-            })
-            .collect()
-    }
-
-    /// Model picker only: keep a trailing "use <typed id>" row in sync with the filter so any
-    /// model id can be chosen even when the provider has not cached a catalog yet.
-    fn sync_typed_model(&mut self) {
-        if self.kind != PickerKind::Model {
-            return;
-        }
-        self.rows.retain(|r| !r.id.starts_with(TYPED_MODEL_PREFIX));
-        let typed = self.filter.trim();
-        let listed = self
-            .rows
-            .iter()
-            .any(|r| r.id.strip_prefix("model:") == Some(typed));
-        if valid_model_id(typed) && !listed {
-            self.rows.push(PickerRow {
-                id: format!("{TYPED_MODEL_PREFIX}{typed}"),
-                label: format!("use {typed}"),
-                detail: "typed model id".into(),
-            });
-        }
-    }
-
-    fn select_clamp(&mut self) {
-        self.sync_typed_model();
-        let n = self.filtered().len();
-        if n == 0 {
-            self.state.select(None);
-            return;
-        }
-        let i = self.state.selected().unwrap_or(0).min(n - 1);
-        self.state.select(Some(i));
-    }
-}
-
-struct BusySendConfirmation {
-    prompt: String,
-    conversation: String,
-    turn_started: Option<Instant>,
-    armed: Instant,
-}
-
-pub struct App {
-    appearance: appearance::State,
-    continuation: continuation::State,
-    native_owner: Option<crate::provider::interaction::InteractionOwner>,
-    native_usage_model: Option<String>,
-    native_usage_session: Option<String>,
-    native_accounting_owner: Option<crate::provider::interaction::InteractionOwner>,
-    scopes: workspace_scope::State,
-    managed_workspaces: managed_workspaces::State,
-    project_search: workspace_search::State,
-    file_action_target: Option<(crate::file_links::ResolvedFile, PathBuf)>,
-    continuation_target: Option<String>,
-    state_root: PathBuf,
-    cwd: PathBuf,
-    account_names: std::collections::BTreeMap<String, String>,
-    account_email: Option<String>,
-    header_email_revealed: bool,
-    header_email_pressed: bool,
-    header_home_pressed: bool,
-    permissions_pressed: bool,
-    permission_rows: Vec<(Rect, usize)>,
-    permission_row_pressed: Option<usize>,
-    card_header_pressed: Option<usize>,
-    header_credits_pressed: bool,
-    messages: Vec<ChatLine>,
-    idle_notice: Option<ProviderKind>,
-    handoff_after_cancel: bool,
-    editor: Editor,
-    /// The visible prompt for the active turn; cancellation never inserts it into the editor.
-    submitted_prompt: Option<String>,
-    expanded_activity: bool,
-    activity: activity::Activity,
-    palette: Palette,
-    /// Registry-derived key sheet shown by `?` or F1.
-    key_sheet: bool,
-    chatref: chatref::ChatRef,
-    related_files: related_files::State,
-    questions: questions::State,
-    images: images::State,
-    raster: raster::State,
-    /// Sent prompts, oldest first. In memory only: prompts may contain pasted secrets.
-    history: Vec<String>,
-    /// Index into `history` while browsing with the arrow keys.
-    hist_pos: Option<usize>,
-    /// What was in the prompt before browsing started, restored by Down past the newest entry.
-    hist_draft: String,
-    /// Two unsent buffers, toggled at the prompt's vertical boundaries.
-    parked_draft: Option<String>,
-    fresh_draft: bool,
-    /// Set by the first idle Ctrl+C; a second one inside QUIT_WINDOW exits.
-    quit_armed: Option<Instant>,
-    busy_send_confirmation: Option<BusySendConfirmation>,
-    full_mode_confirmed: bool,
-    /// First visible prompt row when the prompt is taller than its box.
-    input_scroll: usize,
-    input_scroll_anchor: Option<(u64, usize, usize, usize)>,
-    view: TranscriptView,
-    areas: Areas,
-    drag: Drag,
-    file_jobs: Vec<mpsc::UnboundedReceiver<String>>,
-    workspace: workspace::Workspace,
-    file_click: Option<transcript::Pos>,
-    #[cfg(test)]
-    last_file_open: Option<crate::file_links::ResolvedFile>,
-    clicks: ClickTracker,
-    modal_close_pressed: Option<modal::Target>,
-    /// Transient footer message (e.g. "copied 120 chars").
-    flash: Option<(String, Instant)>,
-    busy: bool,
-    pulse_on: bool,
-    /// Cancellation requested before the runner has provided its process handle.
-    cancel_requested: bool,
-    tick_count: u64,
-    should_quit: bool,
-    provider: ProviderKind,
-    account: String,
-    home_path: Option<PathBuf>,
-    model: String,
-    trust: TrustMode,
-    native_session_id: Option<String>,
-    /// Concordia task identity; unlike native_session_id it survives provider handoffs.
-    task_id: Option<String>,
-    session_chip: Option<String>,
-    session_ui: session_ui::State,
-    native_agents: native_agents::State,
-    footer_left: String,
-    picker: Option<Picker>,
-    doctor: Option<DoctorUi>,
-    doctor_applier: Box<dyn crate::doctor::FixApplier>,
-    model_refresh: Option<ModelRefresh>,
-    token_reads: tokens::State,
-    integrations: integrations::State,
-    artifacts: artifacts::State,
-    landing: Option<landing::Landing>,
-    update_preview: Option<UpdatePreview>,
-    /// Wrapped rows of the `/update` screen and how many fit, as last drawn.
-    update_rows: usize,
-    update_view: usize,
-    cancel_handle: Option<Arc<RunningTurn>>,
-    preparing_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
-    native_sources: Vec<crate::native_memory::Binding>,
-    prior_provider: ProviderKind,
-    prior_home: Option<String>,
-    need_context_pack: bool,
-    /// A persisted task map waiting to be attached to the first turn on a new provider.
-    task_map: Option<String>,
-    /// Opt-in thread log for this conversation (see threads.rs); None when recording is off.
-    thread: Option<crate::threads::ThreadLog>,
-    thread_meta_done: bool,
-    reference_journal: reference_journal::State,
-    usage_summary: String,
-    usage_credits: String,
-    /// The primary reset belongs beside the subscription summary, not in a second status line.
-    usage_reset: Option<String>,
-    usage_tone: UsageTone,
-    usage_warning: Option<String>,
-    /// Width-1 ASCII bar drawn before the footer usage text.
-    /// Claude limits are fetched on a worker thread and cached; never block the UI on them.
-    usage_fetcher: UsageFetcher,
-    /// Index of the `/usage` result block, rewritten in place when a background check lands.
-    usage_block: Option<usize>,
-    /// Footer process stats while switched on (`[ui] stats` or `/stats`).
-    stats: Option<crate::sysstats::StatsHandle>,
-    /// Provider capability detection started at launch (see `provider::compat`).
-    compat_rx: Option<compat_ui::CompatRx>,
-    /// Tone of each `/use` or `/usage all` picker row, by row id.
-    picker_tones: HashMap<String, UsageTone>,
-    live_cards: Vec<StreamCard>,
-    live_text: String,
-    streamed_text_committed: bool,
-    live_thinking: String,
-    phase: Phase,
-    /// A background update preview or install; the UI stays live while it runs.
-    job: Option<Job>,
-    /// `NO_COLOR` is set: draw with the terminal's own colours only.
-    no_color: bool,
-    turn_started: Option<Instant>,
-    /// What the provider reported for the running turn (summed if it reports more than once).
-    turn_usage: crate::provider::stream_cards::TurnUsage,
-    /// Session totals (tokens and cost the providers reported).
-    session_input: u64,
-    session_output: u64,
-    session_cost: f64,
-    /// Ticks spent idle with an empty prompt; drives the mid-session tip.
-    idle_ticks: u64,
-    tip_seed: u64,
-    tip_limiter: tips::RateLimiter,
-    pending_login: Option<PendingLogin>,
-    /// Account-connect entry point; swapped in tests so no login window ever opens.
-    connect: ConnectFn,
-    /// Set when /update succeeds — main loop tears down TUI then re-execs.
-    reexec_path: Option<PathBuf>,
-    /// Delegated workers: the jobs, the strip above the prompt, the viewer.
-    deleg: workers::Panel,
-    /// Read-only worker side panel; it never participates in focus routing.
-    worker_panel_open: bool,
-    /// `<state>/commands/*.md`, scanned at start (see `user_commands`).
-    user_cmds: Vec<crate::user_commands::UserCommand>,
-    /// Prompts lined up behind the running turn (see queue.rs).
-    queue: queue::Queue,
-    /// The prompt of the turn in flight, offered for retry only if the turn fails.
-    last_sent: Option<String>,
-    /// What the draft/history persistence has written (see persist.rs).
-    keep: persist::Keep,
-    /// A signed-out turn awaiting the user's second Enter confirmation.
-    signed_out_confirmation: Option<(String, String)>,
-    /// Accounts for which the user chose to send despite the presence warning this session.
-    signed_out_overrides: HashSet<String>,
-    needs_you: crate::needs_you::Queue,
 }
 
 impl App {
@@ -625,117 +189,6 @@ impl App {
         self.account_email = email;
         self.trust = get_settings(&self.state_root).trust;
         self.refresh_usage();
-    }
-
-    fn refresh_usage(&mut self) {
-        let home = self.home_path.clone().or_else(|| {
-            get_use_selection(&self.state_root)
-                .and_then(|s| s.home_path)
-                .map(PathBuf::from)
-        });
-        let Some(home) = home else {
-            self.usage_summary = "no account yet".into();
-            self.usage_credits = "Credits: not reported".into();
-            self.usage_reset = None;
-            self.usage_tone = UsageTone::Mute;
-            self.usage_warning = None;
-            return;
-        };
-        let snap = self
-            .usage_fetcher
-            .snapshot(self.provider, &self.account, &home);
-        self.set_usage_footer(&snap);
-    }
-
-    fn set_usage_footer(&mut self, snap: &crate::usage::UsageSnapshot) {
-        self.usage_summary = snap.summary.clone();
-        self.usage_credits = snap.credits_text();
-        self.usage_reset = snap
-            .windows
-            .iter()
-            .find(|window| window.label.starts_with("7d"))
-            .or_else(|| snap.windows.first())
-            .and_then(|window| window.resets.as_deref())
-            .map(crate::usage::reset_phrase);
-        self.usage_tone = usage_tone(snap);
-        self.usage_warning = crate::usage::low_limit_warning(snap, self.provider);
-    }
-
-    /// `/usage`: the current account's limits as one block. It reads the cache (a check starts in
-    /// the background when it is stale, and `/usage refresh` forces one) and is rewritten in place
-    /// when the answer arrives, so it never shows a stale "checking" line.
-    fn show_usage(&mut self, force: bool) {
-        let Some(home) = self.home_path.clone() else {
-            self.push_system("usage - no account selected; try /use");
-            return;
-        };
-        let snap = if force {
-            self.usage_fetcher
-                .snapshot_refresh(self.provider, &self.account, &home)
-        } else {
-            self.usage_fetcher
-                .snapshot(self.provider, &self.account, &home)
-        };
-        self.set_usage_footer(&snap);
-        self.push_command(if force { "/usage refresh" } else { "/usage" });
-        self.messages.push(ChatLine {
-            role: MsgRole::System,
-            text: self.usage_block_text(&snap),
-            card: None,
-            meta: None,
-        });
-        self.usage_block = Some(self.messages.len() - 1);
-    }
-
-    /// Header (account) plus one line per limit window, as a single message.
-    fn usage_block_text(&self, snap: &crate::usage::UsageSnapshot) -> String {
-        let mut details = format!(
-            "{}\nCredit spend: not reported separately\n\nSubscription limits\n{}",
-            snap.credits_text(),
-            snap.detail.trim()
-        );
-        if self.provider == ProviderKind::Codex {
-            details.push_str(&format!(
-                "\nCredit balance details: {}",
-                crate::usage::CREDIT_DASHBOARD_URL
-            ));
-        }
-        let body = details.trim();
-        format!("{} - limits\n{}", self.account_label(), body)
-    }
-
-    /// Rewrite the last `/usage` block with the newest reading (cache only, never blocks).
-    fn update_usage_block(&mut self) {
-        let Some(idx) = self.usage_block else {
-            return;
-        };
-        let Some(home) = self.home_path.clone() else {
-            return;
-        };
-        if self
-            .messages
-            .get(idx)
-            .is_none_or(|m| m.role != MsgRole::System)
-        {
-            self.usage_block = None;
-            return;
-        }
-        let snap = self
-            .usage_fetcher
-            .snapshot(self.provider, &self.account, &home);
-        self.messages[idx].text = self.usage_block_text(&snap);
-    }
-
-    fn account_label(&self) -> String {
-        self.named_account(self.provider, &self.account)
-    }
-
-    fn named_account(&self, provider: ProviderKind, account: &str) -> String {
-        let default = display_account_name(provider, account);
-        self.account_names
-            .get(account)
-            .map(|name| format!("{name} ({default})"))
-            .unwrap_or(default)
     }
 
     fn window_title(&self) -> String {
@@ -793,7 +246,10 @@ impl App {
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")
-                .replace(['—', '–'], "-")
+                .replace(['\u{2014}', '\u{2013}'], "-")
+                /*
+                .replace(['Ã¢â‚¬â€', 'Ã¢â‚¬â€œ'], "-")
+                */
                 .chars()
                 .filter(|c| !c.is_control())
                 .take(max)
@@ -814,15 +270,15 @@ impl App {
     fn run_status_label(&self) -> String {
         if self.cancel_requested {
             return if self.queue.force_pending {
-                "Stopping to send the queued message…".into()
+                "Stopping to send the queued message\u{2026}".into()
             } else {
-                "Stopping this turn…".into()
+                "Stopping this turn\u{2026}".into()
             };
         }
         match &self.phase {
-            Phase::Waiting if self.cancel_requested => "Stopping this turn…".into(),
+            Phase::Waiting if self.cancel_requested => "Stopping this turn\u{2026}".into(),
             Phase::Waiting if self.live_cards.is_empty() => {
-                format!("{} · starting the turn", self.account_label())
+                format!("{} \u{b7} starting the turn", self.account_label())
             }
             Phase::Waiting => "Reviewing the latest tool results".into(),
             Phase::Thinking => "Working through the next step".into(),
@@ -947,17 +403,6 @@ impl App {
         }
     }
 
-    /// After Ctrl+Z / Ctrl+Y: the text changed under the palette and any history browsing.
-    fn after_undo(&mut self) {
-        self.palette.reset();
-        self.hist_pos = None;
-        self.view.clear_selection();
-    }
-
-    fn flash(&mut self, msg: impl Into<String>) {
-        self.flash = Some((msg.into(), Instant::now()));
-    }
-
     fn paste_clipboard(&mut self) {
         if !cfg!(test)
             && clipboard::has_attachment()
@@ -975,133 +420,7 @@ impl App {
         match clipboard::get_text() {
             Ok(t) if !t.is_empty() => self.paste_text(&t),
             Ok(_) => {}
-            Err(e) => self.flash(format!("paste failed — {e}")),
-        }
-    }
-
-    /// Insert pasted text into the prompt (replacing any selection).
-    fn paste_text(&mut self, text: &str) {
-        self.paste_text_chunk(text, false);
-    }
-
-    fn paste_text_chunk(&mut self, text: &str, continues: bool) {
-        self.busy_send_confirmation = None;
-        if self.raster.active() {
-            return;
-        }
-        if integrations::paste(self, text) {
-            return;
-        }
-        if worker_input::active(self) {
-            worker_input::paste(self, text);
-            return;
-        }
-        if self.project_search.active() {
-            self.project_search.paste(text);
-            return;
-        }
-        // Paste can arrive as one Event::Paste or as a buffered burst split into overflow
-        // chunks. Route every chunk here so a modal never edits the prompt or queue editor.
-        if self.activity.detail.is_some() {
-            self.activity.insert_query(text);
-            return;
-        }
-        if let Some(picker) = self.picker.as_mut() {
-            let clean: String = text::normalize_newlines(text)
-                .chars()
-                .flat_map(|c| if c == '\t' { vec![' '; 4] } else { vec![c] })
-                .collect();
-            picker.filter.push_str(&clean);
-            picker.select_clamp();
-            return;
-        }
-        if queue::paste(self, text, continues) {
-            return;
-        }
-        if self.workspace.focused.is_some() {
-            if workspace::paste(self, text) {
-                return;
-            }
-            self.flash("read-only file pane; Esc returns to chat before pasting");
-            return;
-        }
-        if landing::handle_paste(self, text) {
-            return;
-        }
-        self.view.clear_selection();
-        self.palette.reset();
-        self.questions.focused = false;
-        self.editor.insert_paste_chunk(text, continues);
-        if !continues {
-            self.offer_pasted_files(text);
-        }
-    }
-
-    /// Selected text in the transcript, else in the prompt.
-    fn selected_text(&self) -> Option<String> {
-        self.view
-            .selected_text()
-            .or_else(|| self.editor.selected_text())
-    }
-
-    fn has_selection(&self) -> bool {
-        self.view.sel.is_some_and(|(a, b)| a != b) || self.editor.selection().is_some()
-    }
-
-    fn clear_selections(&mut self) {
-        self.view.clear_selection();
-        self.editor.clear_selection();
-        self.drag = Drag::None;
-    }
-
-    fn last_assistant_text(&self) -> Option<String> {
-        self.messages
-            .iter()
-            .rev()
-            .find(|m| m.role == MsgRole::Assistant && !m.text.trim().is_empty())
-            .map(|m| m.text.clone())
-    }
-
-    fn navigate_activity_card(&mut self, older: bool) {
-        let current = self.activity.detail.unwrap_or(self.messages.len());
-        let next = if older {
-            (0..current).rev().find(|&i| {
-                self.messages
-                    .get(i)
-                    .is_some_and(|m| m.role == MsgRole::Card)
-            })
-        } else {
-            (current + 1..self.messages.len()).find(|&i| {
-                self.messages
-                    .get(i)
-                    .is_some_and(|m| m.role == MsgRole::Card)
-            })
-        };
-        if let Some(i) = next {
-            self.activity.open(i);
-        }
-    }
-
-    fn open_tool_details(&mut self, index: usize) {
-        if self
-            .messages
-            .get(index)
-            .is_some_and(|message| message.role == MsgRole::Card)
-        {
-            self.activity.open(index);
-        }
-    }
-
-    fn write_clipboard(&mut self, text: &str) -> bool {
-        match clipboard::set_text(text) {
-            Ok(()) => {
-                self.flash(format!("copied {} chars", text.chars().count()));
-                true
-            }
-            Err(e) => {
-                self.flash(e);
-                false
-            }
+            Err(e) => self.flash(format!("paste failed Ã¢â‚¬â€ {e}")),
         }
     }
 
@@ -1116,17 +435,8 @@ impl App {
         match text {
             Some(t) => self.write_clipboard(&t),
             None => {
-                self.flash("nothing to copy — drag to select, or /copy for the last reply");
+                self.flash("nothing to copy Ã¢â‚¬â€ drag to select, or /copy for the last reply");
                 false
-            }
-        }
-    }
-
-    fn cut(&mut self) {
-        if let Some(t) = self.editor.selected_text() {
-            if self.write_clipboard(&t) {
-                self.editor.cut();
-                self.flash(format!("cut {} chars", t.chars().count()));
             }
         }
     }
@@ -1306,7 +616,7 @@ impl App {
             .map(|item| PickerRow {
                 id: format!("needs:{}", item.id),
                 label: item.title.clone(),
-                detail: format!("{} · {}", item.kind.label(), item.session_id),
+                detail: format!("{} Ã‚· {}", item.kind.label(), item.session_id),
             })
             .collect();
         self.show_picker(PickerKind::NeedsYou, "needs you".into(), rows, false);
@@ -1320,833 +630,755 @@ impl App {
         }
     }
 
-    fn thread_id(&self) -> Option<&str> {
-        self.thread.as_ref().map(|t| t.id())
-    }
-
-    /// Append to the thread log when recording is on. Errors are ignored: logging is best effort.
-    fn log_event(&mut self, mut ev: crate::threads::ThreadEvent) {
-        if let Some(t) = &self.thread {
-            if matches!(ev.k.as_str(), "user" | "assistant" | "card") {
-                self.reference_journal.buffer(t.id(), ev, None);
-            } else {
-                ev.text = None;
-                if let Some(card) = &mut ev.card {
-                    card.detail = None;
-                }
-                let _ = t.append(&ev);
-            }
-        }
-    }
-
-    fn log_who(&self, ev: crate::threads::ThreadEvent) -> crate::threads::ThreadEvent {
-        ev.who(self.provider.as_str(), &self.account, &self.model)
-    }
-
-    fn log_user(&mut self, text: &str) {
-        if let Some(t) = &self.thread {
-            if !self.thread_meta_done {
-                self.thread_meta_done = true;
-                let _ = t.write_meta(&crate::threads::ThreadMeta {
-                    id: t.id().to_string(),
-                    started: crate::threads::now_secs(),
-                    title: self
-                        .session_ui
-                        .title
-                        .clone()
-                        .unwrap_or_else(|| crate::threads::title_from_prompt(text)),
-                    cwd: self.cwd.to_string_lossy().into_owned(),
-                    account: Some(self.account.clone()),
-                });
-            }
-        }
-        self.log_event(crate::threads::ThreadEvent::with_text("user", text));
-    }
-
-    fn log_switch(&mut self, from: ProviderKind) {
-        let ev = crate::threads::ThreadEvent::with_text(
-            "switch",
-            &format!("{} -> {}", from.as_str(), self.account),
-        );
-        let ev = self.log_who(ev);
-        self.log_event(ev);
-    }
-
-    fn push_user(&mut self, text: String) {
-        self.related_files.invalidate();
-        self.log_user(&text);
-        self.messages.push(ChatLine {
-            role: MsgRole::User,
-            text,
-            card: None,
-            meta: None,
-        });
-    }
-
-    fn reply_meta(&self) -> (ProviderKind, String) {
-        let mut label = self.account_label();
-        if !self.model.is_empty() && self.model != "?" {
-            label.push_str(&format!(" \u{b7} {}", self.model));
-        }
-        (self.provider, label)
-    }
-
-    fn push_command(&mut self, line: &str) {
-        self.messages.push(ChatLine {
-            role: MsgRole::Command,
-            text: line.trim().to_string(),
-            card: None,
-            meta: None,
-        });
-    }
-
-    fn push_assistant(&mut self, text: String) {
-        self.related_files.invalidate();
-        let ev = self.log_who(crate::threads::ThreadEvent::with_text("assistant", &text));
-        self.log_event(ev);
-        let meta = Some(self.reply_meta());
-        self.messages.push(ChatLine {
-            role: MsgRole::Assistant,
-            text,
-            card: None,
-            meta,
-        });
-    }
-
-    fn push_map(&mut self, pack: &crate::context::ContextPack) {
-        let rest = pack.text.split_once('\n').map_or("", |(_, rest)| rest);
-        self.push_system(format!(
-            "{} · ~{} tok\n{}",
-            pack.labeled,
-            pack.est_tokens,
-            rest.trim_end()
-        ));
-    }
-
-    fn push_card(&mut self, card: StreamCard) {
-        let name = card.title.to_ascii_lowercase();
-        if !self.queue.force_pending
-            && (name.contains("request_user_input") || name.contains("askuserquestion"))
-        {
-            if let Some(detail) = &card.detail {
-                self.questions.offer_tool(detail);
-            }
-        }
-        self.related_files.invalidate();
-        let turn_start = self
-            .messages
-            .iter()
-            .rposition(|m| m.role == MsgRole::User)
-            .unwrap_or(0);
-        let existing_index = (turn_start..self.messages.len()).rev().find(|&i| {
-            let m = &self.messages[i];
-            m.role == MsgRole::Card
-                && m.card.as_ref().map(|c| c.id.as_str()) == Some(card.id.as_str())
-        });
-        if existing_index.is_some_and(|i| self.messages[i].card.as_ref() == Some(&card)) {
-            return;
-        }
-        if card.status != CardStatus::Running {
-            let status = if card.status == CardStatus::Error {
-                "error"
-            } else {
-                "done"
-            };
-            let ev = self.log_who(crate::threads::ThreadEvent::card(
-                &card.title,
-                card.detail.as_deref(),
-                status,
-            ));
-            if let Some(thread) = &self.thread {
-                self.reference_journal
-                    .buffer(thread.id(), ev, Some(&card.id));
-            }
-        }
-        let text = format_card_line(&card);
-        if let Some(i) = existing_index {
-            let existing = &mut self.messages[i];
-            existing.card = Some(card);
-            existing.text = text;
-            self.native_agents
-                .record(existing.card.as_ref().unwrap(), i);
-            if self.activity.detail == Some(i) {
-                self.activity.invalidate_search();
-            }
-            self.refresh_agents_picker();
-            return;
-        }
-        let meta = Some(self.reply_meta());
-        self.messages.push(ChatLine {
-            role: MsgRole::Card,
-            text,
-            card: Some(card),
-            meta,
-        });
-        if let Some(card) = self.messages.last().and_then(|m| m.card.as_ref()) {
-            self.native_agents.record(card, self.messages.len() - 1);
-        }
-        self.refresh_agents_picker();
-    }
-
-    fn apply_progress(&mut self, ev: TurnProgress) {
-        match ev {
-            TurnProgress::Artifact(record) => {
-                if self.native_owner.as_ref() == Some(&record.owner)
-                    && record.owner.conversation_id == self.deleg.d.conversation_id()
-                {
-                    self.commit_live_thinking();
-                    self.commit_live_text();
-                    if !artifacts::record_live(self, &record) {
-                        self.push_card(record.card());
-                    }
-                }
-            }
-            TurnProgress::Interaction(request) => {
-                if self.cancel_requested
-                    || !self.busy
-                    || !self
-                        .native_owner
-                        .as_ref()
-                        .is_some_and(|owner| request.is_owned_by(owner))
-                {
-                    request.invalidate();
-                    return;
-                }
-                let plan = matches!(
-                    request.kind(),
-                    crate::provider::interaction::NativeInteraction::PlanApproval { .. }
-                );
-                let codex_review = matches!(
-                    request.kind(),
-                    crate::provider::interaction::NativeInteraction::CodexPermission { .. }
-                );
-                if codex_review {
-                    let evidence = self
-                        .messages
-                        .iter()
-                        .rev()
-                        .filter_map(|message| message.card.as_ref())
-                        .find(|card| Some(card.id.as_str()) == request.params["itemId"].as_str())
-                        .and_then(|card| card.detail.as_deref())
-                        .unwrap_or("");
-                    let detail = format!(
-                        "{evidence}\n\nNative request:\n{}",
-                        serde_json::to_string_pretty(&request.params).unwrap_or_default()
-                    );
-                    self.push_card(StreamCard {
-                        id: format!(
-                            "native-review:{}:{}",
-                            request.envelope().connection_id,
-                            request.envelope().request_id
-                        ),
-                        title: "Native action awaiting your review".into(),
-                        detail: Some(detail),
-                        status: CardStatus::Running,
-                    });
-                    if self.picker.is_none() && self.activity.detail.is_none() {
-                        self.activity.open(self.messages.len() - 1);
-                    }
-                }
-                if plan {
-                    self.push_card(StreamCard {
-                        id: format!(
-                            "native-plan:{}:{}",
-                            request.envelope().connection_id,
-                            request.envelope().request_id
-                        ),
-                        title: "Plan awaiting your review".into(),
-                        detail: Some(format!(
-                            "{}\n\n{}\n\nTasks:\n{}",
-                            request.params["overview"].as_str().unwrap_or(""),
-                            request.params["plan"].as_str().unwrap_or(""),
-                            serde_json::to_string_pretty(&request.params["todos"])
-                                .unwrap_or_default()
-                        )),
-                        status: CardStatus::Running,
-                    });
-                    if self.picker.is_none() && self.activity.detail.is_none() {
-                        self.activity.open(self.messages.len() - 1);
-                    }
-                }
-                self.questions.offer_native(
-                    *request,
-                    !plan && !codex_review && self.editor.text().is_empty(),
-                );
-                self.pause_queue();
-            }
-            TurnProgress::Session(id) => {
-                self.native_usage_session = Some(id.clone());
-                self.native_session_id = Some(id);
-                self.remember_native_source();
-                self.save_turn_checkpoint(false);
-                self.persist_session_title();
-                if let (Some(task_id), Some(session_id)) =
-                    (self.task_id.clone(), self.native_session_id.clone())
-                {
-                    let map = Some(crate::store::TaskMapPointer {
-                        version: 2,
-                        thread_id: self.thread_id().unwrap_or(task_id.as_str()).to_owned(),
-                    });
-                    if let Err(error) = crate::store::record_task_session(
-                        &self.state_root,
-                        &task_id,
-                        self.session_ui.title.as_deref().unwrap_or("untitled task"),
-                        &self.cwd.to_string_lossy(),
-                        self.provider,
-                        &self.account,
-                        &session_id,
-                        map,
-                    ) {
-                        self.flash(format!("task link could not be saved: {error}"));
-                    }
-                }
-            }
-            TurnProgress::Thinking(t) => {
-                self.clear_idle_notice();
-                self.commit_live_text();
-                self.phase = Phase::Thinking;
-                self.live_thinking.push_str(&t);
-                if !t.ends_with('\n') {
-                    self.live_thinking.push('\n');
-                }
-            }
-            TurnProgress::ThinkingDelta(t) => {
-                self.clear_idle_notice();
-                self.commit_live_text();
-                self.phase = Phase::Thinking;
-                self.live_thinking.push_str(&t);
-            }
-            TurnProgress::Text(t) => {
-                self.clear_idle_notice();
-                self.commit_live_thinking();
-                self.phase = Phase::Writing;
-                self.live_text.push_str(&t);
-                if !t.ends_with('\n') {
-                    self.live_text.push('\n');
-                }
-            }
-            TurnProgress::TextDelta(t) => {
-                self.clear_idle_notice();
-                self.commit_live_thinking();
-                self.phase = Phase::Writing;
-                self.live_text.push_str(&t);
-            }
-            TurnProgress::Card(card) => {
-                self.clear_idle_notice();
-                self.commit_live_thinking();
-                self.commit_live_text();
-                self.phase = if card.status == CardStatus::Running {
-                    Phase::Tool(card.title.clone())
-                } else {
-                    Phase::Waiting
-                };
-                let id = card.id.clone();
-                upsert_card(&mut self.live_cards, card);
-                if let Some(merged) = self.live_cards.iter().find(|c| c.id == id).cloned() {
-                    self.push_card(merged);
-                }
-            }
-            TurnProgress::Notice(n) => self.push_system(n),
-            TurnProgress::Idle {
-                provider, minutes, ..
-            } => {
-                let text = format!(
-                    "No output from {} for {} minutes. Esc cancels; click here (or press Ctrl+K) for options.",
-                    Self::idle_provider_name(provider),
-                    minutes
-                );
-                if let Some(line) = self.messages.iter_mut().find(|line| {
-                    line.meta
-                        .as_ref()
-                        .is_some_and(|(_, label)| label == "__concordia_idle_notice__")
-                }) {
-                    line.text = text;
-                } else {
-                    self.messages.push(ChatLine {
-                        role: MsgRole::System,
-                        text,
-                        card: None,
-                        meta: Some((provider, "__concordia_idle_notice__".into())),
-                    });
-                    self.idle_notice = Some(provider);
-                }
-            }
-            TurnProgress::ChatReferences { maps, notices } => {
-                self.show_chat_refs(chatref::Expansion {
-                    maps,
-                    notices,
-                    ..Default::default()
-                });
-            }
-            TurnProgress::Error(e) => {
-                if self.continuation.errors.len() < 12 {
-                    self.continuation
-                        .errors
-                        .push(e.chars().take(2000).collect());
-                }
-                self.push_system(e);
-            }
-            TurnProgress::Usage(u) => {
-                self.turn_usage.update_snapshot(&u);
-            }
-        }
-    }
-
-    fn commit_live_text(&mut self) {
-        let text = std::mem::take(&mut self.live_text);
-        if !text.trim().is_empty() {
-            self.push_assistant(text.trim().to_string());
-            self.streamed_text_committed = true;
-        }
-    }
-
-    fn commit_live_thinking(&mut self) {
-        let text = std::mem::take(&mut self.live_thinking);
-        if !text.is_empty() {
+    /*
+        fn push_assistant(&mut self, text: String) {
+            self.related_files.invalidate();
+            let ev = self.log_who(crate::threads::ThreadEvent::with_text("assistant", &text));
+            self.log_event(ev);
             let meta = Some(self.reply_meta());
             self.messages.push(ChatLine {
-                role: MsgRole::Thinking,
+                role: MsgRole::Assistant,
                 text,
                 card: None,
                 meta,
             });
         }
-    }
 
-    /// The tip to show dimmed under the transcript, if the moment is right.
-    fn visible_tip(&mut self) -> Option<&'static str> {
-        let quiet = !self.busy
-            && self.picker.is_none()
-            && self.job.is_none()
-            && self.pending_login.is_none()
-            && self.editor.chars().is_empty();
-        let fresh = self.messages.iter().all(|m| m.role == MsgRole::System);
-        if !quiet
-            || !(fresh || self.idle_ticks >= tips::IDLE_TICKS)
-            || !tips::enabled(self.appearance.ui.tips)
-        {
-            return None;
-        }
-        let tip = tips::contextual_tip(
-            !self.queue.items.is_empty(),
-            self.busy,
-            self.usage_warning.is_some(),
-            self.tip_seed,
-        );
-        self.tip_limiter.take(tip)
-    }
-
-    /// Add a finished turn's tokens to the local token log.
-    fn record_tokens(
-        &mut self,
-        usage: &crate::provider::stream_cards::TurnUsage,
-        outcome: &TurnOutcome,
-    ) {
-        let owner = self
-            .native_accounting_owner
-            .as_ref()
-            .or(self.native_owner.as_ref());
-        let provider = owner.map_or(self.provider, |owner| owner.provider);
-        let (new_input, cached_input, output) = crate::token_log::split(provider, usage);
-        let entry = crate::token_log::Entry {
-            at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            provider: provider.as_str().to_string(),
-            account: owner.map_or_else(|| self.account.clone(), |owner| owner.account.clone()),
-            model: if owner.is_some() {
-                self.native_usage_model.clone()
-            } else {
-                (!self.model.is_empty() && self.model != "?").then(|| self.model.clone())
-            },
-            project: owner
-                .map_or(self.cwd.as_path(), |owner| owner.execution_cwd.as_path())
-                .to_string_lossy()
-                .into_owned(),
-            chat: outcome.session_id.clone().or_else(|| {
-                if owner.is_some() {
-                    self.native_usage_session.clone()
-                } else {
-                    self.native_session_id.clone()
-                }
-            }),
-            new_input,
-            cached_input,
-            output,
-            cost_usd: usage.cost_usd,
-            attribution: owner.map(|owner| {
-                let (status, complete) = crate::token_log::attempt_outcome(
-                    outcome.exit_code,
-                    outcome.cancelled,
-                    outcome.failed,
-                );
-                crate::token_log::Attribution::new(
-                    crate::token_log::Origin::Main,
-                    &owner.run_id,
-                    &owner.attempt_id,
-                    owner.home.as_deref(),
-                    usage,
-                    status,
-                    complete,
-                )
-            }),
-        };
-        if let Err(e) = crate::token_log::record(&self.state_root, &entry) {
-            crate::logging::info(&format!("token log not written: {e}"));
+        fn push_map(&mut self, pack: &crate::context::ContextPack) {
+            let rest = pack.text.split_once('\n').map_or("", |(_, rest)| rest);
             self.push_system(format!(
-                "Usage could not be saved: {e}. Native usage is not assumed to be zero."
+                "{} · ~{} tok\n{}",
+                pack.labeled,
+                pack.est_tokens,
+                rest.trim_end()
             ));
         }
-    }
 
-    fn finalize_turn(&mut self, outcome: TurnOutcome) {
-        self.clear_idle_notice();
-        self.busy_send_confirmation = None;
-        self.submitted_prompt = None;
-        let elapsed = self.turn_started.map(|t| t.elapsed());
-        let usage = std::mem::take(&mut self.turn_usage);
-        if !usage.is_empty()
-            || self.native_owner.is_some()
-            || self.native_accounting_owner.is_some()
-        {
-            self.record_tokens(&usage, &outcome);
-        }
-        self.session_input = self.session_input.saturating_add(usage.input.unwrap_or(0));
-        self.session_output = self
-            .session_output
-            .saturating_add(usage.output.unwrap_or(0));
-        self.session_cost += usage.cost_usd.unwrap_or(0.0);
-        // Events only: never the prompt or the reply.
-        crate::logging::info(&format!(
-            "turn provider={} account={} exit={:?} cancelled={} ms={} stderr_lines={}",
-            self.provider.as_str(),
-            self.account,
-            outcome.exit_code,
-            outcome.cancelled,
-            self.turn_started
-                .take()
-                .map(|t| t.elapsed().as_millis())
-                .unwrap_or(0),
-            outcome.stderr_tail.lines().count()
-        ));
-        if let Some(sid) = outcome.session_id {
-            self.native_session_id = Some(sid);
-            self.persist_session_title();
-        }
-        let had_cards = !self.live_cards.is_empty() || !outcome.cards.is_empty();
-        let failed = !outcome.cancelled
-            && (outcome.failed
-                || match outcome.exit_code {
-                    Some(code) => code != 0,
-                    None => !outcome.stderr_tail.trim().is_empty(),
-                });
-        let finish_incomplete = |mut card: StreamCard| {
-            card.status = CardStatus::Error;
-            let reason = if outcome.cancelled {
-                "Interrupted: turn cancelled before the provider reported tool completion."
-                    .to_string()
-            } else if failed {
-                match outcome.exit_code {
-                    Some(code) => format!(
-                        "Provider failed with exit code {code} before reporting tool completion."
-                    ),
-                    None => "Provider failed before reporting tool completion.".to_string(),
+        fn push_card(&mut self, card: StreamCard) {
+            let name = card.title.to_ascii_lowercase();
+            if !self.queue.force_pending
+                && (name.contains("request_user_input") || name.contains("askuserquestion"))
+            {
+                if let Some(detail) = &card.detail {
+                    self.questions.offer_tool(detail);
                 }
-            } else {
-                "Incomplete: provider stream ended before reporting tool completion.".to_string()
-            };
-            card.detail = Some(match card.detail.take() {
-                Some(detail) if !detail.is_empty() => format!("{detail}\n{reason}"),
-                _ => reason,
-            });
-            card
-        };
-        // Final output may contain edits completed after the last progress event was drained.
-        // Reconcile by id even when some cards have already streamed.
-        for card in outcome.cards {
-            let id = card.id.clone();
-            upsert_card(&mut self.live_cards, card);
-            if let Some(card) = self.live_cards.iter().find(|card| card.id == id).cloned() {
-                self.push_card(card);
             }
-        }
-        let running: Vec<_> = self
-            .live_cards
-            .iter()
-            .filter(|card| card.status == CardStatus::Running)
-            .cloned()
-            .collect();
-        for card in running {
-            self.push_card(finish_incomplete(card));
-        }
-        let text = if !self.live_text.trim().is_empty() {
-            self.live_text.trim().to_string()
-        } else if !self.streamed_text_committed && !outcome.cancelled {
-            outcome.text.trim().to_string()
-        } else {
-            String::new()
-        };
-        let scan_text = if outcome.cancelled {
-            String::new()
-        } else if !outcome.text.is_empty() {
-            outcome.text.clone()
-        } else {
-            text.clone()
-        };
-        // A provider that failed to start, or exited non-zero, must say why. Its stderr is the
-        // only place the reason (expired login, bad flag, missing CLI) ever appears.
-        let thought = self.live_thinking.clone();
-        if !thought.is_empty() {
+            self.related_files.invalidate();
+            let turn_start = self
+                .messages
+                .iter()
+                .rposition(|m| m.role == MsgRole::User)
+                .unwrap_or(0);
+            let existing_index = (turn_start..self.messages.len()).rev().find(|&i| {
+                let m = &self.messages[i];
+                m.role == MsgRole::Card
+                    && m.card.as_ref().map(|c| c.id.as_str()) == Some(card.id.as_str())
+            });
+            if existing_index.is_some_and(|i| self.messages[i].card.as_ref() == Some(&card)) {
+                return;
+            }
+            if card.status != CardStatus::Running {
+                let status = if card.status == CardStatus::Error {
+                    "error"
+                } else {
+                    "done"
+                };
+                let ev = self.log_who(crate::threads::ThreadEvent::card(
+                    &card.title,
+                    card.detail.as_deref(),
+                    status,
+                ));
+                if let Some(thread) = &self.thread {
+                    self.reference_journal
+                        .buffer(thread.id(), ev, Some(&card.id));
+                }
+            }
+            let text = format_card_line(&card);
+            if let Some(i) = existing_index {
+                let existing = &mut self.messages[i];
+                existing.card = Some(card);
+                existing.text = text;
+                self.native_agents
+                    .record(existing.card.as_ref().unwrap(), i);
+                if self.activity.detail == Some(i) {
+                    self.activity.invalidate_search();
+                }
+                self.refresh_agents_picker();
+                return;
+            }
             let meta = Some(self.reply_meta());
             self.messages.push(ChatLine {
-                role: MsgRole::Thinking,
-                text: thought,
-                card: None,
+                role: MsgRole::Card,
+                text,
+                card: Some(card),
                 meta,
             });
+            if let Some(card) = self.messages.last().and_then(|m| m.card.as_ref()) {
+                self.native_agents.record(card, self.messages.len() - 1);
+            }
+            self.refresh_agents_picker();
         }
-        let has_reply = !text.is_empty() || self.streamed_text_committed;
-        if has_reply && !failed && !outcome.cancelled {
-            self.questions.offer(&scan_text);
+
+        fn apply_progress(&mut self, ev: TurnProgress) {
+            match ev {
+                TurnProgress::Artifact(record) => {
+                    if self.native_owner.as_ref() == Some(&record.owner)
+                        && record.owner.conversation_id == self.deleg.d.conversation_id()
+                    {
+                        self.commit_live_thinking();
+                        self.commit_live_text();
+                        if !artifacts::record_live(self, &record) {
+                            self.push_card(record.card());
+                        }
+                    }
+                }
+                TurnProgress::Interaction(request) => {
+                    if self.cancel_requested
+                        || !self.busy
+                        || !self
+                            .native_owner
+                            .as_ref()
+                            .is_some_and(|owner| request.is_owned_by(owner))
+                    {
+                        request.invalidate();
+                        return;
+                    }
+                    let plan = matches!(
+                        request.kind(),
+                        crate::provider::interaction::NativeInteraction::PlanApproval { .. }
+                    );
+                    let codex_review = matches!(
+                        request.kind(),
+                        crate::provider::interaction::NativeInteraction::CodexPermission { .. }
+                    );
+                    if codex_review {
+                        let evidence = self
+                            .messages
+                            .iter()
+                            .rev()
+                            .filter_map(|message| message.card.as_ref())
+                            .find(|card| Some(card.id.as_str()) == request.params["itemId"].as_str())
+                            .and_then(|card| card.detail.as_deref())
+                            .unwrap_or("");
+                        let detail = format!(
+                            "{evidence}\n\nNative request:\n{}",
+                            serde_json::to_string_pretty(&request.params).unwrap_or_default()
+                        );
+                        self.push_card(StreamCard {
+                            id: format!(
+                                "native-review:{}:{}",
+                                request.envelope().connection_id,
+                                request.envelope().request_id
+                            ),
+                            title: "Native action awaiting your review".into(),
+                            detail: Some(detail),
+                            status: CardStatus::Running,
+                        });
+                        if self.picker.is_none() && self.activity.detail.is_none() {
+                            self.activity.open(self.messages.len() - 1);
+                        }
+                    }
+                    if plan {
+                        self.push_card(StreamCard {
+                            id: format!(
+                                "native-plan:{}:{}",
+                                request.envelope().connection_id,
+                                request.envelope().request_id
+                            ),
+                            title: "Plan awaiting your review".into(),
+                            detail: Some(format!(
+                                "{}\n\n{}\n\nTasks:\n{}",
+                                request.params["overview"].as_str().unwrap_or(""),
+                                request.params["plan"].as_str().unwrap_or(""),
+                                serde_json::to_string_pretty(&request.params["todos"])
+                                    .unwrap_or_default()
+                            )),
+                            status: CardStatus::Running,
+                        });
+                        if self.picker.is_none() && self.activity.detail.is_none() {
+                            self.activity.open(self.messages.len() - 1);
+                        }
+                    }
+                    self.questions.offer_native(
+                        *request,
+                        !plan && !codex_review && self.editor.text().is_empty(),
+                    );
+                    self.pause_queue();
+                }
+                TurnProgress::Session(id) => {
+                    self.native_usage_session = Some(id.clone());
+                    self.native_session_id = Some(id);
+                    self.remember_native_source();
+                    self.save_turn_checkpoint(false);
+                    self.persist_session_title();
+                    if let (Some(task_id), Some(session_id)) =
+                        (self.task_id.clone(), self.native_session_id.clone())
+                    {
+                        let map = Some(crate::store::TaskMapPointer {
+                            version: 2,
+                            thread_id: self.thread_id().unwrap_or(task_id.as_str()).to_owned(),
+                        });
+                        if let Err(error) = crate::store::record_task_session(
+                            &self.state_root,
+                            &task_id,
+                            self.session_ui.title.as_deref().unwrap_or("untitled task"),
+                            &self.cwd.to_string_lossy(),
+                            self.provider,
+                            &self.account,
+                            &session_id,
+                            map,
+                        ) {
+                            self.flash(format!("task link could not be saved: {error}"));
+                        }
+                    }
+                }
+                TurnProgress::Thinking(t) => {
+                    self.clear_idle_notice();
+                    self.commit_live_text();
+                    self.phase = Phase::Thinking;
+                    self.live_thinking.push_str(&t);
+                    if !t.ends_with('\n') {
+                        self.live_thinking.push('\n');
+                    }
+                }
+                TurnProgress::ThinkingDelta(t) => {
+                    self.clear_idle_notice();
+                    self.commit_live_text();
+                    self.phase = Phase::Thinking;
+                    self.live_thinking.push_str(&t);
+                }
+                TurnProgress::Text(t) => {
+                    self.clear_idle_notice();
+                    self.commit_live_thinking();
+                    self.phase = Phase::Writing;
+                    self.live_text.push_str(&t);
+                    if !t.ends_with('\n') {
+                        self.live_text.push('\n');
+                    }
+                }
+                TurnProgress::TextDelta(t) => {
+                    self.clear_idle_notice();
+                    self.commit_live_thinking();
+                    self.phase = Phase::Writing;
+                    self.live_text.push_str(&t);
+                }
+                TurnProgress::Card(card) => {
+                    self.clear_idle_notice();
+                    self.commit_live_thinking();
+                    self.commit_live_text();
+                    self.phase = if card.status == CardStatus::Running {
+                        Phase::Tool(card.title.clone())
+                    } else {
+                        Phase::Waiting
+                    };
+                    let id = card.id.clone();
+                    upsert_card(&mut self.live_cards, card);
+                    if let Some(merged) = self.live_cards.iter().find(|c| c.id == id).cloned() {
+                        self.push_card(merged);
+                    }
+                }
+                TurnProgress::Notice(n) => self.push_system(n),
+                TurnProgress::Idle {
+                    provider, minutes, ..
+                } => {
+                    let text = format!(
+                        "No output from {} for {} minutes. Esc cancels; click here (or press Ctrl+K) for options.",
+                        Self::idle_provider_name(provider),
+                        minutes
+                    );
+                    if let Some(line) = self.messages.iter_mut().find(|line| {
+                        line.meta
+                            .as_ref()
+                            .is_some_and(|(_, label)| label == "__concordia_idle_notice__")
+                    }) {
+                        line.text = text;
+                    } else {
+                        self.messages.push(ChatLine {
+                            role: MsgRole::System,
+                            text,
+                            card: None,
+                            meta: Some((provider, "__concordia_idle_notice__".into())),
+                        });
+                        self.idle_notice = Some(provider);
+                    }
+                }
+                TurnProgress::ChatReferences { maps, notices } => {
+                    self.show_chat_refs(chatref::Expansion {
+                        maps,
+                        notices,
+                        ..Default::default()
+                    });
+                }
+                TurnProgress::Error(e) => {
+                    if self.continuation.errors.len() < 12 {
+                        self.continuation
+                            .errors
+                            .push(e.chars().take(2000).collect());
+                    }
+                    self.push_system(e);
+                }
+                TurnProgress::Usage(u) => {
+                    self.turn_usage.update_snapshot(&u);
+                }
+            }
         }
-        if !text.is_empty() {
-            self.push_assistant(text);
-        } else if !had_cards && !failed && !outcome.cancelled && !self.streamed_text_committed {
-            self.push_system("(no text in provider stream)");
+
+        fn commit_live_text(&mut self) {
+            let text = std::mem::take(&mut self.live_text);
+            if !text.trim().is_empty() {
+                self.push_assistant(text.trim().to_string());
+                self.streamed_text_committed = true;
+            }
         }
-        if has_reply || had_cards {
-            let tokens = if token_line::enabled(self.appearance.ui.token_line) {
-                token_line::format_line(&usage, None)
+
+        fn commit_live_thinking(&mut self) {
+            let text = std::mem::take(&mut self.live_thinking);
+            if !text.is_empty() {
+                let meta = Some(self.reply_meta());
+                self.messages.push(ChatLine {
+                    role: MsgRole::Thinking,
+                    text,
+                    card: None,
+                    meta,
+                });
+            }
+        }
+
+        /// The tip to show dimmed under the transcript, if the moment is right.
+        fn visible_tip(&mut self) -> Option<&'static str> {
+            let quiet = !self.busy
+                && self.picker.is_none()
+                && self.job.is_none()
+                && self.pending_login.is_none()
+                && self.editor.chars().is_empty();
+            let fresh = self.messages.iter().all(|m| m.role == MsgRole::System);
+            if !quiet
+                || !(fresh || self.idle_ticks >= tips::IDLE_TICKS)
+                || !tips::enabled(self.appearance.ui.tips)
+            {
+                return None;
+            }
+            let tip = tips::contextual_tip(
+                !self.queue.items.is_empty(),
+                self.busy,
+                self.usage_warning.is_some(),
+                self.tip_seed,
+            );
+            self.tip_limiter.take(tip)
+        }
+
+        /// Add a finished turn's tokens to the local token log.
+        fn record_tokens(
+            &mut self,
+            usage: &crate::provider::stream_cards::TurnUsage,
+            outcome: &TurnOutcome,
+        ) {
+            let owner = self
+                .native_accounting_owner
+                .as_ref()
+                .or(self.native_owner.as_ref());
+            let provider = owner.map_or(self.provider, |owner| owner.provider);
+            let (new_input, cached_input, output) = crate::token_log::split(provider, usage);
+            let entry = crate::token_log::Entry {
+                at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                provider: provider.as_str().to_string(),
+                account: owner.map_or_else(|| self.account.clone(), |owner| owner.account.clone()),
+                model: if owner.is_some() {
+                    self.native_usage_model.clone()
+                } else {
+                    (!self.model.is_empty() && self.model != "?").then(|| self.model.clone())
+                },
+                project: owner
+                    .map_or(self.cwd.as_path(), |owner| owner.execution_cwd.as_path())
+                    .to_string_lossy()
+                    .into_owned(),
+                chat: outcome.session_id.clone().or_else(|| {
+                    if owner.is_some() {
+                        self.native_usage_session.clone()
+                    } else {
+                        self.native_session_id.clone()
+                    }
+                }),
+                new_input,
+                cached_input,
+                output,
+                cost_usd: usage.cost_usd,
+                attribution: owner.map(|owner| {
+                    let (status, complete) = crate::token_log::attempt_outcome(
+                        outcome.exit_code,
+                        outcome.cancelled,
+                        outcome.failed,
+                    );
+                    crate::token_log::Attribution::new(
+                        crate::token_log::Origin::Main,
+                        &owner.run_id,
+                        &owner.attempt_id,
+                        owner.home.as_deref(),
+                        usage,
+                        status,
+                        complete,
+                    )
+                }),
+            };
+            if let Err(e) = crate::token_log::record(&self.state_root, &entry) {
+                crate::logging::info(&format!("token log not written: {e}"));
+                self.push_system(format!(
+                    "Usage could not be saved: {e}. Native usage is not assumed to be zero."
+                ));
+            }
+        }
+
+        fn finalize_turn(&mut self, outcome: TurnOutcome) {
+            self.clear_idle_notice();
+            self.busy_send_confirmation = None;
+            self.submitted_prompt = None;
+            let elapsed = self.turn_started.map(|t| t.elapsed());
+            let usage = std::mem::take(&mut self.turn_usage);
+            if !usage.is_empty()
+                || self.native_owner.is_some()
+                || self.native_accounting_owner.is_some()
+            {
+                self.record_tokens(&usage, &outcome);
+            }
+            self.session_input = self.session_input.saturating_add(usage.input.unwrap_or(0));
+            self.session_output = self
+                .session_output
+                .saturating_add(usage.output.unwrap_or(0));
+            self.session_cost += usage.cost_usd.unwrap_or(0.0);
+            // Events only: never the prompt or the reply.
+            crate::logging::info(&format!(
+                "turn provider={} account={} exit={:?} cancelled={} ms={} stderr_lines={}",
+                self.provider.as_str(),
+                self.account,
+                outcome.exit_code,
+                outcome.cancelled,
+                self.turn_started
+                    .take()
+                    .map(|t| t.elapsed().as_millis())
+                    .unwrap_or(0),
+                outcome.stderr_tail.lines().count()
+            ));
+            if let Some(sid) = outcome.session_id {
+                self.native_session_id = Some(sid);
+                self.persist_session_title();
+            }
+            let had_cards = !self.live_cards.is_empty() || !outcome.cards.is_empty();
+            let failed = !outcome.cancelled
+                && (outcome.failed
+                    || match outcome.exit_code {
+                        Some(code) => code != 0,
+                        None => !outcome.stderr_tail.trim().is_empty(),
+                    });
+            let finish_incomplete = |mut card: StreamCard| {
+                card.status = CardStatus::Error;
+                let reason = if outcome.cancelled {
+                    "Interrupted: turn cancelled before the provider reported tool completion."
+                        .to_string()
+                } else if failed {
+                    match outcome.exit_code {
+                        Some(code) => format!(
+                            "Provider failed with exit code {code} before reporting tool completion."
+                        ),
+                        None => "Provider failed before reporting tool completion.".to_string(),
+                    }
+                } else {
+                    "Incomplete: provider stream ended before reporting tool completion.".to_string()
+                };
+                card.detail = Some(match card.detail.take() {
+                    Some(detail) if !detail.is_empty() => format!("{detail}\n{reason}"),
+                    _ => reason,
+                });
+                card
+            };
+            // Final output may contain edits completed after the last progress event was drained.
+            // Reconcile by id even when some cards have already streamed.
+            for card in outcome.cards {
+                let id = card.id.clone();
+                upsert_card(&mut self.live_cards, card);
+                if let Some(card) = self.live_cards.iter().find(|card| card.id == id).cloned() {
+                    self.push_card(card);
+                }
+            }
+            let running: Vec<_> = self
+                .live_cards
+                .iter()
+                .filter(|card| card.status == CardStatus::Running)
+                .cloned()
+                .collect();
+            for card in running {
+                self.push_card(finish_incomplete(card));
+            }
+            let text = if !self.live_text.trim().is_empty() {
+                self.live_text.trim().to_string()
+            } else if !self.streamed_text_committed && !outcome.cancelled {
+                outcome.text.trim().to_string()
             } else {
                 String::new()
             };
-            let line = format!(
-                "Worked for {} · stopped {}{}",
-                crate::delegate::fmt_elapsed(elapsed.unwrap_or_default()),
-                crate::usage::local_time_label(),
-                if tokens.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {tokens}")
-                }
-            );
-            if !line.is_empty() {
-                self.messages.push(ChatLine {
-                    role: MsgRole::Meta,
-                    text: line,
-                    card: None,
-                    meta: None,
-                });
-            }
-        }
-        if outcome.cancelled {
-            self.push_system("cancelled - queued work paused; completed actions were not undone");
-        }
-        if failed && outcome.stderr_tail.contains("already has an active writer") {
-            self.push_system("this Codex session is open in another client or pane. Close its active turn, then retry the restored prompt; /new starts a separate conversation. Concordia will not replay it automatically.");
-        }
-        if failed {
-            self.push_system(match outcome.exit_code {
-                Some(0) => "provider reported a turn failure".to_string(),
-                Some(code) => format!("provider exited with code {code}"),
-                None => "provider could not run".to_string(),
-            });
-            let tail = outcome.stderr_tail.trim();
-            if tail.contains("apply_patch verification failed") {
-                self.push_card(StreamCard {
-                    id: format!("provider-diagnostics:{}", self.messages.len()),
-                    title: "Provider diagnostics: patch verification failed".into(),
-                    detail: Some(format!("These are tool diagnostics retained by the provider; they may predate its exit. They do not establish why the process stopped.\n\n{tail}")),
-                    status: CardStatus::Error,
-                });
-                self.push_system("A patch did not match the current file. Inspect the diagnostics and current files before retrying; completed edits remain in the workspace.");
-            }
-            let lines: Vec<&str> = tail.lines().collect();
-            let said: Vec<String> = self
-                .messages
-                .iter()
-                .rev()
-                .take(8)
-                .filter(|m| m.role == MsgRole::System)
-                .map(|m| m.text.trim().to_string())
-                .collect();
-            for l in lines.iter().skip(lines.len().saturating_sub(6)) {
-                let t = l.trim();
-                // Skip CLI chatter and anything already reported above.
-                if tail.contains("apply_patch verification failed")
-                    || t.is_empty()
-                    || is_cli_noise(t)
-                    || said.iter().any(|s| s == t)
-                {
-                    continue;
-                }
-                self.push_system(format!("  {}", l.trim_end()));
-            }
-        }
-        self.live_cards.clear();
-        self.live_text.clear();
-        self.streamed_text_committed = false;
-        self.live_thinking.clear();
-        self.turn_finished(outcome.cancelled, failed);
-        self.scan_delegation(&scan_text);
-        // The turn used some of this account's limits: re-check them in the background.
-        self.usage_fetcher.invalidate(&self.account);
-        self.refresh_usage();
-        self.update_usage_block();
-    }
-
-    /// `/threads` lists recent recorded threads; `/threads delete <id>` removes one.
-    fn threads_command(&mut self, arg: &str) -> Vec<String> {
-        use crate::threads;
-        if let Some(id) = arg.strip_prefix("delete").map(str::trim) {
-            if id.is_empty() {
-                return vec!["usage: /threads delete <id>".into()];
-            }
-            return match threads::resolve_prefix(&self.state_root, id) {
-                Ok(full) if Some(full.as_str()) == self.thread_id() => {
-                    vec!["that is the current conversation; /new first".into()]
-                }
-                Ok(full) => match threads::delete(&self.state_root, &full) {
-                    Ok(()) => vec![format!("deleted thread {full}")],
-                    Err(e) => vec![format!("delete failed: {e:#}")],
-                },
-                Err(e) => vec![e.to_string()],
-            };
-        }
-        let metas = threads::list(&self.state_root);
-        if metas.is_empty() {
-            return vec![if threads::enabled(&self.state_root) {
-                "no recorded threads yet".into()
+            let scan_text = if outcome.cancelled {
+                String::new()
+            } else if !outcome.text.is_empty() {
+                outcome.text.clone()
             } else {
-                "thread log is off (set CONCORDIA_THREADS=1 to record conversations)".into()
-            }];
+                text.clone()
+            };
+            // A provider that failed to start, or exited non-zero, must say why. Its stderr is the
+            // only place the reason (expired login, bad flag, missing CLI) ever appears.
+            let thought = self.live_thinking.clone();
+            if !thought.is_empty() {
+                let meta = Some(self.reply_meta());
+                self.messages.push(ChatLine {
+                    role: MsgRole::Thinking,
+                    text: thought,
+                    card: None,
+                    meta,
+                });
+            }
+            let has_reply = !text.is_empty() || self.streamed_text_committed;
+            if has_reply && !failed && !outcome.cancelled {
+                self.questions.offer(&scan_text);
+            }
+            if !text.is_empty() {
+                self.push_assistant(text);
+            } else if !had_cards && !failed && !outcome.cancelled && !self.streamed_text_committed {
+                self.push_system("(no text in provider stream)");
+            }
+            if has_reply || had_cards {
+                let tokens = if token_line::enabled(self.appearance.ui.token_line) {
+                    token_line::format_line(&usage, None)
+                } else {
+                    String::new()
+                };
+                let line = format!(
+                    "Worked for {} · stopped {}{}",
+                    crate::delegate::fmt_elapsed(elapsed.unwrap_or_default()),
+                    crate::usage::local_time_label(),
+                    if tokens.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {tokens}")
+                    }
+                );
+                if !line.is_empty() {
+                    self.messages.push(ChatLine {
+                        role: MsgRole::Meta,
+                        text: line,
+                        card: None,
+                        meta: None,
+                    });
+                }
+            }
+            if outcome.cancelled {
+                self.push_system("cancelled - queued work paused; completed actions were not undone");
+            }
+            if failed && outcome.stderr_tail.contains("already has an active writer") {
+                self.push_system("this Codex session is open in another client or pane. Close its active turn, then retry the restored prompt; /new starts a separate conversation. Concordia will not replay it automatically.");
+            }
+            if failed {
+                self.push_system(match outcome.exit_code {
+                    Some(0) => "provider reported a turn failure".to_string(),
+                    Some(code) => format!("provider exited with code {code}"),
+                    None => "provider could not run".to_string(),
+                });
+                let tail = outcome.stderr_tail.trim();
+                if tail.contains("apply_patch verification failed") {
+                    self.push_card(StreamCard {
+                        id: format!("provider-diagnostics:{}", self.messages.len()),
+                        title: "Provider diagnostics: patch verification failed".into(),
+                        detail: Some(format!("These are tool diagnostics retained by the provider; they may predate its exit. They do not establish why the process stopped.\n\n{tail}")),
+                        status: CardStatus::Error,
+                    });
+                    self.push_system("A patch did not match the current file. Inspect the diagnostics and current files before retrying; completed edits remain in the workspace.");
+                }
+                let lines: Vec<&str> = tail.lines().collect();
+                let said: Vec<String> = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .take(8)
+                    .filter(|m| m.role == MsgRole::System)
+                    .map(|m| m.text.trim().to_string())
+                    .collect();
+                for l in lines.iter().skip(lines.len().saturating_sub(6)) {
+                    let t = l.trim();
+                    // Skip CLI chatter and anything already reported above.
+                    if tail.contains("apply_patch verification failed")
+                        || t.is_empty()
+                        || is_cli_noise(t)
+                        || said.iter().any(|s| s == t)
+                    {
+                        continue;
+                    }
+                    self.push_system(format!("  {}", l.trim_end()));
+                }
+            }
+            self.live_cards.clear();
+            self.live_text.clear();
+            self.streamed_text_committed = false;
+            self.live_thinking.clear();
+            self.turn_finished(outcome.cancelled, failed);
+            self.scan_delegation(&scan_text);
+            // The turn used some of this account's limits: re-check them in the background.
+            self.usage_fetcher.invalidate(&self.account);
+            self.refresh_usage();
+            self.update_usage_block();
         }
-        metas
-            .iter()
-            .take(15)
-            .map(|m| {
-                format!(
-                    "{}  {:>4}  {}  {}",
-                    m.id.chars().take(8).collect::<String>(),
-                    threads::age_label(m.started),
-                    m.account.as_deref().unwrap_or("-"),
-                    m.title
-                )
-            })
-            .collect()
-    }
 
-    fn pack_messages(&self) -> Vec<PackMessage> {
-        self.messages
-            .iter()
-            .filter_map(|m| match m.role {
-                MsgRole::User => Some(PackMessage {
-                    role: PackRole::User,
-                    text: m.text.clone(),
-                }),
-                MsgRole::Assistant => Some(PackMessage {
-                    role: PackRole::Assistant,
-                    text: m.text.clone(),
-                }),
-                MsgRole::Card => m.card.as_ref().map(|c| PackMessage {
-                    role: PackRole::Card,
-                    text: crate::threads::encode_card(
-                        &c.title,
-                        c.detail.as_deref(),
-                        match c.status {
-                            CardStatus::Error => "error",
-                            CardStatus::Running => "running",
-                            CardStatus::Done => "done",
-                        },
-                    ),
-                }),
-                MsgRole::System | MsgRole::Command | MsgRole::Thinking | MsgRole::Meta => None,
-            })
-            .collect()
-    }
+        /// `/threads` lists recent recorded threads; `/threads delete <id>` removes one.
+        fn threads_command(&mut self, arg: &str) -> Vec<String> {
+            use crate::threads;
+            if let Some(id) = arg.strip_prefix("delete").map(str::trim) {
+                if id.is_empty() {
+                    return vec!["usage: /threads delete <id>".into()];
+                }
+                return match threads::resolve_prefix(&self.state_root, id) {
+                    Ok(full) if Some(full.as_str()) == self.thread_id() => {
+                        vec!["that is the current conversation; /new first".into()]
+                    }
+                    Ok(full) => match threads::delete(&self.state_root, &full) {
+                        Ok(()) => vec![format!("deleted thread {full}")],
+                        Err(e) => vec![format!("delete failed: {e:#}")],
+                    },
+                    Err(e) => vec![e.to_string()],
+                };
+            }
+            let metas = threads::list(&self.state_root);
+            if metas.is_empty() {
+                return vec![if threads::enabled(&self.state_root) {
+                    "no recorded threads yet".into()
+                } else {
+                    "thread log is off (set CONCORDIA_THREADS=1 to record conversations)".into()
+                }];
+            }
+            metas
+                .iter()
+                .take(15)
+                .map(|m| {
+                    format!(
+                        "{}  {:>4}  {}  {}",
+                        m.id.chars().take(8).collect::<String>(),
+                        threads::age_label(m.started),
+                        m.account.as_deref().unwrap_or("-"),
+                        m.title
+                    )
+                })
+                .collect()
+        }
 
-    fn on_tick(&mut self) -> bool {
-        let mut visible_change = self.busy && self.appearance.ui.motion;
-        self.poll_reference_journal();
-        self.questions.refresh_native();
-        self.poll_images();
-        self.raster.poll();
-        self.tick_count = self.tick_count.wrapping_add(1);
-        if self.busy {
-            self.pulse_on = self.tick_count.is_multiple_of(2);
-        } else {
-            self.pulse_on = false;
+        fn pack_messages(&self) -> Vec<PackMessage> {
+            self.messages
+                .iter()
+                .filter_map(|m| match m.role {
+                    MsgRole::User => Some(PackMessage {
+                        role: PackRole::User,
+                        text: m.text.clone(),
+                    }),
+                    MsgRole::Assistant => Some(PackMessage {
+                        role: PackRole::Assistant,
+                        text: m.text.clone(),
+                    }),
+                    MsgRole::Card => m.card.as_ref().map(|c| PackMessage {
+                        role: PackRole::Card,
+                        text: crate::threads::encode_card(
+                            &c.title,
+                            c.detail.as_deref(),
+                            match c.status {
+                                CardStatus::Error => "error",
+                                CardStatus::Running => "running",
+                                CardStatus::Done => "done",
+                            },
+                        ),
+                    }),
+                    MsgRole::System | MsgRole::Command | MsgRole::Thinking | MsgRole::Meta => None,
+                })
+                .collect()
         }
-        if self.busy || !self.editor.chars().is_empty() || self.picker.is_some() {
-            self.idle_ticks = 0;
-        } else {
-            self.idle_ticks = self.idle_ticks.saturating_add(1);
-        }
-        visible_change |= self.idle_ticks == tips::IDLE_TICKS;
-        self.persist_tick();
-        visible_change |= self.poll_file_jobs();
-        self.poll_session_history();
-        self.poll_memory();
-        self.poll_project_search();
-        visible_change |= self.workspace.poll();
-        if let Some(notice) = self.workspace.take_notice() {
-            self.flash(notice);
-        }
-        if self.workspace.file_quit_requested() {
-            self.should_quit = true;
-        }
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Files)
-        {
-            self.request_related_files();
-        }
-        if self.related_files.poll()
-            && self
+
+        fn on_tick(&mut self) -> bool {
+            let mut visible_change = self.busy && self.appearance.ui.motion;
+            self.poll_reference_journal();
+            self.questions.refresh_native();
+            self.poll_images();
+            self.raster.poll();
+            self.tick_count = self.tick_count.wrapping_add(1);
+            if self.busy {
+                self.pulse_on = self.tick_count.is_multiple_of(2);
+            } else {
+                self.pulse_on = false;
+            }
+            if self.busy || !self.editor.chars().is_empty() || self.picker.is_some() {
+                self.idle_ticks = 0;
+            } else {
+                self.idle_ticks = self.idle_ticks.saturating_add(1);
+            }
+            visible_change |= self.idle_ticks == tips::IDLE_TICKS;
+            self.persist_tick();
+            visible_change |= self.poll_file_jobs();
+            self.poll_session_history();
+            self.poll_memory();
+            self.poll_project_search();
+            visible_change |= self.workspace.poll();
+            if let Some(notice) = self.workspace.take_notice() {
+                self.flash(notice);
+            }
+            if self.workspace.file_quit_requested() {
+                self.should_quit = true;
+            }
+            if self
                 .picker
                 .as_ref()
                 .is_some_and(|p| p.kind == PickerKind::Files)
-        {
-            let old = self.picker.take().unwrap();
-            let selected = old
-                .state
-                .selected()
-                .and_then(|i| old.filtered().get(i).map(|r| r.label.clone()));
-            self.build_related_files_picker();
-            if let Some(picker) = &mut self.picker {
-                picker.filter = old.filter;
-                picker.state = old.state;
-                if let Some(label) = selected {
-                    if let Some(i) = picker.filtered().iter().position(|r| r.label == label) {
-                        picker.state.select(Some(i));
-                    }
-                }
-                picker.select_clamp();
+            {
+                self.request_related_files();
             }
+            if self.related_files.poll()
+                && self
+                    .picker
+                    .as_ref()
+                    .is_some_and(|p| p.kind == PickerKind::Files)
+            {
+                let old = self.picker.take().unwrap();
+                let selected = old
+                    .state
+                    .selected()
+                    .and_then(|i| old.filtered().get(i).map(|r| r.label.clone()));
+                self.build_related_files_picker();
+                if let Some(picker) = &mut self.picker {
+                    picker.filter = old.filter;
+                    picker.state = old.state;
+                    if let Some(label) = selected {
+                        if let Some(i) = picker.filtered().iter().position(|r| r.label == label) {
+                            picker.state.select(Some(i));
+                        }
+                    }
+                    picker.select_clamp();
+                }
+            }
+            self.poll_pending_login();
+            self.poll_model_refresh();
+            self.poll_job();
+            landing::poll(self);
+            tokens::poll(self);
+            integrations::poll(self);
+            artifacts::poll(self);
+            self.update_progress();
+            self.poll_compat();
+            self.poll_proposals();
+            // Polling alone never ages a completed cache. Re-read on a cheap UI timer so idle
+            // panes notice resets and start the fetcher's bounded TTL refresh.
+            if self.usage_fetcher.poll() || self.tick_count.is_multiple_of(50) {
+                self.refresh_usage();
+                self.update_usage_block();
+                self.update_usage_picker();
+                visible_change = true;
+            }
+            visible_change
         }
-        self.poll_pending_login();
-        self.poll_model_refresh();
-        self.poll_job();
-        landing::poll(self);
-        tokens::poll(self);
-        integrations::poll(self);
-        artifacts::poll(self);
-        self.update_progress();
-        self.poll_compat();
-        self.poll_proposals();
-        // Polling alone never ages a completed cache. Re-read on a cheap UI timer so idle
-        // panes notice resets and start the fetcher's bounded TTL refresh.
-        if self.usage_fetcher.poll() || self.tick_count.is_multiple_of(50) {
-            self.refresh_usage();
-            self.update_usage_block();
-            self.update_usage_picker();
-            visible_change = true;
-        }
-        visible_change
-    }
 
+    */
     fn poll_model_refresh(&mut self) {
         let Some(refresh) = self.model_refresh.as_ref() else {
             return;
@@ -2171,1506 +1403,7 @@ impl App {
         picker.filter = filter;
         picker.state.select(Some(selected));
         picker.select_clamp();
-        self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
-    }
-
-    /// Announce when a login we launched has completed (cheap file-existence checks, ~2 s apart).
-    fn poll_pending_login(&mut self) {
-        let Some(p) = self.pending_login.as_mut() else {
-            return;
-        };
-        p.ticks += 1;
-        if p.ticks % LOGIN_POLL_TICKS != 0 {
-            return;
-        }
-        if is_logged_in(p.provider, &p.home) {
-            let p = self.pending_login.take().expect("checked above");
-            self.finish_login(p);
-        } else if p.ticks >= LOGIN_GIVE_UP_TICKS {
-            let p = self.pending_login.take().expect("checked above");
-            self.push_system(format!(
-                "{} is not signed in yet - run /use add {} to try again",
-                p.label,
-                p.provider.as_str()
-            ));
-        }
-    }
-
-    /// A login we launched just completed. If it is the same login as an account that is already
-    /// connected (you signed in to the same subscription twice), the new empty slot is removed
-    /// instead of being kept as a confusing duplicate.
-    fn finish_login(&mut self, p: PendingLogin) {
-        crate::logging::info(&format!(
-            "login-complete account={} provider={}",
-            p.account,
-            p.provider.as_str()
-        ));
-        let who = inspect_provider(p.provider, &p.home)
-            .login
-            .unwrap_or_else(|| "this login".into());
-        let Some(existing) = crate::accounts::duplicate_of(&self.state_root, &p.account) else {
-            self.push_system(format!(
-                "{} connected as {who} - /use to switch to it",
-                p.label
-            ));
-            self.flash(format!("{} connected", p.label));
-            return;
-        };
-        let owned = crate::connect::removable(&self.state_root)
-            .iter()
-            .any(|r| r.id == p.account && r.owned);
-        let advice = format!(
-            "to add another account, sign in with a different one (/use add {})",
-            p.provider.as_str()
-        );
-        if owned {
-            match crate::connect::remove_account(
-                &self.state_root,
-                &p.account,
-                crate::connect::RemoveMode::DeleteData,
-            ) {
-                Ok(_) => self.push_system(format!(
-                    "{who} is already connected as {}, so nothing new was added and the duplicate slot was removed - {advice}",
-                    existing.label
-                )),
-                Err(e) => self.push_system(format!(
-                    "{} is the same login as {} ({who}) but could not be removed: {e} - use /use remove",
-                    p.label, existing.label
-                )),
-            }
-        } else {
-            self.push_system(format!(
-                "{} is the same login as {} ({who}) - use /use remove to drop one of them",
-                p.label, existing.label
-            ));
-        }
-        self.flash("duplicate account");
-    }
-
-    fn open_resume_picker(&mut self) {
-        let sessions = list_recent_sessions(&self.state_root, 40);
-        let mut tasks = crate::store::list_tasks(&self.state_root);
-        let persisted_ids: std::collections::HashSet<String> = tasks
-            .iter()
-            .flat_map(|task| {
-                task.sessions
-                    .iter()
-                    .map(|session| session.native_session_id.clone())
-            })
-            .collect();
-        tasks.extend(legacy_session_tasks(&sessions).into_iter().filter(|task| {
-            !task
-                .sessions
-                .iter()
-                .any(|session| persisted_ids.contains(&session.native_session_id))
-        }));
-        let here = count_sessions_here(&sessions, Some(&self.cwd));
-        let folder = self
-            .cwd
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "cwd".into());
-        let title = if here > 0 {
-            format!("chats · {folder} ({here})")
-        } else {
-            format!("chats · {}", sessions.len())
-        };
-        let rows = if tasks.is_empty() {
-            vec![PickerRow {
-                id: "none".into(),
-                label: "no chats yet".into(),
-                detail: "send a message first — then switch here".into(),
-            }]
-        } else {
-            tasks_to_picker_rows(&tasks)
-        };
-        self.show_picker(PickerKind::Resume, title, rows, true);
-    }
-
-    fn resume_explicit_session(&mut self, id: &str) {
-        let Some(session) = list_recent_sessions(&self.state_root, 200)
-            .into_iter()
-            .find(|session| session.session_id == id)
-        else {
-            self.push_system("resume failed: native session is no longer present");
-            return;
-        };
-        self.resume_session(&session.account, &session.session_id);
-    }
-
-    fn prepare_resume_delete(&mut self) {
-        let Some(picker) = self.picker.as_ref() else {
-            return;
-        };
-        let Some(idx) = picker.state.selected() else {
-            return;
-        };
-        let filtered = picker.filtered();
-        let Some(row) = filtered.get(idx) else { return };
-        let Some(session) = row.id.strip_prefix("resume:") else {
-            return;
-        };
-        let session = session.to_string();
-        let Some((account, id)) = session.split_once(':') else {
-            return;
-        };
-        self.show_picker(
-            PickerKind::ResumeDeleteConfirm,
-            format!("delete chat {id}?"),
-            vec![
-                PickerRow {
-                    id: format!("resume-delete:{id}"),
-                    label: "Delete this chat".into(),
-                    detail: format!("{account} · this cannot be undone"),
-                },
-                PickerRow {
-                    id: "resume-delete-cancel".into(),
-                    label: "Cancel".into(),
-                    detail: String::new(),
-                },
-            ],
-            false,
-        );
-    }
-
-    /// Persist a new permission mode.
-    fn set_mode(&mut self, mode: TrustMode) -> bool {
-        if let Err(e) = set_trust_mode(&self.state_root, mode) {
-            self.push_system(format!("mode save failed - {e}"));
-            return false;
-        }
-        self.trust = mode;
-        true
-    }
-
-    /// Shift+Tab cycles only the non-dangerous modes.
-    fn cycle_mode(&mut self) {
-        let next = next_mode(self.trust);
-        if self.set_mode(next) {
-            let note = if self.busy { " (next turn)" } else { "" };
-            self.flash(format!("mode \u{2192} {}{note}", mode_label(next)));
-        }
-    }
-
-    fn request_full_mode(&mut self) {
-        if self.full_mode_confirmed {
-            let _ = self.set_mode(TrustMode::Full);
-            return;
-        }
-        self.show_picker(
-            PickerKind::FullModeConfirm,
-            "enable full access?".into(),
-            vec![
-                PickerRow {
-                    id: "full-yes".into(),
-                    label: "Yes, enable Full".into(),
-                    detail: "Skip provider permission checks for this session.".into(),
-                },
-                PickerRow {
-                    id: "full-no".into(),
-                    label: "No, keep current mode".into(),
-                    detail: String::new(),
-                },
-            ],
-            false,
-        );
-    }
-
-    fn run_mode_command(&mut self, arg: Option<&str>) {
-        match arg {
-            None => {
-                self.push_system(format!(
-                    "mode: {} - {}",
-                    mode_label(self.trust),
-                    mode_blurb(self.trust)
-                ));
-                self.push_system("set with /mode plan | ask | auto | full  (Shift+Tab cycles plan/ask/workspace)");
-            }
-            Some(a) => match parse_mode(a) {
-                Some(mode) => {
-                    if mode == TrustMode::Full && !self.full_mode_confirmed {
-                        self.request_full_mode();
-                        return;
-                    }
-                    if self.set_mode(mode) {
-                        self.push_system(format!(
-                            "mode \u{2192} {} - {}{}",
-                            mode_label(mode),
-                            mode_blurb(mode),
-                            if self.busy {
-                                " (next turn; the running turn keeps its original permissions)"
-                            } else {
-                                ""
-                            }
-                        ));
-                    }
-                }
-                None => self.push_system(format!("unknown mode {a} - use plan, ask, auto or full")),
-            },
-        }
-    }
-
-    fn open_trust_picker(&mut self) {
-        let rows = trust_picker_rows(self.trust);
-        let idx = rows
-            .iter()
-            .position(|r| r.id == format!("trust:{}", self.trust.as_str()))
-            .unwrap_or(0);
-        self.show_picker_at(PickerKind::Trust, "permissions".into(), rows, false, idx);
-    }
-
-    fn open_use_picker(&mut self) {
-        self.request_account_usage();
-        self.build_use_picker();
-    }
-
-    fn build_use_picker(&mut self) {
-        let ready = accounts_with_auth(&self.state_root);
-        let duplicates = crate::accounts::duplicate_groups(&self.state_root);
-        let mut rows = Vec::new();
-        for a in &ready {
-            let Some(home) = a.home_path.as_ref() else {
-                continue;
-            };
-            let idn = inspect_provider(a.provider, home);
-            let usage = self.usage_fetcher.snapshot(a.provider, &a.account, home);
-            let mut urow = crate::usage::profiled_picker_row(&a.account, a.provider, &usage, &idn);
-            urow.label =
-                urow.label
-                    .replacen(&display_account_name(a.provider, &a.account), &a.label, 1);
-            self.picker_tones
-                .insert(format!("use:{}", a.account), urow.tone);
-            let mut detail = urow.detail;
-            if let Some(other) = duplicates
-                .iter()
-                .find(|g| g.iter().any(|x| x.account == a.account))
-                .and_then(|g| g.iter().find(|x| x.account != a.account))
-            {
-                detail.push_str(&format!(" · same login as {}", other.label));
-            }
-            rows.push(PickerRow {
-                id: format!("use:{}", a.account),
-                // The account's own name ("Codex 3"), so several accounts of one provider are
-                // told apart at a glance.
-                label: urow.label,
-                detail,
-            });
-        }
-        if self.continuation.waiting() {
-            rows.push(PickerRow {
-                id: "use-continue".into(),
-                label: "continue unfinished request".into(),
-                detail: "review the request and choose a target".into(),
-            });
-        }
-        rows.push(PickerRow {
-            id: "use-add".into(),
-            label: "+ add account".into(),
-            detail: if ready.is_empty() {
-                "no logged-in accounts yet - connect Codex, Claude or Cursor".into()
-            } else {
-                "connect another Codex, Claude or Cursor account".into()
-            },
-        });
-        if !ready.is_empty() {
-            rows.push(PickerRow {
-                id: "use-remove".into(),
-                label: "- remove account".into(),
-                detail: "take an account out of Concordia".into(),
-            });
-        }
-        rows.push(PickerRow {
-            id: "use-continuation".into(),
-            label: "limit handoff (save default)".into(),
-            detail: if self.continuation.automatic() {
-                "continue on another account automatically (Enter toggles to pause)".into()
-            } else {
-                "pause at a usage limit (Enter toggles to continue)".into()
-            },
-        });
-        rows.push(PickerRow {
-            id: "use-handoff".into(),
-            label: "next provider for this session".into(),
-            detail: self.handoff_description(),
-        });
-        self.show_picker(PickerKind::Use, "accounts".into(), rows, true);
-    }
-
-    fn show_unfinished_request(&mut self) {
-        if let Some(prompt) = self.continuation.pending_text() {
-            let text = format!("Unfinished request (not sent):\n{prompt}");
-            if !self
-                .messages
-                .last()
-                .is_some_and(|message| message.role == MsgRole::System && message.text == text)
-            {
-                self.push_system(text);
-            }
-            self.open_continuation_picker();
-        } else {
-            self.flash("no unfinished request to continue");
-        }
-    }
-
-    fn open_continuation_picker(&mut self) {
-        let mut accounts = accounts_with_auth(&self.state_root)
-            .into_iter()
-            .filter(|a| {
-                (a.account != self.account || self.continuation.same_account_allowed())
-                    && a.home_path.is_some()
-            })
-            .collect::<Vec<_>>();
-        accounts.sort_by(|a, b| {
-            let remaining = |account: &crate::accounts::AccountDef| {
-                account.home_path.as_ref().and_then(|home| {
-                    crate::usage::peek_cached_usage(
-                        &self.state_root,
-                        account.provider,
-                        &account.account,
-                        home,
-                    )
-                    .and_then(|o| o.remaining_pct)
-                })
-            };
-            remaining(b)
-                .is_some()
-                .cmp(&remaining(a).is_some())
-                .then_with(|| {
-                    remaining(b)
-                        .partial_cmp(&remaining(a))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| a.account.cmp(&b.account))
-        });
-        let mut rows = accounts
-            .into_iter()
-            .map(|a| {
-                let remaining = a.home_path.as_ref().and_then(|home| {
-                    crate::usage::peek_cached_usage(&self.state_root, a.provider, &a.account, home)
-                        .and_then(|o| o.remaining_pct)
-                });
-                let tier = crate::models::catalog_tier(&self.model);
-                let tier = match tier {
-                    crate::models::ModelTier::Frontier => "frontier",
-                    crate::models::ModelTier::Standard => "standard",
-                    crate::models::ModelTier::Fast => "fast",
-                };
-                PickerRow {
-                    id: format!("continue:{}", a.account),
-                    label: a.label,
-                    detail: format!(
-                        "5h {}% left · {tier} · continue the paused request",
-                        remaining
-                            .map(|p| p.round() as i64)
-                            .map_or("??".into(), |p| p.to_string())
-                    ),
-                }
-            })
-            .collect::<Vec<_>>();
-        if let Some(home) = &self.home_path {
-            rows.extend(
-                crate::catalog::list_models(self.provider, home)
-                    .into_iter()
-                    .filter(|model| model != &self.model)
-                    .map(|model| PickerRow {
-                        id: format!("continue:{} {model}", self.account),
-                        label: format!("{} \u{2192} {model}", self.account_label()),
-                        detail: "continue on another model; account-wide quota may still apply"
-                            .into(),
-                    }),
-            );
-        }
-        if rows.is_empty() {
-            self.push_system("usage limit reached; /use add another account to continue");
-        } else {
-            self.show_picker(
-                PickerKind::Continuation,
-                "continue on which account?".into(),
-                rows,
-                true,
-            );
-        }
-    }
-
-    /// Pick an account to remove (or jump straight to its confirmation when one is named).
-    fn open_remove_picker(&mut self, named: Option<String>) {
-        let all = crate::connect::removable(&self.state_root);
-        if all.is_empty() {
-            self.push_system("no accounts to remove");
-            return;
-        }
-        if let Some(id) = named {
-            let want = crate::accounts::normalize_account_id(&id);
-            match all.into_iter().find(|r| r.id == want) {
-                Some(r) => self.open_remove_confirm(r),
-                None => self.push_system(format!("no account named {id} - try /use remove")),
-            }
-            return;
-        }
-        let rows = all
-            .iter()
-            .map(|r| {
-                let what = if r.owned {
-                    "created by Concordia - its login folder can be deleted"
-                } else if r.stored {
-                    "registered with Concordia - its files stay where they are"
-                } else {
-                    "your own login - it can only be hidden, never deleted"
-                };
-                let who = r
-                    .home
-                    .as_ref()
-                    .map(|h| format_identity_label(&inspect_provider(r.provider, h)))
-                    .unwrap_or_default();
-                PickerRow {
-                    id: format!("rmpick:{}", r.id),
-                    label: format!("{}  {who}", self.named_account(r.provider, &r.id)),
-                    detail: what.into(),
-                }
-            })
-            .collect();
-        self.show_picker(
-            PickerKind::Remove,
-            "remove which account?".into(),
-            rows,
-            true,
-        );
-    }
-
-    fn open_remove_confirm(&mut self, r: crate::connect::Removable) {
-        use crate::connect::RemoveMode;
-        let mut rows: Vec<PickerRow> = r
-            .modes()
-            .into_iter()
-            .map(|m| {
-                let (key, label, detail) = match m {
-                    RemoveMode::DeleteData => (
-                        "delete",
-                        "Remove and delete its login data",
-                        r.home
-                            .as_ref()
-                            .map(|h| h.display().to_string())
-                            .unwrap_or_default(),
-                    ),
-                    RemoveMode::Unregister => (
-                        "unreg",
-                        "Remove from Concordia, keep the files",
-                        "nothing on disk changes".to_string(),
-                    ),
-                    RemoveMode::Hide => (
-                        "hide",
-                        "Hide from Concordia",
-                        "your files are not touched; it simply stops being listed".to_string(),
-                    ),
-                };
-                PickerRow {
-                    id: format!("rm:{key}:{}", r.id),
-                    label: label.into(),
-                    detail,
-                }
-            })
-            .collect();
-        rows.push(PickerRow {
-            id: "rm:cancel".into(),
-            label: "Cancel".into(),
-            detail: String::new(),
-        });
-        let title = format!("remove {}?", display_account_name(r.provider, &r.id));
-        self.show_picker(PickerKind::RemoveConfirm, title, rows, false);
-    }
-
-    fn perform_remove(&mut self, id: &str, mode: crate::connect::RemoveMode) {
-        crate::logging::info(&format!("remove-account id={id} mode={mode:?}"));
-        match crate::connect::remove_account(&self.state_root, id, mode) {
-            Err(e) => self.push_system(format!("remove failed - {e}")),
-            Ok(msg) => {
-                self.push_system(msg);
-                if crate::accounts::normalize_account_id(&self.account)
-                    == crate::accounts::normalize_account_id(id)
-                {
-                    // The account in use is gone: move to another so the next turn has a home.
-                    match accounts_with_auth(&self.state_root).into_iter().next() {
-                        Some(next) => {
-                            if select_account(&self.state_root, &next.account).is_ok() {
-                                self.refresh_binding();
-                                self.push_system(format!("now using {}", self.account_label()));
-                            }
-                        }
-                        None => self.push_system("no accounts left - /use add to connect one"),
-                    }
-                }
-            }
-        }
-    }
-
-    fn open_add_provider_picker(&mut self) {
-        let rows = [
-            (ProviderKind::Codex, "Codex", "codex"),
-            (ProviderKind::Claude, "Claude", "claude"),
-            (ProviderKind::Cursor, "Cursor", "agent"),
-        ]
-        .into_iter()
-        .map(|(p, title, bin)| PickerRow {
-            id: format!("add:{}", p.as_str()),
-            label: title.to_string(),
-            detail: if which::which(bin).is_ok()
-                || (p == ProviderKind::Cursor && which::which("cursor-agent").is_ok())
-            {
-                "CLI found".into()
-            } else {
-                format!("{bin} not found on PATH")
-            },
-        })
-        .collect();
-        self.show_picker(PickerKind::AddProvider, "add account".into(), rows, false);
-    }
-
-    /// Create an concordia-owned home and open the provider login; reports problems in the transcript.
-    fn begin_add_account(&mut self, provider: ProviderKind) {
-        if self.pending_login.is_some() {
-            self.push_system("a login is already in progress - finish it first");
-            return;
-        }
-        match (self.connect)(&self.state_root, provider) {
-            Ok(AddResult {
-                account,
-                provider,
-                label,
-                home,
-                message,
-                watch,
-            }) => {
-                for l in message {
-                    self.push_system(l);
-                }
-                if watch {
-                    self.pending_login = Some(PendingLogin {
-                        account,
-                        provider,
-                        label,
-                        home,
-                        ticks: 0,
-                    });
-                }
-            }
-            Err(e) => self.push_system(format!("add account failed - {e}")),
-        }
-    }
-
-    fn open_model_picker(&mut self) {
-        let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
-        let rows = model_picker_rows(
-            crate::models::available(self.provider, &self.account),
-            chosen,
-        );
-        let selected = rows
-            .iter()
-            .position(|r| r.label.ends_with(" · current"))
-            .unwrap_or(0);
-        self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
-        self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
-    }
-
-    fn refresh_model_picker(&mut self) {
-        if self.model_refresh.is_some() {
-            return;
-        }
-        let provider = self.provider;
-        let account = self.account.clone();
-        let (tx, rx) = std_mpsc::channel();
-        std::thread::spawn({
-            let account = account.clone();
-            move || {
-                let _ = tx.send(crate::models::refresh(provider, &account));
-            }
-        });
-        self.model_refresh = Some(ModelRefresh {
-            provider,
-            account,
-            rx,
-        });
-        if let Some(picker) = self.picker.as_mut() {
-            picker.title = "model · refreshing...".into();
-        }
-        self.footer_left = "refreshing... · Esc closes · UI remains responsive".into();
-    }
-
-    /*
-    fn open_model_picker_old(&mut self) {
-        // (id, shown name, detail). The detail repeats the id so typing either one filters.
-        let mut models: Vec<(String, String, String)> = Vec::new();
-        let mut add = |id: &str, name: &str, detail: &str| {
-            if !id.is_empty() && !models.iter().any(|(x, _, _)| x == id) {
-                models.push((id.to_string(), name.to_string(), detail.to_string()));
-            }
-        };
-        let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
-        for model in crate::models::available(self.provider, &self.account) {
-            add(
-                &model.id,
-                &model.display_name,
-                &format!("{} · {:?}", model.family, model.source),
-            );
-        }
-        if let Some(m) = chosen {
-            add(m, m, "current");
-        }
-        let current = |m: &str| chosen == Some(m);
-        let mut rows = vec![PickerRow {
-            id: "model:".into(),
-            label: format!(
-                "provider default{}",
-                if chosen.is_none() { " · current" } else { "" }
-            ),
-            detail: "the CLI picks its own default model".into(),
-        }];
-        rows.extend(models.into_iter().map(|(id, name, detail)| PickerRow {
-            label: format!("{name}{}", if current(&id) { " · current" } else { "" }),
-            id: format!("model:{id}"),
-            detail,
-        }));
-        let selected = rows
-            .iter()
-            .position(|r| r.label.ends_with(" · current"))
-            .unwrap_or(0);
-        self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
-        self.footer_left = "↑↓ Enter · type any model id · Esc".into();
-    }
-
-    */
-    fn open_usage_picker(&mut self) {
-        self.request_account_usage();
-        self.build_usage_picker();
-    }
-
-    fn request_account_usage(&mut self) {
-        for account in accounts_with_auth(&self.state_root) {
-            if let Some(home) = account.home_path {
-                self.usage_fetcher
-                    .snapshot_refresh(account.provider, &account.account, &home);
-            }
-        }
-    }
-
-    fn update_usage_picker(&mut self) {
-        let Some(old) = self.picker.take() else {
-            return;
-        };
-        match old.kind {
-            PickerKind::Use => self.build_use_picker(),
-            PickerKind::Usage => self.build_usage_picker(),
-            PickerKind::CreditDetails => self.show_credit_details(false),
-            _ => {
-                self.picker = Some(old);
-                return;
-            }
-        }
-        if let Some(picker) = &mut self.picker {
-            picker.filter = old.filter;
-            picker.state = old.state;
-        }
-    }
-
-    fn show_credit_details(&mut self, force: bool) {
-        let mut balance = "Not reported by provider".to_string();
-        let mut availability = "Not reported".to_string();
-        if let Some(home) = self.home_path.clone() {
-            let snapshot = if force {
-                self.usage_fetcher
-                    .snapshot_refresh(self.provider, &self.account, &home)
-            } else {
-                self.usage_fetcher
-                    .snapshot(self.provider, &self.account, &home)
-            };
-            balance = snapshot.credit_balance_text();
-            availability = snapshot.credit_availability_text().into();
-            self.set_usage_footer(&snapshot);
-        }
-        let mut rows = vec![
-            PickerRow {
-                id: "balance".into(),
-                label: format!("Balance: {balance}"),
-                detail: "Exact amount from the native provider; no estimate".into(),
-            },
-            PickerRow {
-                id: "availability".into(),
-                label: format!("Availability: {availability}"),
-                detail: String::new(),
-            },
-            PickerRow {
-                id: "source".into(),
-                label: format!("Source: {} native quota response", self.provider.as_str()),
-                detail: self.usage_summary.clone(),
-            },
-        ];
-        if self.provider == ProviderKind::Codex {
-            rows.push(PickerRow {
-                id: "credit-dashboard".into(),
-                label: "Open full credit balance and purchase details".into(),
-                detail: format!(
-                    "{} · select the same account",
-                    crate::usage::CREDIT_DASHBOARD_URL
-                ),
-            });
-        }
-        rows.push(PickerRow {
-            id: "credit-refresh".into(),
-            label: "Refresh native balance".into(),
-            detail: "Read-only; no model turn".into(),
-        });
-        self.show_picker(
-            PickerKind::CreditDetails,
-            format!("Credit balance · {}", self.account_label()),
-            rows,
-            false,
-        );
-    }
-
-    fn build_usage_picker(&mut self) {
-        let ready = accounts_with_auth(&self.state_root);
-        let accounts: Vec<_> = ready
-            .into_iter()
-            .filter_map(|a| a.home_path.map(|h| (a.account, a.provider, h)))
-            .collect();
-        let rows_data = usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account);
-        let rows: Vec<PickerRow> = if rows_data.is_empty() {
-            vec![PickerRow {
-                id: "none".into(),
-                label: "no accounts".into(),
-                detail: String::new(),
-            }]
-        } else {
-            rows_data
-                .into_iter()
-                .map(|r| {
-                    self.picker_tones.insert(format!("usage:{}", r.id), r.tone);
-                    PickerRow {
-                        id: format!("usage:{}", r.id),
-                        label: self
-                            .account_names
-                            .get(&r.id)
-                            .map(|name| {
-                                let default = get_account(&self.state_root, &r.id)
-                                    .map(|a| display_account_name(a.provider, &r.id))
-                                    .unwrap_or_else(|| r.id.clone());
-                                r.label
-                                    .replacen(&default, &format!("{name} ({default})"), 1)
-                            })
-                            .unwrap_or(r.label),
-                        detail: r.detail,
-                    }
-                })
-                .collect()
-        };
-        self.show_picker(PickerKind::Usage, "usage".into(), rows, false);
-        self.footer_left = "↑↓ Enter · r refresh · t tokens · Esc".into();
-    }
-
-    fn show_picker(
-        &mut self,
-        kind: PickerKind,
-        title: String,
-        rows: Vec<PickerRow>,
-        filterable: bool,
-    ) {
-        self.show_picker_at(kind, title, rows, filterable, 0);
-    }
-
-    fn open_doctor(&mut self) {
-        let checks = crate::doctor::run_fast_checks();
-        let fixes = crate::doctor::proposed_fixes(&self.state_root, &checks);
-        self.doctor = Some(DoctorUi {
-            checks,
-            fixes,
-            fixed: HashMap::new(),
-        });
-        self.refresh_doctor_picker();
-    }
-
-    fn refresh_doctor_picker(&mut self) {
-        let Some(doctor) = self.doctor.as_ref() else {
-            return;
-        };
-        let rows = doctor
-            .checks
-            .iter()
-            .enumerate()
-            .map(|(index, check)| {
-                let tag = match check.level {
-                    crate::doctor::Level::Ok => "ok",
-                    crate::doctor::Level::Warn => "warn",
-                    crate::doctor::Level::Fail => "FAIL",
-                };
-                let fix_index = doctor
-                    .fixes
-                    .iter()
-                    .position(|fix| fix.finding == check.detail);
-                let suffix = doctor
-                    .fixed
-                    .get(&index)
-                    .map(|s| format!(" · fixed ({s})"))
-                    .unwrap_or_default();
-                PickerRow {
-                    id: fix_index.map_or_else(
-                        || format!("doctor:check:{index}"),
-                        |i| format!("doctor:fix:{i}"),
-                    ),
-                    label: format!("{tag}  {}{suffix}", check.name),
-                    detail: fix_index.map_or_else(
-                        || check.detail.clone(),
-                        |i| {
-                            format!(
-                                "before: {} · after: {} · Enter to review fix",
-                                doctor.fixes[i].before, doctor.fixes[i].after
-                            )
-                        },
-                    ),
-                }
-            })
-            .collect();
-        self.show_picker(PickerKind::Doctor, "doctor".into(), rows, false);
-        self.footer_left = "↑↓ select · Enter review fix · Esc".into();
-    }
-
-    fn open_doctor_confirmation(&mut self, fix_index: usize) {
-        let Some(fix) = self.doctor.as_ref().and_then(|d| d.fixes.get(fix_index)) else {
-            return;
-        };
-        let row = PickerRow {
-            id: format!("doctor-confirm:{fix_index}"),
-            label: format!(
-                "Apply {}?\nbefore: {}\nafter: {}",
-                fix.finding, fix.before, fix.after
-            ),
-            detail: format!("impact: {} · y apply / n cancel", fix.impact),
-        };
-        self.show_picker(
-            PickerKind::DoctorConfirm,
-            "confirm doctor fix".into(),
-            vec![row],
-            false,
-        );
-        self.footer_left = "y apply · n cancel · Esc".into();
-    }
-
-    fn apply_doctor_fix(&mut self, fix_index: usize) {
-        let Some(fix) = self
-            .doctor
-            .as_ref()
-            .and_then(|d| d.fixes.get(fix_index))
-            .cloned()
-        else {
-            return;
-        };
-        let result =
-            crate::doctor::apply_fix_confirmed(&self.state_root, &fix, true, &*self.doctor_applier);
-        match result {
-            Ok(message) => {
-                let backup = message
-                    .split("undo from ")
-                    .nth(1)
-                    .unwrap_or("unknown backup")
-                    .to_string();
-                let checks = crate::doctor::run_fast_checks();
-                if let Some(doctor) = self.doctor.as_mut() {
-                    doctor.checks = checks;
-                    doctor.fixes = crate::doctor::proposed_fixes(&self.state_root, &doctor.checks);
-                    if let Some(index) = doctor.checks.iter().position(|c| c.detail == fix.finding)
-                    {
-                        doctor.fixed.insert(index, backup.clone());
-                    }
-                }
-                self.refresh_doctor_picker();
-                self.flash(format!("fixed (backup: {backup})"));
-            }
-            Err(error) => {
-                self.dismiss_picker();
-                self.push_system(format!("doctor fix failed · {error}"));
-            }
-        }
-    }
-
-    fn show_picker_at(
-        &mut self,
-        kind: PickerKind,
-        title: String,
-        rows: Vec<PickerRow>,
-        filterable: bool,
-        idx: usize,
-    ) {
-        let mut state = ListState::default();
-        if !rows.is_empty() {
-            state.select(Some(idx.min(rows.len() - 1)));
-        }
-        self.picker = Some(Picker {
-            kind,
-            title,
-            rows,
-            filter: String::new(),
-            state,
-        });
-        self.footer_left = if filterable {
-            "↑↓ Enter · type to filter · Esc".into()
-        } else {
-            if kind == PickerKind::Usage {
-                "↑↓ Enter · r refresh · Esc".into()
-            } else {
-                "↑↓ Enter · Esc".into()
-            }
-        };
-    }
-
-    /// While an update runs, the update screen shows its progress instead of the changelog.
-    fn update_progress(&mut self) {
-        let showing = self
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Update);
-        let Some(job) = self.job.as_ref().filter(|j| j.kind == JobKind::Update) else {
-            return;
-        };
-        if !showing {
-            return;
-        }
-        let status = job.status();
-        let step = if status.is_empty() {
-            "starting".to_string()
-        } else {
-            status.chars().take(120).collect()
-        };
-        use crate::update::PreviewLine as P;
-        self.update_preview = Some(crate::update::UpdatePreview {
-            history: Vec::new(),
-            history_expanded: false,
-            lines: vec![
-                P::Title(format!("{} Updating Concordia", spinner(self.tick_count))),
-                P::Field(
-                    "Elapsed",
-                    crate::delegate::fmt_elapsed(job.started.elapsed()),
-                ),
-                P::Field("Step", step),
-                P::Blank,
-                P::Text("Messages are paused until Concordia restarts on the new build.".into()),
-                P::Blank,
-                P::Hint("Esc cancels the update".into()),
-            ],
-            install_available: false,
-            release_url: None,
-        });
-        self.footer_left = "Esc cancels the update".into();
-    }
-
-    /// Close the update screen when its update has finished, without cancelling anything.
-    fn close_update_screen(&mut self) {
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Update)
-        {
-            self.picker = None;
-            self.update_preview = None;
-            self.footer_left = FOOTER_HINT.into();
-        }
-    }
-
-    fn dismiss_picker(&mut self) {
-        let restore_handoff = self
-            .picker
-            .as_ref()
-            .is_some_and(|picker| picker.kind == PickerKind::Continuation)
-            && self.continuation.pending_prompt().is_some()
-            && self.editor.text().trim().is_empty();
-        self.permission_row_pressed = None;
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|picker| picker.kind == PickerKind::Related)
-        {
-            self.session_ui.memory_pending = None;
-            self.session_ui.memory_screen = None;
-        }
-        tokens::close(&mut self.token_reads);
-        // Only the update screen owns a job: its check, or the update it started.
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Update)
-        {
-            if let Some(job) = &self.job {
-                job.cancel();
-            }
-        }
-        self.picker = None;
-        self.update_preview = None;
-        self.footer_left = FOOTER_HINT.into();
-        if restore_handoff {
-            if let Some(prompt) = self.continuation.pending_prompt().map(str::to_owned) {
-                self.restore_composer(&prompt);
-            }
-        }
-    }
-
-    fn open_update_release(&mut self) {
-        let Some(url) = self
-            .update_preview
-            .as_ref()
-            .and_then(|p| p.release_url.clone())
-        else {
-            return;
-        };
-        if !url.starts_with("https://") {
-            self.flash("refusing non-https release URL");
-            return;
-        }
-        #[cfg(not(test))]
-        {
-            // Explorer is intentionally visible: this is the requested URL window.
-            let _ = std::process::Command::new("explorer.exe") // visible-spawn: user-requested release page.
-                .arg(url)
-                .spawn();
-        }
-        #[cfg(test)]
-        self.flash("release page opened");
-    }
-
-    fn apply_picker_selection(&mut self, turn_tx: Option<&mpsc::UnboundedSender<String>>) {
-        if self.picker.as_ref().is_some_and(|picker| {
-            matches!(
-                picker.kind,
-                PickerKind::BrandCustom | PickerKind::ThemeImport | PickerKind::ThemeExport
-            )
-        }) {
-            appearance::accept_custom(self);
-            return;
-        }
-        let Some(picker) = self.picker.as_ref() else {
-            return;
-        };
-        let filtered = picker.filtered();
-        let Some(idx) = picker.state.selected() else {
-            return;
-        };
-        let Some(row) = filtered.get(idx) else {
-            return;
-        };
-        let id = row.id.clone();
-        let label = row.label.clone();
-        let kind = picker.kind;
-        if kind == PickerKind::Doctor {
-            if let Some(index) = id.strip_prefix("doctor:fix:").and_then(|s| s.parse().ok()) {
-                self.open_doctor_confirmation(index);
-            }
-            return;
-        }
-        if kind == PickerKind::Model && id.starts_with("model-group:") {
-            return;
-        }
-        self.dismiss_picker();
-        if self.busy
-            && matches!(
-                kind,
-                PickerKind::Resume | PickerKind::Use | PickerKind::Model | PickerKind::Usage
-            )
-        {
-            self.push_system("finish or cancel the current turn before switching conversation, provider or model");
-            return;
-        }
-        match kind {
-            PickerKind::Settings | PickerKind::FilePreferences | PickerKind::Customization => {
-                settings::choose(self, kind, &id)
-            }
-            PickerKind::Idle => match id.as_str() {
-                "idle:wait" => {}
-                "idle:cancel" => self.request_cancel(),
-                "idle:handoff" => {
-                    let has_other = accounts_with_auth(&self.state_root)
-                        .iter()
-                        .any(|a| a.account != self.account && a.home_path.is_some());
-                    if has_other {
-                        self.idle_handoff();
-                    } else {
-                        self.push_system("hand off disabled: no other signed-in account");
-                    }
-                }
-                _ => {}
-            },
-            PickerKind::Appearance | PickerKind::Theme | PickerKind::BrandColor => {
-                appearance::choose(self, kind, &id)
-            }
-            PickerKind::BrandCustom => {}
-            PickerKind::ThemeImport | PickerKind::ThemeExport => {}
-            PickerKind::CreditDetails => match id.as_str() {
-                "credit-dashboard" => self.open_host_target(
-                    crate::usage::CREDIT_DASHBOARD_URL.into(),
-                    "credit balance dashboard",
-                ),
-                "credit-refresh" => self.show_credit_details(true),
-                _ => self.show_credit_details(false),
-            },
-            PickerKind::Files => {
-                if id == "artifact-catalog" {
-                    artifacts::open(self);
-                    return;
-                }
-                if let Some(index) = id
-                    .strip_prefix("file:")
-                    .and_then(|s| s.parse::<usize>().ok())
-                {
-                    self.preview_related_file(index);
-                }
-            }
-            PickerKind::FileActions => self.choose_file_action(&id),
-            PickerKind::Artifacts => artifacts::choose(self, &id),
-            PickerKind::ArtifactDetail => {}
-            PickerKind::Agents => {
-                if let Some(index) = id
-                    .strip_prefix("native-agent:")
-                    .and_then(|i| i.parse::<usize>().ok())
-                {
-                    if self.messages.get(index).is_some_and(|m| m.card.is_some()) {
-                        self.activity.open(index);
-                    }
-                }
-                if let Some(id) = id
-                    .strip_prefix("worker-agent:")
-                    .and_then(|id| id.parse::<u32>().ok())
-                {
-                    self.inspect_worker(id);
-                }
-            }
-            PickerKind::NeedsYou => {
-                if let Some(item_id) = id.strip_prefix("needs:") {
-                    let session_id = self
-                        .needs_you
-                        .items()
-                        .find(|item| item.id == item_id)
-                        .map(|item| item.session_id.clone());
-                    if let Some(session_id) = session_id {
-                        self.session_chip = Some(session_id.clone());
-                        self.flash(format!("jumped to {session_id}"));
-                    }
-                }
-            }
-            PickerKind::Recovery => {
-                if let Some(id) = id.strip_prefix("recover:") {
-                    self.choose_recovery(id);
-                }
-            }
-            PickerKind::Resume => {
-                if id == "none" {
-                    return;
-                }
-                if let Some(rest) = id.strip_prefix("resume:") {
-                    let mut parts = rest.splitn(2, ':');
-                    let account = parts.next().unwrap_or("").to_string();
-                    let session_id = parts.next().unwrap_or("").to_string();
-                    if session_id.is_empty() {
-                        self.push_system("resume failed — missing session id");
-                        return;
-                    }
-                    self.resume_session(&account, &session_id);
-                }
-                if let Some(task_id) = id.strip_prefix("task:") {
-                    let Some(task) = crate::store::task(&self.state_root, task_id) else {
-                        self.push_system("resume failed: task is no longer present");
-                        return;
-                    };
-                    let Some(session) = task.sessions.last() else {
-                        self.push_system("resume failed: task has no native sessions");
-                        return;
-                    };
-                    self.task_id = Some(task.id);
-                    if session.provider != self.provider || session.account != self.account {
-                        self.native_session_id = None;
-                        self.need_context_pack = true;
-                        self.prior_provider = session.provider;
-                        self.task_map = task
-                            .last_map
-                            .as_ref()
-                            .and_then(|pointer| {
-                                (pointer.version == 2).then(|| {
-                                    let events = crate::threads::ThreadLog::open(
-                                        &self.state_root,
-                                        &pointer.thread_id,
-                                    )
-                                    .read_all()
-                                    .ok()?;
-                                    Some(crate::threads::build_map_v2(
-                                        &events,
-                                        &pointer.thread_id,
-                                        crate::threads::MAP_CHARS,
-                                        true,
-                                    ))
-                                })
-                            })
-                            .flatten();
-                        self.push_system(format!(
-                            "reopened task on {} / {} with a new native session; map v2 attached",
-                            self.provider.as_str(),
-                            self.account
-                        ));
-                    } else {
-                        self.resume_session(&session.account, &session.native_session_id);
-                    }
-                }
-            }
-            PickerKind::Trust => {
-                if let Some(mode) = id.strip_prefix("trust:") {
-                    let trust = match mode {
-                        "plan" => TrustMode::Plan,
-                        "ask" => TrustMode::Ask,
-                        "full" => TrustMode::Full,
-                        _ => TrustMode::Workspace,
-                    };
-                    if let Err(e) = set_trust_mode(&self.state_root, trust) {
-                        self.push_system(format!("trust save failed — {e}"));
-                        return;
-                    }
-                    self.trust = trust;
-                    self.push_system(match trust {
-                        TrustMode::Plan => "trust → plan (read-only: analyse and propose)",
-                        TrustMode::Full => "trust → full (skip all permissions — careful)",
-                        TrustMode::Workspace => "trust → workspace (cwd write, no trust dialogs)",
-                        TrustMode::Ask => "trust → ask (may hang headless)",
-                    });
-                    if self.busy {
-                        self.push_system("permission change applies to the next turn; the running turn keeps its original permissions");
-                    }
-                }
-            }
-            PickerKind::FullModeConfirm => {
-                if id == "full-yes" {
-                    self.full_mode_confirmed = true;
-                    let _ = self.set_mode(TrustMode::Full);
-                }
-            }
-            PickerKind::Remove => {
-                if let Some(acct) = id.strip_prefix("rmpick:") {
-                    self.open_remove_picker(Some(acct.to_string()));
-                }
-            }
-            PickerKind::RemoveConfirm => {
-                use crate::connect::RemoveMode;
-                let mut parts = id.splitn(3, ':');
-                let (_, mode, acct) = (parts.next(), parts.next(), parts.next());
-                match (mode, acct) {
-                    (Some("delete"), Some(a)) => self.perform_remove(a, RemoveMode::DeleteData),
-                    (Some("unreg"), Some(a)) => self.perform_remove(a, RemoveMode::Unregister),
-                    (Some("hide"), Some(a)) => self.perform_remove(a, RemoveMode::Hide),
-                    _ => {}
-                }
-            }
-            PickerKind::AddProvider => {
-                if let Some(p) = id
-                    .strip_prefix("add:")
-                    .and_then(crate::commands::parse_provider)
-                {
-                    self.begin_add_account(p);
-                }
-            }
-            PickerKind::Use => {
-                if id == "use-handoff" {
-                    self.open_handoff_settings();
-                    return;
-                }
-                if id == "use-continue" {
-                    self.show_unfinished_request();
-                    return;
-                }
-                if id == "use-add" {
-                    self.open_add_provider_picker();
-                    return;
-                }
-                if id == "use-remove" {
-                    self.open_remove_picker(None);
-                    return;
-                }
-                if id == "use-continuation" {
-                    let next = !self.continuation.automatic();
-                    if let Err(error) =
-                        crate::store::set_continuation_automatic(&self.state_root, next)
-                    {
-                        self.push_system(format!(
-                            "could not save usage handoff preference: {error}"
-                        ));
-                        return;
-                    }
-                    let automatic = self.continuation.toggle_automatic();
-                    self.push_system(if automatic {
-                        "usage handoff → automatic"
-                    } else {
-                        "usage handoff → pause"
-                    });
-                    return;
-                }
-                if let Some(account) = id.strip_prefix("use:") {
-                    let prev_home = self
-                        .home_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let prev_prov = self.provider;
-                    let prev_session = self.native_session_id.clone();
-                    if let Err(e) = select_account(&self.state_root, account) {
-                        self.push_system(format!("account switch failed — {e}"));
-                        return;
-                    }
-                    self.refresh_binding();
-                    let new_home = self
-                        .home_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let msgs = self.pack_messages();
-                    let decision = plan_continuity(&ContinuityRequest {
-                        from_provider: prev_prov,
-                        to_provider: self.provider,
-                        from_home: prev_home.as_deref(),
-                        to_home: new_home.as_deref(),
-                        session_id: prev_session.as_deref(),
-                        messages: &msgs,
-                        thread_id: self.thread_id(),
-                        include_pack_if_needed: true,
-                    });
-                    self.native_session_id = decision.session_id.clone();
-                    if !decision.native_resume {
-                        self.session_chip = self.session_ui.title.clone();
-                    }
-                    self.need_context_pack = decision.pack.is_some();
-                    self.log_switch(prev_prov);
-                    if let Some(pack) = &decision.pack {
-                        self.push_map(pack);
-                    } else if !decision.native_resume
-                        && decision.reason != crate::context::NEW_SESSION
-                    {
-                        self.push_system(decision.reason);
-                    }
-                    let home = self.home_path.as_ref();
-                    let idn = home
-                        .map(|h| inspect_provider(self.provider, h))
-                        .map(|i| format_identity_label(&i))
-                        .unwrap_or_else(|| "unknown".into());
-                    self.push_system(format!(
-                        "using {} · {idn} · {}",
-                        self.account_label(),
-                        self.model
-                    ));
-                    self.prior_provider = self.provider;
-                    self.prior_home = self.continuity_home();
-                }
-            }
-            PickerKind::Model => {
-                if let Some(model) = id
-                    .strip_prefix(TYPED_MODEL_PREFIX)
-                    .or_else(|| id.strip_prefix("model:"))
-                {
-                    if !model.is_empty() && !valid_model_id(model) {
-                        self.push_system("model id must be letters, digits or . _ - : / [ ]");
-                        return;
-                    }
-                    // A first run has no saved selection yet; save the account already shown.
-                    if get_use_selection(&self.state_root).is_none() {
-                        let shown = UseSelection {
-                            provider: self.provider,
-                            account: self.account.clone(),
-                            home_path: self
-                                .home_path
-                                .as_ref()
-                                .map(|p| p.to_string_lossy().into_owned()),
-                            model: None,
-                            updated_at: now_stamp(),
-                        };
-                        if let Err(e) = set_use_selection(&self.state_root, shown) {
-                            self.push_system(format!("model save failed — {e}"));
-                            return;
-                        }
-                    }
-                    if let Err(e) = set_model(&self.state_root, model) {
-                        self.push_system(format!("model save failed — {e}"));
-                        return;
-                    }
-                    self.model = if model.is_empty() { "?" } else { model }.to_string();
-                    if model.is_empty() {
-                        self.push_system("model → provider default");
-                    } else {
-                        self.push_system(format!("model → {model}"));
-                    }
-                }
-            }
-            PickerKind::Usage => {
-                if let Some(account) = id.strip_prefix("usage:") {
-                    if account == self.account {
-                        return;
-                    }
-                    let prev_home = self
-                        .home_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let prev_prov = self.provider;
-                    let prev_session = self.native_session_id.clone();
-                    if let Err(e) = select_account(&self.state_root, account) {
-                        self.push_system(format!("usage switch failed — {e}"));
-                        return;
-                    }
-                    self.refresh_binding();
-                    let new_home = self
-                        .home_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let msgs = self.pack_messages();
-                    let decision = plan_continuity(&ContinuityRequest {
-                        from_provider: prev_prov,
-                        to_provider: self.provider,
-                        from_home: prev_home.as_deref(),
-                        to_home: new_home.as_deref(),
-                        session_id: prev_session.as_deref(),
-                        messages: &msgs,
-                        thread_id: self.thread_id(),
-                        include_pack_if_needed: true,
-                    });
-                    self.native_session_id = decision.session_id.clone();
-                    self.session_chip = self.session_ui.title.clone();
-                    self.need_context_pack = decision.pack.is_some();
-                    self.log_switch(prev_prov);
-                    if let Some(pack) = &decision.pack {
-                        self.push_map(pack);
-                    }
-                    self.prior_provider = self.provider;
-                    self.prior_home = self.continuity_home();
-                    self.push_system(format!("using {} · {}", self.account_label(), self.model));
-                }
-            }
-            PickerKind::Continuation => {
-                if let Some(account) = id.strip_prefix("continue:") {
-                    if let Some(tx) = turn_tx {
-                        self.continue_usage(account, tx);
-                    } else {
-                        self.continuation_target = Some(account.to_string());
-                    }
-                }
-            }
-            PickerKind::HandoffSettings => {
-                if let Some(value) = id.strip_prefix("handoff:") {
-                    self.set_session_handoff(value);
-                }
-            }
-            PickerKind::ResumeDeleteConfirm => {
-                if let Some(id) = id.strip_prefix("resume-delete:") {
-                    match crate::threads::resolve_prefix(&self.state_root, id) {
-                        Ok(full) => match crate::threads::delete(&self.state_root, &full) {
-                            Ok(()) => self.push_system(format!("deleted thread {full}")),
-                            Err(e) => self.push_system(format!("delete failed: {e:#}")),
-                        },
-                        Err(e) => self.push_system(e.to_string()),
-                    }
-                }
-            }
-            PickerKind::Update
-            | PickerKind::Tokens
-            | PickerKind::Related
-            | PickerKind::Integrations
-            | PickerKind::Doctor
-            | PickerKind::DoctorConfirm => {}
-        }
-        let _ = label;
+        self.footer_left = "up/down Enter Ã‚· r refresh Ã‚· type to filter Ã‚· Esc".into();
     }
 
     fn handle_slash(&mut self, line: &str) -> bool {
@@ -4189,9 +1922,9 @@ impl App {
             }
             JobResult::Check(Ok(preview)) => {
                 self.footer_left = if preview.install_available {
-                    "Enter installs · ↑↓ scroll · Esc close"
+                    "Enter installs \u{b7} \u{2191}\u{2193} scroll \u{b7} Esc close"
                 } else {
-                    "↑↓ scroll · Esc close"
+                    "\u{2191}\u{2193} scroll \u{b7} Esc close"
                 }
                 .into();
                 self.update_preview = Some(preview);
@@ -4261,7 +1994,7 @@ impl App {
                 return;
             }
             if self.queue.force_pending {
-                self.flash("Stopping the active turn before sending the pending message…");
+                self.flash("Stopping the active turn before sending the pending messageÃ¢â‚¬Â¦");
                 return;
             }
             let index = self.queue.items.len();
@@ -4722,7 +2455,11 @@ fn model_picker_rows(
         id: "model:".into(),
         label: format!(
             "provider default{}",
-            if chosen.is_none() { " · current" } else { "" }
+            if chosen.is_none() {
+                " Ã‚· current"
+            } else {
+                ""
+            }
         ),
         detail: "the CLI picks its own default model".into(),
     }];
@@ -4747,14 +2484,14 @@ fn model_picker_rows(
                 label: format!(
                     "{}{}",
                     model.display_name,
-                    if current { " · current" } else { "" }
+                    if current { " Ã‚· current" } else { "" }
                 ),
                 detail: format!(
-                    "{} · {}{}",
+                    "{} Ã‚· {}{}",
                     model.id,
                     model_source_tag(model.source),
                     if model.deprecated {
-                        " · deprecated"
+                        " Ã‚· deprecated"
                     } else {
                         ""
                     }
