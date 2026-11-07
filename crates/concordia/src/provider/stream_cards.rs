@@ -1200,7 +1200,7 @@ pub(crate) fn literal_wrapper_calls(input: &str) -> Option<Vec<(String, Value)>>
             return None;
         }
         let argument = &statement[end + 1..];
-        let (value, end) = crate::native_memory::literal_tool_argument(argument)?;
+        let (value, end) = crate::tool_literals::literal_tool_argument(argument)?;
         rest = argument
             .get(end..)?
             .trim_start()

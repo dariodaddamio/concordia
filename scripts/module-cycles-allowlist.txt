@@ -1,0 +1,37 @@
+# Known cycles retained for follow-up refactors. Format: start-module: reason.
+file_document: existing file-document helper cycle; preserve behavior while the storage boundary is refactored.
+store: existing store/config/routing cycle; provider account state still crosses the routing boundary.
+update: existing update/doctor/release cycle; diagnostics and release orchestration share update status.
+test_guard: test-only guard helpers reference their own module in fixtures.
+connect: existing connect/account integration cycle retained for follow-up.
+token_log: existing token-log accounting cycle retained for follow-up.
+workspace_paths: existing workspace discovery cycle retained for follow-up.
+delegate: existing delegation cycle retained for follow-up.
+workspaces: existing workspace orchestration cycle retained for follow-up.
+theme_library: existing theme asset cycle retained for follow-up.
+goals: existing goals/project cycle retained for follow-up.
+legacy_migration: existing migration cycle retained for follow-up.
+state_security: existing state security cycle retained for follow-up.
+file_links: existing file-link cycle retained for follow-up.
+native_input: existing native input cycle retained for follow-up.
+state_io: existing state I/O cycle retained for follow-up.
+file_open: existing file-open cycle retained for follow-up.
+commands: existing command dispatch cycle retained for follow-up.
+integration: existing integration cycle retained for follow-up.
+config: existing configuration cycle retained for follow-up.
+models: existing model catalog cycle retained for follow-up.
+sessions: existing session persistence cycle retained for follow-up.
+usage: existing usage accounting cycle retained for follow-up.
+artifacts: existing artifact cycle retained for follow-up.
+attachments: existing attachment cycle retained for follow-up.
+cursor_usage: existing cursor usage cycle retained for follow-up.
+doctor: existing diagnostics cycle retained for follow-up.
+routing: existing routing cycle retained for follow-up.
+capacity: existing capacity cycle retained for follow-up.
+catalog: existing catalog cycle retained for follow-up.
+threads: remaining indirect thread/storage cycle; the direct threads/context edge is removed.
+managed_workspaces: existing managed workspace cycle retained for follow-up.
+release: existing release cycle retained for follow-up.
+context: remaining indirect context/storage cycle; direct context/threads dependency is one-way.
+user_commands: existing user command cycle retained for follow-up.
+accounts: existing account state cycle retained for follow-up.

@@ -434,7 +434,8 @@ impl Workspace {
         true
     }
 
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self) -> bool {
+        let mut visible_change = false;
         let mut index = 0;
         while index < self.jobs.len() {
             if !self.jobs[index].1.is_finished() {
@@ -442,6 +443,7 @@ impl Workspace {
                 continue;
             }
             let (id, job) = self.jobs.swap_remove(index);
+            visible_change = true;
             let result = job
                 .join()
                 .unwrap_or_else(|_| Err("file reader failed".into()));
@@ -461,6 +463,7 @@ impl Workspace {
         edit::poll(self);
 
         if self.watch.as_ref().is_some_and(|job| job.is_finished()) {
+            visible_change = true;
             if let Ok(results) = self.watch.take().unwrap().join() {
                 for (id, generation, observed) in results {
                     if let Some(pane) = self
@@ -496,6 +499,7 @@ impl Workspace {
                 })
                 .ok();
         }
+        visible_change
     }
     pub fn replacement_blockers(&self) -> Vec<PathBuf> {
         self.panes

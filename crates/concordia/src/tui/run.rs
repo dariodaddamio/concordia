@@ -120,17 +120,15 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let mut key_burst = input::BurstBuffer::default();
     let mut mouse_pointer = pointer::Pointer::default();
     let mut window_mouse = None;
+    // Drawing is comparatively expensive: it rasterizes the whole frame and, on Windows,
+    // extracts native images.  Keep the wait loop responsive, but only do that work after a
+    // state change that can affect the screen.
+    let mut dirty = true;
+    let redraw_always = std::env::var_os("CONCORDIA_REDRAW_ALWAYS").is_some();
 
-    let mut previous_title = String::new();
-    let input_result = (|| -> Result<()> {
-        loop {
-            #[cfg(windows)]
-            if let Some(windows) = &mut detached_windows {
-                windows.drain(&mut app);
-                windows.sync(&mut app);
-            }
-            // Drain pending paste chunks before repainting the growing prompt.
-            if !key_burst.active() || !terminal_input.poll(Duration::ZERO)? {
+    macro_rules! draw_if_needed {
+        ($force:expr) => {
+            if $force || (dirty && (!key_burst.active() || !terminal_input.poll(Duration::ZERO)?)) {
                 if !use_window {
                     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 }
@@ -158,6 +156,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 };
                 drawn?;
                 ended?;
+                dirty = false;
                 #[cfg(windows)]
                 if let Some(windows) = &mut detached_windows {
                     windows.draw(&mut app);
@@ -170,6 +169,19 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     mouse_pointer.refresh(&app)?;
                 }
             }
+        };
+    }
+
+    let mut previous_title = String::new();
+    let input_result = (|| -> Result<()> {
+        loop {
+            #[cfg(windows)]
+            if let Some(windows) = &mut detached_windows {
+                windows.drain(&mut app);
+                windows.sync(&mut app);
+            }
+            // Drain pending paste chunks before repainting the growing prompt.
+            draw_if_needed!(redraw_always);
             let title = app.window_title();
             if title != previous_title {
                 terminal.backend_mut().title(&title)?;
@@ -202,6 +214,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         }
                         continue;
                     };
+                    // Any input event may have changed a visible interaction state, including
+                    // events that are intentionally no-ops for the current screen.
+                    dirty = true;
                     match event {
                         Event::Key(key)
                             if use_window
@@ -249,7 +264,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     continue;
                                 }
                             }
-                            handle_mouse(&mut app, m)
+                            handle_mouse(&mut app, m);
                         }
                         Event::Paste(s) => {
                             if let Some(burst) = key_burst.take_pending() {
@@ -283,11 +298,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
 
             while let Ok(h) = handle_rx.try_recv() {
                 app.accept_cancel_handle(h);
+                dirty = true;
             }
 
             // A finished turn can wait here for an inline queue edit to be committed.
             app.queue_advance(&turn_tx);
             while let Ok(prompt) = turn_rx.try_recv() {
+                dirty = true;
                 let incoming = crate::attachments::Message::decode(&prompt);
                 let image_inputs = incoming.images();
                 if app.discard_cancelled_pending_turn() {
@@ -721,6 +738,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             app.flush_delegate_prompt(&turn_tx);
             while let Ok(ev) = progress_rx.try_recv() {
                 app.apply_progress(ev);
+                dirty = true;
             }
 
             while let Ok(outcome) = done_rx.try_recv() {
@@ -728,17 +746,30 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 // drain and this receive. Finish it before finalizing or switching sessions.
                 while let Ok(ev) = progress_rx.try_recv() {
                     app.apply_progress(ev);
+                    dirty = true;
                 }
                 app.on_turn_done(outcome, &turn_tx);
+                dirty = true;
             }
 
             if last_tick.elapsed() >= tick_rate {
-                app.on_tick();
+                let tick_changed = app.on_tick();
+                // Running turns expose both elapsed time and an optional spinner.  The idle
+                // notice also changes on ticks; motion-off deliberately suppresses spinner
+                // cadence, while elapsed/status updates remain observable.
+                dirty |= tick_changed;
                 last_tick = Instant::now();
             }
 
             if app.should_quit || app.reexec_path.is_some() {
                 break;
+            }
+
+            // Paint state changes handled above before waiting for the next input/tick. This is
+            // intentionally after the event and channel drains: a key burst may defer one frame,
+            // but must never defer the resulting frame until the next poll timeout.
+            if !redraw_always {
+                draw_if_needed!(false);
             }
         }
         Ok(())
@@ -860,6 +891,119 @@ fn restore_terminal() {
 pub(super) fn write_osc_title(title: &str) -> io::Result<()> {
     let clean: String = title.chars().filter(|c| !c.is_control()).collect();
     execute!(stdout(), crossterm::terminal::SetTitle(clean))
+}
+
+#[cfg(test)]
+mod redraw_tests {
+    #[derive(Default)]
+    struct RedrawHarness {
+        dirty: bool,
+        draws: usize,
+    }
+
+    impl RedrawHarness {
+        fn draw_if_dirty(&mut self) {
+            if self.dirty {
+                self.draws += 1;
+                self.dirty = false;
+            }
+        }
+        fn input(&mut self) {
+            self.dirty = true;
+        }
+        fn resize(&mut self) {
+            self.dirty = true;
+        }
+        fn tick(&mut self, running: bool, motion: bool) {
+            self.dirty |= running && motion;
+        }
+
+        fn handle_event_then_draw(&mut self) {
+            self.input();
+            self.draw_if_dirty();
+        }
+    }
+
+    #[test]
+    fn idle_screen_does_not_redraw() {
+        let mut h = RedrawHarness {
+            dirty: true,
+            ..Default::default()
+        };
+        h.draw_if_dirty();
+        for _ in 0..25 {
+            h.draw_if_dirty();
+        }
+        assert_eq!(h.draws, 1);
+    }
+
+    #[test]
+    fn input_triggers_exactly_one_redraw() {
+        let mut h = RedrawHarness {
+            dirty: true,
+            ..Default::default()
+        };
+        h.draw_if_dirty();
+        h.input();
+        h.draw_if_dirty();
+        h.draw_if_dirty();
+        assert_eq!(h.draws, 2);
+    }
+
+    #[test]
+    fn handled_event_draws_before_the_next_wait_iteration() {
+        let mut h = RedrawHarness {
+            dirty: true,
+            ..Default::default()
+        };
+        h.draw_if_dirty();
+        h.handle_event_then_draw();
+        assert_eq!(h.draws, 2);
+        assert!(
+            !h.dirty,
+            "the handled event was painted in its own iteration"
+        );
+    }
+
+    #[test]
+    fn running_turn_redraws_at_spinner_cadence_only() {
+        let mut h = RedrawHarness {
+            dirty: true,
+            ..Default::default()
+        };
+        h.draw_if_dirty();
+        for _ in 0..5 {
+            h.tick(true, true);
+            h.draw_if_dirty();
+        }
+        assert_eq!(h.draws, 6);
+    }
+
+    #[test]
+    fn motion_off_has_no_spinner_redraws() {
+        let mut h = RedrawHarness {
+            dirty: true,
+            ..Default::default()
+        };
+        h.draw_if_dirty();
+        for _ in 0..25 {
+            h.tick(true, false);
+            h.draw_if_dirty();
+        }
+        assert_eq!(h.draws, 1);
+    }
+
+    #[test]
+    fn resize_redraws() {
+        let mut h = RedrawHarness {
+            dirty: true,
+            ..Default::default()
+        };
+        h.draw_if_dirty();
+        h.resize();
+        h.draw_if_dirty();
+        assert_eq!(h.draws, 2);
+    }
 }
 
 #[cfg(test)]

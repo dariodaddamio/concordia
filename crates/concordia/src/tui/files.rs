@@ -162,7 +162,7 @@ impl App {
         }
     }
 
-    pub(super) fn poll_file_jobs(&mut self) {
+    pub(super) fn poll_file_jobs(&mut self) -> bool {
         let mut messages = Vec::new();
         self.file_jobs.retain_mut(|rx| {
             while let Ok(message) = rx.try_recv() {
@@ -170,9 +170,11 @@ impl App {
             }
             !rx.is_closed()
         });
+        let received = !messages.is_empty();
         for message in messages {
             self.flash(message);
         }
+        received
     }
 }
 

@@ -564,6 +564,7 @@ pub fn control_checkpoint(
 
 /// Successful native patch inputs from fresh turns only. Exec's public progress stream omits
 /// patch bodies, so edit rendering uses this same account/home/session-verified source reader.
+#[allow(dead_code)]
 pub(crate) fn literal_tool_argument(input: &str) -> Option<(Value, usize)> {
     // Normalize only unquoted identifier keys in a static JSON-like literal. Never
     // evaluate JavaScript, expressions, templates, comments, or computed properties.
@@ -640,7 +641,7 @@ fn literal_exec_patch(input: &str) -> Option<(String, usize)> {
 fn literal_exec_patches(input: &str) -> Option<Vec<(String, usize)>> {
     // Share the complete finite host-batch grammar with compact tool headings. Each patch
     // keeps its own result index; a successful sibling command cannot validate a failed patch.
-    let calls = crate::provider::stream_cards::literal_wrapper_calls(input)?;
+    let calls = crate::tool_literals::literal_wrapper_calls(input)?;
     let mut patches = Vec::new();
     for (index, (name, argument)) in calls.into_iter().enumerate() {
         if name == "apply_patch" {

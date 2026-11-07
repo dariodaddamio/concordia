@@ -27,6 +27,9 @@ jobs:
       - name: Check hidden child-process constructors
         shell: pwsh
         run: ./scripts/check-hidden-process-spawns.ps1
+      - name: Check module dependency cycles
+        shell: pwsh
+        run: ./scripts/check-module-cycles.ps1
 
       # rust-toolchain.toml pins the compiler (and clippy/rustfmt) so lints cannot drift.
       - name: Install pinned toolchain
