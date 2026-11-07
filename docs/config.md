@@ -272,6 +272,12 @@ there wins:
 - Delegation protocol: `/delegate protocol on|off` writes the store; until you use it, the config value applies.
 - `max_workers` is a cap on worker enrollment inside `/delegate`; it is not stored.
 
+Worker execution also applies a deterministic host-resource budget: one active worker per 8 GiB
+of free RAM, capped at one quarter of logical cores (minimum one). Provider child processes get
+`CARGO_BUILD_JOBS`, `MAKEFLAGS`, `npm_config_jobs`, and `CMAKE_BUILD_PARALLEL_LEVEL` defaults
+derived from that budget only when the user or provider has not set them. Host capacity is read
+locally; no credentials or hosted service is involved.
+
 Read the effective values with the `config` and `commands` rows of `concordia doctor`.
 
 ## Custom commands

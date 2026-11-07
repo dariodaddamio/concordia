@@ -3,6 +3,7 @@
 //!
 //! - `stream`: print the JSONL file named by `FAKE_PROVIDER_STREAM`, exit 0.
 //! - `hang`:   write our pid to `FAKE_PROVIDER_PID`, print a session line, then sleep.
+//! - `silent-hang`: write our pid to `FAKE_PROVIDER_PID`, then sleep without output.
 //! - `fail`:   print to stderr and exit 3.
 //!
 //! In every mode, if `FAKE_PROVIDER_OUT` is set we record what we received: one `ARG:<hex>` line
@@ -612,7 +613,7 @@ fn main() {
                 }
             }
         }
-        "hang" | "eof-hang" => {
+        "hang" | "silent-hang" | "eof-hang" => {
             #[cfg(windows)]
             if mode == "eof-hang" {
                 use std::ffi::c_void;
@@ -635,11 +636,13 @@ fn main() {
             if let Ok(path) = std::env::var("FAKE_PROVIDER_PID") {
                 let _ = std::fs::write(path, std::process::id().to_string());
             }
-            let _ = writeln!(
-                stdout,
-                r#"{{"type":"thread.started","thread_id":"99999999-2222-3333-4444-555555555555"}}"#
-            );
-            let _ = stdout.flush();
+            if mode == "hang" {
+                let _ = writeln!(
+                    stdout,
+                    r#"{{"type":"thread.started","thread_id":"99999999-2222-3333-4444-555555555555"}}"#
+                );
+                let _ = stdout.flush();
+            }
             std::thread::sleep(std::time::Duration::from_secs(120));
         }
         "drip-stdout" | "drip-stderr" => {
