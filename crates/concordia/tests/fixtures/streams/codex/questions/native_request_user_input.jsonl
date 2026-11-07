@@ -1,0 +1,1 @@
+{"id":100,"method":"item/tool/requestUserInput","params":{"threadId":"synthetic-thread","turnId":"synthetic-turn","itemId":"synthetic-item","questions":[{"id":"route","header":"Route","question":"Choose the route","isSecret":false,"isOther":false,"options":[{"label":"Direct","description":"Use the direct route"},{"label":"Review","description":"Review before acting"}]}]}}

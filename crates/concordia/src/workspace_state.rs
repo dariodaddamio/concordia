@@ -37,7 +37,7 @@ pub fn attach_workers<'a>(
 
 const FILE_CAP: usize = 20;
 
-fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+fn git(root: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     let root = root.to_owned();
     let args = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let (tx, rx) = mpsc::channel();
@@ -55,20 +55,34 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
         });
         let _ = tx.send(result);
     });
-    rx.recv_timeout(Duration::from_secs(2))
+    rx.recv_timeout(timeout)
         .map_err(|_| String::from("timed out"))?
 }
 
 pub fn collect(root: &Path) -> Option<WorkspaceState> {
-    let branch = git(root, &["branch", "--show-current"])
+    collect_with_git(root, Duration::from_secs(2), |root, args, timeout| {
+        git(root, args, timeout)
+    })
+}
+
+fn collect_with_git<F>(root: &Path, timeout: Duration, mut run_git: F) -> Option<WorkspaceState>
+where
+    F: FnMut(&Path, &[&str], Duration) -> Result<String, String>,
+{
+    let branch = run_git(root, &["branch", "--show-current"], timeout)
         .ok()?
         .trim()
         .to_owned();
-    let head = git(root, &["rev-parse", "--short", "HEAD"])
+    let head = run_git(root, &["rev-parse", "--short", "HEAD"], timeout)
         .unwrap_or_default()
         .trim()
         .to_owned();
-    let status = git(root, &["status", "--porcelain=v1", "--untracked-files=all"]).ok()?;
+    let status = run_git(
+        root,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+        timeout,
+    )
+    .ok()?;
     let mut state = WorkspaceState {
         branch,
         head,
@@ -85,9 +99,10 @@ pub fn collect(root: &Path) -> Option<WorkspaceState> {
             state.omitted_files += 1;
         }
     }
-    if let Ok(upstream) = git(
+    if let Ok(upstream) = run_git(
         root,
         &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+        timeout,
     ) {
         let p = upstream.split_whitespace().collect::<Vec<_>>();
         if p.len() == 2 {
@@ -95,7 +110,7 @@ pub fn collect(root: &Path) -> Option<WorkspaceState> {
             state.behind = p[1].parse().ok();
         }
     }
-    if let Ok(diff) = git(root, &["diff", "--numstat", "HEAD"]) {
+    if let Ok(diff) = run_git(root, &["diff", "--numstat", "HEAD"], timeout) {
         for l in diff.lines() {
             let p = l.split('\t').collect::<Vec<_>>();
             if p.len() >= 2 {
@@ -200,6 +215,15 @@ mod tests {
 
     #[test]
     fn git_timeout_omits_state_without_failing() {
-        assert!(collect(Path::new("Z:/missing-concordia-fixture")).is_none());
+        let slow_git = |_root: &Path, _args: &[&str], timeout: Duration| {
+            std::thread::sleep(timeout + Duration::from_millis(20));
+            Err(String::from("timed out"))
+        };
+        assert!(collect_with_git(
+            Path::new("fake-slow-git-fixture"),
+            Duration::from_millis(1),
+            slow_git,
+        )
+        .is_none());
     }
 }

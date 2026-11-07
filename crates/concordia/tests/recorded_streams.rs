@@ -152,6 +152,58 @@ fn synthetic_stream_mutations_do_not_panic_or_lose_final_text() {
     }
 }
 
+#[test]
+fn structured_question_fixtures_cover_native_provider_envelopes() {
+    let root = _fixture_root();
+    let codex: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(root.join("codex/questions/native_request_user_input.jsonl"))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    assert_eq!(codex["method"], "item/tool/requestUserInput");
+    assert_eq!(
+        codex["params"]["questions"][0]["options"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let claude = fs::read_to_string(root.join("claude/questions/ask_user_question.jsonl")).unwrap();
+    let mut parser = concordia::provider::stream_json::StreamParser::new(
+        concordia::provider::stream_json::Flavor::Claude,
+    );
+    let parts: Vec<_> = claude
+        .lines()
+        .flat_map(|line| parser.parse_line(line))
+        .collect();
+    assert!(parts.iter().any(|part| match part {
+        concordia::provider::stream_cards::StreamPart::Card(card) =>
+            card.title == "AskUserQuestion"
+                && card
+                    .detail
+                    .as_deref()
+                    .is_some_and(|d| d.contains("Choose the route")),
+        _ => false,
+    }));
+
+    let cursor: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(root.join("cursor/questions/ask_question.jsonl"))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    assert_eq!(cursor["method"], "cursor/ask_question");
+    assert_eq!(
+        cursor["params"]["questions"][0]["options"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
 #[allow(dead_code)]
 fn _fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/streams")

@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"ask-1","name":"AskUserQuestion","input":{"questions":[{"question":"Choose the route","header":"Route","multiSelect":false,"options":[{"label":"Direct","description":"Use the direct route"},{"label":"Review","description":"Review before acting"}] }]}}]}}

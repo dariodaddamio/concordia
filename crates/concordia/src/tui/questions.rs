@@ -31,6 +31,29 @@ impl State {
     pub fn waiting(&self) -> bool {
         !self.questions.is_empty()
     }
+
+    /// Whether the visible native panel is waiting for a permission or plan decision.
+    ///
+    /// Conversational questions use the same panel, so callers must distinguish these native
+    /// approvals before publishing attention items.
+    pub(super) fn native_approval_waiting(&self) -> bool {
+        self.native.as_ref().is_some_and(|request| {
+            request.is_active()
+                && matches!(
+                    request.kind(),
+                    crate::provider::interaction::NativeInteraction::Permission { .. }
+                        | crate::provider::interaction::NativeInteraction::CodexPermission { .. }
+                        | crate::provider::interaction::NativeInteraction::PlanApproval { .. }
+                )
+        })
+    }
+
+    pub(super) fn native_session_id(&self) -> Option<String> {
+        self.native
+            .as_ref()
+            .filter(|request| request.is_active())
+            .map(|request| request.envelope().native_session_id.clone())
+    }
     pub fn refresh_native(&mut self) {
         if self
             .native
@@ -1498,5 +1521,193 @@ mod tests {
         state.offer_tool(&structured);
         assert_eq!(state.questions.len(), 2);
         assert!(state.native.is_none() && !state.focused);
+    }
+
+    #[test]
+    fn question_popup_shows_choices_for_each_supported_provider() {
+        for provider in [
+            ProviderKind::Codex,
+            ProviderKind::Claude,
+            ProviderKind::Cursor,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
+            let owner = crate::provider::interaction::InteractionOwner {
+                conversation_id: uuid::Uuid::new_v4().to_string(),
+                workspace: dir.path().to_path_buf(),
+                execution_cwd: dir.path().to_path_buf(),
+                run_id: uuid::Uuid::new_v4().to_string(),
+                attempt_id: uuid::Uuid::new_v4().to_string(),
+                provider,
+                account: "synthetic-account".into(),
+                home: Some(dir.path().to_path_buf()),
+            };
+            let mut connection = crate::provider::interaction::InteractionConnection::new(
+                Some(owner.clone()),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            let session = "synthetic-session";
+            let (method, params) = match provider {
+                ProviderKind::Codex => {
+                    connection.initialized_codex("0.166.0");
+                    (
+                        "item/tool/requestUserInput",
+                        serde_json::json!({
+                            "threadId":"synthetic-session","turnId":"synthetic-turn","itemId":"synthetic-item",
+                            "questions":[{"id":"route","question":"Choose the route","isSecret":false,"isOther":false,
+                                "options":[{"label":"Direct","description":"Use direct"},{"label":"Review","description":"Review first"}]}]
+                        }),
+                    )
+                }
+                ProviderKind::Claude => {
+                    connection
+                        .initialized_claude(crate::capacity::claude_capacity::CLI_VERSION)
+                        .unwrap();
+                    (
+                        "claude/ask_question",
+                        serde_json::json!({
+                            "sessionId":session,"toolCall":{"toolCallId":"ask-1","title":"Answer"},
+                            "questions":[{"id":"route","prompt":"Choose the route","options":[{"id":"Direct","label":"Direct"},{"id":"Review","label":"Review"}]}]
+                        }),
+                    )
+                }
+                ProviderKind::Cursor => {
+                    connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
+                    (
+                        "cursor/ask_question",
+                        serde_json::json!({
+                            "sessionId":session,"toolCallId":"ask-1",
+                            "questions":[{"id":"route","prompt":"Choose the route","options":[{"id":"Direct","label":"Direct"},{"id":"Review","label":"Review"}]}]
+                        }),
+                    )
+                }
+            };
+            let (request, _rx) = connection
+                .request(session, serde_json::json!(1), method.into(), params)
+                .unwrap();
+            app.native_owner = Some(owner);
+            app.questions.offer_native(request, true);
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let mut transcript = frame.area();
+                    let area = carve(&mut transcript, &mut app);
+                    draw(frame, area, &mut app);
+                })
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                screen.contains("Direct"),
+                "{provider:?} popup omitted first choice"
+            );
+            assert!(
+                screen.contains("Review"),
+                "{provider:?} popup omitted second choice"
+            );
+        }
+    }
+
+    #[test]
+    fn popup_never_steals_focus_from_a_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
+        app.editor.set_text("unfinished draft");
+        app.questions.offer("Which route?\n1. Direct\n2. Review");
+        assert!(app.questions.waiting());
+        assert!(!app.questions.focused);
+        assert_eq!(app.editor.text(), "unfinished draft");
+    }
+
+    #[test]
+    fn answer_is_sent_natively() {
+        for (provider, expected) in [
+            (
+                ProviderKind::Codex,
+                serde_json::json!({"answers":{"route":{"answers":["Direct"]}}}),
+            ),
+            (
+                ProviderKind::Claude,
+                serde_json::json!({"outcome":{"outcome":"answered","answers":[{"questionId":"route","selectedOptionIds":["Direct"]}]}}),
+            ),
+            (
+                ProviderKind::Cursor,
+                serde_json::json!({"outcome":{"outcome":"answered","answers":[{"questionId":"route","selectedOptionIds":["Direct"]}]}}),
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
+            let owner = crate::provider::interaction::InteractionOwner {
+                conversation_id: uuid::Uuid::new_v4().to_string(),
+                workspace: dir.path().into(),
+                execution_cwd: dir.path().into(),
+                run_id: uuid::Uuid::new_v4().to_string(),
+                attempt_id: uuid::Uuid::new_v4().to_string(),
+                provider,
+                account: "synthetic-account".into(),
+                home: Some(dir.path().into()),
+            };
+            let mut connection = crate::provider::interaction::InteractionConnection::new(
+                Some(owner.clone()),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            let session = "synthetic-session";
+            let (method, params) = match provider {
+                ProviderKind::Codex => {
+                    connection.initialized_codex("0.166.0");
+                    (
+                        "item/tool/requestUserInput",
+                        serde_json::json!({"threadId":session,"turnId":"turn","itemId":"item","questions":[{"id":"route","question":"Route?","options":[{"label":"Direct"},{"label":"Review"}]}]}),
+                    )
+                }
+                ProviderKind::Claude => {
+                    connection
+                        .initialized_claude(crate::capacity::claude_capacity::CLI_VERSION)
+                        .unwrap();
+                    (
+                        "claude/ask_question",
+                        serde_json::json!({"sessionId":session,"toolCall":{"toolCallId":"ask"},"questions":[{"id":"route","prompt":"Route?","options":[{"id":"Direct","label":"Direct"},{"id":"Review","label":"Review"}]}]}),
+                    )
+                }
+                ProviderKind::Cursor => {
+                    connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
+                    (
+                        "cursor/ask_question",
+                        serde_json::json!({"sessionId":session,"toolCallId":"ask","questions":[{"id":"route","prompt":"Route?","options":[{"id":"Direct","label":"Direct"},{"id":"Review","label":"Review"}]}]}),
+                    )
+                }
+            };
+            let (request, mut rx) = connection
+                .request(session, serde_json::json!(1), method.into(), params)
+                .unwrap();
+            app.native_owner = Some(owner);
+            app.questions.offer_native(request, true);
+            assert!(handle_key(
+                &mut app,
+                &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)
+            ));
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                expected,
+                "{provider:?} answer changed transport shape"
+            );
+        }
+    }
+
+    #[test]
+    fn setting_off_renders_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
+        app.editor.set_text("keep this draft");
+        app.questions.offer("Which route?\n- Direct\n- Review");
+        assert!(app.questions.waiting());
+        assert!(!app.questions.focused);
+        assert!(app.questions.native.is_none());
+        assert_eq!(app.editor.text(), "keep this draft");
     }
 }
