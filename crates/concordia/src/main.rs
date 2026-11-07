@@ -4,36 +4,180 @@ use concordia::tui;
 use concordia::update::resolve_active_exe;
 use concordia::version::version_line;
 
-fn print_help() {
-    let default_chat = if cfg!(windows) {
-        "native app window (image paste and file drop)"
-    } else {
-        "chat TUI in this terminal"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    Terminal,
+    Host,
+    Window,
+    Install,
+    Shortcut,
+    Wezterm,
+    Doctor,
+    Chat,
+    Preview,
+    FileEdit,
+    Sessions,
+    Thread,
+    Mcp,
+    Help,
+    Version,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CommandSpec {
+    name: &'static str,
+    aliases: &'static [&'static str],
+    args: &'static str,
+    help: &'static str,
+    command: Command,
+}
+
+const CLI_HELP: &[CommandSpec] = &[
+    CommandSpec {
+        name: "concordia",
+        aliases: &[],
+        args: "",
+        help: "native app window (image paste and file drop, or terminal chat)",
+        command: Command::Window,
+    },
+    CommandSpec {
+        name: "--terminal",
+        aliases: &["terminal"],
+        args: "",
+        help: "chat TUI in this terminal",
+        command: Command::Terminal,
+    },
+    CommandSpec {
+        name: "--host",
+        aliases: &["host"],
+        args: "",
+        help: "launch the default app interface",
+        command: Command::Host,
+    },
+    CommandSpec {
+        name: "window",
+        aliases: &["--window"],
+        args: "",
+        help: "native app window (image paste and file drop)",
+        command: Command::Window,
+    },
+    CommandSpec {
+        name: "install",
+        aliases: &[],
+        args: "",
+        help: "install this exe on PATH",
+        command: Command::Install,
+    },
+    CommandSpec {
+        name: "shortcut",
+        aliases: &[],
+        args: "install|remove [--desktop]",
+        help: "create or remove a Windows shortcut",
+        command: Command::Shortcut,
+    },
+    CommandSpec {
+        name: "wezterm",
+        aliases: &[],
+        args: "",
+        help: "launch WezTerm running Concordia",
+        command: Command::Wezterm,
+    },
+    CommandSpec {
+        name: "doctor",
+        aliases: &["--doctor"],
+        args: "",
+        help: "check install, provider CLIs, accounts and state",
+        command: Command::Doctor,
+    },
+    CommandSpec {
+        name: "chat",
+        aliases: &[],
+        args: "list|read|search|index|sources|excerpt|recall|lineage|link|detach",
+        help: "bounded native CLI chats and history pointers",
+        command: Command::Chat,
+    },
+    CommandSpec {
+        name: "preview",
+        aliases: &[],
+        args: "FILE",
+        help: "read-only Markdown preview",
+        command: Command::Preview,
+    },
+    CommandSpec {
+        name: "file-edit",
+        aliases: &[],
+        args: "FILE",
+        help: "independent file editor",
+        command: Command::FileEdit,
+    },
+    CommandSpec {
+        name: "sessions",
+        aliases: &[],
+        args: "prune --empty",
+        help: "list and optionally remove empty native sessions",
+        command: Command::Sessions,
+    },
+    CommandSpec {
+        name: "thread",
+        aliases: &[],
+        args: "list|map|read|migrate",
+        help: "read and migrate recorded threads",
+        command: Command::Thread,
+    },
+    CommandSpec {
+        name: "mcp",
+        aliases: &[],
+        args: "",
+        help: "stdio MCP server",
+        command: Command::Mcp,
+    },
+    CommandSpec {
+        name: "--help",
+        aliases: &["-h", "help"],
+        args: "",
+        help: "show this help",
+        command: Command::Help,
+    },
+    CommandSpec {
+        name: "--version",
+        aliases: &["-V", "version"],
+        args: "",
+        help: "show the build stamp",
+        command: Command::Version,
+    },
+];
+
+fn parse_command(args: &[String]) -> Result<(Command, &[String]), String> {
+    let Some(name) = args.first() else {
+        return Err("missing command".into());
     };
-    println!(
-        "{}\n\
-         \n\
-           concordia           {default_chat}\n\
-           concordia --terminal chat TUI in this terminal\n\
-           concordia window    native app window (Windows)\n\
-           concordia --help    this message\n\
-           concordia --version build stamp (confirm pane is not stale)\n\
-           concordia install   install this exe as the `concordia` on your PATH (new panes get it)\n\
-           concordia shortcut install [--desktop]   create a Windows shortcut (WezTerm when installed)\n\
-           concordia shortcut remove [--desktop]    remove that shortcut\n\
-           concordia wezterm   launch WezTerm running Concordia (split with Ctrl+Shift+D/E)\n\
-           concordia doctor    check install, provider CLIs, accounts and state (exit 1 on a problem)\n\
-           concordia chat list|read|search  bounded native CLI chats across your own accounts\n\
-           concordia chat index|sources|excerpt  revision-checked native history pointers\n\
-           concordia chat recall|lineage|link|detach  bounded retrieval and explicit source links\n\
-           concordia preview FILE          read-only Markdown preview in this terminal\n\
-           concordia file-edit FILE        independent file editor (Ctrl+Q closes)\n\
-           concordia sessions prune --empty  list and optionally remove native sessions with no user turns\n\
-           concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]\n\
-                               read recorded threads (opt-in: CONCORDIA_THREADS=1)\n\
-           concordia thread migrate preview <thread|history> --source INDEX | apply PLAN | status PLAN\n\
-           concordia mcp       stdio MCP server: threads, thread_map, thread_read, native_read, usage, delegate (docs/mcp.md)\n\
-         \n\
+    let Some(spec) = CLI_HELP
+        .iter()
+        .find(|s| s.name == name || s.aliases.contains(&name.as_str()))
+    else {
+        return Err(format!("unknown argument: {name} (try --help)"));
+    };
+    let rest = &args[1..];
+    if spec.args.is_empty() && !rest.is_empty() {
+        return Err(format!("{name} takes no arguments (try --help)"));
+    }
+    Ok((spec.command, rest))
+}
+
+fn print_help() {
+    let commands = CLI_HELP
+        .iter()
+        .map(|spec| {
+            let command = if spec.args.is_empty() {
+                spec.name.to_string()
+            } else {
+                format!("{} {}", spec.name, spec.args)
+            };
+            format!("  concordia {command:<43} {}", spec.help)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    println!("{}\n\n{commands}\n\n         \n\
          Slash: /use [add] /model /usage /resume /agents /trust /config /new /threads /split /update /version /copy /doctor /exit\n\
          Files: /open PATH[:LINE[:COLUMN]] · /preview PATH (internal read-only panes) · /close ID · /edit PATH (external editor)\n\
          Delegate: /workers [add|remove] /delegate <account|auto> <task> /delegate stop|use|help (docs/delegation.md)\n\
@@ -76,61 +220,42 @@ async fn main() -> Result<()> {
         run_default_chat().await?;
         return Ok(());
     }
-    if args.len() > 1
-        && matches!(
-            args[0].as_str(),
-            "--host"
-                | "host"
-                | "--terminal"
-                | "terminal"
-                | "--window"
-                | "window"
-                | "--help"
-                | "-h"
-                | "help"
-                | "install"
-                | "wezterm"
-                | "doctor"
-                | "--doctor"
-                | "mcp"
-                | "--version"
-                | "-V"
-                | "version"
-        )
-    {
-        eprintln!("{} takes no arguments (try --help)", args[0]);
-        std::process::exit(2);
-    }
-    match args[0].as_str() {
-        "chat" => match concordia::chat_cli::run(&default_store_root(), &args[1..]) {
+    let (command, rest) = match parse_command(&args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    match command {
+        Command::Chat => match concordia::chat_cli::run(&default_store_root(), rest) {
             Ok(output) => print!("{output}"),
             Err((message, code)) => {
                 eprintln!("{message}");
                 std::process::exit(code);
             }
         },
-        "file-edit" => tui::run_file_editor(&args[1..])?,
-        "preview" => {
-            if args.len() != 2 {
+        Command::FileEdit => tui::run_file_editor(rest)?,
+        Command::Preview => {
+            if rest.len() != 1 {
                 anyhow::bail!("usage: concordia preview FILE");
             }
-            tui::run_file_preview(std::path::Path::new(&args[1]))?;
+            tui::run_file_preview(std::path::Path::new(&rest[0]))?;
         }
-        "--host" | "host" => {
-            // Alias: the platform's default app interface, as for bare concordia.
+        Command::Host => {
             run_default_chat().await?;
         }
-        "--terminal" | "terminal" => {
+        Command::Terminal => {
             tui::run_chat_tui().await?;
         }
-        "--window" | "window" => {
+        Command::Window => {
             #[cfg(windows)]
             tui::run_chat_window().await?;
             #[cfg(not(windows))]
             anyhow::bail!("Native app windows require Windows; use concordia --terminal");
         }
-        "--help" | "-h" | "help" => print_help(),
-        "install" => {
+        Command::Help => print_help(),
+        Command::Install => {
             match concordia::update::install_self() {
                 Ok(r) => {
                     println!("installed {}", r.installed.display());
@@ -157,47 +282,46 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        "shortcut" => {
-            if args.len() < 2 || args.len() > 3 || !matches!(args[1].as_str(), "install" | "remove")
+        Command::Shortcut => {
+            if rest.is_empty()
+                || rest.len() > 2
+                || !matches!(rest[0].as_str(), "install" | "remove")
             {
                 anyhow::bail!("usage: concordia shortcut install|remove [--desktop]");
             }
-            let desktop = args.get(2).is_some_and(|arg| arg == "--desktop");
-            if args.get(2).is_some_and(|arg| arg != "--desktop") {
+            let desktop = rest.get(1).is_some_and(|arg| arg == "--desktop");
+            if rest.get(1).is_some_and(|arg| arg != "--desktop") {
                 anyhow::bail!("usage: concordia shortcut install|remove [--desktop]");
             }
-            let path = if args[1] == "install" {
+            let path = if rest[0] == "install" {
                 concordia::update::install_shortcut(desktop)?
             } else {
                 concordia::update::remove_shortcut(desktop)?
             };
-            println!("{} {}", args[1], path.display());
+            println!("{} {}", rest[0], path.display());
         }
-        "wezterm" => {
+        Command::Wezterm => {
             if let Err(e) = concordia::host::wezterm::launch_window() {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
         }
-        "doctor" | "--doctor" => {
+        Command::Doctor => {
             let (report, healthy) = concordia::doctor::run_cli_report();
             println!("{report}");
             if !healthy {
                 std::process::exit(1);
             }
         }
-        "thread" => match concordia::threads::run_cli(&default_store_root(), &args[1..]) {
+        Command::Thread => match concordia::threads::run_cli(&default_store_root(), rest) {
             Ok(out) => print!("{out}"),
             Err((msg, code)) => {
                 eprintln!("{msg}");
                 std::process::exit(code);
             }
         },
-        "sessions" => {
-            if args.get(1).map(String::as_str) != Some("prune")
-                || args.get(2).map(String::as_str) != Some("--empty")
-                || args.len() != 3
-            {
+        Command::Sessions => {
+            if rest != ["prune", "--empty"] {
                 anyhow::bail!("usage: concordia sessions prune --empty");
             }
             match concordia::sessions::prune_empty_cli(&default_store_root()) {
@@ -208,7 +332,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        "mcp" => {
+        Command::Mcp => {
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();
             if let Err(e) =
@@ -218,17 +342,49 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        "--version" | "-V" | "version" => {
+        Command::Version => {
             println!("{}", version_line());
             // Read-only: reporting a version must never repoint the install at this exe.
             if let Ok(exe) = std::env::current_exe() {
                 println!("exe: {}", exe.display());
             }
         }
-        other => {
-            eprintln!("unknown argument: {other} (try --help)");
-            std::process::exit(2);
-        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_command, CLI_HELP};
+    use std::collections::HashSet;
+
+    #[test]
+    fn help_table_lists_each_command_once() {
+        let commands: HashSet<_> = CLI_HELP.iter().map(|spec| spec.name).collect();
+        assert_eq!(commands.len(), CLI_HELP.len());
+        assert!(commands.contains("chat"));
+        assert!(commands.contains("thread"));
+    }
+
+    #[test]
+    fn every_parsed_command_has_a_help_row_and_vice_versa() {
+        for spec in CLI_HELP {
+            let args = if spec.args.is_empty() {
+                vec![spec.name.to_string()]
+            } else {
+                vec![spec.name.to_string(), "fixture".into()]
+            };
+            let (command, _) = parse_command(&args).unwrap();
+            assert_eq!(command, spec.command, "{}", spec.name);
+        }
+    }
+
+    #[test]
+    fn unknown_and_extra_args_exit_2_with_hint() {
+        let unknown = parse_command(&["nope".into()]).unwrap_err();
+        assert!(unknown.contains("try --help"));
+        let extra = parse_command(&["--help".into(), "extra".into()]).unwrap_err();
+        assert!(extra.contains("takes no arguments"));
+        assert!(extra.contains("try --help"));
+    }
 }
