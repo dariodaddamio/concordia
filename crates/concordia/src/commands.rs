@@ -17,6 +17,8 @@ pub enum SlashCommand {
     /// `/usage all`: limits for every ready account.
     UsageAll,
     UsageRefresh,
+    /// `/help` or `/help --all` shows registry-backed commands.
+    Help(bool),
     Resume,
     New,
     Config,
@@ -266,6 +268,10 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         }
         "usage" if !rest.is_empty() => Some((SlashCommand::Invalid("usage".into()), false)),
         "usage" => Some((SlashCommand::Usage, false)),
+        "help" | "?" => Some((
+            SlashCommand::Help(rest.eq_ignore_ascii_case("--all")),
+            false,
+        )),
         "chats" | "resume" => Some((SlashCommand::Resume, false)),
         "new" => Some((SlashCommand::New, false)),
         "config" => Some((SlashCommand::Config, false)),
@@ -309,51 +315,356 @@ pub fn parse_provider(s: &str) -> Option<ProviderKind> {
     }
 }
 
-/// Every slash command with a one-line description, in the order the palette shows them.
-pub const SLASH_COMMANDS: &[(&str, &str)] = &[
-    (
-        "/worktree",
-        "Create or inspect explicitly managed Git worktrees; no automatic integration or deletion",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandCategory {
+    Chat,
+    Workspace,
+    Accounts,
+    Workers,
+    Settings,
+    Diagnostics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub args: &'static str,
+    pub description: &'static str,
+    pub long_help: &'static str,
+    pub everyday: bool,
+    pub category: CommandCategory,
+    pub key_binding: Option<&'static str>,
+    pub contextual_tip: Option<&'static str>,
+}
+
+macro_rules! command {
+    ($name:literal, [$($alias:literal),* $(,)?], $args:literal, $description:literal, $long:literal, $everyday:expr, $category:expr, $key:expr, $tip:expr) => {
+        CommandSpec { name: $name, aliases: &[$($alias),*], args: $args, description: $description, long_help: $long, everyday: $everyday, category: $category, key_binding: $key, contextual_tip: $tip }
+    };
+}
+
+/// The single source for slash command presentation, documentation and contextual teaching.
+pub const COMMAND_REGISTRY: &[CommandSpec] = &[
+    command!(
+        "/use",
+        ["/login", "/connect"],
+        "ACCOUNT|add PROVIDER|remove ACCOUNT",
+        "switch, add or remove accounts",
+        "Choose an account or connect through the provider's own login.",
+        true,
+        CommandCategory::Accounts,
+        None,
+        Some("Near a usage limit? Try /use to switch accounts.")
     ),
-    ("/use", "switch, add or remove accounts"),
-    ("/model", "choose the model"),
-    (
+    command!(
+        "/model",
+        [],
+        "[MODEL]",
+        "choose the model",
+        "Choose a model from the active provider's local catalog.",
+        true,
+        CommandCategory::Settings,
+        None,
+        None
+    ),
+    command!(
         "/config",
+        [],
+        "[KEY VALUE]",
         "settings: display, permissions, accounts and behavior",
+        "Inspect or change local Concordia settings.",
+        true,
+        CommandCategory::Settings,
+        None,
+        None
     ),
-    (
-        "/skills",
-        "inspect project and user skills for this provider",
+    command!(
+        "/mode",
+        [],
+        "[plan|ask|auto|full]",
+        "how much the agent may do without asking",
+        "Set the permission mode for the active conversation.",
+        true,
+        CommandCategory::Settings,
+        Some("Shift+Tab"),
+        None
     ),
-    ("/hooks", "inspect project and user hooks for this provider"),
-    ("/mode", "how much the agent may do without asking"),
-    ("/usage", "limits for every account"),
-    (
-        "/integrations",
-        "inspect connected integrations and agent tools (F10)",
+    command!(
+        "/usage",
+        [],
+        "[all|refresh]",
+        "limits for every account",
+        "Show provider-reported limits without making an LLM call.",
+        true,
+        CommandCategory::Accounts,
+        None,
+        None
     ),
-    ("/new", "start a fresh chat"),
-    ("/resume", "continue an earlier chat"),
-    ("/memory", "search original chats and inspect source links"),
-    (
-        "/context",
-        "inspect context rollover and native compaction policy",
+    command!(
+        "/new",
+        [],
+        "",
+        "start a fresh chat",
+        "Start a fresh conversation in this folder.",
+        true,
+        CommandCategory::Chat,
+        None,
+        None
     ),
-    ("/delegate", "run tasks on worker accounts"),
-    (
-        "/scope",
-        "declare task paths and inspect workspace reservations",
+    command!(
+        "/resume",
+        ["/chats"],
+        "",
+        "continue an earlier chat",
+        "Choose an earlier recorded conversation by explicit identity.",
+        true,
+        CommandCategory::Chat,
+        None,
+        Some("Use @ to find an earlier chat while writing.")
     ),
-    ("/harness", "connect and run harness tools"),
-    (
+    command!(
+        "/delegate",
+        ["/delegates"],
+        "ACCOUNT TASK",
+        "run tasks on worker accounts",
+        "Send a bounded task to a worker account and review its result.",
+        true,
+        CommandCategory::Workers,
+        None,
+        Some("Tab queues your message while a turn runs; Ctrl+R resumes a paused queue.")
+    ),
+    command!(
+        "/workers",
+        ["/worker"],
+        "[add|remove]",
+        "manage worker accounts",
+        "List or manage the accounts available to workers.",
+        true,
+        CommandCategory::Workers,
+        None,
+        Some("Tab queues your message while a turn runs; Ctrl+R resumes a paused queue.")
+    ),
+    command!(
+        "/harness",
+        [],
+        "ACTION",
+        "connect and run harness tools",
+        "Inspect the explicitly connected local harness.",
+        false,
+        CommandCategory::Diagnostics,
+        Some("F10"),
+        None
+    ),
+    command!(
         "/open",
-        "preview files mentioned in this chat, or /open PATH",
+        [],
+        "[PATH]",
+        "preview files mentioned in this chat",
+        "Open a formatted internal file preview.",
+        true,
+        CommandCategory::Workspace,
+        None,
+        None
     ),
-    ("/search", "search project file contents"),
-    ("/copy", "copy the last reply"),
-    ("/doctor", "check your setup"),
-    ("/update", "update Concordia"),
+    command!(
+        "/preview",
+        [],
+        "PATH",
+        "preview a file read-only",
+        "Open a read-only Markdown or JSON preview.",
+        false,
+        CommandCategory::Workspace,
+        None,
+        None
+    ),
+    command!(
+        "/search",
+        [],
+        "TEXT",
+        "search project file contents",
+        "Search the current project without leaving the conversation.",
+        false,
+        CommandCategory::Workspace,
+        Some("Ctrl+K"),
+        None
+    ),
+    command!(
+        "/scope",
+        [],
+        "...",
+        "declare task paths and reservations",
+        "Declare workspace paths for a task and inspect reservations.",
+        false,
+        CommandCategory::Workspace,
+        None,
+        None
+    ),
+    command!(
+        "/worktree",
+        [],
+        "...",
+        "manage explicit Git workspaces",
+        "Create or inspect an explicitly managed worktree.",
+        false,
+        CommandCategory::Workspace,
+        None,
+        None
+    ),
+    command!(
+        "/memory",
+        [],
+        "...",
+        "search original chats and source links",
+        "Retrieve bounded original conversation sources.",
+        false,
+        CommandCategory::Chat,
+        None,
+        None
+    ),
+    command!(
+        "/context",
+        [],
+        "",
+        "inspect context rollover policy",
+        "Inspect context capacity and native compaction policy.",
+        false,
+        CommandCategory::Chat,
+        None,
+        None
+    ),
+    command!(
+        "/integrations",
+        [],
+        "",
+        "inspect connected integrations",
+        "Inspect connected integrations and agent tools.",
+        false,
+        CommandCategory::Diagnostics,
+        None,
+        None
+    ),
+    command!(
+        "/copy",
+        ["/cp"],
+        "",
+        "copy the last reply",
+        "Copy the last assistant reply to the clipboard.",
+        true,
+        CommandCategory::Chat,
+        None,
+        None
+    ),
+    command!(
+        "/doctor",
+        ["/diag"],
+        "",
+        "check your setup",
+        "Check provider CLIs, logins, accounts and local state.",
+        true,
+        CommandCategory::Diagnostics,
+        None,
+        None
+    ),
+    command!(
+        "/update",
+        ["/upgrade"],
+        "",
+        "update Concordia",
+        "Review and apply a local Concordia update.",
+        true,
+        CommandCategory::Diagnostics,
+        None,
+        None
+    ),
+    command!(
+        "/exit",
+        ["/quit", "/q"],
+        "",
+        "exit Concordia",
+        "Close the current Concordia session.",
+        true,
+        CommandCategory::Chat,
+        None,
+        None
+    ),
 ];
+
+pub fn command_registry() -> &'static [CommandSpec] {
+    COMMAND_REGISTRY
+}
+
+pub fn format_slash_help(all: bool) -> String {
+    COMMAND_REGISTRY
+        .iter()
+        .filter(|c| all || c.everyday)
+        .map(|c| {
+            let args = if c.args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", c.args)
+            };
+            format!("{:<34} {}", format!("{}{}", c.name, args), c.description)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Markdown table used by README generation and its synchronization test.
+pub fn markdown_command_table() -> String {
+    let mut out =
+        String::from("| Command | Arguments | Description | View |\n| --- | --- | --- | --- |\n");
+    for c in COMMAND_REGISTRY {
+        let args = c.args.replace('|', "\\|");
+        out.push_str(&format!(
+            "| `{}` | `{}` | {} | {} |\n",
+            c.name,
+            args,
+            c.description,
+            if c.everyday { "everyday" } else { "advanced" }
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn palette_help_and_readme_come_from_one_registry() {
+        assert_eq!(COMMAND_REGISTRY.iter().filter(|c| c.everyday).count(), 14);
+        assert!(format_slash_help(false).contains("/use"));
+        assert!(format_slash_help(true).contains("/memory"));
+    }
+
+    #[test]
+    fn readme_command_table_in_sync() {
+        let readme = include_str!("../../../README.md");
+        let start = "<!-- COMMANDS:START -->";
+        let end = "<!-- COMMANDS:END -->";
+        let body = readme
+            .split_once(start)
+            .unwrap()
+            .1
+            .split_once(end)
+            .unwrap()
+            .0
+            .trim();
+        assert_eq!(body, markdown_command_table().trim());
+    }
+
+    #[test]
+    fn key_sheet_lists_every_binding_once() {
+        let bindings: Vec<_> = COMMAND_REGISTRY
+            .iter()
+            .filter_map(|c| c.key_binding)
+            .collect();
+        let unique: std::collections::HashSet<_> = bindings.iter().copied().collect();
+        assert_eq!(bindings.len(), unique.len());
+        assert!(bindings.contains(&"F10"));
+    }
+}
 
 pub fn format_config_help() -> String {
     let home = crate::test_guard::test_home().display().to_string();
@@ -418,6 +729,14 @@ pub fn dispatch_slash(
             )],
         ),
         SlashCommand::Config => (CommandOutcome::Ok, vec![format_config_help()]),
+        SlashCommand::Help(all) => (
+            CommandOutcome::Ok,
+            vec![format!(
+                "Commands ({} view):\n{}",
+                if all { "all" } else { "everyday" },
+                format_slash_help(all)
+            )],
+        ),
         SlashCommand::New => (
             CommandOutcome::Ok,
             vec![format!(
@@ -593,7 +912,13 @@ mod usage_tests {
             dispatch_slash(SlashCommand::Usage, &ctx).0,
             CommandOutcome::OpenUsage
         );
-        let help = |c: &str| SLASH_COMMANDS.iter().find(|(n, _)| *n == c).unwrap().1;
+        let help = |c: &str| {
+            command_registry()
+                .iter()
+                .find(|spec| spec.name == c)
+                .unwrap()
+                .description
+        };
         assert_eq!(help("/usage"), "limits for every account");
     }
 }
