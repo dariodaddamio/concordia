@@ -9,6 +9,10 @@ use super::text::{col_to_index, word_bounds, wrap_ranges_hang};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+/// The row cache is a viewport cache, not a second transcript. Older content is rebuilt from
+/// the caller's thread-backed blocks when the user scrolls above the fold.
+pub const MAX_RENDERED_ROWS: usize = 5_000;
+
 #[path = "diff_presentation.rs"]
 mod diff_presentation;
 
@@ -154,6 +158,9 @@ pub struct TranscriptView {
     /// Directory that relative file references resolve against. When set, only references that
     /// name an existing file are underlined and clickable.
     pub link_root: Option<std::path::PathBuf>,
+    folded: bool,
+    rehydrate_fold: bool,
+    folded_blocks: usize,
 }
 
 impl TranscriptView {
@@ -161,12 +168,26 @@ impl TranscriptView {
     /// runs on every frame and every mouse event, so only blocks from the first one that changed
     /// are wrapped again (normally just the newest); earlier blocks reuse their cached rows.
     pub fn rebuild(&mut self, blocks: &[Block], width: usize, height: usize) {
+        let rehydrate_fold = self.rehydrate_fold;
+        self.rehydrate_fold = false;
+        let width_changed = width != self.width;
+        if self.folded && !rehydrate_fold && !width_changed && self.folded_blocks == blocks.len() {
+            self.height = height;
+            self.clamp_scroll();
+            return;
+        }
+        if self.folded {
+            // The visible tail/head is only a cache. Rebuild from the caller's source blocks so
+            // the discarded rows are never retained alongside the newly rehydrated window.
+            self.rows.clear();
+            self.row_blocks.clear();
+            self.keys.clear();
+        }
         let prev_rows = self.rows.len();
         let anchor = (self.scroll > 0)
             .then(|| self.row_blocks.get(self.first).copied())
             .flatten()
             .filter(|x| x.0.is_some());
-        let width_changed = width != self.width;
         if width_changed {
             self.sel = None;
             self.dragging = false;
@@ -220,6 +241,47 @@ impl TranscriptView {
             }
         }
 
+        if self.rows.len() > MAX_RENDERED_ROWS {
+            let retained = MAX_RENDERED_ROWS.saturating_sub(1);
+            let hidden = self.rows.len() - retained;
+            let label = if rehydrate_fold {
+                format!("Earlier messages rehydrated ({hidden} newer rows folded)")
+            } else {
+                format!("Earlier messages folded ({hidden} rows) - scroll up to rehydrate")
+            };
+            let stub = Row {
+                identity: None,
+                source_offset: 0,
+                gutter: "… ".into(),
+                gutter_style: Style::default().fg(ratatui::style::Color::DarkGray),
+                text: label.chars().collect(),
+                style: Style::default().fg(ratatui::style::Color::DarkGray),
+                joins_prev: false,
+                runs: Vec::new(),
+                links: Vec::new(),
+                web_links: Vec::new(),
+            };
+            if rehydrate_fold {
+                self.rows.truncate(retained);
+                self.row_blocks.truncate(retained);
+                self.rows.push(stub);
+                self.row_blocks.push((None, 0));
+            } else {
+                self.rows.drain(..hidden);
+                self.row_blocks.drain(..hidden);
+                self.rows.insert(0, stub);
+                self.row_blocks.insert(0, (None, 0));
+            }
+            self.rows.shrink_to_fit();
+            self.row_blocks.shrink_to_fit();
+            self.keys.clear();
+            self.folded = true;
+            self.folded_blocks = blocks.len();
+        } else {
+            self.folded = false;
+            self.folded_blocks = 0;
+        }
+
         if !width_changed && self.scroll > 0 && self.rows.len() > prev_rows {
             // Keep the viewport still while output streams in below it.
             self.scroll += self.rows.len() - prev_rows;
@@ -259,6 +321,12 @@ impl TranscriptView {
     }
 
     pub fn scroll_up(&mut self, n: usize) {
+        if self.folded && self.scroll == 0 {
+            // The next rebuild receives the complete, thread-backed block list and paints the
+            // oldest bounded window. This keeps the row cache bounded while preserving access
+            // to history without copying it into a second in-memory transcript.
+            self.rehydrate_fold = true;
+        }
         self.scroll += n;
         self.clamp_scroll();
     }
@@ -735,6 +803,39 @@ mod tests {
         let mut v = TranscriptView::default();
         v.rebuild(blocks, w, h);
         v
+    }
+
+    #[test]
+    fn transcript_folds_beyond_cap_and_rehydrates_on_scroll() {
+        let texts: Vec<String> = (0..MAX_RENDERED_ROWS + 200)
+            .map(|i| format!("message {i}"))
+            .collect();
+        let blocks: Vec<Block<'_>> = texts.iter().map(|text| blk("", text)).collect();
+        let mut v = view(&blocks, 80, 10);
+        assert!(v.rows.len() <= MAX_RENDERED_ROWS + 1);
+        assert!(v.rows.iter().any(|row| row
+            .text
+            .iter()
+            .collect::<String>()
+            .contains("Earlier messages folded")));
+        v.scroll_up(1);
+        v.rebuild(&blocks, 80, 10);
+        assert!(v
+            .rows
+            .iter()
+            .any(|row| row.text.iter().collect::<String>().contains("message 0")));
+    }
+
+    #[test]
+    fn long_session_memory_estimate_is_bounded() {
+        let texts: Vec<String> = (0..20_000)
+            .map(|i| format!("synthetic transcript message {i} with bounded text"))
+            .collect();
+        let blocks: Vec<Block<'_>> = texts.iter().map(|text| blk("", text)).collect();
+        let v = view(&blocks, 100, 20);
+        let estimated = v.rows.capacity() * std::mem::size_of::<Row>();
+        assert!(v.rows.len() <= MAX_RENDERED_ROWS + 1);
+        assert!(estimated <= (MAX_RENDERED_ROWS + 1) * std::mem::size_of::<Row>() * 2);
     }
 
     #[test]

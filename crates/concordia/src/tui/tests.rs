@@ -1468,8 +1468,8 @@ fn a_very_long_session_still_draws_quickly() {
     h.draw();
     let rows = h.app.view.rows.len();
     assert!(
-        rows > 30_000,
-        "test should build a big transcript, got {rows}"
+        rows <= crate::tui::transcript::MAX_RENDERED_ROWS,
+        "transcript row cache must stay bounded, got {rows}"
     );
 
     let start = Instant::now();
