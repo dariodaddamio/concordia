@@ -42,6 +42,39 @@ pub struct Continuation {
     pub accounts: Vec<String>,
     /// Ordered models on the current account, validated against its native catalog.
     pub models: Vec<String>,
+    /// Context-limit behavior by provider. `provider` preserves native compaction;
+    /// `fresh` starts a new native session at the configured percentage.
+    pub context: ContextContinuation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextContinuation {
+    pub codex: String,
+    pub claude: String,
+    pub cursor: String,
+    pub threshold: u8,
+}
+
+impl ContextContinuation {
+    pub fn for_provider(&self, provider: crate::store::ProviderKind) -> (&str, u8) {
+        let mode = match provider {
+            crate::store::ProviderKind::Codex => &self.codex,
+            crate::store::ProviderKind::Claude => &self.claude,
+            crate::store::ProviderKind::Cursor => &self.cursor,
+        };
+        (mode, self.threshold)
+    }
+}
+
+impl Default for ContextContinuation {
+    fn default() -> Self {
+        Self {
+            codex: "provider".into(),
+            claude: "provider".into(),
+            cursor: "provider".into(),
+            threshold: 85,
+        }
+    }
 }
 
 impl Default for Continuation {
@@ -52,6 +85,7 @@ impl Default for Continuation {
             automatic_handoff_cap: 3,
             accounts: Vec::new(),
             models: Vec::new(),
+            context: ContextContinuation::default(),
         }
     }
 }
@@ -258,6 +292,10 @@ impl Config {
         };
         let mut cfg = Config::default();
         let mut unknown = Vec::new();
+        let mut context_override = None;
+        let mut codex_context_override = None;
+        let mut claude_context_override = None;
+        let mut cursor_context_override = None;
         for (section, value) in &table {
             let Some(sub) = value.as_table() else {
                 if matches!(
@@ -277,6 +315,28 @@ impl Config {
                         Some("automatic") => cfg.continuation.automatic = true,
                         Some("manual") => cfg.continuation.automatic = false,
                         _ => warnings.push("continuation.mode must be manual or automatic; using manual".into()),
+                    },
+                    "continuation.context" => match v.as_str() {
+                        Some("provider") | Some("fresh") => {
+                            context_override = Some(v.as_str().unwrap().to_owned());
+                        }
+                        _ => warnings.push("continuation.context must be provider or fresh; using provider".into()),
+                    },
+                    "continuation.codex_context" => match v.as_str() {
+                        Some("provider") | Some("fresh") => codex_context_override = Some(v.as_str().unwrap().to_owned()),
+                        _ => warnings.push("continuation.codex_context must be provider or fresh; using provider".into()),
+                    },
+                    "continuation.claude_context" => match v.as_str() {
+                        Some("provider") | Some("fresh") => claude_context_override = Some(v.as_str().unwrap().to_owned()),
+                        _ => warnings.push("continuation.claude_context must be provider or fresh; using provider".into()),
+                    },
+                    "continuation.cursor_context" => match v.as_str() {
+                        Some("provider") | Some("fresh") => cursor_context_override = Some(v.as_str().unwrap().to_owned()),
+                        _ => warnings.push("continuation.cursor_context must be provider or fresh; using provider".into()),
+                    },
+                    "continuation.context_threshold" => match v.as_integer() {
+                        Some(n) if (50..=95).contains(&n) => cfg.continuation.context.threshold = n as u8,
+                        _ => warnings.push("continuation.context_threshold must be 50..=95; using 85".into()),
                     },
                     "continuation.same_provider_automatic" => set_bool(v, &full, &mut cfg.continuation.same_provider_automatic, &mut warnings),
                     "continuation.automatic_handoff_cap" => match v.as_integer() {
@@ -387,6 +447,20 @@ impl Config {
                     _ => unknown.push(full),
                 }
             }
+        }
+        if let Some(mode) = context_override {
+            cfg.continuation.context.codex.clone_from(&mode);
+            cfg.continuation.context.claude.clone_from(&mode);
+            cfg.continuation.context.cursor = mode;
+        }
+        if let Some(mode) = codex_context_override {
+            cfg.continuation.context.codex = mode;
+        }
+        if let Some(mode) = claude_context_override {
+            cfg.continuation.context.claude = mode;
+        }
+        if let Some(mode) = cursor_context_override {
+            cfg.continuation.context.cursor = mode;
         }
         if !unknown.is_empty() {
             warnings.push(format!(
@@ -550,6 +624,26 @@ mod tests {
         assert!(!cfg.continuation.automatic);
         assert!(cfg.continuation.accounts.is_empty());
         assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn default_is_provider_compaction() {
+        let c = Config::default().continuation.context;
+        assert_eq!(c.codex, "provider");
+        assert_eq!(c.claude, "provider");
+        assert_eq!(c.cursor, "provider");
+        assert_eq!(c.threshold, 85);
+    }
+
+    #[test]
+    fn setting_round_trips_through_config() {
+        let (cfg, warnings) = Config::parse(
+            "[continuation]\ncontext='fresh'\nclaude_context='provider'\ncontext_threshold=72\n",
+        );
+        assert!(warnings.is_empty());
+        assert_eq!(cfg.continuation.context.codex, "fresh");
+        assert_eq!(cfg.continuation.context.claude, "provider");
+        assert_eq!(cfg.continuation.context.threshold, 72);
     }
 
     #[test]
