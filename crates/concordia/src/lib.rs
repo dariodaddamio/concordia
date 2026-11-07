@@ -23,6 +23,7 @@ pub mod mcp;
 pub mod models;
 pub mod native_input;
 pub mod native_memory;
+pub mod needs_you;
 pub mod process_lifetime;
 pub mod process_ui;
 pub mod prompt_time;
