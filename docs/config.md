@@ -19,6 +19,8 @@ request offers account and cached-model choices. The toggle is saved for future 
 mode = "manual" # manual | automatic
 accounts = ["codex-2", "claude-1"] # choose ids shown by /use, in preferred order
 models = [] # optional model ids from /model; tried on the current account first
+same_provider_automatic = false # opt in only after accepting the provider terms notice
+automatic_handoff_cap = 3 # maximum automatic handoffs into one account per local day
 ```
 
 A provider error explicitly reporting an exhausted usage limit triggers quota handoff; ordinary
