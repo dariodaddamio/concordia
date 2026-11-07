@@ -428,13 +428,13 @@ impl App {
                 String::new()
             };
             let line = format!(
-                "Worked for {} Ã‚· stopped {}{}",
+                "Worked for {} · stopped {}{}",
                 crate::delegate::fmt_elapsed(elapsed.unwrap_or_default()),
                 crate::usage::local_time_label(),
                 if tokens.is_empty() {
                     String::new()
                 } else {
-                    format!(" Ã‚· {tokens}")
+                    format!(" · {tokens}")
                 }
             );
             if !line.is_empty() {

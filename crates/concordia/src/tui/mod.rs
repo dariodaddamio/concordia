@@ -356,6 +356,10 @@ fn is_cli_noise(line: &str) -> bool {
     let l = line.to_ascii_lowercase();
     l.starts_with("reading additional input from stdin")
         || l.starts_with("reading prompt from stdin")
+        // Codex emits these capability notices when enterprise policy advertises
+        // features this installed client does not know. They are informational,
+        // not turn failures, and should not become transcript error cards.
+        || l.starts_with("ignoring unknown features requirement")
 }
 
 #[cfg(test)]

@@ -90,7 +90,7 @@ impl App {
     pub(in crate::tui) fn push_map(&mut self, pack: &crate::context::ContextPack) {
         let rest = pack.text.split_once('\n').map_or("", |(_, rest)| rest);
         self.push_system(format!(
-            "{} Ã‚· ~{} tok\n{}",
+            "{} · ~{} tok\n{}",
             pack.labeled,
             pack.est_tokens,
             rest.trim_end()

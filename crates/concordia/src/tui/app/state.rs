@@ -672,7 +672,7 @@ impl App {
         match clipboard::get_text() {
             Ok(t) if !t.is_empty() => self.paste_text(&t),
             Ok(_) => {}
-            Err(e) => self.flash(format!("paste failed Ã¢â‚¬â€ {e}")),
+            Err(e) => self.flash(format!("paste failed — {e}")),
         }
     }
 
@@ -687,7 +687,7 @@ impl App {
         match text {
             Some(t) => self.write_clipboard(&t),
             None => {
-                self.flash("nothing to copy Ã¢â‚¬â€ drag to select, or /copy for the last reply");
+                self.flash("nothing to copy — drag to select, or /copy for the last reply");
                 false
             }
         }
@@ -868,7 +868,7 @@ impl App {
             .map(|item| PickerRow {
                 id: format!("needs:{}", item.id),
                 label: item.title.clone(),
-                detail: format!("{} Ã‚· {}", item.kind.label(), item.session_id),
+                detail: format!("{} · {}", item.kind.label(), item.session_id),
             })
             .collect();
         self.show_picker(PickerKind::NeedsYou, "needs you".into(), rows, false);
@@ -906,7 +906,7 @@ impl App {
         picker.filter = filter;
         picker.state.select(Some(selected));
         picker.select_clamp();
-        self.footer_left = "up/down Enter Ã‚· r refresh Ã‚· type to filter Ã‚· Esc".into();
+        self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
     }
 
     pub(in crate::tui) fn update_running(&self) -> bool {
@@ -1060,7 +1060,7 @@ impl App {
                 return;
             }
             if self.queue.force_pending {
-                self.flash("Stopping the active turn before sending the pending messageÃ¢â‚¬Â¦");
+                self.flash("Stopping the active turn before sending the pending message…");
                 return;
             }
             let index = self.queue.items.len();
@@ -1524,7 +1524,7 @@ pub(in crate::tui) fn model_picker_rows(
         label: format!(
             "provider default{}",
             if chosen.is_none() {
-                " Ã‚· current"
+                " · current"
             } else {
                 ""
             }
@@ -1552,14 +1552,14 @@ pub(in crate::tui) fn model_picker_rows(
                 label: format!(
                     "{}{}",
                     model.display_name,
-                    if current { " Ã‚· current" } else { "" }
+                    if current { " · current" } else { "" }
                 ),
                 detail: format!(
-                    "{} Ã‚· {}{}",
+                    "{} · {}{}",
                     model.id,
                     model_source_tag(model.source),
                     if model.deprecated {
-                        " Ã‚· deprecated"
+                        " · deprecated"
                     } else {
                         ""
                     }

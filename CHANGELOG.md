@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-07d
+
+- Pickers, footers, usage, turn summaries and flash messages show `·`, `—` and arrows again
+  instead of garbled `Ã‚·` / `Ã¢â‚¬` text.
+- Cursor's model picker lists Claude Opus 5.5 explicitly instead of collapsing to Auto.
+- Codex's "Ignoring unknown features requirement" notices no longer appear as error cards.
+
 ## 2026-11-07c
 
 - Chat titles also skip Concordia's own awareness note, so a chat is named after what you typed.

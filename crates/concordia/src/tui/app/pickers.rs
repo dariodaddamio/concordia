@@ -25,15 +25,15 @@ impl App {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "cwd".into());
         let title = if here > 0 {
-            format!("chats Ã‚· {folder} ({here})")
+            format!("chats · {folder} ({here})")
         } else {
-            format!("chats Ã‚· {}", sessions.len())
+            format!("chats · {}", sessions.len())
         };
         let rows = if tasks.is_empty() {
             vec![PickerRow {
                 id: "none".into(),
                 label: "no chats yet".into(),
-                detail: "send a message first Ã¢â‚¬â€ then switch here".into(),
+                detail: "send a message first — then switch here".into(),
             }]
         } else {
             tasks_to_picker_rows(&tasks)
@@ -73,7 +73,7 @@ impl App {
                 PickerRow {
                     id: format!("resume-delete:{id}"),
                     label: "Delete this chat".into(),
-                    detail: format!("{account} Ã‚· this cannot be undone"),
+                    detail: format!("{account} · this cannot be undone"),
                 },
                 PickerRow {
                     id: "resume-delete-cancel".into(),
@@ -189,7 +189,7 @@ impl App {
                 .find(|g| g.iter().any(|x| x.account == a.account))
                 .and_then(|g| g.iter().find(|x| x.account != a.account))
             {
-                detail.push_str(&format!(" Ã‚· same login as {}", other.label));
+                detail.push_str(&format!(" · same login as {}", other.label));
             }
             rows.push(PickerRow {
                 id: format!("use:{}", a.account),
@@ -300,7 +300,7 @@ impl App {
                     id: format!("continue:{}", a.account),
                     label: a.label,
                     detail: format!(
-                        "5h {}% left Ã‚· {tier} Ã‚· continue the paused request",
+                        "5h {}% left · {tier} · continue the paused request",
                         remaining
                             .map(|p| p.round() as i64)
                             .map_or("??".into(), |p| p.to_string())
@@ -498,10 +498,10 @@ impl App {
         );
         let selected = rows
             .iter()
-            .position(|r| r.label.ends_with(" Ã‚· current"))
+            .position(|r| r.label.ends_with(" · current"))
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
-        self.footer_left = "up/down Enter Ã‚· r refresh Ã‚· type to filter Ã‚· Esc".into();
+        self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
     }
     pub(in crate::tui) fn refresh_model_picker(&mut self) {
         if self.model_refresh.is_some() {
@@ -522,9 +522,9 @@ impl App {
             rx,
         });
         if let Some(picker) = self.picker.as_mut() {
-            picker.title = "model Ã‚· refreshing...".into();
+            picker.title = "model · refreshing...".into();
         }
-        self.footer_left = "refreshing... Ã‚· Esc closes Ã‚· UI remains responsive".into();
+        self.footer_left = "refreshing... · Esc closes · UI remains responsive".into();
     }
     #[allow(dead_code)]
     pub(in crate::tui) fn open_model_picker_old(&mut self) {
@@ -540,7 +540,7 @@ impl App {
             add(
                 &model.id,
                 &model.display_name,
-                &format!("{} Ã‚· {:?}", model.family, model.source),
+                &format!("{} · {:?}", model.family, model.source),
             );
         }
         if let Some(m) = chosen {
@@ -552,7 +552,7 @@ impl App {
             label: format!(
                 "provider default{}",
                 if chosen.is_none() {
-                    " Ã‚· current"
+                    " · current"
                 } else {
                     ""
                 }
@@ -560,16 +560,16 @@ impl App {
             detail: "the CLI picks its own default model".into(),
         }];
         rows.extend(models.into_iter().map(|(id, name, detail)| PickerRow {
-            label: format!("{name}{}", if current(&id) { " Ã‚· current" } else { "" }),
+            label: format!("{name}{}", if current(&id) { " · current" } else { "" }),
             id: format!("model:{id}"),
             detail,
         }));
         let selected = rows
             .iter()
-            .position(|r| r.label.ends_with(" Ã‚· current"))
+            .position(|r| r.label.ends_with(" · current"))
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
-        self.footer_left = "Ã¢â€ â€˜Ã¢â€ â€œ Enter Ã‚· type any model id Ã‚· Esc".into();
+        self.footer_left = "↑↓ Enter · type any model id · Esc".into();
     }
     pub(in crate::tui) fn show_picker(
         &mut self,
@@ -611,7 +611,7 @@ impl App {
                 let suffix = doctor
                     .fixed
                     .get(&index)
-                    .map(|s| format!(" Ã‚· fixed ({s})"))
+                    .map(|s| format!(" · fixed ({s})"))
                     .unwrap_or_default();
                 PickerRow {
                     id: fix_index.map_or_else(
@@ -623,7 +623,7 @@ impl App {
                         || check.detail.clone(),
                         |i| {
                             format!(
-                                "before: {} Ã‚· after: {} Ã‚· Enter to review fix",
+                                "before: {} · after: {} · Enter to review fix",
                                 doctor.fixes[i].before, doctor.fixes[i].after
                             )
                         },
@@ -632,7 +632,7 @@ impl App {
             })
             .collect();
         self.show_picker(PickerKind::Doctor, "doctor".into(), rows, false);
-        self.footer_left = "Ã¢â€ â€˜Ã¢â€ â€œ select Ã‚· Enter review fix Ã‚· Esc".into();
+        self.footer_left = "↑↓ select · Enter review fix · Esc".into();
     }
     pub(in crate::tui) fn open_doctor_confirmation(&mut self, fix_index: usize) {
         let Some(fix) = self.doctor.as_ref().and_then(|d| d.fixes.get(fix_index)) else {
@@ -644,7 +644,7 @@ impl App {
                 "Apply {}?\nbefore: {}\nafter: {}",
                 fix.finding, fix.before, fix.after
             ),
-            detail: format!("impact: {} Ã‚· y apply / n cancel", fix.impact),
+            detail: format!("impact: {} · y apply / n cancel", fix.impact),
         };
         self.show_picker(
             PickerKind::DoctorConfirm,
@@ -652,7 +652,7 @@ impl App {
             vec![row],
             false,
         );
-        self.footer_left = "y apply Ã‚· n cancel Ã‚· Esc".into();
+        self.footer_left = "y apply · n cancel · Esc".into();
     }
     pub(in crate::tui) fn apply_doctor_fix(&mut self, fix_index: usize) {
         let Some(fix) = self
@@ -686,7 +686,7 @@ impl App {
             }
             Err(error) => {
                 self.dismiss_picker();
-                self.push_system(format!("doctor fix failed Ã‚· {error}"));
+                self.push_system(format!("doctor fix failed · {error}"));
             }
         }
     }
@@ -710,12 +710,12 @@ impl App {
             state,
         });
         self.footer_left = if filterable {
-            "Ã¢â€ â€˜Ã¢â€ â€œ Enter Ã‚· type to filter Ã‚· Esc".into()
+            "↑↓ Enter · type to filter · Esc".into()
         } else {
             if kind == PickerKind::Usage {
-                "Ã¢â€ â€˜Ã¢â€ â€œ Enter Ã‚· r refresh Ã‚· Esc".into()
+                "↑↓ Enter · r refresh · Esc".into()
             } else {
-                "Ã¢â€ â€˜Ã¢â€ â€œ Enter Ã‚· Esc".into()
+                "↑↓ Enter · Esc".into()
             }
         };
     }
@@ -961,7 +961,7 @@ impl App {
                     let account = parts.next().unwrap_or("").to_string();
                     let session_id = parts.next().unwrap_or("").to_string();
                     if session_id.is_empty() {
-                        self.push_system("resume failed Ã¢â‚¬â€ missing session id");
+                        self.push_system("resume failed — missing session id");
                         return;
                     }
                     self.resume_session(&account, &session_id);
@@ -1019,19 +1019,19 @@ impl App {
                         _ => TrustMode::Workspace,
                     };
                     if let Err(e) = set_trust_mode(&self.state_root, trust) {
-                        self.push_system(format!("trust save failed Ã¢â‚¬â€ {e}"));
+                        self.push_system(format!("trust save failed — {e}"));
                         return;
                     }
                     self.trust = trust;
                     self.push_system(match trust {
-                        TrustMode::Plan => "trust Ã¢â€ â€™ plan (read-only: analyse and propose)",
+                        TrustMode::Plan => "trust → plan (read-only: analyse and propose)",
                         TrustMode::Full => {
-                            "trust Ã¢â€ â€™ full (skip all permissions Ã¢â‚¬â€ careful)"
+                            "trust → full (skip all permissions — careful)"
                         }
                         TrustMode::Workspace => {
-                            "trust Ã¢â€ â€™ workspace (cwd write, no trust dialogs)"
+                            "trust → workspace (cwd write, no trust dialogs)"
                         }
-                        TrustMode::Ask => "trust Ã¢â€ â€™ ask (may hang headless)",
+                        TrustMode::Ask => "trust → ask (may hang headless)",
                     });
                     if self.busy {
                         self.push_system("permission change applies to the next turn; the running turn keeps its original permissions");
@@ -1097,9 +1097,9 @@ impl App {
                     }
                     let automatic = self.continuation.toggle_automatic();
                     self.push_system(if automatic {
-                        "usage handoff Ã¢â€ â€™ automatic"
+                        "usage handoff → automatic"
                     } else {
-                        "usage handoff Ã¢â€ â€™ pause"
+                        "usage handoff → pause"
                     });
                     return;
                 }
@@ -1111,7 +1111,7 @@ impl App {
                     let prev_prov = self.provider;
                     let prev_session = self.native_session_id.clone();
                     if let Err(e) = select_account(&self.state_root, account) {
-                        self.push_system(format!("account switch failed Ã¢â‚¬â€ {e}"));
+                        self.push_system(format!("account switch failed — {e}"));
                         return;
                     }
                     self.refresh_binding();
@@ -1149,7 +1149,7 @@ impl App {
                         .map(|i| format_identity_label(&i))
                         .unwrap_or_else(|| "unknown".into());
                     self.push_system(format!(
-                        "using {} Ã‚· {idn} Ã‚· {}",
+                        "using {} · {idn} · {}",
                         self.account_label(),
                         self.model
                     ));
@@ -1179,19 +1179,19 @@ impl App {
                             updated_at: now_stamp(),
                         };
                         if let Err(e) = set_use_selection(&self.state_root, shown) {
-                            self.push_system(format!("model save failed Ã¢â‚¬â€ {e}"));
+                            self.push_system(format!("model save failed — {e}"));
                             return;
                         }
                     }
                     if let Err(e) = set_model(&self.state_root, model) {
-                        self.push_system(format!("model save failed Ã¢â‚¬â€ {e}"));
+                        self.push_system(format!("model save failed — {e}"));
                         return;
                     }
                     self.model = if model.is_empty() { "?" } else { model }.to_string();
                     if model.is_empty() {
-                        self.push_system("model Ã¢â€ â€™ provider default");
+                        self.push_system("model → provider default");
                     } else {
-                        self.push_system(format!("model Ã¢â€ â€™ {model}"));
+                        self.push_system(format!("model → {model}"));
                     }
                 }
             }
@@ -1207,7 +1207,7 @@ impl App {
                     let prev_prov = self.provider;
                     let prev_session = self.native_session_id.clone();
                     if let Err(e) = select_account(&self.state_root, account) {
-                        self.push_system(format!("usage switch failed Ã¢â‚¬â€ {e}"));
+                        self.push_system(format!("usage switch failed — {e}"));
                         return;
                     }
                     self.refresh_binding();
@@ -1235,7 +1235,7 @@ impl App {
                     }
                     self.prior_provider = self.provider;
                     self.prior_home = self.continuity_home();
-                    self.push_system(format!("using {} Ã‚· {}", self.account_label(), self.model));
+                    self.push_system(format!("using {} · {}", self.account_label(), self.model));
                 }
             }
             PickerKind::Continuation => {

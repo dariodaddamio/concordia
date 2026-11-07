@@ -167,7 +167,7 @@ impl App {
                 id: "credit-dashboard".into(),
                 label: "Open full credit balance and purchase details".into(),
                 detail: format!(
-                    "{} Ã‚· select the same account",
+                    "{} · select the same account",
                     crate::usage::CREDIT_DASHBOARD_URL
                 ),
             });
@@ -179,7 +179,7 @@ impl App {
         });
         self.show_picker(
             PickerKind::CreditDetails,
-            format!("Credit balance Ã‚· {}", self.account_label()),
+            format!("Credit balance · {}", self.account_label()),
             rows,
             false,
         );
@@ -221,6 +221,6 @@ impl App {
                 .collect()
         };
         self.show_picker(PickerKind::Usage, "usage".into(), rows, false);
-        self.footer_left = "Ã¢â€ â€˜Ã¢â€ â€œ Enter Ã‚· r refresh Ã‚· t tokens Ã‚· Esc".into();
+        self.footer_left = "↑↓ Enter · r refresh · t tokens · Esc".into();
     }
 }

@@ -691,12 +691,13 @@ fn one_failure_reported_three_ways_is_shown_once_and_cli_noise_is_dropped() {
     h.app.apply_progress(TurnProgress::Error(cap.into()));
     h.app.finalize_turn(TurnOutcome {
         exit_code: Some(1),
-        stderr_tail: format!("Reading additional input from stdin...\n{cap}\nsomething new"),
+        stderr_tail: format!("Reading additional input from stdin...\nIgnoring unknown features requirement ultrafast_mode from requirements layers\n{cap}\nsomething new"),
         ..TurnOutcome::default()
     });
     let text = h.transcript_text();
     assert_eq!(text.matches("spend cap").count(), 1, "{text}");
     assert!(!text.contains("Reading additional input"), "{text}");
+    assert!(!text.contains("Ignoring unknown features"), "{text}");
     assert!(
         text.contains("something new") && text.contains("exited with code 1"),
         "{text}"
