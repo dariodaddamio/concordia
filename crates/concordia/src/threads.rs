@@ -650,7 +650,7 @@ pub fn build_map_v2_with_workspace(
         "(memory)"
     };
     let mut lines = vec![format!(
-        "[concordia map v2] thread {id} - tools/approvals NOT transferred"
+        "[concordia map] thread {id} - v2 - tools/approvals NOT transferred"
     )];
     if let Some(state) = workspace {
         lines.push(crate::redact::redact(&crate::workspace_state::summary(state)).into_owned());
@@ -1311,6 +1311,15 @@ mod tests {
             build_map_v2(&events, "thread-1", 1600, true),
             build_map_v2(&events, "thread-1", 1600, true)
         );
+    }
+
+    #[test]
+    fn map_v2_keeps_the_concordia_map_marker() {
+        let map = build_map_v2(&[user("keep the handoff readable")], "thread-1", 1600, true);
+
+        assert!(map.starts_with("[concordia map]"));
+        assert!(map.starts_with("[concordia map] thread thread-1 - v2"));
+        assert!(!map.starts_with("[concordia map v2]"));
     }
 
     #[test]

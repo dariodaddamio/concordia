@@ -9,6 +9,28 @@ use crate::usage::picker_row;
 use ratatui::backend::TestBackend;
 
 #[test]
+fn chat_map_row_expands_for_v2_maps() {
+    let map = crate::threads::build_map_v2(
+        &[crate::threads::ThreadEvent::with_text(
+            "user",
+            "continue here",
+        )],
+        "thread-1",
+        1600,
+        true,
+    );
+    let row = ChatLine {
+        role: MsgRole::System,
+        text: map,
+        card: None,
+        meta: None,
+    };
+
+    assert!(row.is_map());
+    assert!(row.toggles());
+}
+
+#[test]
 fn header_and_status_never_repeat_usage() {
     let mut h = Harness::new(120, 30);
     h.app.landing = None;
@@ -336,6 +358,120 @@ struct Harness {
     app: App,
     term: Terminal<TestBackend>,
     _dir: tempfile::TempDir,
+}
+
+struct DoctorFake {
+    applied: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::doctor::FixApplier for DoctorFake {
+    fn previous_value(
+        &self,
+        _fix: &crate::doctor::Fix,
+        _root: &std::path::Path,
+    ) -> Result<String, String> {
+        Ok("old value".into())
+    }
+
+    fn apply(&self, _fix: &crate::doctor::Fix, _root: &std::path::Path) -> Result<(), String> {
+        self.applied
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn doctor_fixture(fixable: bool) -> (Vec<crate::doctor::Check>, Vec<crate::doctor::Fix>) {
+    let check = crate::doctor::Check {
+        level: if fixable {
+            crate::doctor::Level::Warn
+        } else {
+            crate::doctor::Level::Ok
+        },
+        name: "fixture",
+        detail: "synthetic doctor finding".into(),
+    };
+    let fixes = fixable
+        .then(|| crate::doctor::Fix {
+            id: "fixture-fix",
+            finding: check.detail.clone(),
+            before: "old PATH folder".into(),
+            after: "PATH folder to append: C:\\fixture\\bin".into(),
+            impact: "synthetic impact",
+        })
+        .into_iter()
+        .collect();
+    (vec![check], fixes)
+}
+
+fn open_doctor_fixture(
+    h: &mut Harness,
+    fixable: bool,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let (checks, fixes) = doctor_fixture(fixable);
+    let applied = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    h.app.doctor_applier = Box::new(DoctorFake {
+        applied: applied.clone(),
+    });
+    h.app.doctor = Some(DoctorUi {
+        checks,
+        fixes,
+        fixed: HashMap::new(),
+    });
+    h.app.refresh_doctor_picker();
+    applied
+}
+
+#[test]
+fn doctor_enter_on_fixable_row_asks_confirmation() {
+    let mut h = Harness::new(100, 28);
+    open_doctor_fixture(&mut h, true);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        h.app.picker.as_ref().map(|p| p.kind),
+        Some(PickerKind::DoctorConfirm)
+    );
+    assert!(h.screen().contains("old PATH folder") && h.screen().contains("PATH folder to append"));
+    assert!(h.screen().contains("y apply / n cancel"));
+}
+
+#[test]
+fn doctor_y_applies_then_rechecks() {
+    let mut h = Harness::new(100, 28);
+    let applied = open_doctor_fixture(&mut h, true);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(h
+        .app
+        .flash
+        .as_ref()
+        .is_some_and(|(text, _)| text.contains("fixed (backup:")));
+}
+
+#[test]
+fn doctor_n_changes_nothing() {
+    let mut h = Harness::new(100, 28);
+    let applied = open_doctor_fixture(&mut h, true);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Char('n'), KeyModifiers::NONE);
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(h
+        .app
+        .picker
+        .as_ref()
+        .is_none_or(|p| p.kind != PickerKind::DoctorConfirm));
+}
+
+#[test]
+fn doctor_non_fixable_row_has_no_apply() {
+    let mut h = Harness::new(100, 28);
+    let applied = open_doctor_fixture(&mut h, false);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        h.app.picker.as_ref().map(|p| p.kind),
+        Some(PickerKind::Doctor)
+    );
 }
 
 impl Harness {
@@ -1354,8 +1490,8 @@ fn a_very_long_session_still_draws_quickly() {
     h.draw();
     let rows = h.app.view.rows.len();
     assert!(
-        rows > 30_000,
-        "test should build a big transcript, got {rows}"
+        rows <= crate::tui::transcript::MAX_RENDERED_ROWS,
+        "transcript row cache must stay bounded, got {rows}"
     );
 
     let start = Instant::now();
