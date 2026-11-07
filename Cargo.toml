@@ -3,5 +3,16 @@ members = ["crates/concordia"]
 resolver = "2"
 exclude = ["vendor/crossterm"]
 
+[profile.release]
+# Keep the owner-facing install and /update rebuilds fast. Distribution builds opt into
+# whole-program optimization below.
+strip = "symbols"
+panic = "unwind"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }

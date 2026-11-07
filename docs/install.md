@@ -88,17 +88,7 @@ scoop install concordia
 The bucket is a repository that holds the manifest rendered by each release (see
 `packaging/README.md`). Scoop checks the SHA-256 from the manifest.
 
-## 4. cargo binstall
-
-```powershell
-cargo binstall concordia
-```
-
-Downloads the same release zip (matched by `[package.metadata.binstall]` in
-`crates/concordia/Cargo.toml`). This route needs the crate to be published, which is not the case
-yet, so it is not available today. Use route 1 or 5.
-
-## 5. Release zip, then `concordia install`
+## 4. Release zip, then `concordia install`
 
 1. Download `concordia-x86_64-pc-windows-msvc.zip` and `concordia-x86_64-pc-windows-msvc.zip.sha256`
    from the release page.
@@ -126,7 +116,7 @@ cd concordia
 ```
 
 This preflights and installs missing Rust, MSVC, and Windows SDK dependencies, then builds
-`concordia` in release mode and runs the same `concordia install` as route 5. Use
+`concordia` in release mode and runs the same `concordia install` as route 4. Use
 `\.\scripts\install-dev.ps1 -CheckOnly` to inspect prerequisites without building. If the linker
 reports `dbghelp.lib` missing, the Windows SDK is not installed or is still installing.
 
@@ -166,7 +156,17 @@ if ($actual -eq $expected) { 'OK' } else { 'MISMATCH: do not run this file' }
 
 The one-liner does this check for you and stops on a mismatch. The checksum comes from the same
 release as the file, so it catches corrupted or truncated downloads. It does not prove who published
-the release; TLS to GitHub does that.
+the release; TLS to GitHub does that. Tagged releases also publish a CycloneDX SBOM and a GitHub
+build-provenance attestation. When available, verify the attestation with
+`gh attestation verify concordia-x86_64-pc-windows-msvc.exe -R OWNER/concordia`.
+
+## Unsigned-release threat model
+
+Concordia is intentionally unsigned. The checksum protects against accidental or in-transit
+corruption, the SBOM makes shipped dependencies inspectable, and the attestation links tagged
+release artifacts to the GitHub build workflow. None of these grants Windows publisher reputation:
+SmartScreen or Smart App Control may still warn, and a Defender detection must never be bypassed.
+Stop, retain the artifact hash, and report a detection to the maintainer.
 
 ## Troubleshooting
 
@@ -182,7 +182,7 @@ the release; TLS to GitHub does that.
 - **`release vX has no concordia-x86_64-pc-windows-msvc.zip`.** That release predates the zip, or its
   upload is still running. Use `-Version` with an earlier release, or wait and retry.
 - **`no published release found`, or a 403 from the API.** GitHub rate-limits anonymous requests
-  (60 per hour per IP). Wait, or use route 5 with the release page.
+  (60 per hour per IP). Wait, or use route 4 with the release page.
 - **Execution policy errors.** The one-liner runs in memory and needs no policy change. For a saved
   script, use `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`.
 - **Antivirus blocks `concordia.exe`.** Stop installation and report the release version,
