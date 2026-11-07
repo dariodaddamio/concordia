@@ -250,7 +250,7 @@ pub(in crate::tui) struct BusySendConfirmation {
     pub(in crate::tui) armed: Instant,
 }
 
-pub(in crate::tui) struct App {
+pub(crate) struct App {
     pub(in crate::tui) appearance: appearance::State,
     pub(in crate::tui) continuation: continuation::State,
     pub(in crate::tui) native_owner: Option<crate::provider::interaction::InteractionOwner>,
@@ -387,6 +387,16 @@ pub(in crate::tui) struct App {
 }
 
 impl App {
+    #[allow(dead_code)]
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn has_unsent_work(&self) -> bool {
+        !self.editor.text().is_empty() || !self.queue.items.is_empty() || self.queue.edit.is_some()
+    }
+
     pub(in crate::tui) fn continuity_home(&self) -> Option<String> {
         self.home_path
             .as_ref()

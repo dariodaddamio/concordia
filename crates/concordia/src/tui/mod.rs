@@ -100,6 +100,8 @@ mod session_ui_tests;
 mod settings;
 mod stats_ui;
 mod syntax;
+#[allow(dead_code)]
+pub(crate) mod tabs;
 mod text;
 mod theme;
 mod tips;
