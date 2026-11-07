@@ -3,6 +3,18 @@ use super::super::*;
 impl App {
     pub(in crate::tui) fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if trimmed == "/rename" || trimmed.starts_with("/rename ") {
+            let name = trimmed.strip_prefix("/rename").unwrap_or_default().trim();
+            self.session_ui.title = crate::session_titles::sanitize(name);
+            self.session_chip = self.session_ui.title.clone();
+            self.persist_session_title();
+            self.push_system(if self.session_ui.title.is_some() {
+                "Chat renamed."
+            } else {
+                "Chat title reset to automatic."
+            });
+            return true;
+        }
         if let Some(id) = trimmed
             .strip_prefix("/resume ")
             .or_else(|| trimmed.strip_prefix("/chats "))

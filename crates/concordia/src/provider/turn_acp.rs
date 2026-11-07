@@ -186,12 +186,15 @@ impl Connection {
                     .filter(|v| !v.is_null())
                     .map(Value::to_string)
                     .or_else(|| prior.and_then(|c| c.detail.clone()));
-                let card = StreamCard {
+                let mut card = StreamCard {
                     id,
                     title,
                     detail,
                     status,
                 };
+                if let Some(content) = update.get("content").or_else(|| update.get("rawInput")) {
+                    crate::provider::edit_display::normalize_acp(&mut card, content);
+                }
                 crate::provider::stream_cards::upsert_card(&mut self.out.cards, card.clone());
                 self.emit(TurnProgress::Card(card));
             }

@@ -285,6 +285,35 @@ pub(super) fn normalize(card: &mut StreamCard) {
     ));
 }
 
+/// Convert ACP's provider-reported diff payload into the common edit-card format.
+pub(crate) fn normalize_acp(card: &mut StreamCard, value: &Value) {
+    let Some(path) = value.get("path").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(diff) = value.get("diff").and_then(Value::as_str) else {
+        return;
+    };
+    if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
+        return;
+    }
+    let detail = if diff.is_empty() {
+        replacement(
+            value
+                .get("oldText")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            value
+                .get("newText")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+    } else {
+        diff.to_owned()
+    };
+    card.title = "Edit".into();
+    card.detail = Some(format!("File: {path}\n{detail}"));
+}
+
 fn normalize_completed_wrapper(card: &mut StreamCard) -> bool {
     if card.status != super::CardStatus::Done {
         return false;

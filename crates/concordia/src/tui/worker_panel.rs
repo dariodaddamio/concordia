@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::time::{Duration, Instant};
 
-pub const MIN_WIDTH: u16 = 100;
+pub const MIN_WIDTH: u16 = 72;
 pub const DEFAULT_WIDTH: u16 = thirty(30);
 
 const fn thirty(value: u16) -> u16 {
