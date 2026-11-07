@@ -332,4 +332,30 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn fresh_triggers_at_threshold_with_map_seed() {
+        let policy = Policy {
+            rollover_percent: Some(85),
+            compaction: Compaction::Native,
+        };
+        assert!(!policy.rollover(Some(Measurement {
+            used: 849,
+            window: 1000
+        })));
+        assert!(policy.rollover(Some(Measurement {
+            used: 850,
+            window: 1000
+        })));
+    }
+
+    #[test]
+    fn unreported_context_disables_fresh_with_reason() {
+        let policy = Policy {
+            rollover_percent: Some(85),
+            compaction: Compaction::Native,
+        };
+        assert!(!policy.rollover(None));
+        assert!(unavailable_reason(ProviderKind::Cursor).contains("no negotiated"));
+    }
 }

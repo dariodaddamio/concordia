@@ -4977,7 +4977,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         )
                         .ok()
                     });
-                    let policy = match binding
+                    let mut policy = match binding
                         .as_ref()
                         .map(|b| crate::capacity::load(&state_root, b))
                         .transpose()
@@ -4991,6 +4991,20 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             return;
                         }
                     };
+                    // Config is the app-wide default; an account/home policy saved by
+                    // `/context` remains authoritative when it has an explicit setting.
+                    let context_config = crate::config::for_root(&state_root).continuation.context;
+                    let (context_mode, threshold) = context_config.for_provider(provider);
+                    if policy.rollover_percent.is_none() && context_mode == "fresh" {
+                        if provider == ProviderKind::Cursor {
+                            let _ = progress_tx.send(TurnProgress::Notice(format!(
+                                "Fresh session disabled for Cursor: {}",
+                                crate::capacity::unavailable_reason(provider)
+                            )));
+                        } else {
+                            policy.rollover_percent = Some(threshold);
+                        }
+                    }
                     let native_input = match crate::native_input::for_home(
                         &state_root,
                         provider,
