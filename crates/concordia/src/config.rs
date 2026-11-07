@@ -31,13 +31,29 @@ pub struct TurnConfig {
     pub idle_timeout_minutes: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Continuation {
     pub automatic: bool,
+    /// Same-provider automatic exhaustion handoff is deliberately opt-in.
+    pub same_provider_automatic: bool,
+    /// Maximum automatic handoffs into one account per local day.
+    pub automatic_handoff_cap: usize,
     /// Optional ordered allowlist; empty uses connected accounts in automatic mode.
     pub accounts: Vec<String>,
     /// Ordered models on the current account, validated against its native catalog.
     pub models: Vec<String>,
+}
+
+impl Default for Continuation {
+    fn default() -> Self {
+        Self {
+            automatic: false,
+            same_provider_automatic: false,
+            automatic_handoff_cap: 3,
+            accounts: Vec::new(),
+            models: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -261,6 +277,11 @@ impl Config {
                         Some("automatic") => cfg.continuation.automatic = true,
                         Some("manual") => cfg.continuation.automatic = false,
                         _ => warnings.push("continuation.mode must be manual or automatic; using manual".into()),
+                    },
+                    "continuation.same_provider_automatic" => set_bool(v, &full, &mut cfg.continuation.same_provider_automatic, &mut warnings),
+                    "continuation.automatic_handoff_cap" => match v.as_integer() {
+                        Some(n) if (1..=32).contains(&n) => cfg.continuation.automatic_handoff_cap = n as usize,
+                        _ => warnings.push("continuation.automatic_handoff_cap must be between 1 and 32; using 3".into()),
                     },
                     "continuation.models" => match v.as_array() {
                         Some(models) if models.iter().all(|m| m.as_str().is_some()) => {

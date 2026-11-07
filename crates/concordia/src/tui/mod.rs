@@ -2334,16 +2334,58 @@ impl App {
     }
 
     fn open_continuation_picker(&mut self) {
-        let mut rows = accounts_with_auth(&self.state_root)
+        let mut accounts = accounts_with_auth(&self.state_root)
             .into_iter()
             .filter(|a| {
                 (a.account != self.account || self.continuation.same_account_allowed())
                     && a.home_path.is_some()
             })
-            .map(|a| PickerRow {
-                id: format!("continue:{}", a.account),
-                label: a.label,
-                detail: "continue the paused request on this account".into(),
+            .collect::<Vec<_>>();
+        accounts.sort_by(|a, b| {
+            let remaining = |account: &crate::accounts::AccountDef| {
+                account.home_path.as_ref().and_then(|home| {
+                    crate::usage::peek_cached_usage(
+                        &self.state_root,
+                        account.provider,
+                        &account.account,
+                        home,
+                    )
+                    .and_then(|o| o.remaining_pct)
+                })
+            };
+            remaining(b)
+                .is_some()
+                .cmp(&remaining(a).is_some())
+                .then_with(|| {
+                    remaining(b)
+                        .partial_cmp(&remaining(a))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| a.account.cmp(&b.account))
+        });
+        let mut rows = accounts
+            .into_iter()
+            .map(|a| {
+                let remaining = a.home_path.as_ref().and_then(|home| {
+                    crate::usage::peek_cached_usage(&self.state_root, a.provider, &a.account, home)
+                        .and_then(|o| o.remaining_pct)
+                });
+                let tier = crate::models::catalog_tier(&self.model);
+                let tier = match tier {
+                    crate::models::ModelTier::Frontier => "frontier",
+                    crate::models::ModelTier::Standard => "standard",
+                    crate::models::ModelTier::Fast => "fast",
+                };
+                PickerRow {
+                    id: format!("continue:{}", a.account),
+                    label: a.label,
+                    detail: format!(
+                        "5h {}% left · {tier} · continue the paused request",
+                        remaining
+                            .map(|p| p.round() as i64)
+                            .map_or("??".into(), |p| p.to_string())
+                    ),
+                }
             })
             .collect::<Vec<_>>();
         if let Some(home) = &self.home_path {
