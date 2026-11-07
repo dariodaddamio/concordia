@@ -633,6 +633,17 @@ pub fn build_map_v2(
     max_chars: usize,
     stored: bool,
 ) -> String {
+    build_map_v2_with_workspace(events, thread_id, max_chars, stored, None)
+}
+
+/// Version 2 map with an optional bounded workspace-state block.
+pub fn build_map_v2_with_workspace(
+    events: &[ThreadEvent],
+    thread_id: &str,
+    max_chars: usize,
+    stored: bool,
+    workspace: Option<&crate::workspace_state::WorkspaceState>,
+) -> String {
     let id = if stored && !thread_id.is_empty() {
         thread_id
     } else {
@@ -641,6 +652,9 @@ pub fn build_map_v2(
     let mut lines = vec![format!(
         "[concordia map] thread {id} - v2 - tools/approvals NOT transferred"
     )];
+    if let Some(state) = workspace {
+        lines.push(crate::redact::redact(&crate::workspace_state::summary(state)).into_owned());
+    }
     let pointer = if stored && !thread_id.is_empty() {
         format!("concordia thread read {thread_id}")
     } else {

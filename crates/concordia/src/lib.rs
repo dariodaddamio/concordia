@@ -57,4 +57,5 @@ mod file_identity;
 pub mod managed_workspaces;
 pub mod workspace_paths;
 pub mod workspace_search;
+pub mod workspace_state;
 pub mod workspaces;
