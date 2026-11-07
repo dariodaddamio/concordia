@@ -29,6 +29,7 @@ pub mod prompt_time;
 pub mod provider;
 pub mod redact;
 pub mod release;
+pub mod resource_governor;
 pub mod routing;
 pub mod session_titles;
 pub mod sessions;
