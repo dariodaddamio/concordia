@@ -323,6 +323,7 @@ enum PickerKind {
     HandoffSettings,
     ResumeDeleteConfirm,
     Update,
+    NeedsYou,
 }
 
 struct Picker {
@@ -563,6 +564,7 @@ pub struct App {
     signed_out_confirmation: Option<(String, String)>,
     /// Accounts for which the user chose to send despite the presence warning this session.
     signed_out_overrides: HashSet<String>,
+    needs_you: crate::needs_you::Queue,
 }
 
 impl App {
@@ -1201,6 +1203,103 @@ impl App {
             ],
             false,
         );
+    }
+
+    fn needs_you_session(&self) -> String {
+        self.questions
+            .native_session_id()
+            .or_else(|| self.native_session_id.clone())
+            .or_else(|| self.task_id.clone())
+            .unwrap_or_else(|| "chat".into())
+    }
+
+    fn sync_needs_you(&mut self) {
+        use crate::needs_you::{Item, ItemKind, SessionState};
+        self.questions.refresh_native();
+        let session = self.needs_you_session();
+        let state = if self.busy {
+            SessionState::Running
+        } else if self.signed_out_confirmation.is_some()
+            || self.questions.waiting()
+            || self.queue.paused
+        {
+            SessionState::Waiting
+        } else {
+            SessionState::Idle
+        };
+        self.needs_you.set_state(session.clone(), state);
+        let approval = self.questions.native_approval_waiting();
+        let current = [
+            (
+                "question",
+                self.questions.waiting() && !approval,
+                ItemKind::Question,
+                "answer provider question",
+            ),
+            (
+                "approval",
+                approval,
+                ItemKind::Approval,
+                "answer permission request",
+            ),
+            (
+                "paused-queue",
+                self.queue.paused,
+                ItemKind::PausedQueue,
+                "resume paused prompt queue",
+            ),
+            (
+                "idle",
+                self.idle_notice.is_some(),
+                ItemKind::IdleNotice,
+                "turn is quiet",
+            ),
+            (
+                "signed-out",
+                self.signed_out_confirmation.is_some(),
+                ItemKind::SignedOut,
+                "confirm signed-out account",
+            ),
+        ];
+        for (suffix, present, kind, title) in current {
+            self.needs_you.remove_suffix(suffix);
+            let id = format!("{session}:{suffix}");
+            if present {
+                self.needs_you.add(Item {
+                    id,
+                    session_id: session.clone(),
+                    title: title.into(),
+                    kind,
+                });
+            }
+        }
+        for job in &self.deleg.d.jobs {
+            let id = format!("worker:{}", job.id);
+            if job.state == crate::delegate::WorkerState::Done && !job.collected {
+                self.needs_you.add(Item {
+                    id,
+                    session_id: job.session_id.clone().unwrap_or_else(|| job.id.to_string()),
+                    title: format!("worker {} finished", job.id),
+                    kind: ItemKind::WorkerResult,
+                });
+            } else {
+                self.needs_you.remove(&id);
+            }
+        }
+    }
+
+    fn open_needs_you_picker(&mut self) {
+        self.sync_needs_you();
+        let rows = self
+            .needs_you
+            .items()
+            .map(|item| PickerRow {
+                id: format!("needs:{}", item.id),
+                label: item.title.clone(),
+                detail: format!("{} · {}", item.kind.label(), item.session_id),
+            })
+            .collect();
+        self.show_picker(PickerKind::NeedsYou, "needs you".into(), rows, false);
     }
 
     fn idle_provider_name(provider: ProviderKind) -> &'static str {
@@ -3219,6 +3318,19 @@ impl App {
                     self.inspect_worker(id);
                 }
             }
+            PickerKind::NeedsYou => {
+                if let Some(item_id) = id.strip_prefix("needs:") {
+                    let session_id = self
+                        .needs_you
+                        .items()
+                        .find(|item| item.id == item_id)
+                        .map(|item| item.session_id.clone());
+                    if let Some(session_id) = session_id {
+                        self.session_chip = Some(session_id.clone());
+                        self.flash(format!("jumped to {session_id}"));
+                    }
+                }
+            }
             PickerKind::Recovery => {
                 if let Some(id) = id.strip_prefix("recover:") {
                     self.choose_recovery(id);
@@ -4544,6 +4656,7 @@ impl App {
             keep: persist::Keep::new(&state_root_for_cmds),
             signed_out_confirmation: None,
             signed_out_overrides: HashSet::new(),
+            needs_you: crate::needs_you::Queue::default(),
         }
     }
 }
