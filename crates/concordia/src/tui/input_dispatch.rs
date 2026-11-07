@@ -413,6 +413,15 @@ pub(super) fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    if ctrl && shift && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
+        app.worker_panel_open = !app.worker_panel_open;
+        app.flash(if app.worker_panel_open {
+            "worker panel open (read-only)"
+        } else {
+            "worker panel closed"
+        });
+        return false;
+    }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
         app.open_agents_picker();
         return false;
