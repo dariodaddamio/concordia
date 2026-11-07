@@ -51,7 +51,7 @@ pub fn next_action(row: &Check) -> Option<String> {
         "clipboard" => "install or restore powershell.exe on PATH".into(),
         "install" => "re-run scripts\\install-dev.ps1".into(),
         "store" => "move the corrupt store aside, then restart Concordia".into(),
-        "state" if row.detail.contains("not owner-only") => "concordia doctor --fix-acl".into(),
+        "state" if row.detail.contains("not owner-only") => icacls_state_action(&row.detail),
         "state" => "choose a writable Concordia state directory".into(),
         "config" => "/config to review the setting".into(),
         "commands" => "rename or remove the conflicting custom command".into(),
@@ -75,6 +75,20 @@ pub fn next_action(row: &Check) -> Option<String> {
         _ => "review the diagnostic details and address the reported condition".into(),
     };
     Some(action)
+}
+
+fn icacls_state_action(detail: &str) -> String {
+    let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
+        (Ok(domain), Ok(name)) if !domain.is_empty() && !name.is_empty() => {
+            format!("{domain}\\{name}")
+        }
+        (Ok(name), _) | (_, Ok(name)) if !name.is_empty() => name,
+        _ => "$env:USERNAME".to_string(),
+    };
+    let path = detail
+        .split_once(" is writable")
+        .map_or(detail, |(path, _)| path);
+    format!("icacls \"{path}\" /inheritance:r /grant:r \"{user}:(OI)(CI)F\" \"SYSTEM:(OI)(CI)F\"")
 }
 
 fn check(level: Level, name: &'static str, detail: impl Into<String>) -> Check {
@@ -1221,6 +1235,11 @@ mod tests {
             ),
             check(Level::Warn, "account", "not signed in"),
             check(Level::Warn, "accounts", "none"),
+            check(
+                Level::Warn,
+                "state",
+                "C:\\fixture\\concordia is writable; state directory is not owner-only",
+            ),
             check(Level::Warn, "path", "not on PATH"),
             check(Level::Warn, "wezterm", "missing"),
             check(Level::Fail, "install", "broken"),
@@ -1234,6 +1253,13 @@ mod tests {
         for row in rows {
             let action = next_action(&row).expect("missing action");
             assert!(!action.contains("concordia doctor"), "{action}");
+            assert!(!action.contains('%'), "{action}");
+            if row.name == "state" {
+                assert!(action.starts_with("icacls \"C:\\fixture\\concordia\""));
+                assert!(action.contains("/inheritance:r"));
+                assert!(action.contains("(OI)(CI)F"));
+                assert!(action.contains("SYSTEM:(OI)(CI)F"));
+            }
             let rendered = format_report(std::slice::from_ref(&row));
             assert_eq!(rendered.matches("next: ").count(), 1, "{rendered}");
         }
