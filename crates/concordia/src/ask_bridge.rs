@@ -50,7 +50,7 @@ pub async fn spawn_listener(
                     return;
                 }
                 let questions = value.get("questions").cloned().unwrap_or(Value::Null);
-                if validate(&json!({"questions": questions})).is_err() {
+                if validate(&json!({"questions": questions.clone()})).is_err() {
                     return;
                 }
                 let (answer_tx, answer_rx) = oneshot::channel();
@@ -226,5 +226,35 @@ mod tests {
         assert!(handle_line(&"x".repeat(MAX_REQUEST_BYTES + 1))
             .unwrap()
             .contains("request too large"));
+    }
+
+    #[tokio::test]
+    async fn listener_rejects_bad_token_and_returns_answer() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (endpoint, task) = spawn_listener("good".into(), tx).await.unwrap();
+        let mut bad = tokio::net::TcpStream::connect(&endpoint).await.unwrap();
+        bad.write_all(br#"{"token":"bad","questions":[]}"#)
+            .await
+            .unwrap();
+        bad.write_all(b"\n").await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .is_err()
+        );
+        let mut good = tokio::net::TcpStream::connect(&endpoint).await.unwrap();
+        good.write_all(
+            br#"{"token":"good","questions":[{"question":"Pick","options":["A","B"]}]}"#,
+        )
+        .await
+        .unwrap();
+        good.write_all(b"\n").await.unwrap();
+        let request = rx.recv().await.unwrap();
+        request.answer.send(json!({"answer":"A"})).unwrap();
+        let mut line = String::new();
+        BufReader::new(good).read_line(&mut line).await.unwrap();
+        assert_eq!(line.trim(), r#"{"answer":"A"}"#);
+        task.abort();
     }
 }

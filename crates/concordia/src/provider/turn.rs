@@ -541,7 +541,12 @@ async fn run_provider_turn_inner(
             return Ok(out);
         }
     }
-    if mode == crate::native_input::Mode::CodexAppServer {
+    // codex exec has no response channel for request_user_input; the app-server transport does.
+    if mode == crate::native_input::Mode::CodexAppServer
+        || (req.provider == ProviderKind::Codex
+            && mode == crate::native_input::Mode::Standard
+            && crate::config::ui_question_popups())
+    {
         return appserver::run(req, &plan, owner, on_started, on_progress).await;
     }
     if mode == crate::native_input::Mode::ClaudeStdio {

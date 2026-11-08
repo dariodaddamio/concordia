@@ -237,6 +237,13 @@ impl Connection {
 /// mode; nothing was prompted and nothing was shown.
 pub(super) const SESSION_NOT_IN_ACP: &str = "Cursor ACP has no session with this id";
 
+fn ask_server_config(endpoint: &str, token: &str, enabled: bool) -> Value {
+    if !enabled || endpoint.is_empty() {
+        return json!([]);
+    }
+    json!([{"name":"concordia-ask","command":std::env::current_exe().unwrap_or_default().to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":token}]}])
+}
+
 /// `agent models` lists flat variants (`claude-opus-5-5-high-fast`, `cursor-grok-4.6-low`), while
 /// ACP sessions offer one parameterized entry per base (`claude-opus-5-5[effort=medium,fast=false]`).
 /// Map a flat id onto the session's entry for its base, changing only effort, fast and thinking.
@@ -391,8 +398,7 @@ pub(super) async fn run(
         conn.interactions.initialized_cursor(&init);
         anyhow::ensure!(init["protocolVersion"] == 1, "Installed Cursor ACP did not negotiate protocol version 1");
         anyhow::ensure!(req.images.is_empty() || init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
-        let ask_server = if endpoint.is_empty() { Value::Null } else { json!({"name":"concordia-ask","command":std::env::current_exe()?.to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":bridge_token}]}) };
-        let mcp_servers = if ask_server.is_null() { json!([]) } else { json!([ask_server]) };
+        let mcp_servers = ask_server_config(&endpoint, &bridge_token, !endpoint.is_empty());
         let (method,params)=if let Some(id)=req.native_session_id{
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
             ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":mcp_servers}))
@@ -457,7 +463,18 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{acp_argv, acp_model_id};
+    use super::{acp_argv, acp_model_id, ask_server_config};
+
+    #[test]
+    fn question_server_is_registered_only_when_enabled() {
+        assert!(ask_server_config("", "token", false)
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let enabled = ask_server_config("127.0.0.1:1234", "token", true);
+        assert_eq!(enabled[0]["name"], "concordia-ask");
+        assert_eq!(enabled[0]["env"][1]["value"], "token");
+    }
 
     #[test]
     fn flat_cli_model_ids_map_onto_the_sessions_parameterized_variants() {
