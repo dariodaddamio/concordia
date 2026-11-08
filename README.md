@@ -78,6 +78,7 @@ discovery needs diagnosis.
 
 ## Learn more
 
+- [How Concordia works, end to end](docs/how-concordia-works.md)
 - [Concepts and capabilities](docs/capabilities.md)
 - [Architecture and data boundaries](docs/architecture.md)
 - [Memory and context handoff](docs/context-handoff-plan.md)
