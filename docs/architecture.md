@@ -1,5 +1,7 @@
 # Architecture: local memory and provider orchestration
 
+For a source-cited guided tour of the complete current runtime, start with [How Concordia works](how-concordia-works.md).
+
 Concordia coordinates memory/session continuity, account routing and worker runs around the
 unmodified Codex, Claude Code and Cursor CLIs. Those CLIs retain native execution, authentication
 and approvals. Concordia owns the index/map, orchestration policy, process lifecycle and UI.
