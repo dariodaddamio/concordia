@@ -1,5 +1,16 @@
 # Configuration and custom commands
 
+## Feed
+
+The local output feed is enabled by default and is bounded and redacted. Screen snapshots remain
+off unless requested.
+
+```toml
+[feed]
+enabled = true
+screen = false
+```
+
 ## Limit continuation and unfinished work
 
 In `/use`, **next provider for this session** opens choices to pause at a limit, choose

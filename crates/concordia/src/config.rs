@@ -24,9 +24,16 @@ pub struct Config {
     pub editor: EditorConfig,
     pub continuation: Continuation,
     pub turn: TurnConfig,
+    pub feed: FeedConfig,
     /// Named, local provider/account and model arrangements. The values are opaque model ids;
     /// availability is checked when a crew is selected, never while loading config.
     pub crews: BTreeMap<String, Crew>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedConfig {
+    pub enabled: bool,
+    pub screen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +228,10 @@ impl Default for Config {
             continuation: Continuation::default(),
             turn: TurnConfig {
                 idle_timeout_minutes: 10,
+            },
+            feed: FeedConfig {
+                enabled: true,
+                screen: false,
             },
             crews: BTreeMap::new(),
         }
@@ -481,6 +492,8 @@ impl Config {
                         set_bool(v, &full, &mut cfg.threads.awareness, &mut warnings)
                     }
                     "threads.mcp" => set_bool(v, &full, &mut cfg.threads.mcp, &mut warnings),
+                    "feed.enabled" => set_bool(v, &full, &mut cfg.feed.enabled, &mut warnings),
+                    "feed.screen" => set_bool(v, &full, &mut cfg.feed.screen, &mut warnings),
                     "mode.default" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("plan") => cfg.mode.default = TrustMode::Plan,
                         Some("ask") => cfg.mode.default = TrustMode::Ask,

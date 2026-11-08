@@ -2,6 +2,32 @@ use super::super::*;
 
 impl App {
     pub(in crate::tui) fn apply_progress(&mut self, ev: TurnProgress) {
+        let feed = crate::feed::FeedWriter::new(
+            &self.state_root,
+            self.thread_id().unwrap_or("main"),
+            crate::config::for_root(&self.state_root).feed.enabled,
+        );
+        match &ev {
+            TurnProgress::Text(text) => {
+                let _ = feed.emit("text", text);
+            }
+            TurnProgress::TextDelta(text) => {
+                let _ = feed.emit_text_delta(text);
+            }
+            TurnProgress::Card(card) => {
+                let _ = feed.emit("tool", &card.title);
+            }
+            TurnProgress::Interaction(_) => {
+                let _ = feed.emit("question", "native approval/question waiting");
+            }
+            TurnProgress::Error(error) => {
+                let _ = feed.emit("error", error);
+            }
+            TurnProgress::Usage(usage) => {
+                let _ = feed.emit("usage", format!("{:?}", usage));
+            }
+            _ => {}
+        }
         match ev {
             TurnProgress::Artifact(record) => {
                 if self.native_owner.as_ref() == Some(&record.owner)
@@ -307,6 +333,20 @@ impl App {
         }
     }
     pub(in crate::tui) fn finalize_turn(&mut self, outcome: TurnOutcome) {
+        let feed = crate::feed::FeedWriter::new(
+            &self.state_root,
+            self.thread_id().unwrap_or("main"),
+            crate::config::for_root(&self.state_root).feed.enabled,
+        );
+        let _ = feed.flush_text_delta();
+        let _ = feed.emit(
+            "turn_end",
+            if outcome.failed {
+                "failed"
+            } else {
+                "completed"
+            },
+        );
         self.clear_idle_notice();
         self.busy_send_confirmation = None;
         self.submitted_prompt = None;

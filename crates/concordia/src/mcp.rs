@@ -234,6 +234,11 @@ fn tool_list() -> Value {
             "inputSchema": {"type":"object","properties":{}}
         },
         {
+            "name":"feed",
+            "description":"Read the bounded local Concordia event feed.",
+            "inputSchema":{"type":"object","properties":{"cursor":{"type":"integer"},"limit":{"type":"integer"},"pane":{"type":"string"}}}
+        },
+        {
             "name":"memory",
             "description":"Search original chats, file facts or confirmed groups. Read-only; use native_read for exact excerpts.",
             "inputSchema":{"type":"object","additionalProperties":false,"properties":{
@@ -567,6 +572,7 @@ fn call_tool(state_root: &Path, params: &Value, scope: Option<&Scope>) -> Result
             | "thread_read"
             | "native_read"
             | "usage"
+            | "feed"
             | "memory"
             | "goals"
             | "integrations"
@@ -594,6 +600,7 @@ fn call_tool(state_root: &Path, params: &Value, scope: Option<&Scope>) -> Result
         "thread_read" => tool_thread_read(state_root, &args),
         "native_read" => tool_native_read(state_root, &args),
         "usage" => Ok(tool_usage(state_root, read_scope.unwrap())),
+        "feed" => tool_feed(state_root, &args, read_scope.unwrap()),
         "memory" => tool_memory(state_root, &args, read_scope.unwrap()),
         "goals" => tool_goals(state_root, &args),
         "delegate" => tool_delegate(state_root, &args),
@@ -621,6 +628,21 @@ fn call_tool(state_root: &Path, params: &Value, scope: Option<&Scope>) -> Result
         Ok(t) => text_result(t, false),
         Err(e) => text_result(e, true),
     })
+}
+
+fn tool_feed(root: &Path, args: &Value, scope: &Scope) -> Result<String, String> {
+    let cursor = uint_arg(args, "cursor").unwrap_or(0);
+    let limit = uint_arg(args, "limit").unwrap_or(50).min(200);
+    let pane = str_arg(args, "pane");
+    let events = crate::feed::read(root, 0, pane).map_err(|e| e.to_string())?;
+    let page: Vec<_> = events.iter().skip(cursor).take(limit).collect();
+    let next = if cursor + page.len() < events.len() {
+        Some(cursor + page.len())
+    } else {
+        None
+    };
+    let value = json!({"events": page, "next_cursor": next, "account": scope.account});
+    serde_json::to_string(&value).map_err(|e| e.to_string())
 }
 
 fn tool_native_read(root: &Path, args: &Value) -> Result<String, String> {

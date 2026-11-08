@@ -5,7 +5,7 @@ bounded map and shows that map with the submitted prompt. Recording is opt-in th
 `[threads] enabled = true`. A provider can retrieve more with `concordia thread read <id>`.
 
 `concordia mcp` serves JSON-RPC over newline-delimited stdin/stdout. It exposes `threads`,
-`thread_map`, `thread_read`, `native_read`, `usage`, `memory`, `goals`, `delegate` and `integrations`. Read tools stay local;
+`thread_map`, `thread_read`, `native_read`, `usage`, `feed`, `memory`, `goals`, `delegate` and `integrations`. Read tools stay local;
 `native_read` resolves revision-checked native-session pointers without transcript recording.
 Build `2026-11-05b` supplies standard read-only, non-destructive, idempotent and closed-world
 effect hints for all seven pure read tools. Derived local index caches may be populated; original sources and

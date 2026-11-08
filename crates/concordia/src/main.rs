@@ -19,6 +19,7 @@ enum Command {
     Sessions,
     Thread,
     Mcp,
+    Feed,
     Help,
     Version,
 }
@@ -132,6 +133,13 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::Mcp,
     },
     CommandSpec {
+        name: "feed",
+        aliases: &[],
+        args: "[--follow] [--since N] [--pane ID] [--json] [--screen]",
+        help: "follow the local event feed",
+        command: Command::Feed,
+    },
+    CommandSpec {
         name: "--help",
         aliases: &["-h", "help"],
         args: "",
@@ -231,6 +239,13 @@ async fn main() -> Result<()> {
     };
     match command {
         Command::Chat => match concordia::chat_cli::run(&default_store_root(), rest) {
+            Ok(output) => print!("{output}"),
+            Err((message, code)) => {
+                eprintln!("{message}");
+                std::process::exit(code);
+            }
+        },
+        Command::Feed => match concordia::feed::cli(&default_store_root(), rest) {
             Ok(output) => print!("{output}"),
             Err((message, code)) => {
                 eprintln!("{message}");
