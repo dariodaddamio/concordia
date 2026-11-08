@@ -3,6 +3,12 @@ members = ["crates/concordia"]
 resolver = "2"
 exclude = ["vendor/crossterm"]
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 # Keep the owner-facing install and /update rebuilds fast. Distribution builds opt into
 # whole-program optimization below.
