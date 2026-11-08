@@ -49,6 +49,12 @@ fn clean(raw: &str) -> String {
     title
 }
 
+/// Sanitize an explicit chat title. `None` means restore automatic titling.
+pub fn sanitize(raw: &str) -> Option<String> {
+    let title = clean(raw);
+    (!title.is_empty()).then_some(title)
+}
+
 /// First substantive request, without inference or a provider call.
 pub fn real_user_text(prompt: &str) -> String {
     // Bound work even when a pasted prompt is enormous.

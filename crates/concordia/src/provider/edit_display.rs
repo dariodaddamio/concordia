@@ -285,6 +285,59 @@ pub(super) fn normalize(card: &mut StreamCard) {
     ));
 }
 
+/// Convert ACP's provider-reported diff payload into the common edit-card format.
+pub(crate) fn normalize_acp(card: &mut StreamCard, value: &Value) {
+    let Some(path) = value.get("path").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(diff) = value.get("diff").and_then(Value::as_str) else {
+        return;
+    };
+    if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
+        return;
+    }
+    let detail = if diff.is_empty() {
+        replacement(
+            value
+                .get("oldText")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            value
+                .get("newText")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+    } else {
+        diff.to_owned()
+    };
+    card.title = "Edit".into();
+    card.detail = Some(format!("File: {path}\n{detail}"));
+}
+
+#[cfg(test)]
+mod acp_tests {
+    use super::*;
+
+    #[test]
+    fn acp_diff_becomes_the_common_edit_card_evidence() {
+        let mut card = StreamCard {
+            id: "acp-edit".into(),
+            title: "tool_call".into(),
+            status: super::super::CardStatus::Done,
+            detail: None,
+        };
+        normalize_acp(
+            &mut card,
+            &serde_json::json!({"path":"src/main.rs","diff":"@@ -1 +1 @@\n-old\n+new"}),
+        );
+        assert_eq!(card.title, "Edit");
+        let detail = card.detail.unwrap();
+        assert!(detail.contains("File: src/main.rs"));
+        assert!(detail.contains("-old"));
+        assert!(detail.contains("+new"));
+    }
+}
+
 fn normalize_completed_wrapper(card: &mut StreamCard) -> bool {
     if card.status != super::CardStatus::Done {
         return false;

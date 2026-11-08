@@ -134,6 +134,7 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
 /// Browser-style strip on the top row while two or more tabs are open; returns the rest.
 fn draw_tab_strip(f: &mut Frame, app: &mut App) -> Rect {
     app.tab_hits.clear();
+    app.tab_close_hits.clear();
     let area = f.area();
     if app.tab_strip.len() < 2 || area.height < 4 {
         return area;
@@ -143,7 +144,7 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> Rect {
     let mut x = row.x;
     let mut spans = Vec::new();
     for (index, label) in app.tab_strip.iter().enumerate() {
-        let text = format!(" {} {label} ", index + 1);
+        let text = format!(" {} {label} ×", index + 1);
         let width = (text.chars().count() as u16).min(row.right().saturating_sub(x));
         if width == 0 {
             break;
@@ -157,6 +158,12 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> Rect {
             Style::default().fg(Color::Gray).bg(Color::Indexed(236))
         };
         app.tab_hits.push(Rect::new(x, row.y, width, 1));
+        app.tab_close_hits.push(Rect::new(
+            x.saturating_add(width.saturating_sub(1)),
+            row.y,
+            1,
+            1,
+        ));
         spans.push(Span::styled(text, style));
         spans.push(Span::raw(" "));
         x = x.saturating_add(width + 1);

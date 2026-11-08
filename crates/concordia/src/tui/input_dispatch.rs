@@ -415,11 +415,50 @@ pub(super) fn handle_key(
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     if ctrl && shift && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
         app.worker_panel_open = !app.worker_panel_open;
+        app.worker_panel_explicit = Some(app.worker_panel_open);
+        let choice = app.worker_panel_open;
+        let _ = crate::store::modify_store(&app.state_root, |store| {
+            store.settings.worker_panel_open = Some(choice);
+            Ok(())
+        });
         app.flash(if app.worker_panel_open {
             "worker panel open (read-only)"
         } else {
             "worker panel closed"
         });
+        return false;
+    }
+    if key.code == KeyCode::F(2) && key.modifiers.is_empty() {
+        app.rename_active = true;
+        app.editor
+            .set_text(app.session_ui.title.as_deref().unwrap_or_default());
+        return false;
+    }
+    if app.rename_active {
+        match key.code {
+            KeyCode::Esc => {
+                app.rename_active = false;
+                app.editor.clear();
+            }
+            KeyCode::Enter => {
+                app.session_ui.title = crate::session_titles::sanitize(&app.editor.text());
+                app.session_chip = app.session_ui.title.clone();
+                app.persist_session_title();
+                app.rename_active = false;
+                app.editor.clear();
+            }
+            KeyCode::Backspace => app.editor.backspace(),
+            KeyCode::Left => app.editor.move_left(false),
+            KeyCode::Right => app.editor.move_right(false),
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                app.editor.insert_char(c)
+            }
+            _ => {}
+        }
         return false;
     }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {

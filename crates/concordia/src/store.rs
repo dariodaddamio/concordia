@@ -152,6 +152,8 @@ pub struct StoredAccount {
 #[serde(rename_all = "camelCase")]
 pub struct OrchestratorSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_panel_open: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_action: Option<crate::file_open::FileAction>,
     #[serde(default = "default_trust")]
     pub trust: TrustMode,
@@ -212,6 +214,7 @@ fn default_child_trust() -> ChildTrust {
 impl Default for OrchestratorSettings {
     fn default() -> Self {
         Self {
+            worker_panel_open: None,
             file_action: None,
             trust: TrustMode::Workspace,
             child_trust: ChildTrust::Inherit,
