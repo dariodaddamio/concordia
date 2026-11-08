@@ -11,6 +11,17 @@ enabled = true
 screen = false
 ```
 
+## Provider question popups
+
+Question popups are enabled by default for provider questions and the per-turn `ask_user` MCP
+bridge. Set `[ui] question_popups = false` to disable this UI path; native provider tools remain
+available according to each provider's own behavior.
+
+Cursor ACP receives a per-turn `concordia-ask` MCP server in both new and loaded sessions.
+Codex uses its app-server request channel when popups are enabled because `codex exec --json`
+cannot answer a pending `request_user_input` event. Claude's native stdio transport normalizes
+`AskUserQuestion` directly into the same popup broker.
+
 ## Limit continuation and unfinished work
 
 In `/use`, **next provider for this session** opens choices to pause at a limit, choose
