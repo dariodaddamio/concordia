@@ -2,9 +2,11 @@
 use crate::redact::redact;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -12,6 +14,11 @@ use std::{
 pub const MAX_EVENT_TEXT: usize = 4096;
 pub const MAX_FEED_BYTES: u64 = 2 * 1024 * 1024;
 const FEED: &str = "feed.jsonl";
+const COALESCE_WINDOW: Duration = Duration::from_millis(100);
+type DeltaKey = (PathBuf, String);
+type DeltaValue = (std::time::Instant, String);
+static DELTAS: OnceLock<Mutex<HashMap<DeltaKey, DeltaValue>>> = OnceLock::new();
+static SCREENS: OnceLock<Mutex<HashMap<PathBuf, (std::time::Instant, u64)>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeedEvent {
@@ -39,11 +46,15 @@ impl FeedWriter {
         }
     }
     pub fn emit(&self, kind: impl Into<String>, text: impl AsRef<str>) -> std::io::Result<()> {
+        self.flush_text_delta()?;
+        self.emit_raw(kind.into(), text.as_ref())
+    }
+    fn emit_raw(&self, kind: String, text: &str) -> std::io::Result<()> {
         if !self.enabled {
             return Ok(());
         }
         fs::create_dir_all(&self.root)?;
-        let mut text = redact(text.as_ref()).into_owned();
+        let mut text = redact(text).into_owned();
         text.retain(|c| !c.is_control() || c == '\n' || c == '\t');
         if text.chars().count() > MAX_EVENT_TEXT {
             text = text.chars().take(MAX_EVENT_TEXT).collect();
@@ -57,7 +68,7 @@ impl FeedWriter {
             conversation: None,
             account: None,
             provider: None,
-            kind: kind.into(),
+            kind,
             text,
         };
         let path = self.root.join(FEED);
@@ -71,12 +82,62 @@ impl FeedWriter {
         serde_json::to_writer(&mut file, &event)?;
         file.write_all(b"\n")
     }
+    pub fn emit_text_delta(&self, text: &str) -> std::io::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let key = (self.root.clone(), self.pane.clone());
+        let mut pending = DELTAS.get_or_init(Default::default).lock().unwrap();
+        if let Some((started, value)) = pending.get_mut(&key) {
+            if started.elapsed() < COALESCE_WINDOW {
+                value.push_str(text);
+                return Ok(());
+            }
+            let old = std::mem::take(value);
+            *started = std::time::Instant::now();
+            drop(pending);
+            self.emit_raw("text_delta".into(), &old)?;
+        } else {
+            pending.insert(key.clone(), (std::time::Instant::now(), String::new()));
+        }
+        let mut pending = DELTAS.get().unwrap().lock().unwrap();
+        pending.get_mut(&key).unwrap().1.push_str(text);
+        Ok(())
+    }
+    pub fn flush_text_delta(&self) -> std::io::Result<()> {
+        let key = (self.root.clone(), self.pane.clone());
+        let Some((_, text)) = DELTAS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .remove(&key)
+        else {
+            return Ok(());
+        };
+        if text.is_empty() {
+            Ok(())
+        } else {
+            self.emit_raw("text_delta".into(), &text)
+        }
+    }
     pub fn screen(&self, text: &str) -> std::io::Result<()> {
         if !self.enabled {
             return Ok(());
         }
+        let value = redact(text).into_owned();
+        let hash = value.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+            h.wrapping_mul(0x100000001b3).wrapping_add(b as u64)
+        });
+        let mut screens = SCREENS.get_or_init(Default::default).lock().unwrap();
+        if let Some((at, previous)) = screens.get(&self.root) {
+            if *previous == hash || at.elapsed() < Duration::from_secs(1) {
+                return Ok(());
+            }
+        }
+        screens.insert(self.root.clone(), (std::time::Instant::now(), hash));
+        drop(screens);
         let tmp = self.root.join("screen.txt.tmp");
-        fs::write(&tmp, redact(text).as_ref())?;
+        fs::write(&tmp, value)?;
         fs::rename(tmp, self.root.join("screen.txt"))
     }
 }
@@ -182,5 +243,18 @@ mod tests {
         .unwrap();
         assert!(output.contains("turn_start"));
         assert!(!output.contains("turn_end"));
+    }
+
+    #[test]
+    fn text_deltas_coalesce_until_flushed() {
+        let dir = tempdir().unwrap();
+        let writer = FeedWriter::new(dir.path(), "one", true);
+        writer.emit_text_delta("hel").unwrap();
+        writer.emit_text_delta("lo").unwrap();
+        assert!(read(dir.path(), 0, None).unwrap().is_empty());
+        writer.flush_text_delta().unwrap();
+        let events = read(dir.path(), 0, None).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].text, "hello");
     }
 }
