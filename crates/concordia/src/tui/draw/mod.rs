@@ -57,11 +57,11 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
             ])
             .split(chat_area)
             .to_vec();
-        // The queue panel sits right above the prompt, the worker rows above it (each is nothing
-        // when empty).
+        // Queue and question panels reserve space first. The worker strip is carved last so it
+        // stays directly above the composer instead of being separated from it by another panel.
         let queue_area = queue::carve(&mut chunks[1], app);
-        let strip = workers::carve(&mut chunks[1], app);
         let question_area = questions::carve(&mut chunks[1], app);
+        let strip = workers::carve(&mut chunks[1], app);
         let run_status = if app.busy && app.picker.is_none() && app.activity.detail.is_none() {
             chunks[1].height = chunks[1].height.saturating_sub(1);
             Rect::new(chunks[1].x, chunks[1].bottom(), chunks[1].width, 1)

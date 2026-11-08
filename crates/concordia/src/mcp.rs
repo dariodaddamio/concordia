@@ -634,7 +634,10 @@ fn tool_feed(root: &Path, args: &Value, scope: &Scope) -> Result<String, String>
     let cursor = uint_arg(args, "cursor").unwrap_or(0);
     let limit = uint_arg(args, "limit").unwrap_or(50).min(200);
     let pane = str_arg(args, "pane");
-    let events = crate::feed::read(root, 0, pane).map_err(|e| e.to_string())?;
+    let mut events = crate::feed::read(root, 0, pane).map_err(|e| e.to_string())?;
+    if !scope.unrestricted {
+        events.retain(|e| e.account.as_deref() == Some(scope.account.as_str()));
+    }
     let page: Vec<_> = events.iter().skip(cursor).take(limit).collect();
     let next = if cursor + page.len() < events.len() {
         Some(cursor + page.len())
@@ -1432,6 +1435,7 @@ mod tests {
                 "thread_read",
                 "native_read",
                 "usage",
+                "feed",
                 "memory",
                 "goals",
                 "delegate",

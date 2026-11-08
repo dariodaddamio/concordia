@@ -1,12 +1,16 @@
 use super::super::*;
 
 impl App {
-    pub(in crate::tui) fn apply_progress(&mut self, ev: TurnProgress) {
-        let feed = crate::feed::FeedWriter::new(
+    pub(in crate::tui) fn feed(&self) -> crate::feed::FeedWriter {
+        crate::feed::FeedWriter::new(
             &self.state_root,
             self.thread_id().unwrap_or("main"),
-            crate::config::for_root(&self.state_root).feed.enabled,
-        );
+            crate::config::get().feed.enabled,
+        )
+        .identity(&self.account, self.provider.as_str())
+    }
+    pub(in crate::tui) fn apply_progress(&mut self, ev: TurnProgress) {
+        let feed = self.feed();
         match &ev {
             TurnProgress::Text(text) => {
                 let _ = feed.emit("text", text);
@@ -21,7 +25,9 @@ impl App {
                 let _ = feed.emit("question", "native approval/question waiting");
             }
             TurnProgress::Error(error) => {
-                let _ = feed.emit("error", error);
+                if !is_cli_noise_block(error) {
+                    let _ = feed.emit("error", error);
+                }
             }
             TurnProgress::Usage(usage) => {
                 let _ = feed.emit("usage", format!("{:?}", usage));
@@ -218,12 +224,14 @@ impl App {
                 });
             }
             TurnProgress::Error(e) => {
-                if self.continuation.errors.len() < 12 {
-                    self.continuation
-                        .errors
-                        .push(e.chars().take(2000).collect());
+                if !is_cli_noise_block(&e) {
+                    if self.continuation.errors.len() < 12 {
+                        self.continuation
+                            .errors
+                            .push(e.chars().take(2000).collect());
+                    }
+                    self.push_system(e);
                 }
-                self.push_system(e);
             }
             TurnProgress::Usage(u) => {
                 self.turn_usage.update_snapshot(&u);
@@ -333,11 +341,7 @@ impl App {
         }
     }
     pub(in crate::tui) fn finalize_turn(&mut self, outcome: TurnOutcome) {
-        let feed = crate::feed::FeedWriter::new(
-            &self.state_root,
-            self.thread_id().unwrap_or("main"),
-            crate::config::for_root(&self.state_root).feed.enabled,
-        );
+        let feed = self.feed();
         let _ = feed.flush_text_delta();
         let _ = feed.emit(
             "turn_end",

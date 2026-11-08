@@ -35,6 +35,8 @@ pub struct FeedWriter {
     root: PathBuf,
     pane: String,
     enabled: bool,
+    account: Option<String>,
+    provider: Option<String>,
 }
 
 impl FeedWriter {
@@ -43,7 +45,14 @@ impl FeedWriter {
             root: root.into(),
             pane: pane.into(),
             enabled,
+            account: None,
+            provider: None,
         }
+    }
+    pub fn identity(mut self, account: &str, provider: &str) -> Self {
+        self.account = Some(account.to_owned());
+        self.provider = Some(provider.to_owned());
+        self
     }
     pub fn emit(&self, kind: impl Into<String>, text: impl AsRef<str>) -> std::io::Result<()> {
         self.flush_text_delta()?;
@@ -66,8 +75,8 @@ impl FeedWriter {
                 .as_millis() as u64,
             pane: self.pane.clone(),
             conversation: None,
-            account: None,
-            provider: None,
+            account: self.account.clone(),
+            provider: self.provider.clone(),
             kind,
             text,
         };

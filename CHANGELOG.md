@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-07e
+
+- Raised the delegated-worker safety ceiling from three to twelve; resource admission still
+  limits concurrent execution.
+- Worker status rows are carved last so the live worker strip stays directly above the composer.
+- Codex capability notices are filtered at the native progress boundary, and injected test
+  launchers no longer get routed into the real app-server protocol.
+- Restored the image transport integration path by keeping diagnostic exec launchers on the
+  stream protocol while real Codex retains native question popups.
+
 ## 2026-11-07d
 
 - Pickers, footers, usage, turn summaries and flash messages show `·`, `—` and arrows again

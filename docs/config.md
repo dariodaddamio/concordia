@@ -181,7 +181,7 @@ default = "ask"          # plan | ask | workspace | full
 
 [delegation]
 protocol = false         # let the orchestrator propose delegations (you still approve)
-max_workers = 3          # 1..=3
+max_workers = 12         # 1..=12
 
 [turn]
 idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables it
@@ -205,7 +205,7 @@ idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables 
 | `threads.mcp` | `false` | Registers the `concordia mcp` server in those homes; `false` removes the entry (see [mcp.md](mcp.md)) |
 | `mode.default` | `"ask"` | Anything else falls back to `ask` |
 | `delegation.protocol` | `false` | Same switch as `/delegate protocol on|off` |
-| `delegation.max_workers` | `3` | 0 becomes 1, above 3 becomes 3 |
+| `delegation.max_workers` | `12` | 0 becomes 1, above 12 becomes 12 |
 | `turn.idle_timeout_minutes` | `10` | Notification interval for provider stdout/stderr silence; `0` disables notifications. |
 
 ### Themes and custom colors
@@ -305,7 +305,8 @@ there wins:
 - Permission mode: `[mode] default` applies only until a mode has been saved (first launch). After
   that `/mode` and Shift+Tab own it.
 - Delegation protocol: `/delegate protocol on|off` writes the store; until you use it, the config value applies.
-- `max_workers` is a cap on worker enrollment inside `/delegate`; it is not stored.
+- `max_workers` is a cap on worker enrollment inside `/delegate`; it is not stored. The default
+  and safety ceiling are 12; resource admission may still limit concurrent execution.
 
 Worker execution also applies a deterministic host-resource budget: one active worker per 8 GiB
 of free RAM, capped at one quarter of logical cores (minimum one). Provider child processes get

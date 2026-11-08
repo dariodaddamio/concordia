@@ -542,9 +542,14 @@ async fn run_provider_turn_inner(
         }
     }
     // codex exec has no response channel for request_user_input; the app-server transport does.
+    // Only an interactive owner can answer, so ownerless (worker) turns stay on exec.
     if mode == crate::native_input::Mode::CodexAppServer
         || (req.provider == ProviderKind::Codex
             && mode == crate::native_input::Mode::Standard
+            && owner.is_some()
+            // Test/diagnostic launchers speak the exec stream contract, not Codex app-server.
+            // Keep them on the stream path; real Codex uses the native popup transport.
+            && std::env::var_os("CONCORDIA_CODEX_BIN").is_none()
             && crate::config::ui_question_popups())
     {
         return appserver::run(req, &plan, owner, on_started, on_progress).await;

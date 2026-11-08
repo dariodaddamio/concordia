@@ -1,6 +1,11 @@
 # Feature completion audit: 2026-11-05c
 
 The full roadmap is **not complete**. The current board has seven grouped open/deferred workstreams;
+
+Current follow-up (2026-11-07e): the delegated-worker ceiling is now 12 instead of 3, and the
+worker strip is carved directly above the composer. Image-preview behavior remains under active
+repair; local rendering is separate from unverified provider-side image processing. The installed
+2026-11-07d build does not contain these follow-ups yet.
 they mix missing capabilities, qualification and release work, so they are not a feature count
 or a percentage of completion:
 

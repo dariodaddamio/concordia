@@ -3,7 +3,7 @@
 //! The server is intentionally small and stateless.  The parent turn owns the loopback endpoint;
 //! this process only validates MCP input and forwards one bounded request at a time.
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::net::TcpListener;
@@ -15,6 +15,46 @@ const MAX_OPTIONS: usize = 8;
 const MAX_TEXT: usize = 2_000;
 const ENDPOINT_ENV: &str = "CONCORDIA_ASK_ENDPOINT";
 const TOKEN_ENV: &str = "CONCORDIA_ASK_TOKEN";
+/// Cursor's MCP client keeps the tool call open while the user thinks; the turn's own cancellation
+/// ends the wait earlier.
+const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+pub const DISMISSED: &str = "The user dismissed the question without answering.";
+
+/// Turns a native question answer (selected option ids) back into the labels the agent offered.
+pub fn answer_text(questions: &[Value], answer: &Value) -> String {
+    let outcome = &answer["outcome"];
+    if outcome["outcome"] != "answered" {
+        return DISMISSED.into();
+    }
+    let mut text = String::new();
+    for (i, question) in questions.iter().enumerate() {
+        let id = format!("question-{i}");
+        let selected = outcome["answers"]
+            .as_array()
+            .and_then(|answers| answers.iter().find(|a| a["questionId"] == id.as_str()))
+            .and_then(|a| a["selectedOptionIds"].as_array())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| {
+                        let j: usize = id.as_str()?.rsplit('-').next()?.parse().ok()?;
+                        question["options"].get(j)?.as_str()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let selected = if selected.is_empty() {
+            "(no answer)"
+        } else {
+            &selected
+        };
+        text.push_str(&format!(
+            "Q: {}\nA: {selected}\n",
+            question["question"].as_str().unwrap_or("")
+        ));
+    }
+    text
+}
 
 pub struct BridgeRequest {
     pub questions: Value,
@@ -63,12 +103,11 @@ pub async fn spawn_listener(
                 {
                     return;
                 }
-                let answer =
-                    tokio::time::timeout(std::time::Duration::from_secs(120), answer_rx).await;
-                let value = answer
+                let value = tokio::time::timeout(ANSWER_WAIT, answer_rx)
+                    .await
                     .ok()
                     .and_then(Result::ok)
-                    .unwrap_or_else(|| json!({"error":"the user dismissed the question"}));
+                    .unwrap_or_else(|| json!(DISMISSED));
                 let _ = writer.write_all(value.to_string().as_bytes()).await;
                 let _ = writer.write_all(b"\n").await;
             });
@@ -134,9 +173,7 @@ fn forward(args: &Value) -> Result<String, String> {
         .map_err(|_| "Concordia question bridge token is unavailable".to_owned())?;
     let mut stream = TcpStream::connect(endpoint)
         .map_err(|_| "Concordia turn is no longer running".to_owned())?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(120)))
-        .ok();
+    stream.set_read_timeout(Some(ANSWER_WAIT)).ok();
     let body = json!({"token":token,"questions":args["questions"]}).to_string();
     stream
         .write_all(body.as_bytes())
@@ -145,8 +182,7 @@ fn forward(args: &Value) -> Result<String, String> {
         .write_all(b"\n")
         .map_err(|_| "Concordia turn closed the question bridge".to_owned())?;
     let mut response = Vec::new();
-    BufReader::new(stream)
-        .take(MAX_REQUEST_BYTES as u64 + 1)
+    BufReader::new(stream.take(MAX_REQUEST_BYTES as u64 + 1))
         .read_until(b'\n', &mut response)
         .map_err(|_| "invalid response from Concordia turn".to_owned())?;
     if response.len() > MAX_REQUEST_BYTES {
@@ -154,7 +190,10 @@ fn forward(args: &Value) -> Result<String, String> {
     }
     let value: Value = serde_json::from_slice(&response)
         .map_err(|_| "invalid response from Concordia turn".to_owned())?;
-    Ok(value.to_string())
+    Ok(value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string()))
 }
 
 pub fn handle_line(line: &str) -> Option<String> {
@@ -221,6 +260,26 @@ mod tests {
         assert_eq!(v["result"]["tools"].as_array().unwrap().len(), 1);
         assert_eq!(v["result"]["tools"][0]["name"], "ask_user");
     }
+    #[test]
+    fn answers_come_back_as_the_offered_labels() {
+        let questions = vec![
+            json!({"question":"Database?","options":["Postgres","SQLite"]}),
+            json!({"question":"Features?","options":["Auth","Billing","Search"],"multiple":true}),
+        ];
+        let answer = json!({"outcome":{"outcome":"answered","answers":[
+            {"questionId":"question-0","selectedOptionIds":["option-0-1"]},
+            {"questionId":"question-1","selectedOptionIds":["option-1-0","option-1-2"]}
+        ]}});
+        assert_eq!(
+            answer_text(&questions, &answer),
+            "Q: Database?\nA: SQLite\nQ: Features?\nA: Auth, Search\n"
+        );
+        assert_eq!(
+            answer_text(&questions, &json!({"outcome":{"outcome":"cancelled"}})),
+            DISMISSED
+        );
+    }
+
     #[test]
     fn rejects_oversized_input() {
         assert!(handle_line(&"x".repeat(MAX_REQUEST_BYTES + 1))

@@ -11,8 +11,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Hard ceiling on delegated workers (the store and `/workers add` enforce it too).
-pub const MAX_WORKERS_CAP: usize = 3;
+/// Safety ceiling on delegated workers (the store and `/workers add` enforce it too).
+/// The previous three-worker limit was an arbitrary product restriction; resource admission
+/// still controls how many jobs can run concurrently.
+pub const MAX_WORKERS_CAP: usize = 12;
 pub const MAP_CHARS_RANGE: std::ops::RangeInclusive<i64> = 200..=8000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -786,7 +788,7 @@ mod tests {
         assert_eq!(c.threads.map_chars, 1600);
         assert_eq!(c.mode.default, TrustMode::Ask);
         assert!(!c.delegation.protocol);
-        assert_eq!(c.delegation.max_workers, 3);
+        assert_eq!(c.delegation.max_workers, 12);
     }
 
     #[test]
@@ -921,8 +923,8 @@ max_workers = 2
         let (c, warn) = w("[delegation]\nmax_workers = 0\n");
         assert_eq!(c.delegation.max_workers, 1);
         assert_eq!(warn.len(), 1);
-        let (c, warn) = w("[delegation]\nmax_workers = 9\n");
-        assert_eq!(c.delegation.max_workers, 3);
+        let (c, warn) = w("[delegation]\nmax_workers = 99\n");
+        assert_eq!(c.delegation.max_workers, 12);
         assert_eq!(warn.len(), 1);
         let (c, warn) = w("[ui]\ntips = \"yes\"\n[threads]\nmap_chars = \"big\"\n");
         assert!(c.ui.tips);

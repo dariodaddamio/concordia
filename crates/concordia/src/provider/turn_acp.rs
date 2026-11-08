@@ -36,7 +36,10 @@ impl Connection {
             let mut bytes = Vec::new();
             let next = tokio::select! {
                 _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
-                Some(request)=self.bridge_rx.recv()=>self.bridge_request(request).await?,
+                Some(request)=self.bridge_rx.recv()=>{
+                    self.bridge_request(request).await?;
+                    continue;
+                }
                 next=read_line_bounded(&mut self.output,&mut bytes)=>next,
             };
             let received = next?;
@@ -78,13 +81,13 @@ impl Connection {
         }
     }
     async fn bridge_request(&mut self, request: crate::ask_bridge::BridgeRequest) -> Result<()> {
-        let Some(session) = self.session_id.as_deref() else {
-            let _ = request
-                .answer
-                .send(json!({"error":"the user dismissed the question"}));
+        let Some(session) = self.session_id.clone() else {
+            let _ = request.answer.send(json!(crate::ask_bridge::DISMISSED));
             return Ok(());
         };
+        let session = session.as_str();
         let Some(questions) = request.questions.as_array() else {
+            let _ = request.answer.send(json!(crate::ask_bridge::DISMISSED));
             return Ok(());
         };
         let native = json!({"sessionId":session,"toolCallId":"concordia-ask-user","prompt":"The agent needs a decision","questions":questions.iter().enumerate().map(|(i,q)| json!({"id":format!("question-{i}"),"prompt":q["question"],"options":q["options"].as_array().unwrap_or(&Vec::new()).iter().enumerate().map(|(j,o)| json!({"id":format!("option-{i}-{j}"),"label":o})).collect::<Vec<_>>(),"allowMultiple":q["multiple"].as_bool().unwrap_or(false)})).collect::<Vec<_>>() });
@@ -100,11 +103,17 @@ impl Connection {
         if let Some(tx) = &self.progress {
             let _ = tx.send(TurnProgress::Interaction(Box::new(native_request.clone())));
         }
-        let answer = rx
-            .await
-            .unwrap_or_else(|_| json!({"outcome":{"outcome":"cancelled"}}));
+        let answer = tokio::select! {
+            _ = self.handle.wake.notified() => {
+                native_request.invalidate();
+                let _ = request.answer.send(json!(crate::ask_bridge::DISMISSED));
+                anyhow::bail!("cancelled");
+            }
+            answer = rx => answer.unwrap_or_else(|_| json!({"outcome":{"outcome":"cancelled"}})),
+        };
         native_request.invalidate();
-        let _ = request.answer.send(answer);
+        let text = crate::ask_bridge::answer_text(questions, &answer);
+        let _ = request.answer.send(json!(text));
         Ok(())
     }
     async fn request(&mut self, value: &Value) -> Result<()> {

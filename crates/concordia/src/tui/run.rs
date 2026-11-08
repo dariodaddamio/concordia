@@ -206,7 +206,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     .draw(|f| {
                         raster::begin_frame(&app);
                         draw_ui(f, &mut *app);
-                        if crate::config::for_root(&app.state_root).feed.screen {
+                        if crate::config::get().feed.screen {
                             let area = f.area();
                             for y in area.top()..area.bottom() {
                                 for x in area.left()..area.right() {
@@ -234,7 +234,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 };
                 drawn?;
                 ended?;
-                if !screen_text.is_empty() && crate::config::for_root(&app.state_root).feed.screen {
+                if !screen_text.is_empty() && crate::config::get().feed.screen {
                     let writer = crate::feed::FeedWriter::new(
                         &app.state_root,
                         app.thread_id().unwrap_or("main"),

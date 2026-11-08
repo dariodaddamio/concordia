@@ -1146,6 +1146,7 @@ impl App {
         self.run_line(dispatch, turn_tx);
         if !was_busy && self.busy && self.submitted_prompt.is_some() {
             self.submitted_prompt = Some(original_prompt);
+            let _ = self.feed().emit("turn_start", "");
         }
     }
 

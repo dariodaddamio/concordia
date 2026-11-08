@@ -362,5 +362,18 @@ fn is_cli_noise(line: &str) -> bool {
         || l.starts_with("ignoring unknown features requirement")
 }
 
+/// A provider may coalesce several informational stderr lines into one progress error.
+/// Treat the block as noise only when every non-empty line is known chatter.
+pub(super) fn is_cli_noise_block(text: &str) -> bool {
+    let mut any = false;
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        any = true;
+        if !is_cli_noise(line) {
+            return false;
+        }
+    }
+    any
+}
+
 #[cfg(test)]
 mod screenshots;
