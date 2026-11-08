@@ -126,6 +126,7 @@ pub(crate) enum TabAction {
     Unhandled,
     New,
     Close,
+    CloseAt(usize),
     Reopen,
     Next,
     Previous,

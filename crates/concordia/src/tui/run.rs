@@ -316,7 +316,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 if let Some(index) = app.tab_hits.iter().position(|r| {
                                     r.contains(ratatui::layout::Position::new(m.column, m.row))
                                 }) {
-                                    tab_action = tabs::TabAction::Select(index + 1);
+                                    if app.tab_close_hits.get(index).is_some_and(|r| {
+                                        r.contains(ratatui::layout::Position::new(m.column, m.row))
+                                    }) {
+                                        tab_action = tabs::TabAction::CloseAt(index);
+                                    } else {
+                                        tab_action = tabs::TabAction::Select(index + 1);
+                                    }
                                     break;
                                 }
                             }
@@ -427,6 +433,26 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     tabs.active_mut().app.flash("This is the last tab.");
                     dirty = true;
                 }
+                tabs::TabAction::CloseAt(index) if tabs.has_multiple() => {
+                    tabs.select_number(index + 1);
+                    let confirmed =
+                        close_armed.is_some_and(|at| at.elapsed() < Duration::from_secs(3));
+                    if tabs.needs_close_confirmation() && !confirmed {
+                        close_armed = Some(Instant::now());
+                        tabs.active_mut().app.flash(
+                            "This tab has a running turn or unsent draft. Click × again to close.",
+                        );
+                    } else {
+                        tabs.active_mut().shut_down();
+                        tabs.close(true);
+                        close_armed = None;
+                    }
+                    dirty = true;
+                }
+                tabs::TabAction::CloseAt(_) => {
+                    tabs.active_mut().app.flash("This is the last tab.");
+                    dirty = true;
+                }
                 tabs::TabAction::Reopen => {
                     if !tabs.reopen() {
                         tabs.active_mut().app.flash("No closed tab to reopen.");
@@ -455,6 +481,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     progress_tx,
                     progress_rx,
                 } = tab;
+                if app.worker_panel_explicit.is_none() && app.deleg.d.any_active() {
+                    app.worker_panel_open = true;
+                }
                 while let Ok(h) = handle_rx.try_recv() {
                     app.accept_cancel_handle(h);
                     dirty = true;
