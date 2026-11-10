@@ -8,7 +8,7 @@ pub mod interaction;
 pub mod launch;
 pub(crate) mod npm;
 pub mod recording;
-mod session_guard;
+pub(crate) mod session_guard;
 pub mod stream_cards;
 pub mod stream_json;
 pub mod turn;

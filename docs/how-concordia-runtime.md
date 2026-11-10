@@ -72,13 +72,13 @@ Execution happens only for a reviewed `/harness`/integration action:
   manifest.
 
 Source:
-[`harness/command.rs` (`connect_in`, `verify_in`, `tools_cmd`,
-`connect_selected`)](../crates/concordia/src/harness/command.rs) and
+[`harness/command.rs` (`connect_in`, `verify_in`, `tools_cmd`)](../crates/concordia/src/harness/command.rs) and
 [`tui/integrations.rs` (`review`, `start_action`)](../crates/concordia/src/tui/integrations.rs).
 
 The runner passes an argument array without a shell, closes stdin, clears the environment, restores
-only a small platform/PATH set plus manifest-allowlisted names, caps stdout and stderr at 64 KiB
-each, and kills the tracked process tree after 60 seconds or cancellation. Source:
+only a small platform/PATH set plus manifest-allowlisted names, caps combined stdout and stderr at 64 KiB with an explicit failure on overflow, and kills the
+tracked process tree after 60 seconds or cancellation. Placeholder replacement is single-pass, so
+placeholder-shaped text inside an inserted path stays literal data. Source:
 [`harness/run.rs` (`DEFAULT_TIMEOUT`, `MAX_OUTPUT`, `run_command_cancellable`)](../crates/concordia/src/harness/run.rs).
 
 Harness tools never become an autonomous in-process plugin runtime. Catalog discovery never grants

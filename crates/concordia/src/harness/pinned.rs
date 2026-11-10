@@ -1,25 +1,22 @@
 //! Exact rules supplied by explicitly connected file-backed harness manifests.
-use super::{connections, parse_manifest, Manifest};
+#[cfg(test)]
+use super::parse_manifest;
+use super::{connections, Manifest};
 use crate::store::ProviderKind;
+#[cfg(test)]
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, fs::File, io::Read, path::Path};
+use std::{collections::HashSet, path::Path};
 
 pub(super) fn manifest_at(path: &Path, expected: &str) -> Result<Manifest, String> {
-    let file = File::open(path)
-        .map_err(|_| "pinned-decision manifest is unavailable; reconnect the harness")?;
-    let mut bytes = Vec::new();
-    file.take(256 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > 256 * 1024 || format!("{:x}", Sha256::digest(&bytes)) != expected {
+    let selection = path
+        .to_str()
+        .ok_or("pinned-decision manifest path is not UTF-8")?;
+    let (manifest, digest, _) =
+        super::command::load_local_manifest_for_action(selection, Path::new("."))?;
+    if digest != expected {
         return Err("pinned-decision manifest changed; reconnect the harness before starting a new native session".into());
     }
-    let text =
-        std::str::from_utf8(&bytes).map_err(|_| "pinned decisions require a UTF-8 manifest")?;
-    parse_manifest(
-        text,
-        path.parent().ok_or("manifest directory is unavailable")?,
-    )
+    Ok(manifest)
 }
 
 pub fn for_new_session(

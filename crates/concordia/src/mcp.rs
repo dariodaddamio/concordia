@@ -214,9 +214,10 @@ fn tool_list() -> Value {
         },
         {
             "name": "thread_read",
-            "description": "Read parts of a thread. Prefer tail or grep over the whole text.",
+            "description": "Read one bounded page; follow cursor. Prefer tail/grep.",
             "inputSchema": {"type":"object","properties":{
                 "id":id,
+                "cursor":{"type":"string","description":"Next-page cursor"},
                 "tail":{"type":"integer"},
                 "grep":{"type":"string"},
                 "range":{"type":"string","description":"A-B"},
@@ -299,6 +300,9 @@ fn tool_list() -> Value {
 
 fn text_result(text: String, is_error: bool) -> Value {
     let redacted = crate::redact::redact(&text);
+    if redacted.chars().count() > MAX_RESULT_CHARS && serde_json::from_str::<Value>(&text).is_ok() {
+        return json!({"content":[{"type":"text","text":"Structured result exceeds the response budget; request a smaller page or narrow the query."}],"isError":true});
+    }
     let changed = redacted.as_ref() != text;
     let mut result = json!({"content":[{"type":"text","text":cap(redacted.as_ref(), MAX_RESULT_CHARS)}],"isError":is_error});
     if changed {
@@ -813,125 +817,67 @@ fn tool_threads(state_root: &Path, limit: Option<usize>, scope: &Scope) -> Strin
         .join("\n")
 }
 
-fn resolve(state_root: &Path, args: &Value) -> Result<(String, Vec<threads::ThreadEvent>), String> {
+fn tool_thread_map(state_root: &Path, args: &Value) -> Result<String, String> {
     let prefix = str_arg(args, "id").ok_or("missing id")?;
     let id = threads::resolve_prefix(state_root, prefix).map_err(|e| e.to_string())?;
-    let events = threads::ThreadLog::open(state_root, &id)
-        .read_all()
-        .map_err(|e| format!("{e:#}"))?;
-    Ok((id, events))
-}
-
-fn tool_thread_map(state_root: &Path, args: &Value) -> Result<String, String> {
-    let (id, events) = resolve(state_root, args)?;
     let cap = crate::config::for_root(state_root).threads.map_chars;
-    Ok(threads::build_map(&events, &id, cap, true))
+    threads::ThreadLog::open(state_root, &id)
+        .read_map(cap)
+        .map_err(|error| format!("{error:#}"))
 }
 
 fn tool_thread_read(state_root: &Path, args: &Value) -> Result<String, String> {
-    let (_, events) = resolve(state_root, args)?;
-    let range = match str_arg(args, "range") {
-        Some(r) => Some(threads::parse_range(r).map_err(|e| e.to_string())?),
-        None => None,
-    };
-    let opts = threads::ReadOpts {
-        tail: uint_arg(args, "tail"),
-        grep: str_arg(args, "grep")
-            .filter(|g| !g.is_empty())
-            .map(str::to_string),
-        range,
-        max_chars: uint_arg(args, "max_chars")
+    let id = str_arg(args, "id").ok_or("missing id")?;
+    let mut command = vec!["read".into(), id.into()];
+    for key in ["cursor", "grep", "range"] {
+        if let Some(value) = str_arg(args, key) {
+            command.extend([format!("--{key}"), value.into()]);
+        }
+    }
+    if let Some(tail) = uint_arg(args, "tail") {
+        command.extend(["--tail".into(), tail.to_string()]);
+    }
+    command.extend([
+        "--max-chars".into(),
+        uint_arg(args, "max_chars")
             .unwrap_or(DEFAULT_READ_CHARS)
-            .clamp(200, MAX_RESULT_CHARS),
-    };
-    Ok(threads::read_events_text(&events, &opts))
+            .clamp(200, MAX_RESULT_CHARS)
+            .to_string(),
+    ]);
+    threads::run_cli(state_root, &command).map_err(|(error, _)| error)
 }
 
 /// Cached readings only. Never starts a refresh or infers an account from an unbound legacy file.
 fn tool_usage(state_root: &Path, scope: &Scope) -> String {
-    let dir = state_root.join("usage-cache");
-    let mut rows: Vec<String> = Vec::new();
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .map(|rd| rd.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
-    files.sort();
-    for path in files {
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(account) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !scope.unrestricted && account != scope.account {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        let now = threads::now_secs();
-        let fetched_at = v.get("fetched_at").and_then(Value::as_u64);
-        let (freshness, age) = match fetched_at.filter(|at| *at <= now) {
-            Some(at) => {
-                let seconds = now.saturating_sub(at);
-                let freshness = if seconds < crate::usage::USAGE_TTL_SECS {
-                    "recent cache"
-                } else {
-                    "stale cache"
-                };
-                (freshness, threads::age_label(at))
-            }
-            None => ("cache age unknown", "age unknown".to_string()),
-        };
-        let identity = v.get("identity");
-        let bound = identity.and_then(|i| {
-            if i.get("home")?.as_str()?.is_empty() {
-                return None;
-            }
+    let rows: Vec<String> = crate::accounts::list_all_accounts(state_root)
+        .into_iter()
+        .filter(|account| scope.unrestricted || account.account == scope.account)
+        .filter_map(|account| {
+            let home = account.home_path?;
+            let cached = crate::usage::cached_usage_view(
+                state_root,
+                account.provider,
+                &account.account,
+                &home,
+            )?;
+            let freshness = if cached.fresh {
+                "recent cache"
+            } else {
+                "stale cache"
+            };
+            let age = threads::age_label(cached.observed_at);
+            let windows = if cached.windows.is_empty() {
+                "no limits reported".into()
+            } else {
+                cached.windows.join("; ")
+            };
             Some(format!(
-                "{} account {}",
-                i.get("provider")?.as_str()?,
-                i.get("account")?.as_str()?
+                "{} account {} [{freshness}, read {age}]: {windows}",
+                account.provider.as_str(),
+                account.account
             ))
-        });
-        let who = bound.unwrap_or_else(|| format!("identity unknown (legacy cache {account})"));
-        let windows: Vec<String> = v
-            .get("windows")
-            .and_then(Value::as_array)
-            .map(|ws| {
-                ws.iter()
-                    .filter_map(|w| {
-                        let label = w.get("label")?.as_str()?;
-                        let used = w.get("used_pct")?.as_f64()?.clamp(0.0, 100.0);
-                        let reset = w.get("resets").and_then(Value::as_str);
-                        if reset.is_some_and(|r| r.starts_with("already reset")) {
-                            return Some(format!(
-                                "{label} reset since report (current usage unknown)"
-                            ));
-                        }
-                        let resets = reset.map(|r| format!(", resets {r}")).unwrap_or_default();
-                        Some(format!(
-                            "{label} {:.0}% left ({:.0}% used{resets})",
-                            100.0 - used,
-                            used
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if windows.is_empty() {
-            rows.push(format!(
-                "{who} [{freshness}, read {age}]: no limits reported"
-            ));
-        } else {
-            rows.push(format!(
-                "{who} [{freshness}, read {age}]: {}",
-                windows.join("; ")
-            ));
-        }
-    }
+        })
+        .collect();
     if rows.is_empty() {
         "no cached usage readings (cache only; Concordia does not refresh from MCP)".into()
     } else {
@@ -1540,67 +1486,136 @@ mod tests {
         assert_eq!(r["error"]["code"], -32602);
     }
 
+    fn seeded_usage_cache(
+        root: &Path,
+        provider: crate::store::ProviderKind,
+        account: &str,
+        fetched_at: u64,
+        windows: Value,
+    ) -> PathBuf {
+        let home = root.join("usage-fixture-homes").join(account);
+        std::fs::create_dir_all(&home).unwrap();
+        crate::store::upsert_stored_account(
+            root,
+            crate::store::StoredAccount {
+                id: account.into(),
+                provider,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: account.into(),
+                created_at: "fixture".into(),
+            },
+        )
+        .unwrap();
+        let mut fetcher = crate::usage::UsageFetcher::with_runner(
+            root.into(),
+            std::sync::Arc::new(|_| Ok("Current session: 1% used".into())),
+        )
+        .with_cursor_runner(std::sync::Arc::new(|_| {
+            Ok("Usage ? Fixture\nIncluded 1% used".into())
+        }))
+        .with_codex_runner(std::sync::Arc::new(|_| {
+            Ok(r#"{"rate_limits":{"primary":{"used_percent":1,"window_minutes":300}}}"#.into())
+        }));
+        fetcher.snapshot(provider, account, &home);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while crate::usage::peek_cached_usage(root, provider, account, &home).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "synthetic usage fixture did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            fetcher.poll();
+        }
+        let path = std::fs::read_dir(root.join("usage-cache"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                std::fs::read(path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|value| value["identity"]["account"] == account)
+            })
+            .unwrap();
+        let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["fetched_at"] = json!(fetched_at);
+        value["windows"] = windows;
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        path
+    }
+
     #[test]
     fn usage_reads_only_the_cache() {
         let d = tempfile::tempdir().unwrap();
         let (m, err) = tool(d.path(), "usage", json!({}));
         assert!(!err && m.contains("no cached usage"));
+        seeded_usage_cache(
+            d.path(),
+            crate::store::ProviderKind::Claude,
+            "claude-2",
+            threads::now_secs(),
+            json!([
+            {"label":"5h","used_pct":41.0,"resets":"3h"},
+            {"label":"7d","used_pct":10.0,"resets":null}]),
+        );
         let dir = d.path().join("usage-cache");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("claude-2.json"),
-            json!({"fetched_at": threads::now_secs(), "windows":[
-                {"label":"5h","used_pct":41.0,"resets":"3h"},
-                {"label":"7d","used_pct":10.0,"resets":null}]})
-            .to_string(),
-        )
-        .unwrap();
         std::fs::write(dir.join("broken.json"), "{").unwrap();
+        let before: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| (entry.path(), std::fs::read(entry.path()).unwrap()))
+            .collect();
         let (m, _) = tool(d.path(), "usage", json!({}));
+        assert!(m.contains("claude account claude-2 [recent cache"), "{m}");
         assert!(
-            m.contains("identity unknown (legacy cache claude-2) [recent cache"),
+            m.contains("59% left")
+                && m.contains("41% used")
+                && m.contains("7d")
+                && m.contains("90% left"),
             "{m}"
         );
-        assert!(m.contains("5h 59% left (41% used, resets 3h)") && m.contains("7d 90% left"));
         assert!(!m.contains("broken"));
+        for (path, bytes) in before {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
     }
 
     #[test]
     fn usage_labels_bound_identity_freshness_and_expired_windows_without_refreshing() {
         let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join("usage-cache");
-        std::fs::create_dir_all(&dir).unwrap();
         let now = threads::now_secs();
-        std::fs::write(
-            dir.join("recent.json"),
-            json!({
-                "fetched_at": now,
-                "identity":{"account":"claude-personal","provider":"claude","home":"/synthetic/claude-personal"},
-                "windows":[{"label":"5h","used_pct":88.0,"resets":"already reset (chat to refresh)"}]
-            }).to_string(),
-        ).unwrap();
-        std::fs::write(
-            dir.join("old.json"),
-            json!({
-                "fetched_at": now.saturating_sub(crate::usage::USAGE_TTL_SECS + 60),
-                "identity":{"account":"cursor-work","provider":"cursor","home":"/synthetic/cursor-work"},
-                "windows":[{"label":"Included","used_pct":27.0,"resets":null}]
-            }).to_string(),
-        ).unwrap();
+        seeded_usage_cache(
+            d.path(),
+            crate::store::ProviderKind::Claude,
+            "claude-personal",
+            now,
+            json!([{"label":"5h","used_pct":88.0,"resets":"already reset (chat to refresh)"}]),
+        );
+        seeded_usage_cache(
+            d.path(),
+            crate::store::ProviderKind::Cursor,
+            "cursor-work",
+            now.saturating_sub(crate::usage::USAGE_TTL_SECS + 60),
+            json!([{"label":"Included","used_pct":27.0,"resets":null}]),
+        );
+        seeded_usage_cache(
+            d.path(),
+            crate::store::ProviderKind::Codex,
+            "codex-test",
+            now.saturating_add(60),
+            json!([{"label":"7d","used_pct":12.0,"resets":null}]),
+        );
+        let dir = d.path().join("usage-cache");
         std::fs::write(
             dir.join("legacy.json"),
             json!({"windows":[{"label":"7d","used_pct":4.0,"resets":null}]}).to_string(),
         )
         .unwrap();
-        std::fs::write(
-            dir.join("future.json"),
-            json!({
-                "fetched_at": now.saturating_add(60),
-                "identity":{"account":"codex-test","provider":"codex","home":"/synthetic/codex-test"},
-                "windows":[{"label":"7d","used_pct":12.0,"resets":null}]
-            }).to_string(),
-        ).unwrap();
-
+        let before: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| (entry.path(), std::fs::read(entry.path()).unwrap()))
+            .collect();
         let (out, err) = tool(d.path(), "usage", json!({}));
         assert!(!err);
         assert!(
@@ -1608,7 +1623,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("5h reset since report (current usage unknown)"),
+            out.contains("current usage unavailable") && out.contains("last reading 88% used"),
             "{out}"
         );
         assert!(!out.contains("5h 12% left"), "{out}");
@@ -1617,19 +1632,21 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("identity unknown (legacy cache legacy) [cache age unknown"),
+            !out.contains("legacy")
+                && !out.contains("codex-test")
+                && !out.contains("7d 96% left")
+                && !out.contains("7d 88% left"),
             "{out}"
         );
-        assert!(
-            out.contains("codex account codex-test [cache age unknown"),
-            "{out}"
-        );
-        assert!(out.contains("7d 96% left"), "{out}");
-        assert!(out.contains("7d 88% left"), "{out}");
-        assert!(
-            std::fs::read_dir(dir).unwrap().count() == 4,
+        assert!(out.contains("73% left"), "{out}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            4,
             "MCP usage must not refresh or write cache data"
         );
+        for (path, bytes) in before {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
     }
 
     #[test]

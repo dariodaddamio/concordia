@@ -8,7 +8,6 @@ pub mod config;
 pub mod connect;
 pub mod context;
 pub(crate) mod context_types;
-pub mod continuity;
 pub mod cursor_usage;
 pub mod delegate;
 pub mod doctor;

@@ -135,9 +135,9 @@ impl App {
         );
     }
 
-    pub(super) fn poll_managed_workspaces(&mut self) {
+    pub(super) fn poll_managed_workspaces(&mut self) -> bool {
         let Some((conversation, cancel, rx)) = &self.managed_workspaces.pending else {
-            return;
+            return false;
         };
         let current = conversation == self.deleg.d.conversation_id();
         if !current {
@@ -145,12 +145,13 @@ impl App {
         }
         let result = match rx.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(_) => Err("managed workspace operation stopped; inspect any reserved creation before reconciliation".into()),
         };
         self.managed_workspaces.pending = None;
         if current {
             self.push_system(result.unwrap_or_else(|error| error));
         }
+        current
     }
 }

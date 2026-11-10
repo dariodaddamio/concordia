@@ -106,6 +106,7 @@ fn setup() -> tempfile::TempDir {
 fn roles_validate_and_persist() {
     let d = setup();
     let r = d.path();
+    std::fs::write(r.join("config.toml"), "[delegation]\nmax_workers = 3\n").unwrap();
     // The orchestrator is never its own worker.
     assert!(add_worker(r, "codex-o", "codex-o")
         .unwrap_err()
@@ -459,7 +460,7 @@ fn one_turn_per_worker_with_a_bounded_queue_and_cancel() {
         );
         for request_id in 0..if number < 3 { 8 } else { 1 } {
             let (request, mut rx) = connection.request("fixture-session", serde_json::json!(request_id), "session/request_permission".into(),
-                serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"allow"}]})).unwrap();
+                serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"allow"}]})).unwrap().unwrap();
             inputs.test_native_input(id, request);
             if number < 3 {
                 responses.push(rx);
@@ -605,7 +606,10 @@ fn workers_report_shows_status_and_last_result() {
     add_worker(r, "codex-o", "codex-w1").unwrap();
     let mut del = Delegates::default();
     let lines = workers_report(r, "codex-o", &del, Instant::now());
-    assert!(lines[0].contains("workers 1/3") && lines[0].contains("protocol off"));
+    assert!(
+        lines[0].contains(&format!("workers 1/{}", crate::config::MAX_WORKERS_CAP))
+            && lines[0].contains("protocol off")
+    );
     assert!(lines[1].contains("idle"));
     let mut j = bare_job(4, "codex-w1", WorkerState::Done);
     j.snippet = "all green".into();

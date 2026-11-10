@@ -21,7 +21,7 @@ models are read from files the CLIs already write. One tracked child process own
 cancellation and recovery never replay uncertain tool actions.
 
 More detail: [continuity](continuity.md), [UI architecture](ui-architecture.md),
-[provider capabilities](capabilities.md), and [provider terms](provider-terms.md).
+[provider capabilities](archive/capabilities.md), and [provider terms](provider-terms.md).
 
 ## Maintainer decisions and roadmap
 

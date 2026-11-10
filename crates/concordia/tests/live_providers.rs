@@ -35,6 +35,16 @@ fn cheap_model(provider: ProviderKind) -> String {
 }
 
 fn mode(provider: ProviderKind) -> Mode {
+    let variable = format!("CONCORDIA_LIVE_{}_MODE", provider.as_str().to_uppercase());
+    if let Ok(value) = std::env::var(variable) {
+        return match (provider, value.as_str()) {
+            (_, "standard") => Mode::Standard,
+            (ProviderKind::Codex, "appserver") => Mode::CodexAppServer,
+            (ProviderKind::Claude, "stdio") => Mode::ClaudeStdio,
+            (ProviderKind::Cursor, "acp") => Mode::CursorAcp,
+            _ => panic!("invalid explicitly selected live transport"),
+        };
+    }
     match provider {
         ProviderKind::Cursor => Mode::CursorAcp,
         ProviderKind::Codex | ProviderKind::Claude => Mode::Standard,
@@ -92,14 +102,18 @@ async fn turn(
     prompt: &str,
     trust: TrustMode,
 ) -> (TurnOutcome, Seen) {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(64);
+    let feed_root = cwd.to_path_buf();
     let seen = tokio::spawn(async move {
+        let feed = concordia::feed::FeedWriter::new(&feed_root, "live-stream", true);
         let mut seen = Seen {
             questions: 0,
             diffs: Vec::new(),
         };
         while let Some(event) = rx.recv().await {
             match event {
+                TurnProgress::TextDelta(text) => feed.emit_text_delta(&text).unwrap(),
+                TurnProgress::Text(text) => feed.emit("text", &text).unwrap(),
                 TurnProgress::Card(card) => {
                     if let Some(detail) = card.detail.filter(|d| d.contains("\n@@")) {
                         seen.diffs.push(detail);
@@ -122,6 +136,7 @@ async fn turn(
                 _ => {}
             }
         }
+        feed.flush_text_delta().unwrap();
         seen
     });
     let model = cheap_model(provider);
@@ -152,6 +167,37 @@ async fn turn(
 
 #[tokio::test]
 #[ignore = "spends real provider usage"]
+async fn every_provider_streams_with_feed_and_finishes() {
+    for (provider, home) in selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (out, _) = turn(
+            provider,
+            &home,
+            dir.path(),
+            "Reply with exactly OK. Do not run tools.",
+            TrustMode::Plan,
+        )
+        .await;
+        std::fs::write(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target").join(format!("roadmap-live-stream-{}.json",provider.as_str())),
+            serde_json::to_vec_pretty(&serde_json::json!({"provider":provider.as_str(),"model":cheap_model(provider),"mode":format!("{:?}",mode(provider)),"failed":out.failed,"exit_code":out.exit_code,"reply":out.text,"stderr":out.stderr_tail})).unwrap(),
+        ).unwrap();
+        assert!(
+            !out.failed && out.exit_code == Some(0),
+            "{provider:?}: exit={:?}; reply={:?}; stderr={}",
+            out.exit_code,
+            out.text,
+            out.stderr_tail
+        );
+        assert!(out.text.contains("OK"), "{provider:?}: {:?}", out.text);
+        assert!(!concordia::feed::read(dir.path(), 0, None)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+#[ignore = "spends real provider usage"]
 async fn every_provider_asks_through_the_popup() {
     for (provider, home) in selected() {
         let dir = tempfile::tempdir().unwrap();
@@ -166,7 +212,28 @@ async fn every_provider_asks_through_the_popup() {
             TrustMode::Ask,
         )
         .await;
-        assert!(!out.failed, "{provider:?}: {}", out.stderr_tail);
+        let artifact = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("live-question-{}.json", provider.as_str()));
+        std::fs::write(
+            artifact,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "provider": provider.as_str(),
+                "model": cheap_model(provider),
+                "failed": out.failed,
+                "exit_code": out.exit_code,
+                "reply": out.text,
+                "stderr": out.stderr_tail,
+                "questions": seen.questions,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !out.failed,
+            "{provider:?}: reply={:?}; stderr={}",
+            out.text, out.stderr_tail
+        );
         assert!(
             seen.questions > 0,
             "{provider:?} asked no popup question: {:?}",

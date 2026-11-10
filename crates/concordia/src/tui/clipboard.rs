@@ -3,60 +3,29 @@
 //!
 //! Under `cfg(test)` an in-memory slot stands in, so tests never touch the user's clipboard.
 
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 /// Run `cmd` (optionally feeding it `input` on stdin) and return its stdout, giving up and
 /// killing it after `timeout`. Stdin is written and stdout read on their own threads so a
 /// full pipe on either side cannot deadlock the wait.
 pub fn run_with_timeout(
-    mut cmd: Command,
+    cmd: Command,
     input: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<Vec<u8>, String> {
-    cmd.stdin(if input.is_some() {
-        Stdio::piped()
+    let output = crate::process_lifetime::capture_with_input(
+        cmd,
+        timeout,
+        16 * 1024 * 1024,
+        input.map(<[u8]>::to_vec),
+    )?;
+    if output.status.success() {
+        Ok(output.stdout)
     } else {
-        Stdio::null()
-    })
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null());
-    let mut child = cmd.spawn().map_err(|e| format!("could not start: {e}"))?;
-
-    if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
-        let data = data.to_vec();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&data);
-            // Dropping stdin closes it, which is the helper's EOF.
-        });
-    }
-    let mut stdout = child.stdout.take().ok_or("no stdout")?;
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
-
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let out = reader.join().unwrap_or_default();
-                return if status.success() {
-                    Ok(out)
-                } else {
-                    Err("the helper reported an error".into())
-                };
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("timed out after {}s", timeout.as_secs().max(1)));
-            }
-            Err(e) => return Err(e.to_string()),
-        }
+        Err("the helper reported an error".into())
     }
 }
 

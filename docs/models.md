@@ -1,22 +1,49 @@
 # Model discovery
 
-Round A uses only local, deterministic discovery. `available` never invokes a provider; `refresh`
-is explicit and writes Concordia's state cache. Provider-written caches are read from every account
-home for that provider, then the embedded catalog is used as a fallback. Duplicate ids retain the
-first source's metadata and priority.
+Model choices come only from the selected account's physical provider home and an explicit CLI list
+captured for that same provider/account/home identity. Concordia neither merges other accounts' model
+caches nor supplies a built-in model catalog. No data produces an empty discovered list; the provider
+default and an explicitly typed ID remain available. A typed ID is a user request, not evidence that
+the provider offers it. Native caches and CLI output retain their reported IDs, including native
+aliases or older-looking names; Concordia does not rename or remove an ID based on its age.
 
-Research performed 2026-11-06 with help/version only:
+`available` performs bounded local reads. Codex model metadata comes from `models_cache.json` using
+its current object `models` array with required `slug`, `display_name` and `visibility` fields.
+Only native `visibility: list` entries enter discovery. Hidden/unknown visibility stays unlisted;
+missing visibility, root arrays, ID aliases and bare-string cache layouts are unsupported.
+Claude choices come from the current native SDK initialize response, not guessed cache filenames.
+Cursor's local config contributes
+only an explicitly stored model ID. It no longer invents `auto` when metadata is absent or invalid.
+An explicitly reported or configured `auto` remains valid native data.
 
-| Provider | CLI/version | Credential-free listing surface | Local cache/catalog |
-| --- | --- | --- | --- |
-| Codex | `codex-cli 0.155.1` | `codex --help` has no `models`/`--list-models` surface | `models_cache.json`; embedded catalog fallback |
-| Claude Code | `2.1.319 (Claude Code)` | `claude --help` has no model-listing command or option | `cache/model-catalog.json` and `cache/additionalModelOptionsCache.json`; embedded catalog fallback |
-| Cursor | `2026.10.22-27dcf5f` | `agent --list-models` is documented and exits after listing; refresh uses it | `cli-config.json` current model; embedded `auto` fallback |
+Cursor's explicit refresh uses its supported `agent models` command, bounded to 30 seconds and 1 MiB
+of combined output with owned process-tree cleanup. Extra account homes use their existing native
+API-key handoff. Without a key, only the real default Cursor home can be refreshed; Concordia does
+not assume an undocumented profile-selection environment variable or query another account instead.
+No model inference is performed to discover choices.
 
-The Cursor list command is the only discovered provider-owned listing command and is run with a
-five-second timeout, hidden through Concordia's process wrapper. It is never run by `available`.
-Catalog entries are intentionally conservative: the Claude entries preserve the prior shipped
-list, Cursor's `auto` is documented by the CLI help, and Codex's current fallback entries are
-`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` (family `GPT-5.6`). Future refresh output or
-provider caches supersede them. `opus`, `sonnet`, and `haiku` remain valid typed
-Claude aliases but are not catalog claims.
+Claude 2.1.319 exposes native model `value` and `displayName` entries through the official SDK
+initialization interface (`initializationResult` / `supportedModels`). Its refresh sends only an
+initialize control frame with an exact request ID and version check; it sends no user message.
+The process receives the selected CLAUDE_CONFIG_DIR, uses bare mode with empty settings sources,
+strict MCP selection and no session persistence, and is bounded to 30 seconds / 1 MiB by the shared
+process owner. Ambient API-key/token overrides are removed. These are CLI-declared choices, not a
+server entitlement or quota check. Concordia neither extracts account details nor turns resolvedModel
+metadata into additional selectable IDs. The obsolete Claude cache-layout readers were removed.
+
+Refresh returns an explicit success/error result. CLI failure, missing/invalid metadata, version
+mismatch, and cache publication failure are visible; they never become a successful refresh of an
+old list. Existing cached rows may remain as previous observations. Codex reads its current native
+cache and labels that operation as a native-cache read. Routing, dependencies, continuation and
+worker controls share the same account/home-bound model read path.
+
+Concordia's list cache is bounded to 4 MiB and published atomically. Its versioned metadata binds the
+exact provider, account and canonical home; filenames also distinguish physical homes. Unbound old
+cache records and records for a rebound home are not accepted or automatically deleted. Refresh
+eligibility uses the validated identity and recorded age; future timestamps are rejected. Cached
+native metadata is an observation, not a guarantee of current server availability.
+
+The former static `assets/models.toml` and its catalog/deprecation UI were removed. Model-tier
+classification remains a separate local routing/display heuristic; it neither creates selectable
+IDs nor establishes price, availability or native context capacity. The selected CLI remains the
+authority on whether an explicit model request succeeds.

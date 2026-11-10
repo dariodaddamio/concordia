@@ -476,7 +476,10 @@ fn auto_advance_waits_for_an_inline_edit_to_be_saved() {
     h.finish_ok();
     assert!(h.sent().is_empty());
     assert_eq!(h.items(), ["second", "third"]);
-    assert_eq!(h.app.queue.edit.as_ref().unwrap().text(), "second revised");
+    assert_eq!(
+        h.app.queue.edit.as_ref().unwrap().editor.text(),
+        "second revised"
+    );
     h.press(KeyCode::Enter);
     h.app.queue_advance(&h.tx);
     assert_eq!(h.sent(), ["second revised"]);
@@ -656,13 +659,14 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
 }
 
 #[test]
-fn a_corrupt_queue_file_is_ignored() {
+fn a_corrupt_queue_file_is_preserved_and_import_reports_error() {
     let mut h = H::new(100, 24);
     std::fs::write(h.root().join("queue.json"), b"{{{").unwrap();
     h.relaunch();
-    h.app.import_legacy_recovery().unwrap();
+    assert!(h.app.import_legacy_recovery().is_err());
     assert!(h.app.queue.items.is_empty());
-    assert!(h.root().join("queue.json.bad").exists());
+    assert_eq!(std::fs::read(h.root().join("queue.json")).unwrap(), b"{{{");
+    assert!(!h.root().join("queue.json.bad").exists());
 }
 
 // ---- undo / redo keys --------------------------------------------------------------------
@@ -768,9 +772,13 @@ fn a_corrupt_draft_file_does_not_crash_launch() {
     let mut h = H::new(80, 24);
     std::fs::write(h.root().join("draft.json"), b"\x00\x01 not json").unwrap();
     h.relaunch();
-    h.app.import_legacy_recovery().unwrap();
+    assert!(h.app.import_legacy_recovery().is_err());
     assert_eq!(h.app.editor.text(), "");
-    assert!(h.root().join("draft.json.bad").exists());
+    assert_eq!(
+        std::fs::read(h.root().join("draft.json")).unwrap(),
+        b"\x00\x01 not json"
+    );
+    assert!(!h.root().join("draft.json.bad").exists());
 }
 
 #[test]

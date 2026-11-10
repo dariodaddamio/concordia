@@ -687,6 +687,7 @@ fn file_focus_does_not_steal_modal_or_queued_edit_input() {
         .edit
         .as_ref()
         .unwrap()
+        .editor
         .text()
         .contains("queued edit"));
     assert_eq!(h.app.editor.text(), "original draft");

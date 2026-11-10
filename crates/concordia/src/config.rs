@@ -161,22 +161,21 @@ impl Theme {
         match self {
             Self::Opifex => crate::theme_library::builtin("opifex")
                 .map(|t| [t.background, t.foreground, t.accent])
-                .unwrap_or([[5, 5, 6], [216, 208, 192], [255, 176, 0]]),
+                .unwrap_or([[0, 0, 0], [216, 208, 192], [255, 176, 0]]),
             Self::Light => crate::theme_library::builtin("light")
                 .map(|t| [t.background, t.foreground, t.accent])
                 .unwrap_or([[247, 247, 244], [36, 40, 47], [28, 86, 180]]),
             Self::Dark => crate::theme_library::builtin("dark")
                 .map(|t| [t.background, t.foreground, t.accent])
                 .unwrap_or([[11, 13, 17], [232, 234, 240], [107, 180, 245]]),
-            Self::Default | Self::Terminal => [[20, 23, 31], [224, 226, 235], [58, 150, 221]],
+            Self::Default | Self::Terminal => [[0, 0, 0], [224, 226, 235], [58, 150, 221]],
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Threads {
-    pub enabled: bool,
-    /// Whether Concordia writes its local thread log; `enabled` is retained as a legacy alias.
+    /// Whether Concordia writes its local thread log.
     pub logging: bool,
     pub map_chars: usize,
     /// Write the awareness block into homes Concordia created (default on).
@@ -215,7 +214,6 @@ impl Default for Config {
                 library_theme: None,
             },
             threads: Threads {
-                enabled: false,
                 logging: false,
                 map_chars: 1600,
                 awareness: true,
@@ -284,7 +282,15 @@ impl Config {
             path: path.clone(),
             exists: false,
         };
-        let raw = match std::fs::read(&path) {
+        use std::io::Read;
+        let raw = match std::fs::File::open(&path).and_then(|file| {
+            let mut raw = Vec::new();
+            file.take(1024 * 1024 + 1).read_to_end(&mut raw)?;
+            if raw.len() > 1024 * 1024 {
+                return Err(std::io::Error::other("config.toml exceeds 1 MiB"));
+            }
+            Ok(raw)
+        }) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
             Err(e) => {
@@ -471,9 +477,6 @@ impl Config {
                     "ui.brand_color" => set_color(v, &full, &mut cfg.ui.brand_color, &mut warnings),
                     "ui.motion" => set_bool(v, &full, &mut cfg.ui.motion, &mut warnings),
                     "ui.question_popups" => set_bool(v, &full, &mut cfg.ui.question_popups, &mut warnings),
-                    "threads.enabled" => {
-                        set_bool(v, &full, &mut cfg.threads.enabled, &mut warnings)
-                    }
                     "threads.logging" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("on") => cfg.threads.logging = true,
                         Some("off") => cfg.threads.logging = false,
@@ -576,17 +579,23 @@ impl Config {
 
     /// Stable TOML for the crew portion of config, useful for editors and round-trip tests.
     pub fn crews_toml(&self) -> String {
+        let quote = |text: &str| {
+            serde_json::to_string(text)
+                .expect("string serialization")
+                .replace('\u{7f}', "\\u007f")
+        };
         let mut out = String::new();
         for (name, crew) in &self.crews {
             out.push_str(&format!(
-                "[crews.{name}]\nlead = {:?}\nworkers = [",
-                crew.lead
+                "[crews.{}]\nlead = {}\nworkers = [",
+                quote(name),
+                quote(&crew.lead)
             ));
             for (i, worker) in crew.workers.iter().enumerate() {
                 if i != 0 {
                     out.push_str(", ");
                 }
-                out.push_str(&format!("{worker:?}"));
+                out.push_str(&quote(worker));
             }
             out.push_str("]\n\n");
         }
@@ -659,39 +668,9 @@ pub fn ui_token_line() -> bool {
     get().ui.token_line
 }
 
-/// Whether idle tips are shown. Wired by stage 1b.
-pub fn ui_tips() -> bool {
-    get().ui.tips
-}
-
-/// Whether the footer shows process memory and CPU (`[ui] stats`).
-pub fn ui_stats() -> bool {
-    get().ui.stats
-}
-
-/// Whether conversations are recorded to `<state>/threads`. Wired by stage 1a.
-pub fn threads_enabled() -> bool {
-    get().threads.enabled || get().threads.logging
-}
-
-/// Whether native-source prompt references are kept for recall across restarts.
-pub fn ui_persist_history() -> bool {
-    get().ui.persist_history
-}
-
 /// Whether provider question requests should be routed to the foreground popup.
 pub fn ui_question_popups() -> bool {
     get().ui.question_popups
-}
-
-/// Size of the `[concordia map]` block in characters. Wired by stage 1a.
-pub fn threads_map_chars() -> usize {
-    get().threads.map_chars
-}
-
-/// Permission mode for a store that has none saved yet.
-pub fn default_mode() -> TrustMode {
-    get().mode.default
 }
 
 /// Config default for the delegation protocol (a value saved in the store wins).
@@ -784,7 +763,7 @@ mod tests {
         let (c, warn) = w("");
         assert_eq!(c, Config::default());
         assert!(warn.is_empty());
-        assert!(c.ui.token_line && c.ui.tips && !c.threads.enabled);
+        assert!(c.ui.token_line && c.ui.tips && !c.threads.logging);
         assert_eq!(c.threads.map_chars, 1600);
         assert_eq!(c.mode.default, TrustMode::Ask);
         assert!(!c.delegation.protocol);
@@ -825,7 +804,7 @@ accent = '#1b5a9e'
 brand_color = '#c9a5ff'
 motion = false
 [threads]
-enabled = true
+logging = "on"
 map_chars = 800
 [mode]
 default = "Full"
@@ -834,7 +813,7 @@ protocol = true
 max_workers = 2
 "#);
         assert!(warn.is_empty(), "{warn:?}");
-        assert!(!c.ui.token_line && !c.ui.tips && c.threads.enabled);
+        assert!(!c.ui.token_line && !c.ui.tips && c.threads.logging);
         assert_eq!(c.ui.theme, Theme::Light);
         assert_eq!(c.ui.background, Some([251, 249, 241]));
         assert_eq!(c.ui.foreground, Some([35, 39, 41]));

@@ -2,7 +2,7 @@
 param([ValidateRange(1, 10)][int]$JourneyPasses = 3)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$evidence = Join-Path $root 'target/overnight-2026-10-31'
+$evidence = Join-Path $root ('target/reliability-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') + '-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $results = New-Object 'System.Collections.Generic.List[object]'
 

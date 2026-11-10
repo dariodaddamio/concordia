@@ -10,11 +10,60 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 /// What a tab must answer before it closes.
 pub(crate) trait TabState {
     fn needs_close_confirmation(&self) -> bool;
+    fn can_evict_closed(&self) -> bool {
+        false
+    }
 }
 
 impl TabState for App {
     fn needs_close_confirmation(&self) -> bool {
-        self.is_busy() || self.has_unsent_work()
+        self.busy
+            || self.local_terminal.running()
+            || self.deleg.d.any_active()
+            || self.deleg.has_pending_prompt()
+            || !self.editor.text().is_empty()
+            || self.composer_images().count() > 0
+            || self.composer_images().importing()
+            || !self.queue.items.is_empty()
+            || self.queue.edit.is_some()
+            || self.rename_editor.is_some()
+            || super::landing::editing_goal(self)
+            || self.questions.waiting()
+            || super::workers::overlay_open(self)
+            || self.workspace.has_unsaved()
+    }
+
+    fn can_evict_closed(&self) -> bool {
+        !self.needs_close_confirmation()
+            && self.preparing_cancel.is_none()
+            && self.cancel_handle.is_none()
+            && !self.cancel_requested
+            && self.job.is_none()
+            && self.picker.is_none()
+            && !self.session_ui.loading()
+            && !self.continuation.waiting()
+            && self.continuation_target.is_none()
+            && !self.keep.turn_recovery_notice
+            && !self.reference_journal.pending()
+            && !self.reference_journal.backlogged()
+            && self.recovery_warning().is_none()
+            && self
+                .parked_draft
+                .as_ref()
+                .is_none_or(|draft| draft.is_empty())
+            && self.hist_draft.is_empty()
+            && self
+                .keep
+                .lease
+                .as_ref()
+                .is_some_and(|lease| matches!(lease.turn(), Ok(None)))
+            && (self.native_session_id.is_some()
+                || !self.messages.iter().any(|message| {
+                    matches!(
+                        message.role,
+                        super::MsgRole::User | super::MsgRole::Assistant
+                    )
+                }))
     }
 }
 
@@ -60,8 +109,30 @@ impl<T: TabState> TabSet<T> {
         let index = self.active;
         let tab = self.tabs.remove(index);
         self.closed.push(tab);
+        self.prune_closed();
         self.active = index.min(self.tabs.len() - 1);
         true
+    }
+
+    /// Keep a small reopen cache of clean conversations. Unsaved or unfinished
+    /// closed tabs stay owned in memory; eviction never deletes native/recovery files.
+    pub(crate) fn prune_closed(&mut self) {
+        let mut clean = self
+            .closed
+            .iter()
+            .filter(|tab| tab.can_evict_closed())
+            .count();
+        if clean <= 8 {
+            return;
+        }
+        self.closed.retain(|tab| {
+            if clean > 8 && tab.can_evict_closed() {
+                clean -= 1;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub(crate) fn reopen(&mut self) -> bool {
@@ -89,22 +160,14 @@ impl<T: TabState> TabSet<T> {
             self.active = number - 1;
         }
     }
-
-    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> TabAction {
-        let action = action_for(key);
-        match action {
-            TabAction::Next => self.next(false),
-            TabAction::Previous => self.next(true),
-            TabAction::Select(n) => self.select_number(n),
-            _ => {}
-        }
-        action
-    }
 }
 
 /// Tab keys, recognised before any other dispatch so pickers and the editor never see them.
 pub(crate) fn action_for(key: KeyEvent) -> TabAction {
-    if key.kind == KeyEventKind::Release || !key.modifiers.contains(KeyModifiers::CONTROL) {
+    if key.kind == KeyEventKind::Release
+        || !key.modifiers.contains(KeyModifiers::CONTROL)
+        || key.modifiers.contains(KeyModifiers::ALT)
+    {
         return TabAction::Unhandled;
     }
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -125,6 +188,8 @@ pub(crate) fn action_for(key: KeyEvent) -> TabAction {
 pub(crate) enum TabAction {
     Unhandled,
     New,
+    Home,
+    BackToChat,
     Close,
     CloseAt(usize),
     Reopen,
@@ -150,11 +215,7 @@ mod tests {
 
     #[test]
     fn ctrl_t_opens_home_tab() {
-        let mut set = TabSet::new(app());
-        assert_eq!(
-            set.handle_key(key('t', KeyModifiers::CONTROL)),
-            TabAction::New
-        );
+        assert_eq!(action_for(key('t', KeyModifiers::CONTROL)), TabAction::New);
     }
     #[test]
     fn ctrl_w_closes_and_asks_only_when_needed() {
@@ -186,7 +247,7 @@ mod tests {
         set.add(app());
         set.tabs[0].busy = true;
         set.next(false);
-        assert!(set.tabs[0].is_busy());
+        assert!(set.tabs[0].busy);
     }
     #[test]
     fn tab_strip_only_with_two_or_more_tabs() {

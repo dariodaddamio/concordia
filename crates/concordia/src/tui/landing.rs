@@ -373,6 +373,24 @@ pub(crate) fn set_hidden_temp_root(app: &mut App, root: PathBuf) {
 }
 
 pub(super) fn open_home(app: &mut App) {
+    app.tab_request = Some(super::tabs::TabAction::Home);
+}
+
+pub(super) fn back_to_chat(app: &mut App) {
+    app.tab_request = Some(super::tabs::TabAction::BackToChat);
+}
+
+/// An unbound conversation can host Home without replacing a saved or running chat.
+pub(super) fn can_host_home(app: &App) -> bool {
+    !app.busy
+        && app.native_session_id.is_none()
+        && !app
+            .messages
+            .iter()
+            .any(|message| matches!(message.role, MsgRole::User | MsgRole::Assistant))
+}
+
+pub(super) fn open_home_tab(app: &mut App) {
     let sessions = list_recent_sessions(&app.state_root, RECENT_CHATS);
     let program = harness_program(&app.state_root);
     open_with_mode(app, sessions, program, true);
@@ -384,7 +402,9 @@ fn open_with_mode(
     program: Option<String>,
     from_chat: bool,
 ) {
+    app.refresh_store_warning();
     let welcome = sessions.is_empty()
+        && app.store_warning.is_none()
         && crate::store::load_store(&app.state_root)
             .accounts
             .is_empty();
@@ -565,32 +585,36 @@ pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
 }
 
 /// Collect open work that arrived from the background reader.
-pub(super) fn poll(app: &mut App) {
+pub(super) fn poll(app: &mut App) -> bool {
     if app.landing.is_none() {
-        return;
+        return false;
     }
     refresh_meters(app);
     let Some(landing) = app.landing.as_mut() else {
-        return;
+        return false;
     };
     let Some(rx) = landing.work_rx.as_ref() else {
-        return;
+        return false;
     };
+    let mut changed = false;
     loop {
         match rx.try_recv() {
-            Ok(work) => landing.work.push(work),
-            Err(mpsc::TryRecvError::Empty) => return,
+            Ok(work) => {
+                landing.work.push(work);
+                changed = true;
+            }
+            Err(mpsc::TryRecvError::Empty) => return changed,
             Err(mpsc::TryRecvError::Disconnected) => {
                 landing.work_rx = None;
-                return;
+                return true;
             }
         }
     }
 }
 
-fn save(app: &mut App) {
+fn save(app: &mut App) -> bool {
     let Some(landing) = app.landing.as_ref() else {
-        return;
+        return false;
     };
     let selected_id = landing
         .open_goals()
@@ -598,6 +622,7 @@ fn save(app: &mut App) {
         .map(|&i| landing.goals[i].id.clone());
     if let Err(e) = save_goals(&app.state_root, &landing.goals) {
         app.flash(format!("goals could not be saved: {e}"));
+        false
     } else {
         let goals = load_goals(&app.state_root);
         let landing = app.landing.as_mut().expect("landing page is open");
@@ -606,6 +631,7 @@ fn save(app: &mut App) {
         landing.goal_sel = selected_id
             .and_then(|id| open.iter().position(|&i| landing.goals[i].id == id))
             .unwrap_or_else(|| landing.goal_sel.min(open.len().saturating_sub(1)));
+        true
     }
 }
 
@@ -618,7 +644,7 @@ fn activate_chat(app: &mut App) {
         Some(ChatRow::Chat(g, s)) => {
             let session = landing.groups[g].sessions[s].clone();
             close(app);
-            app.resume_session(&session.account, &session.session_id);
+            app.request_resume_session(&session.account, &session.session_id);
         }
         Some(ChatRow::Quick(g)) => {
             landing.groups[g].quick_questions = !landing.groups[g].quick_questions
@@ -626,7 +652,7 @@ fn activate_chat(app: &mut App) {
         Some(ChatRow::QuickChat(g, s)) => {
             let session = landing.groups[g].quick_sessions[s].clone();
             close(app);
-            app.resume_session(&session.account, &session.session_id);
+            app.request_resume_session(&session.account, &session.session_id);
         }
         None => {}
     }
@@ -665,7 +691,7 @@ pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Right if visible(app) => {
-            close(app);
+            back_to_chat(app);
             true
         }
         _ => false,
@@ -716,7 +742,11 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                             ..Default::default()
                         });
                         landing.goal_sel = landing.open_goals().len().saturating_sub(1);
-                        save(app);
+                        if !save(app) {
+                            let landing = app.landing.as_mut().expect("goal editor is open");
+                            landing.goals.pop();
+                            landing.mode = Mode::AddGoal(text);
+                        }
                     }
                 }
                 KeyCode::Backspace => {
@@ -750,6 +780,9 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             match key.code {
                 KeyCode::Enter => {
                     let open = landing.open_goals();
+                    let previous = open
+                        .get(landing.goal_sel)
+                        .map(|&index| (index, landing.goals[index].clone(), landing.goal_sel));
                     if let Some(&i) = open.get(landing.goal_sel) {
                         landing.goals[i].done = true;
                         landing.goals[i].closed_at = Some(super::now_stamp());
@@ -759,7 +792,14 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                     landing.goal_sel = landing
                         .goal_sel
                         .min(landing.open_goals().len().saturating_sub(1));
-                    save(app);
+                    if !save(app) {
+                        let landing = app.landing.as_mut().expect("goal confirmation is open");
+                        if let Some((index, goal, selected)) = previous {
+                            landing.goals[index] = goal;
+                            landing.goal_sel = selected;
+                        }
+                        landing.mode = Mode::ConfirmDone;
+                    }
                 }
                 KeyCode::Esc => landing.mode = Mode::Browse,
                 _ => return true,
@@ -799,7 +839,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     let rows = landing.rows().len();
     let goals = landing.open_goals().len();
     match (key.code, landing.pane) {
-        (KeyCode::Esc, _) => close(app),
+        (KeyCode::Esc, _) => back_to_chat(app),
         (KeyCode::Tab | KeyCode::BackTab, Pane::Chats) => set_pane(app, Pane::Goals),
         (KeyCode::Tab | KeyCode::BackTab, Pane::Goals) => set_pane(app, Pane::Chats),
         (KeyCode::Up, Pane::Chats) => landing.chat_sel = previous(landing.chat_sel, rows),

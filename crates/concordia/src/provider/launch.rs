@@ -71,6 +71,16 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
             launch.args.insert(0, script.to_string_lossy().into_owned());
         }
     }
+    if cfg!(windows)
+        && is_batch_shim(&launch.program)
+        && launch
+            .args
+            .iter()
+            .take(launch.args.len().saturating_sub(1))
+            .any(|argument| !batch_safe(argument))
+    {
+        bail!("provider options cannot pass safely through this batch launcher; select the native CLI executable or a supported npm bridge");
+    }
     if !prompt_needs_stdin(&plan.prompt, batch) {
         return Ok(launch);
     }
@@ -90,6 +100,9 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
             launch.stdin = Some(plan.prompt.clone());
         }
         ProviderKind::Cursor => {
+            if plan.prompt.starts_with('-') {
+                bail!("this prompt starts with '-', which the Cursor CLI would read as an option; reword it");
+            }
             // No documented stdin prompt for `agent`; skip the cmd.exe layer instead by running
             // the PowerShell script the shim would have run.
             let shim = Path::new(&plan.command);
@@ -110,9 +123,6 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
                     launch.program = "powershell.exe".into();
                     launch.args = args;
                     launch.env.push(("CURSOR_INVOKED_AS".into(), name));
-                }
-                None if plan.prompt.starts_with('-') => {
-                    bail!("this prompt starts with '-', which the Cursor CLI would read as an option; reword it")
                 }
                 None if batch => bail!(
                     "this prompt cannot be passed safely through {} (newlines or special characters); \

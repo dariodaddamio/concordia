@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     thread,
@@ -15,6 +15,7 @@ pub const MAX_EVENT_TEXT: usize = 4096;
 pub const MAX_FEED_BYTES: u64 = 2 * 1024 * 1024;
 const FEED: &str = "feed.jsonl";
 const COALESCE_WINDOW: Duration = Duration::from_millis(100);
+const MAX_DELTA_BYTES: usize = 64 * 1024;
 type DeltaKey = (PathBuf, String);
 type DeltaValue = (std::time::Instant, String);
 static DELTAS: OnceLock<Mutex<HashMap<DeltaKey, DeltaValue>>> = OnceLock::new();
@@ -97,21 +98,25 @@ impl FeedWriter {
         }
         let key = (self.root.clone(), self.pane.clone());
         let mut pending = DELTAS.get_or_init(Default::default).lock().unwrap();
-        if let Some((started, value)) = pending.get_mut(&key) {
-            if started.elapsed() < COALESCE_WINDOW {
-                value.push_str(text);
-                return Ok(());
-            }
-            let old = std::mem::take(value);
+        let (started, value) = pending
+            .entry(key)
+            .or_insert_with(|| (std::time::Instant::now(), String::new()));
+        let expired = (started.elapsed() >= COALESCE_WINDOW).then(|| std::mem::take(value));
+        if expired.is_some() {
             *started = std::time::Instant::now();
-            drop(pending);
-            self.emit_raw("text_delta".into(), &old)?;
-        } else {
-            pending.insert(key.clone(), (std::time::Instant::now(), String::new()));
         }
-        let mut pending = DELTAS.get().unwrap().lock().unwrap();
-        pending.get_mut(&key).unwrap().1.push_str(text);
-        Ok(())
+        if value.len().saturating_add(text.len()) > MAX_DELTA_BYTES {
+            // This optional observation feed is not the transcript. Drop the entire
+            // oversized batch rather than retain a partial credential or UTF-8 token.
+            *value = "[stream projection omitted: batch exceeds feed limit]".into();
+        } else {
+            value.push_str(text);
+        }
+        drop(pending);
+        match expired {
+            Some(old) if !old.is_empty() => self.emit_raw("text_delta".into(), &old),
+            _ => Ok(()),
+        }
     }
     pub fn flush_text_delta(&self) -> std::io::Result<()> {
         let key = (self.root.clone(), self.pane.clone());
@@ -145,9 +150,13 @@ impl FeedWriter {
         }
         screens.insert(self.root.clone(), (std::time::Instant::now(), hash));
         drop(screens);
-        let tmp = self.root.join("screen.txt.tmp");
-        fs::write(&tmp, value)?;
-        fs::rename(tmp, self.root.join("screen.txt"))
+        fs::create_dir_all(&self.root)?;
+        if value.len() as u64 > MAX_FEED_BYTES {
+            return Err(std::io::Error::other(
+                "screen projection exceeds feed limit",
+            ));
+        }
+        crate::state_io::write_atomic(&self.root.join("screen.txt"), value.as_bytes())
     }
 }
 
@@ -157,9 +166,14 @@ pub fn read(root: &Path, since: usize, pane: Option<&str>) -> std::io::Result<Ve
         let Ok(file) = fs::File::open(path) else {
             continue;
         };
-        for line in BufReader::new(file).lines() {
-            let Ok(line) = line else { continue };
-            if let Ok(event) = serde_json::from_str::<FeedEvent>(&line) {
+        let mut bytes = Vec::new();
+        file.take(MAX_FEED_BYTES + 64 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_FEED_BYTES + 64 * 1024 {
+            return Err(std::io::Error::other("feed file exceeds rotation limit"));
+        }
+        for line in bytes.split(|byte| *byte == b'\n') {
+            if let Ok(event) = serde_json::from_slice::<FeedEvent>(line) {
                 if pane.is_none_or(|p| p == event.pane) {
                     out.push(event);
                 }
@@ -183,7 +197,19 @@ pub fn cli(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
         .and_then(|w| w[1].parse().ok())
         .unwrap_or(0);
     if screen {
-        return fs::read_to_string(root.join("screen.txt")).map_err(|e| (e.to_string(), 1));
+        let read_screen = || -> std::io::Result<String> {
+            let mut text = String::new();
+            fs::File::open(root.join("screen.txt"))?
+                .take(MAX_FEED_BYTES + 1)
+                .read_to_string(&mut text)?;
+            if text.len() as u64 > MAX_FEED_BYTES {
+                return Err(std::io::Error::other(
+                    "screen projection exceeds feed limit",
+                ));
+            }
+            Ok(text)
+        };
+        return read_screen().map_err(|e| (e.to_string(), 1));
     }
     let mut out = String::new();
     let mut n = since;
@@ -257,9 +283,18 @@ mod tests {
     #[test]
     fn text_deltas_coalesce_until_flushed() {
         let dir = tempdir().unwrap();
-        let writer = FeedWriter::new(dir.path(), "one", true);
-        writer.emit_text_delta("hel").unwrap();
-        writer.emit_text_delta("lo").unwrap();
+        let root = dir.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let writer = FeedWriter::new(&root, "one", true);
+            writer.emit_text_delta("hel").unwrap();
+            writer.emit_text_delta("lo").unwrap();
+            tx.send(writer).unwrap();
+        });
+        let writer = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first streamed delta must not deadlock the chat loop");
+        worker.join().unwrap();
         assert!(read(dir.path(), 0, None).unwrap().is_empty());
         writer.flush_text_delta().unwrap();
         let events = read(dir.path(), 0, None).unwrap();

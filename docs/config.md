@@ -80,13 +80,13 @@ config default for future launches.
 
 Session titles are generated deterministically from the first substantive request, without a
 model call. They are shown in the header, terminal title and resume picker, and saved under
-`<state>/.ao/session-titles/` independently of `[threads].enabled`. Each record is bound to the
+`<state>/.ao/session-titles/` independently of `[threads].logging`. Each record is bound to the
 provider, account, normalized home and native session id; provider-owned files are not rewritten.
 
 `/resume` loads up to 200 recent Codex/Claude user/assistant messages within 1 MiB of visible
 text, reading at most an 8 MiB native tail. Loading runs off the input/render thread; the draft
-is retained and sending waits for completion. A truncated view is labeled; Cursor transcript
-reading is explicitly unavailable. Loaded scrollback is for display and is not replayed into
+is retained and sending waits for completion. A truncated view is labeled. Cursor uses bounded
+read-only ACP session replay when available. Loaded scrollback is for display and is not replayed into
 the selected native session. Native tools and approvals are not restored from this text.
 
 Ctrl+G lists reported native child-agent activity and Concordia worker jobs. Enter
@@ -145,7 +145,8 @@ files and 32 accounts; listing summarizes at most 1,000 records, reading at most
 Native UUID reads filter filenames before summarizing. A scan that cannot establish a unique
 match reports its bound rather than claiming absence. List JSON preserves exact identity fields,
 clips display metadata and caps output at 5 MiB. Reads use at most the last 8 MiB of a transcript. Tool records are
-omitted. Cursor metadata can be listed; its native transcript reader is not implemented.
+omitted. Cursor history uses the bounded read-only ACP session replay path; missing or unsupported
+native history stays explicitly unavailable.
 
 Concordia reads two optional things you write by hand, both under the state directory
 (`%LOCALAPPDATA%\concordia`, or `CONCORDIA_STATE_DIR`). It never writes either of them.
@@ -171,7 +172,7 @@ persist_history = true   # native-source recall references; legacy prompt histor
 stats = false            # footer: mem 41 MB - cpu 1% (and the provider processes)
 
 [threads]
-enabled = false          # metadata/native references under <state>/threads; legacy logs remain readable
+logging = "off"          # opt-in metadata/native references under <state>/threads
 map_chars = 1600         # size of the [concordia map] block, 200..=8000
 awareness = true         # tell the CLIs in Concordia-created homes about [concordia map] (docs/mcp.md)
 mcp = false              # register `concordia mcp` in Concordia-created homes (opt-in, costs tokens)
@@ -189,7 +190,7 @@ idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables 
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `ui.theme` | `"default"` | `default`, `dark`, `light`, `terminal` or `opifex`; also selectable live in `/config` |
+| `ui.theme` | `"opifex"` | `default`, `dark`, `light`, `terminal` or `opifex`; also selectable live in `/config` |
 | `ui.brand_color` | Amber `#FFB000` | Optional running-window icon color |
 | `ui.motion` | `true` | Retained for config compatibility; the Home portrait is static |
 | `ui.background` | Theme default | Optional quoted `#RRGGBB` background, including empty rows and native client margins |
@@ -199,7 +200,7 @@ idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables 
 | `ui.tips` | `true` | Tips while the prompt is idle |
 | `ui.persist_history` | `true` | Stores native prompt-recall references (last 500); `false` keeps new recall in memory only |
 | `ui.stats` | `false` | Footer memory and CPU for Concordia and the agents it started (`/stats` toggles it) |
-| `threads.enabled` | `false` | Opt-in metadata/native-reference recording; existing legacy bodies are preserved |
+| `threads.logging` | `"off"` | Explicit `"on"` enables metadata/native-reference recording; existing logs are preserved |
 | `threads.map_chars` | `1600` | Out of range is clamped to 200..8000 |
 | `threads.awareness` | `true` | One short block in `CLAUDE.md` / `AGENTS.md` of homes Concordia created; `false` removes it |
 | `threads.mcp` | `false` | Registers the `concordia mcp` server in those homes; `false` removes the entry (see [mcp.md](mcp.md)) |
@@ -216,19 +217,22 @@ presets and a custom `#RRGGBB` input; it changes the running-window icon; Home r
 The installed executable's Explorer icon remains the bundled original.
 
 Themes are local TOML files under `<state>/themes`; there is no marketplace or network lookup. A
-theme file is at most 16 KiB and must contain `name`, `author`, `background`, `foreground`,
-`accent`, `dim`, `success`, `warning`, `error`, `selection`, and `border`, each as `#RRGGBB`.
+theme file is at most 16 KiB and must contain nonempty `name` and `author` strings plus
+`background`, `foreground`, `accent`, `dim`, `success`, `warning`, `error`, `selection`, and
+`border` colors as `#RRGGBB`.
 `portrait_tint` is optional. Unknown keys and malformed colors are rejected with a line-aware
 error. Built-in Dark, Light, and Opifex Studio themes use this same parser. Foreground contrast
 below WCAG AA 4.5:1, or dim contrast below 3:1, loads with a warning in the picker.
 
 In `/config` → Appearance → Theme, choose a built-in or imported library theme. **Import theme...**
 validates a `.toml` before copying it into `<state>/themes`; **Export current** writes the active
-theme there or to a path supplied by the user. Opifex Studio is the default for new installs and
-is applied once to older unset/old-default appearance state; later user choices are preserved.
+theme there or to a path supplied by the user, including configured palette overrides. Default
+and Terminal do not expose the host terminal palette; select a named theme before exporting.
+Opifex Studio is the default for new installs. Loading appearance settings preserves explicit
+theme/config choices without an old-theme migration or startup file rewrite.
 
 Direct commands are `/config theme opifex`, `/config color #78BFFF` and `/config motion off`.
-**Opifex Studio** uses the Studio host's near-black `#050506`, amber `#FFB000` and bone `#D8D0C0`
+**Opifex Studio** uses black `#000000`, amber `#FFB000` and bone `#D8D0C0`
 palette. Build 05d restores the original static gold Home portrait and removes the 3D renderer.
 Small windows omit the portrait to preserve chat space. Saved motion preferences remain readable
 for compatibility and do not animate the portrait. Build 05e uses the motion preference for
@@ -308,10 +312,9 @@ there wins:
 - `max_workers` is a cap on worker enrollment inside `/delegate`; it is not stored. The default
   and safety ceiling are 12; resource admission may still limit concurrent execution.
 
-Worker execution also applies a deterministic host-resource budget: one active worker per 8 GiB
-of free RAM, capped at one quarter of logical cores (minimum one). Provider child processes get
+Worker admission uses the configured ceiling and its scheduling contracts. Provider child processes get
 `CARGO_BUILD_JOBS`, `MAKEFLAGS`, `npm_config_jobs`, and `CMAKE_BUILD_PARALLEL_LEVEL` defaults
-derived from that budget only when the user or provider has not set them. Host capacity is read
+defaults of one to four build jobs, based on logical cores, only when the user or provider has not set them. Host capacity is read
 locally; no credentials or hosted service is involved.
 
 Read the effective values with the `config` and `commands` rows of `concordia doctor`.

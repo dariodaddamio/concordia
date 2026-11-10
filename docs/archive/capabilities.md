@@ -1,5 +1,9 @@
 # P0 provider capability matrix
 
+This is the historical interface survey from 2026-10-14, not Concordia's current feature status.
+For implemented capabilities and limits, start with [the project plan](../../PLAN.md).
+Keep this survey as evidence for the versions checked below.
+
 Package: **P0** (Integration investigator). Dependencies: none.  
 Owned paths: `docs/capabilities.md`, `docs/evidence/p0/**`.  
 Research date: 2026-10-14. Host: Windows 11 (10.0.26200).

@@ -1,6 +1,9 @@
 # Images and diagrams in Concordia
 
-Build: `2026-11-04j`. Supported provider adapters: Codex, Claude Code and Cursor CLI.
+Current source: `2026-11-09a`. Provider adapters: Codex, Claude Code and Cursor CLI.
+Claude's native-stdio gate currently pins CLI `2.1.319`; its initialize exchange was observed
+without a model turn. Earlier `2.1.318` image/PDF and native-control results below are historical
+evidence, not live qualification of `2.1.319`.
 
 ## Attach an image
 
@@ -45,6 +48,12 @@ after queueing does not change the attached snapshot. Byte hashes are checked be
 Drafts, queue records, inline queue edits and unfinished-request checkpoints retain attachment
 references. Reordering/sending a queue item keeps its images. Missing or modified snapshots cause
 an explicit failure rather than silent omission. Saved snapshots remain local for recovery.
+
+While editing a queued message, Ctrl+V, dropped image paths and F9 add attachments to that edit.
+Its cards are labelled `Queued Image`; click X to remove one. Enter saves the text and attachments;
+Esc or Ctrl+C cancels the edit. The separate composer draft and its attachments stay intact.
+Unfinished attachment edits survive explicit recovery after restart. Saving waits for any import
+to finish; an image-only queued edit keeps a default description request.
 
 Image input is native, not OCR or vector embeddings:
 
@@ -107,12 +116,12 @@ draft revision. Once accepted, typing can continue during import; replacing the 
 conversations cancels it. Up to four paths and 16 KiB of pasted path
 text are accepted. No shell expansion, host configuration change or dropped-file execution occurs.
 
-PDF attachments are now integrated in the installed 2026-11-04b candidate. The version-matched [TypeScript SDK
+PDF attachments were integrated in the historical installed 2026-11-04b candidate. The version-matched [TypeScript SDK
 `UserMessage` input union](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusermessage)
 places image/document blocks in `message.content`; this is user input, not the older output
 `ContentBlock` union. The historical z receipt dispatched the ordered document block through
-Claude 2.1.317 standard stdin and `ClaudeStdio`; installed 2026-11-04b uses 2.1.318 after the
-capability/version gate. Each PDF is capped at
+Claude 2.1.317 standard stdin and `ClaudeStdio`; installed 2026-11-04b used 2.1.318 after the
+capability/version gate. Current source gates native stdio at 2.1.319. Each PDF is capped at
 8 MiB, all PDFs together at 16 MiB, and the message at four attachments. Snapshots retain the
 SHA-256 descriptor and refuse sensitive or linked paths, changed identity/hash, missing `%PDF-`
 signature, and encrypted files marked with `/Encrypt`. Codex and Cursor currently reject PDF
@@ -124,8 +133,9 @@ Attach through the existing picker/F9 path flow. The PDF chip opens the immutabl
 system viewer as an explicit file action; it does not rasterize or OCR the document. Drafts,
 queues and checkpoints retain descriptor metadata and the original envelope. Fake-process tests
 cover schema/order, Standard Claude and ClaudeStdio payloads, unsupported providers and tamper
-rejection in the historical z receipt; the d322/22b4da5 process checks now cover the integrated
-2.1.318 path. Live provider processing, physical clipboard/viewer behavior and real PDF quality remain unqualified. Codex/Cursor PDF rejection is
+rejection in the historical z receipt; the d322/22b4da5 process checks covered the integrated
+2.1.318 path. The scoped live 05c result below also belongs to 2.1.318; live 2.1.319 PDF processing,
+physical clipboard/viewer behavior and broader PDF quality remain unqualified. Codex/Cursor PDF rejection is
 an explicit provider limit, not an unfinished transport.
 
 ## Mermaid
@@ -146,6 +156,7 @@ at once, with 32 cached source/width entries. Input is limited to 8 KiB, 128 sou
 semicolons; presentation is capped at 200 columns, 128 rows and 128 KiB output. Partial streamed
 fences wait for completion. Invalid, unsupported or oversized diagrams retain readable source
 and an explanation. Terminal output is sanitized before display.
+Background completion repaints chat and standalone previews without requiring a keypress.
 
 ## Evidence and limits
 
@@ -170,12 +181,12 @@ Up to 16 diagrams per message render; additional diagrams retain source.
 The first Python SDK audit examined an output content union; that did not settle accepted user
 input. The official [TypeScript SDK streamed user-message contract](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusermessage)
 explicitly places images and documents in `message.content` and identifies native support from
-CLI 2.1.277. Installed 2.1.318 exceeds that threshold. This supplies the native wire contract;
+CLI 2.1.277. The historically qualified 2.1.318 exceeded that threshold; current source pins 2.1.319. This supplies the native wire contract;
 the historical z receipt contains the initial bounded snapshot/dispatch evidence. Installed
 qualification is distinct from live provider parity and physical-host behavior.
 
-Build 05c live checks qualify one-page identifier reading on Claude CLI 2.1.318 through Standard
+Historical build 05c live checks qualified one-page identifier reading on Claude CLI 2.1.318 through Standard
 and native-stdio production transports. Both replies added an address prefix, so strict response
 formatting failed even though the unique PDF identifier was correct. Complex documents, OCR,
 physical viewer behavior and other providers are not qualified by these two calls. See
-[exact results](e2e-status.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).
+[exact results](quality/e2e-history.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).

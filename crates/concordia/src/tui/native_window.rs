@@ -79,11 +79,6 @@ pub(super) enum NativeEvent {
     MouseUp { event: MouseEvent, x: i32, y: i32 },
 }
 
-enum EventSender {
-    Plain(SyncSender<Event>),
-    Detailed(SyncSender<NativeEvent>),
-}
-
 fn send_until_closed<T>(sender: &SyncSender<T>, mut value: T, closing: &AtomicBool) {
     while !closing.load(Ordering::Acquire) {
         match sender.try_send(value) {
@@ -101,18 +96,12 @@ pub(super) struct WindowBackend {
 }
 
 /// Every receiver belongs to one HWND and therefore one Concordia process/run UI.
-#[allow(dead_code)] // Plain-event entry point retained for standalone native diagnostics.
-pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
+pub(super) fn open() -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
     let (events, receiver) = mpsc::sync_channel(4096);
-    Ok((open_with_sender(EventSender::Plain(events))?, receiver))
+    Ok((open_with_sender(events)?, receiver))
 }
 
-pub(super) fn open_detailed() -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
-    let (events, receiver) = mpsc::sync_channel(4096);
-    Ok((open_with_sender(EventSender::Detailed(events))?, receiver))
-}
-
-fn open_with_sender(events: EventSender) -> io::Result<WindowBackend> {
+fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend> {
     let shared = Arc::new(Shared {
         hwnd: AtomicIsize::new(0),
         pointer: AtomicUsize::new(0),
@@ -364,7 +353,7 @@ impl Backend for WindowBackend {
 
 struct Window {
     shared: Arc<Shared>,
-    events: EventSender,
+    events: SyncSender<NativeEvent>,
     fonts: [HFONT; 16],
     symbol_fonts: [HFONT; 16],
     emoji_fonts: [HFONT; 16],
@@ -439,12 +428,11 @@ impl Drop for Window {
 }
 impl Window {
     fn emit(&self, event: Event) {
-        match &self.events {
-            EventSender::Plain(sender) => send_until_closed(sender, event, &self.shared.closing),
-            EventSender::Detailed(sender) => {
-                send_until_closed(sender, NativeEvent::Event(event), &self.shared.closing)
-            }
-        }
+        send_until_closed(
+            &self.events,
+            NativeEvent::Event(event),
+            &self.shared.closing,
+        );
     }
     unsafe fn fonts(&mut self, hwnd: HWND, dpi: u32) {
         // Cached glyphs must be regenerated after a DPI/font change.
@@ -570,18 +558,16 @@ impl Window {
             self.last_motion = None;
         }
         if matches!(kind, MouseEventKind::Up(_)) {
-            if let EventSender::Detailed(sender) = &self.events {
-                send_until_closed(
-                    sender,
-                    NativeEvent::MouseUp {
-                        event,
-                        x: x.div_euclid(self.cell_width.max(1)),
-                        y: y.div_euclid(self.cell_height.max(1)),
-                    },
-                    &self.shared.closing,
-                );
-                return;
-            }
+            send_until_closed(
+                &self.events,
+                NativeEvent::MouseUp {
+                    event,
+                    x: x.div_euclid(self.cell_width.max(1)),
+                    y: y.div_euclid(self.cell_height.max(1)),
+                },
+                &self.shared.closing,
+            );
+            return;
         }
         self.emit(Event::Mouse(event));
     }
@@ -1245,7 +1231,7 @@ unsafe fn refresh_icon(hwnd: HWND, window: &mut Window) {
 
 unsafe fn window_thread(
     shared: Arc<Shared>,
-    events: EventSender,
+    events: SyncSender<NativeEvent>,
     ready: &mpsc::SyncSender<io::Result<()>>,
 ) -> io::Result<()> {
     // Only this thread creates/destroys windows and owns all GDI objects.
@@ -1786,6 +1772,11 @@ fn key(vk: u16, modifiers: KeyModifiers) -> Option<KeyCode> {
             KeyCode::Char((b'a' + (vk - 0x41) as u8) as char)
         }
         VK_SPACE if modifiers == KeyModifiers::CONTROL => KeyCode::Char(' '),
+        0xc0 if modifiers.contains(KeyModifiers::CONTROL)
+            && !modifiers.contains(KeyModifiers::ALT) =>
+        {
+            KeyCode::Char('`')
+        }
         // Ctrl+1..9 selects a tab; AltGr (Ctrl+Alt) still types its character.
         0x31..=0x39
             if modifiers.contains(KeyModifiers::CONTROL)

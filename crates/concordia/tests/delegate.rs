@@ -601,7 +601,7 @@ async fn explicit_worker_quota_failover_is_bounded_and_recovery_never_reexecutes
     let recovery = env.path("pane/worker-runs");
     std::fs::write(
         env.path("worker-one/models_cache.json"),
-        r#"["model-a","model-b"]"#,
+        r#"{"models":[{"slug":"model-a","display_name":"model-a","visibility":"list"},{"slug":"model-b","display_name":"model-b","visibility":"list"}]}"#,
     )
     .unwrap();
     concordia::routing::policy_command(

@@ -18,6 +18,9 @@ impl App {
             TurnProgress::TextDelta(text) => {
                 let _ = feed.emit_text_delta(text);
             }
+            TurnProgress::TextBoundary => {
+                let _ = feed.emit("message_boundary", "");
+            }
             TurnProgress::Card(card) => {
                 let _ = feed.emit("tool", &card.title);
             }
@@ -128,10 +131,12 @@ impl App {
                 if let (Some(task_id), Some(session_id)) =
                     (self.task_id.clone(), self.native_session_id.clone())
                 {
-                    let map = Some(crate::store::TaskMapPointer {
-                        version: 2,
-                        thread_id: self.thread_id().unwrap_or(task_id.as_str()).to_owned(),
-                    });
+                    let map = self
+                        .thread_id()
+                        .map(|thread_id| crate::store::TaskMapPointer {
+                            version: 2,
+                            thread_id: thread_id.to_owned(),
+                        });
                     if let Err(error) = crate::store::record_task_session(
                         &self.state_root,
                         &task_id,
@@ -150,31 +155,37 @@ impl App {
                 self.clear_idle_notice();
                 self.commit_live_text();
                 self.phase = Phase::Thinking;
-                self.live_thinking.push_str(&t);
+                crate::provider::turn::append_visible_text(&mut self.live_thinking, &t);
                 if !t.ends_with('\n') {
-                    self.live_thinking.push('\n');
+                    crate::provider::turn::append_visible_text(&mut self.live_thinking, "\n");
                 }
             }
             TurnProgress::ThinkingDelta(t) => {
                 self.clear_idle_notice();
                 self.commit_live_text();
                 self.phase = Phase::Thinking;
-                self.live_thinking.push_str(&t);
+                crate::provider::turn::append_visible_text(&mut self.live_thinking, &t);
             }
             TurnProgress::Text(t) => {
                 self.clear_idle_notice();
                 self.commit_live_thinking();
                 self.phase = Phase::Writing;
-                self.live_text.push_str(&t);
+                crate::provider::turn::append_visible_text(&mut self.live_text, &t);
                 if !t.ends_with('\n') {
-                    self.live_text.push('\n');
+                    crate::provider::turn::append_visible_text(&mut self.live_text, "\n");
                 }
             }
             TurnProgress::TextDelta(t) => {
                 self.clear_idle_notice();
                 self.commit_live_thinking();
                 self.phase = Phase::Writing;
-                self.live_text.push_str(&t);
+                crate::provider::turn::append_visible_text(&mut self.live_text, &t);
+            }
+            TurnProgress::TextBoundary => {
+                if !self.cancel_requested && !self.queue.dispatch.is_explicit() {
+                    self.questions.offer(&self.live_text);
+                }
+                self.commit_live_text();
             }
             TurnProgress::Card(card) => {
                 self.clear_idle_notice();
@@ -545,6 +556,7 @@ impl App {
         self.refresh_usage();
         self.update_usage_block();
     }
+    #[cfg(test)]
     pub(in crate::tui) fn threads_command(&mut self, arg: &str) -> Vec<String> {
         use crate::threads;
         if let Some(id) = arg.strip_prefix("delete").map(str::trim) {
@@ -614,10 +626,11 @@ impl App {
     }
     pub(in crate::tui) fn on_tick(&mut self) -> bool {
         let mut visible_change = self.busy && self.appearance.ui.motion;
-        self.poll_reference_journal();
-        self.questions.refresh_native();
-        self.poll_images();
-        self.raster.poll();
+        visible_change |= self.local_terminal.poll();
+        visible_change |= self.poll_reference_journal();
+        visible_change |= self.questions.refresh_native();
+        visible_change |= self.poll_images();
+        visible_change |= self.raster.poll();
         self.tick_count = self.tick_count.wrapping_add(1);
         if self.busy {
             self.pulse_on = self.tick_count.is_multiple_of(2);
@@ -632,12 +645,13 @@ impl App {
         visible_change |= self.idle_ticks == tips::IDLE_TICKS;
         self.persist_tick();
         visible_change |= self.poll_file_jobs();
-        self.poll_session_history();
-        self.poll_memory();
-        self.poll_project_search();
+        visible_change |= self.poll_session_history();
+        visible_change |= self.poll_memory();
+        visible_change |= self.poll_project_search();
         visible_change |= self.workspace.poll();
         if let Some(notice) = self.workspace.take_notice() {
             self.flash(notice);
+            visible_change = true;
         }
         if self.workspace.file_quit_requested() {
             self.should_quit = true;
@@ -655,6 +669,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|p| p.kind == PickerKind::Files)
         {
+            visible_change = true;
             let old = self.picker.take().unwrap();
             let selected = old
                 .state
@@ -672,24 +687,26 @@ impl App {
                 picker.select_clamp();
             }
         }
-        self.poll_pending_login();
-        self.poll_model_refresh();
-        self.poll_job();
-        landing::poll(self);
-        tokens::poll(self);
-        integrations::poll(self);
-        artifacts::poll(self);
+        visible_change |= self.poll_pending_login();
+        visible_change |= self.poll_model_refresh();
+        visible_change |= self.poll_job();
+        visible_change |= landing::poll(self);
+        visible_change |= tokens::poll(self);
+        visible_change |= integrations::poll(self);
+        visible_change |= artifacts::poll(self);
         self.update_progress();
-        self.poll_compat();
-        self.poll_proposals();
+        visible_change |= self.poll_compat();
+        visible_change |= self.poll_proposals();
         // Polling alone never ages a completed cache. Re-read on a cheap UI timer so idle
         // panes notice resets and start the fetcher's bounded TTL refresh.
         if self.usage_fetcher.poll() || self.tick_count.is_multiple_of(50) {
+            self.refresh_store_warning();
             self.refresh_usage();
             self.update_usage_block();
             self.update_usage_picker();
             visible_change = true;
         }
+        visible_change |= self.prune_transcript_projection();
         visible_change
     }
 }

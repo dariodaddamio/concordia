@@ -215,6 +215,8 @@ pub fn is_branch(input: &str) -> bool {
             | "/delegate model"
             | "/delegate returns"
             | "/harness"
+            | "/skills"
+            | "/hooks"
     )
 }
 
@@ -226,7 +228,16 @@ pub fn has_argument_menu(input: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         root.as_str(),
-        "/use" | "/model" | "/mode" | "/update" | "/workers" | "/delegate" | "/harness" | "/usage"
+        "/use"
+            | "/model"
+            | "/mode"
+            | "/update"
+            | "/workers"
+            | "/delegate"
+            | "/harness"
+            | "/skills"
+            | "/hooks"
+            | "/usage"
     )
 }
 
@@ -401,13 +412,49 @@ pub fn matching_arguments(
                 }
             }
         }
+        cmd @ ("/skills" | "/hooks") => {
+            add(
+                cmd.into(),
+                "Enter inspects this account's sources; connect applies shared setup".into(),
+            );
+            add(
+                format!("{cmd} list"),
+                "inspect this account's local sources".into(),
+            );
+            add(
+                format!("{cmd} connect"),
+                "PATH [--current] - connect setup across accounts".into(),
+            );
+            add(
+                format!("{cmd} status"),
+                "show Harness setup and verification results".into(),
+            );
+            if cmd == "/skills" {
+                add(
+                    "/skills remove".into(),
+                    "PATH - stop sharing and remove matching links across accounts".into(),
+                );
+                add(
+                    format!("{cmd} install"),
+                    "[PATH] [--current] - share skill folders across accounts".into(),
+                );
+            } else {
+                add(
+                    format!("{cmd} verify"),
+                    "[NAME] [--current] - run verification across accounts".into(),
+                );
+            }
+        }
         "/harness" => {
             add(
                 "/harness".into(),
                 "connect | status | tools | verify | disconnect | skill".into(),
             );
             for (suffix, help) in [
-                ("connect", "FOLDER or PROGRAM - connect a project harness"),
+                (
+                    "connect",
+                    "PATH [--current] - connect setup across accounts",
+                ),
                 ("status", "show connected harnesses and verification state"),
                 (
                     "tools",
@@ -415,12 +462,12 @@ pub fn matching_arguments(
                 ),
                 (
                     "verify",
-                    "NAME - run configured verification; may use provider usage",
+                    "[NAME] [--current] - verify all accounts; may use provider usage",
                 ),
                 ("disconnect", "NAME - remove a harness connection"),
                 (
                     "skill",
-                    "install the connection instructions in the selected account",
+                    "[--current] - install the connection skill across accounts",
                 ),
             ] {
                 add(format!("/harness {suffix}"), help.into());
@@ -499,6 +546,8 @@ mod discovery_tests {
             "/delegate",
             "/delegate protocol",
             "/harness",
+            "/skills",
+            "/hooks",
             "/usage",
         ] {
             let entries = matching_arguments(root, &[], &[]);

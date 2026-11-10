@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn dismissed_recovery_stays_available_without_reappearing_at_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let saved = create(dir.path()).unwrap();
+    saved
+        .save("saved draft", &["queued prompt".into()])
+        .unwrap();
+    let id = saved.id().to_owned();
+    drop(saved);
+    dismiss(dir.path(), &available(dir.path()).unwrap()).unwrap();
+    let (_, restored, choices) = startup_with_restore(dir.path()).unwrap();
+    assert!(restored.is_none());
+    assert!(choices.is_empty());
+    assert!(available(dir.path())
+        .unwrap()
+        .iter()
+        .any(|choice| choice.id == id));
+    let saved = claim(dir.path(), &id).unwrap();
+    assert_eq!(saved.data().unwrap().draft, "saved draft");
+    saved.save("new version after dismissal", &[]).unwrap();
+    // Give this revision a deterministic identity distinct from the dismissed one.
+    let mut data = saved.data().unwrap();
+    data.updated_unix_ms += 1;
+    fs::write(
+        saved.directory.join(RECORD_FILE),
+        serde_json::to_vec(&data).unwrap(),
+    )
+    .unwrap();
+    drop(saved);
+    assert!(startup_with_restore(dir.path()).unwrap().1.is_some());
+}
+
+#[test]
 fn concurrent_panes_own_distinct_records_and_workspace_roots() {
     let d = tempfile::tempdir().unwrap();
     let a = d.path().join("a");
@@ -55,7 +87,10 @@ fn multiple_records_require_explicit_choice_and_corruption_is_preserved() {
     fs::write(corrupt.directory.join(RECORD_FILE), b"broken").unwrap();
     drop(corrupt);
     let choices = available(d.path()).unwrap();
-    assert_eq!(choices.len(), 2);
+    assert_eq!(choices.len(), 3);
+    assert!(choices
+        .iter()
+        .any(|choice| choice.draft.contains("Original kept unchanged")));
     assert!(!d.path().join("broken").exists());
     // The corrupt record remains available for manual inspection; it is never overwritten.
     let dirs: Vec<_> = fs::read_dir(d.path())
@@ -93,9 +128,15 @@ fn pending_edit_round_trips_and_old_record_json_defaults_it() {
     let edit = RecoveryEdit {
         index: 1,
         text: "unfinished upper edit".into(),
+        attachments: None,
     };
     lease
-        .save_with_edit("main draft", &["one".into(), "two".into()], Some(&edit))
+        .save_with_alternate(
+            "main draft",
+            &["one".into(), "two".into()],
+            Some(&edit),
+            None,
+        )
         .unwrap();
     let loaded = lease.data().unwrap();
     assert_eq!(loaded.draft, "main draft");

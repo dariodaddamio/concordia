@@ -54,14 +54,16 @@ impl State {
             .filter(|request| request.is_active())
             .map(|request| request.envelope().native_session_id.clone())
     }
-    pub fn refresh_native(&mut self) {
+    pub fn refresh_native(&mut self) -> bool {
         if self
             .native
             .as_ref()
             .is_some_and(|request| !request.is_active())
         {
             self.advance_native();
+            return true;
         }
+        false
     }
     pub fn clear(&mut self) {
         for request in self.pending_native.drain(..) {
@@ -614,10 +616,20 @@ fn choose(app: &mut App, index: usize) {
     }
     let answer = s.answers.join("\n\n");
     s.clear();
-    app.queue.items.insert(0, answer);
+    // An inferred question has no native response channel. Its reply is a normal
+    // FIFO follow-up, never an instruction to interrupt or replace the active task.
+    app.queue.items.push(answer);
     app.queue_changed();
-    let notice = app.force_queued(0);
-    app.flash(notice);
+    if !app.busy && !app.queue.paused {
+        app.queue.dispatch.set_automatic();
+    }
+    app.flash(if app.queue.paused {
+        "Reply queued as a follow-up; the queue remains paused (Ctrl+R resumes)."
+    } else if app.busy {
+        "Reply queued as a follow-up; the active task continues."
+    } else {
+        "Reply queued as a normal follow-up."
+    });
 }
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if key.code == KeyCode::F(8) && app.questions.waiting() {
@@ -990,7 +1002,7 @@ mod tests {
         let (request, mut rx) = connection.request(
             "fixture-session", serde_json::json!(1), "session/request_permission".into(),
             serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read synthetic file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"allow-once"},{"name":"Reject","kind":"reject_once","optionId":"reject"}]}),
-        ).unwrap();
+        ).unwrap().unwrap();
         app.questions.offer_native(request, true);
         assert!(handle_key(
             &mut app,
@@ -1036,7 +1048,7 @@ mod tests {
                     ]
                 }),
             )
-            .unwrap();
+            .unwrap().unwrap();
         app.native_owner = Some(claude_owner);
         app.editor.set_text("preserve foreground draft");
         app.questions.offer_native(question, true);
@@ -1065,7 +1077,7 @@ mod tests {
         app.native_owner = Some(owner.clone());
 
         connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
-        let (plan, mut plan_rx) = connection.request("fixture-session", serde_json::json!(10), "cursor/create_plan".into(), serde_json::json!({"toolCallId":"plan-tool","plan":"Inspect the exact parser.\nPreserve unrelated files.","todos":[]})).unwrap();
+        let (plan, mut plan_rx) = connection.request("fixture-session", serde_json::json!(10), "cursor/create_plan".into(), serde_json::json!({"toolCallId":"plan-tool","plan":"Inspect the exact parser.\nPreserve unrelated files.","todos":[]})).unwrap().unwrap();
         app.busy = true;
         app.apply_progress(TurnProgress::Interaction(Box::new(plan)));
         assert!(app.activity.detail.is_some());
@@ -1100,7 +1112,7 @@ mod tests {
         let (stale, mut stale_rx) = connection.request(
             "fixture-session", serde_json::json!(2), "session/request_permission".into(),
             serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"allow-once"}]}),
-        ).unwrap();
+        ).unwrap().unwrap();
         app.busy = true;
         app.native_owner.as_mut().unwrap().attempt_id = uuid::Uuid::new_v4().to_string();
         app.apply_progress(TurnProgress::Interaction(Box::new(stale)));
@@ -1124,7 +1136,7 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         let (worker_request, mut worker_rx) = worker_connection.request("fixture-session", serde_json::json!(1), "session/request_permission".into(),
-            serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read worker file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"},{"name":"Reject","kind":"reject_once","optionId":"worker-reject"}]})).unwrap();
+            serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read worker file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"},{"name":"Reject","kind":"reject_once","optionId":"worker-reject"}]})).unwrap().unwrap();
         app.deleg.d.test_native_input(worker, worker_request);
         assert_eq!(
             app.deleg.d.get(worker).unwrap().state,
@@ -1155,7 +1167,7 @@ mod tests {
         assert_eq!(app.native_owner, main_owner);
         assert_eq!(app.editor.text(), "keep this worker-review draft");
         let (cancelled, mut cancelled_rx) = worker_connection.request("fixture-session", serde_json::json!(2), "session/request_permission".into(),
-            serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"}]})).unwrap();
+            serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"}]})).unwrap().unwrap();
         app.deleg.d.test_native_input(worker, cancelled);
         worker_input::open(&mut app, worker);
         app.deleg.d.cancel(worker, Instant::now());
@@ -1193,6 +1205,7 @@ mod tests {
                 "item/tool/requestUserInput".into(),
                 params.clone(),
             )
+            .unwrap()
             .unwrap();
         assert!(request
             .choices_with_text(&[0, 0, 0], &[Some("x".repeat(4097)), None, None])
@@ -1258,6 +1271,7 @@ mod tests {
                 "item/tool/requestUserInput".into(),
                 worker_params,
             )
+            .unwrap()
             .unwrap();
         app.deleg.d.test_native_input(worker, request);
         worker_input::open(app, worker);
@@ -1302,7 +1316,7 @@ mod tests {
                     "questions":[{"id":"colors","prompt":"Choose colors","options":[{"id":"Red","label":"Red"},{"id":"Blue","label":"Blue"}],"allowMultiple":true}]
                 }),
             )
-            .unwrap();
+            .unwrap().unwrap();
         app.deleg.d.test_native_input(claude_worker, claude_request);
         worker_input::open(app, claude_worker);
         worker_input::key(app, &KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
@@ -1342,6 +1356,7 @@ mod tests {
                 "item/commandExecution/requestApproval".into(),
                 params.clone(),
             )
+            .unwrap()
             .unwrap();
         let (second, mut second_rx) = connection
             .request(
@@ -1350,6 +1365,7 @@ mod tests {
                 "item/commandExecution/requestApproval".into(),
                 params,
             )
+            .unwrap()
             .unwrap();
         app.questions.offer_native(first.clone(), false);
         app.questions.offer_native(second.clone(), false);
@@ -1430,6 +1446,85 @@ mod tests {
         );
         assert_eq!(app.editor.text(), "keep the current draft");
         assert!(app.questions.native.is_none());
+        assert!(!app.queue.dispatch.is_explicit());
+        assert!(app.queue.dispatch.is_automatic());
+
+        for paused in [false, true] {
+            let mut active = App::new(
+                dir.path().join(if paused { "paused" } else { "active" }),
+                dir.path().into(),
+            );
+            active.busy = true;
+            active.submitted_prompt = Some("original sustained task".into());
+            active.last_sent = Some("original sustained task".into());
+            active.native_session_id = Some("original-session".into());
+            active.turn_started = Some(Instant::now());
+            active.continuation.begin(
+                "fixture-account",
+                "fixture-model",
+                "original sustained task",
+            );
+            let conversation = active.deleg.d.conversation_id().to_owned();
+            let run = active.continuation.run_id().to_owned();
+            let started = active.turn_started;
+            let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            active.preparing_cancel = Some(cancelled.clone());
+            active.editor.set_text("independent unsent draft");
+            active.queue.items.push("earlier queued request".into());
+            active.queue.paused = paused;
+            active.push_card(StreamCard {
+                id: "busy-async-question-fixture".into(),
+                title: "functions.request_user_input_async".into(),
+                detail: Some(format!("arguments: {payload}")),
+                status: CardStatus::Running,
+            });
+            choose(&mut active, 1);
+            assert!(active.busy && !active.cancel_requested);
+            assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(
+                active.submitted_prompt.as_deref(),
+                Some("original sustained task")
+            );
+            assert_eq!(active.last_sent.as_deref(), Some("original sustained task"));
+            assert_eq!(
+                active.native_session_id.as_deref(),
+                Some("original-session")
+            );
+            assert_eq!(active.turn_started, started);
+            assert_eq!(active.deleg.d.conversation_id(), conversation);
+            assert_eq!(active.continuation.run_id(), run);
+            assert_eq!(
+                active
+                    .continuation
+                    .checkpoint(None, Vec::new(), dir.path().into())
+                    .unwrap()
+                    .prompt,
+                "original sustained task"
+            );
+            assert_eq!(active.editor.text(), "independent unsent draft");
+            assert_eq!(
+                active.queue.items,
+                [
+                    "earlier queued request",
+                    "How are you pasting the image?\nCtrl+Shift+V"
+                ]
+            );
+            assert_eq!(active.queue.paused, paused);
+            assert!(!active.queue.dispatch.is_explicit() && !active.queue.dispatch.is_automatic());
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            active.queue_advance(&tx);
+            assert!(
+                rx.try_recv().is_err(),
+                "clarification must not launch a competing turn"
+            );
+            assert_eq!(active.queue.items.len(), 2);
+            active.turn_finished(false, false);
+            assert!(
+                active.queue.dispatch.is_automatic(),
+                "clean completion admits normal FIFO advancement"
+            );
+            assert_eq!(active.queue.paused, paused);
+        }
 
         let text = "May I use up to 18 real CLI test requests total across the currently selected, signed-in Codex/Claude/Cursor accounts? These would use disposable fixtures to check approvals, images/PDFs, exact-session continuation and a three-arm memory comparison. Seeds and compaction requests count toward the cap; no automatic retries or account switching. Mention any provider/account exclusions in your answer.\n- Allow up to 18 requests total\n- Allow up to 6 requests total\n- No additional live requests\n\nWhat provider usage may those tests consume? I will not buy credits, add paid services or change your billing settings.\n- Subscription allowances only\n- Existing purchased credits are also allowed\nThe missing decisions are the live-test allowance and whether existing purchased credits may be used. I’ve asked both together; the previous one-request allowance is consumed.";
         let parsed = parse(text);
@@ -1584,6 +1679,7 @@ mod tests {
             };
             let (request, _rx) = connection
                 .request(session, serde_json::json!(1), method.into(), params)
+                .unwrap()
                 .unwrap();
             app.native_owner = Some(owner);
             app.questions.offer_native(request, true);
@@ -1684,8 +1780,14 @@ mod tests {
             };
             let (request, mut rx) = connection
                 .request(session, serde_json::json!(1), method.into(), params)
+                .unwrap()
                 .unwrap();
-            app.native_owner = Some(owner);
+            app.busy = true;
+            app.submitted_prompt = Some("original native task".into());
+            app.editor.set_text("separate native draft");
+            app.queue.items.push("queued after native task".into());
+            app.queue.paused = true;
+            app.native_owner = Some(owner.clone());
             app.questions.offer_native(request, true);
             assert!(handle_key(
                 &mut app,
@@ -1696,6 +1798,15 @@ mod tests {
                 expected,
                 "{provider:?} answer changed transport shape"
             );
+            assert!(app.busy && !app.cancel_requested);
+            assert_eq!(app.native_owner.as_ref(), Some(&owner));
+            assert_eq!(
+                app.submitted_prompt.as_deref(),
+                Some("original native task")
+            );
+            assert_eq!(app.editor.text(), "separate native draft");
+            assert_eq!(app.queue.items, ["queued after native task"]);
+            assert!(app.queue.paused && !app.queue.dispatch.is_explicit());
         }
     }
 

@@ -96,9 +96,9 @@ pub fn load_policies(root: &Path) -> Result<Policies, String> {
 pub fn policy_command(root: &Path, workers: bool, command: &str) -> Result<String, String> {
     if command.is_empty() {
         let policies = load_policies(root)?;
-        return Ok(format!("Ordered routing policy: {:?}. Use policy set ACCOUNT[:MODEL] ... or policy legacy. Changes apply to future requests.", if workers { policies.workers } else { policies.main }));
+        return Ok(format!("Ordered routing policy: {:?}. Use policy set ACCOUNT[:MODEL] ... or policy reset to use configured targets. Changes apply to future requests.", if workers { policies.workers } else { policies.main }));
     }
-    let targets = if command == "legacy" {
+    let targets = if command == "reset" {
         None
     } else if let Some(rest) = command.strip_prefix("set ") {
         let targets: Vec<_> = rest
@@ -118,7 +118,7 @@ pub fn policy_command(root: &Path, workers: bool, command: &str) -> Result<Strin
         validate_targets(&targets)?;
         Some(targets)
     } else {
-        return Err("usage: policy [set ACCOUNT[:MODEL] ...|legacy]".into());
+        return Err("usage: policy [set ACCOUNT[:MODEL] ...|reset]".into());
     };
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
     crate::state_io::with_lock(&root.join("routing-policy.lock"), || {
@@ -256,6 +256,14 @@ impl Approved {
             context,
         );
         decision.policy_revision = self.revision.clone();
+        // Fresh observations may change eligibility, never an already approved sequence.
+        // Generic discovery still ranks candidates using cached quota/model observations.
+        decision.candidates.sort_by_key(|row| {
+            self.targets
+                .iter()
+                .position(|target| target.target == row.candidate.target)
+                .unwrap_or(usize::MAX)
+        });
         for row in &mut decision.candidates {
             let expected = self
                 .targets

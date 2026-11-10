@@ -126,7 +126,11 @@ impl App {
         ) {
             Ok(()) => {
                 if !confirmed {
-                    self.push_system("Native process exit is uncertain; workspace reservation retained. Inspect the old process before /scope stopped and explicit continuation.");
+                    self.push_system(if outcome.exit_code.is_some() {
+                        "Native process exited before all tool completions were confirmed; workspace reservation retained. Inspect unfinished tool effects and any remaining child processes before /scope stopped and explicit continuation."
+                    } else {
+                        "Native process exit is uncertain; workspace reservation retained. Inspect the old process before /scope stopped and explicit continuation."
+                    });
                 }
                 confirmed
             }
@@ -327,13 +331,13 @@ impl App {
         self.push_system("Reading workspace reservations");
     }
 
-    pub(super) fn poll_scope_inspection(&mut self) {
+    pub(super) fn poll_scope_inspection(&mut self) -> bool {
         let Some((conversation, receiver)) = &self.scopes.read else {
-            return;
+            return false;
         };
         let result = match receiver.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(_) => Err("workspace inspection stopped".into()),
         };
         let current = conversation == self.deleg.d.conversation_id();
@@ -341,5 +345,6 @@ impl App {
         if current {
             self.push_system(result.unwrap_or_else(|error| error));
         }
+        current
     }
 }

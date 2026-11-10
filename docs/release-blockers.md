@@ -27,7 +27,8 @@ control, not evidence of passing remote CI or authorization to publish.
 | Source snapshot | Memory/orchestration work is committed; the unsigned release workflow builds precompiled assets and checksum/notices bundles. | CI must pass on the exact committed candidate. Configured workflows do not establish release qualification. |
 | Windows antivirus / publisher trust | Defender quarantined the installed 2026-11-02d executable and release dependency executable as `Trojan:Win32/Bearfoos.A!ml` on 2026-11-02. A locked rebuild passed local scans and installed successfully after intelligence update to `1.463.94.0`; it remains unsigned. | The owner selected unsigned distribution on 2026-11-04; no certificate or paid signing account is required. Pass Defender/install/update checks on the exact final artifact, and pursue vendor review for any detected artifact. Public-feed rehearsal remains pending publication. See [Windows signing](windows-signing.md) for the recovered artifact hash and limits. No antivirus exclusion is a release prerequisite. |
 
-The privacy script scans tracked files only; new files also need the final privacy/secrets review.
+The privacy script scans tracked and unignored candidate files. Exact public-theme exceptions are
+reviewed per path; ignored local evidence is not automatically part of a release candidate.
 No credential files were read or copied for this audit. Evidence: ignored
 `target/advisories-2026-11-02a.log`, `target/artifact-smoke-2026-11-02a-final.log` and
 `target/oss-gates-2026-11-02a.log`.

@@ -24,7 +24,7 @@ The execution surface and first memory/orchestration slices exist. The complete 
 
 Practical sequence: (1) stabilize current release checks and prove the demo paths; (2) complete deeper native memory and related-chat retrieval; (3) prove proactive capacity policy and broader orchestration. Public-preview storytelling can begin before the full roadmap is done. A broad stable-release claim cannot.
 
-Sources of product truth: [PLAN](../PLAN.md), [native memory](native-memory.md), [handoff target](context-handoff-plan.md), [delegation](delegation.md), [verification](e2e-status.md), [release gates](release-blockers.md).
+Sources of product truth: [PLAN](../../PLAN.md), [native memory](../native-memory.md), [handoff target](context-handoff-plan.md), [delegation](../delegation.md), [verification](../e2e-status.md), [release gates](../release-blockers.md).
 
 ## Positioning and format
 
@@ -76,7 +76,7 @@ A suggested cadence is one installment per day, replying to the previous install
 
 ### 7. Explicit workers (247 characters)
 
-7/8 Sometimes I want a second account working on a separate task. Concordia supports explicit background workers, visible progress and result handoff. You choose the task and when to use the result. Up to three workers; no automatic task spawning.
+7/8 Sometimes I want a second account working on a separate task. Concordia supports explicit background workers, visible progress and result handoff. You choose the task and when to use the result. The configured limit supports up to twelve workers, with concurrency limited by available resources.
 
 **GIF:** 10-12s: explicitly launch a fake worker task, show its progress, open its result. Stop before any orchestrator dispatch unless that is part of the recorded scenario. Label the clip 'Fixture demo'.
 

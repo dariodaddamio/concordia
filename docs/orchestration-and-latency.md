@@ -34,8 +34,9 @@ Providers can differ. `/delegate model ACCOUNT` lists that worker's locally reco
 proposals. `default` restores the native default. Running/queued jobs retain the selection captured
 when submitted. Catalog ids are validated; models are never invented or silently substituted.
 
-`/delegate ACCOUNT TASK` starts a fresh native worker session with bounded context. Up to three
-workers can run concurrently; each has a queue of at most two. The strip and Ctrl+G browser show
+`/delegate ACCOUNT TASK` starts a fresh native worker session with bounded context. Up to twelve
+worker accounts can be enrolled, subject to the configured ceiling and scheduling; each has a queue
+of at most two. The strip and Ctrl+G browser show
 model/state, and inspection shows task, trust, session, output and result-delivery state. Different
 concerns should own different files: shared-folder workers have no automatic merge isolation.
 

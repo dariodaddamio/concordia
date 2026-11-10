@@ -30,8 +30,24 @@ the manifest. A bare program is asked for JSON with `concordia-manifest`.
 `verify` must exit zero and print a final JSON object with `result: "denied-live-probe"`, the exact
 provider and isolated home, and the current SHA-256 policy revision. Other results remain
 unverified and do not write a receipt. Connecting never copies authentication files; the optional
-`skill` is metadata and `/harness skill` installs only Concordia's connection skill into the active
-provider home.
+`skill` is metadata and `/harness skill` installs Concordia's connection skill across registered
+provider homes. Use `--current` to restrict setup to the selected account.
+
+`/skills` and `/hooks` inspect the selected account's native sources. Their `connect PATH` action
+uses `/harness connect PATH`, which defaults to all registered accounts, including logged-out
+and hidden homes. Supported providers receive separate connection results. Shared project intent
+and receipts live in Concordia's existing connection store. Later accounts connect before their
+first turn in that project. Source revision changes require explicit reconnect; failed adapter
+effects are not automatically retried. Native hook trust and live enforcement remain separate.
+The version 2 setup store reads existing version 1 records; older binaries reject version 2
+instead of overwriting the new shared-source and future-account settings.
+
+`/skills install [PATH]` links a skill folder or collection into the provider homes. The default
+source is `~/.agents/skills`. Shared sources apply across projects and reach later accounts before
+their first turn. Directory links retain one current source; same-named existing skills are kept.
+`/skills remove PATH` stops propagation and removes matching links across registered homes,
+preserving source files and unrelated skill directories. Missing sources can still be unshared.
+`/hooks status` reports shared sources and per-account setup; `/hooks verify` runs adapter probes.
 
 ## Exact pinned decisions (2026-10-31s)
 

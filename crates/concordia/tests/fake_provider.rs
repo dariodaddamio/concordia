@@ -147,7 +147,7 @@ async fn shell_start_arrives_while_provider_waits_for_completion_gate() {
     env.set("FAKE_PROVIDER_STREAM", fixture("codex-stream.jsonl"));
     let gate = env.path("release-stream");
     env.set("FAKE_PROVIDER_GATE", &gate);
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(64);
     let cwd = env.path("work");
     std::fs::create_dir_all(&cwd).unwrap();
     let request = req("stream before completion", &cwd, None);
@@ -190,7 +190,7 @@ async fn streams_session_text_and_cards_through_the_real_runner() {
     let out_file = env.path("received.txt");
     env.set("FAKE_PROVIDER_OUT", &out_file);
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(64);
     let cwd = env.path("work");
     std::fs::create_dir_all(&cwd).unwrap();
     let outcome = run_provider_turn_with_progress(&req("hi", &cwd, Some(&home)), None, Some(tx))
@@ -695,7 +695,7 @@ async fn a_cursor_conversation_gets_a_created_chat_and_resumes_it() {
 }
 
 #[tokio::test]
-async fn cursor_falls_back_to_an_unbound_turn_when_create_chat_is_unusable() {
+async fn cursor_refuses_dispatch_when_create_chat_is_unusable() {
     for (label, key, value) in [
         ("garbage output", "FAKE_PROVIDER_CHAT_OUT", "no id here"),
         ("a failing command", "FAKE_PROVIDER_CHAT_FAIL", "1"),
@@ -708,21 +708,17 @@ async fn cursor_falls_back_to_an_unbound_turn_when_create_chat_is_unusable() {
         env.set(key, value);
         let cwd = env.path("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let out = run_provider_turn(&req_for(ProviderKind::Cursor, "hello", &cwd, None), None)
+        let error = run_provider_turn(&req_for(ProviderKind::Cursor, "hello", &cwd, None), None)
             .await
-            .unwrap();
-        let got = read_received(&out_file);
+            .unwrap_err();
         assert!(
-            arg_after(&got, "--resume").is_none(),
-            "{label}: {:?}",
-            got.args
+            error.to_string().contains("exact native chat"),
+            "{label}: {error}"
         );
-        assert_eq!(prompt_arg(&got), "hello", "{label}");
-        assert!(out.session_id.is_none(), "{label}");
         assert_eq!(
-            out.exit_code,
-            Some(0),
-            "{label}: the turn itself must still run"
+            read_received(&out_file).args,
+            ["create-chat"],
+            "{label}: only metadata initialization may run; no model turn"
         );
     }
 }
@@ -746,7 +742,7 @@ async fn a_claude_result_line_with_usage_reaches_progress_but_never_the_reply() 
     env.set("FAKE_PROVIDER_STREAM", &stream);
     let cwd = env.path("work");
     std::fs::create_dir_all(&cwd).unwrap();
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(64);
     let outcome = run_provider_turn_with_progress(
         &req_for(ProviderKind::Claude, "hi", &cwd, None),
         None,

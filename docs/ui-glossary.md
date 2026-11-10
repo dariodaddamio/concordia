@@ -4,6 +4,17 @@ This glossary lists each
 visible run phase, tool toggle, worker mark, transcript gutter, notice and terminal-tab state.
 The phase text is authoritative when a terminal font cannot render a symbol.
 
+## Tabs and terminals
+
+Tabs have padded close controls and a hand cursor over clickable labels/close areas. Double-click
+a tab label to rename that conversation; the title editor preserves the independent message draft.
+
+F11 or `/terminal` opens a local shell in the workspace; F11 returns to chat. Hiding keeps the shell
+alive, while `/terminal close` or Ctrl+Shift+W in the shell stops it. Ctrl+C inside the shell interrupts
+the shell command; it does not cancel the model's task. Shell sessions are transient and are stopped
+when their owning tab/window closes. `concordia --terminal` selects the host for the chat UI and is
+separate from this in-app command terminal.
+
 ## Account identity
 
 The top bar shows the active nickname and provider/account, followed by its email. If the provider
@@ -33,9 +44,10 @@ The [workspace pane guide](workspace-panes.md) covers both routes. Clickable
 paths and `/open FILE[:LINE[:COLUMN]]` share the same internal file pane. Prefixing a path with `@`
 is accepted, including `/open @README.md`. A click opens a pane; a drag selects text. File references
 in the prompt remain provider-visible text, rather than silently reading/attaching local contents.
-The file pane is read-only, bounded to three files, 2 MiB and 50,000 UTF-8 lines per file.
-`/open` starts in raw mode; `/preview` requests formatted Markdown or pretty-printed JSON.
-Press `v` or click the view bar to toggle. Unsupported formats stay raw. Terminal controls are
+File panes are bounded to three files, 2 MiB and 50,000 UTF-8 lines per file.
+`/open` and `/preview` show formatted Markdown or pretty-printed JSON; source files open raw.
+Alt+V or the view bar switches modes. Formatted view is read-only; raw mode edits with explicit
+Ctrl+S save and dirty-close decisions. Terminal controls are
 removed before rendering. Divider hover/drag requests `ew-resize` or `ns-resize`; close and view
 controls request `pointer`. Unsupported terminal hosts may ignore these OSC 22 requests.
 
@@ -45,13 +57,14 @@ Cached values are marked while checking or after an error. Codex re-reads provid
 local files; server changes are only available after the CLI writes another reading.
 
 Prompt `@` completion combines current-chat file references with recorded Concordia chats.
-`/open` without an argument shows the current-chat file list. Ctrl+P or a file-row click previews;
+`/open` without an argument browses chat references, recent previews and bounded workspace files.
+Ctrl+P or a file-row click previews;
 Tab/Enter inserts a literal reference and leaves the draft unsent. Discovery uses bounded recent
 messages/tool cards, deduplicates canonical paths and excludes automatic credential suggestions.
-It does not scan the repository or silently attach file contents. Sending a selected chat
-reference supplies its bounded map; a side-by-side chat viewer and repository-wide file search
-remain planned. See [workspace requirements](workspace-panes.md) for implemented preview
-controls and planned editing, and [memory design](context-handoff-plan.md) for native-source retrieval.
+Reference completion does not silently attach file contents. Sending a selected chat reference
+supplies its bounded map. `/search` searches workspace contents with visible bounds and explicit
+replacement previews. A side-by-side chat viewer remains planned. See
+[workspace controls](workspace-panes.md) and [memory design](plans/context-handoff-plan.md).
 
 ## Unfinished requests and previews
 
@@ -60,3 +73,9 @@ draft. `/continue` reviews the request and target choices; `/use` also has a con
 is sent merely by reopening the app. In a focused file pane, `/` searches, `n`/`N` navigate matches,
 and `r` reloads. A changed-on-disk indicator comes from background metadata checks. These controls
 never send a chat prompt. [Native memory](native-memory.md) defines the limits and recovery rules.
+
+Double-click a tab or press F2 to edit its title in place. The title has its own editor; the message
+draft, attachments and editor state stay visible and unchanged. Enter saves; Esc cancels.
+Switching tabs or clicking outside cancels the pending title edit. `/rename TITLE` changes the same local title;
+`/rename` resets it to automatic naming. F1 opens shortcuts; `?` opens them only from an empty,
+idle composer, so question marks remain ordinary text in drafts and focused editors.

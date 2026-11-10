@@ -1,6 +1,97 @@
 use super::*;
 
 #[test]
+fn attention_badge_opens_and_selects_the_paused_queue() {
+    let mut h = Harness::new(180, 30);
+    landing::open_home_tab(&mut h.app);
+    h.app.queue.items.push("pending prompt".into());
+    h.app.queue.paused = true;
+    h.draw();
+    let badge = h
+        .app
+        .areas
+        .header_attention
+        .expect("clickable attention badge");
+    h.click(badge.x + 2, badge.y);
+    assert!(h
+        .app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::NeedsYou));
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert!(h.app.queue.focused);
+    assert!(
+        h.app.queue.paused,
+        "inspection must not send a queued prompt"
+    );
+    assert_eq!(h.app.queue.items[0], "pending prompt");
+}
+
+#[test]
+fn home_picker_owns_navigation_and_preserves_the_composer() {
+    let mut h = Harness::new(120, 30);
+    landing::open_home_tab(&mut h.app);
+    h.app.editor.set_text("unsent home draft");
+    h.app.queue.items.push("queued prompt".into());
+    h.app.queue.paused = true;
+    h.key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::NeedsYou);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert!(landing::visible(&h.app));
+    assert_eq!(h.app.editor.text(), "unsent home draft");
+    h.key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert!(h.app.queue.focused);
+    assert!(h.app.queue.paused);
+    assert!(!h.app.busy);
+}
+
+#[test]
+fn empty_paused_queue_has_no_attention_badge() {
+    let mut h = Harness::new(120, 24);
+    h.app.queue.paused = true;
+    h.draw();
+    assert!(h.app.areas.header_attention.is_none());
+    h.key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
+fn home_canvas_and_native_portrait_padding_are_pure_black() {
+    for name in ["default", "opifex"] {
+        let mut h = Harness::new(120, 30);
+        let (config, warnings) = crate::config::Config::parse(&format!("[ui]\ntheme='{name}'\n"));
+        assert!(warnings.is_empty());
+        super::theme::install(&config.ui);
+        h.app.raster.native = true;
+        landing::open_home_tab(&mut h.app);
+        h.draw();
+        assert_eq!(super::theme::image_background(), [0, 0, 0]);
+        assert_eq!(
+            h.term.backend().buffer()[(118, 5)].bg,
+            if name == "default" {
+                Color::Reset
+            } else {
+                Color::Rgb(0, 0, 0)
+            }
+        );
+        // Home places its 14x6 portrait directly below the two header rows.
+        for y in 2..8 {
+            for x in 1..15 {
+                let cell = &h.term.backend().buffer()[(x, y)];
+                assert_eq!(cell.bg, Color::Rgb(0, 0, 0));
+            }
+        }
+        #[cfg(windows)]
+        assert_eq!(super::theme::native_default(false), [0, 0, 0]);
+    }
+    super::theme::install(&crate::config::Config::default().ui);
+}
+
+#[test]
 fn pending_approval_is_a_needs_you_item() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
@@ -33,6 +124,7 @@ fn pending_approval_is_a_needs_you_item() {
                 "availableDecisions": ["accept", "decline"]
             }),
         )
+        .unwrap()
         .unwrap();
     app.questions.offer_native(request, true);
     app.sync_needs_you();
@@ -52,7 +144,7 @@ fn pending_approval_is_a_needs_you_item() {
 
 #[test]
 fn chat_map_row_expands_for_v2_maps() {
-    let map = crate::threads::build_map_v2(
+    let map = crate::threads::build_map(
         &[crate::threads::ThreadEvent::with_text(
             "user",
             "continue here",
@@ -60,6 +152,8 @@ fn chat_map_row_expands_for_v2_maps() {
         "thread-1",
         1600,
         true,
+        None,
+        None,
     );
     let row = ChatLine {
         role: MsgRole::System,
@@ -99,7 +193,7 @@ fn header_and_status_never_repeat_usage() {
 #[test]
 fn home_header_omits_subscription_when_usage_box_visible() {
     let mut h = Harness::new(120, 30);
-    crate::tui::landing::open_home(&mut h.app);
+    crate::tui::landing::open_home_tab(&mut h.app);
     h.key(KeyCode::Tab, KeyModifiers::NONE);
     h.key(KeyCode::Tab, KeyModifiers::NONE);
     let landing = h.app.landing.as_mut().unwrap();
@@ -305,7 +399,7 @@ fn distinct_escape_presses_drained_together_close_each_focused_layer() {
     h.app.queue.focused = true;
     let mut edit = Editor::default();
     edit.set_text("unsaved upper edit");
-    h.app.queue.edit = Some(edit);
+    h.app.begin_queue_edit(edit);
     h.app.activity.open(0);
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut burst = input::BurstBuffer::default();

@@ -348,7 +348,12 @@ fn enter_still_sends_when_the_prompt_has_text() {
     h.type_str("/workers");
     h.key(KeyCode::Enter, KeyModifiers::NONE); // runs it (the prompt was not empty)
     assert!(h.app.deleg.viewer.is_none());
-    assert!(h.messages().contains("workers 0/3"), "{}", h.messages());
+    assert!(
+        h.messages()
+            .contains(&format!("workers 0/{}", crate::config::MAX_WORKERS_CAP)),
+        "{}",
+        h.messages()
+    );
 }
 
 #[test]
@@ -662,7 +667,7 @@ fn worker_models_use_their_own_catalog_and_apply_to_new_jobs() {
     set_workers(&root, vec!["codex-w1".into()]).unwrap();
     std::fs::write(
         root.join("home-codex-w1/models_cache.json"),
-        r#"{"models":[{"slug":"fixture-fast"}]}"#,
+        r#"{"models":[{"slug":"fixture-fast","display_name":"fixture-fast","visibility":"list"}]}"#,
     )
     .unwrap();
     h.submit("/delegate model codex-w1 fixture-fast");

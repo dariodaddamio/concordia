@@ -1,4 +1,5 @@
 //! Clean-room Codex JSONL -> text / tool cards.
+use crate::tool_literals::literal_wrapper_calls;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +15,50 @@ pub struct StreamCard {
     pub title: String,
     pub detail: Option<String>,
     pub status: CardStatus,
+}
+
+const VISIBLE_CARDS_MAX: usize = 256;
+const CARD_TEXT_MAX: usize = 64 * 1024;
+const OMITTED_CARDS_ID: &str = "concordia:omitted-tool-history";
+
+fn bound_card_text(text: &mut String, limit: usize) {
+    const NOTICE: &str =
+        "\n[Display clipped; inspect the original native session for full output.]";
+    if text.len() <= limit {
+        return;
+    }
+    let mut end = limit.saturating_sub(NOTICE.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push_str(NOTICE);
+}
+
+pub(crate) fn bound_card(card: &mut StreamCard) {
+    if card.id.len() > 4096 {
+        use sha2::{Digest, Sha256};
+        card.id = format!("concordia:long-id:{:x}", Sha256::digest(card.id.as_bytes()));
+    }
+    bound_card_text(&mut card.title, 4096);
+    if let Some(detail) = &mut card.detail {
+        bound_card_text(detail, CARD_TEXT_MAX);
+    }
+}
+
+fn bound_card_history(cards: &mut Vec<StreamCard>) {
+    if cards.len() <= VISIBLE_CARDS_MAX {
+        return;
+    }
+    cards.retain(|card| card.id != OMITTED_CARDS_ID);
+    let remove = cards.len().saturating_sub(VISIBLE_CARDS_MAX - 1);
+    cards.drain(..remove);
+    cards.insert(0, StreamCard {
+        id: OMITTED_CARDS_ID.into(),
+        title: "Earlier tool cards omitted from this view".into(),
+        detail: Some("Inspect the original native session for full tool history. Native permissions and pending questions remain separate.".into()),
+        status: CardStatus::Done,
+    });
 }
 
 /// Token counts and cost a provider reported for one turn. Every field is optional: a provider
@@ -109,6 +154,8 @@ pub fn usage_exhausted(text: &str) -> bool {
         "insufficient_quota",
         "you've hit your limit",
         "you have hit your limit",
+        "you've hit your weekly limit",
+        "you have hit your weekly limit",
         "rate_limit_exceeded",
         "rate limit reached",
         "usage has been exhausted",
@@ -858,6 +905,7 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
         .detail
         .as_deref()
         .map(|detail| crate::redact::redact(detail).into_owned());
+    bound_card(&mut next);
     if let Some(prev) = cards.iter_mut().find(|c| c.id == next.id) {
         let is_result_update = next.title == "result";
         let search_heartbeat = next.title == "Search web"
@@ -920,9 +968,11 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
         // A native result supplies the successful output only after its input was merged.
         // This also runs during exact-session history hydration.
         super::edit_display::normalize(prev);
+        bound_card(prev);
     } else {
         cards.push(next);
     }
+    bound_card_history(cards);
 }
 
 pub fn format_card_line(card: &StreamCard) -> String {
@@ -1175,47 +1225,6 @@ fn append_patch_summary(summary: &mut CardSummary, patch: &str) {
     }
 }
 
-/// Only complete literal host statement batches qualify; no expressions are evaluated.
-pub(crate) fn literal_wrapper_calls(input: &str) -> Option<Vec<(String, Value)>> {
-    if input.len() > 256 * 1024 {
-        return None;
-    }
-    let mut rest = input.trim();
-    if rest.starts_with("// @exec:") {
-        rest = rest.split_once('\n')?.1.trim_start();
-    }
-    let mut calls = Vec::new();
-    while !rest.is_empty() {
-        if calls.len() >= 8 {
-            return None;
-        }
-        let statement = rest.strip_prefix("text(await tools.")?;
-        let end = statement.find('(')?;
-        let name = &statement[..end];
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
-            return None;
-        }
-        let argument = &statement[end + 1..];
-        let (value, end) = crate::tool_literals::literal_tool_argument(argument)?;
-        rest = argument
-            .get(end..)?
-            .trim_start()
-            .strip_prefix("))")?
-            .trim_start();
-        if let Some(next) = rest.strip_prefix(';') {
-            rest = next.trim_start();
-        } else if !rest.is_empty() {
-            return None;
-        }
-        calls.push((name.into(), value));
-    }
-    (!calls.is_empty()).then_some(calls)
-}
-
 fn command_purpose(command: &str) -> &'static str {
     let lower = command.trim().to_ascii_lowercase();
     let lower = if lower.contains("powershell") || lower.contains("pwsh") {
@@ -1434,6 +1443,17 @@ fn card_preview(detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weekly_limit_wording_is_exhaustion_and_not_server_overload() {
+        for message in [
+            "You've hit your weekly limit",
+            "You have hit your weekly limit",
+        ] {
+            assert!(usage_exhausted(message));
+            assert!(!model_overloaded(message));
+        }
+    }
 
     #[test]
     fn compact_shell_rows_show_the_command_and_preserve_full_output() {

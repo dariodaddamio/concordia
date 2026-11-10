@@ -1,10 +1,9 @@
-//! Provider compatibility: feature detection, not version pinning.
+//! Read-only provider interface observation and required-capability validation.
 //!
-//! Concordia never pins or updates the provider CLIs. For each one it reads `--version` and, once
+//! Concordia never installs or updates the provider CLIs. For each one it reads `--version` and, once
 //! per binary revision (cached in `<state>/version-probes.json`), `--help`, and records which flags exist. Turn
-//! planning degrades stream-json to plain text, but fails closed when known help cannot enforce
-//! Plan mode. [`TESTED`] holds the versions the parsers and flag sets were last verified against;
-//! `concordia doctor` warns (never fails) when the installed one differs.
+//! planning preserves its current structured/native controls and rejects known missing requirements.
+//! [`OBSERVED_INTERFACES`] records read-only installed interface observations, not live qualification.
 //!
 //! Detection never runs a turn. The runner is injectable so tests use fake output; the real one
 //! runs `--version` / `--help` with a 5 s bound and kills the process tree on timeout.
@@ -13,48 +12,46 @@ use crate::provider::launch::{cursor_ps1_beside, is_batch_shim};
 use crate::provider::turn::PlannedTurn;
 use crate::store::{ProviderKind, TrustMode};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
-use std::io::Read;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Versions each provider's parsers and flag sets were last verified against (version output
-/// only; no turn was run to obtain them).
-pub const TESTED: &[(ProviderKind, &[&str])] = &[
-    (ProviderKind::Claude, &["2.1.301"]),
-    (ProviderKind::Codex, &["0.163.0"]),
-    (ProviderKind::Cursor, &["2026.10.14-0f9edde"]),
+/// Installed interfaces observed through bounded --version/--help on 2026-11-08.
+/// This table is diagnostic metadata, never proof of model-turn or approval parity.
+pub const OBSERVED_INTERFACES: &[(ProviderKind, &[&str])] = &[
+    (ProviderKind::Claude, &["2.1.319"]),
+    (ProviderKind::Codex, &["0.166.0"]),
+    (ProviderKind::Cursor, &["2026.11.05-86047df"]),
 ];
 
 /// Bump when the help parsing below changes, so cached results are read again.
-const PARSER_REV: u32 = 1;
+const PARSER_REV: u32 = 2;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTPUT_MAX: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Tested {
+pub enum VersionComparison {
     Same,
     Newer,
     Older,
     Unknown,
 }
 
-impl Tested {
+impl VersionComparison {
     pub fn label(self) -> &'static str {
         match self {
-            Tested::Same => "same",
-            Tested::Newer => "newer",
-            Tested::Older => "older",
-            Tested::Unknown => "unknown",
+            VersionComparison::Same => "same",
+            VersionComparison::Newer => "newer",
+            VersionComparison::Older => "older",
+            VersionComparison::Unknown => "unknown",
         }
     }
 }
 
-/// Which flags a CLI's help text lists. When the help could not be read every flag is assumed
-/// present (no degradation on a guess).
+/// Which flags native help declares. Unknown observations grant no capability evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Caps {
     /// `--output-format stream-json` (Codex: `--json`).
@@ -67,18 +64,18 @@ pub struct Caps {
     pub partial_messages: bool,
     /// `-s/--sandbox`.
     pub sandbox: bool,
-    /// False when this is the assume-everything fallback.
+    /// False when native help was unavailable or malformed.
     pub known: bool,
 }
 
 impl Caps {
-    pub fn assume_all() -> Caps {
+    pub fn unknown() -> Caps {
         Caps {
-            stream_json: true,
-            permission_mode: true,
-            plan_mode: true,
-            partial_messages: true,
-            sandbox: true,
+            stream_json: false,
+            permission_mode: false,
+            plan_mode: false,
+            partial_messages: false,
+            sandbox: false,
             known: false,
         }
     }
@@ -88,15 +85,8 @@ impl Caps {
 pub struct Compat {
     /// First line of `--version`, as printed.
     pub version: String,
-    pub tested: Tested,
+    pub comparison: VersionComparison,
     pub caps: Caps,
-}
-
-impl Compat {
-    /// Legacy flag-cache optimism never supplies native interaction/capacity authority.
-    pub fn interaction_capabilities(&self) -> super::interaction::InteractionCapabilities {
-        super::interaction::InteractionCapabilities::unknown_for_version(Some(&self.version))
-    }
 }
 
 /// Runs `program args...` and returns its output (stdout then stderr).
@@ -104,8 +94,8 @@ pub type Runner<'a> = &'a dyn Fn(&Path, &[&str]) -> Result<String, String>;
 
 // ---- versions -----------------------------------------------------------------------------
 
-/// The version token of a `--version` line: `2.1.301 (Claude Code)` gives `2.1.301`,
-/// `codex-cli 0.163.0` gives `0.163.0`.
+/// The version token of a `--version` line: `2.1.319 (Claude Code)` gives `2.1.319`,
+/// `codex-cli 0.166.0` gives `0.166.0`.
 pub fn version_token(line: &str) -> Option<String> {
     line.split_whitespace()
         .map(|t| t.trim_start_matches('v'))
@@ -127,40 +117,42 @@ fn numeric(v: &str) -> Option<Vec<u64>> {
     parts.filter(|p| !p.is_empty())
 }
 
-fn assess_against(token: &str, tested: &[&str]) -> Tested {
+fn compare_against(token: &str, observed: &[&str]) -> VersionComparison {
     let Some(v) = numeric(token) else {
-        return Tested::Unknown;
+        return VersionComparison::Unknown;
     };
-    let known: Vec<Vec<u64>> = tested.iter().filter_map(|t| numeric(t)).collect();
+    let known: Vec<Vec<u64>> = observed.iter().filter_map(|t| numeric(t)).collect();
     if known.is_empty() {
-        return Tested::Unknown;
+        return VersionComparison::Unknown;
     }
-    if known.contains(&v) {
-        Tested::Same
+    if observed.contains(&token) {
+        VersionComparison::Same
     } else if known.iter().all(|t| &v > t) {
-        Tested::Newer
+        VersionComparison::Newer
     } else if known.iter().all(|t| &v < t) {
-        Tested::Older
+        VersionComparison::Older
     } else {
-        Tested::Unknown
+        VersionComparison::Unknown
     }
 }
 
-/// How `version_line` compares with what [`TESTED`] lists for the provider.
-pub fn assess(provider: ProviderKind, version_line: &str) -> Tested {
+/// How `version_line` compares with what [`OBSERVED_INTERFACES`] lists for the provider.
+pub fn compare_version(provider: ProviderKind, version_line: &str) -> VersionComparison {
     let Some(token) = version_token(version_line) else {
-        return Tested::Unknown;
+        return VersionComparison::Unknown;
     };
-    TESTED
+    OBSERVED_INTERFACES
         .iter()
         .find(|(p, _)| *p == provider)
-        .map_or(Tested::Unknown, |(_, t)| assess_against(&token, t))
+        .map_or(VersionComparison::Unknown, |(_, t)| {
+            compare_against(&token, t)
+        })
 }
 
 // ---- help parsing -------------------------------------------------------------------------
 
 /// Flags from `--help` text; `None` when it does not look like help at all (then the caller
-/// assumes everything is supported rather than degrading on a guess).
+/// retains an explicitly unknown observation).
 pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
     if help.lines().filter(|l| l.contains("--")).count() < 3 {
         return None;
@@ -243,8 +235,7 @@ fn binary_fingerprint(bin: &Path) -> Option<(String, u64, u64, u32)> {
 }
 
 fn load_version_cache(state_root: &Path) -> BTreeMap<String, VersionProbeCache> {
-    std::fs::read_to_string(version_cache_path(state_root))
-        .ok()
+    crate::fs_safe::read_text_bounded(&version_cache_path(state_root), 1024 * 1024)
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
@@ -269,7 +260,8 @@ fn shim_target(provider: ProviderKind, bin: &Path) -> Option<String> {
             let package = super::npm::package_for_shim(&bin.to_string_lossy(), provider)?;
             let manifest = package.join("package.json");
             let value: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&manifest).ok()?).ok()?;
+                serde_json::from_str(&crate::fs_safe::read_text_bounded(&manifest, 128 * 1024)?)
+                    .ok()?;
             let version = value["version"].as_str()?;
             let modified = std::fs::metadata(&manifest)
                 .ok()?
@@ -347,8 +339,7 @@ fn cache_key(provider: ProviderKind, version: &str) -> String {
 }
 
 fn load_cache(state_root: &Path) -> BTreeMap<String, Caps> {
-    std::fs::read_to_string(cache_path(state_root))
-        .ok()
+    crate::fs_safe::read_text_bounded(&cache_path(state_root), 1024 * 1024)
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
@@ -356,7 +347,9 @@ fn load_cache(state_root: &Path) -> BTreeMap<String, Caps> {
 fn save_cache(state_root: &Path, map: &BTreeMap<String, Caps>) {
     if let Ok(json) = serde_json::to_string_pretty(map) {
         let _ = std::fs::create_dir_all(state_root);
-        let _ = std::fs::write(cache_path(state_root), json);
+        if json.len() <= 1024 * 1024 {
+            let _ = crate::state_io::write_atomic(&cache_path(state_root), json.as_bytes());
+        }
     }
 }
 
@@ -402,7 +395,7 @@ pub fn detect_with_mode(
             }
             Some(version)
         })?;
-    let tested = assess(provider, &version);
+    let comparison = compare_version(provider, &version);
     let token = version_token(&version).unwrap_or_else(|| version.clone());
     let key = cache_key(provider, &token);
     let mut cache = state_root.map(load_cache).unwrap_or_default();
@@ -421,12 +414,12 @@ pub fn detect_with_mode(
                 }
                 c
             }
-            None => Caps::assume_all(),
+            None => Caps::unknown(),
         },
     };
     Some(Compat {
         version,
-        tested,
+        comparison,
         caps,
     })
 }
@@ -468,34 +461,17 @@ pub fn run_cli(program: &Path, args: &[&str]) -> Result<String, String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    fn drain<R: Read + Send + 'static>(r: Option<R>) -> std::thread::JoinHandle<String> {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(r) = r {
-                let _ = r.take(OUTPUT_MAX as u64).read_to_end(&mut buf);
-            }
-            String::from_utf8_lossy(&buf).into_owned()
-        })
-    }
-    let (out, err) = (drain(child.stdout.take()), drain(child.stderr.take()));
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() >= PROBE_TIMEOUT => {
-                crate::provider::turn::kill_process_tree(child.id());
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("timed out".into());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-            Err(e) => return Err(e.to_string()),
-        }
-    }
-    let mut text = out.join().unwrap_or_default();
+    let out = crate::process_lifetime::capture(cmd, PROBE_TIMEOUT, OUTPUT_MAX)?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push('\n');
-    text.push_str(&err.join().unwrap_or_default());
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        return Err(format!(
+            "CLI interface probe failed (exit {:?}): {}",
+            out.status.code(),
+            text.trim()
+        ));
+    }
     Ok(text)
 }
 
@@ -544,7 +520,7 @@ pub fn start_real_detection(state_root: PathBuf) -> Receiver<(ProviderKind, Comp
 static CAPS: Mutex<Vec<(&'static str, Caps)>> = Mutex::new(Vec::new());
 static VERSIONS: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
 
-/// Record what was detected so turn planning can degrade; also used by `concordia doctor`.
+/// Record detected capabilities for explicit turn validation and `concordia doctor`.
 pub fn set_caps(provider: ProviderKind, caps: Caps) {
     if let Ok(mut v) = CAPS.lock() {
         v.retain(|(p, _)| *p != provider.as_str());
@@ -561,7 +537,7 @@ pub fn set_compat(provider: ProviderKind, compat: &Compat) {
     }
 }
 
-fn version_for(provider: ProviderKind) -> String {
+pub(super) fn version_for(provider: ProviderKind) -> String {
     VERSIONS
         .lock()
         .ok()
@@ -579,7 +555,7 @@ fn plan_enforcement_error(provider: ProviderKind) -> String {
         ProviderKind::Cursor => ("Cursor", "--mode plan"),
         ProviderKind::Codex => ("Codex", "--sandbox read-only"),
     };
-    format!("{cli} {} can't enforce Plan mode (its help has no {flag}). Update the CLI, or switch to Ask with Shift+Tab to run with approvals.", version_for(provider))
+    format!("{cli} {} can't enforce Plan mode (its help has no {flag}). Use a CLI that provides the current required interface.", version_for(provider))
 }
 
 fn ensure_plan_supported(
@@ -601,163 +577,73 @@ pub fn caps_for(provider: ProviderKind) -> Option<Caps> {
         .map(|(_, c)| *c)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Degrade {
-    /// Plain text instead of stream-json.
-    NoStreamJson,
-    /// Ask instead of plan.
-    NoPlanMode,
-    /// The permission flag is omitted.
-    NoPermissionMode,
-}
-
-impl Degrade {
-    pub fn notice(self, provider: ProviderKind) -> String {
-        let p = provider.as_str();
-        match self {
-            Degrade::NoStreamJson => format!("{p}: no stream-json, showing text"),
-            Degrade::NoPlanMode => format!("{p}: no plan mode, using ask"),
-            Degrade::NoPermissionMode => {
-                format!("{p}: no --permission-mode, running with its own defaults")
-            }
-        }
-    }
-}
-
-/// Rewrite a planned argv for a CLI that lacks a flag. The prompt (always last) is never
-/// touched. Returns what was degraded.
-fn set_value(argv: &mut [String], flag: &str, value: &str) -> bool {
-    match argv.iter().position(|a| a == flag) {
-        Some(i) if i + 1 < argv.len() => {
-            argv[i + 1] = value.into();
-            true
-        }
-        _ => false,
-    }
-}
-
-pub fn degrade_argv(
+/// Validate the declared current interface without rewriting argv or weakening native controls.
+fn validate_argv(
     provider: ProviderKind,
-    argv: &mut Vec<String>,
-    _trust: TrustMode,
+    argv: &[String],
+    trust: TrustMode,
     caps: &Caps,
-) -> Vec<Degrade> {
-    let mut out = Vec::new();
+) -> anyhow::Result<()> {
+    ensure_plan_supported(provider, trust, caps)?;
     if !caps.known {
-        return out;
-    }
-    let prompt = argv.pop();
-    match provider {
-        ProviderKind::Claude | ProviderKind::Cursor if !caps.stream_json => {
-            if set_value(argv, "--output-format", "text") {
-                argv.retain(|a| a != "--verbose");
-                out.push(Degrade::NoStreamJson);
-            }
-        }
-        ProviderKind::Codex if !caps.stream_json => {
-            let before = argv.len();
-            argv.retain(|a| a != "--json");
-            if argv.len() != before {
-                out.push(Degrade::NoStreamJson);
-            }
-        }
-        _ => {}
-    }
-    if provider == ProviderKind::Claude && !caps.permission_mode {
-        let pos = argv.iter().position(|a| a == "--permission-mode");
-        if let Some(i) = pos.filter(|i| i + 1 < argv.len()) {
-            argv.drain(i..i + 2);
-            out.push(Degrade::NoPermissionMode);
-        }
-    }
-    // Partial output only exists with stream-json; without it the reply arrives whole (no notice).
-    if provider == ProviderKind::Cursor && !(caps.partial_messages && caps.stream_json) {
-        argv.retain(|a| a != "--stream-partial-output");
-    }
-    if let Some(prompt) = prompt {
-        argv.push(prompt);
-    }
-    out
-}
-
-/// Notices already shown this launch, and ones waiting for the UI.
-#[derive(Default)]
-pub struct NoticeLog {
-    seen: HashSet<(&'static str, Degrade)>,
-    pending: Vec<String>,
-}
-
-impl NoticeLog {
-    /// Queue the notice for each degradation not yet seen for this provider.
-    pub fn note(&mut self, provider: ProviderKind, degraded: &[Degrade]) {
-        for d in degraded {
-            if self.seen.insert((provider.as_str(), *d)) {
-                self.pending.push(d.notice(provider));
-            }
-        }
-    }
-
-    pub fn take(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pending)
-    }
-}
-
-static NOTICES: Mutex<Option<NoticeLog>> = Mutex::new(None);
-
-/// Dim system notices queued by planning (once per provider and degradation per launch).
-pub fn take_notices() -> Vec<String> {
-    NOTICES
-        .lock()
-        .ok()
-        .and_then(|mut g| g.as_mut().map(NoticeLog::take))
-        .unwrap_or_default()
-}
-
-/// Apply detected capabilities to a planned turn. No-op until detection has landed.
-pub fn degrade_planned(plan: &mut PlannedTurn, trust: TrustMode) -> anyhow::Result<()> {
-    let Some(caps) = caps_for(plan.provider) else {
-        return Ok(());
-    };
-    let done = apply_caps(plan, trust, &caps)?;
-    if done.is_empty() {
+        // Unknown is not supported evidence. Keep explicit native flags and let the
+        // selected CLI validate them; never remove controls or substitute plain text.
         return Ok(());
     }
-    if let Ok(mut g) = NOTICES.lock() {
-        g.get_or_insert_with(NoticeLog::default)
-            .note(plan.provider, &done);
+    for (flag, value) in super::turn::planned_options(argv) {
+        let missing = match flag {
+            "--json" => !caps.stream_json,
+            "--output-format" if value == Some("stream-json") => !caps.stream_json,
+            "--permission-mode" if provider == ProviderKind::Claude => !caps.permission_mode,
+            "--stream-partial-output" | "--include-partial-messages" => !caps.partial_messages,
+            "-s" | "--sandbox" => !caps.sandbox,
+            _ => false,
+        };
+        anyhow::ensure!(!missing,
+            "{} {} does not declare required {flag}; this current provider interface is unsupported",
+            provider.as_str(), version_for(provider));
     }
     Ok(())
 }
 
-/// Degrade `plan` for `caps`; returns what changed (no notice is queued).
-pub fn apply_caps(
-    plan: &mut PlannedTurn,
-    trust: TrustMode,
-    caps: &Caps,
-) -> anyhow::Result<Vec<Degrade>> {
-    ensure_plan_supported(plan.provider, trust, caps)?;
-    Ok(degrade_argv(plan.provider, &mut plan.argv, trust, caps))
+/// Check observations for the selected provider; absence remains explicitly unverified.
+pub fn validate_planned(plan: &PlannedTurn, trust: TrustMode) -> anyhow::Result<()> {
+    validate_caps(
+        plan,
+        trust,
+        &caps_for(plan.provider).unwrap_or_else(Caps::unknown),
+    )
 }
 
-/// The part of a doctor row that explains degradations (empty when nothing is missing).
-pub fn degradation_summary(provider: ProviderKind, caps: &Caps) -> String {
-    if caps.known && !caps.plan_mode {
-        return plan_enforcement_error(provider);
+pub fn validate_caps(plan: &PlannedTurn, trust: TrustMode, caps: &Caps) -> anyhow::Result<()> {
+    validate_argv(plan.provider, &plan.argv, trust, caps)
+}
+
+pub fn support_summary(provider: ProviderKind, caps: &Caps) -> String {
+    if !caps.known {
+        return "CLI help unavailable; required interface unverified".into();
     }
-    let mut argv = vec![
-        "--output-format".to_string(),
-        "stream-json".into(),
-        "--permission-mode".into(),
-        "plan".into(),
-        "--mode".into(),
-        "plan".into(),
-        "--json".into(),
-    ];
-    degrade_argv(provider, &mut argv, TrustMode::Plan, caps)
-        .into_iter()
-        .map(|d| d.notice(provider))
-        .collect::<Vec<_>>()
-        .join("; ")
+    let mut missing = Vec::new();
+    if !caps.stream_json {
+        missing.push("structured JSON output");
+    }
+    if provider == ProviderKind::Claude && !caps.permission_mode {
+        missing.push("explicit permission mode");
+    }
+    if provider == ProviderKind::Cursor && !caps.partial_messages {
+        missing.push("partial streaming");
+    }
+    if !caps.plan_mode {
+        missing.push("read-only Plan controls");
+    }
+    if missing.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "unsupported current interface: missing {}",
+            missing.join(", ")
+        )
+    }
 }
 
 #[cfg(test)]
@@ -772,50 +658,56 @@ mod tests {
     const CODEX_EXEC_HELP: &str = "Run Codex non-interactively\n  --json  Print events as JSONL\n  -s, --sandbox <MODE>  sandbox policy\n  -m, --model <MODEL>  model\n";
 
     #[test]
-    fn version_tokens_and_tested_comparison() {
+    fn version_tokens_and_read_only_interface_comparison() {
         assert_eq!(
-            version_token("2.1.301 (Claude Code)").as_deref(),
-            Some("2.1.301")
+            version_token("2.1.319 (Claude Code)").as_deref(),
+            Some("2.1.319")
         );
         assert_eq!(
-            version_token("codex-cli 0.163.0").as_deref(),
-            Some("0.163.0")
+            version_token("codex-cli 0.166.0").as_deref(),
+            Some("0.166.0")
         );
         assert_eq!(
-            version_token("2026.10.14-0f9edde").as_deref(),
-            Some("2026.10.14-0f9edde")
+            version_token("2026.11.05-86047df").as_deref(),
+            Some("2026.11.05-86047df")
         );
         assert_eq!(version_token("no version here"), None);
         assert_eq!(
-            assess(ProviderKind::Claude, "2.1.301 (Claude Code)"),
-            Tested::Same
+            compare_version(ProviderKind::Claude, "2.1.319 (Claude Code)"),
+            VersionComparison::Same
         );
         assert_eq!(
-            assess(ProviderKind::Claude, "2.2.0 (Claude Code)"),
-            Tested::Newer
-        );
-        assert_eq!(assess(ProviderKind::Claude, "2.0.9"), Tested::Older);
-        assert_eq!(
-            assess(ProviderKind::Codex, "codex-cli 0.163.0"),
-            Tested::Same
+            compare_version(ProviderKind::Claude, "2.2.0 (Claude Code)"),
+            VersionComparison::Newer
         );
         assert_eq!(
-            assess(ProviderKind::Codex, "codex-cli 0.200.1"),
-            Tested::Newer
-        );
-        // A different build of the same date counts as the tested one.
-        assert_eq!(
-            assess(ProviderKind::Cursor, "2026.10.14-abcdef0"),
-            Tested::Same
+            compare_version(ProviderKind::Claude, "2.0.9"),
+            VersionComparison::Older
         );
         assert_eq!(
-            assess(ProviderKind::Cursor, "2026.11.02-abcdef0"),
-            Tested::Newer
+            compare_version(ProviderKind::Codex, "codex-cli 0.166.0"),
+            VersionComparison::Same
         );
-        assert_eq!(assess(ProviderKind::Cursor, "garbage"), Tested::Unknown);
         assert_eq!(
-            assess_against("1.5.0", &["1.0.0", "2.0.0"]),
-            Tested::Unknown
+            compare_version(ProviderKind::Codex, "codex-cli 0.200.1"),
+            VersionComparison::Newer
+        );
+        // Another build on the same date is not the observed binary revision.
+        assert_eq!(
+            compare_version(ProviderKind::Cursor, "2026.11.05-abcdef0"),
+            VersionComparison::Unknown
+        );
+        assert_eq!(
+            compare_version(ProviderKind::Cursor, "2026.11.06-abcdef0"),
+            VersionComparison::Newer
+        );
+        assert_eq!(
+            compare_version(ProviderKind::Cursor, "garbage"),
+            VersionComparison::Unknown
+        );
+        assert_eq!(
+            compare_against("1.5.0", &["1.0.0", "2.0.0"]),
+            VersionComparison::Unknown
         );
     }
 
@@ -857,10 +749,10 @@ mod tests {
     fn detect_parses_help_once_per_version_and_caches_it() {
         let dir = tempfile::tempdir().unwrap();
         let calls: FakeRun = RefCell::new(Vec::new());
-        let run = fake(&calls, "2.1.301 (Claude Code)\n", CLAUDE_HELP);
+        let run = fake(&calls, "2.1.319 (Claude Code)\n", CLAUDE_HELP);
         let bin = Path::new("claude");
         let a = detect(ProviderKind::Claude, bin, &run, Some(dir.path())).unwrap();
-        assert_eq!(a.tested, Tested::Same);
+        assert_eq!(a.comparison, VersionComparison::Same);
         assert!(a.caps.stream_json && a.caps.known);
         assert_eq!(calls.borrow().len(), 2, "version and help");
         assert!(dir.path().join("compat.json").is_file());
@@ -879,7 +771,7 @@ mod tests {
         let old_help = CLAUDE_HELP.replace("stream-json", "ndjson");
         let run2 = fake(&calls, "2.9.0 (Claude Code)", &old_help);
         let c = detect(ProviderKind::Claude, bin, &run2, Some(dir.path())).unwrap();
-        assert_eq!(c.tested, Tested::Newer);
+        assert_eq!(c.comparison, VersionComparison::Newer);
         assert!(!c.caps.stream_json);
         assert_eq!(calls.borrow().len(), 2);
     }
@@ -888,7 +780,7 @@ mod tests {
     fn doctor_detection_never_writes_caches() {
         let dir = tempfile::tempdir().unwrap();
         let calls: FakeRun = RefCell::new(Vec::new());
-        let run = fake(&calls, "2.1.301 (Claude Code)\n", CLAUDE_HELP);
+        let run = fake(&calls, "2.1.319 (Claude Code)\n", CLAUDE_HELP);
 
         let detected = detect_with_mode(
             ProviderKind::Claude,
@@ -911,7 +803,7 @@ mod tests {
         let run = |_: &Path, args: &[&str]| {
             if args == ["--version"] {
                 calls.fetch_add(1, Ordering::SeqCst);
-                Ok("2.1.301 (Claude Code)".to_string())
+                Ok("2.1.319 (Claude Code)".to_string())
             } else {
                 Ok(CLAUDE_HELP.to_string())
             }
@@ -948,7 +840,7 @@ mod tests {
         let run = |_: &Path, args: &[&str]| {
             if args == ["--version"] {
                 calls.fetch_add(1, Ordering::SeqCst);
-                Ok("codex-cli 0.163.0".into())
+                Ok("codex-cli 0.166.0".into())
             } else {
                 Ok(CODEX_EXEC_HELP.into())
             }
@@ -978,7 +870,7 @@ mod tests {
         let run = |_: &Path, args: &[&str]| {
             if args == ["--version"] {
                 calls.fetch_add(1, Ordering::SeqCst);
-                Ok("2026.10.14-0f9edde".into())
+                Ok("2026.11.05-86047df".into())
             } else {
                 Ok(CURSOR_HELP.into())
             }
@@ -1001,7 +893,7 @@ mod tests {
         let run = |_: &Path, args: &[&str]| {
             if args == ["--version"] {
                 calls.fetch_add(1, Ordering::SeqCst);
-                Ok("codex-cli 0.163.0".into())
+                Ok("codex-cli 0.166.0".into())
             } else {
                 Ok(CODEX_EXEC_HELP.into())
             }
@@ -1018,19 +910,19 @@ mod tests {
             (
                 ProviderKind::Codex,
                 "codex.exe",
-                "codex-cli 0.163.0",
+                "codex-cli 0.166.0",
                 CODEX_EXEC_HELP,
             ),
             (
                 ProviderKind::Claude,
                 "claude.exe",
-                "2.1.301 (Claude Code)",
+                "2.1.319 (Claude Code)",
                 CLAUDE_HELP,
             ),
             (
                 ProviderKind::Cursor,
                 "agent.exe",
-                "2026.10.14-0f9edde",
+                "2026.11.05-86047df",
                 CURSOR_HELP,
             ),
         ];
@@ -1083,7 +975,7 @@ mod tests {
         let run = |_: &Path, args: &[&str]| {
             if args == ["--version"] {
                 calls.fetch_add(1, Ordering::SeqCst);
-                Ok("2.1.301 (Claude Code)".into())
+                Ok("2.1.319 (Claude Code)".into())
             } else {
                 Ok(CLAUDE_HELP.into())
             }
@@ -1093,22 +985,22 @@ mod tests {
     }
 
     #[test]
-    fn codex_help_is_read_from_exec_and_failures_assume_support() {
+    fn codex_help_is_read_from_exec_and_failures_remain_unknown() {
         let calls: FakeRun = RefCell::new(Vec::new());
-        let run = fake(&calls, "codex-cli 0.163.0", CODEX_EXEC_HELP);
+        let run = fake(&calls, "codex-cli 0.166.0", CODEX_EXEC_HELP);
         let c = detect(ProviderKind::Codex, Path::new("codex"), &run, None).unwrap();
         assert!(c.caps.stream_json);
         assert_eq!(calls.borrow()[1], vec!["exec", "--help"]);
 
         let broken = |_: &Path, a: &[&str]| {
             if a == ["--version"] {
-                Ok("2026.10.14-0f9edde".to_string())
+                Ok("2026.11.05-86047df".to_string())
             } else {
                 Err("timed out".to_string())
             }
         };
         let c = detect(ProviderKind::Cursor, Path::new("agent"), &broken, None).unwrap();
-        assert!(!c.caps.known && c.caps.stream_json && c.caps.plan_mode);
+        assert!(!c.caps.known && !c.caps.stream_json && !c.caps.plan_mode);
         let none = |_: &Path, _: &[&str]| Err("not found".to_string());
         assert!(detect(ProviderKind::Cursor, Path::new("agent"), &none, None).is_none());
     }
@@ -1118,84 +1010,59 @@ mod tests {
     }
 
     #[test]
-    fn claude_without_stream_json_or_plan_degrades_and_keeps_the_prompt_last() {
-        let mut caps = Caps::assume_all();
-        caps.known = true;
+    fn claude_missing_required_controls_refuses_without_changing_the_prompt() {
+        let mut caps = parse_help(ProviderKind::Claude, CLAUDE_HELP).unwrap();
         caps.stream_json = false;
-        caps.plan_mode = false;
-        let mut a = argv(&[
+        let a = argv(&[
             "-p",
             "--output-format",
             "stream-json",
-            "--verbose",
             "--permission-mode",
             "plan",
-            "--session-id",
-            "x",
             "do it",
         ]);
-        let d = degrade_argv(ProviderKind::Claude, &mut a, TrustMode::Ask, &caps);
-        assert_eq!(d, vec![Degrade::NoStreamJson]);
-        assert_eq!(
-            a,
-            argv(&[
-                "-p",
-                "--output-format",
-                "text",
-                "--permission-mode",
-                "plan",
-                "--session-id",
-                "x",
-                "do it"
-            ])
-        );
+        let original = a.clone();
+        assert!(validate_argv(ProviderKind::Claude, &a, TrustMode::Ask, &caps).is_err());
+        assert_eq!(a, original);
+        caps.stream_json = true;
         caps.permission_mode = false;
-        let mut b = argv(&["-p", "--permission-mode", "acceptEdits", "hello"]);
-        let d = degrade_argv(ProviderKind::Claude, &mut b, TrustMode::Workspace, &caps);
-        assert_eq!(d, vec![Degrade::NoPermissionMode]);
-        assert_eq!(b, argv(&["-p", "hello"]));
+        assert!(validate_argv(ProviderKind::Claude, &a, TrustMode::Workspace, &caps).is_err());
+        assert_eq!(a, original);
     }
 
     #[test]
-    fn cursor_and_codex_degrade_and_full_support_changes_nothing() {
-        let mut caps = Caps::assume_all();
-        caps.known = true;
-        let original = argv(&[
-            "--print",
-            "--output-format",
-            "stream-json",
-            "--mode",
-            "plan",
-            "p",
-        ]);
-        let mut same = original.clone();
-        assert!(degrade_argv(ProviderKind::Cursor, &mut same, TrustMode::Plan, &caps).is_empty());
-        assert_eq!(same, original);
-
-        caps.plan_mode = false;
-        caps.stream_json = false;
-        let mut a = original.clone();
-        let d = degrade_argv(ProviderKind::Cursor, &mut a, TrustMode::Ask, &caps);
-        assert_eq!(d, vec![Degrade::NoStreamJson]);
-        assert_eq!(
-            a,
-            argv(&["--print", "--output-format", "text", "--mode", "plan", "p"])
-        );
-
-        let mut c = argv(&["exec", "--json", "-s", "read-only", "p"]);
-        let d = degrade_argv(ProviderKind::Codex, &mut c, TrustMode::Plan, &caps);
-        assert_eq!(d, vec![Degrade::NoStreamJson]);
-        assert_eq!(c, argv(&["exec", "-s", "read-only", "p"]));
-
-        // Unknown capabilities (help unreadable) never degrade.
-        let mut u = original.clone();
-        let mut unknown = Caps::assume_all();
-        unknown.stream_json = false;
-        assert!(degrade_argv(ProviderKind::Cursor, &mut u, TrustMode::Plan, &unknown).is_empty());
+    fn cursor_and_codex_require_structured_output_and_unknown_stays_unverified() {
+        for (provider, help, args) in [
+            (
+                ProviderKind::Cursor,
+                CURSOR_HELP,
+                vec![
+                    "--output-format",
+                    "stream-json",
+                    "--stream-partial-output",
+                    "p",
+                ],
+            ),
+            (
+                ProviderKind::Codex,
+                CODEX_EXEC_HELP,
+                vec!["exec", "--json", "-s", "read-only", "p"],
+            ),
+        ] {
+            let original = argv(&args);
+            let mut caps = parse_help(provider, help).unwrap();
+            assert!(validate_argv(provider, &original, TrustMode::Plan, &caps).is_ok());
+            caps.stream_json = false;
+            assert!(validate_argv(provider, &original, TrustMode::Plan, &caps).is_err());
+            let unknown = Caps::unknown();
+            assert!(!unknown.known && !unknown.stream_json && !unknown.plan_mode);
+            assert!(validate_argv(provider, &original, TrustMode::Plan, &unknown).is_ok());
+            assert!(support_summary(provider, &unknown).contains("unverified"));
+        }
     }
 
     #[test]
-    fn known_help_without_plan_flag_refuses_plan_for_each_provider_but_ask_works() {
+    fn missing_plan_controls_refuse_plan_and_missing_sandbox_also_refuses_ask() {
         let cases = [
             (
                 ProviderKind::Claude,
@@ -1217,8 +1084,8 @@ mod tests {
             let caps = parse_help(provider, &help).unwrap();
             assert!(!caps.plan_mode, "fixture must omit plan support");
             let mut argv = argv(&[flag, "plan", "prompt"]);
-            let err = apply_caps(
-                &mut PlannedTurn {
+            let err = validate_caps(
+                &PlannedTurn {
                     command: "fixture".into(),
                     argv: argv.clone(),
                     prompt: "prompt".into(),
@@ -1233,42 +1100,25 @@ mod tests {
             )
             .unwrap_err();
             assert!(err.to_string().contains("can't enforce Plan mode"));
-            assert!(apply_caps(
-                &mut PlannedTurn {
-                    command: "fixture".into(),
-                    argv: std::mem::take(&mut argv),
-                    prompt: "prompt".into(),
-                    new_session_id: None,
-                    env_remove: Vec::new(),
-                    env: vec![],
-                    cwd: ".".into(),
-                    provider,
-                },
-                TrustMode::Ask,
-                &caps,
-            )
-            .is_ok());
+            assert_eq!(
+                validate_caps(
+                    &PlannedTurn {
+                        command: "fixture".into(),
+                        argv: std::mem::take(&mut argv),
+                        prompt: "prompt".into(),
+                        new_session_id: None,
+                        env_remove: Vec::new(),
+                        env: vec![],
+                        cwd: ".".into(),
+                        provider,
+                    },
+                    TrustMode::Ask,
+                    &caps,
+                )
+                .is_ok(),
+                provider != ProviderKind::Codex
+            );
         }
-    }
-
-    #[test]
-    fn a_notice_is_queued_once_per_provider_and_degradation() {
-        let mut log = NoticeLog::default();
-        log.note(ProviderKind::Claude, &[Degrade::NoStreamJson]);
-        log.note(
-            ProviderKind::Claude,
-            &[Degrade::NoStreamJson, Degrade::NoPlanMode],
-        );
-        log.note(ProviderKind::Cursor, &[Degrade::NoStreamJson]);
-        assert_eq!(
-            log.take(),
-            vec![
-                "claude: no stream-json, showing text".to_string(),
-                "claude: no plan mode, using ask".to_string(),
-                "cursor: no stream-json, showing text".to_string(),
-            ]
-        );
-        assert!(log.take().is_empty());
     }
 
     #[test]
@@ -1281,7 +1131,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runner: SharedRunner = Arc::new(|_, a| {
             Ok(if a == ["--version"] {
-                "2.1.301 (Claude Code)".into()
+                "2.1.319 (Claude Code)".into()
             } else {
                 CLAUDE_HELP.to_string()
             })
@@ -1293,7 +1143,7 @@ mod tests {
         );
         let (p, c) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(p, ProviderKind::Claude);
-        assert_eq!(c.tested, Tested::Same);
+        assert_eq!(c.comparison, VersionComparison::Same);
     }
 }
 
@@ -1318,7 +1168,7 @@ mod planning_tests {
             local_time: None,
             compaction: Default::default(),
         };
-        let mut plan = plan_provider_turn(&req).unwrap();
+        let plan = plan_provider_turn(&req).unwrap();
         assert!(plan
             .argv
             .windows(2)
@@ -1326,13 +1176,13 @@ mod planning_tests {
         let caps = Caps {
             stream_json: false,
             plan_mode: false,
-            ..Caps::assume_all()
+            ..Caps::unknown()
         };
         let caps = Caps {
             known: true,
             ..caps
         };
-        let done = apply_caps(&mut plan, TrustMode::Plan, &caps);
+        let done = validate_caps(&plan, TrustMode::Plan, &caps);
         assert!(done.is_err());
         assert!(plan
             .argv

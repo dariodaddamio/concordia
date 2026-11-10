@@ -279,7 +279,7 @@ pub fn capture(root: &Path, targets: &[Target], context: &Context) -> Decision {
         let model_status = match (&target.model, provider.zip(home.as_ref())) {
             (None, _) => ModelStatus::Default,
             (Some(model), Some((provider, home))) => {
-                let models = crate::catalog::list_models(provider, home);
+                let models = crate::models::ids_at(root, provider, &target.account, home);
                 if models.contains(model) {
                     ModelStatus::Available
                 } else if models.is_empty() {
@@ -527,7 +527,7 @@ pub fn validate_launch(
         return Err("native login unavailable before launch".into());
     }
     if model.is_some_and(|model| {
-        !crate::catalog::list_models(provider, &registered)
+        !crate::models::ids_at(root, provider, account, &registered)
             .iter()
             .any(|native| native == model)
     }) {

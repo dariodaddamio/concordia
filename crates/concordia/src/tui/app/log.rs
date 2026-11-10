@@ -1,6 +1,112 @@
 use super::super::*;
 
 impl App {
+    /// Trim the resting projection only after source capture and indexed UI work
+    /// settle. Native sources, composer, queues and conversation identity remain owned.
+    pub(in crate::tui) fn prune_transcript_projection(&mut self) -> bool {
+        const ROWS: usize = 2048;
+        const BYTES: usize = 16 * 1024 * 1024;
+        if self.busy
+            || self.preparing_cancel.is_some()
+            || self.cancel_requested
+            || self.deleg.d.any_active()
+            || self.deleg.has_pending_prompt()
+            || self.questions.waiting()
+            || self.picker.is_some()
+            || self.activity.detail.is_some()
+            || self.card_header_pressed.is_some()
+            || self.view.scroll != 0
+            || self.view.sel.is_some()
+            || self.view.dragging
+            || self.session_ui.loading()
+            || self.native_session_id.is_none()
+            || self.native_sources.is_empty()
+            || self.continuation.waiting()
+            || self.reference_journal.pending()
+            || self.reference_journal.backlogged()
+            || artifacts::projection_pending(self)
+        {
+            return false;
+        }
+        let size = |message: &ChatLine| {
+            message
+                .text
+                .len()
+                .saturating_add(message.card.as_ref().map_or(0, |card| {
+                    card.id.len() + card.title.len() + card.detail.as_ref().map_or(0, String::len)
+                }))
+        };
+        let mut bytes = 0usize;
+        let mut keep = 0usize;
+        for message in self.messages.iter().rev().take(ROWS) {
+            let next = bytes.saturating_add(size(message));
+            if keep > 0 && next > BYTES {
+                break;
+            }
+            bytes = next;
+            keep += 1;
+        }
+        let removed = self.messages.len().saturating_sub(keep);
+        const OMITTED: &str = "Older messages are omitted from this bounded view. Original native history is kept; reopen the chat or use exact-source memory retrieval to inspect it.";
+        if removed == 0
+            || (removed == 1
+                && self
+                    .messages
+                    .first()
+                    .is_some_and(|message| message.text == OMITTED))
+            || !self
+                .keep
+                .lease
+                .as_ref()
+                .is_some_and(|lease| matches!(lease.turn(), Ok(None)))
+        {
+            return false;
+        }
+        let (Some(home), Some(session)) = (&self.home_path, &self.native_session_id) else {
+            return false;
+        };
+        let Ok(binding) =
+            crate::native_memory::Binding::new(self.provider, &self.account, home, session)
+        else {
+            return false;
+        };
+        if !self.native_sources.contains(&binding)
+            || !self
+                .reference_journal
+                .projection_verified(&self.state_root, &binding)
+        {
+            return false;
+        }
+        self.messages.drain(..removed);
+        self.messages.insert(
+            0,
+            ChatLine {
+                role: MsgRole::System,
+                text: OMITTED.into(),
+                card: None,
+                meta: None,
+            },
+        );
+        self.usage_block = self
+            .usage_block
+            .and_then(|index| index.checked_sub(removed))
+            .map(|index| index + 1);
+        self.activity = activity::Activity::default();
+        self.artifacts = artifacts::State::default();
+        self.native_agents = native_agents::State::default();
+        for (index, message) in self.messages.iter().enumerate() {
+            if let Some(card) = &message.card {
+                self.native_agents.record(card, index);
+            }
+        }
+        self.view = TranscriptView::default();
+        self.related_files.invalidate();
+        if self.messages.capacity() > ROWS * 2 {
+            self.messages.shrink_to_fit();
+        }
+        true
+    }
+
     pub(in crate::tui) fn thread_id(&self) -> Option<&str> {
         self.thread.as_ref().map(|t| t.id())
     }
@@ -50,9 +156,13 @@ impl App {
         let ev = self.log_who(ev);
         self.log_event(ev);
     }
-    pub(in crate::tui) fn push_user(&mut self, text: String) {
+    pub(in crate::tui) fn push_user(&mut self, mut text: String) {
         self.related_files.invalidate();
         self.log_user(&text);
+        if text.len() > crate::provider::turn::VISIBLE_TEXT_MAX {
+            let full = std::mem::take(&mut text);
+            crate::provider::turn::append_visible_text(&mut text, &full);
+        }
         self.messages.push(ChatLine {
             role: MsgRole::User,
             text,
@@ -75,10 +185,14 @@ impl App {
             meta: None,
         });
     }
-    pub(in crate::tui) fn push_assistant(&mut self, text: String) {
+    pub(in crate::tui) fn push_assistant(&mut self, mut text: String) {
         self.related_files.invalidate();
         let ev = self.log_who(crate::threads::ThreadEvent::with_text("assistant", &text));
         self.log_event(ev);
+        if text.len() > crate::provider::turn::VISIBLE_TEXT_MAX {
+            let full = std::mem::take(&mut text);
+            crate::provider::turn::append_visible_text(&mut text, &full);
+        }
         let meta = Some(self.reply_meta());
         self.messages.push(ChatLine {
             role: MsgRole::Assistant,
@@ -87,18 +201,9 @@ impl App {
             meta,
         });
     }
-    pub(in crate::tui) fn push_map(&mut self, pack: &crate::context::ContextPack) {
-        let rest = pack.text.split_once('\n').map_or("", |(_, rest)| rest);
-        self.push_system(format!(
-            "{} · ~{} tok\n{}",
-            pack.labeled,
-            pack.est_tokens,
-            rest.trim_end()
-        ));
-    }
     pub(in crate::tui) fn push_card(&mut self, card: StreamCard) {
         let name = card.title.to_ascii_lowercase();
-        if !self.queue.force_pending
+        if !self.queue.dispatch.is_explicit()
             && (name.contains("request_user_input") || name.contains("askuserquestion"))
         {
             if let Some(detail) = &card.detail {

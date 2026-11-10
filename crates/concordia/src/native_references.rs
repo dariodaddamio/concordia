@@ -54,6 +54,9 @@ impl CaptureScope {
 }
 
 impl Reference {
+    pub(crate) fn current_format(&self) -> bool {
+        self.version == 2
+    }
     pub fn binding(&self) -> &Binding {
         &self.binding
     }
@@ -78,32 +81,6 @@ pub fn fresh_scope(root: &Path, binding: &Binding) -> Result<CaptureScope, Strin
 /// Capture before dispatch, while the exact existing session has no turn in flight.
 pub fn begin_scope(root: &Path, binding: &Binding) -> Result<CaptureScope, String> {
     capture::begin(root, binding)
-}
-
-/// Reserve an explicitly new, exact native session id BEFORE its source exists.
-/// A caller must not use this constructor for resume or merely missing old history.
-pub fn begin_fresh_scope(root: &Path, binding: &Binding) -> Result<CaptureScope, String> {
-    binding.account_home(root)?;
-    if binding.provider == ProviderKind::Cursor {
-        return Err("fresh Cursor capture requires an observed native session creation".into());
-    }
-    if sessions::find_native_record(
-        root,
-        &binding.account,
-        Some(binding.provider),
-        &binding.session_id,
-    )?
-    .is_some()
-    {
-        return Err("fresh native capture refuses an already existing session".into());
-    }
-    Ok(CaptureScope {
-        version: 2,
-        binding: binding.clone(),
-        before: None,
-        watermark: 0,
-        sealed: None,
-    })
 }
 
 fn role_valid(role: &str) -> bool {
@@ -163,147 +140,17 @@ fn plaintext(value: &Value, provider: ProviderKind) -> Result<String, String> {
     Ok(result)
 }
 
-fn joined(root: &Path, index_id: &str, messages: &[usize], role: &str) -> Result<String, String> {
-    if !role_valid(role) || messages.is_empty() || messages.len() > MAX_MESSAGES {
-        return Err("unsupported native reference role or record count".into());
-    }
-    let index = load(root, index_id)?;
-    let mut source = open_index_source(root, &index)?;
-    let mut text = String::new();
-    let mut previous = 0;
-    let mut read_bytes = 0usize;
-    for &ordinal in messages {
-        if ordinal <= previous {
-            return Err("native reference records are not strictly ordered".into());
-        }
-        previous = ordinal;
-        let span = ordinal
-            .checked_sub(1)
-            .and_then(|i| index.messages.get(i))
-            .ok_or("native reference record is outside its exact index")?;
-        if span.role != role || span.len > LINE_BYTES {
-            return Err("native reference role or record budget changed".into());
-        }
-        read_bytes = read_bytes
-            .checked_add(span.len)
-            .ok_or("native reference byte budget overflow")?;
-        if read_bytes as u64 > TAIL_BYTES {
-            return Err("native reference read exceeds its byte budget".into());
-        }
-        let raw = read_at(&mut source, span.start, span.len)?;
-        if digest(&raw) != span.sha256 {
-            return Err("native reference source record changed".into());
-        }
-        let value: Value =
-            serde_json::from_slice(&raw).map_err(|_| "malformed native reference")?;
-        let rendered = plaintext(&value, index.binding.provider)?;
-        if !text.is_empty() && index.binding.provider != ProviderKind::Cursor {
-            text.push('\n');
-        }
-        if text.len().saturating_add(rendered.len()) > TEXT_BYTES {
-            return Err("joined native plaintext exceeds its byte budget".into());
-        }
-        text.push_str(&rendered);
-    }
-    if index.binding.provider != ProviderKind::Cursor {
-        let _ = open_index_source(root, &index)?;
-    }
-    Ok(text)
-}
-
-/// Capture a UNIQUE exact plaintext projection strictly beyond the pre-turn source watermark.
-/// `expected` is transient caller RAM and is never serialized or written by this module.
-fn capture_index(root: &Path, scope: &CaptureScope) -> Result<Summary, String> {
-    if scope.version != 1 {
-        return Err("unsupported native capture scope".into());
-    }
-    if let Some(sealed) = &scope.sealed {
-        let index = load(root, sealed)?;
-        if index.binding != scope.binding
-            || index.source_len < scope.watermark
-            || index
-                .messages
-                .iter()
-                .any(|span| span.start < scope.watermark)
-        {
-            return Err("sealed native capture binding changed".into());
-        }
-        return verify_source(root, sealed);
-    }
-    if let Some(before) = &scope.before {
-        let old = load(root, before)?;
-        if old.binding != scope.binding || old.source_len != scope.watermark {
-            return Err("native capture watermark binding changed".into());
-        }
-        verify_source(root, before)?;
-    } else if scope.watermark != 0 {
-        return Err("invalid fresh native capture watermark".into());
-    }
-    let (mut source, mut index) = open_bound(root, &scope.binding)?;
-    index.truncated = scope.watermark > 0;
-    let delta = index
-        .source_len
-        .checked_sub(scope.watermark)
-        .filter(|delta| *delta > 0 && *delta <= TAIL_BYTES)
-        .ok_or("native capture is missing, stale or exceeds its bounded turn window")?;
-    let bytes = read_at(&mut source, scope.watermark, delta as usize)?;
-    if bytes.last() != Some(&b'\n') {
-        return Err("native capture ends in an unfinished source record".into());
-    }
-    let mut offset = scope.watermark;
-    let mut fallback = Vec::new();
-    for line in bytes.split_inclusive(|b| *b == b'\n') {
-        if line.len() > LINE_BYTES {
-            return Err("native capture contains an oversized source record".into());
-        }
-        let value: Value = serde_json::from_slice(line)
-            .map_err(|_| "native capture contains a malformed source record")?;
-        if let Some((record_role, is_fallback)) =
-            message_role(&value, scope.binding.provider, &scope.binding.session_id)
-        {
-            {
-                let span = Span {
-                    start: offset,
-                    len: line.len(),
-                    sha256: digest(line),
-                    role: record_role,
-                };
-                if is_fallback {
-                    fallback.push(span);
-                } else {
-                    index.messages.push(span);
-                }
-                if index.messages.len() + fallback.len() > MAX_MESSAGES {
-                    return Err("native capture exceeds its record count budget".into());
-                }
-            }
-        }
-        offset += line.len() as u64;
-    }
-    if !index.messages.iter().any(|span| span.role != "tool") {
-        index.messages.extend(fallback);
-        index.messages.sort_by_key(|span| span.start);
-    }
-    if let Some(before) = &scope.before {
-        verify_source(root, before)?;
-        let old = load(root, before)?;
-        if index.file_identity != old.file_identity || index.relative_file != old.relative_file {
-            return Err("native source was replaced between capture and indexing".into());
-        }
-    }
-    save_index(root, &mut source, index)
-}
-
 /// Freeze a completed turn before another request may append to the same native session.
 pub fn seal_scope(root: &Path, scope: &CaptureScope) -> Result<CaptureScope, String> {
-    if scope.version == 2 {
-        return capture::seal(root, scope);
+    require_current_scope(scope)?;
+    capture::seal(root, scope)
+}
+
+fn require_current_scope(scope: &CaptureScope) -> Result<(), String> {
+    if scope.version != 2 {
+        return Err("unsupported native capture scope format; original source retained; start a new explicit capture instead of replaying this scope".into());
     }
-    let captured = capture_index(root, scope)?;
-    Ok(CaptureScope {
-        sealed: Some(captured.id),
-        ..scope.clone()
-    })
+    Ok(())
 }
 
 /// Capture a UNIQUE exact plaintext segment without persisting the caller's expected body.
@@ -316,47 +163,8 @@ pub fn capture_text(
     if !role_valid(role) || expected.is_empty() || expected.len() > TEXT_BYTES {
         return Err("unsupported native capture role or text budget".into());
     }
-    if scope.version == 2 {
-        return capture::text(root, scope, role, expected);
-    }
-    let summary = capture_index(root, scope)?;
-    let index = load(root, &summary.id)?;
-    let messages: Vec<usize> = index
-        .messages
-        .iter()
-        .enumerate()
-        .filter_map(|(i, span)| (span.role == role).then_some(i + 1))
-        .collect();
-    let text = joined(root, &summary.id, &messages, role)?;
-    let start = text
-        .find(expected)
-        .ok_or("exact native plaintext is unavailable")?;
-    // Start the second search one character later to include overlapping occurrences.
-    let after_first = start
-        + expected
-            .chars()
-            .next()
-            .expect("nonempty expected text")
-            .len_utf8();
-    if text[after_first..].contains(expected) {
-        return Err("exact native plaintext is ambiguous in the bounded turn window".into());
-    }
-    Ok(Reference {
-        version: 1,
-        binding: scope.binding.clone(),
-        index: summary.id,
-        role: role.into(),
-        messages,
-        start,
-        bytes: expected.len(),
-        sha256: digest(expected.as_bytes()),
-        projection: Projection::PlainText,
-        anchor: Some(Segment {
-            start,
-            bytes: expected.len(),
-            sha256: digest(expected.as_bytes()),
-        }),
-    })
+    require_current_scope(scope)?;
+    capture::text(root, scope, role, expected)
 }
 
 /// Bind the complete planned native input first, then retain a caller-defined UTF-8 segment.
@@ -438,145 +246,24 @@ fn tool_kind(value: &Value, provider: ProviderKind, call_id: &str) -> Option<boo
     }
 }
 
-fn tool_records(
-    root: &Path,
-    index_id: &str,
-    messages: &[usize],
-    call_id: &str,
-) -> Result<String, String> {
-    let index = load(root, index_id)?;
-    if messages.is_empty()
-        || messages.len() > MAX_MESSAGES
-        || call_id.is_empty()
-        || call_id.len() > 256
-        || call_id.chars().any(char::is_control)
-    {
-        return Err("invalid native tool reference identity or count".into());
-    }
-    let mut source = open_index_source(root, &index)?;
-    let mut result = String::new();
-    let mut previous = 0;
-    let mut calls = 0;
-    let mut outputs = 0;
-    for &ordinal in messages {
-        if ordinal <= previous {
-            return Err("native tool records are not strictly ordered".into());
-        }
-        previous = ordinal;
-        let span = ordinal
-            .checked_sub(1)
-            .and_then(|i| index.messages.get(i))
-            .ok_or("native tool record is unavailable")?;
-        if span.len > LINE_BYTES {
-            return Err("native tool record exceeds its budget".into());
-        }
-        let raw = read_at(&mut source, span.start, span.len)?;
-        if digest(&raw) != span.sha256 {
-            return Err("native tool source changed".into());
-        }
-        let value: Value =
-            serde_json::from_slice(&raw).map_err(|_| "malformed native tool record")?;
-        match tool_kind(&value, index.binding.provider, call_id)
-            .ok_or("native tool call identity is unavailable")?
-        {
-            true => calls += 1,
-            false => outputs += 1,
-        }
-        if calls > 1 || (index.binding.provider != ProviderKind::Cursor && outputs > 1) {
-            return Err("native tool call identity is ambiguous".into());
-        }
-        if result.len().saturating_add(raw.len()) > TEXT_BYTES {
-            return Err("native tool projection exceeds its byte budget".into());
-        }
-        result.push_str(std::str::from_utf8(&raw).map_err(|_| "native tool source is not UTF-8")?);
-    }
-    if index.binding.provider != ProviderKind::Cursor {
-        let _ = open_index_source(root, &index)?;
-    }
-    Ok(result)
-}
-
 /// Exact scoped native tool JSONL records, without interpreting success or recreating UI cards.
 pub fn capture_tool(root: &Path, scope: &CaptureScope, call_id: &str) -> Result<Reference, String> {
     if call_id.is_empty() || call_id.len() > 256 || call_id.chars().any(char::is_control) {
         return Err("invalid native tool capture identity".into());
     }
-    if scope.version == 2 {
-        return capture::tool(root, scope, call_id);
-    }
-    let summary = capture_index(root, scope)?;
-    let index = load(root, &summary.id)?;
-    let mut source = open_index_source(root, &index)?;
-    let mut messages = Vec::new();
-    for (i, span) in index.messages.iter().enumerate() {
-        let raw = read_at(&mut source, span.start, span.len)?;
-        if digest(&raw) != span.sha256 {
-            return Err("native tool source changed while selecting records".into());
-        }
-        let value: Value =
-            serde_json::from_slice(&raw).map_err(|_| "malformed native tool source")?;
-        if scope.binding.provider == ProviderKind::Claude {
-            let count = value["message"]["content"].as_array().map_or(0, |blocks| {
-                blocks
-                    .iter()
-                    .filter(|block| {
-                        (block["type"] == "tool_use" && block["id"] == call_id)
-                            || (block["type"] == "tool_result" && block["tool_use_id"] == call_id)
-                    })
-                    .count()
-            });
-            if count > 1 {
-                return Err("native tool identity is ambiguous within its source record".into());
-            }
-        }
-        if tool_kind(&value, scope.binding.provider, call_id).is_some() {
-            messages.push(i + 1);
-        }
-    }
-    let raw = tool_records(root, &summary.id, &messages, call_id)?;
-    Ok(Reference {
-        version: 1,
-        binding: scope.binding.clone(),
-        index: summary.id,
-        role: "tool".into(),
-        messages,
-        start: 0,
-        bytes: raw.len(),
-        sha256: digest(raw.as_bytes()),
-        projection: Projection::RawJsonRecords {
-            call_id: call_id.into(),
-        },
-        anchor: None,
-    })
+    require_current_scope(scope)?;
+    capture::tool(root, scope, call_id)
 }
 
 /// Reconstruct only the originally verified UTF-8 segment; no stale/foreign fallback.
 pub fn hydrate_text(root: &Path, reference: &Reference) -> Result<String, String> {
-    if !matches!(reference.version, 1 | 2)
-        || reference.bytes > TEXT_BYTES
-        || !valid_id(&reference.sha256)
-    {
+    if !reference.current_format() {
+        return Err("unsupported native reference format; original source retained; re-index and explicitly select the original source again".into());
+    }
+    if reference.bytes > TEXT_BYTES || !valid_id(&reference.sha256) {
         return Err("unsupported native text reference".into());
     }
-    let text = if reference.version == 2 {
-        capture::hydrate(root, reference)?
-    } else {
-        let index = load(root, &reference.index)?;
-        if index.binding != reference.binding || index.history.is_some() {
-            return Err("native text reference binding changed".into());
-        }
-        match &reference.projection {
-            Projection::PlainText if role_valid(&reference.role) => {
-                joined(root, &reference.index, &reference.messages, &reference.role)?
-            }
-            Projection::RawJsonRecords { call_id }
-                if reference.role == "tool" && reference.start == 0 =>
-            {
-                tool_records(root, &reference.index, &reference.messages, call_id)?
-            }
-            _ => return Err("native reference projector and role disagree".into()),
-        }
-    };
+    let text = capture::hydrate(root, reference)?;
     match &reference.anchor {
         Some(anchor) if matches!(reference.projection, Projection::PlainText) => {
             let end = anchor
@@ -623,20 +310,6 @@ pub fn historical_scope(root: &Path, source_index: &str) -> Result<CaptureScope,
     capture::historical_scope(root, source_index)
 }
 
-/// Convenience exact historical lookup under an explicitly supplied source binding.
-/// Use historical_scope plus capture_text when resolving multiple rows from one revision.
-pub fn capture_historical_text(
-    root: &Path,
-    binding: &Binding,
-    role: &str,
-    expected: &str,
-) -> Result<Reference, String> {
-    if !role_valid(role) || expected.is_empty() || expected.len() > TEXT_BYTES {
-        return Err("unsupported historical capture role or text budget".into());
-    }
-    capture::historical(root, binding, role, expected)
-}
-
 #[cfg(test)]
 pub(super) fn fixture_proof() {
     capture::fixture_proof();
@@ -677,7 +350,6 @@ pub(super) fn fixture_proof() {
             &path,
             super::tests::message(provider, "same old request").as_bytes(),
         );
-        assert!(begin_fresh_scope(dir.path(), &binding).is_err());
         let scope = begin_scope(dir.path(), &binding).unwrap();
         assert!(capture_text(dir.path(), &scope, "user", "same old request").is_err());
         super::tests::append(

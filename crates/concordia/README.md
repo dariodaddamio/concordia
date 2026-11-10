@@ -1,21 +1,5 @@
-# Concordia (Rust — public binary)
+# Concordia crate
 
-Thin local orchestration TUI. This crate is the **only** supported install path.
-
-## Build
-
-```powershell
-cargo build -p concordia --release
-.\scripts\install-concordia-rust.ps1
-```
-
-Needs Rust + MSVC linker (VS Build Tools C++ workload).
-
-## TUI
-
-`/use` `/model` `/usage` `/resume` `/trust` `/config` `/new` `/split` `/exit`
-
-Footer: hints left, **auth {mode}** right. Ctrl+C cancels the tracked provider child.
-
-Home records a chat only after the first user message. Empty provider session artifacts stay hidden;
-`concordia sessions prune --empty` lists them and removes them only after you type `yes`.
+This is the product crate in the Concordia Cargo workspace. Run build commands from the
+repository root. See the [main README](../../README.md) for installation and commands,
+the [plan](../../PLAN.md) for current scope, and [Contributing](../../CONTRIBUTING.md) for checks.

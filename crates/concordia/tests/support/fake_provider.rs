@@ -165,15 +165,32 @@ fn fake_appserver() {
         std::io::stdout().flush().unwrap();
     };
     let mut thread = "native-fixture-thread".to_owned();
-    let finish = |thread: &str| {
+    let large_tool = |thread: &str| {
+        if let Some(bytes) = fixture["large_tool_bytes"].as_u64() {
+            emit(
+                json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"large-output","type":"commandExecution","command":"synthetic large output","cwd":root,"aggregatedOutput":"x".repeat(bytes as usize),"status":"completed","exitCode":0}}}),
+            );
+        }
+    };
+    let finish = |thread: &str, answered: bool| {
+        if answered && fixture["question"] != true {
+            emit(
+                json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"completed","exitCode":0}}}),
+            );
+        }
         if fixture["artifact"] == true {
             std::fs::write(root.join("native-output.md"), "Synthetic native output\n").unwrap();
             let event = json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"native-output-event","type":"fileChange","status":"completed","changes":[{"path":"native-output.md","kind":{"type":"add"},"diff":"+Synthetic native output"}]}}});
             emit(event.clone());
             emit(event);
         }
+        let reply = if fixture["large_text"] == true {
+            format!("{}Native approval handled", "é".repeat(100_000))
+        } else {
+            "Native approval handled".into()
+        };
         emit(
-            json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":"reply","delta":"Native approval handled"}}),
+            json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":"reply","delta":reply}}),
         );
         emit(
             json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":"native-turn","status":"completed"}}}),
@@ -188,7 +205,7 @@ fn fake_appserver() {
             .unwrap();
         writeln!(journal, "{line}").unwrap();
         if value["id"] == 100 && value.get("method").is_none() {
-            finish(&thread);
+            finish(&thread, true);
             continue;
         }
         let result = match value["method"].as_str().unwrap_or("") {
@@ -207,14 +224,62 @@ fn fake_appserver() {
             }
             "turn/start" => {
                 // Deliberately arrive before the turn/start response: the client must buffer.
-                emit(
-                    json!({"method":"item/started","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"inProgress"}}}),
-                );
+                // Question fixtures do not start a command. Permission fixtures keep
+                // command lifetime distinct and complete it only after a native answer.
+                if fixture["question"] != true {
+                    emit(
+                        json!({"method":"item/started","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"inProgress"}}}),
+                    );
+                }
+                if fixture["early_large"] == true {
+                    large_tool(&thread);
+                }
                 emit(
                     json!({"id":value["id"],"result":{"turn":{"id":"native-turn","status":"inProgress"}}}),
                 );
+                if fixture["early_large"] != true {
+                    large_tool(&thread);
+                }
                 if fixture["closed"] == true {
                     return;
+                }
+                if let Some(messages) = fixture["messages"].as_array() {
+                    if let Some(bytes) = fixture["wire_bytes"].as_u64() {
+                        let padding = "x".repeat(32 * 1024);
+                        for _ in 0..bytes.div_ceil(padding.len() as u64) {
+                            emit(
+                                json!({"method":"synthetic/telemetry","params":{"threadId":thread,"turnId":"native-turn","padding":padding}}),
+                            );
+                        }
+                    }
+                    for (index, message) in messages.iter().enumerate() {
+                        let id = format!("message-{index}");
+                        let text = message.as_str().unwrap();
+                        emit(
+                            json!({"method":"item/started","params":{"threadId":thread,"turnId":"native-turn","item":{"id":id,"type":"agentMessage","text":""}}}),
+                        );
+                        emit(
+                            json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":id,"delta":text}}),
+                        );
+                        emit(
+                            json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":id,"type":"agentMessage","text":text}}}),
+                        );
+                    }
+                    if let Some(gate) = fixture["wait_for"].as_str() {
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(30);
+                        while !root.join(gate).exists() {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "native message fixture gate timed out"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                    emit(
+                        json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":"native-turn","status":"completed"}}}),
+                    );
+                    continue;
                 }
                 let method = if fixture["question"] == true {
                     "item/tool/requestUserInput"
@@ -231,12 +296,19 @@ fn fake_appserver() {
                 if fixture["wrong_turn"] == true {
                     params["turnId"] = json!("foreign-turn");
                 }
-                emit(json!({"id":100,"method":method,"params":params}));
+                let request = json!({"id":100,"method":method,"params":params});
+                emit(request.clone());
+                if fixture["duplicate"] == true {
+                    emit(request.clone());
+                }
                 if fixture["resolved"] == true {
                     emit(
                         json!({"method":"serverRequest/resolved","params":{"threadId":thread,"requestId":100}}),
                     );
-                    finish(&thread);
+                    if fixture["duplicate"] == true {
+                        emit(request);
+                    }
+                    finish(&thread, false);
                 }
                 continue;
             }
@@ -286,7 +358,9 @@ fn fake_claude_control(args: &[String]) {
         if value["type"] == "control_request" {
             let subtype = value["request"]["subtype"].as_str().unwrap();
             let response = match subtype {
-                "initialize" => json!({}),
+                "initialize" => {
+                    json!({"claude_code_version":"2.1.319","session_state":"idle","capabilities":{}})
+                }
                 "get_context_usage" => {
                     json!({"totalTokens":fixture["context_used"].as_u64().unwrap_or(120),
                     "maxTokens":1000,"rawMaxTokens":1000,"percentage":fixture["context_used"].as_u64().unwrap_or(120) as f64 / 10.0,
@@ -446,7 +520,7 @@ fn main() {
     if args.first().is_some_and(|arg| arg == "--version")
         && std::env::var("FAKE_PROVIDER_NATIVE_CLAUDE").as_deref() == Ok("1")
     {
-        println!("2.1.318 (Claude Code)");
+        println!("2.1.319 (Claude Code)");
         return;
     }
     if args.iter().any(|arg| arg == "--permission-prompt-tool")
@@ -494,7 +568,7 @@ fn main() {
             match request["method"].as_str().unwrap_or("") {
                 "initialize" => println!(
                     "{}",
-                    serde_json::json!({"id":request["id"],"result":{"userAgent":"synthetic"}})
+                    serde_json::json!({"id":request["id"],"result":{"userAgent":"synthetic","codexHome":home}})
                 ),
                 "initialized" => continue,
                 "account/rateLimits/read" => {

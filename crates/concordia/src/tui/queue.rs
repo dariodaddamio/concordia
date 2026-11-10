@@ -27,6 +27,50 @@ const SELECTED_BG: Color = Color::Indexed(238);
 const DIM: Color = Color::Indexed(245);
 const WARN: Color = Color::Indexed(179);
 
+pub(super) struct Editing {
+    pub index: usize,
+    pub editor: Editor,
+    pub composer_images: super::images::State,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Dispatch {
+    #[default]
+    Idle,
+    Automatic,
+    Explicit,
+}
+
+impl Dispatch {
+    pub(super) fn is_explicit(self) -> bool {
+        self == Self::Explicit
+    }
+    pub(super) fn is_automatic(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
+    pub(super) fn set_explicit(&mut self) {
+        *self = Self::Explicit;
+    }
+    pub(super) fn set_automatic(&mut self) {
+        if *self == Self::Idle {
+            *self = Self::Automatic;
+        }
+    }
+    pub(super) fn clear_automatic(&mut self) {
+        if *self == Self::Automatic {
+            *self = Self::Idle;
+        }
+    }
+    pub(super) fn take_automatic(&mut self) -> bool {
+        if self.is_automatic() {
+            *self = Self::Idle;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Queue {
     pub items: Vec<String>,
@@ -36,14 +80,13 @@ pub(super) struct Queue {
     pub sel: usize,
     pub focused: bool,
     /// Inline editor for `items[sel]`.
-    pub edit: Option<Editor>,
+    pub edit: Option<Editing>,
     pub(super) edit_scroll: usize,
     pub(super) edit_rect: Option<(Rect, usize)>,
     /// Click targets from the last draw.
     pub rects: Vec<(Rect, usize)>,
     /// The turn that just ended was clean: the next item may be sent.
-    pub(super) advance: bool,
-    pub(super) force_pending: bool,
+    pub(super) dispatch: Dispatch,
     pub(super) send_targets: Vec<(Rect, usize)>,
     pressed_send: Option<usize>,
 }
@@ -137,10 +180,14 @@ impl Plan {
 /// Take the panel's rows off the bottom of the transcript area (nothing when the queue is empty).
 pub(super) fn carve(transcript: &mut Rect, app: &App) -> Rect {
     let q = &app.queue;
-    let rows = if let Some(ed) = q.edit.as_ref() {
-        let prefix = edit_prefix(q.sel + 1, transcript.width as usize);
+    let rows = if let Some(edit) = q.edit.as_ref() {
+        let prefix = edit_prefix(edit.index + 1, transcript.width as usize);
         let text_width = (transcript.width as usize).saturating_sub(display_width(&prefix));
-        let editor_rows = ed.layout(text_width.max(1)).len().clamp(1, EDIT_ROWS);
+        let editor_rows = edit
+            .editor
+            .layout(text_width.max(1))
+            .len()
+            .clamp(1, EDIT_ROWS);
         Plan::of(q).rows(q) + editor_rows
     } else {
         Plan::of(q).rows(q)
@@ -260,10 +307,11 @@ fn display_width(text: &str) -> usize {
 fn draw_editor(f: &mut Frame, area: Rect, app: &mut App) {
     let (lines, rect, scroll, caret, rects) = {
         let q = &app.queue;
-        let Some(ed) = q.edit.as_ref() else { return };
+        let Some(edit) = q.edit.as_ref() else { return };
+        let ed = &edit.editor;
         let width = area.width as usize;
         let compact = area.height as usize <= usize::from(q.paused) + 1;
-        let prefix = edit_prefix(q.sel + 1, width);
+        let prefix = edit_prefix(edit.index + 1, width);
         let prefix_width = display_width(&prefix);
         let text_width = width.saturating_sub(prefix_width);
         let layout_width = text_width.max(1);
@@ -283,7 +331,10 @@ fn draw_editor(f: &mut Frame, area: Rect, app: &mut App) {
             let header_y = area.y + lines.len() as u16;
             lines.push(Line::from(Span::styled(
                 fit(
-                    &format!(" editing {} - send waits for save", q.sel + 1),
+                    &format!(
+                        " editing {} · Enter save · Esc cancel · F9 attach · paste/drop images",
+                        edit.index + 1
+                    ),
                     width,
                 ),
                 Style::default().fg(Color::Cyan),
@@ -352,7 +403,7 @@ fn draw_editor(f: &mut Frame, area: Rect, app: &mut App) {
         }
         let mut rects = Vec::new();
         for i in plan_indices(q) {
-            if i == q.sel || lines.len() as u16 >= area.height {
+            if i == edit.index || lines.len() as u16 >= area.height {
                 continue;
             }
             let y = area.y + lines.len() as u16;
@@ -495,10 +546,9 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             let mut ed = Editor::default();
             ed.set_text(&message.text);
             ed.reset_undo();
-            app.queue.edit = Some(ed);
-            app.queue.edit_scroll = 0;
+            app.begin_queue_edit(ed);
         }
-        KeyCode::Delete => app.remove_queued(),
+        KeyCode::Delete => app.remove_queued(app.queue.sel),
         // Typing goes back to the prompt: leave the panel and let the key through.
         KeyCode::Char(_) | KeyCode::Backspace if !ctrl || alt => {
             app.queue.unfocus();
@@ -517,34 +567,44 @@ fn edit_key(
     shift: bool,
     width: usize,
 ) -> bool {
-    let Some(ed) = app.queue.edit.as_mut() else {
+    if code == KeyCode::Enter && !ctrl && !alt && !shift && app.images.importing() {
+        app.flash("Wait for the attachment to finish importing before saving");
+        return true;
+    }
+    let Some(edit) = app.queue.edit.as_mut() else {
         return false;
     };
+    let ed = &mut edit.editor;
     match code {
         KeyCode::Enter if ctrl || alt || shift => ed.insert_char('\n'),
         KeyCode::Enter => {
-            let text = ed.text();
-            app.queue.edit = None;
-            app.queue.edit_scroll = 0;
-            if text.trim().is_empty() {
+            let mut text = ed.text();
+            if text.trim().is_empty() && app.images.count() > 0 {
+                text = app.images.default_prompt().into();
+            }
+            let i = edit.index;
+            let attachments = app.close_queue_edit().expect("queued edit is open");
+            if text.trim().is_empty() && attachments.is_empty() {
                 // Emptied on purpose: same as deleting the item.
-                app.remove_queued();
+                app.remove_queued(i);
             } else {
-                let i = app.queue.sel;
                 let original = crate::attachments::Message::decode(&app.queue.items[i]);
-                app.queue.items[i] = crate::attachments::Message { text, ..original }.encode();
+                app.queue.items[i] = crate::attachments::Message {
+                    text,
+                    attachments,
+                    ..original
+                }
+                .encode();
                 app.queue_changed();
             }
         }
         KeyCode::Esc => {
-            app.queue.edit = None;
-            app.queue.edit_scroll = 0;
+            app.close_queue_edit();
             app.queue_changed();
         }
         KeyCode::Char(c) if ctrl && !alt => match c.to_ascii_lowercase() {
             'c' => {
-                app.queue.edit = None;
-                app.queue.edit_scroll = 0;
+                app.close_queue_edit();
                 app.queue_changed();
             }
             'j' => ed.insert_char('\n'),
@@ -582,8 +642,11 @@ fn edit_key(
 /// Pasted text goes to the inline editor while one is open. True when it took the text.
 pub(super) fn paste(app: &mut App, text: &str, continues: bool) -> bool {
     match app.queue.edit.as_mut() {
-        Some(ed) => {
-            ed.insert_paste_chunk(text, continues);
+        Some(edit) => {
+            edit.editor.insert_paste_chunk(text, continues);
+            if !continues {
+                app.offer_pasted_files(text);
+            }
             true
         }
         None => false,
@@ -615,8 +678,9 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
         return false;
     }
     if app.queue.edit.is_some() {
-        if let (Some(ed), Some((r, scroll))) = (app.queue.edit.as_mut(), app.queue.edit_rect) {
+        if let (Some(edit), Some((r, scroll))) = (app.queue.edit.as_mut(), app.queue.edit_rect) {
             if contains(r, m.column, m.row) {
+                let ed = &mut edit.editor;
                 let width = r.width.max(1) as usize;
                 let row = scroll + m.row.saturating_sub(r.y) as usize;
                 let col = m.column.saturating_sub(r.x) as usize;
@@ -651,6 +715,28 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 // ---- state changes -----------------------------------------------------------------------
 
 impl App {
+    pub(super) fn begin_queue_edit(&mut self, editor: Editor) {
+        let message = crate::attachments::Message::decode(&self.queue.items[self.queue.sel]);
+        let composer_images = std::mem::take(&mut self.images);
+        self.images.draft = message.attachments;
+        self.queue.edit = Some(Editing {
+            index: self.queue.sel,
+            editor,
+            composer_images,
+        });
+        self.queue.edit_scroll = 0;
+        self.queue.edit_rect = None;
+    }
+
+    pub(super) fn close_queue_edit(&mut self) -> Option<Vec<crate::attachments::Attachment>> {
+        let edit = self.queue.edit.take()?;
+        self.queue.edit_scroll = 0;
+        self.queue.edit_rect = None;
+        let images = std::mem::replace(&mut self.images, edit.composer_images);
+        self.images.clear_targets();
+        Some(images.draft)
+    }
+
     pub(super) fn force_queued(&mut self, index: usize) -> String {
         if self.queue.edit.is_some() {
             return "Save or cancel the queued edit before sending.".into();
@@ -665,12 +751,12 @@ impl App {
         {
             return format!("Queued attachment remains paused: {error}");
         }
-        if self.queue.force_pending {
+        if self.queue.dispatch.is_explicit() {
             return "Stopping the active turn before sending the selected message…".into();
         }
         let item = self.queue.items.remove(index);
         self.queue.items.insert(0, item);
-        self.queue.force_pending = true;
+        self.queue.dispatch.set_explicit();
         self.questions.clear();
         self.queue_changed();
         self.continuation.invalidate();
@@ -684,7 +770,7 @@ impl App {
     /// Persist after any change and keep the selection valid.
     pub(super) fn queue_changed(&mut self) {
         self.queue.clamp();
-        self.persist_queue_now();
+        self.persist_draft_now();
     }
 
     fn move_queued(&mut self, dir: isize) {
@@ -698,8 +784,7 @@ impl App {
         self.queue_changed();
     }
 
-    fn remove_queued(&mut self) {
-        let i = self.queue.sel;
+    fn remove_queued(&mut self, i: usize) {
         if i < self.queue.items.len() {
             self.queue.items.remove(i);
         }
@@ -718,16 +803,19 @@ impl App {
     pub(super) fn turn_finished(&mut self, cancelled: bool, failed: bool) {
         let sent = self.last_sent.take();
         if cancelled || failed {
-            self.queue.advance = false;
+            self.queue.dispatch.clear_automatic();
             self.pause_queue();
             if let Some(p) = sent.filter(|_| failed && !cancelled) {
-                if self.editor.text().trim().is_empty() && self.images.count() == 0 {
+                if self.queue.edit.is_none()
+                    && self.editor.text().trim().is_empty()
+                    && self.images.count() == 0
+                {
                     self.restore_composer(&p);
                     self.push_system("your prompt is back in the box");
                 }
             }
         } else {
-            self.queue.advance = true;
+            self.queue.dispatch.set_automatic();
         }
     }
 
@@ -743,8 +831,7 @@ impl App {
         let scope_closed = self.finish_main_scope(&outcome);
         if !scope_closed {
             // A failed admission must not consume an explicitly selected queue item.
-            self.queue.force_pending = false;
-            self.queue.advance = false;
+            self.queue.dispatch = Dispatch::Idle;
             self.pause_queue();
         }
         if !scope_closed && !outcome.cancelled && (outcome.failed || outcome.exit_code != Some(0)) {
@@ -762,7 +849,7 @@ impl App {
         self.cancel_handle = None;
         self.questions.cancel_native();
         self.native_owner = None;
-        let automatic_target = if self.queue.force_pending || !scope_closed {
+        let automatic_target = if self.queue.dispatch.is_explicit() || !scope_closed {
             None
         } else {
             self.prepare_usage_continuation(&outcome)
@@ -792,10 +879,10 @@ impl App {
         }
         if self.questions.waiting() {
             self.pause_queue();
-            self.queue.advance = false;
+            self.queue.dispatch.clear_automatic();
         }
         if self.continuation.waiting() {
-            self.queue.advance = false;
+            self.queue.dispatch.clear_automatic();
             self.pause_queue();
         }
         if let Some(target) = automatic_target {
@@ -806,15 +893,14 @@ impl App {
 
     /// Send queued prompts through the normal submit path until one starts a turn.
     pub(super) fn queue_advance(&mut self, tx: &mpsc::UnboundedSender<String>) {
-        if self.reference_journal.backlogged() {
+        if self.reference_journal.backlogged() || self.rename_editor.is_some() {
             return;
         }
-        if self.queue.force_pending || self.queue.advance {
+        if self.queue.dispatch.is_explicit() || self.queue.dispatch.is_automatic() {
             if let Some(line) = self.queue.items.first() {
                 if let Err(error) = crate::attachments::Message::decode(line).validate() {
                     self.queue.paused = true;
-                    self.queue.force_pending = false;
-                    self.queue.advance = false;
+                    self.queue.dispatch = Dispatch::Idle;
                     self.push_system(format!("Queue paused: {error}"));
                     return;
                 }
@@ -823,7 +909,7 @@ impl App {
         if self.questions.waiting() {
             return;
         }
-        if self.queue.force_pending {
+        if self.queue.dispatch.is_explicit() {
             if self.busy
                 || self.cancel_requested
                 || self.queue.edit.is_some()
@@ -832,16 +918,15 @@ impl App {
             {
                 return;
             }
-            self.queue.force_pending = false;
-            self.queue.advance = false;
+            self.queue.dispatch = Dispatch::Idle;
             self.queue.paused = true;
             if !self.queue.items.is_empty() {
                 let line = self.queue.items.remove(0);
                 self.queue_changed();
                 self.push_history(&line);
-                self.run_line(line, tx);
+                self.dispatch_queued(line, tx);
                 self.queue.paused = true;
-                self.queue.advance = false;
+                self.queue.dispatch.clear_automatic();
             }
             return;
         }
@@ -858,7 +943,7 @@ impl App {
         if self.queue.edit.is_some() || self.session_ui.loading() {
             return;
         }
-        if !std::mem::take(&mut self.queue.advance) {
+        if !self.queue.dispatch.take_automatic() {
             return;
         }
         while !self.busy && !self.queue.paused && !self.queue.items.is_empty() {
@@ -871,8 +956,26 @@ impl App {
             let line = self.queue.items.remove(0);
             self.queue_changed();
             self.push_history(&line);
-            self.run_line(line, tx);
+            if !self.dispatch_queued(line, tx) {
+                break;
+            }
         }
+    }
+
+    fn dispatch_queued(&mut self, line: String, tx: &mpsc::UnboundedSender<String>) -> bool {
+        let draft = self.composer_value();
+        let queued = crate::attachments::Message::decode(&line).encode();
+        self.run_line(line.clone(), tx);
+        if !self.busy && draft != queued && self.composer_value() == queued {
+            self.queue.items.insert(0, line);
+            self.restore_composer(&draft);
+            self.queue.paused = true;
+            self.queue.dispatch = Dispatch::Idle;
+            self.queue_changed();
+            self.push_system("Queued request was not dispatched. It remains paused, and your separate draft was kept.");
+            return false;
+        }
+        true
     }
 
     /// `/queue` and `/queue clear`.

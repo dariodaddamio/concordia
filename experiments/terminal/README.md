@@ -1,43 +1,14 @@
-# Terminal host spike (P1)
+﻿# Terminal host support
 
-Minimal launchers only. Host adapter surface for the orchestrator: spawn panes, record explicit IDs where the host returns them, set titles/labels. Does not remap Escape/Ctrl-C or replace the emulator.
+This folder began as the October terminal-host experiment. The standalone spike launcher is
+retired: it guessed the control pane from the highest pane ID and could target an unrelated
+window. It has no product callers; its original source remains in Git history.
 
-## Prerequisites
+The retained `wezterm/wezterm.lua` is a production input embedded by
+[`host/wezterm.rs`](../../crates/concordia/src/host/wezterm.rs). It resolves Concordia's installed
+executable, provides explicit split/new-tab commands, and preserves ordinary keyboard handling.
+Do not remove or regenerate it as experimental debris.
 
-| Host | This machine (2026-10-14) | Install (user step; not run by this spike) |
-| --- | --- | --- |
-| Windows Terminal (`wt`) | Present — Appx `Microsoft.WindowsTerminal` **1.24.12741.0** | Already installed |
-| WezTerm (`wezterm`) | **Missing** | See below |
-
-### Install WezTerm (required to validate preferred host)
-
-Do **not** let agents install silently. Recommended user steps on Windows:
-
-1. Download the Windows installer or portable zip from https://wezterm.org/install/windows.html  
-   or install via a package manager you already trust, for example:
-   - `winget install wez.wezterm` (when `winget` is available)
-   - `scoop install wezterm` (when Scoop is available)
-2. Confirm: `wezterm --version` and `wezterm cli --help`
-3. Re-run `.\launch-wezterm.ps1` from this directory.
-
-## Scripts
-
-| Script | Host | What it demonstrates |
-| --- | --- | --- |
-| `launch-wt.ps1` | Windows Terminal | PowerShell default shell; multi-pane layout; tab titles as labels; sequential splits (no stable pane-id API) |
-| `launch-wezterm.ps1` | WezTerm | Explicit `--pane-id` splits; records pane IDs from CLI stdout; tab titles; optional isolated config dir |
-| `wezterm/wezterm.lua` | WezTerm | Isolated config: PowerShell default prog; unix domain named `orch` for persistence design |
-
-## Manual checklist (keyboard / mouse)
-
-After a launcher opens panes, verify in each agent pane (not the control pane):
-
-1. Paste (Ctrl-V / right-click) inserts text into the shell, not the host chrome.
-2. Escape reaches the running program (does **not** get swallowed by a host keymap — avoid agentmux-style Escape capture).
-3. Ctrl-C interrupts the foreground process.
-4. Mouse select / click-focus works; window resize redistributes panes.
-5. Titles/labels remain visible without requiring key-stealing overlays.
-
-## Evidence markers
-
-Launchers write optional marker files under `%TEMP%\orch-terminal-spike\` so spawn success can be checked without reading TTY output.
+Use the product's `concordia wezterm` / `/split` commands for host operations. Provider login,
+account/session ownership and live qualification remain governed by the repository instructions.
+WezTerm is optional and is never installed silently by the development bootstrap.

@@ -16,11 +16,69 @@ pub(super) fn should_accept_key(key: &KeyEvent) -> bool {
     true
 }
 
+fn rename_key(app: &mut App, key: KeyEvent) {
+    if !should_accept_key(&key) {
+        return;
+    }
+    let mut editor = app.rename_editor.take().expect("active title editor");
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Esc => return,
+        KeyCode::Enter => {
+            if app.rename_session(&editor.text()) {
+                return;
+            }
+        }
+        KeyCode::Char('a' | 'A') if ctrl && !alt => editor.select_all(),
+        KeyCode::Char('v' | 'V') if ctrl && !alt => {
+            app.rename_editor = Some(editor);
+            match clipboard::get_text() {
+                Ok(text) => app.paste_text(&text),
+                Err(error) => app.flash(format!("paste failed: {error}")),
+            }
+            return;
+        }
+        KeyCode::Backspace => editor.backspace(),
+        KeyCode::Delete => editor.delete(),
+        KeyCode::Left => editor.move_left(shift),
+        KeyCode::Right => editor.move_right(shift),
+        KeyCode::Home => editor.move_to(0, shift),
+        KeyCode::End => editor.move_to(editor.chars().len(), shift),
+        KeyCode::Char(c) if !c.is_control() && (!ctrl && !alt || ctrl && alt) => {
+            if editor.chars().len() < 256 || editor.selection().is_some() {
+                editor.insert_char(c);
+            }
+        }
+        _ => {}
+    }
+    app.rename_editor = Some(editor);
+}
+
 pub(super) fn dispatch_key_burst(
     app: &mut App,
     burst: input::KeyBurst,
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
+    if app.local_terminal.visible() {
+        if burst.text {
+            app.local_terminal
+                .paste(burst.text_content.as_deref().unwrap_or_default());
+        } else {
+            for key in burst.keys {
+                local_terminal::key(app, &key);
+            }
+        }
+        return false;
+    }
+    if app.rename_editor.is_some() && burst.text {
+        app.paste_text_chunk(
+            burst.text_content.as_deref().unwrap_or_default(),
+            burst.continues_paste,
+        );
+        return false;
+    }
     // File drops can arrive as a whole unframed burst of character keys.
     if !burst.text && burst.keys.len() > 1 {
         let dropped: Option<String> = burst
@@ -76,6 +134,7 @@ pub(super) fn dispatch_key_event(
         && !app.palette_entries().is_empty()
         && !key_burst.active();
     if input::BurstBuffer::is_candidate(&key)
+        && !app.local_terminal.visible()
         && app.picker.is_none()
         && !app.project_search.active()
         && !palette_action
@@ -102,13 +161,30 @@ pub(super) fn handle_key(
     key: KeyEvent,
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
+    if local_terminal::key(app, &key) {
+        return false;
+    }
     if app.key_sheet {
         if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1)) {
             app.key_sheet = false;
         }
         return false;
     }
-    if (key.code == KeyCode::F(1) || key.code == KeyCode::Char('?')) && key.modifiers.is_empty() {
+    let idle_help = key.code == KeyCode::Char('?')
+        && !app.busy
+        && app.rename_editor.is_none()
+        && !app.raster.active()
+        && !workers::overlay_open(app)
+        && app.editor.chars().is_empty()
+        && app.picker.is_none()
+        && app.workspace.focused.is_none()
+        && !app.project_search.active()
+        && !worker_input::active(app)
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+        && app.queue.edit.is_none()
+        && !landing::editing_goal(app);
+    if (key.code == KeyCode::F(1) || idle_help) && key.modifiers.is_empty() {
         app.key_sheet = true;
         return false;
     }
@@ -163,7 +239,6 @@ pub(super) fn handle_key(
     if key.code == KeyCode::F(9)
         && app.picker.is_none()
         && app.workspace.focused.is_none()
-        && app.queue.edit.is_none()
         && app.activity.detail.is_none()
         && !app.questions.focused
     {
@@ -237,7 +312,7 @@ pub(super) fn handle_key(
     if landing::navigation_key(app, key) {
         return false;
     }
-    if landing::visible(app) && landing::handle_key(app, key) {
+    if app.picker.is_none() && landing::visible(app) && landing::handle_key(app, key) {
         return false;
     }
     if tokens::handle_key(app, key) {
@@ -428,37 +503,23 @@ pub(super) fn handle_key(
         });
         return false;
     }
-    if key.code == KeyCode::F(2) && key.modifiers.is_empty() {
-        app.rename_active = true;
-        app.editor
-            .set_text(app.session_ui.title.as_deref().unwrap_or_default());
+    if key.code == KeyCode::F(2)
+        && key.modifiers.is_empty()
+        && app.rename_editor.is_none()
+        && app.workspace.focused.is_none()
+        && app.queue.edit.is_none()
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+        && !landing::editing_goal(app)
+    {
+        let mut editor = Editor::default();
+        editor.set_text(app.session_ui.title.as_deref().unwrap_or_default());
+        editor.select_all();
+        app.rename_editor = Some(editor);
         return false;
     }
-    if app.rename_active {
-        match key.code {
-            KeyCode::Esc => {
-                app.rename_active = false;
-                app.editor.clear();
-            }
-            KeyCode::Enter => {
-                app.session_ui.title = crate::session_titles::sanitize(&app.editor.text());
-                app.session_chip = app.session_ui.title.clone();
-                app.persist_session_title();
-                app.rename_active = false;
-                app.editor.clear();
-            }
-            KeyCode::Backspace => app.editor.backspace(),
-            KeyCode::Left => app.editor.move_left(false),
-            KeyCode::Right => app.editor.move_right(false),
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                app.editor.insert_char(c)
-            }
-            _ => {}
-        }
+    if app.rename_editor.is_some() {
+        rename_key(app, key);
         return false;
     }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
@@ -825,6 +886,12 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if matches!(m.kind, MouseEventKind::Down(_)) {
+        app.rename_editor = None;
+    }
+    if local_terminal::mouse(app, m) {
+        return;
+    }
     if matches!(m.kind, MouseEventKind::Down(_) | MouseEventKind::Drag(_)) {
         app.card_header_pressed = None;
         app.busy_send_confirmation = None;
@@ -915,6 +982,24 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         }
         return;
     }
+    let attention_hit = app
+        .areas
+        .header_attention
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.header_attention_pressed = attention_hit;
+        if attention_hit {
+            return;
+        }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_attention_pressed)
+    {
+        if attention_hit {
+            app.open_needs_you_picker();
+        }
+        return;
+    }
     let home_hit = app
         .areas
         .header_home
@@ -936,7 +1021,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     {
         if home_hit {
             if landing::visible(app) {
-                landing::close(app);
+                landing::back_to_chat(app);
             } else {
                 landing::open_home(app);
             }
@@ -972,7 +1057,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if chatref::handle_mouse(app, m) {
         return;
     }
-    if landing::visible(app) && landing::handle_mouse(app, m) {
+    if app.picker.is_none() && landing::visible(app) && landing::handle_mouse(app, m) {
         return;
     }
     if app.activity.detail.is_some() {

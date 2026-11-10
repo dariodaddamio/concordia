@@ -23,6 +23,13 @@ pub(super) struct State {
     activity_attempted: Option<(String, usize, String)>,
     detail_job: Option<DetailJob>,
 }
+
+pub(super) fn projection_pending(app: &App) -> bool {
+    app.artifacts.job.is_some()
+        || app.artifacts.activity_job.is_some()
+        || app.artifacts.detail_job.is_some()
+        || inline::projection_pending(app)
+}
 pub(super) fn record_live(app: &mut App, record: &crate::artifacts::Record) -> bool {
     inline::record_live(app, record)
 }
@@ -53,12 +60,12 @@ pub(super) fn open(app: &mut App) {
     );
     app.footer_left = "Enter inspect source · type to filter · Esc close".into();
 }
-pub(super) fn poll(app: &mut App) {
-    inline::poll(app);
-    poll_activity(app);
-    poll_detail(app);
+pub(super) fn poll(app: &mut App) -> bool {
+    let mut changed = inline::poll(app);
+    changed |= poll_activity(app);
+    changed |= poll_detail(app);
     let Some((conversation, rx)) = &app.artifacts.job else {
-        return;
+        return changed;
     };
     let valid = conversation == app.deleg.d.conversation_id()
         && app
@@ -67,12 +74,12 @@ pub(super) fn poll(app: &mut App) {
             .is_some_and(|picker| picker.kind == PickerKind::Artifacts);
     let result = match rx.try_recv() {
         Ok(result) => result,
-        Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        Err(std::sync::mpsc::TryRecvError::Empty) => return changed,
         Err(_) => Err("Reported file metadata reader stopped".into()),
     };
     app.artifacts.job = None;
     if !valid {
-        return;
+        return changed;
     }
     let rows = match result {
         Ok(records) => {
@@ -111,8 +118,10 @@ pub(super) fn poll(app: &mut App) {
         false,
     );
     app.footer_left = "Enter inspect source · type to filter · Esc close".into();
+    true
 }
-fn poll_activity(app: &mut App) {
+fn poll_activity(app: &mut App) -> bool {
+    let mut changed = false;
     let target = app.activity.detail.and_then(|index| {
         let id = &app.messages.get(index)?.card.as_ref()?.id;
         id.strip_prefix("artifact:")
@@ -131,7 +140,7 @@ fn poll_activity(app: &mut App) {
     if let Some((conversation, index, id, rx)) = &app.artifacts.activity_job {
         let result = match rx.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return changed,
             Err(_) => Err("native edit reader stopped".into()),
         };
         let valid = target.as_ref().is_some_and(|target| {
@@ -140,6 +149,7 @@ fn poll_activity(app: &mut App) {
         let index = *index;
         app.artifacts.activity_job = None;
         if valid {
+            changed = true;
             let message = &mut app.messages[index];
             match result {
                 Ok(Some(card)) if message.card.as_ref().is_some_and(|old| old.id == card.id) => {
@@ -160,11 +170,11 @@ fn poll_activity(app: &mut App) {
         }
     }
     let Some((conversation, index, id)) = target else {
-        return;
+        return changed;
     };
     if app.artifacts.activity_attempted.as_ref() == Some(&(conversation.clone(), index, id.clone()))
     {
-        return;
+        return changed;
     }
     app.artifacts.activity_attempted = Some((conversation.clone(), index, id.clone()));
     let root = app.state_root.clone();
@@ -182,6 +192,7 @@ fn poll_activity(app: &mut App) {
         let _ = tx.send(result);
     });
     app.artifacts.activity_job = Some((conversation, index, id, rx));
+    changed
 }
 
 pub(super) fn choose(app: &mut App, id: &str) {
@@ -219,9 +230,9 @@ fn show_detail(app: &mut App, record: &crate::artifacts::Record, card: &StreamCa
     app.update_preview = Some(crate::update::UpdatePreview { history: Vec::new(), history_expanded: false, lines: std::iter::once(crate::update::PreviewLine::Title("Reported file change".into())).chain(detail.lines().map(|line| crate::update::PreviewLine::Text(line.into()))).chain([crate::update::PreviewLine::Text(format!("Execution directory: {}", record.owner.execution_cwd.display())), crate::update::PreviewLine::Hint("O current-file actions · R catalog · Esc close. Opening never reruns the producing tool.".into())]).collect(), install_available: false, release_url: None });
 }
 
-fn poll_detail(app: &mut App) {
+fn poll_detail(app: &mut App) -> bool {
     let Some((conversation, id, rx)) = &app.artifacts.detail_job else {
-        return;
+        return false;
     };
     let valid = conversation == app.deleg.d.conversation_id()
         && app
@@ -235,15 +246,15 @@ fn poll_detail(app: &mut App) {
             .is_some_and(|picker| picker.kind == PickerKind::ArtifactDetail);
     let result = match rx.try_recv() {
         Ok(result) => result,
-        Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        Err(std::sync::mpsc::TryRecvError::Empty) => return false,
         Err(_) => Err("native edit reader stopped".into()),
     };
     app.artifacts.detail_job = None;
     if !valid {
-        return;
+        return false;
     }
     let Some(record) = app.artifacts.selected.clone() else {
-        return;
+        return false;
     };
     match result {
         Ok(Some(card)) => {
@@ -268,6 +279,7 @@ fn poll_detail(app: &mut App) {
         }
         Ok(None) => {}
     }
+    true
 }
 pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
     if !app.picker.as_ref().is_some_and(|picker| {

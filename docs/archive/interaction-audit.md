@@ -42,7 +42,7 @@ output into another conversation or identity.
   surrogate branch paired key-release halves with key-down halves. The vendored 0.28.1 has
   a five-line behavioral patch; the special Alt-code path stays unchanged. See the
   [upstream report](https://github.com/crossterm-rs/crossterm/issues/1072) and
-  [patch notes](../vendor/crossterm/CONCORDIA-PATCH.md).
+  [patch notes](../../vendor/crossterm/CONCORDIA-PATCH.md).
 - Cards were matched by tool ID across the entire transcript. IDs reused on subsequent turns
   overwrote old cards. Updates are now bounded by the latest user message.
 - A slash command issued during a turn replaced its saved recovery prompt. It now preserves
@@ -111,7 +111,7 @@ turn or quota probe ran. Clippy with warnings denied, formatting/diff checks, OS
 dependency checks passed. Screenshots were regenerated. The install pointer and User executable
 setting both point to Concordia, with the expected stamp, after the tests.
 
-[Performance measurements](metrics.md): 30 `--version` runs had a median process startup of
+[Performance measurements](../metrics.md): 30 `--version` runs had a median process startup of
 38.4 ms; 500 cached busy-transcript frames averaged 370 us (480 us p95). These synthetic
 measurements do not establish end-to-end latency under sustained provider output. Changes
 remain local and uncommitted.
@@ -146,8 +146,8 @@ smoke invocation hit Windows' executable linker lock; final build/test/install c
 
 CLI scans cap directory entries/files/accounts and summary I/O; exact native UUID reads narrow by
 filename before parsing. JSON retains exact account/session identities and rejects oversized output.
-See [configuration](config.md), [command audit](command-audit.md), [provider activity audit](provider-activity-audit.md),
-[file navigation audit](file-navigation-audit.md) and [usage audit](usage-freshness-audit.md).
+See [configuration](../config.md), [command audit](../command-audit.md), [provider activity audit](../provider-activity-audit.md),
+[file navigation audit](../file-navigation-audit.md) and [usage audit](../usage-freshness-audit.md).
 
 Final validation passed on build `2026-10-16e`: **651 enabled project tests** (558 unit and 93
 integration), including **18 ConPTY journeys against the installed release executable** using
@@ -160,7 +160,7 @@ Clippy with warnings denied, formatting/diff checks, OSS gates and `cargo deny` 
 installed binary matches the release SHA-256; the install pointer and User executable setting
 both select it. Screenshots were regenerated. All changes remain local and uncommitted.
 
-[Metrics](metrics.md): 4118 KiB (4.02 MiB) release binary; 34 ms median and 48.8 ms p95 process
+[Metrics](../metrics.md): 4118 KiB (4.02 MiB) release binary; 34 ms median and 48.8 ms p95 process
 startup for `--version`; cached draw p95 343 us. The explicit streaming/input benchmark used 250
 samples, 500 transcript messages and a 29,850-character draft: input plus draw p95 **6.715 ms**,
 maximum **15.946 ms**, with all draft characters retained. This uses TestBackend and does not

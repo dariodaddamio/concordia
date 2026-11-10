@@ -15,7 +15,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 /// How long a fetched Claude reading is trusted before it is refreshed in the background.
 pub const USAGE_TTL_SECS: u64 = 120;
@@ -434,6 +434,10 @@ fn snapshot_from_windows(
     extras: Vec<String>,
     source: &str,
 ) -> UsageSnapshot {
+    let windows: Vec<_> = windows
+        .into_iter()
+        .filter(|window| window.used_pct.is_finite() && (0.0..=100.0).contains(&window.used_pct))
+        .collect();
     let mut parts = Vec::new();
     if let Some(kind) = &limit_kind {
         parts.push(format!("LIMIT · {kind}"));
@@ -545,16 +549,6 @@ pub fn cursor_usage() -> UsageSnapshot {
         "not shown by Cursor CLI",
         "Cursor's CLI has no usage command, so Concordia cannot show it. See cursor.com/dashboard/usage",
     )
-}
-
-/// Limits for one account without ever blocking. Claude needs the fetcher (see
-/// [`UsageFetcher::snapshot`]); here it only reports that nothing has been read yet.
-pub fn read_provider_usage(provider: crate::store::ProviderKind, home: &Path) -> UsageSnapshot {
-    match provider {
-        crate::store::ProviderKind::Codex => read_codex_usage(home),
-        crate::store::ProviderKind::Claude => claude_waiting(),
-        crate::store::ProviderKind::Cursor => cursor_waiting(),
-    }
 }
 
 fn cursor_waiting() -> UsageSnapshot {
@@ -960,30 +954,11 @@ pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<Str
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("could not start claude: {e}"))?;
-    let mut stdout = child.stdout.take().ok_or("no stdout")?;
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        String::from_utf8_lossy(&buf).into_owned()
-    });
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() >= timeout => {
-                crate::provider::turn::kill_process_tree(child.id());
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("timed out after {}s", timeout.as_secs()));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(40)),
-            Err(e) => return Err(format!("wait failed: {e}")),
-        }
+    let out = crate::process_lifetime::capture(cmd, timeout, 1024 * 1024)?;
+    if !out.status.success() {
+        return Err(format!("Claude usage reader exited with {}", out.status));
     }
-    reader.join().map_err(|_| "reader thread panicked".into())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1002,7 +977,9 @@ impl UsageIdentity {
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(home)
         };
-        let mut normalized = home.to_string_lossy().replace('\\', "/");
+        let home = home.canonicalize().unwrap_or(home);
+        let raw = home.to_string_lossy();
+        let mut normalized = crate::file_links::normalized_local_path(&raw).replace('\\', "/");
         if cfg!(windows) {
             normalized.make_ascii_lowercase();
         }
@@ -1059,6 +1036,27 @@ pub struct CachedObservation {
     pub remaining_pct: Option<f64>,
 }
 
+pub struct CachedUsageView {
+    pub observed_at: u64,
+    pub fresh: bool,
+    pub windows: Vec<String>,
+}
+
+/// Exact account/provider/home cache only: no directory scan, provider launch or refresh.
+pub fn cached_usage_view(
+    root: &Path,
+    provider: crate::store::ProviderKind,
+    account: &str,
+    home: &Path,
+) -> Option<CachedUsageView> {
+    let cached = load_cache(root, &UsageIdentity::new(provider, account, home))?;
+    Some(CachedUsageView {
+        observed_at: cached.fetched_at,
+        fresh: unix_now().saturating_sub(cached.fetched_at) < USAGE_TTL_SECS,
+        windows: window_lines(&cached.windows),
+    })
+}
+
 /// Local, identity-bound cache inspection only. Never constructs a fetcher or starts a provider.
 pub fn peek_cached_usage(
     root: &Path,
@@ -1066,31 +1064,21 @@ pub fn peek_cached_usage(
     account: &str,
     home: &Path,
 ) -> Option<CachedObservation> {
-    use std::io::Read;
     let identity = UsageIdentity::new(provider, account, home);
-    let file = fs::File::open(identity.cache_path(root)).ok()?;
-    let mut bytes = Vec::new();
-    file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 64 * 1024 {
-        return None;
-    }
-    let cached: CachedUsage = serde_json::from_slice(&bytes).ok()?;
+    let cached = load_cache(root, &identity)?;
     let now = unix_now();
-    if cached.identity.as_ref() != Some(&identity)
-        || cached.fetched_at > now
-        || cached.windows.len() > 16
-        || cached
-            .windows
-            .iter()
-            .any(|window| !window.used_pct.is_finite() || !(0.0..=100.0).contains(&window.used_pct))
-    {
-        return None;
-    }
     Some(CachedObservation {
         observed_at: cached.fetched_at,
         fresh: now.saturating_sub(cached.fetched_at) < USAGE_TTL_SECS,
-        exhausted: cached.windows.iter().any(|window| window.used_pct >= 100.0),
-        remaining_pct: cached.windows.first().map(UsageWindow::left_pct),
+        exhausted: cached
+            .windows
+            .iter()
+            .any(|window| !window.expired() && window.used_pct >= 100.0),
+        remaining_pct: cached
+            .windows
+            .iter()
+            .find(|window| !window.expired())
+            .map(UsageWindow::left_pct),
     })
 }
 
@@ -1102,10 +1090,29 @@ fn unix_now() -> u64 {
 }
 
 fn load_cache(state_root: &Path, identity: &UsageIdentity) -> Option<CachedUsage> {
-    let raw = fs::read_to_string(identity.cache_path(state_root)).ok()?;
+    let path = identity.cache_path(state_root);
+    let directory = path.parent()?.canonicalize().ok()?;
+    if crate::workspaces::directory_id(path.parent()?).is_err()
+        || !crate::fs_safe::regular_owned_file(&path, &directory)
+    {
+        return None;
+    }
+    let raw = crate::fs_safe::read_text_bounded(&path, 64 * 1024)?;
     let cached: CachedUsage = serde_json::from_str(&raw).ok()?;
-    (cached.identity.as_ref() == Some(identity) && cached.fetched_at <= unix_now())
-        .then_some(cached)
+    (cached.identity.as_ref() == Some(identity)
+        && cached.fetched_at <= unix_now()
+        && cached.windows.len() <= 16
+        && cached.note.len() <= 4096
+        && cached.windows.iter().all(|window| {
+            window.used_pct.is_finite()
+                && (0.0..=100.0).contains(&window.used_pct)
+                && window.label.len() <= 128
+                && window
+                    .resets
+                    .as_ref()
+                    .is_none_or(|reset| reset.len() <= 512)
+        }))
+    .then_some(cached)
 }
 
 fn save_cache(state_root: &Path, c: &CachedUsage) {
@@ -1114,10 +1121,21 @@ fn save_cache(state_root: &Path, c: &CachedUsage) {
     };
     let path = identity.cache_path(state_root);
     if let Some(dir) = path.parent() {
-        let _ = fs::create_dir_all(dir);
+        if fs::create_dir_all(dir).is_err() || crate::workspaces::directory_id(dir).is_err() {
+            return;
+        }
+        if path.exists()
+            && !dir
+                .canonicalize()
+                .is_ok_and(|dir| crate::fs_safe::regular_owned_file(&path, &dir))
+        {
+            return;
+        }
     }
     if let Ok(json) = serde_json::to_string(c) {
-        let _ = fs::write(path, json);
+        if json.len() <= 64 * 1024 {
+            let _ = crate::state_io::write_atomic(&path, json.as_bytes());
+        }
     }
 }
 
@@ -1189,55 +1207,33 @@ impl UsageFetcher {
         self
     }
 
-    /// Limits for an account right now. Claude returns the cached reading (or a "checking"
-    /// placeholder) and starts a background refresh when the cache is missing or older than the TTL.
+    /// Cached limits for an account, with a background refresh when missing or stale.
     pub fn snapshot(
         &mut self,
         provider: crate::store::ProviderKind,
         account: &str,
         home: &Path,
     ) -> UsageSnapshot {
-        match provider {
-            crate::store::ProviderKind::Codex => {
-                self.fetched_snapshot(provider, account, home, false, true)
-            }
-            p => self.fetched_snapshot(p, account, home, false, true),
-        }
+        self.fetched_snapshot(provider, account, home, false)
     }
 
-    /// Return the cached reading without starting a provider usage read.
-    pub fn cached_snapshot(
-        &mut self,
-        provider: crate::store::ProviderKind,
-        account: &str,
-        home: &Path,
-    ) -> UsageSnapshot {
-        self.fetched_snapshot(provider, account, home, false, false)
-    }
-
-    /// Like [`snapshot`](Self::snapshot) but refreshes Claude even if the cache is fresh (`/usage`).
+    /// Like [`snapshot`](Self::snapshot), but refreshes even a fresh cache (`/usage`).
     pub fn snapshot_refresh(
         &mut self,
         provider: crate::store::ProviderKind,
         account: &str,
         home: &Path,
     ) -> UsageSnapshot {
-        match provider {
-            crate::store::ProviderKind::Codex => {
-                self.fetched_snapshot(provider, account, home, true, true)
-            }
-            p => self.fetched_snapshot(p, account, home, true, true),
-        }
+        self.fetched_snapshot(provider, account, home, true)
     }
 
-    /// Claude and Cursor: cached reading plus a background refresh when stale.
+    /// All providers share identity, freshness and refresh scheduling here.
     fn fetched_snapshot(
         &mut self,
         provider: crate::store::ProviderKind,
         account: &str,
         home: &Path,
         force: bool,
-        allow_start: bool,
     ) -> UsageSnapshot {
         let cursor = provider == crate::store::ProviderKind::Cursor;
         let codex = provider == crate::store::ProviderKind::Codex;
@@ -1265,7 +1261,7 @@ impl UsageFetcher {
             .is_none_or(|c| now.saturating_sub(c.fetched_at) >= USAGE_TTL_SECS);
         let stale = stale || e.dirty;
         let retry_ok = force || e.dirty || now.saturating_sub(e.last_attempt) >= USAGE_TTL_SECS;
-        let start = allow_start && !e.pending && (force || (stale && retry_ok));
+        let start = !e.pending && (force || (stale && retry_ok));
         if start {
             e.pending = true;
             e.dirty = false;
@@ -1391,9 +1387,10 @@ impl UsageFetcher {
         let root = self.state_root.clone();
         std::thread::spawn(move || {
             let result = runner(&home).and_then(|text| {
-                let codex_limits = codex.then(|| parse_rate_limits_blob(&text)).flatten();
+                let parsed_limits = codex.then(|| parse_rate_limits_blob(&text)).flatten();
+                let codex_limits = parsed_limits.clone();
                 let (windows, note) = if codex {
-                    parse_rate_limits_blob(&text).map(|limits| {
+                    parsed_limits.map(|limits| {
                         let snap = format_limits(&limits, "Codex live limits");
                         (snap.windows, snap.plan.unwrap_or_default())
                     })
@@ -1446,19 +1443,23 @@ impl UsageFetcher {
 
 fn read_tmp_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemTime)> {
     let tmp = codex_home.join("tmp");
-    if !tmp.is_dir() {
+    if crate::fs_safe::resolved_directory(&tmp).is_none() {
         return None;
     }
     let mut files: Vec<_> = fs::read_dir(&tmp)
         .ok()?
+        .take(4096)
         .flatten()
-        .filter(|e| e.path().is_file())
+        .filter(|e| {
+            fs::symlink_metadata(e.path())
+                .is_ok_and(|metadata| metadata.is_file() && !crate::workspaces::linked(&metadata))
+        })
         .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
         .collect();
     files.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
     files.reverse();
     for entry in files.into_iter().take(8) {
-        let Ok(raw) = fs::read_to_string(entry.path()) else {
+        let Some(raw) = crate::fs_safe::read_text_bounded(&entry.path(), 512 * 1024) else {
             continue;
         };
         if let Some(limits) = parse_rate_limits_blob(&raw) {
@@ -1476,20 +1477,30 @@ fn read_tmp_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemTime)
 
 fn read_session_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemTime)> {
     let sessions = codex_home.join("sessions");
-    if !sessions.is_dir() {
+    if crate::workspaces::directory_id(&sessions).is_err() {
         return None;
     }
     let mut files: Vec<(PathBuf, SystemTime)> = Vec::new();
-    let mut stack = vec![sessions];
-    while let Some(dir) = stack.pop() {
+    let mut stack = vec![(sessions, 0)];
+    let mut remaining = 4096;
+    while let Some((dir, depth)) = stack.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries.take(remaining) {
+            remaining = remaining.saturating_sub(1);
+            let Ok(entry) = entry else { continue };
             let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().map(|x| x == "jsonl").unwrap_or(false) {
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if crate::workspaces::linked(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() && depth < 8 {
+                stack.push((path, depth + 1));
+            } else if metadata.is_file() && path.extension().map(|x| x == "jsonl").unwrap_or(false)
+            {
                 let mtime = entry
                     .metadata()
                     .ok()
@@ -1783,10 +1794,7 @@ pub fn low_limit_warning(
             (w.label == "5h" || w.label.starts_with("7d"))
                 && w.used_pct.is_finite()
                 && w.used_pct >= 80.0
-                && !w
-                    .resets
-                    .as_deref()
-                    .is_some_and(|r| r.starts_with("already reset"))
+                && !w.expired()
         })
         .map(|w| {
             format!(

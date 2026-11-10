@@ -40,7 +40,7 @@ are different measurements. These are retained rather than collapsed by text sim
 ## Remaining planned work
 
 The canonical roadmap remains [PLAN.md](../../PLAN.md), with acceptance in
-[context-handoff-plan.md](../context-handoff-plan.md). Suggested order:
+[context-handoff-plan.md](../plans/context-handoff-plan.md). Suggested order:
 
 1. Native-session source pointers and exact, freshness-checked readback. This supplies reliable
    history even when optional Concordia transcript recording is off.

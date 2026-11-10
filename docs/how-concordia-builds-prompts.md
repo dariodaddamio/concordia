@@ -47,7 +47,7 @@ rewrites those provider-owned additions.
 | Worker result returned with `/delegate use` | explicit user action | result body at most 6,000 chars plus labels/fences | about 1,500 plus labels |
 | Harness pinned decisions | matching provider/home/project, new session | decisions total at most 4,096 UTF-8 bytes; 16 entries | at most roughly 1,024 for ASCII, tokenizer-dependent |
 | Text documents | user attaches them | 64 KiB total document bytes plus labels | roughly 16K for ASCII, tokenizer-dependent |
-| MCP tool catalog | opt-in registration | serialized nine-tool catalog tested below 4,000 bytes | below roughly 1,000 for ASCII JSON |
+| MCP tool catalog | opt-in registration | serialized ten-tool catalog tested below 4,000 bytes | below roughly 1,000 for ASCII JSON |
 | Cooperative scope note | explicit non-whole-workspace scope | declared path list plus fixed label; control chars removed | input-dependent |
 
 The effective 1,600-character worker cap deserves emphasis. `delegate::PACK_CHARS` is 3,000, but
@@ -120,10 +120,10 @@ to the fixed `threads::MAP_CHARS = 1600`; current handoff maximum is therefore 1
 (about 400 tokens). The user-configurable `threads.map_chars` does not change this v2 handoff cap;
 it controls `@chat` expansion. Source:
 [`context.rs` (`MAX_CONTEXT_CHARS`, `build_context_pack_with_workspace`)](../crates/concordia/src/context.rs),
-[`threads.rs` (`MAP_CHARS`, `build_map_v2_with_workspace`)](../crates/concordia/src/threads.rs), and
+[`threads.rs` (`MAP_CHARS`, `build_map`)](../crates/concordia/src/threads.rs), and
 [`tui/run.rs` (`plan_continuity` call)](../crates/concordia/src/tui/run.rs).
 
-If a workspace snapshot is supplied to `build_map_v2_with_workspace`, its one-line branch/head/
+If a workspace snapshot is supplied to `build_map`, its one-line branch/head/
 dirty-worker summary is redacted and shares the same total 1,600-character budget. The main TUI's
 current call does not pass that optional value; the function exists for callers that do. Source:
 [`workspace_state.rs` (`summary`, `render`)](../crates/concordia/src/workspace_state.rs) and
@@ -159,17 +159,18 @@ Please compare this with @3f9a1111.
 
 [Referenced chats: source context, not new requests]
 @3f9a1111
-[concordia map] thread 3f9a… "fix login" - …
+[concordia map] thread THREAD - v2 - tools/approvals NOT transferred
 asked: …
-more: concordia thread read 3f9a… [--tail N | --grep TEXT | --range A-B]
+more: concordia thread read THREAD [--range A-B | --tail N | --grep TEXT]
 ```
 
-The fixed header is 52 characters (about 13 tokens), plus `@id`, newlines and each map. Unlike
-handoff continuity, this path currently calls the older `threads::build_map`, not map v2. Each map
-uses configured `threads.map_chars`, clamped to 200–8,000 and defaulting to 1,600. Repeated ids share
+The fixed reference header is 52 characters (about 13 tokens), plus `@id`, newlines and each map.
+Handoff, CLI/MCP maps and this path share the canonical `threads::build_map` v2 formatter, which
+withholds assistant/tool bodies and retains source pointers. Each explicit reference map uses
+configured `threads.map_chars`, clamped to 200-8,000 and defaulting to 1,600. Repeated ids share
 one map; ambiguous, missing and extra references remain literal and produce UI notices. Source:
 [`tui/chatref.rs` (`MAX_REFS`, `expand`)](../crates/concordia/src/tui/chatref.rs),
-[`threads.rs` (`build_map_with`)](../crates/concordia/src/threads.rs), and
+[`threads.rs` (`build_map`)](../crates/concordia/src/threads.rs), and
 [`config.rs` (`threads.map_chars` parsing)](../crates/concordia/src/config.rs).
 
 ## Attachments
@@ -271,7 +272,7 @@ reservation; it does not grant or replace provider sandbox permission. Source:
 ## MCP schemas
 
 With `[threads] mcp = true`, Concordia registers `concordia mcp` only in Concordia-created Codex and
-Claude homes. The provider MCP client may then include the nine tool descriptions/schemas in its
+Claude homes. The provider MCP client may then include the ten tool descriptions/schemas in its
 own model context. Concordia's serialized catalog is tested below 4,000 bytes (roughly below 1,000
 tokens by chars/4); registration is off by default precisely because schemas cost context. Source:
 [`mcp.rs` (`tool_list`, test
@@ -279,7 +280,7 @@ tokens by chars/4); registration is off by default precisely because schemas cos
 [`integration.rs` (`sync_mcp_for_account`)](../crates/concordia/src/integration.rs), and
 [`config.rs` (`ThreadsConfig::default`)](../crates/concordia/src/config.rs).
 
-The tools are `threads`, `thread_map`, `thread_read`, `native_read`, `usage`, `memory`, `goals`,
+The tools are `threads`, `thread_map`, `thread_read`, `native_read`, `usage`, `feed`, `memory`, `goals`,
 `delegate` and `integrations`. Tool **results** can add model-visible text only after the model calls
 one; each text result is capped at 20,000 characters and redacted. `delegate` and goal changes only
 record reviewable proposals. Source:

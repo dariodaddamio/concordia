@@ -1,5 +1,4 @@
 use crate::accounts::{accounts_with_auth, display_account_name, get_account, is_logged_in};
-use crate::catalog::list_models;
 use crate::commands::{dispatch_slash, parse_slash, CommandContext, CommandOutcome, SlashCommand};
 use crate::connect::{add_account, AddResult};
 use crate::context::{plan_continuity, ContinuityRequest, PackMessage, PackRole};
@@ -10,7 +9,7 @@ use crate::provider::turn::{
     TurnOutcome, TurnProgress,
 };
 use crate::sessions::{
-    count_sessions_here, legacy_session_tasks, list_recent_sessions, tasks_to_picker_rows,
+    count_sessions_here, list_recent_sessions, native_session_picker_rows, tasks_to_picker_rows,
     trust_picker_rows, PickerRow,
 };
 use crate::store::{
@@ -57,6 +56,7 @@ mod run;
 pub use run::run_chat_window;
 pub use run::{run_chat_tui, run_file_editor, run_file_preview};
 mod brand;
+mod chat_ownership;
 mod chatref;
 mod clipboard;
 #[cfg(all(windows, not(test)))]
@@ -75,6 +75,7 @@ mod input_dispatch;
 mod input_stream;
 mod integrations;
 mod landing;
+mod local_terminal;
 mod managed_workspaces;
 mod markdown;
 mod modal;
@@ -100,7 +101,6 @@ mod session_ui_tests;
 mod settings;
 mod stats_ui;
 mod syntax;
-#[allow(dead_code)]
 pub(crate) mod tabs;
 mod text;
 mod theme;
@@ -132,6 +132,7 @@ const PROMPT_W: usize = 2;
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const FLASH_FOR: Duration = Duration::from_secs(3);
 const FOOTER_HINT: &str = "Enter send \u{b7} F9 attach \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
+const START_HINT: &str = "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts.";
 /// How often (in 200 ms ticks) to look for a finished login, and when to stop looking.
 /// A second idle Ctrl+C within this window exits.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);

@@ -74,18 +74,8 @@ pub fn plan_cursor_turn_with(
         argv.push(sid.to_string());
     }
     argv.push(req.prompt.to_string());
-    assert_safe_cursor_argv(&argv, req.trust == TrustMode::Full)?;
-    let mut env = Vec::new();
-    if let Ok(key) = std::env::var("CURSOR_API_KEY") {
-        crate::redact::register_runtime_secret(&key);
-    }
-    let mut env_remove = vec!["CURSOR_API_KEY".to_string()];
-    if let Some(home) = req.home_path {
-        if let Some(key) = cursor_api_key_for_home(home) {
-            env.push(("CURSOR_API_KEY".into(), key));
-            env_remove.clear();
-        }
-    }
+    assert_safe_cursor_argv(&argv[..argv.len() - 1], req.trust == TrustMode::Full)?;
+    let auth = account_auth(req.home_path)?;
     Ok(CursorPlan {
         command: super::locate(super::ProviderKind::Cursor, locate_env)
             .map(|p| p.path.to_string_lossy().into_owned())
@@ -94,9 +84,42 @@ pub fn plan_cursor_turn_with(
             })
             .map_err(anyhow::Error::msg)?,
         argv,
-        env,
-        env_remove,
+        env: auth.env,
+        env_remove: auth.env_remove,
         cwd: req.cwd.to_string_lossy().into_owned(),
+    })
+}
+
+/// Authentication surfaces supported by the current native CLI. Custom OAuth homes
+/// cannot be selected with an undocumented environment variable.
+pub(crate) struct AccountAuth {
+    pub env: Vec<(String, String)>,
+    pub env_remove: Vec<String>,
+}
+
+pub(crate) fn account_auth(home: Option<&Path>) -> Result<AccountAuth> {
+    if let Ok(key) = std::env::var("CURSOR_API_KEY") {
+        crate::redact::register_runtime_secret(&key);
+    }
+    if let Some(home) = home {
+        let selected = home
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("selected Cursor home is unavailable"))?;
+        anyhow::ensure!(selected.is_dir(), "selected Cursor home is not a directory");
+        if let Some(key) = cursor_api_key_for_home(&selected) {
+            return Ok(AccountAuth {
+                env: vec![("CURSOR_API_KEY".into(), key)],
+                env_remove: vec!["CURSOR_AUTH_TOKEN".into()],
+            });
+        }
+        let default_home =
+            dirs::home_dir().and_then(|profile| profile.join(".cursor").canonicalize().ok());
+        anyhow::ensure!(default_home.as_ref() == Some(&selected),
+            "custom Cursor OAuth homes are unsupported by the native CLI; select its default home or an account with its own native API key");
+    }
+    Ok(AccountAuth {
+        env: Vec::new(),
+        env_remove: vec!["CURSOR_API_KEY".into(), "CURSOR_AUTH_TOKEN".into()],
     })
 }
 
@@ -136,28 +159,35 @@ pub fn extract_uuid(text: &str) -> Option<String> {
 }
 
 /// Ask the Cursor CLI for a fresh chat id (`agent create-chat`) so the conversation can be resumed
-/// explicitly. Any failure (missing command, timeout, unexpected output) returns `None`, and the
-/// turn simply runs without a bound session as before.
-pub async fn create_chat(command: &str, env: &[(String, String)], cwd: &str) -> Option<String> {
+/// explicitly. Missing commands, timeouts or invalid output fail before a turn is dispatched.
+pub async fn create_chat(
+    command: &str,
+    env: &[(String, String)],
+    env_remove: &[String],
+    cwd: &str,
+) -> Option<String> {
     use std::process::Stdio;
-    let mut cmd = crate::process_ui::tokio_command(command);
-    crate::process_ui::background(&mut cmd);
+    let mut cmd = crate::process_ui::command(command);
     cmd.arg("create-chat")
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .stderr(Stdio::null());
+    for key in env_remove {
+        cmd.env_remove(key);
+    }
     for (k, v) in env {
         cmd.env(k, v);
     }
     if !env.iter().any(|(k, _)| k == "CURSOR_API_KEY") {
         cmd.env_remove("CURSOR_API_KEY");
     }
-    let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+    let out = tokio::task::spawn_blocking(move || {
+        crate::process_lifetime::capture(cmd, std::time::Duration::from_secs(20), 1024 * 1024)
+    })
+    .await
+    .ok()?
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -192,19 +222,34 @@ mod tests {
     use super::extract_uuid;
 
     #[test]
-    fn cursor_child_without_key_file_gets_no_cursor_api_key() {
+    fn custom_cursor_home_requires_its_own_native_authentication() {
         let root = tempfile::tempdir().unwrap();
-        let req = super::CursorTurnRequest {
-            prompt: "x",
-            cwd: root.path(),
-            home_path: Some(root.path()),
-            model: None,
-            native_session_id: None,
-            trust: crate::store::TrustMode::Ask,
-        };
-        let plan = super::plan_cursor_turn(&req).unwrap();
-        assert!(plan.env.iter().all(|(key, _)| key != "CURSOR_API_KEY"));
-        assert!(plan.env_remove.iter().any(|key| key == "CURSOR_API_KEY"));
+        let error = super::account_auth(Some(root.path()))
+            .err()
+            .expect("custom OAuth home must be refused");
+        assert!(error
+            .to_string()
+            .contains("custom Cursor OAuth homes are unsupported"));
+        let native = super::account_auth(None).unwrap();
+        assert!(native.env.is_empty());
+        assert!(native.env_remove.iter().any(|key| key == "CURSOR_API_KEY"));
+        std::fs::write(
+            root.path().join("api-key"),
+            "synthetic-selected-account-key",
+        )
+        .unwrap();
+        let selected = super::account_auth(Some(root.path())).unwrap();
+        assert!(selected.env.iter().any(
+            |(key, value)| key == "CURSOR_API_KEY" && value == "synthetic-selected-account-key"
+        ));
+        assert!(!selected
+            .env_remove
+            .iter()
+            .any(|key| key == "CURSOR_API_KEY"));
+        assert!(selected
+            .env_remove
+            .iter()
+            .any(|key| key == "CURSOR_AUTH_TOKEN"));
     }
 
     #[test]

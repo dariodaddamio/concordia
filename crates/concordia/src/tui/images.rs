@@ -1,4 +1,4 @@
-//! Image composer state. Snapshots travel with durable queue/draft envelopes.
+//! Active attachment state for the composer or a queued edit. Snapshots stay in durable envelopes.
 use super::*;
 use crate::attachments::{Attachment, Document, Image, Message, PdfDocument};
 enum Paste {
@@ -27,6 +27,10 @@ struct Pasted {
     cwd: PathBuf,
 }
 impl State {
+    pub(super) fn clear_targets(&mut self) {
+        self.targets.clear();
+        self.pressed = None;
+    }
     pub fn count(&self) -> usize {
         self.draft.len()
     }
@@ -63,10 +67,23 @@ impl State {
     }
 }
 impl App {
+    fn attachment_revision(&self) -> u64 {
+        self.queue
+            .edit
+            .as_ref()
+            .map_or_else(|| self.editor.revision(), |edit| edit.editor.revision())
+    }
+
+    pub(super) fn composer_images(&self) -> &State {
+        self.queue
+            .edit
+            .as_ref()
+            .map_or(&self.images, |edit| &edit.composer_images)
+    }
+
     pub(super) fn offer_pasted_files(&mut self, text: &str) {
         if self.picker.is_some()
             || self.workspace.focused.is_some()
-            || self.queue.edit.is_some()
             || self.activity.detail.is_some()
             || self.project_search.active()
             || worker_input::active(self)
@@ -75,7 +92,7 @@ impl App {
         }
         self.images.pasted = crate::attachments::pasted_paths(text).map(|paths| Pasted {
             paths,
-            revision: self.editor.revision(),
+            revision: self.attachment_revision(),
             conversation: self.deleg.d.conversation_id().into(),
             cwd: self.cwd.clone(),
         });
@@ -97,7 +114,6 @@ impl App {
     pub(super) fn accept_pasted_files(&mut self) -> bool {
         if self.picker.is_some()
             || self.workspace.focused.is_some()
-            || self.queue.edit.is_some()
             || self.questions.focused
             || self.images.importing()
         {
@@ -106,7 +122,7 @@ impl App {
         let Some(pasted) = self.images.pasted.take() else {
             return false;
         };
-        if pasted.revision != self.editor.revision()
+        if pasted.revision != self.attachment_revision()
             || pasted.conversation != self.deleg.d.conversation_id()
             || pasted.cwd != self.cwd
         {
@@ -119,7 +135,7 @@ impl App {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let root = self.state_root.clone();
-        self.images.revision = self.editor.revision();
+        self.images.revision = self.attachment_revision();
         self.images.conversation = self.deleg.d.conversation_id().into();
         self.images.cwd = self.cwd.clone();
         self.images.job = Some(rx);
@@ -213,12 +229,13 @@ impl App {
     pub(super) fn composer_value(&self) -> String {
         Message {
             text: self.editor.text(),
-            attachments: self.images.draft.clone(),
+            attachments: self.composer_images().draft.clone(),
             invalid: None,
         }
         .encode()
     }
     pub(super) fn restore_composer(&mut self, raw: &str) {
+        self.rename_editor = None;
         // A restored draft owns its attachments; a previous import must never append to it.
         self.images.job = None;
         self.images.pressed = None;
@@ -258,7 +275,7 @@ impl App {
         }
         let root = self.state_root.clone();
         let (tx, rx) = std::sync::mpsc::channel();
-        self.images.revision = self.editor.revision();
+        self.images.revision = self.attachment_revision();
         self.images.conversation = self.deleg.d.conversation_id().to_owned();
         self.images.cwd = self.cwd.clone();
         self.images.job = Some(rx);
@@ -271,13 +288,15 @@ impl App {
             let _ = tx.send(result);
         });
     }
-    pub(super) fn poll_images(&mut self) {
+    pub(super) fn poll_images(&mut self) -> bool {
+        let mut changed = false;
         if self.images.pasted.as_ref().is_some_and(|pasted| {
-            pasted.revision != self.editor.revision()
+            pasted.revision != self.attachment_revision()
                 || pasted.conversation != self.deleg.d.conversation_id()
                 || pasted.cwd != self.cwd
         }) {
             self.images.pasted = None;
+            changed = true;
         }
         let result = self.images.job.as_ref().and_then(|rx| match rx.try_recv() {
             Ok(r) => Some(r),
@@ -287,12 +306,13 @@ impl App {
             Err(_) => None,
         });
         if let Some(result) = result {
+            changed = true;
             self.images.job = None;
             if self.images.conversation != self.deleg.d.conversation_id()
                 || self.images.cwd != self.cwd
             {
                 self.flash("Conversation changed while importing; choose the attachment again");
-                return;
+                return true;
             }
             match result {
                 Ok(Paste::Image(image)) => {
@@ -301,10 +321,9 @@ impl App {
                     }
                 }
                 Ok(Paste::Text(text))
-                    if self.editor.revision() == self.images.revision
+                    if self.attachment_revision() == self.images.revision
                         && self.picker.is_none()
-                        && self.workspace.focused.is_none()
-                        && self.queue.edit.is_none() =>
+                        && self.workspace.focused.is_none() =>
                 {
                     self.paste_text(&text)
                 }
@@ -340,6 +359,7 @@ impl App {
             }
         }
         self.ensure_inline_raster();
+        changed
     }
 }
 fn import_paths(root: &Path, paths: Vec<PathBuf>) -> Paste {
@@ -521,7 +541,12 @@ pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
             }
             Attachment::PdfDocument(document) => ("PDF", document.name.as_str(), document.bytes),
         };
-        let label = format!("{kind} {}: {name}", index + 1);
+        let owner = if app.queue.edit.is_some() {
+            "Queued "
+        } else {
+            ""
+        };
+        let label = format!("{owner}{kind} {}: {name}", index + 1);
         let label: String = label
             .chars()
             .take(usize::from(card.width.saturating_sub(7)))
@@ -874,7 +899,7 @@ mod tests {
         app.busy = false;
         app.queue.focused = true;
         queue::handle_key(&mut app, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.queue.edit.as_ref().unwrap().text(), "Inspect it");
+        assert_eq!(app.queue.edit.as_ref().unwrap().editor.text(), "Inspect it");
         let (tx, rx) = std::sync::mpsc::channel();
         app.images.job = Some(rx);
         app.images.revision = app.editor.revision();
@@ -882,7 +907,7 @@ mod tests {
         app.poll_images();
         // Queue edit owns paste routing; async completion never interprets an attachment envelope.
         assert!(!app.editor.text().contains("concordia-message-v1"));
-        app.queue.edit = None;
+        app.close_queue_edit();
         app.queue.items.clear();
         app.editor.set_text("");
         let pasted = format!("\"{}\"", doc_source.display());

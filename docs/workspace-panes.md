@@ -12,7 +12,7 @@ implement the requested control. [Chat rendering](chat-rendering.md) records the
 the newer table/link rendering and input-scroll behavior.
 The initial preview slice shipped in local build `2026-10-21b`.
 `/open` uses internal panes; `/edit PATH` (unlisted) preserves the external-editor route. The
-search/replacement stage below remains a requirement. Keep the stable
+search/replacement stage below is implemented with explicit source-bound previews. Keep the stable
 installed binary usable while developing this feature. No live providers are required here.
 
 Internal editing uses exact UTF-8 bytes, preserves BOM/CRLF/tabs, bounds delta history, and stages
@@ -54,7 +54,7 @@ The existing pane and file limits apply across all windows.
 | Small terminal or pane limit | Keep chat usable; explain a refused additional split. Never create invisible panes with live hit targets. Tabs may be added later |
 | `/open FILE` | Open an internal pane, formatted for Markdown/JSON and raw for source code. Standalone CLI preview remains read-only |
 | Edit/save/close | Raw mode edits; explicit save, dirty decisions, external-change checks and bounded pane-owned recovery |
-| Search/replace | Later slice: search the cwd with visible scope/ignore rules. Preview replacement diffs and apply selected changes explicitly |
+| Search/replace | Search the cwd with visible scope/ignore rules. Preview hash-bound replacement diffs and apply selected changes explicitly |
 
 Initial layout: chat occupies the left column; file panes share the right column. The first slice
 has at most three file panes, a 2 MiB/50,000-line UTF-8 limit per file and small-screen refusal.
@@ -63,7 +63,7 @@ Errors for binary, oversized, missing, inaccessible or non-regular files must re
 Do not evaluate terminal control characters from file contents. Do not start an editor process
 per internal pane or scan the entire repository during rendering.
 
-The preview and editing/recovery slices are implemented. Project replacement remains planned.
+The preview, editing/recovery and selected project replacement slices are implemented.
 Keep the external-editor launch path explicitly accessible when changing `/open` semantics; never
 silently depend on an editor installation for an internal preview.
 
@@ -87,10 +87,10 @@ silently depend on an editor installation for an internal preview.
    change to a fake worker, inspect edits, run checks, review the result, interrupt and recover.
    Build a candidate separately. Activating it is explicit; failure leaves the stable app usable.
 
-For each source slice: bump `BUILD_STAMP`, update the changelog, run appropriate provider-free
-tests and clippy, and record actual results. Do not rewrite historical validation as proof of a
+For each source slice: bump `BUILD_STAMP`, update the changelog, follow the scoped verification
+rules in [AGENTS.md](../AGENTS.md), and record actual results. Do not rewrite historical validation as proof of a
 new build. Installation/activation and real-provider tests are separate from source verification.
-For this first slice, see [source preview validation](e2e-status.md#source-preview-validation-2026-10-21a).
+For this first slice, see [source preview validation](quality/e2e-history.md#source-preview-validation-2026-10-21a).
 
 ## Resource and lifecycle requirements
 

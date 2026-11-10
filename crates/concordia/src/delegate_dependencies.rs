@@ -165,7 +165,9 @@ impl Delegates {
             );
         }
         if let (Some(model), Some(home)) = (&job.model, &job.spec.home) {
-            if !crate::catalog::list_models(job.provider, home).contains(model) {
+            if !crate::models::ids_at(&recovery.state_root, job.provider, &job.account, home)
+                .contains(model)
+            {
                 return Err("worker model is no longer in its local catalog".into());
             }
         }

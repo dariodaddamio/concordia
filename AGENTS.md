@@ -8,7 +8,7 @@ State the task, the paths you will touch, your assumptions and observable accept
 before implementing. Preserve native provider tools and authentication. Memory management may
 index provider-owned session sources and coordinate handoff; it must preserve explicit identities,
 bounded reads, source freshness and existing logs. Distinguish implemented behavior from the target
-design in docs/context-handoff-plan.md. Do not introduce a hosted memory backend or silently change
+design in docs/plans/context-handoff-plan.md. Do not introduce a hosted memory backend or silently change
 provider compaction policy.
 
 Delegation is allowed for scoped work: assign disjoint ownership and return evidence. Do not spawn
@@ -47,8 +47,13 @@ Use argument arrays (or stdin) for prompts, never shell strings; validate Window
 Do not install hooks or change global authentication for experiments. Start with isolated
 directories and mock providers.
 
-Run meaningful checks for what you changed (`cargo test -p concordia --tests`, clippy with
-`-D warnings`, `scripts/smoke-e2e-everyday.ps1`). Bump `BUILD_STAMP` in
+Verify the changed user flow with a focused end-to-end check and an observable artifact. Do not
+write unit or integration tests unless the owner requests a specific case. Keep useful existing
+checks for recovery, identity, approvals and storage integrity; remove tests that merely restate
+implementation and add no protection beyond the end-to-end flow. Do not run the full suite on
+each edit. Full tests, all-target Clippy and everyday smoke belong at an explicitly requested
+commit/PR/release qualification, or when a concrete unresolved failure warrants them. Clippy is a
+static Rust linter, not a feature or end-to-end check. Bump `BUILD_STAMP` in
 `crates/concordia/src/version.rs` for every user-facing change. Record notable changes in CHANGELOG.md.
 
 No publishing, remote repository creation, account migrations, or release actions are authorized

@@ -97,7 +97,7 @@ fn cursor_home_ready(home: &Path) -> bool {
     for name in ["concordia-api-key", "api-key"] {
         let p = home.join(name);
         if p.is_file()
-            && fs::read_to_string(&p)
+            && crate::fs_safe::read_text_bounded(&p, 16 * 1024)
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false)
         {
@@ -108,8 +108,7 @@ fn cursor_home_ready(home: &Path) -> bool {
     if !cfg.is_file() {
         return false;
     }
-    fs::read_to_string(&cfg)
-        .ok()
+    crate::fs_safe::read_text_bounded(&cfg, 1024 * 1024)
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|j| {
             j.get("authInfo")
@@ -234,6 +233,15 @@ fn discover_numbered_homes(
 }
 
 pub fn list_all_accounts(state_root: &Path) -> Vec<AccountDef> {
+    list_accounts(state_root, false)
+}
+
+/// Setup/removal must also cover logged-out and hidden registered homes.
+pub fn setup_accounts(state_root: &Path) -> Vec<AccountDef> {
+    list_accounts(state_root, true)
+}
+
+fn list_accounts(state_root: &Path, include_hidden: bool) -> Vec<AccountDef> {
     let mut by_id: HashMap<String, AccountDef> = HashMap::new();
     for a in builtin_accounts() {
         by_id.insert(a.account.clone(), a);
@@ -254,7 +262,7 @@ pub fn list_all_accounts(state_root: &Path) -> Vec<AccountDef> {
     let hidden = store.hidden_accounts;
     let mut out: Vec<_> = by_id
         .into_values()
-        .filter(|a| !hidden.contains(&a.account))
+        .filter(|a| include_hidden || !hidden.contains(&a.account))
         .collect();
     for a in &mut out {
         if !a.custom {

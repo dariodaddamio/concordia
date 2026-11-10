@@ -2,10 +2,8 @@ use crate::provider::stream_cards::{
     parse_codex_stream_chunk, upsert_card, StreamCard, StreamPart,
 };
 use crate::store::TrustMode;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Debug, Clone)]
 pub struct TurnRequest<'a> {
@@ -26,7 +24,6 @@ pub struct TurnPlan {
 
 #[derive(Debug, Default, Clone)]
 pub struct StreamOutcome {
-    pub exit_code: Option<i32>,
     pub text: String,
     pub session_id: Option<String>,
     pub cards: Vec<StreamCard>,
@@ -118,40 +115,4 @@ pub fn apply_stream_parts(parts: Vec<StreamPart>, out: &mut StreamOutcome) {
             StreamPart::Error(msg) => out.errors.push(msg),
         }
     }
-}
-
-pub async fn run_turn(req: &TurnRequest<'_>) -> Result<StreamOutcome> {
-    let plan = plan_turn_argv(req)?;
-    assert_safe_argv(&plan.argv)?;
-    let mut cmd = crate::process_ui::tokio_command(&plan.command);
-    crate::process_ui::background(&mut cmd);
-    cmd.args(&plan.argv)
-        .current_dir(&plan.cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(home) = req.codex_home {
-        cmd.env("CODEX_HOME", home);
-    }
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawn {} {:?}", plan.command, plan.argv))?;
-    let stdout = child.stdout.take().context("codex stdout")?;
-    let mut lines = BufReader::new(stdout).lines();
-    let mut out = StreamOutcome::default();
-    while let Some(line) = read_line(&mut lines).await? {
-        apply_stream_parts(parse_codex_stream_chunk(&line), &mut out);
-    }
-    let status = child.wait().await.context("wait codex")?;
-    out.exit_code = status.code();
-    if out.text.is_empty() && status.code().unwrap_or(1) != 0 {
-        out.text = format!("codex exited {}", status.code().unwrap_or(-1));
-    }
-    Ok(out)
-}
-
-async fn read_line(
-    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
-) -> Result<Option<String>> {
-    lines.next_line().await.context("read codex stdout line")
 }

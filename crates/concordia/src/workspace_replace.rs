@@ -99,6 +99,14 @@ pub fn stage(
     for (path, mut hits) in grouped {
         let verified = verify_hit(&summary.request, hits[0], cancel)?;
         let before = verified.text;
+        let ranges = match_ranges(
+            &before,
+            &summary.request.query,
+            summary.request.case_sensitive,
+            cancel,
+            Instant::now(),
+        )
+        .map_err(|status| format!("replacement verification stopped: {status:?}"))?;
         hits.sort_by_key(|hit| hit.range.start);
         let mut end = 0;
         for hit in &hits {
@@ -111,13 +119,7 @@ pub fn stage(
             {
                 return Err("Selected match ranges overlap or have changed".into());
             }
-            let found = &before[hit.range.clone()];
-            if (summary.request.case_sensitive && found != summary.request.query)
-                || (!summary.request.case_sensitive
-                    && !found
-                        .to_lowercase()
-                        .contains(&summary.request.query.to_lowercase()))
-            {
+            if !ranges.contains(&hit.range) {
                 return Err("Selected match no longer agrees with its query".into());
             }
             end = hit.range.end;

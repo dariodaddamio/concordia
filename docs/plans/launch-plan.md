@@ -87,7 +87,7 @@ Post follow-ups when there is new evidence to share. Do not copy an eight-post X
 
 ## Recording and publication readiness
 
-The release/demo link must resolve to the version in the recording. The demo must be repeatable, the code must be the installed artifact, and the supported-host/provider limits must be visible. Known stress-test failures and unverified live behavior must not be hidden by a passing isolated demo. Cursor requests on the installed WezTerm 2024 host are not working visible custom pointers; see [host evidence](chat-rendering.md).
+The release/demo link must resolve to the version in the recording. The demo must be repeatable, the code must be the installed artifact, and the supported-host/provider limits must be visible. Known stress-test failures and unverified live behavior must not be hidden by a passing isolated demo. Cursor requests on the installed WezTerm 2024 host are not working visible custom pointers; see [host evidence](../chat-rendering.md).
 
 The best immediate work is closing these implementation/evidence gaps. Copy, storyboards and exports can be prepared in parallel, but final launch claims and media stay gated on the demonstrated product.
 

@@ -20,6 +20,106 @@ const ROWS: usize = 40;
 static JOURNEY_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+#[ignore = "isolated slash-command and shared skill lifecycle; no provider turns"]
+fn shared_setup_commands_are_discoverable_and_work_through_the_terminal_ui() {
+    let _guard = JOURNEY_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let source = dir.path().join("workspace/shared-skills");
+    std::fs::create_dir_all(source.join("ui-review-fixture")).unwrap();
+    std::fs::write(source.join("ui-review-fixture/SKILL.md"), "---\nname: ui-review-fixture\ndescription: Synthetic command journey\n---\nInspect only.\n").unwrap();
+    let mut session = Session::launch(dir.path());
+    session.send("/sk");
+    session.until("skills root completion", |session| {
+        session.screen().contains("/skills")
+    });
+    session.send("\x1b");
+    session.until("completion dismissed", |session| {
+        !session
+            .screen()
+            .contains("inspect skills and connect shared setup")
+    });
+    session.send("\x01\x7f");
+    session.until("completion draft cleared", |session| {
+        session.draft().is_empty()
+    });
+    session.submit(&format!("/skills install \"{}\"", source.display()));
+    session.until_with_timeout(
+        "shared source installed and recorded",
+        Duration::from_secs(30),
+        |_| {
+            concordia::harness::connections::shared_skill_sources(dir.path())
+                .is_ok_and(|sources| sources.len() == 1)
+        },
+    );
+    for provider in [".codex", ".claude", ".cursor"] {
+        assert!(
+            dir.path()
+                .join("profile")
+                .join(provider)
+                .join("skills/ui-review-fixture/SKILL.md")
+                .is_file(),
+            "{provider}"
+        );
+    }
+    session.submit("/skills list");
+    session.until("installed linked skill visible in catalog", |session| {
+        session.screen().contains("ui-review-fixture")
+    });
+    session.send("\x1b");
+    session.submit("/hooks list");
+    session.until("native hook inventory and trust boundary", |session| {
+        session.screen().contains("Native hook trust")
+    });
+    session.send("\x1b");
+    session.submit("/hooks status");
+    session.until("shared source status", |session| {
+        session.screen().contains("shared skills:")
+    });
+    session.submit("/hooks list extra");
+    session.until("invalid command arguments rejected", |session| {
+        session.screen().contains("unsupported arguments")
+    });
+    session.submit(&format!("/skills remove \"{}\"", source.display()));
+    session.until_with_timeout(
+        "source unshared and links removed",
+        Duration::from_secs(30),
+        |_| {
+            concordia::harness::connections::shared_skill_sources(dir.path())
+                .is_ok_and(|sources| sources.is_empty())
+                && !dir
+                    .path()
+                    .join("profile/.codex/skills/ui-review-fixture")
+                    .exists()
+        },
+    );
+    session.until("removal result published", |session| {
+        session.screen().contains("stopped sharing skill source")
+    });
+    for provider in [".codex", ".claude", ".cursor"] {
+        assert!(
+            !dir.path()
+                .join("profile")
+                .join(provider)
+                .join("skills/ui-review-fixture")
+                .exists(),
+            "{provider}"
+        );
+    }
+    assert!(source.join("ui-review-fixture/SKILL.md").is_file());
+    assert!(
+        session.journal().is_empty(),
+        "setup must not start a model turn"
+    );
+    let artifact =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/09g-command-journey.txt");
+    std::fs::write(artifact, session.screen()).unwrap();
+    session.exit();
+}
+
+#[test]
 #[ignore = "isolated Mermaid, native images and Cursor native permission journey; fake providers only"]
 fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -799,7 +899,7 @@ fn usage_limit_automatically_continues_on_configured_provider_without_foreign_se
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
-    std::fs::write(dir.path().join("config.toml"), "[threads]\nenabled=true\n[ui]\ntips=false\n[continuation]\nmode='automatic'\naccounts=['claude']\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[threads]\nlogging='on'\n[ui]\ntips=false\n[continuation]\nmode='automatic'\naccounts=['claude']\n").unwrap();
     let mut s = Session::launch(dir.path());
     s.submit("Fix graph [quota] [coded-limit]");
     s.until("handoff reply completed", |s| {
@@ -1023,7 +1123,7 @@ fn setup(root: &Path, provider: ProviderKind) {
     std::fs::create_dir_all(root.join("workspace")).unwrap();
     std::fs::write(
         root.join("config.toml"),
-        "[threads]\nenabled = true\n[ui]\ntips = false\n",
+        "[threads]\nlogging = 'on'\n[ui]\ntips = false\n",
     )
     .unwrap();
     let store = OrchestratorStore {
@@ -2609,7 +2709,7 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     std::fs::write(home.join("auth.json"), serde_json::json!({"tokens":{"id_token":"e30.eyJlbWFpbCI6ICJtZW1iZXJAZXhhbXBsZS5pbnZhbGlkIiwgImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6IHsiY2hhdGdwdF9wbGFuX3R5cGUiOiAicGx1cyJ9fQ.fixture"}}).to_string()).unwrap();
     std::fs::write(
         home.join("models_cache.json"),
-        r#"{"models":[{"slug":"fixture-model"}]}"#,
+        r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list"}]}"#,
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
@@ -2795,7 +2895,7 @@ fn quota_handoff_supplies_native_source_pointers_with_concordia_recording_off() 
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
-    std::fs::write(dir.path().join("config.toml"), "[threads]\nenabled=false\n[ui]\ntips=false\n[continuation]\nmode='automatic'\naccounts=['claude']\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[threads]\nlogging='off'\n[ui]\ntips=false\n[continuation]\nmode='automatic'\naccounts=['claude']\n").unwrap();
     let original = seed_native_quota_source(dir.path());
     let mut s = Session::launch(dir.path());
     s.submit("Finish important task [quota]");
@@ -2853,7 +2953,7 @@ fn usage_limited_request_survives_restart_separately_from_the_newer_draft() {
     setup(dir.path(), ProviderKind::Codex);
     std::fs::write(
         dir.path().join("config.toml"),
-        "[threads]\nenabled=false\n[ui]\ntips=false\n[continuation]\nmode='manual'\n",
+        "[threads]\nlogging='off'\n[ui]\ntips=false\n[continuation]\nmode='manual'\n",
     )
     .unwrap();
     seed_native_quota_source(dir.path());
@@ -2895,7 +2995,7 @@ fn reported_context_capacity_starts_one_new_native_session_with_original_source_
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
-    std::fs::write(dir.path().join("config.toml"), "[threads]\nenabled=false\n[ui]\ntips=false\n[continuation]\nmode='automatic'\naccounts=['claude']\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[threads]\nlogging='off'\n[ui]\ntips=false\n[continuation]\nmode='automatic'\naccounts=['claude']\n").unwrap();
     seed_native_quota_source(dir.path());
     let folder = dir.path().join("profile/.codex/sessions");
     let body = format!(
@@ -2940,7 +3040,7 @@ fn proactive_context_policy_rolls_before_dispatch_and_keeps_original_pointers() 
     setup(dir.path(), ProviderKind::Codex);
     std::fs::write(
         dir.path().join("profile/.codex/models_cache.json"),
-        r#"{"models":[{"slug":"synthetic-model"}]}"#,
+        r#"{"models":[{"slug":"synthetic-model","display_name":"synthetic-model","visibility":"list"}]}"#,
     )
     .unwrap();
     let folder = dir.path().join("profile/.codex/sessions");
@@ -3379,7 +3479,7 @@ fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
     );
     std::fs::write(
         dir.path().join("profile/.codex/models_cache.json"),
-        r#"{"models":[{"slug":"fixture-fast"}]}"#,
+        r#"{"models":[{"slug":"fixture-fast","display_name":"fixture-fast","visibility":"list"}]}"#,
     )
     .unwrap();
     let mut s = Session::launch(dir.path());

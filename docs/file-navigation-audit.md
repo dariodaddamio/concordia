@@ -1,5 +1,10 @@
 # File navigation audit
 
+Historical scoped evidence from 2026-10-21. The editor/layout limits and URL exclusions
+below describe that implementation, not the current product. For current navigation and
+editing behavior, use [workspace controls](workspace-panes.md) and
+[chat rendering](chat-rendering.md).
+
 Source follow-up `2026-10-21a`: `/open`, `/preview` and clicked links now use internal read-only
 file panes. `/edit` retains the separate-terminal editor described below. Internal panes read at
 most 2 MiB/50,000 UTF-8 lines off the UI thread, bind results to stable pane ids, and support

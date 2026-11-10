@@ -774,9 +774,9 @@ impl App {
         self.push_system("Inspecting exact prerequisite sources and managed heads; no Git integration is running");
     }
 
-    fn poll_dependency_delivery(&mut self) {
+    fn poll_dependency_delivery(&mut self) -> bool {
         let Some(read) = self.deleg.delivery_read.as_ref() else {
-            return;
+            return false;
         };
         if read.generation != self.deleg.generation {
             read.cancel
@@ -784,16 +784,16 @@ impl App {
         }
         let result = match read.rx.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(_) => Err("Dependency reviewer stopped; inspect again".into()),
         };
         let Some(read) = self.deleg.delivery_read.take() else {
-            return;
+            return false;
         };
         if read.generation != self.deleg.generation
             || read.cancel.load(std::sync::atomic::Ordering::Relaxed)
         {
-            return;
+            return false;
         }
         let result = result.and_then(|review| {
             if self.deleg.d.delivery_request(read.job)? != read.request || review.request != read.request { return Err("Dependency ownership changed during review; nothing accepted".into()); }
@@ -809,6 +809,7 @@ impl App {
             }
         });
         self.push_system(result.unwrap_or_else(|error| format!("Dependency delivery: {error}")));
+        true
     }
 
     pub(super) fn worker_route_inputs(
@@ -959,15 +960,17 @@ impl App {
     }
 
     /// Apply worker events and post the result of each worker that finished.
-    pub(super) fn poll_delegates(&mut self) {
-        self.poll_dependency_delivery();
-        self.poll_managed_workspaces();
-        self.poll_scope_inspection();
+    pub(super) fn poll_delegates(&mut self) -> bool {
+        let mut changed = self.deleg.d.any_active();
+        changed |= self.poll_dependency_delivery();
+        changed |= self.poll_managed_workspaces();
+        changed |= self.poll_scope_inspection();
         if let Some((generation, rx)) = &self.deleg.route_read {
             match rx.try_recv() {
                 Ok(decision) => {
                     let current = *generation == self.deleg.generation;
                     self.deleg.route_read = None;
+                    changed = true;
                     if current {
                         self.push_system(
                             decision
@@ -979,6 +982,7 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     let current = *generation == self.deleg.generation;
                     self.deleg.route_read = None;
+                    changed = true;
                     if current {
                         self.push_system(
                             "Local route inspection stopped; retry the inspection command.",
@@ -1005,6 +1009,7 @@ impl App {
                 }
                 Err(_) => Err("worker result reader stopped".into()),
             };
+            changed = true;
             let RecoveryRead {
                 job: id,
                 generation,
@@ -1024,6 +1029,7 @@ impl App {
         self.deleg
             .owners
             .retain(|id, _| self.deleg.d.get(*id).is_some());
+        changed |= !finished.is_empty();
         for id in finished {
             if let Some(job) = self.deleg.d.get(id) {
                 self.usage_fetcher.invalidate(&job.account);
@@ -1074,7 +1080,9 @@ impl App {
             && get_settings(&self.state_root).delegate_auto_return
         {
             self.collect_results(false);
+            changed = true;
         }
+        changed
     }
 
     pub(super) fn cancel_all_delegates(&mut self) {
@@ -1127,7 +1135,7 @@ impl App {
 
     /// One bounded proposal queue. Worker proposals require delegation mode; goal proposals
     /// always require complete local review and explicit F7 focus before any goal mutation.
-    pub(super) fn poll_proposals(&mut self) {
+    pub(super) fn poll_proposals(&mut self) -> bool {
         if self.picker.is_some()
             || self.workspace.focused.is_some()
             || self.activity.detail.is_some()
@@ -1158,14 +1166,16 @@ impl App {
             || self.picker.is_some()
             || self.workspace.focused.is_some()
         {
-            return;
+            return false;
         }
         let slots = MAX_PENDING_CONFIRMS.saturating_sub(self.deleg.confirms.len());
+        let mut changed = false;
         for proposal in crate::mcp::take_pending(
             &self.state_root,
             crate::store::delegation_protocol_on(&self.state_root),
             slots,
         ) {
+            changed = true;
             match proposal {
                 crate::mcp::PendingProposal::Delegate(proposal) => {
                     if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
@@ -1205,6 +1215,7 @@ impl App {
                 }
             }
         }
+        changed
     }
 
     fn queue_proposals(&mut self, blocks: Vec<crate::delegate::DelegateBlock>) {
@@ -1472,27 +1483,16 @@ impl App {
                 }
             }
             SlashCommand::CrewUse(name) => {
+                if self.busy || self.preparing_cancel.is_some() || self.cancel_handle.is_some() {
+                    self.push_system("Finish or cancel the active turn before changing crew lead or model.");
+                    return true;
+                }
                 let crews = crate::config::Config::load(&root).config.crews;
                 match crews.get(name.trim()) {
                     Some(crew) => {
                         match apply_crew(&root, &self.account, crew) {
                             Ok((lead, workers)) => {
-                                if let Some(account) = crate::accounts::get_account(&root, &lead.0) {
-                                    let mut selection = crate::store::get_use_selection(&root)
-                                        .unwrap_or(crate::store::UseSelection {
-                                            provider: account.provider,
-                                            account: account.account.clone(),
-                                            home_path: account.home_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
-                                            model: None,
-                                            updated_at: String::new(),
-                                        });
-                                    selection.provider = account.provider;
-                                    selection.account = account.account;
-                                    selection.home_path = account.home_path.map(|p| p.to_string_lossy().into_owned());
-                                    selection.model = lead.1.clone();
-                                    let _ = crate::store::set_use_selection(&root, selection);
-                                }
-                                self.refresh_binding();
+                                self.refresh_account_continuity();
                                 self.push_system(format!(
                                     "Crew '{}' selected: lead {} ({}); enrolled {} worker(s). Worker trust remains capped at {}.",
                                     name,
@@ -1759,7 +1759,7 @@ impl App {
         let models = acct
             .home_path
             .as_deref()
-            .map(|h| crate::catalog::list_models(acct.provider, h))
+            .map(|h| crate::models::ids_at(&self.state_root, acct.provider, &account, h))
             .unwrap_or_default();
         let Some(model) = model else {
             return format!("{account}: {}\nNative models: {}\n/delegate model {account} MODEL | default (applies to new jobs)",
@@ -1807,7 +1807,7 @@ impl App {
                     && !j.collected
                     && !j.final_text().is_empty()
             })
-            .take(crate::delegate::MAX_WORKERS)
+            .take(crate::delegate::MAX_COLLECT_RESULTS)
             .collect();
         if jobs.is_empty() {
             if report_empty {
@@ -1859,9 +1859,8 @@ fn apply_crew(
     crew: &crate::config::Crew,
 ) -> Result<((String, Option<String>), usize), String> {
     let lead = crew_target(&crew.lead)?;
-    if crate::accounts::get_account(root, &lead.0).is_none() {
-        return Err(format!("no lead account named {}", lead.0));
-    }
+    let account = crate::accounts::get_account(root, &lead.0)
+        .ok_or_else(|| format!("no lead account named {}", lead.0))?;
     let mut workers = Vec::new();
     for entry in &crew.workers {
         let target = crew_target(entry)?;
@@ -1885,6 +1884,16 @@ fn apply_crew(
         ));
     }
     crate::store::modify_store(root, |store| {
+        store.selection = Some(crate::store::UseSelection {
+            provider: account.provider,
+            account: account.account.clone(),
+            home_path: account
+                .home_path
+                .as_ref()
+                .map(|home| home.to_string_lossy().into_owned()),
+            model: lead.1.clone(),
+            updated_at: super::now_stamp(),
+        });
         store.settings.workers = workers.iter().map(|(account, _)| account.clone()).collect();
         store.settings.worker_models = workers
             .iter()

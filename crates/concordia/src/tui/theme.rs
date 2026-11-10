@@ -173,7 +173,7 @@ impl Palette {
         // Syntax colors repeat across thousands of cells; adjust each color/background once.
         let mut foregrounds = HashMap::new();
         for cell in &mut buffer.content {
-            if cell.symbol() == " " && cell.fg == Color::Rgb(20, 23, 31) && cell.bg == cell.fg {
+            if cell.symbol() == " " && cell.fg == color(self.background) && cell.bg == cell.fg {
                 // Native image overlays are collected after this pass and match this exact marker.
                 continue;
             }
@@ -281,20 +281,41 @@ pub(super) fn apply(buffer: &mut Buffer, no_color: bool, native: bool) {
     current().apply(buffer, no_color, native);
 }
 
+pub(super) fn export_current(ui: &Ui) -> Result<crate::theme_library::ThemeFile, String> {
+    if matches!(ui.theme, Theme::Default | Theme::Terminal) && ui.library_theme.is_none() {
+        return Err("Choose a named theme before exporting; terminal-provided colors have no exact local palette".into());
+    }
+    let palette = Palette::from_ui(ui);
+    let mut theme = match &ui.library_theme {
+        Some(theme) => theme.clone(),
+        None => crate::theme_library::builtin(match ui.theme {
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+            _ => "opifex",
+        })?,
+    };
+    theme.background = palette.background;
+    theme.foreground = palette.foreground;
+    theme.accent = palette.accent;
+    theme.success = palette.success;
+    theme.warning = palette.warning;
+    theme.error = palette.error;
+    if ui.library_theme.is_none() {
+        theme.dim = palette.muted;
+        theme.selection = palette.panel;
+        theme.border = palette.muted;
+    }
+    Ok(theme)
+}
+
 #[cfg(windows)]
 pub(super) fn image_marker() -> Color {
-    // Native overlays are collected before the frame-wide theme pass. Keep this
-    // marker stable so an installed theme cannot make a valid overlay invisible.
-    Color::Rgb(20, 23, 31)
+    // Uncovered cells in an image's rectangle must match the surrounding canvas.
+    color(current().background)
 }
 
 pub(super) fn image_background() -> Rgb {
-    let palette = current();
-    if palette.enabled && (!palette.terminal || palette.custom_background.is_some()) {
-        palette.background
-    } else {
-        [28, 28, 28]
-    }
+    current().background
 }
 
 /// Native Reset colors also fill the client margin outside the whole-cell grid.
@@ -349,6 +370,10 @@ pub(super) fn fixture_proof() {
         assert!(warnings.is_empty());
         let palette = Palette::from_ui(&config.ui);
         let mut themed = original.clone();
+        themed[(6, 0)]
+            .set_fg(color(palette.background))
+            .set_bg(color(palette.background));
+        let marker = themed[(6, 0)].clone();
         palette.apply(&mut themed, false, false);
         assert!(themed[(0, 0)].modifier.contains(Modifier::BOLD));
         assert_eq!(
@@ -359,7 +384,7 @@ pub(super) fn fixture_proof() {
         assert_eq!(themed[(0, 0)].bg, color(palette.background));
         assert_eq!(
             themed[(6, 0)],
-            original[(6, 0)],
+            marker,
             "native image overlay markers survive the theme pass"
         );
         assert_ne!(themed[(1, 0)].bg, themed[(2, 0)].bg);

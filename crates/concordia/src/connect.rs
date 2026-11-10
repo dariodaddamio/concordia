@@ -75,9 +75,7 @@ pub fn pick_slot(state_root: &Path, provider: ProviderKind) -> Slot {
         let id = format!("{}-{n}", provider.as_str());
         let home = homes.join(&id);
         let legacy = legacy_base.join(legacy_dir_name(provider, n));
-        let in_use = taken.contains(id.as_str())
-            || legacy.exists()
-            || (home.exists() && is_logged_in(provider, &home));
+        let in_use = taken.contains(id.as_str()) || legacy.exists() || home.exists();
         if !in_use {
             return Slot {
                 label: format!("{} {n}", capitalized(provider)),
@@ -221,13 +219,18 @@ impl Removable {
 }
 
 fn is_owned_home(state_root: &Path, home: &Path) -> bool {
+    if crate::workspaces::directory_id(&homes_dir(state_root)).is_err()
+        || crate::workspaces::directory_id(home).is_err()
+    {
+        return false;
+    }
     let Ok(homes) = fs::canonicalize(homes_dir(state_root)) else {
         return false;
     };
     let Ok(h) = fs::canonicalize(home) else {
         return false;
     };
-    h != homes && h.starts_with(&homes)
+    h.parent() == Some(homes.as_path())
 }
 
 /// Every account the user can remove, with what removing it would do.
@@ -282,14 +285,27 @@ pub fn remove_account(state_root: &Path, id: &str, mode: RemoveMode) -> Result<S
             let home = acct.home.clone().context("account has no home folder")?;
             let meta =
                 fs::symlink_metadata(&home).with_context(|| format!("stat {}", home.display()))?;
-            if meta.file_type().is_symlink() || !is_owned_home(state_root, &home) {
+            if crate::workspaces::linked(&meta) || !is_owned_home(state_root, &home) {
                 anyhow::bail!(
                     "refusing to delete {}: not a plain folder inside Concordia's homes",
                     home.display()
                 );
             }
-            crate::store::remove_stored_account(state_root, &acct.id)?;
+            let canonical = home.canonicalize()?;
+            anyhow::ensure!(
+                !list_all_accounts(state_root).iter().any(|other| {
+                    other.account != acct.id
+                        && other.home_path.as_ref().is_some_and(|path| {
+                            path.canonicalize()
+                                .is_ok_and(|path| path.starts_with(&canonical))
+                        })
+                }),
+                "another account references this home; unregister it without deleting shared files"
+            );
+            crate::store::load_store_checked(state_root)?;
             fs::remove_dir_all(&home).with_context(|| format!("delete {}", home.display()))?;
+            crate::store::remove_stored_account(state_root, &acct.id)
+                .context("account files were removed, but registration could not be updated")?;
             Ok(format!(
                 "removed {} and deleted its login folder",
                 acct.label

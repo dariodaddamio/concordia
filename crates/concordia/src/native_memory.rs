@@ -11,6 +11,9 @@ use std::{
 
 const TAIL_BYTES: u64 = 8 * 1024 * 1024;
 const HEAD_BYTES: u64 = 64 * 1024;
+// Native setup can make the identity record larger than the freshness anchor.
+// Match discovery's finite prefix budget without changing existing pointer hashes.
+const IDENTITY_BYTES: u64 = 1024 * 1024;
 const LINE_BYTES: usize = 256 * 1024;
 const MAX_MESSAGES: usize = 128;
 const INDEX_BYTES: u64 = 256 * 1024;
@@ -282,13 +285,13 @@ fn message_role(value: &Value, provider: ProviderKind, session: &str) -> Option<
         }
     }
     let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
-    let event_fallback = provider == ProviderKind::Codex && kind == "event_msg";
+    let codex_event_message = provider == ProviderKind::Codex && kind == "event_msg";
     let payload = if provider == ProviderKind::Codex {
         value.get("payload").unwrap_or(value)
     } else {
         value.get("message").unwrap_or(value)
     };
-    if event_fallback {
+    if codex_event_message {
         return match payload.get("type").and_then(Value::as_str) {
             Some("user_message") => Some(("user".into(), true)),
             Some("agent_message") => Some(("assistant".into(), true)),
@@ -390,16 +393,6 @@ pub fn cursor_text(root: &Path, binding: &Binding) -> Result<Vec<(String, String
         previous = key;
     }
     Ok(messages)
-}
-
-/// Last native Codex context measurement, not cumulative billed usage. Unsupported formats and
-/// measurements invalidated by model changes/compaction remain unknown. No provider process runs.
-pub fn context_measurement(
-    root: &Path,
-    binding: &Binding,
-    model: &str,
-) -> Result<Option<crate::capacity::Measurement>, String> {
-    Ok(context_observation(root, binding, model)?.measurement)
 }
 
 /// A fresh, bounded source observation with enough metadata to explain every rejection.
@@ -560,76 +553,6 @@ pub fn control_checkpoint(
         record_bytes: None,
         record_sha256: None,
     })
-}
-
-/// Successful native patch inputs from fresh turns only. Exec's public progress stream omits
-/// patch bodies, so edit rendering uses this same account/home/session-verified source reader.
-#[allow(dead_code)]
-pub(crate) fn literal_tool_argument(input: &str) -> Option<(Value, usize)> {
-    // Normalize only unquoted identifier keys in a static JSON-like literal. Never
-    // evaluate JavaScript, expressions, templates, comments, or computed properties.
-    let mut at = 0;
-    let mut json = String::new();
-    let mut depth = Vec::new();
-    while at < input.len() {
-        let byte = input.as_bytes()[at];
-        if byte == b')' && depth.is_empty() {
-            break;
-        }
-        match byte {
-            b'"' => {
-                let mut values =
-                    serde_json::Deserializer::from_str(&input[at..]).into_iter::<String>();
-                values.next()?.ok()?;
-                let end = at + values.byte_offset();
-                json.push_str(&input[at..end]);
-                at = end;
-            }
-            b'{' | b'[' => {
-                if depth.len() >= 64 {
-                    return None;
-                }
-                depth.push(byte);
-                json.push(char::from(byte));
-                at += 1;
-            }
-            b'}' | b']' => {
-                let expected = if byte == b'}' { b'{' } else { b'[' };
-                if depth.pop()? != expected {
-                    return None;
-                }
-                json.push(char::from(byte));
-                at += 1;
-            }
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
-                let start = at;
-                while input
-                    .as_bytes()
-                    .get(at)
-                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-                {
-                    at += 1;
-                }
-                let word = &input[start..at];
-                if input[at..].trim_start().starts_with(':') {
-                    json.push_str(&serde_json::to_string(word).ok()?);
-                } else if matches!(word, "true" | "false" | "null") {
-                    json.push_str(word);
-                } else {
-                    return None;
-                }
-            }
-            b'0'..=b'9' | b'-' | b'+' | b'.' | b':' | b',' | b' ' | b'\n' | b'\r' | b'\t' => {
-                json.push(char::from(byte));
-                at += 1;
-            }
-            _ => return None,
-        }
-    }
-    if !depth.is_empty() {
-        return None;
-    }
-    Some((serde_json::from_str(&json).ok()?, at))
 }
 
 #[cfg(test)]
@@ -1036,7 +959,9 @@ pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
             text.push('\n');
         }
     }
-    let _ = open_index_source(root, &index)?;
+    if index.binding.provider != ProviderKind::Cursor {
+        let _ = open_index_source(root, &index)?;
+    }
     if text.trim().is_empty() {
         return Err("no assistant result in the recorded source window".into());
     }
@@ -1077,7 +1002,7 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
     };
     let mut offset = start + skip as u64;
     let mut messages = Vec::new();
-    let mut fallback = Vec::new();
+    let mut event_messages = Vec::new();
     let mut truncated = start > 0;
     for line in bytes[skip..].split_inclusive(|b| *b == b'\n') {
         if line.len() > LINE_BYTES {
@@ -1086,7 +1011,7 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
             continue;
         }
         if let Ok(value) = serde_json::from_slice::<Value>(line) {
-            if let Some((role, is_fallback)) =
+            if let Some((role, is_event_message)) =
                 message_role(&value, binding.provider, &binding.session_id)
             {
                 let span = Span {
@@ -1095,8 +1020,8 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
                     sha256: digest(line),
                     role,
                 };
-                if is_fallback {
-                    fallback.push(span);
+                if is_event_message {
+                    event_messages.push(span);
                 } else {
                     messages.push(span);
                 }
@@ -1107,7 +1032,7 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
         offset += line.len() as u64;
     }
     if !messages.iter().any(|span| span.role != "tool") {
-        messages.extend(fallback);
+        messages.extend(event_messages);
         messages.sort_by_key(|span| span.start);
     }
     if messages.len() > MAX_MESSAGES {
@@ -1163,18 +1088,9 @@ fn open_bound(root: &Path, binding: &Binding) -> Result<(Source, SourceIndex), S
     let source_len = file.len()?;
     let anchor_len = source_len.min(HEAD_BYTES);
     let head = read_at(&mut file, 0, anchor_len as usize)?;
-    let owns_session = head
-        .split(|b| *b == b'\n')
-        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
-        .any(|v| {
-            if binding.provider == ProviderKind::Codex {
-                v.get("type").and_then(Value::as_str) == Some("session_meta")
-                    && v.pointer("/payload/id").and_then(Value::as_str)
-                        == Some(binding.session_id.as_str())
-            } else {
-                v.get("sessionId").and_then(Value::as_str) == Some(binding.session_id.as_str())
-            }
-        });
+    let identity_header = read_at(&mut file, 0, source_len.min(IDENTITY_BYTES) as usize)?;
+    let owns_session =
+        sessions::identity_matches(binding.provider, &identity_header, &binding.session_id)?;
     if !owns_session {
         return Err(
             "native source does not confirm the exact session identity in its bounded header"
@@ -1823,14 +1739,18 @@ mod tests {
         let count = json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":9999999},"last_token_usage":{"total_tokens":80},"model_context_window":100}}}).to_string() + "\n";
         append(&path, count.as_bytes());
         assert_eq!(
-            context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
+            context_observation(dir.path(), &binding, "fixture-model")
+                .unwrap()
+                .measurement,
             Some(crate::capacity::Measurement {
                 used: 80,
                 window: 100
             })
         );
         assert_eq!(
-            context_measurement(dir.path(), &binding, "other-model").unwrap(),
+            context_observation(dir.path(), &binding, "other-model")
+                .unwrap()
+                .measurement,
             None
         );
         let observed = context_observation(dir.path(), &binding, "fixture-model").unwrap();
@@ -1852,7 +1772,9 @@ mod tests {
         append(&path, count.as_bytes());
         append(&path, b"{\"type\":\"compacted\",\"payload\":{}}\n");
         assert_eq!(
-            context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
+            context_observation(dir.path(), &binding, "fixture-model")
+                .unwrap()
+                .measurement,
             None
         );
         append(&path, count.as_bytes());
@@ -1861,7 +1783,9 @@ mod tests {
             b"{\"type\":\"turn_context\",\"payload\":{\"model\":\"other-model\"}}\n",
         );
         assert_eq!(
-            context_measurement(dir.path(), &binding, "other-model").unwrap(),
+            context_observation(dir.path(), &binding, "other-model")
+                .unwrap()
+                .measurement,
             None
         );
         append(&path, context.as_bytes());

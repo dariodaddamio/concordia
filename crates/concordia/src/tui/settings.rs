@@ -307,7 +307,7 @@ fn skill_rows(directory: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited:
             break;
         }
         *visited += 1;
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+        if !entry.path().is_dir() {
             continue;
         }
         let path = entry.path().join("SKILL.md");
@@ -315,7 +315,10 @@ fn skill_rows(directory: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited:
             continue;
         }
         let folder = entry.file_name().to_string_lossy().into_owned();
-        match bounded_text(&path) {
+        let native_source = std::fs::canonicalize(entry.path())
+            .map(|folder| folder.join("SKILL.md"))
+            .unwrap_or_else(|_| path.clone());
+        match bounded_text(&native_source) {
             Ok(text) => {
                 let description = text
                     .lines()
@@ -325,7 +328,7 @@ fn skill_rows(directory: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited:
                     .trim()
                     .trim_matches(['\'', '"']);
                 rows.push(source_row(
-                    &path,
+                    &native_source,
                     scope,
                     &folder,
                     &crate::sessions::clean_preview(Some(description), 120),
@@ -416,7 +419,9 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                 ProviderKind::Cursor => {
                     hook_rows(&root.join(".cursor/hooks.json"), "Project", &mut rows)
                 }
-                ProviderKind::Codex => {}
+                ProviderKind::Codex => {
+                    hook_rows(&root.join(".codex/hooks.json"), "Project", &mut rows)
+                }
             }
         } else {
             skill_rows(
@@ -430,9 +435,24 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
     if let Some(home) = &app.home_path {
         if hooks {
             match provider {
-                ProviderKind::Claude => hook_rows(&home.join("settings.json"), "User · selected account", &mut rows),
-                ProviderKind::Cursor => hook_rows(&home.join("hooks.json"), "User · selected account", &mut rows),
-                ProviderKind::Codex => rows.push(row("notice", "Codex native hooks", "No verified native hook catalog is exposed here. Concordia does not install or emulate hooks.")),
+                ProviderKind::Claude => hook_rows(
+                    &home.join("settings.json"),
+                    "User · selected account",
+                    &mut rows,
+                ),
+                ProviderKind::Cursor => hook_rows(
+                    &home.join("hooks.json"),
+                    "User · selected account",
+                    &mut rows,
+                ),
+                ProviderKind::Codex => {
+                    hook_rows(
+                        &home.join("hooks.json"),
+                        "User · selected account",
+                        &mut rows,
+                    );
+                    rows.push(row("notice", "Native hook trust", "This inventory shows configured sources. Review native /hooks in this provider home; only native consent can enable untrusted hooks."));
+                }
             }
         } else {
             skill_rows(

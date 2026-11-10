@@ -510,7 +510,8 @@ pub(super) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool
     }
 }
 
-pub(super) fn poll(app: &mut App) {
+pub(super) fn poll(app: &mut App) -> bool {
+    let mut changed = false;
     let current_landing = super::landing::usage_generation(app);
     let current_screen = app.token_reads.screen;
     let conversation = app.deleg.d.conversation_id().to_owned();
@@ -544,6 +545,7 @@ pub(super) fn poll(app: &mut App) {
         if !valid {
             continue;
         }
+        changed = true;
         match (job.kind, result) {
             (ReadKind::Landing, result) => {
                 let value = match result {
@@ -611,6 +613,7 @@ pub(super) fn poll(app: &mut App) {
     if super::landing::needs_usage(app) {
         start(app, None, ReadKind::Landing);
     }
+    changed
 }
 
 #[cfg(test)]

@@ -111,18 +111,20 @@ It is built only for an explicit/allowed continuation from the retained original
 Same-provider automatic handoff is a second opt-in beyond automatic mode and requires recorded
 terms acceptance for that provider. The default remains manual; different-provider routing does
 not imply consent to same-provider account rotation. Source:
-[`continuity.rs` (`automatic_rules_respect_same_provider_opt_in`)](../crates/concordia/src/continuity.rs),
+[`tui/continuation.rs` (`continuation_route_inputs`)](../crates/concordia/src/tui/continuation.rs),
 [`store.rs` (`same_provider_automatic`, `same_provider_terms_accepted`)](../crates/concordia/src/store.rs),
 and [`config.rs` (`Continuation::default`)](../crates/concordia/src/config.rs).
 
 ## Concordia workers
 
 `/workers add ACCOUNT` registers a different logged-in account as an eligible worker. The account
-cannot be the orchestrator or another slot for the same detected login. There are at most three
-workers and at most two queued jobs per worker. A worker trust request is capped at the user's
+cannot be the orchestrator or another slot for the same detected login. The configured worker limit
+is bounded at twelve; resource admission can reduce concurrency. Each worker has at most two queued
+jobs. A worker trust request is capped at the user's
 current trust; it can never escalate it. Source:
-[`delegate.rs` (`MAX_WORKERS`, `MAX_QUEUED_PER_WORKER`, `check_add_worker`,
-`worker_trust`)](../crates/concordia/src/delegate.rs).
+[`delegate.rs` (`MAX_QUEUED_PER_WORKER`, `check_add_worker`,
+`worker_trust`)](../crates/concordia/src/delegate.rs) and
+[`config.rs` (`Delegation`, `MAX_WORKERS_CAP`)](../crates/concordia/src/config.rs).
 
 `/delegate ACCOUNT TASK` creates one fresh provider turn with:
 

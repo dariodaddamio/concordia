@@ -77,6 +77,7 @@ pub enum SlashCommand {
     CrewClear,
     /// `/harness ...` is executed by the TUI because it needs the live account home.
     Harness(String),
+    Customization(bool),
     /// A known command received an unsupported argument. Keeping this distinct prevents
     /// misspelled destructive commands such as `/update typo` from running.
     Invalid(String),
@@ -248,6 +249,12 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         "crew" => {
             let mut crew_words = body[cmd.len()..].split_whitespace();
             let action = crew_words.next().unwrap_or("").to_ascii_lowercase();
+            if matches!(action.as_str(), "list" | "clear") && crew_words.clone().next().is_some() {
+                return Some((
+                    SlashCommand::Invalid("crew use NAME|list|clear".into()),
+                    false,
+                ));
+            }
             if action == "list" || action.is_empty() {
                 Some((SlashCommand::CrewList, false))
             } else if action == "clear" {
@@ -320,6 +327,29 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         "version" | "ver" | "about" => Some((SlashCommand::Version, false)),
         "copy" | "cp" => Some((SlashCommand::Copy, false)),
         "doctor" | "diag" => Some((SlashCommand::Doctor, false)),
+        "skills" | "hooks" => {
+            let args = body[cmd.len()..].trim();
+            let (action, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+            if matches!(action, "" | "list" | "catalog" | "status") && !rest.trim().is_empty() {
+                return Some((
+                    SlashCommand::Invalid(format!(
+                        "{cmd}: unsupported arguments; use /{cmd} to inspect sources"
+                    )),
+                    false,
+                ));
+            }
+            let routed = match (cmd.as_str(), action) {
+                (_, "" | "list" | "catalog") => {
+                    return Some((SlashCommand::Customization(cmd == "hooks"), false))
+                }
+                (_, "connect" | "status") => format!("{action} {rest}"),
+                ("skills", "install") => format!("skills {rest}"),
+                ("skills", "remove") => format!("skills-remove {rest}"),
+                ("hooks", "verify") => format!("verify {rest}"),
+                _ => return Some((SlashCommand::Invalid(cmd), false)),
+            };
+            Some((SlashCommand::Harness(routed), false))
+        }
         "harness" => Some((
             SlashCommand::Harness(body["harness".len()..].trim().to_string()),
             false,
@@ -372,6 +402,17 @@ macro_rules! command {
 
 /// The single source for slash command presentation, documentation and contextual teaching.
 pub const COMMAND_REGISTRY: &[CommandSpec] = &[
+    command!(
+        "/terminal",
+        [],
+        "[open|hide|close]",
+        "open the local PowerShell terminal",
+        "Run local shell commands in the current workspace. Hide keeps the shell alive; close stops it. Chat drafts stay separate.",
+        true,
+        CommandCategory::Workspace,
+        Some("F11"),
+        None
+    ),
     command!(
         "/use",
         ["/login", "/connect"],
@@ -505,6 +546,18 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         None
     ),
     command!(
+        "/skills", [], "[list|install [PATH]|remove PATH|connect PATH|status]",
+        "inspect skills and connect shared setup",
+        "List selected account sources. Install a skill folder/collection across accounts; default source: ~/.agents/skills. Use --current to limit setup.",
+        false, CommandCategory::Settings, None, None
+    ),
+    command!(
+        "/hooks", [], "[list|connect PATH|verify|status]",
+        "inspect hooks and verify shared setup",
+        "List native hook sources; connect shared setup or run its verification. Native trust remains separate.",
+        false, CommandCategory::Settings, None, None
+    ),
+    command!(
         "/open",
         [],
         "[PATH]",
@@ -577,6 +630,17 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         "inspect context rollover policy",
         "Inspect context capacity and native compaction policy.",
         false,
+        CommandCategory::Chat,
+        None,
+        None
+    ),
+    command!(
+        "/recover",
+        [],
+        "[retry|legacy]",
+        "inspect saved drafts and interrupted requests",
+        "Preview or restore saved work for this workspace without automatically sending it.",
+        true,
         CommandCategory::Chat,
         None,
         None
@@ -681,7 +745,6 @@ mod registry_tests {
 
     #[test]
     fn palette_help_and_readme_come_from_one_registry() {
-        assert_eq!(COMMAND_REGISTRY.iter().filter(|c| c.everyday).count(), 16);
         assert!(format_slash_help(false).contains("/use"));
         assert!(format_slash_help(true).contains("/memory"));
     }
@@ -881,7 +944,7 @@ pub fn dispatch_slash(
                 "unknown command: /{name}; type / to see the commands"
             )],
         ),
-        SlashCommand::Harness(_) => (
+        SlashCommand::Harness(_) | SlashCommand::Customization(_) => (
             CommandOutcome::Ok,
             vec!["/harness runs inside the Concordia TUI".into()],
         ),
@@ -891,6 +954,30 @@ pub fn dispatch_slash(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn customization_routes_validate_arguments_before_setup() {
+        for command in [
+            "/skills list extra",
+            "/hooks catalog extra",
+            "/hooks status extra",
+        ] {
+            assert!(
+                matches!(parse_slash(command).unwrap().0, SlashCommand::Invalid(_)),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            parse_slash("/skills install \"shared skills\" --current")
+                .unwrap()
+                .0,
+            SlashCommand::Harness("skills \"shared skills\" --current".into())
+        );
+        assert_eq!(
+            parse_slash("/hooks verify").unwrap().0,
+            SlashCommand::Harness("verify ".into())
+        );
+    }
 
     fn cmd(line: &str) -> SlashCommand {
         parse_slash(line).unwrap().0

@@ -460,7 +460,7 @@ impl Workspace {
                 }
             }
         }
-        edit::poll(self);
+        visible_change |= edit::poll(self);
 
         if self.watch.as_ref().is_some_and(|job| job.is_finished()) {
             visible_change = true;
@@ -958,6 +958,7 @@ fn draw_pane(
     } else if let Some(error) = pane.error.as_ref().filter(|_| pane.document.is_none()) {
         vec![Line::styled(error.clone(), Style::default().fg(Color::Red))]
     } else if pane.formatted_mode && pane.formatted.is_some() {
+        pane.view.link_root = pane.path.parent().map(Path::to_path_buf);
         pane.view.rebuild(
             &[TBlock {
                 identity: None,

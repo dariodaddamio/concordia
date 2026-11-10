@@ -1,15 +1,13 @@
 //! Unified provider turns with tracked cancel (Ctrl+C).
 
 use crate::provider::claude::{plan_claude_turn, ClaudeTurnRequest};
-use crate::provider::codex::{
-    self, apply_stream_parts, extract_stream_chunk, plan_turn_argv, TurnRequest as CodexReq,
-};
+use crate::provider::codex::{self, apply_stream_parts, plan_turn_argv, TurnRequest as CodexReq};
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
 use crate::provider::enforcement;
 use crate::provider::interaction::InteractionOwner;
 pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
-use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart, TurnUsage};
+use crate::provider::stream_cards::{classify_codex_event, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
 #[path = "turn_acp.rs"]
 mod acp;
@@ -38,8 +36,64 @@ const KILL_GRACE: Duration = Duration::from_millis(2000);
 const STDERR_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// A single provider output line is kept up to this size; the rest of it is discarded.
 const LINE_MAX: usize = 1024 * 1024;
-/// Raw stream kept for the Codex fallback parse.
-const RAW_MAX: usize = 4 * 1024 * 1024;
+
+pub const VISIBLE_TEXT_MAX: usize = 4 * 1024 * 1024;
+pub const PROGRESS_CAPACITY: usize = 64;
+const VISIBLE_TEXT_KEEP: usize = 3 * 1024 * 1024;
+const OMITTED_TEXT: &str = "[Earlier output omitted from this view; inspect the original native session for full output.]\n";
+
+/// Keep a bounded, explicitly incomplete display projection; native records remain authoritative.
+pub fn append_visible_text(text: &mut String, fragment: &str) {
+    if text.len().saturating_add(fragment.len()) <= VISIBLE_TEXT_MAX {
+        text.push_str(fragment);
+        return;
+    }
+    if fragment.len() >= VISIBLE_TEXT_KEEP {
+        let mut start = fragment.len() - VISIBLE_TEXT_KEEP;
+        while !fragment.is_char_boundary(start) {
+            start += 1;
+        }
+        text.clear();
+        text.push_str(OMITTED_TEXT);
+        text.push_str(&fragment[start..]);
+    } else {
+        let mut start = text
+            .len()
+            .saturating_sub(VISIBLE_TEXT_KEEP - fragment.len());
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text.drain(..start);
+        text.insert_str(0, OMITTED_TEXT);
+        text.push_str(fragment);
+    }
+}
+
+pub(crate) async fn send_progress(
+    progress: &Option<mpsc::Sender<TurnProgress>>,
+    mut event: TurnProgress,
+    handle: &RunningTurn,
+) -> bool {
+    let Some(tx) = progress else { return false };
+    if let TurnProgress::Card(card) = &mut event {
+        crate::provider::stream_cards::bound_card(card);
+    }
+    if handle.cancel_flag.load(Ordering::SeqCst) {
+        return false;
+    }
+    tokio::select! {
+        biased;
+        _ = handle.wake.notified() => false,
+        result = tx.send(event) => {
+            if result.is_err() {
+                handle.cancel();
+                false
+            } else {
+                true
+            }
+        }
+    }
+}
 
 /// A native history-write failure is not evidence of quota exhaustion or a deleted rollout.
 pub fn thread_recording_failed(provider: ProviderKind, stderr: &str) -> bool {
@@ -79,6 +133,39 @@ pub struct PlannedTurn {
     pub env_remove: Vec<String>,
     pub cwd: String,
     pub provider: ProviderKind,
+}
+
+/// Inspect planner-owned options, excluding the final prompt and option values.
+/// Prompt/model text must never become a native permission flag.
+pub(super) fn planned_options(argv: &[String]) -> impl Iterator<Item = (&str, Option<&str>)> {
+    let mut arguments = argv[..argv.len().saturating_sub(1)].iter();
+    std::iter::from_fn(move || {
+        let argument = arguments.next()?.as_str();
+        let (flag, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        if matches!(
+            flag,
+            "-m" | "--model"
+                | "-s"
+                | "--sandbox"
+                | "-c"
+                | "--config"
+                | "--mode"
+                | "--output-format"
+                | "--permission-mode"
+                | "--session-id"
+                | "--resume"
+                | "resume"
+        ) {
+            Some((
+                flag,
+                inline.or_else(|| arguments.next().map(String::as_str)),
+            ))
+        } else {
+            Some((argument, None))
+        }
+    })
 }
 
 #[derive(Debug, Default, Clone)]
@@ -151,6 +238,8 @@ pub enum TurnProgress {
     Session(String),
     Text(String),
     TextDelta(String),
+    /// The provider finished a distinct assistant message within the active turn.
+    TextBoundary,
     Card(StreamCard),
     Error(String),
     Thinking(String),
@@ -188,8 +277,8 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
     };
     let mut plan = plan_provider_turn_raw(req)?;
     crate::capacity::apply(&mut plan, &req.compaction).map_err(anyhow::Error::msg)?;
-    // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
-    crate::provider::compat::degrade_planned(&mut plan, req.trust)?;
+    // Current structured/native controls stay explicit; unsupported observed interfaces fail.
+    crate::provider::compat::validate_planned(&plan, req.trust)?;
     // A turn the gate made read-only must still be read-only, or it does not start.
     if lowered.is_some() {
         enforcement::ensure_read_only(plan.provider, &plan.argv)?;
@@ -235,7 +324,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 native_session_id: req.native_session_id,
                 trust: req.trust,
             })?;
-            codex::assert_safe_argv(&plan.argv)?;
+            codex::assert_safe_argv(&plan.argv[..plan.argv.len() - 1])?;
             let mut env = Vec::new();
             if let Some(home) = req.home_path {
                 env.push(("CODEX_HOME".into(), home.to_string_lossy().into_owned()));
@@ -382,7 +471,7 @@ pub async fn run_provider_turn(
 pub async fn run_provider_turn_with_progress(
     req: &ProviderTurnRequest<'_>,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
     run_provider_turn_inner(
         req,
@@ -399,7 +488,7 @@ pub async fn run_provider_turn_with_progress(
 pub async fn run_provider_turn_with_idle_timeout(
     req: &ProviderTurnRequest<'_>,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
     idle_timeout: Duration,
 ) -> Result<TurnOutcome> {
     run_provider_turn_inner(
@@ -418,7 +507,7 @@ pub async fn run_provider_turn_with_owner(
     req: &ProviderTurnRequest<'_>,
     owner: InteractionOwner,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
     run_provider_turn_with_transport(
         req,
@@ -435,7 +524,7 @@ pub async fn run_provider_turn_with_transport(
     owner: InteractionOwner,
     mode: crate::native_input::Mode,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
     let owner = owner
         .validate_for(req.provider, req.cwd, req.home_path)
@@ -493,10 +582,12 @@ async fn run_provider_turn_inner(
     owner: Option<InteractionOwner>,
     mode: crate::native_input::Mode,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
     idle_timeout: Duration,
 ) -> Result<TurnOutcome> {
     let timing = Instant::now();
+    // Idle notices are advisory. Bound even direct API durations before Instant arithmetic.
+    let idle_timeout = idle_timeout.min(Duration::from_secs(365 * 24 * 60 * 60));
     let source_started = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -508,6 +599,81 @@ async fn run_provider_turn_inner(
             super::session_guard::acquire(&crate::store::default_store_root(), req.home_path, id)
         })
         .transpose()?;
+    let handle = Arc::new(RunningTurn::new());
+    let setup_store = crate::store::default_store_root();
+    if crate::harness::shared::needs_setup(&setup_store, req.provider, req.home_path, req.cwd)
+        .map_err(anyhow::Error::msg)?
+        || crate::harness::skills::needs_setup(&setup_store, req.home_path)
+            .map_err(anyhow::Error::msg)?
+    {
+        // Setup adapters run before the provider. Publish their cancellation owner too;
+        // aborting this future must kill the tracked adapter rather than orphan it.
+        if let Some(started) = &on_started {
+            if started.send(handle.clone()).is_err() {
+                return Ok(TurnOutcome {
+                    cancelled: true,
+                    ..Default::default()
+                });
+            }
+        }
+        struct CancelSetupOnDrop(Option<Arc<AtomicBool>>);
+        impl Drop for CancelSetupOnDrop {
+            fn drop(&mut self) {
+                if let Some(cancel) = &self.0 {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        let mut setup_guard = CancelSetupOnDrop(Some(handle.cancel_flag.clone()));
+        let setup_cancel = handle.cancel_flag.clone();
+        let setup_provider = req.provider;
+        let setup_home = req.home_path.map(Path::to_path_buf);
+        let setup_project = req.cwd.to_path_buf();
+        let setup = tokio::task::spawn_blocking(move || {
+            let mut lines = crate::harness::skills::reconcile(
+                &setup_store,
+                setup_home.as_deref(),
+                &setup_cancel,
+            )?;
+            lines.extend(crate::harness::shared::reconcile_account(
+                &setup_store,
+                setup_provider,
+                setup_home.as_deref(),
+                &setup_project,
+                &|argv| {
+                    crate::harness::run::run_command_cancellable(
+                        argv,
+                        &setup_project,
+                        crate::harness::run::DEFAULT_TIMEOUT,
+                        &setup_cancel,
+                    )
+                },
+            )?);
+            Ok::<_, String>(lines)
+        })
+        .await?;
+        setup_guard.0.take();
+        if handle.cancel_flag.load(Ordering::SeqCst) {
+            return Ok(TurnOutcome {
+                cancelled: true,
+                ..Default::default()
+            });
+        }
+        if let Some(progress) = &on_progress {
+            let lines =
+                setup.unwrap_or_else(|error| vec![format!("Shared setup stopped: {error}")]);
+            for line in lines {
+                if !send_progress(&Some(progress.clone()), TurnProgress::Notice(line), &handle)
+                    .await
+                {
+                    return Ok(TurnOutcome {
+                        cancelled: true,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
     let mut plan = plan_provider_turn(req)?;
     let documents = pdf_message(req)?;
     if documents.is_some() && mode == crate::native_input::Mode::Standard {
@@ -521,7 +687,9 @@ async fn run_provider_turn_inner(
             "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained", claude_native::SUPPORTED_VERSION);
     }
     if let (Some(tx), Some(notice)) = (&on_progress, enforcement_notice(req)) {
-        let _ = tx.send(TurnProgress::Notice(notice));
+        tx.send(TurnProgress::Notice(notice))
+            .await
+            .map_err(|_| anyhow::anyhow!("progress receiver closed before provider startup"))?;
     }
     if req.provider == ProviderKind::Cursor
         && (!req.images.is_empty() || mode == crate::native_input::Mode::CursorAcp)
@@ -532,6 +700,7 @@ async fn run_provider_turn_inner(
             owner.clone(),
             on_started.clone(),
             on_progress.clone(),
+            handle.clone(),
         )
         .await?;
         if !(out.failed
@@ -542,7 +711,7 @@ async fn run_provider_turn_inner(
         }
     }
     // codex exec has no response channel for request_user_input; the app-server transport does.
-    // Only an interactive owner can answer, so ownerless (worker) turns stay on exec.
+    // Only an interactive owner can answer, so ownerless turns stay on exec.
     if mode == crate::native_input::Mode::CodexAppServer
         || (req.provider == ProviderKind::Codex
             && mode == crate::native_input::Mode::Standard
@@ -552,27 +721,29 @@ async fn run_provider_turn_inner(
             && std::env::var_os("CONCORDIA_CODEX_BIN").is_none()
             && crate::config::ui_question_popups())
     {
-        return appserver::run(req, &plan, owner, on_started, on_progress).await;
+        return appserver::run(req, &plan, owner, on_started, on_progress, handle).await;
     }
     if mode == crate::native_input::Mode::ClaudeStdio {
-        return claude_native::run(req, &plan, owner, on_started, on_progress).await;
+        return claude_native::run(req, &plan, owner, on_started, on_progress, handle).await;
     }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
-    // it explicitly. If that does not work the turn runs unbound, exactly as before.
+    // it explicitly. Refuse an unbound turn if native session creation fails.
     if plan.provider == ProviderKind::Cursor
         && req.native_session_id.is_none_or(|s| s.trim().is_empty())
     {
-        if let Some(id) =
-            crate::provider::cursor::create_chat(&plan.command, &plan.env, &plan.cwd).await
-        {
-            let at = plan.argv.len() - 1; // the prompt stays last
-            plan.argv.insert(at, id.clone());
-            plan.argv.insert(at, "--resume".into());
-            plan.new_session_id = Some(id);
-        }
+        let id = crate::provider::cursor::create_chat(
+            &plan.command,
+            &plan.env,
+            &plan.env_remove,
+            &plan.cwd,
+        )
+        .await
+        .context("Cursor did not create an exact native chat; the turn was not started")?;
+        let at = plan.argv.len() - 1; // the prompt stays last
+        plan.argv.insert(at, id.clone());
+        plan.argv.insert(at, "--resume".into());
+        plan.new_session_id = Some(id);
     }
-    let plain_output =
-        super::compat::caps_for(plan.provider).is_some_and(|caps| caps.known && !caps.stream_json);
     let mut launch = prepare(&plan)?;
     if let Some(message) = documents {
         anyhow::ensure!(
@@ -593,8 +764,6 @@ async fn run_provider_turn_inner(
     } else {
         attach_images(&mut launch, plan.provider, req.images, &plan.prompt)?;
     }
-    let handle = Arc::new(RunningTurn::new());
-
     let mut cmd = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut cmd);
     #[cfg(unix)]
@@ -639,6 +808,12 @@ async fn run_provider_turn_inner(
     // Do not echo argv here: it contains the whole prompt.
     let setup_ms = timing.elapsed().as_millis();
     let spawning = Instant::now();
+    if handle.cancel_flag.load(Ordering::SeqCst) {
+        return Ok(TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -652,7 +827,8 @@ async fn run_provider_turn_inner(
         }
         Err(error) => return Err(error).with_context(|| format!("spawn {}", launch.program)),
     };
-    crate::process_lifetime::bind_to_concordia(&child);
+    let _process_tree =
+        crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     let spawn_ms = spawning.elapsed().as_millis();
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     // Counted in the footer stats (when on) until this turn ends.
@@ -670,23 +846,9 @@ async fn run_provider_turn_inner(
     let last_activity_ms = Arc::new(AtomicU64::new(timing.elapsed().as_millis() as u64));
     let stderr_activity = last_activity_ms.clone();
     // Always drain stderr: an unread pipe blocks a chatty child, and it is where failures go.
-    let mut stderr_task = tokio::spawn(async move {
-        let mut tail: VecDeque<String> = VecDeque::new();
-        let mut reader = BufReader::new(stderr);
-        let mut line = Vec::new();
-        while read_line_bounded(&mut reader, &mut line)
-            .await
-            .is_ok_and(|n| n > 0)
-        {
-            stderr_activity.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
-            // stderr is retained as a bounded tail; recording is independently opt-in.
-            if tail.len() == STDERR_KEEP_LINES {
-                tail.pop_front();
-            }
-            tail.push_back(decode_line(&line));
-        }
-        tail.into_iter().collect::<Vec<_>>().join("\n")
-    });
+    let mut stderr_task = tokio::spawn(read_stderr_tail(stderr, move || {
+        stderr_activity.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
+    }));
     {
         let mut slot = handle.child.lock().await;
         *slot = Some(child);
@@ -702,13 +864,13 @@ async fn run_provider_turn_inner(
     let mut reader = BufReader::new(stdout);
     let mut line_buf: Vec<u8> = Vec::new();
     let mut out = TurnOutcome::default();
-    let mut raw = String::new();
     let flavor = match plan.provider {
         ProviderKind::Claude => Some(Flavor::Claude),
         ProviderKind::Cursor => Some(Flavor::Cursor),
         ProviderKind::Codex => None,
     };
     let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));
+    let mut invalid_protocol = false;
     let mut completed_events = CompletedEvents::default();
     let mut artifacts = crate::artifacts::Collector::default();
     let mut first_event_ms = None;
@@ -735,9 +897,9 @@ async fn run_provider_turn_inner(
                 let activity_ms = last_activity_ms.load(Ordering::SeqCst);
                 let silent_for = Duration::from_millis(elapsed_ms.saturating_sub(activity_ms));
                 if silent_for >= idle_timeout {
-                    if let Some(tx) = &on_progress {
+                    if on_progress.is_some() {
                         let minutes = silent_for.as_secs().div_ceil(60).max(1);
-                        let _ = tx.send(TurnProgress::Idle { provider: plan.provider, minutes, silent_for });
+                        let _ = send_progress(&on_progress, TurnProgress::Idle { provider: plan.provider, minutes, silent_for }, &handle).await;
                     }
                     idle.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
                 } else {
@@ -758,24 +920,22 @@ async fn run_provider_turn_inner(
                 }
                 first_event_ms.get_or_insert_with(|| timing.elapsed().as_millis());
                 let parsing = Instant::now();
-                if !plain_output && completed_events.repeated(&line) {
+                if completed_events.repeated(&line) {
                     continue;
                 }
                 if let Some(failed) = terminal_failure(&line) {
                     out.failed = failed;
                 }
-                if raw.len() < RAW_MAX {
-                    raw.push_str(&line);
-                    raw.push('\n');
-                }
                 {
-                    let mut parts = if plain_output {
-                        vec![StreamPart::Text(line.clone())]
-                    } else {
-                        match json_parser.as_mut() {
-                            Some(p) => p.parse_line(&line),
-                            None => parse_codex_stream_chunk(&line),
-                        }
+                    let mut parts = match json_parser.as_mut() {
+                        Some(p) => p.parse_line(&line),
+                        None => match serde_json::from_str::<serde_json::Value>(&line) {
+                            Ok(event) if event.is_object() => classify_codex_event(&event),
+                            _ => {
+                                invalid_protocol = true;
+                                vec![StreamPart::Error("Codex returned invalid structured JSON output; current JSON events are required.".into())]
+                            }
+                        },
                     };
                     if plan.provider == ProviderKind::Claude && req.native_session_id.is_some() {
                         // Recent Claude versions restore earlier session cost into result totals.
@@ -786,7 +946,7 @@ async fn run_provider_turn_inner(
                             }
                         }
                     }
-                    emit_progress(&parts, &on_progress);
+                    emit_progress(&parts, &on_progress, &handle).await;
                     let mut chunk = codex::StreamOutcome::default();
                     apply_stream_parts(parts, &mut chunk);
                     if let Some(sid) = chunk.session_id {
@@ -802,43 +962,52 @@ async fn run_provider_turn_inner(
                         }
                         out.session_id = Some(sid);
                     }
-                    if !plain_output {
+                    {
                         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
                             if plan.provider == ProviderKind::Codex
                                 && event["type"] == "item.completed"
                             {
-                                artifacts.report(
-                                    owner.as_ref(),
-                                    out.session_id.as_deref().or(req.native_session_id),
-                                    None,
-                                    &event["item"],
-                                    &on_progress,
-                                );
+                                artifacts
+                                    .report(
+                                        owner.as_ref(),
+                                        out.session_id.as_deref().or(req.native_session_id),
+                                        None,
+                                        &event["item"],
+                                        &on_progress,
+                                        &handle,
+                                    )
+                                    .await;
                             } else if plan.provider == ProviderKind::Cursor {
-                                artifacts.report_cursor(
-                                    owner.as_ref(),
-                                    req.native_session_id
-                                        .or(plan.new_session_id.as_deref())
-                                        .or(out.session_id.as_deref()),
-                                    None,
-                                    &event,
-                                    &on_progress,
-                                );
+                                artifacts
+                                    .report_cursor(
+                                        owner.as_ref(),
+                                        req.native_session_id
+                                            .or(plan.new_session_id.as_deref())
+                                            .or(out.session_id.as_deref()),
+                                        None,
+                                        &event,
+                                        &on_progress,
+                                        &handle,
+                                    )
+                                    .await;
                             } else if plan.provider == ProviderKind::Claude {
-                                artifacts.report_claude(
-                                    owner.as_ref(),
-                                    req.native_session_id
-                                        .or(plan.new_session_id.as_deref())
-                                        .or(out.session_id.as_deref()),
-                                    None,
-                                    &event,
-                                    &on_progress,
-                                );
+                                artifacts
+                                    .report_claude(
+                                        owner.as_ref(),
+                                        req.native_session_id
+                                            .or(plan.new_session_id.as_deref())
+                                            .or(out.session_id.as_deref()),
+                                        None,
+                                        &event,
+                                        &on_progress,
+                                        &handle,
+                                    )
+                                    .await;
                             }
                         }
                     }
                     if !chunk.text.is_empty() {
-                        out.text.push_str(&chunk.text);
+                        append_visible_text(&mut out.text, &chunk.text);
                     }
                     for card in chunk.cards {
                         crate::provider::stream_cards::upsert_card(&mut out.cards, card);
@@ -894,14 +1063,11 @@ async fn run_provider_turn_inner(
         if out.text.is_empty() {
             out.text = "cancelled".into();
         }
-    } else if out.text.is_empty() && out.cards.is_empty() && plan.provider == ProviderKind::Codex {
-        let chunk = extract_stream_chunk(&raw);
-        out.text = chunk.text;
-        out.cards = chunk.cards;
-        if out.session_id.is_none() {
-            out.session_id = chunk.session_id;
-        }
     }
+    out.failed |= invalid_protocol
+        || json_parser
+            .as_ref()
+            .is_some_and(|parser| parser.invalid_output());
     if plan.provider == ProviderKind::Codex
         && !out.cancelled
         && super::edit_display::needs_codex_patch(&out.cards)
@@ -926,8 +1092,9 @@ async fn run_provider_turn_inner(
                 if let Ok(patches) = patches {
                     for card in super::edit_display::enrich_codex(&mut out.cards, &patches, req.cwd)
                     {
-                        if let Some(tx) = &on_progress {
-                            let _ = tx.send(TurnProgress::Card(card));
+                        if on_progress.is_some() {
+                            let _ = send_progress(&on_progress, TurnProgress::Card(card), &handle)
+                                .await;
                         }
                     }
                 }
@@ -1054,12 +1221,41 @@ mod replay_tests {
     }
 }
 
+/// Drain every transport's stderr without blocking the child; retain only a bounded tail.
+async fn read_stderr_tail(
+    stderr: tokio::process::ChildStderr,
+    mut on_line: impl FnMut(),
+) -> String {
+    let mut reader = BufReader::new(stderr);
+    let mut tail = VecDeque::new();
+    let mut line = Vec::new();
+    while read_line_bounded(&mut reader, &mut line)
+        .await
+        .is_ok_and(|n| n > 0)
+    {
+        on_line();
+        if tail.len() == STDERR_KEEP_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(decode_line(&line));
+    }
+    tail.into_iter().collect::<Vec<_>>().join("\n")
+}
+
 /// Read one line into `buf` (cleared first), keeping at most `LINE_MAX` bytes and discarding the
 /// remainder of an over-long line. Returns the bytes consumed; 0 means end of stream. Unlike
 /// `lines()`, invalid UTF-8 is not an error (the caller decodes lossily) and memory is bounded.
 async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     r: &mut R,
     buf: &mut Vec<u8>,
+) -> std::io::Result<usize> {
+    read_line_bounded_with_limit(r, buf, LINE_MAX).await
+}
+
+async fn read_line_bounded_with_limit<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+    limit: usize,
 ) -> std::io::Result<usize> {
     buf.clear();
     let mut total = 0usize;
@@ -1072,11 +1268,11 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin>(
             Some(i) => (i + 1, true),
             None => (available.len(), false),
         };
-        if buf.len() < LINE_MAX {
-            let take = (LINE_MAX - buf.len()).min(used);
+        if buf.len() < limit {
+            let take = (limit - buf.len()).min(used);
             buf.extend_from_slice(&available[..take]);
         }
-        total += used;
+        total = total.saturating_add(used);
         r.consume(used);
         if done {
             return Ok(total);
@@ -1095,10 +1291,11 @@ fn decode_line(buf: &[u8]) -> String {
     line
 }
 
-fn emit_progress(parts: &[StreamPart], on_progress: &Option<mpsc::UnboundedSender<TurnProgress>>) {
-    let Some(tx) = on_progress else {
-        return;
-    };
+async fn emit_progress(
+    parts: &[StreamPart],
+    on_progress: &Option<mpsc::Sender<TurnProgress>>,
+    handle: &RunningTurn,
+) {
     for part in parts {
         let ev = match part {
             StreamPart::Session(id) => TurnProgress::Session(id.clone()),
@@ -1110,7 +1307,7 @@ fn emit_progress(parts: &[StreamPart], on_progress: &Option<mpsc::UnboundedSende
             StreamPart::ThinkingDelta(t) => TurnProgress::ThinkingDelta(t.clone()),
             StreamPart::Usage(u) => TurnProgress::Usage(u.clone()),
         };
-        let _ = tx.send(ev);
+        let _ = send_progress(on_progress, ev, handle).await;
     }
 }
 
@@ -1346,7 +1543,7 @@ mod gate_tests {
             Caps {
                 known: true,
                 plan_mode: false,
-                ..Caps::assume_all()
+                ..Caps::unknown()
             },
         );
         let req = ProviderTurnRequest {
@@ -1363,10 +1560,7 @@ mod gate_tests {
             compaction: Default::default(),
         };
         let result = plan_provider_turn(&req);
-        set_caps(
-            ProviderKind::Cursor,
-            before.unwrap_or_else(Caps::assume_all),
-        );
+        set_caps(ProviderKind::Cursor, before.unwrap_or_else(Caps::unknown));
         let text = result
             .expect_err("must refuse to plan a write-capable turn")
             .to_string();

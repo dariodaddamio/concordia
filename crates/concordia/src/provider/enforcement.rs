@@ -116,12 +116,42 @@ fn remember_locked(slot: &Path, revision: &str) {
         return;
     }
     if std::fs::create_dir_all(slot).is_ok() {
-        let _ = std::fs::write(slot.join(LOCKED_MARKER), revision);
+        let _ = crate::state_io::write_atomic(&slot.join(LOCKED_MARKER), revision.as_bytes());
     }
 }
 
 pub(crate) fn is_inside(path: &Path, root: &Path) -> bool {
-    let (path, root) = (path_key(path), path_key(root));
+    // A newly chosen home may not exist yet. Resolve its nearest existing ancestor
+    // so an ordinary path and a canonical Windows extended path remain comparable,
+    // including a missing child beneath a junction into this project.
+    fn physical_key(path: &Path) -> String {
+        let mut ancestor = path.to_owned();
+        let mut missing = Vec::new();
+        let resolved = loop {
+            if let Ok(resolved) = ancestor.canonicalize() {
+                break Some(resolved);
+            }
+            let Some(name) = ancestor.file_name().map(std::ffi::OsStr::to_owned) else {
+                break None;
+            };
+            missing.push(name);
+            if !ancestor.pop() {
+                break None;
+            }
+        };
+        let path = if let Some(mut resolved) = resolved {
+            for name in missing.iter().rev() {
+                resolved.push(name);
+            }
+            resolved
+        } else {
+            path.to_owned()
+        };
+        path_key(Path::new(crate::file_links::normalized_local_path(
+            &path.to_string_lossy(),
+        )))
+    }
+    let (path, root) = (physical_key(path), physical_key(root));
     path == root || path.starts_with(&format!("{root}/"))
 }
 
@@ -133,7 +163,11 @@ fn receipt_matches(
     home: Option<&Path>,
     revision: &str,
 ) -> bool {
-    let Ok(text) = std::fs::read_to_string(slot.join(format!("{}.json", provider.as_str()))) else {
+    let path = slot.join(format!("{}.json", provider.as_str()));
+    if has_reparse_component(store, &path) {
+        return false;
+    }
+    let Some(text) = crate::fs_safe::read_text_bounded(&path, 64 * 1024) else {
         return false;
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -236,6 +270,19 @@ pub fn gate(cwd: &Path, provider: ProviderKind, home: Option<&Path>) -> Gate {
 /// [`gate`] against an explicit state directory.
 pub fn gate_in(store: &Path, cwd: &Path, provider: ProviderKind, home: Option<&Path>) -> Gate {
     let name = provider.as_str();
+    for directory in cwd.ancestors() {
+        match std::fs::symlink_metadata(directory.join(POLICY_FILE)) {
+            Ok(metadata) if !metadata.is_file() || is_reparse(&metadata) => {
+                return Gate::ReadOnly(format!(
+                    "{name}: locked-code policy is not a regular file; enforcement is unverified"
+                ));
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Gate::ReadOnly(format!("{name}: locked-code policy inspection failed; enforcement is unverified: {error}"));
+            }
+            _ => {}
+        }
+    }
     let Some(root) = project_root(cwd) else {
         if was_locked(store, cwd) {
             return Gate::ReadOnly(format!(
@@ -244,8 +291,8 @@ pub fn gate_in(store: &Path, cwd: &Path, provider: ProviderKind, home: Option<&P
         }
         return Gate::Open;
     };
-    let revision = std::fs::read(root.join(POLICY_FILE))
-        .map(|bytes| policy_revision(&bytes))
+    let revision = crate::fs_safe::read_text_bounded(&root.join(POLICY_FILE), 1024 * 1024)
+        .map(|text| policy_revision(text.as_bytes()))
         .unwrap_or_default();
     let slot = slot(store, &root);
     remember_locked(&slot, &revision);
@@ -289,12 +336,11 @@ pub fn effective_trust_in(
     }
 }
 
-/// Whether a final command line carries the provider's read-only switch. Capability fallbacks
-/// can drop it, so this is checked after planning, not assumed from the requested trust.
+/// Check the actual final read-only option rather than assuming it from the requested trust.
 pub fn is_read_only_argv(provider: ProviderKind, argv: &[String]) -> bool {
-    let pair = |flag: &[&str], value: &str| {
-        argv.windows(2)
-            .any(|w| flag.contains(&w[0].as_str()) && w[1] == value)
+    let pair = |flags: &[&str], value: &str| {
+        super::turn::planned_options(argv)
+            .any(|(flag, supplied)| flags.contains(&flag) && supplied == Some(value))
     };
     match provider {
         ProviderKind::Claude => pair(&["--permission-mode"], "plan"),

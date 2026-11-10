@@ -84,7 +84,7 @@ pub fn plan_claude_turn_with(
         new_session_id = Some(id);
     }
     argv.push(req.prompt.to_string());
-    assert_safe_claude_argv(&argv, req.trust == TrustMode::Full)?;
+    assert_safe_claude_argv(&argv[..argv.len() - 1], req.trust == TrustMode::Full)?;
     let mut env = Vec::new();
     if let Some(home) = req.config_dir {
         env.push((

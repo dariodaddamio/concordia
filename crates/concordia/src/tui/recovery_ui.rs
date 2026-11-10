@@ -3,6 +3,14 @@ use super::{recovery, App, PickerKind, PickerRow};
 
 impl App {
     pub(super) fn open_recovery_picker(&mut self) {
+        self.show_recovery_picker(true);
+    }
+
+    pub(super) fn offer_startup_recovery(&mut self) {
+        self.show_recovery_picker(false);
+    }
+
+    fn show_recovery_picker(&mut self, refresh: bool) {
         if self.busy {
             self.push_system("finish or cancel the current turn before recovering a draft");
             return;
@@ -13,7 +21,7 @@ impl App {
             ));
             return;
         }
-        if let Some(root) = &self.keep.recovery_root {
+        if let Some(root) = self.keep.recovery_root.as_ref().filter(|_| refresh) {
             match recovery::available(root) {
                 Ok(choices) => self.keep.recovery_choices = choices,
                 Err(error) => {
@@ -49,6 +57,11 @@ impl App {
                 }
             })
             .collect();
+        rows.extend(self.recovery_choices().iter().map(|choice| PickerRow {
+            id: format!("recover-preview:{}", choice.id),
+            label: format!("Preview saved draft {}", choice.id),
+            detail: "read the draft and queued prompts without restoring".into(),
+        }));
         if recovery::legacy_available(&self.state_root) {
             rows.push(PickerRow {
                 id: "recover:legacy".into(),
@@ -62,9 +75,49 @@ impl App {
         }
         self.show_picker(
             PickerKind::Recovery,
-            "recover a saved draft - Esc keeps this pane".into(),
+            "saved drafts - Esc dismisses; /recover opens them later".into(),
             rows,
             true,
+        );
+    }
+
+    pub(super) fn preview_recovery(&mut self, id: &str) {
+        super::landing::close(self);
+        let result = self
+            .keep
+            .recovery_root
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("recovery storage unavailable"))
+            .and_then(|root| recovery::claim(root, id))
+            .and_then(|lease| {
+                let data = lease.data()?;
+                let mut text = format!(
+                    "Saved draft {id}\n{}",
+                    crate::attachments::Message::text(&data.draft)
+                );
+                for (i, prompt) in data.queue.iter().enumerate() {
+                    text.push_str(&format!(
+                        "\n\nQueued {}\n{}",
+                        i + 1,
+                        crate::attachments::Message::text(prompt)
+                    ));
+                }
+                if let Some(turn) = lease.turn()? {
+                    text.push_str(&format!(
+                        "\n\nUnfinished request\n{}",
+                        crate::attachments::Message::text(&turn.prompt)
+                    ));
+                }
+                if let Some(edit) = data.pending_edit {
+                    text.push_str(&format!(
+                        "\n\nUnfinished queue edit\n{}",
+                        crate::attachments::Message::text(&edit.text)
+                    ));
+                }
+                Ok(text)
+            });
+        self.push_system(
+            result.unwrap_or_else(|error| format!("could not preview saved draft: {error}")),
         );
     }
 
@@ -117,6 +170,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn startup_offer_keeps_dismissed_records_hidden_and_home_escape_dismisses() {
+        let state = tempfile::tempdir().unwrap();
+        let root = recovery::recovery_root(state.path(), state.path()).unwrap();
+        let old = recovery::create(&root).unwrap();
+        let old_id = old.record_id();
+        old.save("previously declined", &[]).unwrap();
+        drop(old);
+        recovery::dismiss(&root, &recovery::available(&root).unwrap()).unwrap();
+        for draft in ["new draft one", "new draft two"] {
+            let saved = recovery::create(&root).unwrap();
+            saved.save(draft, &[]).unwrap();
+        }
+        let mut app = App::new(state.path().into(), state.path().into());
+        app.restore_state();
+        app.offer_startup_recovery();
+        assert_eq!(app.keep.recovery_choices.len(), 2);
+        assert!(!app
+            .picker
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .any(|row| row.id.ends_with(&old_id)));
+        super::super::landing::open_home_tab(&mut app);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        super::super::input_dispatch::handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &tx,
+        );
+        assert!(app.picker.is_none());
+        assert!(super::super::landing::visible(&app));
+        assert!(rx.try_recv().is_err());
+        drop(app);
+        let mut restarted = App::new(state.path().into(), state.path().into());
+        restarted.restore_state();
+        assert!(restarted.keep.recovery_choices.is_empty());
+        restarted.open_recovery_picker();
+        assert_eq!(restarted.keep.recovery_choices.len(), 3);
+    }
+
+    #[test]
     fn picker_hides_active_panes_and_failed_claim_preserves_current_work() {
         let state = tempfile::tempdir().unwrap();
         let mut app = App::new(state.path().into(), state.path().into());
@@ -135,8 +233,19 @@ mod tests {
         drop(abandoned);
         app.open_recovery_picker();
         let picker = app.picker.as_ref().unwrap();
-        assert_eq!(picker.rows.len(), 1);
+        assert_eq!(picker.rows.len(), 2);
         assert_eq!(picker.rows[0].id, format!("recover:{id}"));
+        app.picker.as_mut().unwrap().state.select(Some(1));
+        app.apply_picker_selection(None);
+        assert_eq!(app.editor.text(), "current draft");
+        assert_eq!(app.queue.items, ["current queue"]);
+        let preview = &app.messages.last().unwrap().text;
+        assert!(preview.contains("abandoned draft") && preview.contains("abandoned queue"));
+        assert_eq!(
+            recovery::claim(&root, &id).unwrap().data().unwrap().draft,
+            "abandoned draft"
+        );
+        app.open_recovery_picker();
         let claimed_elsewhere = recovery::claim(&root, &id).unwrap();
         app.choose_recovery(&id);
         assert_eq!(app.editor.text(), "current draft");

@@ -3,7 +3,7 @@
 Build `2026-11-02p` adds shared routing explanations and saved ordered account/model policies.
 `/delegate routes` inspects current eligibility; `/delegate routes ID` shows the task's captured
 policy and recorded failover reasons. `/delegate policy set ACCOUNT[:MODEL] ...` changes future
-tasks only; `policy legacy` restores the existing worker order. Approved and queued tasks retain
+tasks only; `policy reset` clears the override and uses configured targets. Approved and queued tasks retain
 their account/home/login bindings. A changed binding pauses dispatch. Ledger v4 migrates earlier
 versions without replay. [Routing behavior and limits](quality/routing-policies.md).
 
@@ -35,16 +35,16 @@ without confirmed delivery; inspect main-request recovery before explicitly send
 Automatic duplicate delivery is suppressed. This is at-most-once automatic dispatch, not a claim
 of exactly-once provider execution.
 
-`/delegate fallback on` opts into quota failover; `off` disables it. Eligibility follows configured
-worker order and native model settings, requires a free logged-in account and valid configured
+`/delegate fallback on` opts into quota failover; `off` disables it. Eligibility follows the captured
+approved target sequence and native model settings, requires a free logged-in account and valid configured
 model, excludes the current orchestrator and same-home/login target, and preserves trust mode.
 At most four distinct accounts are attempted. Only explicit terminal quota errors with a confirmed
 exit, no tools and no partial answer can reroute. Crash, cancellation, connection failure, unknown
 exit and uncertain completion stop automatic retry. Fake-provider checks do not establish live
 provider/auth/approval parity.
 
-One of your accounts is the **orchestrator**: the conversation you type into. Up to three other
-accounts can be **workers**. You hand a worker one task; it runs in the background, in the same
+One of your accounts is the **orchestrator**: the conversation you type into. Up to twelve other
+accounts can be **workers**, subject to the configured limit. You hand a worker one task; it runs in the background, in the same
 folder, as a separate turn of that account's own CLI. You see it live under the transcript and
 decide what happens with its result.
 
@@ -67,7 +67,7 @@ remain separate actions.
 | Command | What it does |
 | --- | --- |
 | `/delegate` | Lists workers and provides add, remove, stop, result handoff, protocol and help choices. |
-| `/delegate <account\|auto> <task>` | Starts one worker turn as a shortcut. `auto` picks the first idle worker. |
+| `/delegate <account\|auto> <task>` | Starts one worker turn as a shortcut. `auto` chooses an eligible idle worker using the captured routing ranking. |
 | `/delegate after ID[,ID] ACCOUNT TASK` | Approves a task that waits for the named successful runs in this workspace. |
 | `/delegate graph` | Shows task readiness and exact prerequisite run identities. |
 
@@ -88,7 +88,8 @@ remain separate work; the scheduler never merges edits.
 
 An account can be a worker when it exists, is logged in, is not the orchestrator, is not the same
 login as the orchestrator or another worker (checked by the same identity used for duplicate
-accounts), and fewer than three workers exist. Workers are stored in `store.json`
+accounts), and the configured `delegation.max_workers` limit has not been reached (at most twelve).
+Resource admission can reduce concurrency. Workers are stored in `store.json`
 (`settings.workers`) with the other settings.
 
 ## What a delegate gets

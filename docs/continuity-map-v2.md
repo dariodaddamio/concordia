@@ -2,34 +2,38 @@
 
 The handoff map is a deterministic table of contents. Concordia never summarizes provider
 output and never makes an inference call. The map is UTF-8 text with a bounded character budget
-(the configured `threads.map_chars`, capped by the continuity pack budget).
+(the handoff planner currently caps it at 1,600 characters; `threads.map_chars` separately controls
+explicit chat-reference maps).
 
 Entries are emitted in source order:
 
 1. The v2 header and explicit thread id.
-2. `user turn N:` entries. These are the user's typed messages, collapsed only for whitespace and
-   truncated at the entry limit; they are the ground truth of intent.
-3. `assistant pointer`, `tool pointer`, and structural-event pointers. Each names its turn ordinal
-   and resolves through `concordia thread read THREAD --range N-N`.
-4. The bounded `more:` pointer, or the explicit `native_memory fallback` marker when no local log
-   is available.
+2. `asked:` for the first user message, then `user turn N:` entries. First/latest intent is
+   collapsed for whitespace and bounded; intermediate user turns retain source pointers.
+3. `assistant pointer`, `tool pointer`, and structural-event pointers. Stored-thread ordinals
+   resolve through `concordia thread read THREAD --range N-N`.
+4. The bounded `more:` instruction. With logging off, the map identifies in-memory turn numbers
+   and directs retrieval to attached native-source indexes or explicit `concordia chat index`;
+   it does not invent a stored thread or native message ordinal.
 
 The stable pointer format is:
 
 `<label>: turn <ordinal> -> concordia thread read <thread-id> --range <ordinal>-<ordinal>`
 
-The ordering and truncation are deterministic for identical inputs. Older callers may continue to
-use the legacy `build_map` layout; handoff uses `build_map_v2` and carries the version in its
-header.
+The ordering and truncation are deterministic for identical inputs. `threads::build_map` is the
+single current formatter for handoff, CLI/MCP maps and explicit chat references; its header carries
+format v2. Partial-journal notices enter the header. Compaction reserves the header and source
+instruction before shortening user intent when that budget can fit both lines.
 
 ## Pinned spans
 
 When a verified native reference is appended to a thread, its exact plaintext projection is
 written, after `crate::redact`, to the thread's `.pins.jsonl` journal. Pins contain provider,
-account, native session id, role, and ordinal metadata, plus the redacted body needed to resolve
-the pointer after provider pruning. The journal retains at most 128 spans and 256 KiB, removing
-the oldest ordinal first. A missing pin falls back to the native-backed thread record; no native
-session is guessed and no `resume --last` behavior is used.
+account, native session id, role, and ordinal metadata, plus a bounded local redacted excerpt.
+The journal retains at most 128 spans and 256 KiB, removing
+the oldest ordinal first. Current journal reads verify the native-backed record; unavailable or
+stale sources produce an explicit gap. Pins are retained independently, not used as a silent
+replacement for failed native verification. No session is guessed or resumed with `--last`.
 
 Pinning is local and bounded. Provider transcript files remain authoritative for native history,
 and redaction happens before either the journal record or pin is written.

@@ -3,11 +3,15 @@ use super::super::*;
 impl App {
     pub(in crate::tui) fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if trimmed == "/terminal" || trimmed.starts_with("/terminal ") {
+            local_terminal::command(self, trimmed.strip_prefix("/terminal").unwrap_or_default());
+            return true;
+        }
         if trimmed == "/rename" || trimmed.starts_with("/rename ") {
             let name = trimmed.strip_prefix("/rename").unwrap_or_default().trim();
-            self.session_ui.title = crate::session_titles::sanitize(name);
-            self.session_chip = self.session_ui.title.clone();
-            self.persist_session_title();
+            if !self.rename_session(name) {
+                return true;
+            }
             self.push_system(if self.session_ui.title.is_some() {
                 "Chat renamed."
             } else {
@@ -129,10 +133,6 @@ impl App {
             self.open_agents_picker();
             return true;
         }
-        if trimmed == "/skills" || trimmed == "/hooks" {
-            settings::catalog(self, trimmed == "/hooks");
-            return true;
-        }
         if trimmed == "/config" || trimmed.starts_with("/config ") {
             let args = trimmed.strip_prefix("/config").unwrap_or("").trim();
             match args {
@@ -189,11 +189,6 @@ impl App {
         }
         // /workers, /queue, /edit, /close, /split, /stats and /recover keep working unlisted
         // until the screens that replace them exist.
-        if trimmed == "/exit" || trimmed == "/quit" || trimmed == "/q" {
-            self.push_command(line);
-            self.push_system("/exit is now Ctrl+C twice");
-            return true;
-        }
         if line.trim() == "/search" {
             self.open_project_search();
             return true;
@@ -202,7 +197,7 @@ impl App {
             self.open_related_files();
             return true;
         }
-        if matches!(line.trim(), "/preview" | "/edit") {
+        if line.trim() == "/edit" {
             self.push_system("usage: /open FILE");
             return true;
         }
@@ -262,13 +257,6 @@ impl App {
                 self.queue_command(arg)
             };
             for l in notices {
-                self.push_system(l);
-            }
-            return true;
-        }
-        if line.trim() == "/threads" || line.trim_start().starts_with("/threads ") {
-            self.push_command(line);
-            for l in self.threads_command(line.trim_start()["/threads".len()..].trim()) {
                 self.push_system(l);
             }
             return true;
@@ -345,26 +333,13 @@ impl App {
         if self.try_delegate_slash(&cmd) {
             return true;
         }
+        if let SlashCommand::Customization(hooks) = &cmd {
+            settings::catalog(self, *hooks);
+            return true;
+        }
         if let SlashCommand::Harness(arg) = &cmd {
             self.push_command(line);
-            let accounts = accounts_with_auth(&self.state_root)
-                .into_iter()
-                .map(|a| (a.provider, a.home_path))
-                .collect();
-            let session = crate::harness::command::Session {
-                store: &self.state_root,
-                cwd: &self.cwd,
-                provider: self.provider,
-                home: self.home_path.as_deref(),
-                accounts,
-            };
-            let cwd = self.cwd.clone();
-            let lines = crate::harness::command::dispatch(&session, arg, &|argv| {
-                crate::harness::run::run_command(argv, &cwd, crate::harness::run::DEFAULT_TIMEOUT)
-            });
-            for l in lines {
-                self.push_system(l);
-            }
+            integrations::command(self, arg);
             return true;
         }
         if matches!(&cmd, SlashCommand::Unknown(n) if n == "stats") {
@@ -404,6 +379,7 @@ impl App {
             self.view.follow_tail();
             self.clear_selections();
             self.native_session_id = None;
+            self.task_id = None;
             self.session_chip = None;
             self.usage_block = None;
             self.session_input = 0;

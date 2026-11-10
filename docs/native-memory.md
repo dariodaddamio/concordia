@@ -1,4 +1,4 @@
-# Native source pointers and unfinished work
+# Native source pointers and continuity limits
 
 ## Reference-backed recording and recall (2026-11-04r)
 
@@ -34,6 +34,25 @@ on hydration. The ordinary recent index keeps its 8 MiB/128-record/256 KiB limit
 These are finite bounds, not an unbounded archive: exceeding them retains protected recovery and
 explicit availability gaps. Legacy originals and pending/uncertain recovery remain intentional
 retention exceptions, not silently discarded input.
+
+## Journal and projection budgets (2026-11-08f)
+
+Native originals remain authoritative. Optional journal reads use at most 8 MiB/256 records per
+page, with exact next-page cursors and original event ordinals. `thread read ID --cursor TOKEN`
+and MCP `thread_read` share that reader. Tail selection streams with a finite scan budget and
+reports partial coverage; maps label an incomplete first page instead of claiming a whole log.
+Explicit read-all has a 32 MiB/4,096-event budget and errors rather than silently truncating.
+
+Pending reference projections retain the first user event and recent events under 256 records/
+4 MiB, recording `projection_omitted` plus a UI notice when older display projections do not fit.
+The source capture remains separate. Protected unfinished recovery is retained if exact source
+verification fails. Recovery records have a 32 MiB read/write budget; oversized originals stay
+visible and untouched. Store mutations use an OS-held lock and show checked read failures.
+The account/settings store also has a 32 MiB complete-read/write bound: oversized or unsupported
+originals remain intact and mutations fail visibly. The bound never removes records to make them fit.
+
+`sessions prune --empty` is a non-destructive report. Concordia cannot prove a native writer is
+quiescent, so it never deletes provider-owned chat files through this command.
 
 ## Explicit legacy migration
 
@@ -163,7 +182,8 @@ and the byte range/hash of each indexed event. The index ID is a SHA-256 of this
 It stores roles and pointers, not conversation bodies, under `<state>/.ao/native-memory/`.
 
 Discovery uses the existing bounded native-session resolver and verifies the exact session in its
-header. Indexing reads at most the last 8 MiB and first 64 KiB, retaining up to 128 recent message
+header. Identity verification reads at most the first 1 MiB; the compatible freshness anchor
+remains 64 KiB. Indexing reads at most the last 8 MiB, retaining up to 128 recent message
 or tool events, with at most 256 KiB per event. Truncated/malformed/skipped data is reported.
 This first slice is a recent-window index, not a claim to index every event in an unlimited log.
 

@@ -951,7 +951,7 @@ fn the_palette_stays_out_of_the_way_while_browsing_history() {
 }
 
 #[test]
-fn signing_in_to_the_same_login_twice_removes_the_duplicate_and_says_why() {
+fn signing_in_to_the_same_login_twice_preserves_both_homes_and_explains_removal() {
     let iso = Isolated::new();
     codex_login(&iso.base.path().join(".codex"), "me@example.com");
     let mut h = Harness::new(100, 30);
@@ -960,14 +960,20 @@ fn signing_in_to_the_same_login_twice_removes_the_duplicate_and_says_why() {
     let home = h.add_codex_signed_in_as("ME@Example.com"); // same login, different case
     assert!(h.app.pending_login.is_none());
     let t = h.transcript_text();
-    assert!(t.contains("already connected as Codex"), "{t}");
-    assert!(t.contains("duplicate slot was removed"), "{t}");
+    assert!(t.contains("same login as Codex"), "{t}");
+    assert!(
+        t.contains("Both account homes and their histories were kept"),
+        "{t}"
+    );
     assert!(t.contains("sign in with a different one"), "{t}");
     assert!(
-        !home.exists(),
-        "the duplicate's login folder must be deleted"
+        home.exists(),
+        "duplicate detection must preserve the account's native history"
     );
-    assert!(crate::store::list_stored_accounts(&h.app.state_root).is_empty());
+    assert_eq!(
+        crate::store::list_stored_accounts(&h.app.state_root).len(),
+        1
+    );
     assert!(!t.contains("connected as me@example.com - /use"), "{t}");
 }
 
@@ -1578,7 +1584,7 @@ fn model_argument_completion_uses_the_account_catalog_and_can_apply_it() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("models_cache.json"),
-        r#"{"models":[{"slug":"fixture-model"},{"slug":"another-model"}]}"#,
+        r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list"},{"slug":"another-model","display_name":"another-model","visibility":"list"}]}"#,
     )
     .unwrap();
     set_use_selection(
@@ -1650,7 +1656,7 @@ fn typed_model_ids_are_accepted_but_unsafe_and_unknown_accounts_cannot_change_bi
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("models_cache.json"),
-        r#"{"models":[{"slug":"fixture-model"}]}"#,
+        r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list"}]}"#,
     )
     .unwrap();
     h.app.home_path = Some(home);
@@ -1681,16 +1687,14 @@ fn model_picker_groups_by_family_with_default_first() {
                 display_name: "B".into(),
                 family: "Family B".into(),
                 tier: crate::models::ModelTier::Standard,
-                source: crate::models::ModelSource::Catalog,
-                deprecated: false,
+                source: crate::models::ModelSource::Cached,
             },
             crate::models::ModelEntry {
                 id: "a".into(),
                 display_name: "A".into(),
                 family: "Family A".into(),
                 tier: crate::models::ModelTier::Standard,
-                source: crate::models::ModelSource::Catalog,
-                deprecated: false,
+                source: crate::models::ModelSource::Cached,
             },
         ],
         None,
@@ -1709,7 +1713,6 @@ fn model_picker_shows_source_tags_and_marks_current() {
             family: "GPT-5.6".into(),
             tier: crate::models::ModelTier::Frontier,
             source: crate::models::ModelSource::Cached,
-            deprecated: false,
         }],
         Some("sol"),
     );
@@ -1725,8 +1728,7 @@ fn model_picker_filter_matches_names_and_ids() {
             display_name: "GPT Sol".into(),
             family: "GPT-5.6".into(),
             tier: crate::models::ModelTier::Frontier,
-            source: crate::models::ModelSource::Catalog,
-            deprecated: false,
+            source: crate::models::ModelSource::Cached,
         }],
         None,
     );

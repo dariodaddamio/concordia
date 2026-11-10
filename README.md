@@ -4,6 +4,10 @@ Concordia is a Windows-first terminal app that runs the official Codex, Claude C
 CLIs under your own accounts, with bounded handoff between them. It keeps one conversation
 navigable while each provider remains responsible for its own sessions, approvals and tools.
 
+For the short view of what works, what remains unproven and the intended direction, read the
+[project plan](PLAN.md). The [documentation index](docs/README.md) separates current references,
+planned work and historical evidence. Concordia is currently private and pre-release.
+
 Concordia is independent and unofficial. It is not affiliated with or endorsed by OpenAI,
 Anthropic, Anysphere or Cursor. It runs their official, unmodified CLIs using your own accounts.
 Each CLI keeps its own login; Concordia only checks that a login exists. The one secret it
@@ -33,9 +37,15 @@ Ask your question and press Enter
 /model               # choose a model from the active provider
 ```
 
+`concordia` opens the native app window. `concordia --terminal` runs the same chat UI in your
+existing PowerShell or terminal, without requiring WezTerm. Inside either interface, `/terminal`
+or F11 opens a local shell in the workspace; F11 returns to chat with its draft intact.
+`/terminal hide` keeps that shell alive, and `/terminal close` stops it.
+
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |
 | --- | --- | --- | --- |
+| `/terminal` | `[open\|hide\|close]` | open the local PowerShell terminal | everyday |
 | `/use` | `ACCOUNT\|add PROVIDER\|remove ACCOUNT` | switch, add or remove accounts | everyday |
 | `/model` | `[MODEL]` | choose the model | everyday |
 | `/config` | `[KEY VALUE]` | settings: display, permissions, accounts and behavior | everyday |
@@ -48,6 +58,8 @@ Ask your question and press Enter
 | `/crew` | `[list\|use NAME\|clear]` | choose a saved lead and worker preset | everyday |
 | `/worker-panel` | `` | toggle the worker side panel | everyday |
 | `/harness` | `ACTION` | connect and run harness tools | advanced |
+| `/skills` | `[list\|install [PATH]\|remove PATH\|connect PATH\|status]` | inspect skills and connect shared setup | advanced |
+| `/hooks` | `[list\|connect PATH\|verify\|status]` | inspect hooks and verify shared setup | advanced |
 | `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
 | `/preview` | `PATH` | preview a file read-only | advanced |
 | `/search` | `TEXT` | search project file contents | advanced |
@@ -55,12 +67,27 @@ Ask your question and press Enter
 | `/worktree` | `...` | manage explicit Git workspaces | advanced |
 | `/memory` | `...` | search original chats and source links | advanced |
 | `/context` | `` | inspect context rollover policy | advanced |
+| `/recover` | `[retry\|legacy]` | inspect saved drafts and interrupted requests | everyday |
 | `/integrations` | `` | inspect connected integrations | advanced |
 | `/copy` | `` | copy the last reply | everyday |
 | `/doctor` | `` | check your setup | everyday |
 | `/update` | `` | update Concordia | everyday |
 | `/exit` | `` | exit Concordia | everyday |
 <!-- COMMANDS:END -->
+
+`/skills` and `/hooks` show the selected account's local sources. Their `connect PATH`
+action uses `/harness connect PATH` to apply a declared setup across registered accounts;
+later accounts inherit that connection in this project before their first turn. Use `--current`
+for an account-specific setup. `/skills install [PATH]` links a skill folder or collection into provider homes; the default
+source is `~/.agents/skills`. Later accounts inherit shared skill sources across projects.
+Links keep one current source, and existing same-named skills are preserved.
+`/skills remove PATH` stops sharing and removes matching directory links across accounts;
+source files and other skill directories are preserved.
+`/harness skill` installs Concordia's connection instructions.
+`/hooks status` shows shared skill sources and per-account connection results;
+`/hooks verify` runs declared verification probes.
+Native hook consent must be reviewed in each provider's own client. A connected configuration
+does not prove that hooks are trusted, active or able to protect every source language.
 
 Use `/doctor` inside Concordia, or `concordia doctor` in a terminal, when setup or provider
 discovery needs diagnosis.
@@ -79,13 +106,10 @@ discovery needs diagnosis.
 ## Learn more
 
 - [How Concordia works, end to end](docs/how-concordia-works.md)
-- [Concepts and capabilities](docs/capabilities.md)
+- [Current capabilities and limits](PLAN.md)
 - [Architecture and data boundaries](docs/architecture.md)
-- [Memory and context handoff](docs/context-handoff-plan.md)
-- [Commands, controls and UI glossary](docs/ui-glossary.md)
-- [Configuration](docs/config.md)
-- [Images and diagrams](docs/images-and-diagrams.md)
+- [Verified behavior and remaining limits](docs/e2e-status.md)
 - [Contributing](CONTRIBUTING.md)
-- [Internal development notes](docs/contributing-internals.md)
-- [Metrics](docs/metrics.md)
 - [License](LICENSE)
+
+The walkthrough links the detailed provider, memory, input and configuration references.

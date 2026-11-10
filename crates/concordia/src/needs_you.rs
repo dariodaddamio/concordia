@@ -5,14 +5,6 @@
 
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionState {
-    Running,
-    Waiting,
-    Idle,
-    Failed,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 pub enum ItemKind {
     Approval,
@@ -46,19 +38,10 @@ pub struct Item {
 
 #[derive(Debug, Default, Clone)]
 pub struct Queue {
-    sessions: BTreeMap<String, SessionState>,
     items: BTreeMap<String, Item>,
 }
 
 impl Queue {
-    pub fn set_state(&mut self, session_id: impl Into<String>, state: SessionState) {
-        self.sessions.insert(session_id.into(), state);
-    }
-
-    pub fn state(&self, session_id: &str) -> Option<SessionState> {
-        self.sessions.get(session_id).copied()
-    }
-
     pub fn add(&mut self, item: Item) {
         self.items.insert(item.id.clone(), item);
     }
@@ -70,6 +53,10 @@ impl Queue {
     pub fn remove_suffix(&mut self, suffix: &str) {
         let suffix = format!(":{suffix}");
         self.items.retain(|id, _| !id.ends_with(&suffix));
+    }
+
+    pub fn remove_kind(&mut self, kind: ItemKind) {
+        self.items.retain(|_, item| item.kind != kind);
     }
 
     pub fn items(&self) -> impl Iterator<Item = &Item> {
@@ -138,15 +125,14 @@ mod tests {
     }
 
     #[test]
-    fn per_session_drafts_and_queues_are_independent() {
+    fn attention_items_keep_their_session_owner_when_another_session_resolves() {
         let mut q = Queue::default();
-        q.set_state("codex", SessionState::Running);
-        q.set_state("claude", SessionState::Waiting);
         q.add(item("codex-q", "codex", ItemKind::PausedQueue));
         q.add(item("claude-q", "claude", ItemKind::Question));
-        assert_eq!(q.state("codex"), Some(SessionState::Running));
-        assert_eq!(q.state("claude"), Some(SessionState::Waiting));
         assert_eq!(q.item(0).unwrap().session_id, "claude");
         assert_eq!(q.item(1).unwrap().session_id, "codex");
+        q.remove_kind(ItemKind::Question);
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.item(0).unwrap().session_id, "codex");
     }
 }

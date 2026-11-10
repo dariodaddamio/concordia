@@ -3,6 +3,11 @@
 Baseline: merged `ea4377d`. Production source: `6d637dd`. Build `2026-11-02p`.
 State: fixture-verified and portable-installed-verified. Live native-provider evidence is separate.
 
+Repository audit 2026-11-08: approved evaluations now preserve the captured sequence while
+rechecking eligibility and binding. The prior implementation accidentally reapplied quota/tier
+sorting during every evaluation, contrary to the ordered-policy contract. Automatic candidate
+discovery retains its ranking before approval; this correction does not grant a new target.
+
 ## Shared decisions
 
 Main continuation, worker selection and worker quota failover use the same local evaluator.
@@ -26,7 +31,7 @@ presence and explicit models. A changed captured account/home/login binding bloc
 
 Use `/delegate policy set WORKER[:MODEL] ...` or
 `/continuation policy set ACCOUNT[:MODEL] ...` to save an ordered sequence for future requests.
-`policy` reads the saved override; `policy legacy` restores the existing configured ordering.
+`policy` reads the saved override; `policy reset` clears it and uses configured ordering.
 Models are exact native IDs; an absent/unavailable explicit ID is skipped, never substituted.
 Policy editing does not enable automatic continuation or worker failover.
 

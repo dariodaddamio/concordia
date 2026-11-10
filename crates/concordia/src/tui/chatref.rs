@@ -202,9 +202,8 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
                         i = end;
                         continue;
                     }
-                    match threads::ThreadLog::open(state_root, &id).read_all() {
-                        Ok(events) => {
-                            let map = threads::build_map(&events, &id, map_chars, true);
+                    match threads::ThreadLog::open(state_root, &id).read_map(map_chars) {
+                        Ok(map) => {
                             ex.maps.push((short_id(metas, &id), map));
                             done.push(id);
                         }
@@ -291,6 +290,10 @@ impl App {
             self.chatref.last_query = None;
             return View::Hidden;
         };
+        if q.len() > 4096 {
+            return View::Hidden;
+        }
+        let folded_query = q.to_lowercase();
         self.request_related_files();
         if self.chatref.loaded.is_none_or(|t| t.elapsed() > LIST_TTL) {
             self.chatref.list = threads::list(&self.state_root);
@@ -311,13 +314,13 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, file)| {
-                file.label.to_lowercase().contains(&q.to_lowercase())
+                file.label.to_lowercase().contains(&folded_query)
                     || file
                         .candidate
                         .target
                         .replace('\\', "/")
                         .to_lowercase()
-                        .contains(&q.to_lowercase())
+                        .contains(&folded_query)
             })
             .map(|(i, _)| Reference::File(i))
             .collect();

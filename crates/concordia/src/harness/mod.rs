@@ -11,6 +11,8 @@ pub mod command;
 pub mod connections;
 pub mod pinned;
 pub mod run;
+pub mod shared;
+pub mod skills;
 pub mod verify;
 
 use crate::store::ProviderKind;
@@ -51,7 +53,7 @@ pub struct Manifest {
     pub tools: Vec<Tool>,
 }
 
-/// How a command ended. Output is truncated by the runner.
+/// How a command ended. Output beyond the runner's finite budget is an explicit failure.
 #[derive(Debug, Clone, Default)]
 pub struct RunOutcome {
     pub exit: Option<i32>,
@@ -317,14 +319,32 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
 pub fn expand(argv: &[String], ctx: &Context<'_>) -> Result<Vec<String>, String> {
     argv.iter()
         .map(|arg| {
-            let mut out = arg.replace("{provider}", ctx.provider.as_str());
-            out = out.replace("{project}", &ctx.project.to_string_lossy());
-            if out.contains("{home}") {
-                let home = ctx.home.ok_or(
-                    "this account has no isolated home, so a command that needs {home} cannot run",
-                )?;
-                out = out.replace("{home}", &home.to_string_lossy());
+            let mut out = String::new();
+            let mut rest = arg.as_str();
+            while let Some(at) = rest.find('{') {
+                out.push_str(&rest[..at]);
+                rest = &rest[at..];
+                let replacement = if rest.starts_with("{provider}") {
+                    Some(("{provider}", ctx.provider.as_str().to_owned()))
+                } else if rest.starts_with("{project}") {
+                    Some(("{project}", ctx.project.to_string_lossy().into_owned()))
+                } else if rest.starts_with("{home}") {
+                    let home = ctx.home.ok_or(
+                        "this account has no isolated home, so a command that needs {home} cannot run",
+                    )?;
+                    Some(("{home}", home.to_string_lossy().into_owned()))
+                } else {
+                    None
+                };
+                if let Some((placeholder, value)) = replacement {
+                    out.push_str(&value);
+                    rest = &rest[placeholder.len()..];
+                } else {
+                    out.push('{');
+                    rest = &rest[1..];
+                }
             }
+            out.push_str(rest);
             Ok(out)
         })
         .collect()

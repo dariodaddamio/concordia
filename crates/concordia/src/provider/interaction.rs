@@ -2,7 +2,8 @@
 use crate::store::ProviderKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -934,7 +935,7 @@ pub(crate) struct InteractionConnection {
     id: String,
     active: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
-    seen: HashSet<String>,
+    seen: HashMap<String, [u8; 32]>,
     pending: Vec<(usize, Weak<ResponseChannel>)>,
     pub capabilities: InteractionCapabilities,
 }
@@ -949,7 +950,7 @@ impl InteractionConnection {
             id: uuid::Uuid::new_v4().to_string(),
             active: Arc::new(AtomicBool::new(true)),
             cancelled,
-            seen: HashSet::new(),
+            seen: HashMap::new(),
             pending: Vec::new(),
             capabilities: InteractionCapabilities::default(),
         }
@@ -1033,7 +1034,7 @@ impl InteractionConnection {
         request_id: Value,
         method: String,
         params: Value,
-    ) -> Result<(NativeRequest, oneshot::Receiver<Value>), String> {
+    ) -> Result<Option<(NativeRequest, oneshot::Receiver<Value>)>, String> {
         if session.is_empty() || session.len() > 4096 || self.cancelled.load(Ordering::SeqCst) {
             return Err("native interaction session is unavailable".into());
         }
@@ -1079,7 +1080,23 @@ impl InteractionConnection {
             Value::Number(n) => n.is_i64() || n.is_u64(),
             _ => false,
         };
-        if !valid_id || self.seen.len() >= REQUESTS_PER_CONNECTION {
+        if !valid_id {
+            return Err("native interaction request identity/budget is invalid".into());
+        }
+        // Remember identity, never an answer: retransmission must not reuse consent or
+        // create a second response channel, including after native resolution.
+        let identity = serde_json::to_vec(&(session, &method, &params))
+            .map_err(|_| "invalid native interaction data")?;
+        let fingerprint: [u8; 32] = Sha256::digest(&identity).into();
+        let key = request_id.to_string();
+        if let Some(previous) = self.seen.get(&key) {
+            return if previous == &fingerprint {
+                Ok(None)
+            } else {
+                Err("native interaction request ID reused with different content".into())
+            };
+        }
+        if self.seen.len() >= REQUESTS_PER_CONNECTION {
             return Err("native interaction request identity/budget is invalid".into());
         }
         let bytes = serde_json::to_vec(&params)
@@ -1097,9 +1114,7 @@ impl InteractionConnection {
             return Err("native interaction request exceeds its byte budget".into());
         }
         let kind = NativeInteraction::parse(&method, &params)?;
-        if !self.seen.insert(request_id.to_string()) {
-            return Err("native interaction request was already observed".into());
-        }
+        self.seen.insert(key, fingerprint);
         let capability = CapabilityEvidence {
             support: Support::Supported,
             transport: if claude {
@@ -1134,7 +1149,7 @@ impl InteractionConnection {
         self.pending.push((bytes, Arc::downgrade(&response)));
         let native_turn_id =
             codex.then(|| params["turnId"].as_str().unwrap_or_default().to_owned());
-        Ok((
+        Ok(Some((
             NativeRequest {
                 method,
                 params,
@@ -1154,7 +1169,7 @@ impl InteractionConnection {
                 response,
             },
             rx,
-        ))
+        )))
     }
 }
 
@@ -1174,6 +1189,45 @@ fn observed_at() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retransmission_preserves_original_answer_and_rejects_changed_content() {
+        let mut connection = InteractionConnection::new(None, Arc::new(AtomicBool::new(false)));
+        connection.initialized_codex("0.166.0");
+        let method = "item/commandExecution/requestApproval";
+        let params = json!({"threadId":"thread","turnId":"turn","itemId":"item","command":"echo fixture","availableDecisions":["accept","decline"]});
+        let (request, mut rx) = connection
+            .request("thread", json!(1), method.into(), params.clone())
+            .unwrap()
+            .unwrap();
+        assert!(connection
+            .request("thread", json!(1), method.into(), params.clone())
+            .unwrap()
+            .is_none());
+        for field in ["turnId", "itemId", "command"] {
+            let mut changed = params.clone();
+            changed[field] = json!("changed");
+            assert!(connection
+                .request("thread", json!(1), method.into(), changed)
+                .is_err());
+        }
+        request.respond(json!({"decision":"decline"}));
+        assert_eq!(rx.try_recv().unwrap(), json!({"decision":"decline"}));
+        assert!(connection
+            .request("thread", json!(1), method.into(), params.clone())
+            .unwrap()
+            .is_none());
+        let (resolved, mut rx) = connection
+            .request("thread", json!(2), method.into(), params.clone())
+            .unwrap()
+            .unwrap();
+        resolved.resolve_native();
+        assert!(connection
+            .request("thread", json!(2), method.into(), params)
+            .unwrap()
+            .is_none());
+        assert!(rx.try_recv().is_err());
+    }
 
     fn owner() -> InteractionOwner {
         InteractionOwner {
@@ -1210,6 +1264,7 @@ mod tests {
                 "session/request_permission".into(),
                 permission(),
             )
+            .unwrap()
             .unwrap();
         for wrong in [
             InteractionOwner {
@@ -1263,6 +1318,7 @@ mod tests {
                 "item/commandExecution/requestApproval".into(),
                 params.clone(),
             )
+            .unwrap()
             .unwrap();
         let NativeInteraction::CodexPermission { options, .. } = request.kind() else {
             panic!("Codex permission expected")
@@ -1289,6 +1345,7 @@ mod tests {
                 "item/commandExecution/requestApproval".into(),
                 params,
             )
+            .unwrap()
             .unwrap();
         resolved.resolve_native();
         assert!(resolved.was_resolved() && !resolved.was_answered() && !resolved.is_active());
@@ -1313,7 +1370,7 @@ mod tests {
             )
             .is_err());
         assert!(claude.initialized_claude("unknown").is_err());
-        assert!(claude.initialized_claude("2.1.317").is_err());
+        assert!(claude.initialized_claude("2.1.318").is_err());
         claude
             .initialized_claude(crate::capacity::claude_capacity::CLI_VERSION)
             .unwrap();
@@ -1326,6 +1383,7 @@ mod tests {
                 "claude/can_use_tool".into(),
                 params.clone(),
             )
+            .unwrap()
             .unwrap();
         assert_eq!(request.capability().transport, "claude-stdio");
         assert!(request.respond_owned(&owner, selected("once")).is_err());
@@ -1340,7 +1398,8 @@ mod tests {
                 "claude/can_use_tool".into(),
                 params
             )
-            .is_err());
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1354,6 +1413,7 @@ mod tests {
                 "session/request_permission".into(),
                 permission(),
             )
+            .unwrap()
             .unwrap();
         assert!(scope
             .request(
@@ -1370,7 +1430,8 @@ mod tests {
                 "session/request_permission".into(),
                 permission()
             )
-            .is_err());
+            .unwrap()
+            .is_none());
         cancelled.store(true, Ordering::SeqCst);
         request.respond(selected("once"));
         assert!(!request.is_active());
@@ -1383,6 +1444,7 @@ mod tests {
                 "session/request_permission".into(),
                 permission(),
             )
+            .unwrap()
             .unwrap();
         drop(scope);
         request.respond(selected("once"));
@@ -1401,6 +1463,7 @@ mod tests {
                 "session/request_permission".into(),
                 permission(),
             )
+            .unwrap()
             .unwrap();
         let (b, mut b_rx) = second
             .request(
@@ -1409,6 +1472,7 @@ mod tests {
                 "session/request_permission".into(),
                 permission(),
             )
+            .unwrap()
             .unwrap();
         assert_ne!(a.envelope().connection_id, b.envelope().connection_id);
         b.respond(selected("always"));
@@ -1446,6 +1510,7 @@ mod tests {
                 "session/request_permission".into(),
                 permission(),
             )
+            .unwrap()
             .unwrap();
         request
             .respond(json!({"outcome":{"outcome":"selected","optionId":"once","scope":"always"}}));
@@ -1466,6 +1531,7 @@ mod tests {
                 "cursor/ask_question".into(),
                 params,
             )
+            .unwrap()
             .unwrap();
         for selected in [json!(["a", "a"]), json!(["foreign"]), json!([])] {
             request.respond(json!({"outcome":{"outcome":"answered","answers":[{"questionId":"question","selectedOptionIds":selected}]}}));
@@ -1483,6 +1549,7 @@ mod tests {
                 "cursor/create_plan".into(),
                 params.clone(),
             )
+            .unwrap()
             .unwrap();
         assert_eq!(
             plan.single_choices(&[0]).unwrap(),
@@ -1543,6 +1610,7 @@ mod tests {
                         "session/request_permission".into(),
                         permission(),
                     )
+                    .unwrap()
                     .unwrap(),
             );
         }
@@ -1562,6 +1630,7 @@ mod tests {
                 "session/request_permission".into(),
                 permission(),
             )
+            .unwrap()
             .unwrap();
         drop(replacement);
         drop(pending);
@@ -1574,6 +1643,7 @@ mod tests {
                 "session/request_permission".into(),
                 large.clone(),
             )
+            .unwrap()
             .unwrap();
         assert!(scope
             .request(

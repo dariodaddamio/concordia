@@ -32,10 +32,10 @@ pub struct Session<'a> {
     pub accounts: Vec<(ProviderKind, Option<PathBuf>)>,
 }
 
-struct Loaded {
-    manifest: Manifest,
-    path: String,
-    sha: String,
+pub(super) struct Loaded {
+    pub manifest: Manifest,
+    pub path: String,
+    pub sha: String,
 }
 
 fn now() -> u64 {
@@ -67,11 +67,13 @@ fn home_label(home: Option<&str>) -> String {
 pub fn help_lines() -> Vec<String> {
     [
         "/harness: connect any harness to the providers Concordia launches",
-        "  /harness connect <folder|harness.json|program> [--all]   wire it into this account (or every account)",
+        "  /harness connect <folder|harness.json|program> [--current]   connect all accounts; new accounts inherit this project setup",
         "  /harness status                                          what is connected and verified",
-        "  /harness verify [name] [provider] [--all]                run its live probe; opens a locked project only on a real denial",
+        "  /harness verify [name] [provider] [--current]             run its live probe across accounts; native trust is separate",
         "  /harness disconnect <name>                               forget it and withdraw the receipts it wrote",
-        "  /harness skill                                           install the connect skill into this account's home",
+        "  /harness skill [--current]                               install the Concordia connection skill across accounts",
+        "  /skills install [PATH] [--current]                       share a skill folder/collection; default ~/.agents/skills",
+        "  /skills remove PATH                                     stop sharing and remove matching links across accounts",
         "  /harness tools [name|harness/name]                      list or run a declared harness tool",
         "A harness is described by harness.json (see docs/harness.md). Commands run without a shell.",
     ]
@@ -117,18 +119,10 @@ fn load_manifest(target: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, Strin
         } else {
             path
         };
-        let meta =
-            fs::metadata(&file).map_err(|_| format!("no harness.json at {}", file.display()))?;
-        if meta.len() > MAX_MANIFEST_BYTES {
-            return Err("that manifest is too large to be a harness.json".into());
-        }
-        let text = fs::read_to_string(&file)
-            .map_err(|e| format!("could not read {}: {e}", file.display()))?;
-        let dir = file.parent().unwrap_or(cwd);
-        let manifest = parse_manifest(&text, dir)?;
+        let (manifest, sha, path) = load_local_manifest_for_action(&file.to_string_lossy(), cwd)?;
         return Ok(Loaded {
-            sha: sha_hex(&text),
-            path: file.to_string_lossy().into_owned(),
+            sha,
+            path,
             manifest,
         });
     }
@@ -221,12 +215,27 @@ pub fn connect_in(
     let entry = match outcome {
         Err(why) => entry_for(ctx, false, why),
         Ok(o) if o.timed_out => entry_for(ctx, false, "the connect command timed out".into()),
-        Ok(o) if o.exit == Some(0) => entry_for(ctx, true, "ok".into()),
+        Ok(o) if o.exit == Some(0) => {
+            let report = serde_json::from_str::<serde_json::Value>(&o.stdout).ok();
+            let note = match report.as_ref().and_then(|value| value["trust"].as_str()) {
+                Some(trust @ ("trusted" | "untrusted" | "unknown" | "n/a")) =>
+                    format!("configuration connected; reported native trust: {trust}; enforcement not verified"),
+                _ => "ok".into(),
+            };
+            entry_for(ctx, true, note)
+        }
         Ok(o) => {
             let code = o
                 .exit
                 .map_or("no exit code".to_string(), |c| format!("exit {c}"));
-            let detail = o.stderr.trim().lines().last().unwrap_or("").to_string();
+            let detail = crate::sessions::clean_preview(
+                Some(if o.stderr.trim().is_empty() {
+                    &o.stdout
+                } else {
+                    &o.stderr
+                }),
+                512,
+            );
             entry_for(ctx, false, format!("{code}: {detail}"))
         }
     };
@@ -379,21 +388,39 @@ pub fn verify_reviewed(
 }
 
 pub fn status_lines(store: &Path) -> Vec<String> {
+    let mut lines = match connections::shared_skill_sources(store) {
+        Ok(sources) => sources
+            .into_iter()
+            .map(|source| format!("shared skills: {source} · all accounts, all projects"))
+            .collect::<Vec<_>>(),
+        Err(error) => return vec![error],
+    };
     let all = match connections::load(store) {
         Ok(all) => all,
         Err(e) => return vec![e],
     };
     if all.is_empty() {
-        return vec!["no harness connected. /harness connect <folder> (or /harness help)".into()];
+        if lines.is_empty() {
+            lines
+                .push("no setup connected. /skills install [PATH] or /harness connect PATH".into());
+        }
+        return lines;
     }
-    let mut lines = Vec::new();
     for c in all {
+        for project in &c.all_account_projects {
+            lines.push(format!(
+                "{} · shared project: {project} · later accounts inherit setup",
+                c.name
+            ));
+        }
         let manifest_current = if c.manifest_path.starts_with(COMMAND_PREFIX) {
             true
         } else {
-            fs::read_to_string(&c.manifest_path)
-                .ok()
-                .is_some_and(|text| sha_hex(&text) == c.manifest_sha256)
+            crate::fs_safe::read_text_bounded(
+                Path::new(&c.manifest_path),
+                MAX_MANIFEST_BYTES as usize,
+            )
+            .is_some_and(|text| sha_hex(&text) == c.manifest_sha256)
         };
         lines.push(format!(
             "{} {}  ({})",
@@ -403,7 +430,11 @@ pub fn status_lines(store: &Path) -> Vec<String> {
         ));
         for e in c.entries {
             let connect = if e.connect_ok {
-                "connected".to_string()
+                if e.connect_note == "ok" {
+                    "connected".to_string()
+                } else {
+                    format!("connected: {}", e.connect_note)
+                }
             } else {
                 format!("connect failed: {}", e.connect_note)
             };
@@ -478,9 +509,9 @@ fn targets(session: &Session<'_>, all: bool) -> Vec<(ProviderKind, Option<PathBu
 }
 
 fn connect_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<String> {
-    let all = args.iter().any(|a| a == "--all");
+    let all = !args.iter().any(|a| a == "--current");
     let Some(target) = args.iter().find(|a| !a.starts_with("--")) else {
-        return vec!["usage: /harness connect <folder|harness.json|program> [--all]".into()];
+        return vec!["usage: /harness connect <folder|harness.json|program> [--current]".into()];
     };
     let loaded = match load_manifest(target, session.cwd, run) {
         Ok(l) => l,
@@ -515,13 +546,23 @@ fn connect_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<Stri
         );
         lines.push(if entry.connect_ok {
             format!(
-                "connected {} · {}",
+                "connected {} · {} · {}",
                 provider.as_str(),
-                home_label(entry.home.as_deref())
+                home_label(entry.home.as_deref()),
+                entry.connect_note
             )
         } else {
             format!("failed {}: {}", provider.as_str(), entry.connect_note)
         });
+    }
+    if all {
+        if let Err(error) =
+            connections::share_project(session.store, &loaded.manifest.name, session.cwd)
+        {
+            lines.push(format!("shared setup was not saved: {error}"));
+        } else {
+            lines.push("shared setup saved for this project; later accounts connect before their first turn".into());
+        }
     }
     lines.push(
         "next: /harness verify (a locked-code project stays read-only until a real probe passes)"
@@ -530,14 +571,8 @@ fn connect_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<Stri
     lines
 }
 
-/// Explicit manifest-selection entry point for the F10 "new connection" action. The selected
-/// path/program is passed as one argument and is never discovered or executed implicitly.
-pub fn connect_selected(session: &Session<'_>, selection: &str, run: Run<'_>) -> Vec<String> {
-    connect_cmd(session, &[selection.to_string()], run)
-}
-
 fn verify_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<String> {
-    let all = args.iter().any(|a| a == "--all");
+    let all = !args.iter().any(|a| a == "--current");
     let mut provider_filter = None;
     let mut name = None;
     for a in args.iter().filter(|a| !a.starts_with("--")) {
@@ -632,7 +667,7 @@ fn verify_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<Strin
     lines
 }
 
-fn reload(stored: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, String> {
+pub(super) fn reload(stored: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, String> {
     match stored.strip_prefix(COMMAND_PREFIX) {
         Some(program) => load_manifest(program, cwd, run),
         None => load_manifest(stored, cwd, run),
@@ -669,7 +704,12 @@ pub fn load_local_manifest_for_action(
     } else {
         path
     };
-    let metadata = fs::symlink_metadata(&file).map_err(|_| "manifest path is unavailable")?;
+    let metadata = fs::symlink_metadata(&file).map_err(|_| {
+        format!(
+            "manifest path is unavailable: {} (select a harness.json file or its directory)",
+            file.display()
+        )
+    })?;
     if !metadata.is_file()
         || super::super::workspaces::linked(&metadata)
         || metadata.len() > MAX_MANIFEST_BYTES
@@ -750,14 +790,13 @@ fn withdraw_receipts(store: &Path, name: &str) -> usize {
         return 0;
     };
     let mut removed = 0;
-    for project in projects.flatten() {
-        let Ok(files) = fs::read_dir(project.path()) else {
-            continue;
-        };
-        for file in files.flatten() {
-            let path = file.path();
-            let wrote = fs::read_to_string(&path)
-                .ok()
+    for project in projects.take(4096).flatten() {
+        for provider in ["codex", "claude", "cursor"] {
+            let path = project.path().join(format!("{provider}.json"));
+            if crate::provider::enforcement::has_reparse_component(store, &path) {
+                continue;
+            }
+            let wrote = crate::fs_safe::read_text_bounded(&path, 64 * 1024)
                 .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
                 .is_some_and(|v| v.get("harness").and_then(|h| h.as_str()) == Some(name));
             if wrote && fs::remove_file(&path).is_ok() {
@@ -774,8 +813,12 @@ fn withdraw_receipt_target(store: &Path, target: &connections::ActionTarget) -> 
     };
     let path =
         crate::provider::enforcement::slot(store, &root).join(format!("{}.json", target.provider));
-    let wrote = fs::read_to_string(&path)
-        .ok()
+    if !matches!(target.provider.as_str(), "codex" | "claude" | "cursor")
+        || crate::provider::enforcement::has_reparse_component(store, &path)
+    {
+        return 0;
+    }
+    let wrote = crate::fs_safe::read_text_bounded(&path, 64 * 1024)
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .is_some_and(|value| {
             value.get("harness").and_then(|h| h.as_str()) == Some(target.name.as_str())
@@ -836,21 +879,42 @@ pub fn disconnect_reviewed(
 }
 
 /// Install the connect skill as one folder under the account's home. No other file is touched.
-fn skill_cmd(session: &Session<'_>) -> Vec<String> {
-    let Some(home) = session.home else {
+fn skill_cmd(session: &Session<'_>, args: &[String]) -> Vec<String> {
+    targets(session, !args.iter().any(|arg| arg == "--current"))
+        .into_iter()
+        .flat_map(|(provider, home)| {
+            let label = home_label(home.as_deref().and_then(Path::to_str));
+            install_connect_skill(home.as_deref())
+                .into_iter()
+                .map(move |line| format!("{} · {label}: {line}", provider.as_str()))
+        })
+        .collect()
+}
+
+fn install_connect_skill(home: Option<&Path>) -> Vec<String> {
+    let Some(home) = home else {
         return vec!["this account has no isolated home, so the skill cannot be installed".into()];
     };
     let skills = home.join("skills");
     let folder = skills.join(SKILL_NAME);
     for path in [&skills, &folder] {
-        if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        if fs::symlink_metadata(path).is_ok_and(|m| crate::workspaces::linked(&m)) {
             return vec![format!(
                 "refusing to write through a link: {}",
                 path.display()
             )];
         }
     }
-    match fs::create_dir_all(&folder).and_then(|()| fs::write(folder.join("SKILL.md"), SKILL)) {
+    match fs::create_dir_all(&folder).and_then(|()| {
+        let path = folder.join("SKILL.md");
+        if fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file() || crate::workspaces::linked(&m))
+        {
+            return Err(std::io::Error::other(
+                "skill destination is linked or not a regular file",
+            ));
+        }
+        crate::state_io::write_atomic(&path, SKILL.as_bytes())
+    }) {
         Ok(()) => vec![format!(
             "installed the {SKILL_NAME} skill in {}",
             folder.display()
@@ -871,14 +935,23 @@ pub fn tools_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<St
     let mut errors = Vec::new();
     for connection in connections {
         match reload(&connection.manifest_path, session.cwd, run) {
-            Ok(loaded) => rows.extend(
-                loaded
-                    .manifest
-                    .tools
-                    .iter()
-                    .cloned()
-                    .map(|tool| (connection.name.clone(), tool, loaded.manifest.clone())),
-            ),
+            Ok(loaded)
+                if loaded.sha == connection.manifest_sha256
+                    && loaded.manifest.name == connection.name =>
+            {
+                rows.extend(
+                    loaded
+                        .manifest
+                        .tools
+                        .iter()
+                        .cloned()
+                        .map(|tool| (connection.name.clone(), tool, loaded.manifest.clone())),
+                )
+            }
+            Ok(_) => errors.push(format!(
+                "{}: manifest changed; reconnect before listing or running its tools",
+                connection.name
+            )),
             Err(e) => errors.push(format!("{}: {e}", connection.name)),
         }
     }
@@ -939,17 +1012,121 @@ pub fn tools_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<St
 
 /// Handle `/harness <arg>` and return the lines to show.
 pub fn dispatch(session: &Session<'_>, arg: &str, run: Run<'_>) -> Vec<String> {
+    dispatch_cancellable(
+        session,
+        arg,
+        run,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+}
+
+pub fn dispatch_cancellable(
+    session: &Session<'_>,
+    arg: &str,
+    run: Run<'_>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<String> {
     let args = split_args(arg);
     let Some((sub, rest)) = args.split_first() else {
         return help_lines();
     };
+    if matches!(sub.as_str(), "connect" | "verify" | "skill" | "skills") {
+        if let Some(flag) = rest
+            .iter()
+            .find(|arg| arg.starts_with("--") && !matches!(arg.as_str(), "--all" | "--current"))
+        {
+            return vec![format!(
+                "unsupported setup option: {flag}; use --current to limit setup to this account"
+            )];
+        }
+        if sub == "skill" && rest.iter().any(|arg| !arg.starts_with("--")) {
+            return vec![
+                "usage: /harness skill [--current]; installs the Concordia connection skill".into(),
+            ];
+        }
+        if matches!(sub.as_str(), "connect" | "skills")
+            && rest.iter().filter(|arg| !arg.starts_with("--")).count() > 1
+        {
+            return vec![
+                "usage: /harness connect PATH [--current]; quote a path containing spaces".into(),
+            ];
+        }
+    }
     match sub.to_lowercase().as_str() {
         "help" | "?" => help_lines(),
         "status" | "list" => status_lines(session.store),
         "connect" => connect_cmd(session, rest, run),
         "verify" => verify_cmd(session, rest, run),
         "disconnect" | "remove" => disconnect_cmd(session, rest),
-        "skill" => skill_cmd(session),
+        "skill" => skill_cmd(session, rest),
+        "skills-remove" => {
+            if rest.len() != 1 || rest[0].starts_with("--") {
+                return vec!["usage: /skills remove PATH; stops sharing and removes matching links across accounts".into()];
+            }
+            let path = session.cwd.join(&rest[0]);
+            let source = fs::canonicalize(&path).unwrap_or(path);
+            if let Err(error) = connections::unshare_skill_source(session.store, &source) {
+                return vec![error];
+            }
+            let mut lines = vec![format!("stopped sharing skill source {}", source.display())];
+            for (provider, home) in targets(session, true) {
+                if let Some(home) = home {
+                    match super::skills::remove(&source, &home) {
+                        Ok(result) => lines.extend(result),
+                        Err(error) => lines.push(format!(
+                            "{} · {}: {error}; existing links retained for inspection",
+                            provider.as_str(),
+                            home.display()
+                        )),
+                    }
+                }
+            }
+            lines
+        }
+        "skills" => {
+            let source = rest
+                .iter()
+                .find(|arg| !arg.starts_with("--"))
+                .map(|arg| session.cwd.join(arg))
+                .unwrap_or_else(|| crate::test_guard::test_home().join(".agents/skills"));
+            let source = match super::skills::validate_source(&source) {
+                Ok(source) => source,
+                Err(error) => return vec![format!("skill source unavailable: {error}")],
+            };
+            let all = !rest.iter().any(|arg| arg == "--current");
+            let mut lines = Vec::new();
+            for (provider, home) in targets(session, all) {
+                let Some(home) = home else {
+                    lines.push(format!("{}: no provider home", provider.as_str()));
+                    continue;
+                };
+                match super::skills::install(&source, &home, cancel) {
+                    Ok(result) => {
+                        lines.extend(result.into_iter().map(|line| {
+                            format!("{} · {}: {line}", provider.as_str(), home.display())
+                        }))
+                    }
+                    Err(error) => lines.push(format!(
+                        "{} · {}: {error}",
+                        provider.as_str(),
+                        home.display()
+                    )),
+                }
+                if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    return lines;
+                }
+            }
+            if all {
+                match connections::share_skill_source(session.store, &source) {
+                    Ok(()) => lines.push(
+                        "shared skill source saved; later accounts inherit it across projects"
+                            .into(),
+                    ),
+                    Err(error) => lines.push(format!("shared skill source was not saved: {error}")),
+                }
+            }
+            lines
+        }
         "tools" => tools_cmd(session, rest, run),
         other => vec![format!(
             "unknown /harness subcommand `{other}`. /harness help lists them"

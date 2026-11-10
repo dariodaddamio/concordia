@@ -1,362 +1,71 @@
-# Architecture: local memory and provider orchestration
+# Architecture
 
-For a source-cited guided tour of the complete current runtime, start with [How Concordia works](how-concordia-works.md).
+Concordia owns local coordination and presentation. Official provider CLIs own model execution,
+authentication, native sessions and native approvals. [The request walkthrough](how-concordia-works.md)
+explains the flow; this page identifies the code that owns each invariant.
 
-Concordia coordinates memory/session continuity, account routing and worker runs around the
-unmodified Codex, Claude Code and Cursor CLIs. Those CLIs retain native execution, authentication
-and approvals. Concordia owns the index/map, orchestration policy, process lifecycle and UI.
+## Ownership
 
-Current source implements explicit resume, bounded maps, optional Concordia thread logs,
-recent Codex/Claude native-source pointers and exact readback, unfinished-request recovery,
-file-backed Harness pins and explicit capacity-error rollover. [Native memory](native-memory.md)
-documents the identities, byte budgets and remaining limits. Whole-history pages, bounded related-chat
-retrieval, worker recovery policy and supported opt-in proactive rollover are implemented with
-documented provider/evidence limits. The [implementation plan](context-handoff-plan.md) separates
-the original target from current contracts. This page describes the existing runtime unless
-a section is explicitly marked planned.
-
-## Principles
-
-## Harness adapters
-
-`/harness` is a user-invoked bridge for any local harness. A `harness.json` manifest declares
-provider-specific connect/verify argv and optional named tools; Concordia expands only
-`{provider}`, `{home}` and `{project}`, runs without a shell, and stores connection state under
-the Concordia state directory. Tools are listed or run explicitly and never become a model-owned
-runtime. A verify receipt is written only after a successful adapter denial report matching the
-current provider, isolated home and policy revision; provider turns cannot create receipts.
-
-1. **Pointers, not payloads.** When a model needs context from another thread, give it a small
-   map and a way to fetch the part it needs. Never paste a transcript.
-2. **No summariser model.** Maps are built deterministically from recorded events. They cost no
-   tokens to make.
-3. **The CLIs own skills, rules, tools and native session execution.** Concordia coordinates
-   memory access and continuity between sessions; it does not import provider skills or hooks. They
-   keep working because Concordia only points the CLI at an account home.
-4. **Declarative extension only.** User customisation is config and files. There is no plugin
-   runtime and no agent loop in the binary.
-5. **Small and fast.** One binary and no resident inference model. Background provider/worker
-   tasks, usage refresh and local reads are bounded and tracked. Budgets are checked in CI.
-6. **Document retention explicitly.** Thread recording is opt-in; new bodies use verified native
-   references. Prompt recall defaults on and stores references separately. Legacy logs, drafts and
-   queue/unfinished recovery can retain sensitive text and must not be described as all disabled
-   or body-free. Completed worker inputs use references only after exact binding succeeds.
-
-## Layers
-
-| Layer | What | Where |
+| Concern | Canonical source owner | Contract |
 | --- | --- | --- |
-| Thread log | Append-only metadata/native references (opt-in), legacy read compatibility | `<state>/threads/<thread-id>.jsonl` |
-| Map | Deterministic summary of a thread, <= 1600 chars | built on demand (`threads::build_map`) |
-| Pointer | How a model fetches more: `concordia thread read <id>` | printed inside every map |
-| Delivery | Map prepended on a switch or `@chat`; native resume otherwise | `context.rs` |
-| Config | User-edited `config.toml` and `commands/*.md` | `<state>/config.toml`, `<state>/commands/` |
-| Appearance | User-selected live theme, Concordia color and motion; atomically saved without rewriting config defaults | `<state>/.ao/appearance.json` |
-| MCP (opt-in) | `concordia mcp`: the same data as tools | same binary |
+| Tabs and event loop | `tui/run.rs`, `tui/tabs.rs` | One App and channel set per tab; background work stays with its conversation |
+| Submission and UI | `tui/input.rs`, `tui/input_dispatch.rs`, `tui/draw/` | Explicit input dispatch; open controls own their keys; drafts remain separate from sent requests |
+| Provider execution | `provider/turn.rs`, native transport modules, `provider/launch.rs` | One tracked executor per turn; arguments/stdin; explicit cancellation and native ownership |
+| Account selection | `accounts.rs`, `store.rs`, `connect.rs` | Explicit account/provider/home identity; isolated native authentication |
+| Continuity | `context.rs` | Same-home exact resume when valid; bounded map for a new native session |
+| Sources and retrieval | `native_memory.rs`, `native_references.rs`, `memory_*.rs` | Bounded reads, explicit provenance, source revision checks and honest unavailability |
+| Optional thread record | `threads.rs` | Metadata/references plus bounded pinned spans; legacy compatibility |
+| Main-turn retry | `tui/continuation.rs`, `routing.rs` | Explicit retry eligibility, configured targets, bounded attempts and review of uncertain work |
+| Workers | `delegate.rs`, `delegate/`, `delegate_*.rs` | Per-run ownership, scheduling, result collection, recovery and native permission bounds |
+| Workspace ownership | `workspaces.rs`, `workspace_paths.rs`, `managed_*.rs` | Cooperative reservations and explicit managed Git workspaces; not a replacement for native confinement |
+| Files and attachments | `file_*.rs`, `attachments.rs`, `tui/workspace.rs`, `tui/raster.rs` | Explicit preview/edit/save and immutable attachment snapshots |
+| Usage | `usage.rs`, `usage_codex.rs`, `cursor_usage.rs` | Identity-bound cached observations; no inference probes or invented remaining capacity |
+| Configuration | `config.rs`, `store.rs`, `tui/appearance.rs` | Config supplies defaults; saved choices override them without rewriting user config |
+| Extensions | `harness/`, `integration.rs`, `mcp.rs` | Explicit local adapters/tools; native permissions and locked-code receipts remain authoritative |
 
-`<state>` is `%LOCALAPPDATA%\concordia` (override: `CONCORDIA_STATE_DIR`).
+Paths are relative to [`crates/concordia/src`](../crates/concordia/src).
 
-## Thread log
+## State and recovery
 
-One file per conversation, created when a conversation starts and `threads.enabled = true`.
-A conversation is the span between `/new` (or launch) and the next `/new`. Thread id: UUID v4.
+Conversation, account/home, native session, run/attempt and workspace IDs are distinct. Never infer
+ownership from the focused tab, the newest source file or `resume --last`.
 
-New version-2 records contain event time/kind, provider/account/model, bounded card metadata,
-usage, and a native reference or fixed unavailable reason. Message text and tool-detail bodies
-are hydrated from exact provider-owned sources on read. The transient `ThreadEvent` API and legacy
-JSONL remain readable; they do not describe the new disk format. `ThreadLog::append` accepts only
-metadata, while referenced bodies require validated source bindings. Body-free unavailable rows
-never fall back to copying transcript text.
+The UI activity phase is presentation, not execution authority. Main continuation uses one retry
+state: ready, deferred behind a local control, or requiring review. Request provenance and context
+capacity remain separate because they determine whether a new native session is permitted.
+[State ownership](tui-states.md) inventories explicit and implicit lifecycle owners, transition guards,
+persistence, valid coupled-field combinations and remaining coverage limits, including clarification
+replies and the per-tab local shell. It is not an exhaustive reachability proof.
 
-Writes use a bounded stable per-thread lock and complete append writes. A header file
-`<id>.meta.json` holds `{id, started, title, cwd}`; its title remains a bounded display label.
-Existing logs are not migrated or removed. Explicit `/threads delete <id>` remains user-controlled.
-See [native reference bounds](native-memory.md) for exact identity/hash validation, read limits,
-source sealing and protected recovery exceptions.
-Build 05b uses larger streaming capture manifests independently of the interactive index and
-supports explicit legacy migration with revision checks and original-byte backups. Migrated
-and original recall hydrate on a bounded background worker. [Bounds and migration](native-memory.md).
+Recovery binds drafts, queued prompts, unfinished requests and worker ledgers to their owning pane.
+Restart cannot prove that a tool finished. Preserve the record, reconcile uncertain effects and
+require explicit action instead of silently replaying them.
 
-## Map
+## Memory and delivery
 
-`threads::build_map(events, thread_id) -> String`, at most `map_chars` (default 1600) characters.
-Plain text, fixed layout, every line optional except the first and last:
+Native provider history is authoritative. Concordia indexes source identity and serves bounded
+excerpts; configured thread recording and local pins provide additional bounded retention.
+A map is a table of contents with source pointers, not a model-generated summary or a complete
+transfer of native memory. Native compaction still follows the selected provider/policy.
 
-```
-[concordia map] thread 3f9a... "fix the login redirect" - claude-1 -> codex-2 - 42 msgs - 18 min
-asked: <first user prompt, 160 chars>
-now: <latest user prompt, 160 chars>
-files: src/auth.rs, src/login.rs, tests/login.rs (+4 more)
-ran: cargo test; git diff --stat; rg -n redirect (+3 more)
-errors: <up to 3 failed cards or provider errors, 80 chars each>
-last reply: <tail of the last assistant message, up to 500 chars>
-more: concordia thread read 3f9a... [--tail N | --grep TEXT | --range A-B]
-```
-
-`files` come from cards whose title is an edit/write/read tool and whose detail looks like a path.
-`ran` comes from shell/command cards. No inference, no model. If the budget is tight, drop in
-this order: `ran`, `files`, `errors`, then shorten `last reply`.
-
-## The `thread` subcommand (the free pointer)
-
-`concordia thread list [--json]`, `concordia thread map <id>`, and
-`concordia thread read <id> [--tail N] [--grep TEXT] [--range A-B]` print to stdout, capped at
-`--max-chars` (default 6000). Models with a shell tool can call it, so no MCP is needed for this.
-It is read-only. A prefix of an id is enough if unambiguous.
-
-## Delivery
-
-* Same account, same provider, explicit session id: native resume. Nothing is prepended.
-* Switch (account or provider): prepend the map of the current thread, not the transcript dump.
-  If the thread log is off, build the map from the in-memory transcript (same layout, the `more:`
-  line says the full text is not stored).
-* `@chat`: in the prompt, `@` opens a completion list of recent threads (title, age, account).
-  On send, `@<id-or-title-prefix>` is replaced by that thread's map. The user sees exactly what is
-  sent (the expanded map is shown dimmed under the prompt).
-
-## Config
-
-`<state>/config.toml`, written by the user, read-only to Concordia. Missing file or key = default.
-Unknown keys are reported by `concordia doctor`, not fatal. Full reference: [config.md](config.md).
-Implemented in `config.rs`; wired by: `config::ui_token_line()`, `ui_tips()` (stage 1b),
-`threads_enabled()`, `threads_map_chars()` (stage 1a), `default_mode()` and `delegation_protocol()`/
-`max_workers()` (store/delegate, store value wins). A store value set by the user wins over config. Concordia-owned state stays in
-`store.json`; config only supplies defaults and switches.
-
-```toml
-[ui]
-token_line = true        # per-turn "in 12.3k out 1.4k 8.2s" under each reply
-tips = true              # a rotating tip while idle
-
-[threads]
-enabled = false          # record conversations to <state>/threads (stores prompts)
-map_chars = 1600
-
-[mode]
-default = "ask"          # plan | ask | workspace | full
-
-[delegation]
-protocol = false         # let the orchestrator propose delegations (user still approves)
-max_workers = 3
-```
-
-## User commands
-
-`<state>/commands/<name>.md` becomes `/<name>`. Front matter is optional:
-
-```
----
-description: review the staged diff
----
-Review the staged diff for bugs and missing tests. Focus: $ARGS
-```
-
-Running `/<name> some text` sends the body with `$ARGS` replaced, as an ordinary prompt. Built-in
-commands win over user commands on a name clash (doctor reports the clash). No code runs: it is a
-prompt template. Implemented in `user_commands.rs`; see [config.md](config.md).
-
-## Token line and tips
-
-After each reply, one dim line: `in 12.3k - out 1.4k - cached 9.8k - 8.2s` (fields that the
-provider reports; cost only if reported). Sources: Claude `result.usage` and `total_cost_usd`;
-Codex `turn.completed.usage`. Cursor reports none, so the line shows time only. Session totals
-appear in `/usage` under the limits. Tips are a static list in the binary, one per launch, shown
-only while the transcript is empty or the prompt has been idle for 20 s.
-
-## Awareness (one line, no per-turn cost)
-
-For homes Concordia created, `/use add` writes a short block into that home's own instructions
-file (`CLAUDE.md` under `CLAUDE_CONFIG_DIR`, `AGENTS.md` under `CODEX_HOME`): "You are running
-inside Concordia. A `[concordia map]` block is a pointer to an earlier thread; run
-`concordia thread read <id>` for details." About 40 tokens, loaded and cached by the CLI. Never
-written to a user's own existing home.
-
-## MCP server (opt-in)
-
-`concordia mcp` (stdio) exposes `threads`, `thread_map`, `thread_read`, `usage` (read-only) and
-`delegate` (propose only; the UI asks the user). Registered only in homes Concordia created.
-Keep the tool list to five and the descriptions terse: every schema costs tokens each turn.
+Context is prepared and delivered for a submitted message or authorized worker task. Account/model
+selection alone does not dispatch it. Handoff, CLI and MCP use the same canonical map v2 formatter.
+[Continuity](continuity.md), [map format](continuity-map-v2.md),
+[storage/bounds](native-memory.md), [prompt composition](how-concordia-builds-prompts.md).
 
 ## Prompt queue
 
-While a turn runs, the user can line up the next prompts.
+Queue entries are unsent requests. A clean completion may advance the queue through the normal
+submission path. Failure/cancellation and recovery pause it. Editing a queued entry is separate
+from composing a new message. Queue focus, edit and admission state live in `tui/queue.rs` and its
+control modules; provider errors never authorize an uncertain replay.
 
-* **Tab** with a non-empty prompt, while a turn is running (or other prompts are already queued),
-  moves the prompt into the queue. When idle with an empty queue, Tab keeps completing slash
-  commands. A prompt that starts with `/` is never queued; it runs now.
-* The queue shows in a panel **above** the prompt box: `queued 1: <first 60 chars>`, newest last,
-  at most 5 rows then `+N more`. The panel and the draft are separate: editing the queue never
-  replaces what is being typed.
-* **Ctrl+Up** focuses the queue while preserving a nonempty draft, caret and selection;
-  **Ctrl+Down** returns after an upper edit is saved or cancelled. **Up** on the first prompt row
-  with an empty draft and a non-empty queue also focuses the panel (with
-  an empty queue, Up keeps walking history). In the panel: Up/Down select, **Enter** edits the
-  selected item in a multiline upper editor (Enter saves, Esc cancels, Ctrl+Enter or Ctrl+J inserts
-  a newline), **Alt+Up/Alt+Down** move it,
-  **Delete** removes it, **Esc** returns to the prompt.
-* Automatic sending waits while a queued item is being edited, preserving unsaved text; it
-  continues after save/cancel. Conversation/provider/model switches wait for the active turn to
-  finish or be cancelled, so streamed output stays bound to its original identity.
-* When the running turn finishes (not when it is cancelled or fails), the first queued prompt is
-  sent automatically through the normal submit path, so trust mode, the current account and
-  provider, continuity packs and logging all apply at send time. Switching account while
-  prompts are queued is allowed; the queue is provider-neutral text.
-* Esc during a turn cancels the turn and **pauses** the queue. **Ctrl+R** or `/queue resume`
-  explicitly resumes it while retaining the draft. Enter sends typed text without resuming a
-  paused queue. A failed turn and restart also pause queued work.
-* Draft, queue and pending upper edit use a pane-owned recovery record (atomic writes).
-  `/queue clear` empties the committed queue; active upper edits require save/cancel first.
+## Boundaries
 
-## Expandable activity
+No hosted memory backend, inference for routing/summaries, credential collection or autonomous
+plugin runtime. Read/write capability comes from the native provider's permission mode and any
+verified locked-code receipt; cooperative reservations do not grant additional native permission.
 
-`Ctrl+O` toggles compact previews and full received tool input/output and reasoning, including
-while a turn runs. Parsers retain text; only the compact rendering shortens it. Replies remain
-fully scrollable. Provider-side omissions and the runner's bounded output-line limit still apply.
-Click a card's gutter to expand it independently. `Ctrl+E` opens full activity detail with search,
-match navigation and `Ctrl+C` copy; `Alt+Up/Down` chooses the previous/next card, and `Esc` closes
-the detail view. Input belongs to that view while open,
-preserving the main draft and queued edit underneath.
-
-## Undo, redo and drafts
-
-* `Ctrl+Z` undo, `Ctrl+Shift+Z` and `Ctrl+Y` redo, in the prompt editor. History is a stack of
-  (text, cursor) snapshots, coalesced so that a burst of typing is one step and every cut, paste,
-  delete-word and clear is its own step. Capped at 200 steps. Sending a prompt does not clear the
-  stack (undo after send restores the sent text into the box, so a mis-sent prompt is never lost).
-* Each pane holds an OS lock on its own record under `<state>/pane-recovery/<workspace-key>/`.
-  Draft changes are debounced (about one second), with immediate save on exit. Active pane records
-  are never claimed by another pane. One abandoned record can be restored at startup; several
-  produce a chooser. `/recover` selects an abandoned record for the current workspace. Queued
-  work stays paused after recovery. A failed turn restores its submitted prompt when the box is
-  empty. Cancellation leaves the current prompt box unchanged; sent history supports explicit
-  recall. Legacy shared `draft.json` and `queue.json` require explicit import via
-  `/recover`; sent history remains shared.
-* Pending upper edits are saved separately from committed queue items; recovery restores the
-  editor and holds dispatch until explicit save/cancel. Save failures stay visible in the footer
-  and retry at bounded intervals. `/recover` explains the error; `/recover retry` retries after
-  local storage is repaired. Explicit legacy import preserves the current pane's saved record.
-* Prompt recall writes native references to `<state>/history.refs.jsonl` (cap 500, newest last).
-  Up hydrates original composer text and attachment descriptors after restart. Legacy
-  `history.jsonl` is read-only compatibility input. Missing sources are skipped with a notice,
-  never replaced with another session or placeholder prompt. `[ui] persist_history = false`
-  disables new persistent recall (default on). This is separate from draft/queue recovery.
-
-## Process stats
-
-Shared goals and the token log use stable adjacent lock files through `state_io`.
-Lock acquisition is bounded to two seconds. Goal saves merge additions and completion
-by immutable id before atomic replacement, preserving unreadable originals. Token
-writers append complete serialized records under the lock, so concurrent panes cannot
-interleave JSON lines. Goals are bounded to 2 MiB on read/save; token counters saturate
-instead of wrapping. The landing page wraps, scrolls and hit-tests goals using the same
-visual rows, and displays the focused pane when the terminal is too narrow for two.
-
-Optional footer segment `mem 41 MB - cpu 1%` for Concordia, and `+ agents 380 MB - 6%` for the
-provider processes it started (their whole process trees). `[ui] stats = true` (default false).
-Sampled every 2 s on a background thread using Win32 (`GetProcessMemoryInfo`, `GetProcessTimes`,
-`CreateToolhelp32Snapshot`); the UI thread only reads the last sample. `concordia doctor` and
-`docs/metrics.md` also report idle memory.
-
-## Provider compatibility
-
-Concordia never pins or updates provider CLIs. It uses **feature detection, not version pinning**:
-
-* `concordia doctor` prints each provider's version (`--version`) next to a `TESTED` table in
-  `provider/compat.rs` (the version each parser and flag set was last verified against) and warns,
-  never fails, when the installed one is newer or older.
-* A capability probe runs `--help` once per provider (cached in the state dir by the CLI's
-  version string) and records which flags exist (`--output-format stream-json`,
-  `--permission-mode`, `--mode plan`, `--include-partial-messages`, ...). Turn planning degrades
-  when one is missing: stream-json falls back to plain text, plan mode falls back to ask. The
-  footer shows one dim notice the first time it happens ("claude: no stream-json, showing text").
-* Parsers already ignore unknown events and pass plain text through. Every provider format change
-  is added as a fixture line in `tests/fixtures/provider-lines/<provider>/` first; the parser
-  tests read that folder, so a new shape is one file.
-
-## Locked-code launch gate
-
-`provider::enforcement` decides, before a provider process starts, whether a turn may be
-write-capable. A project opts in by carrying `docs/quality/locked-code.json` (found from the turn's
-working directory upward). Installed hook files and capability flags do not count as enforcement.
-
-The gate opens only for a receipt in Concordia's state directory, at
-`enforcement/<project key>/<provider>.json`, with `result: "denied-live-probe"` whose provider,
-isolated home, policy revision (SHA-256 of the policy file with normalized line endings), and
-connected harness identity match the turn. File-backed harness manifests are re-hashed before the
-gate opens. Receipts are never read from inside the project, so an agent that can only write the
-project cannot forge one. The first time the gate sees a policy file it records that the project
-was locked, so deleting the file does not unlock it. A provider home inside the project is not
-isolated and never opens the gate. Any mismatch, missing file or read error closes it.
-
-A closed gate lowers ask, workspace and full trust to plan and the turn shows a
-`TurnProgress::Notice` explaining why. Plan turns are unchanged. Capability fallbacks can drop the
-plan switch, so after planning the command line must still be provably read-only (Claude
-`--permission-mode plan`, Cursor `--mode plan`, Codex `-s read-only`); if it is not, the turn is
-refused instead of started. The Harness verifier writes the receipt; agents never do. A changed
-connection or file-backed manifest closes the gate until verification runs again.
-
-## Images and remaining attachment work
-
-Build `2026-11-01e` implements clipboard/file image import, composer preview/remove chips,
-content-addressed snapshots, durable draft/queue envelopes and native inputs for Codex/Claude/Cursor.
-Cursor image turns use ACP and route permission/choice requests back to their original RPC ids.
-Ordinary text turns retain their existing provider adapters. No vector embeddings are created.
-
-[Images and diagrams](images-and-diagrams.md) records formats, budgets, lifecycle and fixture/live
-capability evidence. Inline raster thumbnails, generic document/drop attachments and generated
-artifact cards remain planned. Mermaid terminal diagrams render locally with bounded background
-workers and a pinned native renderer; no browser/Node rendering service is launched.
-
-## Budgets (checked in CI)
-
-| Budget | Limit |
-| --- | --- |
-| Release binary | 4 MB |
-| `concordia --version` cold start, median | 60 ms |
-| `draw_ui` frame, busy transcript | 2 ms |
-| Map | 1600 chars |
-| Per-turn work on the UI thread | no file or process I/O |
-
-## Production-readiness additions (2026-10-16)
-
-Windows VT input uses a dedicated console reader plus the existing ANSI parser on the event
-thread. Both readers are joined, input mode is ready before the first frame, and saved console
-settings are restored at shutdown. Framed paste becomes one explicit paste event across read
-chunks; action keys outside its frame remain actions. Bounded channels carry events and observed
-quiet markers independently of drawing. Unsupported hosts fall back to the native key-record
-reader; only this fallback and unframed input require quiet-gap inference. An empty application
-channel alone never proves that a paste ended. Source scheduling and channel saturation remain
-limitations for input that lacks framing.
-
-`file_links` extracts bounded local references from rendered transcript text; explicit clicks
-resolve against the workspace and `file_open` builds argument-array WezTerm launch plans.
-External editors are configured through `[editor]`; `preview FILE` is a separate, read-only
-UTF-8 Markdown/text terminal viewer. Selection drags never launch files. No shell evaluates
-message text. `chat list|search|read` reads bounded native transcript files with explicit account
-and session identity; search is metadata-only and unsupported formats report that limitation.
-
-Usage fetches and caches bind account, provider and full normalized home. Old unbound/future
-cache entries are not trusted; late results retain their originating identity. Low-limit warnings
-above chat label freshness, and a reset does not imply confirmed available capacity. Tool cards
-merge results into the original command and retain provider-supplied arguments/output/diffs.
-See the production plan and individual audit documents for evidence and remaining gaps.
-
-## Non-goals
-
-A plugin runtime, an agent loop, skill or rule import, a global skill library, hosted services,
-automatic summarisation, rotating accounts to get around a limit.
-
-## Build order and ownership
-
-| Stage | Work | Owns |
-| --- | --- | --- |
-| 1a | Thread log, map, `thread` subcommand, delivery on switch | `threads.rs`, `context.rs`, `main.rs` (subcommand only) |
-| 1b | Token line and tips | `provider/stream_json.rs`, `provider/stream_cards.rs`, `provider/turn.rs`, token/tips drawing in `tui/mod.rs` |
-| 1c | `config.toml`, user commands, doctor checks | `config.rs`, `commands.rs`, `doctor.rs` |
-| 2a | `@chat` completion and expansion | `tui/mod.rs`, `tui/palette.rs` (needs 1a) |
-| 2b | Awareness line, `concordia mcp` (needs 1a) | `mcp.rs`, `connect.rs` |
-| 2c | Budgets in CI, docs | `scripts/`, `.github/`, README |
-| 3a | Prompt queue, undo/redo, draft and history persistence | `tui/editor.rs`, `tui/queue.rs`, `tui/mod.rs` (input handling) |
-| 3b | Process stats, provider compatibility, coloured `/usage` block | `sysstats.rs`, `provider/compat.rs`, `doctor.rs`, `usage.rs`, `tui/transcript.rs` |
-| 3c | `@chat`, awareness line, `concordia mcp` | `mcp.rs`, `tui/palette.rs`, `connect.rs` |
-| 4 | Attachments and artifact chips | `attachments.rs`, paste handling |
+Current capabilities belong in [PLAN.md](../PLAN.md), limits/evidence in
+[verification status](e2e-status.md), and proposed work in the [backlog](plans/README.md).
+Command/config reference details belong in [UI glossary](ui-glossary.md) and [configuration](config.md).

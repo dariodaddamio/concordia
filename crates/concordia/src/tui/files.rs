@@ -191,13 +191,15 @@ impl App {
         }
     }
 
-    pub(super) fn poll_project_search(&mut self) {
+    pub(super) fn poll_project_search(&mut self) -> bool {
         if let Some(action) = self
             .project_search
             .poll(&self.cwd, self.deleg.d.conversation_id())
         {
             self.apply_search_action(action);
+            return true;
         }
+        false
     }
 
     pub(super) fn apply_search_action(&mut self, action: workspace_search::Action) {

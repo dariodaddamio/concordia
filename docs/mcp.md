@@ -40,7 +40,7 @@ returned `next_offset` and `revision` for a later page; changed state requires a
 With `goal` and an exact `workspace`, it reads confirmed goal/source association metadata instead.
 Metadata listings launch no provider or native replay and do not claim that a source is currently
 available; use `native_read` for revision-checked readback. Source links cannot be mutated through
-MCP. The nine-tool schema stays below 4,000 bytes; MCP registration remains opt-in.
+MCP. The tool catalog is bounded; MCP registration remains opt-in.
 
 Goal changes use `action: "propose_add"` with `text`, or `action: "propose_close"` with an exact
 `goal` id. Both require a canonical UUID `request_id` and the current goal-list `revision`.
@@ -65,3 +65,7 @@ files require `source`. Paged metadata accepts the returned `offset` and `revisi
 scope, provenance and coverage stay in the result. Oversized results are refused with narrowing
 instructions, rather than cutting through JSON or an exact source pointer. This tool cannot confirm
 relationships, change memberships, approve native requests or start a provider.
+
+`usage` reads only the canonical bounded cache for each registered provider/account/home identity.
+Unknown legacy identities, invalid or future timestamps, linked files and oversized caches are
+omitted. It never launches a provider or refreshes usage. Stale and expired readings remain labeled.

@@ -402,15 +402,19 @@ pub fn verify_hit(
         return Err("search result is stale; run the search again".into());
     }
     let text = String::from_utf8(bytes).map_err(|_| "search result is no longer UTF-8 text")?;
-    let value = text
-        .get(hit.range.clone())
+    text.get(hit.range.clone())
         .ok_or("search result range is unavailable")?;
-    let matches = if request.case_sensitive {
-        value == request.query
-    } else {
-        value.to_lowercase().contains(&request.query.to_lowercase())
-    };
-    if !matches {
+    // Use the producer's exact Unicode-to-original-byte mapping. A wider span
+    // merely containing the query is not the selected search match.
+    let ranges = match_ranges(
+        &text,
+        &request.query,
+        request.case_sensitive,
+        cancel,
+        Instant::now(),
+    )
+    .map_err(|status| format!("search result verification stopped: {status:?}"))?;
+    if !ranges.contains(&hit.range) {
         return Err("search result no longer matches the query".into());
     }
     let (line, column, _) = location(&text, hit.range.start);

@@ -4,6 +4,9 @@ impl App {
     pub(in crate::tui) fn refresh_usage(&mut self) {
         let home = self.home_path.clone().or_else(|| {
             get_use_selection(&self.state_root)
+                .filter(|selection| {
+                    selection.provider == self.provider && selection.account == self.account
+                })
                 .and_then(|s| s.home_path)
                 .map(PathBuf::from)
         });

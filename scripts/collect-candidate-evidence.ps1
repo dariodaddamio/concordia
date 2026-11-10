@@ -59,7 +59,7 @@ $head = (& git -C $root rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve checkout commit.' }
 & git -C $root merge-base --is-ancestor $BuildCommit $head
 if ($LASTEXITCODE -ne 0) { throw 'Build commit is not in this checkout history.' }
-& git -C $root diff --quiet $BuildCommit -- Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates
+& git -C $root diff --quiet $BuildCommit -- Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates vendor
 if ($LASTEXITCODE -ne 0) { throw 'Application source differs from the declared build commit.' }
 $stampSource = & git -C $root show ($BuildCommit + ':crates/concordia/src/version.rs')
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve build identity source.' }
@@ -97,7 +97,7 @@ if ($ChecksPath) {
 }
 Assert-Regular $exePath $binaryBudgetBytes
 if ((Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $before) { throw 'Candidate changed during collection.' }
-& git -C $root diff --quiet $BuildCommit -- Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates
+& git -C $root diff --quiet $BuildCommit -- Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates vendor
 if ($LASTEXITCODE -ne 0 -or (& git -C $root rev-parse HEAD).Trim() -ne $head) { throw 'Source changed during collection.' }
 $dirty = @(& git -C $root status --porcelain --untracked-files=no)
 if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect checkout state.' }

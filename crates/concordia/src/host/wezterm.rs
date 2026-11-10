@@ -107,8 +107,8 @@ const EMBEDDED_CONFIG: &str = include_str!("../../../../experiments/terminal/wez
 pub fn ensure_config(dir: &Path) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("wezterm.lua");
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(EMBEDDED_CONFIG) {
-        std::fs::write(&path, EMBEDDED_CONFIG)?;
+    if crate::fs_safe::read_text_bounded(&path, 1024 * 1024).as_deref() != Some(EMBEDDED_CONFIG) {
+        crate::state_io::write_atomic(&path, EMBEDDED_CONFIG.as_bytes())?;
     }
     Ok(path)
 }
@@ -173,7 +173,7 @@ pub fn split_concordia_pane(vertical: bool) -> Result<(), String> {
     for a in concordia_pane_argv() {
         cmd.arg(a);
     }
-    let out = cmd.output().map_err(|e| e.to_string())?;
+    let out = crate::process_lifetime::capture(cmd, std::time::Duration::from_secs(10), 64 * 1024)?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);

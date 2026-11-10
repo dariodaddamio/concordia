@@ -34,6 +34,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
 ) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
+    std::fs::write(root.join("api-key"), "synthetic-image-account-key").unwrap();
     let path = root.join("sample.png");
     std::fs::write(&path, b"\x89PNG\r\n\x1a\nsynthetic image pixels").unwrap();
     let image = attachments::import(root, &path).unwrap();
@@ -155,7 +156,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             ),
         )
         .unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let native_session = session.clone();
         let updates = tokio::spawn(async move {
             let mut wrote_source = false;
@@ -259,7 +260,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     ] {
         let work = tempfile::tempdir().unwrap();
         std::fs::write(work.path().join("acp-fixture.json"), fixture.to_string()).unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let answers = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 match &event {
@@ -329,6 +330,9 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     env.set("FAKE_PROVIDER_NATIVE_CODEX", "1");
     for fixture in [
         json!({"artifact":true}),
+        json!({"large_tool_bytes":2*1024*1024,"large_text":true}),
+        json!({"question":true,"large_tool_bytes":17*1024*1024,"early_large":true}),
+        json!({"frame_over_limit":true,"large_tool_bytes":64*1024*1024+1}),
         json!({"question":true}),
         json!({"question":true,"freeform":true}),
         json!({"resolved":true}),
@@ -359,11 +363,17 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         let resolved = fixture["resolved"] == true;
         let artifact = fixture["artifact"] == true;
         let conversation = owner.conversation_id.clone();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let large_text = fixture["large_text"] == true;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let answers = tokio::spawn(async move {
             let mut requests = Vec::new();
             let mut outputs = Vec::new();
+            let mut delivered_text = String::new();
             while let Some(event) = rx.recv().await {
+                if let TurnProgress::TextDelta(text) = &event {
+                    assert!(text.len() <= 64 * 1024);
+                    delivered_text.push_str(text);
+                }
                 if let TurnProgress::Artifact(record) = &event {
                     assert_eq!(record.owner, owner_for_answers);
                     assert_eq!(record.native_session, "exact-native-thread");
@@ -412,6 +422,12 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 usize::from(artifact),
                 "repeated native events must deduplicate"
             );
+            if large_text {
+                assert_eq!(
+                    delivered_text,
+                    format!("{}Native approval handled", "é".repeat(100_000))
+                );
+            }
             requests.len()
         });
         let request = ProviderTurnRequest {
@@ -443,10 +459,32 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         let offered = answers.await.unwrap();
         let records = concordia::artifacts::read(&root.join("state"), &conversation).unwrap();
         assert_eq!(records.len(), usize::from(artifact));
-        let expected_failed = fixture["wrong_thread"] == true || fixture["closed"] == true;
+        let expected_failed = fixture["wrong_thread"] == true
+            || fixture["closed"] == true
+            || fixture["frame_over_limit"] == true;
         assert_eq!(out.failed, expected_failed, "{fixture}: {out:?}");
         if !expected_failed {
-            assert_eq!(out.text, "Native approval handled");
+            let expected = if large_text {
+                format!("{}Native approval handled", "é".repeat(100_000))
+            } else {
+                "Native approval handled".into()
+            };
+            assert_eq!(out.text, expected);
+        }
+        if fixture["large_tool_bytes"].is_number() && !expected_failed {
+            assert_eq!(out.exit_code, Some(0));
+            let card = out
+                .cards
+                .iter()
+                .find(|card| card.id == "large-output")
+                .unwrap();
+            assert_eq!(card.status, concordia::provider::CardStatus::Done);
+            assert!(card.detail.as_ref().unwrap().len() <= 64 * 1024);
+            assert!(card.detail.as_ref().unwrap().contains("Display clipped"));
+            assert!(!out
+                .cards
+                .iter()
+                .any(|card| card.status == concordia::provider::CardStatus::Running));
         }
         let calls = std::fs::read_to_string(work.path().join("appserver-calls.jsonl")).unwrap();
         let values: Vec<Value> = calls
@@ -456,6 +494,19 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         if fixture["wrong_thread"] == true {
             assert!(!calls.contains("turn/start"));
             assert_eq!(offered, 0);
+            continue;
+        }
+        if fixture["frame_over_limit"] == true {
+            assert!(out.stderr_tail.contains("64 MiB transport frame limit"));
+            assert_eq!(out.exit_code, Some(1));
+            assert_eq!(offered, 0);
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|value| value["method"] == "turn/start")
+                    .count(),
+                1
+            );
             continue;
         }
         let turn = values
@@ -647,7 +698,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             account: "claude-fixture".into(),
             home: Some(root.into()),
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let answer_owner = owner
             .validate_for(ProviderKind::Claude, work.path(), Some(root))
             .unwrap();
@@ -951,7 +1002,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             account: "claude-fixture".into(),
             home: Some(root.into()),
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let answers = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 if let TurnProgress::Interaction(request) = event {
@@ -1179,7 +1230,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     let owner_for_answer = owner
         .validate_for(ProviderKind::Claude, stdio_work.path(), Some(root))
         .unwrap();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let answerer = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             if let TurnProgress::Interaction(request) = event {

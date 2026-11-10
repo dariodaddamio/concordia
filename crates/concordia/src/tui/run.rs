@@ -4,6 +4,8 @@ pub fn run_file_preview(path: &Path) -> Result<()> {
 }
 #[path = "file_editor.rs"]
 mod file_editor;
+#[path = "window_session.rs"]
+mod window_session;
 pub fn run_file_editor(arguments: &[String]) -> Result<()> {
     file_editor::run(arguments)
 }
@@ -19,15 +21,20 @@ pub async fn run_chat_window() -> Result<()> {
 
 /// One conversation tab: its `App` and the channels its provider turns report on.
 struct RunTab {
+    chat_lease: Option<chat_ownership::Lease>,
+    conversation_lease: Option<chat_ownership::Lease>,
+    id: uuid::Uuid,
+    home_origin: Option<uuid::Uuid>,
     app: App,
     turn_tx: mpsc::UnboundedSender<String>,
     turn_rx: mpsc::UnboundedReceiver<String>,
     done_tx: mpsc::UnboundedSender<TurnOutcome>,
     done_rx: mpsc::UnboundedReceiver<TurnOutcome>,
+    pending_done: Option<TurnOutcome>,
     handle_tx: mpsc::UnboundedSender<Arc<RunningTurn>>,
     handle_rx: mpsc::UnboundedReceiver<Arc<RunningTurn>>,
-    progress_tx: mpsc::UnboundedSender<TurnProgress>,
-    progress_rx: mpsc::UnboundedReceiver<TurnProgress>,
+    progress_tx: mpsc::Sender<TurnProgress>,
+    progress_rx: mpsc::Receiver<TurnProgress>,
 }
 
 impl RunTab {
@@ -35,13 +42,18 @@ impl RunTab {
         let (turn_tx, turn_rx) = mpsc::unbounded_channel();
         let (done_tx, done_rx) = mpsc::unbounded_channel();
         let (handle_tx, handle_rx) = mpsc::unbounded_channel();
-        let (progress_tx, progress_rx) = mpsc::unbounded_channel();
+        let (progress_tx, progress_rx) = mpsc::channel(crate::provider::turn::PROGRESS_CAPACITY);
         Self {
+            chat_lease: None,
+            conversation_lease: None,
+            id: uuid::Uuid::new_v4(),
+            home_origin: None,
             app,
             turn_tx,
             turn_rx,
             done_tx,
             done_rx,
+            pending_done: None,
             handle_tx,
             handle_rx,
             progress_tx,
@@ -51,6 +63,10 @@ impl RunTab {
 
     /// Persist the draft and stop anything still running; used on close and on exit.
     fn shut_down(&mut self) {
+        self.app.local_terminal.stop();
+        // A closed tab can be reopened. Retain a pending completion and queued
+        // progress together; finalizing here could dispatch another queued turn.
+        // On exit, the unfinished checkpoint and native history remain available.
         self.app.persist_draft_now();
         self.handle_rx.close();
         while let Ok(handle) = self.handle_rx.try_recv() {
@@ -64,6 +80,65 @@ impl RunTab {
             h.cancel();
         }
         self.app.cancel_all_delegates();
+        self.chat_lease = None;
+        self.conversation_lease = None;
+    }
+
+    fn reopen_handle_receiver(&mut self) {
+        // A retired turn cannot publish handles into the replacement receiver.
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.handle_tx = sender;
+        self.handle_rx = receiver;
+    }
+
+    fn acquire_chat_ownership(&mut self) -> Result<(), String> {
+        let conversation = chat_ownership::Key::conversation(&self.app);
+        let next_conversation =
+            if self.conversation_lease.as_ref().map(|lease| lease.key()) != Some(&conversation) {
+                Some(chat_ownership::Lease::acquire(
+                    &self.app.state_root,
+                    &conversation,
+                )?)
+            } else {
+                None
+            };
+        let key = chat_ownership::Key::for_app(&self.app);
+        if self.app.native_session_id.is_some() && key.is_none() {
+            return Err("The chat's exact native account/home identity is unavailable.".into());
+        }
+        let changed = self.chat_lease.as_ref().map(|lease| lease.key()) != key.as_ref();
+        let next_native = if changed {
+            key.as_ref()
+                .map(|key| chat_ownership::Lease::acquire(&self.app.state_root, key))
+                .transpose()?
+        } else {
+            None
+        };
+        if let Some(lease) = next_conversation {
+            self.conversation_lease = Some(lease);
+        }
+        if changed {
+            self.chat_lease = next_native;
+        }
+        Ok(())
+    }
+
+    fn refresh_chat_ownership(&mut self) -> bool {
+        let error = self.acquire_chat_ownership().err();
+        if error == self.app.chat_ownership_error {
+            return false;
+        }
+        if let Some(message) = &error {
+            if self.app.busy
+                && (self.app.cancel_handle.is_some() || self.app.preparing_cancel.is_some())
+            {
+                self.app.request_cancel();
+            }
+            self.app
+                .push_system(format!("{message} Sending is blocked; saved work is kept."));
+        }
+        self.app.chat_ownership_error = error;
+        true
     }
 }
 
@@ -71,16 +146,220 @@ impl tabs::TabState for RunTab {
     fn needs_close_confirmation(&self) -> bool {
         tabs::TabState::needs_close_confirmation(&self.app)
     }
+
+    fn can_evict_closed(&self) -> bool {
+        self.pending_done.is_none()
+            && self.progress_rx.is_empty()
+            && self.done_rx.is_empty()
+            && self.handle_rx.is_empty()
+            && self.turn_rx.is_empty()
+            && tabs::TabState::can_evict_closed(&self.app)
+    }
 }
 
 fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     let mut app = App::new(state_root.to_path_buf(), cwd.to_path_buf());
     app.refresh_binding();
-    landing::open(&mut app);
+    app.retry_recovery_now();
     app.prior_provider = app.provider;
     app.prior_home = app.continuity_home();
     app.workspace.set_native_windows(use_window);
     app
+}
+
+fn navigate_home(tabs: &mut tabs::TabSet<RunTab>, state_root: &Path, cwd: &Path, use_window: bool) {
+    let current = &tabs.active().app;
+    if landing::can_host_home(current)
+        && (current.landing.is_some()
+            || (!tabs::TabState::needs_close_confirmation(current)
+                && current.composer_images().count() == 0
+                && !current.composer_images().importing()))
+    {
+        landing::open_home_tab(&mut tabs.active_mut().app);
+        return;
+    }
+    let origin = tabs.active().id;
+    if let Some(index) = tabs
+        .tabs
+        .iter()
+        .position(|tab| tab.app.landing.is_some() && landing::can_host_home(&tab.app))
+    {
+        tabs.active = index;
+    } else {
+        tabs.add(RunTab::new(new_tab_app(state_root, cwd, use_window)));
+    }
+    landing::open_home_tab(&mut tabs.active_mut().app);
+    tabs.active_mut().home_origin = Some(origin);
+}
+
+fn return_from_home(tabs: &mut tabs::TabSet<RunTab>) {
+    let origin = tabs.active_mut().home_origin.take();
+    if let Some(index) = origin.and_then(|id| tabs.tabs.iter().position(|tab| tab.id == id)) {
+        tabs.active = index;
+    } else {
+        landing::close(&mut tabs.active_mut().app);
+    }
+}
+
+fn matches_resume(app: &App, request: &session_ui::ResumeRequest) -> bool {
+    if chat_ownership::Key::for_app(app).as_ref() == Some(&request.key) {
+        return true;
+    }
+    // A task can span several native sessions, but never use its name/id to cross accounts.
+    request.task.as_ref().is_some_and(|task| {
+        app.task_id.as_ref() == Some(task)
+            && app.account == request.account
+            && get_account(&app.state_root, &request.account).is_some_and(|account| {
+                account.provider == app.provider
+                    && account.home_path.as_ref().zip(app.home_path.as_ref()).is_some_and(
+                        |(registered, home)| {
+                            matches!((std::fs::canonicalize(registered), std::fs::canonicalize(home)),
+                                (Ok(left), Ok(right)) if left == right)
+                        },
+                    )
+            })
+    })
+}
+
+fn show_existing_chat(app: &mut App) {
+    if !landing::editing_goal(app) {
+        landing::close(app);
+    }
+    app.flash("This chat is already open; switched to its owning tab.");
+}
+
+fn resume_in_tabs(
+    tabs: &mut tabs::TabSet<RunTab>,
+    request: session_ui::ResumeRequest,
+    state_root: &Path,
+    native: bool,
+) {
+    match chat_ownership::Key::for_resume(state_root, &request.account, &request.session) {
+        Ok(current) if current == request.key => {}
+        _ => {
+            tabs.active_mut().app.push_system("resume unavailable: the selected account/home changed; existing chats and drafts were kept");
+            return;
+        }
+    }
+    if let Some(index) = tabs
+        .tabs
+        .iter()
+        .position(|tab| matches_resume(&tab.app, &request))
+    {
+        tabs.active = index;
+        show_existing_chat(&mut tabs.active_mut().app);
+        return;
+    }
+
+    if let Err(error) = chat_ownership::Lease::check_resume_writer(state_root, &request.key) {
+        tabs.active_mut().app.push_system(format!(
+            "Cannot open this chat yet: {error}. Existing drafts were kept."
+        ));
+        return;
+    }
+    if let Some(index) = tabs
+        .closed
+        .iter()
+        .position(|tab| matches_resume(&tab.app, &request))
+    {
+        if let Err(error) = tabs.closed[index].acquire_chat_ownership() {
+            tabs.active_mut().app.push_system(error);
+            return;
+        }
+        let mut tab = tabs.closed.remove(index);
+        tab.reopen_handle_receiver();
+        show_existing_chat(&mut tab.app);
+        tabs.add(tab);
+        return;
+    }
+
+    let native_lease = match chat_ownership::Lease::acquire(state_root, &request.key) {
+        Ok(lease) => lease,
+        Err(error) => {
+            tabs.active_mut().app.push_system(error);
+            return;
+        }
+    };
+    let app = &tabs.active().app;
+    let has_work = tabs::TabState::needs_close_confirmation(app)
+        || app.native_session_id.is_some()
+        || !app.native_sources.is_empty()
+        || app.task_id.is_some()
+        || app.keep.turn_recovery_notice
+        || app.continuation.waiting()
+        || app.session_ui.loading()
+        || app.messages.iter().any(|message| {
+            matches!(
+                message.role,
+                MsgRole::User | MsgRole::Assistant | MsgRole::Card | MsgRole::Thinking
+            )
+        });
+    if has_work {
+        let workspace = tabs.active().app.cwd.clone();
+        let mut app = new_tab_app(state_root, &workspace, native);
+        if app.resume_session(&request.account, &request.session) {
+            app.task_id = request.task;
+            let mut tab = RunTab::new(app);
+            tab.chat_lease = Some(native_lease);
+            if let Err(error) = tab.acquire_chat_ownership() {
+                tabs.active_mut().app.push_system(error);
+                return;
+            }
+            tabs.add(tab);
+        } else {
+            tabs.active_mut().app.push_system(
+                "Could not open the selected chat; the current conversation and draft were kept.",
+            );
+        }
+    } else {
+        let tab = tabs.active_mut();
+        if tab.app.resume_session(&request.account, &request.session) {
+            tab.app.task_id = request.task;
+            tab.chat_lease = Some(native_lease);
+            if let Err(error) = tab.acquire_chat_ownership() {
+                tab.app.chat_ownership_error = Some(error.clone());
+                tab.app.push_system(error);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn inspect_requested_resume(mut app: App, inspect: impl FnOnce(&mut App)) {
+    let request = app
+        .session_ui
+        .resume_request
+        .take()
+        .expect("queued resume request");
+    let root = app.state_root.clone();
+    let mut tabs = tabs::TabSet::new(RunTab::new(app));
+    resume_in_tabs(&mut tabs, request, &root, false);
+    inspect(&mut tabs.active_mut().app);
+    assert!(
+        tabs.tabs
+            .iter_mut()
+            .all(|tab| tab.turn_rx.try_recv().is_err()),
+        "history navigation must not dispatch a model turn"
+    );
+}
+
+/// Apply the shared confirmation/close path after the target tab is active.
+fn confirm_and_close_tab(
+    tabs: &mut tabs::TabSet<RunTab>,
+    close_armed: &mut Option<(uuid::Uuid, Instant)>,
+    prompt: &str,
+) {
+    let owner = tabs.active().id;
+    let confirmed =
+        close_armed.is_some_and(|(id, at)| id == owner && at.elapsed() < Duration::from_secs(3));
+    if tabs.needs_close_confirmation() && !confirmed {
+        *close_armed = Some((owner, Instant::now()));
+        tabs.active_mut().app.flash(prompt);
+        return;
+    }
+    tabs.active_mut().shut_down();
+    tabs.close(true);
+    *close_armed = None;
 }
 
 async fn run_chat_ui(use_window: bool) -> Result<()> {
@@ -97,24 +376,16 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     crate::config::loaded(); // read config.toml once, at start
     let cwd = std::env::current_dir()?;
 
-    let mut app = App::new(state_root.clone(), cwd.clone());
-    app.compat_rx = Some(crate::provider::compat::start_real_detection(
+    let (mut saved_window, mut tabs) = window_session::open(&state_root, &cwd, use_window);
+    tabs.active_mut().app.compat_rx = Some(crate::provider::compat::start_real_detection(
         state_root.clone(),
     ));
-    app.refresh_binding();
-    app.restore_state();
-    if !app.recovery_choices().is_empty() {
-        app.open_recovery_picker();
-    }
-    landing::open(&mut app);
-    app.prior_provider = app.provider;
-    app.prior_home = app.continuity_home();
 
     let terminal_restore = (!use_window).then(TerminalRestoreGuard::new);
     let (backend, mut terminal_input) = if use_window {
         #[cfg(windows)]
         {
-            let (backend, events) = native_window::open_detailed()?;
+            let (backend, events) = native_window::open()?;
             let input = input_stream::InputStream::from_native(events)?;
             // This process owns a native window now. Detach only its inherited console,
             // so another application's console control events cannot terminate its runs.
@@ -171,7 +442,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     }));
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    app.workspace.set_native_windows(use_window);
     #[cfg(windows)]
     let mut detached_windows =
         use_window.then(|| detached::DetachedWindows::new(terminal_input.wake_handle()));
@@ -185,11 +455,12 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     // extracts native images.  Keep the wait loop responsive, but only do that work after a
     // state change that can affect the screen.
     let mut dirty = true;
+    let mut diagram_revision = diagrams::revision();
     let redraw_always = std::env::var_os("CONCORDIA_REDRAW_ALWAYS").is_some();
 
-    let mut tabs = tabs::TabSet::new(RunTab::new(app));
-    let mut close_armed: Option<Instant> = None;
+    let mut close_armed: Option<(uuid::Uuid, Instant)> = None;
     let mut previous_labels: Vec<String> = Vec::new();
+    let mut tab_click: Option<(usize, u16, u16, Instant)> = None;
 
     macro_rules! draw_if_needed {
         ($app:ident, $force:expr) => {
@@ -243,10 +514,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let _ = writer.screen(&screen_text);
                 }
                 dirty = false;
-                #[cfg(windows)]
-                if let Some(windows) = &mut detached_windows {
-                    windows.draw(&mut *app);
-                }
                 if use_window {
                     if let Some((x, y)) = window_mouse {
                         terminal.backend_mut().pointer(pointer::shape(&app, x, y))?;
@@ -261,6 +528,47 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let mut previous_title = String::new();
     let input_result = (|| -> Result<()> {
         loop {
+            for tab in tabs.tabs.iter_mut() {
+                dirty |= tab.refresh_chat_ownership();
+            }
+            let revision = diagrams::revision();
+            dirty |= revision != diagram_revision;
+            diagram_revision = revision;
+            let account_changes_blocked = tabs.tabs.iter().chain(&tabs.closed).any(|tab| {
+                tab.app.busy
+                    || tab.app.preparing_cancel.is_some()
+                    || tab.app.cancel_handle.is_some()
+                    || tab.app.deleg.d.any_active()
+                    || tab.pending_done.is_some()
+                    || !tab.turn_rx.is_empty()
+                    || !tab.handle_rx.is_empty()
+                    || !tab.done_rx.is_empty()
+            });
+            for tab in &mut tabs.tabs {
+                tab.app.account_changes_blocked = account_changes_blocked;
+            }
+            #[cfg(windows)]
+            if let Some(windows) = &mut detached_windows {
+                let owners: Vec<_> = tabs.tabs.iter().map(|tab| tab.id).collect();
+                windows.retain_tabs(&owners);
+                dirty |= windows.drain(|owner, id, event| {
+                    let Some(tab) = tabs.tabs.iter_mut().find(|tab| tab.id == owner) else {
+                        return;
+                    };
+                    if !tab.app.workspace.detached_ids().contains(&id) {
+                        return;
+                    }
+                    if let Some(event) = event {
+                        workspace::handle_window_event(&mut tab.app, id, event);
+                    } else {
+                        tab.app.workspace.request_dock(id);
+                    }
+                });
+                for tab in &mut tabs.tabs {
+                    windows.sync(tab.id, &mut tab.app);
+                    windows.draw(tab.id, &mut tab.app);
+                }
+            }
             let active = tabs.active;
             let labels: Vec<String> = if tabs.has_multiple() {
                 tabs.tabs.iter().map(|t| t.app.tab_label()).collect()
@@ -272,15 +580,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 previous_labels = labels.clone();
             }
             let mut tab_action = tabs::TabAction::Unhandled;
+            let mut rename_tab = None;
             {
                 let RunTab { app, turn_tx, .. } = &mut tabs.tabs[active];
                 app.tab_strip = labels;
                 app.tab_index = active;
-                #[cfg(windows)]
-                if let Some(windows) = &mut detached_windows {
-                    windows.drain(app);
-                    windows.sync(app);
-                }
                 // Drain pending paste chunks before repainting the growing prompt.
                 draw_if_needed!(app, redraw_always);
                 let title = app.window_title();
@@ -319,6 +623,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         // events that are intentionally no-ops for the current screen.
                         dirty = true;
                         if let Event::Key(key) = &event {
+                            tab_click = None;
                             let action = tabs::action_for(*key);
                             // A focused file pane keeps Ctrl+W for closing itself.
                             let pane_close =
@@ -339,12 +644,32 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     if app.tab_close_hits.get(index).is_some_and(|r| {
                                         r.contains(ratatui::layout::Position::new(m.column, m.row))
                                     }) {
+                                        tab_click = None;
                                         tab_action = tabs::TabAction::CloseAt(index);
                                     } else {
+                                        #[cfg(windows)]
+                                        let interval = Duration::from_millis(u64::from(unsafe {
+                                            windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime()
+                                        }));
+                                        #[cfg(not(windows))]
+                                        let interval = MULTI_CLICK;
+                                        if tab_click.is_some_and(|(previous, x, y, at)| {
+                                            previous == index
+                                                && x.abs_diff(m.column) <= 1
+                                                && y == m.row
+                                                && captured_at.saturating_duration_since(at)
+                                                    <= interval
+                                        }) {
+                                            rename_tab = Some(index);
+                                            tab_click = None;
+                                        } else {
+                                            tab_click = Some((index, m.column, m.row, captured_at));
+                                        }
                                         tab_action = tabs::TabAction::Select(index + 1);
                                     }
                                     break;
                                 }
+                                tab_click = None;
                             }
                         }
                         match event {
@@ -400,7 +725,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 if let Some(burst) = key_burst.take_pending() {
                                     dispatch_key_burst(&mut *app, burst, turn_tx);
                                 }
-                                if app.project_search.active() || !questions::paste(&mut *app, &s) {
+                                if app.local_terminal.visible() {
+                                    app.local_terminal.paste(&s);
+                                } else if app.rename_editor.is_some() {
+                                    app.paste_text(&s);
+                                } else if app.project_search.active()
+                                    || !questions::paste(&mut *app, &s)
+                                {
                                     if s.is_empty() && clipboard::has_attachment() {
                                         app.paste_clipboard();
                                     } else {
@@ -417,7 +748,12 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             }
                             _ => {}
                         }
-                        if !terminal_input.poll(Duration::ZERO)? {
+                        // Apply navigation before draining the next event: it belongs to
+                        // the destination tab, not the tab that requested the switch.
+                        if app.tab_request.is_some()
+                            || app.session_ui.resume_request.is_some()
+                            || !terminal_input.poll(Duration::ZERO)?
+                        {
                             break;
                         }
                     }
@@ -427,26 +763,41 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
             }
 
+            if let Some(request) = tabs.active_mut().app.tab_request.take() {
+                tab_action = request;
+            }
+            let resume_request = tabs.active_mut().app.session_ui.resume_request.take();
+            if !matches!(
+                tab_action,
+                tabs::TabAction::Select(_) | tabs::TabAction::Unhandled
+            ) {
+                tab_click = None;
+            }
             match tab_action {
                 tabs::TabAction::Unhandled => {}
                 tabs::TabAction::New => {
-                    tabs.add(RunTab::new(new_tab_app(&state_root, &cwd, use_window)));
+                    let mut app = new_tab_app(&state_root, &cwd, use_window);
+                    landing::open_home_tab(&mut app);
+                    tabs.add(RunTab::new(app));
+                    close_armed = None;
+                    dirty = true;
+                }
+                tabs::TabAction::Home => {
+                    navigate_home(&mut tabs, &state_root, &cwd, use_window);
+                    close_armed = None;
+                    dirty = true;
+                }
+                tabs::TabAction::BackToChat => {
+                    return_from_home(&mut tabs);
                     close_armed = None;
                     dirty = true;
                 }
                 tabs::TabAction::Close if tabs.has_multiple() => {
-                    let confirmed =
-                        close_armed.is_some_and(|at| at.elapsed() < Duration::from_secs(3));
-                    if tabs.needs_close_confirmation() && !confirmed {
-                        close_armed = Some(Instant::now());
-                        tabs.active_mut().app.flash(
-                            "This tab has a running turn or an unsent draft. Ctrl+W again closes it.",
-                        );
-                    } else {
-                        tabs.active_mut().shut_down();
-                        tabs.close(true);
-                        close_armed = None;
-                    }
+                    confirm_and_close_tab(
+                        &mut tabs,
+                        &mut close_armed,
+                        "This tab has a running turn or an unsent draft. Ctrl+W again closes it.",
+                    );
                     dirty = true;
                 }
                 tabs::TabAction::Close => {
@@ -455,18 +806,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
                 tabs::TabAction::CloseAt(index) if tabs.has_multiple() => {
                     tabs.select_number(index + 1);
-                    let confirmed =
-                        close_armed.is_some_and(|at| at.elapsed() < Duration::from_secs(3));
-                    if tabs.needs_close_confirmation() && !confirmed {
-                        close_armed = Some(Instant::now());
-                        tabs.active_mut().app.flash(
-                            "This tab has a running turn or unsent draft. Click × again to close.",
-                        );
-                    } else {
-                        tabs.active_mut().shut_down();
-                        tabs.close(true);
-                        close_armed = None;
-                    }
+                    confirm_and_close_tab(
+                        &mut tabs,
+                        &mut close_armed,
+                        "This tab has a running turn or unsent draft. Click \u{00d7} again to close.",
+                    );
                     dirty = true;
                 }
                 tabs::TabAction::CloseAt(_) => {
@@ -474,7 +818,30 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     dirty = true;
                 }
                 tabs::TabAction::Reopen => {
-                    if !tabs.reopen() {
+                    let existing = tabs.closed.last().and_then(|closed| {
+                        let key = chat_ownership::Key::for_app(&closed.app);
+                        tabs.tabs.iter().position(|open| {
+                            open.app.deleg.d.conversation_id()
+                                == closed.app.deleg.d.conversation_id()
+                                || key.as_ref().is_some_and(|key| {
+                                    chat_ownership::Key::for_app(&open.app).as_ref() == Some(key)
+                                })
+                        })
+                    });
+                    if let Some(index) = existing {
+                        tabs.active = index;
+                        show_existing_chat(&mut tabs.active_mut().app);
+                    } else if let Some(error) = tabs
+                        .closed
+                        .last_mut()
+                        .and_then(|tab| tab.acquire_chat_ownership().err())
+                    {
+                        tabs.active_mut().app.push_system(error);
+                    } else if tabs.reopen() {
+                        // Shutdown closes the previous receiver so late starts from
+                        // that turn are cancelled. Future turns need their own channel.
+                        tabs.active_mut().reopen_handle_receiver();
+                    } else {
                         tabs.active_mut().app.flash("No closed tab to reopen.");
                     }
                     dirty = true;
@@ -483,23 +850,49 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 tabs::TabAction::Previous => tabs.next(true),
                 tabs::TabAction::Select(n) => tabs.select_number(n),
             }
-            if tabs.active != active {
+            if let Some(request) = resume_request {
+                resume_in_tabs(&mut tabs, request, &state_root, use_window);
                 close_armed = None;
+                tab_click = None;
+                dirty = true;
+            }
+            if rename_tab == Some(tabs.active) {
+                let RunTab { app, turn_tx, .. } = tabs.active_mut();
+                local_terminal::command(app, "hide");
+                handle_key(
+                    app,
+                    KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE),
+                    turn_tx,
+                );
+                dirty = true;
+            }
+            if tabs.active != active {
+                for (index, tab) in tabs.tabs.iter_mut().enumerate() {
+                    if index != tabs.active {
+                        tab.app.rename_editor = None;
+                    }
+                }
+                if close_armed.is_some_and(|(owner, _)| owner != tabs.active().id) {
+                    close_armed = None;
+                }
                 dirty = true;
             }
 
             let tick_due = last_tick.elapsed() >= tick_rate;
             for tab in tabs.tabs.iter_mut() {
+                dirty |= tab.refresh_chat_ownership();
                 let RunTab {
                     app,
                     turn_tx,
                     turn_rx,
                     done_tx,
                     done_rx,
+                    pending_done,
                     handle_tx,
                     handle_rx,
                     progress_tx,
                     progress_rx,
+                    ..
                 } = tab;
                 if app.worker_panel_explicit.is_none() && app.deleg.d.any_active() {
                     app.worker_panel_open = true;
@@ -513,6 +906,16 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 app.queue_advance(turn_tx);
                 while let Ok(prompt) = turn_rx.try_recv() {
                     dirty = true;
+                    if let Some(error) = app.chat_ownership_error.clone() {
+                        app.queue.items.insert(0, prompt);
+                        app.pause_queue();
+                        app.queue_changed();
+                        app.submitted_prompt = None;
+                        app.busy = false;
+                        app.keep.turn_recovery_notice = true;
+                        app.push_system(format!("Request kept in the paused queue: {error}"));
+                        continue;
+                    }
                     let incoming = crate::attachments::Message::decode(&prompt);
                     let image_inputs = incoming.images();
                     if app.discard_cancelled_pending_turn() {
@@ -647,8 +1050,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             }
                         };
                         if !maps.is_empty() || !notices.is_empty() {
-                            let _ =
-                                progress_tx.send(TurnProgress::ChatReferences { maps, notices });
+                            let _ = progress_tx
+                                .send(TurnProgress::ChatReferences { maps, notices })
+                                .await;
                         }
                         let home = launch_home;
                         let home_str = home.as_ref().map(|p| p.to_string_lossy().into_owned());
@@ -708,12 +1112,14 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 match measured {
                                     Ok(Ok(observation)) => {
                                         rollover = policy.rollover(observation.measurement);
-                                        let _ = progress_tx.send(TurnProgress::Notice(
-                                            observation.notice(rollover),
-                                        ));
+                                        let _ = progress_tx
+                                            .send(TurnProgress::Notice(
+                                                observation.notice(rollover),
+                                            ))
+                                            .await;
                                     }
                                     _ => {
-                                        let _ = progress_tx.send(TurnProgress::Notice("native context measurement unavailable; proactive rollover skipped".into()));
+                                        let _ = progress_tx.send(TurnProgress::Notice("native context measurement unavailable; proactive rollover skipped".into())).await;
                                     }
                                 }
                             }
@@ -765,7 +1171,8 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                         return;
                                     }
                                     for notice in notices {
-                                        let _ = progress_tx.send(TurnProgress::Notice(notice));
+                                        let _ =
+                                            progress_tx.send(TurnProgress::Notice(notice)).await;
                                     }
                                     if !sources.is_empty() {
                                         prefix
@@ -783,9 +1190,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                         });
                                         return;
                                     }
-                                    let _ = progress_tx.send(TurnProgress::Notice(format!(
-                                        "native source indexing unavailable: {error}"
-                                    )));
+                                    let _ = progress_tx
+                                        .send(TurnProgress::Notice(format!(
+                                            "native source indexing unavailable: {error}"
+                                        )))
+                                        .await;
                                 }
                             }
                         }
@@ -798,6 +1207,12 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         }
                         if let Some(scope) = scope_intent {
                             prefix.get_or_insert_with(String::new).push_str(&format!("\n[User-declared cooperative workspace scope]\n{scope}\nFollow these declared paths. Scheduler reservations grant no additional native permissions."));
+                        }
+                        if let Some(context) = prefix.as_ref().filter(|text| !text.is_empty()) {
+                            let _ = progress_tx.send(TurnProgress::Notice(format!(
+                                "Context for this message · {}\nConversation references are included for the selected provider. Native tool and approval state stays with its original session.\n\n{context}",
+                                account
+                            ))).await;
                         }
                         let req = ProviderTurnRequest {
                             images: &image_inputs,
@@ -951,21 +1366,31 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     });
                 }
 
-                app.poll_delegates();
+                dirty |= app.poll_delegates();
                 app.flush_delegate_prompt(turn_tx);
-                while let Ok(ev) = progress_rx.try_recv() {
+                // A fast producer must yield to input and painting. Keep every event,
+                // including approvals; this is a consumer scheduling budget, not a cap
+                // on the provider's wire traffic or retained history.
+                let drain_started = Instant::now();
+                for _ in 0..256 {
+                    let Ok(ev) = progress_rx.try_recv() else {
+                        break;
+                    };
                     app.apply_progress(ev);
                     dirty = true;
+                    if drain_started.elapsed() >= Duration::from_millis(8) {
+                        break;
+                    }
                 }
 
-                while let Ok(outcome) = done_rx.try_recv() {
-                    // Progress is sent before completion, but may arrive between the earlier
-                    // drain and this receive. Finish it before finalizing or switching sessions.
-                    while let Ok(ev) = progress_rx.try_recv() {
-                        app.apply_progress(ev);
-                        dirty = true;
-                    }
-                    app.on_turn_done(outcome, turn_tx);
+                if pending_done.is_none() {
+                    *pending_done = done_rx.try_recv().ok();
+                }
+                // Progress is sent before completion. A completion received after a
+                // partial drain waits for the remaining events, across frames, before
+                // finalization can switch sessions or start the next queued turn.
+                if pending_done.is_some() && progress_rx.is_empty() {
+                    app.on_turn_done(pending_done.take().unwrap(), turn_tx);
                     dirty = true;
                 }
 
@@ -979,6 +1404,14 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             }
             if tick_due {
                 last_tick = Instant::now();
+            }
+
+            if let Some(saved) = &mut saved_window {
+                if let Err(error) = saved.save(&tabs, false) {
+                    tabs.active_mut()
+                        .app
+                        .flash(format!("Could not save open tabs: {error}"));
+                }
             }
 
             if tabs
@@ -1000,6 +1433,15 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         Ok(())
     })();
 
+    // Capture the visible conversations before cancellation changes live request state.
+    for tab in &mut tabs.tabs {
+        tab.app.persist_draft_now();
+    }
+    if let Some(saved) = &mut saved_window {
+        if let Err(error) = saved.save(&tabs, true) {
+            crate::logging::error(&format!("Could not save open tabs on exit: {error}"));
+        }
+    }
     let mut reexec = None;
     for tab in tabs.tabs.iter_mut() {
         tab.shut_down();
@@ -1020,6 +1462,10 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         terminal.show_cursor()?;
     }
     drop(terminal);
+    // The replacement must be able to claim this window and each pane's recovery lease.
+    // reexec waits for its child, so keeping these owners alive would lock out restoration.
+    drop(tabs);
+    drop(saved_window);
     input_result?;
     if let Some(path) = reexec {
         let code = crate::update::reexec_into_mode(&path, &cwd, !use_window)?;
@@ -1224,6 +1670,95 @@ mod redraw_tests {
 
 #[cfg(test)]
 mod panic_log_tests {
+    #[test]
+    fn resuming_an_open_chat_focuses_its_busy_owner_and_keeps_both_drafts() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("fixture-home");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let session = "8facabf0-7af5-4701-85bd-76ac30604475";
+        std::fs::write(
+            home.join("sessions/fixture.jsonl"),
+            format!("{}\n", serde_json::json!({"type":"session_meta", "payload":{"id":session,"cwd":dir.path()}})),
+        ).unwrap();
+        crate::store::upsert_stored_account(
+            dir.path(),
+            crate::store::StoredAccount {
+                id: "fixture".into(),
+                provider: ProviderKind::Codex,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "Fixture".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        let mut owner = new_tab_app(dir.path(), dir.path(), false);
+        owner.provider = ProviderKind::Codex;
+        owner.account = "fixture".into();
+        owner.home_path = Some(home);
+        owner.native_session_id = Some(session.into());
+        owner.editor.set_text("owning tab draft");
+        owner.busy = true;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        owner.preparing_cancel = Some(cancel.clone());
+        let conversation = owner.deleg.d.conversation_id().to_owned();
+        let mut tabs = tabs::TabSet::new(RunTab::new(owner));
+        let mut origin = new_tab_app(dir.path(), dir.path(), false);
+        origin.editor.set_text("other tab draft");
+        assert!(origin.request_resume_session("fixture", session));
+        let request = origin.session_ui.resume_request.take().unwrap();
+        tabs.add(RunTab::new(origin));
+        resume_in_tabs(&mut tabs, request, dir.path(), false);
+        assert_eq!(tabs.tabs.len(), 2);
+        assert_eq!(tabs.active, 0);
+        assert!(tabs.active().app.busy);
+        assert_eq!(
+            tabs.active().app.native_session_id.as_deref(),
+            Some(session)
+        );
+        assert_eq!(tabs.active().app.deleg.d.conversation_id(), conversation);
+        assert_eq!(tabs.tabs[0].app.editor.text(), "owning tab draft");
+        assert_eq!(tabs.tabs[1].app.editor.text(), "other tab draft");
+        assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!tabs.active().app.session_ui.loading());
+        assert!(tabs
+            .tabs
+            .iter_mut()
+            .all(|tab| tab.turn_rx.try_recv().is_err()));
+    }
+
+    #[test]
+    fn home_tab_keeps_the_previous_chat_draft_and_owns_new_recovery() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let mut original = new_tab_app(dir.path(), dir.path(), false);
+        original.editor.set_text("draft belongs to previous chat");
+        original.queue.items.push("queued in previous chat".into());
+        let original_record = original.keep.lease.as_ref().unwrap().record_id();
+        let mut tabs = tabs::TabSet::new(RunTab::new(original));
+        landing::open_home(&mut tabs.active_mut().app);
+        assert_eq!(
+            tabs.active_mut().app.tab_request.take(),
+            Some(tabs::TabAction::Home)
+        );
+        let mut home = new_tab_app(dir.path(), dir.path(), false);
+        landing::open_home_tab(&mut home);
+        assert!(home.editor.is_empty());
+        assert!(home.queue.items.is_empty());
+        assert_ne!(
+            home.keep.lease.as_ref().unwrap().record_id(),
+            original_record
+        );
+        tabs.add(RunTab::new(home));
+        assert!(landing::visible(&tabs.active().app));
+        tabs.next(true);
+        assert_eq!(
+            tabs.active().app.editor.text(),
+            "draft belongs to previous chat"
+        );
+        assert_eq!(tabs.active().app.queue.items[0], "queued in previous chat");
+    }
+
     #[test]
     fn panic_log_line_never_contains_payload_text() {
         let secret = "SECRET-PANIC-PAYLOAD";

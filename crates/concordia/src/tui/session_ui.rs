@@ -1,9 +1,13 @@
 //! Session titles and bounded asynchronous resume scrollback. Native session ownership stays explicit.
 use super::*;
 
+pub(super) const HISTORY_OMITTED: &str =
+    "Showing recent conversation history. Earlier messages remain saved in the original chat.";
+
 #[derive(Default)]
 pub(super) struct State {
     pub title: Option<String>,
+    pub(super) resume_request: Option<ResumeRequest>,
     next: u64,
     pending: Option<u64>,
     jobs: Vec<Load>,
@@ -12,12 +16,20 @@ pub(super) struct State {
     memory_jobs: Vec<(u64, std::sync::mpsc::Receiver<Result<String, String>>)>,
 }
 
+pub(super) struct ResumeRequest {
+    pub account: String,
+    pub session: String,
+    pub task: Option<String>,
+    pub key: super::chat_ownership::Key,
+}
+
 struct Load {
     generation: u64,
     provider: ProviderKind,
     account: String,
     home: PathBuf,
-    session: String,
+    expected_session: Option<String>,
+    restoring: bool,
     rx: std::sync::mpsc::Receiver<Result<crate::chat_cli::History, String>>,
 }
 
@@ -30,6 +42,7 @@ impl State {
         self.pending.is_some()
     }
     pub fn invalidate(&mut self) {
+        self.resume_request = None;
         self.pending = None;
         self.memory_pending = None;
         self.memory_screen = None;
@@ -249,6 +262,49 @@ fn ranked_memory(
 }
 
 impl App {
+    /// Refresh a restored tab's exact native history without changing selection, draft,
+    /// conversation ownership or paused unfinished-request state.
+    pub(super) fn reload_restored_history(&mut self, session: &str) {
+        let Some(home) = self.home_path.clone() else {
+            return;
+        };
+        let root = self.state_root.clone();
+        let account = self.account.clone();
+        let provider = self.provider;
+        let requested = session.to_owned();
+        let worker_session = requested.clone();
+        let worker_account = account.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Err(error) = std::thread::Builder::new()
+            .name("concordia-restored-history".into())
+            .spawn(move || {
+                let _ = tx.send(crate::chat_cli::read_history(
+                    &root,
+                    &worker_account,
+                    provider,
+                    &worker_session,
+                ));
+            })
+        {
+            self.push_system(format!(
+                "Saved conversation kept; history refresh unavailable: {error}"
+            ));
+            return;
+        }
+        self.session_ui.next = self.session_ui.next.wrapping_add(1);
+        let generation = self.session_ui.next;
+        self.session_ui.pending = Some(generation);
+        self.session_ui.jobs.push(Load {
+            generation,
+            provider,
+            account,
+            home,
+            expected_session: self.native_session_id.clone(),
+            restoring: true,
+            rx,
+        });
+    }
+
     pub(super) fn memory_command(&mut self, argument: &str) {
         if argument.is_empty() {
             self.push_system("Related work: /memory groups · group-create SOURCE · group-members GROUP · group-link GROUP SOURCE · group-unlink GROUP SOURCE. Membership requires your explicit action. /memory related-file PATH TEXT, related-goal GOAL TEXT and related-from SOURCE TEXT show suggestions separately.");
@@ -333,7 +389,8 @@ impl App {
         self.flash("reading native memory…");
     }
 
-    pub(super) fn poll_memory(&mut self) {
+    pub(super) fn poll_memory(&mut self) -> bool {
+        let mut changed = false;
         let mut i = 0;
         while i < self.session_ui.memory_jobs.len() {
             let result = match self.session_ui.memory_jobs[i].1.try_recv() {
@@ -349,6 +406,7 @@ impl App {
                 continue;
             }
             self.session_ui.memory_pending = None;
+            changed = true;
             let output = crate::chat_cli::terminal_safe(
                 &result.unwrap_or_else(|e| format!("memory unavailable: {e}")),
             );
@@ -378,6 +436,7 @@ impl App {
                 self.push_system(output);
             }
         }
+        changed
     }
 
     pub(super) fn ensure_session_title(&mut self, prompt: &str) {
@@ -410,26 +469,65 @@ impl App {
         }
     }
 
-    pub(super) fn resume_session(&mut self, account: &str, id: &str) {
+    pub(super) fn rename_session(&mut self, raw: &str) -> bool {
+        let title = crate::session_titles::sanitize(raw);
+        if let (Some(id), Some(home)) = (&self.native_session_id, &self.home_path) {
+            if let Err(error) = crate::session_titles::set(
+                &self.state_root,
+                self.provider,
+                &self.account,
+                home,
+                id,
+                title.as_deref(),
+            ) {
+                self.flash(format!("Chat title was not changed: {error}"));
+                return false;
+            }
+        }
+        self.session_ui.title = title;
+        self.session_chip = self.session_ui.title.clone();
+        true
+    }
+
+    /// Request navigation without replacing this tab before the runner checks existing owners.
+    pub(super) fn request_resume_session(&mut self, account: &str, id: &str) -> bool {
+        let key = match super::chat_ownership::Key::for_resume(&self.state_root, account, id) {
+            Ok(key) => key,
+            Err(error) => {
+                self.push_system(format!("resume unavailable: {error}"));
+                return false;
+            }
+        };
+        self.session_ui.resume_request = Some(ResumeRequest {
+            account: account.into(),
+            session: id.into(),
+            task: None,
+            key,
+        });
+        true
+    }
+
+    /// Low-level application after window-level routing has excluded another owning tab.
+    pub(super) fn resume_session(&mut self, account: &str, id: &str) -> bool {
         if self.busy {
             self.flash("finish or cancel the active turn before resuming");
-            return;
+            return false;
         }
         if self.session_ui.jobs.len() >= 2 {
             self.flash("previous history reads are finishing; try resume again shortly");
-            return;
+            return false;
         }
         let Some(target) = get_account(&self.state_root, account) else {
             self.push_system("resume failed: account is no longer registered");
-            return;
+            return false;
         };
         let Some(home) = target.home_path.clone() else {
             self.push_system("resume failed: account has no native home");
-            return;
+            return false;
         };
         if let Err(error) = select_account(&self.state_root, account) {
             self.push_system(format!("resume account switch failed: {error}"));
-            return;
+            return false;
         }
         self.refresh_binding();
         let root = self.state_root.clone();
@@ -450,8 +548,9 @@ impl App {
         {
             self.native_session_id = None;
             self.push_system(format!("could not start history reader: {error}"));
-            return;
+            return false;
         }
+        super::landing::close(self);
         self.continuation.invalidate();
         self.keep.turn_recovery_notice = false;
         self.session_ui.next = self.session_ui.next.wrapping_add(1);
@@ -461,6 +560,7 @@ impl App {
             crate::session_titles::get(&self.state_root, provider, account, &home, id);
         self.session_chip = self.session_ui.title.clone();
         self.native_session_id = Some(id.to_string());
+        self.task_id = None;
         self.native_sources.clear();
         self.remember_native_source();
         let checkpoint_cleared = self.save_turn_checkpoint(true);
@@ -496,17 +596,25 @@ impl App {
             self.push_system("could not clear the previous unfinished-request record; it has been kept for recovery");
         }
         self.push_system("Loading recent messages for the selected session…");
+        if crate::usage::peek_cached_usage(&self.state_root, provider, account, &home)
+            .is_some_and(|usage| usage.exhausted)
+        {
+            self.push_system("This account's recorded usage is exhausted. You can still read this chat. Use /use to choose another account, /model to choose a model, or /usage refresh to check the limit before sending.");
+        }
         self.session_ui.jobs.push(Load {
             generation,
             provider,
             account: account.into(),
             home,
-            session: id.into(),
+            expected_session: Some(id.into()),
+            restoring: false,
             rx,
         });
+        true
     }
 
-    pub(super) fn poll_session_history(&mut self) {
+    pub(super) fn poll_session_history(&mut self) -> bool {
+        let mut changed = false;
         let mut i = 0;
         while i < self.session_ui.jobs.len() {
             let result = match self.session_ui.jobs[i].rx.try_recv() {
@@ -520,16 +628,62 @@ impl App {
                 }
             };
             let job = self.session_ui.jobs.swap_remove(i);
-            if self.session_ui.pending != Some(job.generation)
-                || self.provider != job.provider
+            if self.session_ui.pending != Some(job.generation) {
+                continue;
+            }
+            if self.provider != job.provider
                 || self.account != job.account
                 || self.home_path.as_ref() != Some(&job.home)
-                || self.native_session_id.as_deref() != Some(job.session.as_str())
+                || self.native_session_id != job.expected_session
             {
+                self.session_ui.pending = None;
+                changed = true;
+                let notice = "History loading stopped because the account or native session changed. Select the intended chat again.";
+                if let Some(message) = self.messages.iter_mut().find(|message| {
+                    message.role == MsgRole::System
+                        && message.text == "Loading recent messages for the selected session…"
+                }) {
+                    message.text = notice.into();
+                } else {
+                    self.push_system(notice);
+                }
                 continue;
             }
             self.session_ui.pending = None;
-            let pending_notices = self.messages.split_off(1.min(self.messages.len()));
+            changed = true;
+            let unfinished_prompt = (job.restoring && self.keep.turn_recovery_notice)
+                .then(|| self.continuation.pending_text().map(str::to_owned))
+                .flatten();
+            if job.restoring {
+                if let Err(error) = &result {
+                    self.push_system(format!(
+                        "Saved conversation kept; native history unavailable: {error}"
+                    ));
+                    continue;
+                }
+                if result
+                    .as_ref()
+                    .is_ok_and(|history| history.messages.is_empty())
+                    && self
+                        .messages
+                        .iter()
+                        .any(|message| matches!(message.role, MsgRole::User | MsgRole::Assistant))
+                {
+                    self.push_system("Saved conversation kept; the native source contains no readable messages yet.");
+                    continue;
+                }
+            }
+            let pending_notices = if job.restoring {
+                self.messages
+                    .iter()
+                    .filter(|message| {
+                        message.role == MsgRole::System && message.text != HISTORY_OMITTED
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                self.messages.split_off(1.min(self.messages.len()))
+            };
             let pending_usage = self
                 .usage_block
                 .take()
@@ -562,9 +716,11 @@ impl App {
                         }
                     }
                     let count = history.messages.len();
-                    self.push_system(if history.truncated {
-                        format!("Resumed · {count} recent messages loaded; older history is omitted from this bounded view.")
-                    } else { format!("Resumed · {count} messages loaded. Scroll up to review the conversation.") });
+                    if history.truncated {
+                        self.push_system(HISTORY_OMITTED);
+                    } else if !job.restoring {
+                        self.push_system(format!("Resumed · {count} messages loaded. Scroll up to review the conversation."));
+                    }
                     let meta = Some(self.reply_meta());
                     for message in history.messages {
                         self.messages.push(ChatLine {
@@ -602,10 +758,27 @@ impl App {
                     ));
                 }
             }
+            if let Some(prompt) = unfinished_prompt {
+                let already_last = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == MsgRole::User)
+                    .is_some_and(|message| message.text == prompt);
+                if !already_last {
+                    self.messages.push(ChatLine {
+                        role: MsgRole::User,
+                        text: prompt,
+                        card: None,
+                        meta: None,
+                    });
+                }
+            }
             let notice_offset = self.messages.len();
             self.messages.extend(pending_notices);
             self.usage_block = pending_usage.map(|index| notice_offset + index);
             self.view.follow_tail();
         }
+        changed
     }
 }

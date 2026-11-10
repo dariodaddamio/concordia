@@ -8,10 +8,35 @@ use super::markdown;
 use super::text::{col_to_index, word_bounds, wrap_ranges_hang};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::hash::{Hash, Hasher};
 
 /// The row cache is a viewport cache, not a second transcript. Older content is rebuilt from
 /// the caller's thread-backed blocks when the user scrolls above the fold.
 pub const MAX_RENDERED_ROWS: usize = 5_000;
+// Reuse the existing block keys for exact folded-cache comparisons when they fit. This
+// avoids hashing every style and source byte on every unchanged frame, while larger
+// histories still use a fingerprint instead of retaining another unbounded text copy.
+const MAX_FOLDED_KEYS_BYTES: usize = 8 * 1024 * 1024;
+
+fn folded_keys_fit(blocks: &[Block]) -> bool {
+    let mut bytes = blocks
+        .len()
+        .saturating_mul(std::mem::size_of::<(BlockKey, usize)>());
+    for block in blocks {
+        bytes = bytes
+            .saturating_add(block.text.len())
+            .saturating_add(block.gutter.len())
+            .saturating_add(std::mem::size_of_val(block.runs))
+            .saturating_add(std::mem::size_of_val(block.header_files));
+        for (_, path) in block.header_files {
+            bytes = bytes.saturating_add(path.len());
+        }
+        if bytes > MAX_FOLDED_KEYS_BYTES {
+            return false;
+        }
+    }
+    bytes <= MAX_FOLDED_KEYS_BYTES
+}
 
 #[path = "diff_presentation.rs"]
 mod diff_presentation;
@@ -141,6 +166,24 @@ impl BlockKey {
     }
 }
 
+fn projection_signature(blocks: &[Block], link_root: Option<&std::path::Path>) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    link_root.hash(&mut hash);
+    super::diagrams::revision().hash(&mut hash);
+    for block in blocks {
+        block.identity.hash(&mut hash);
+        block.text.hash(&mut hash);
+        block.gutter.hash(&mut hash);
+        block.gutter_style.hash(&mut hash);
+        block.style.hash(&mut hash);
+        block.markdown.hash(&mut hash);
+        block.linkify.hash(&mut hash);
+        block.runs.hash(&mut hash);
+        block.header_files.hash(&mut hash);
+    }
+    hash.finish()
+}
+
 #[derive(Default)]
 pub struct TranscriptView {
     pub rows: Vec<Row>,
@@ -161,6 +204,9 @@ pub struct TranscriptView {
     folded: bool,
     rehydrate_fold: bool,
     folded_blocks: usize,
+    folded_signature: u64,
+    folded_link_root: Option<std::path::PathBuf>,
+    folded_head: bool,
 }
 
 impl TranscriptView {
@@ -168,10 +214,39 @@ impl TranscriptView {
     /// runs on every frame and every mouse event, so only blocks from the first one that changed
     /// are wrapped again (normally just the newest); earlier blocks reuse their cached rows.
     pub fn rebuild(&mut self, blocks: &[Block], width: usize, height: usize) {
-        let rehydrate_fold = self.rehydrate_fold;
+        let requested_rehydrate = self.rehydrate_fold;
+        let rehydrate_fold =
+            requested_rehydrate || (self.folded_head && self.folded_blocks != usize::MAX);
         self.rehydrate_fold = false;
         let width_changed = width != self.width;
-        if self.folded && !rehydrate_fold && !width_changed && self.folded_blocks == blocks.len() {
+        if self.folded && self.sel.is_some() && !width_changed {
+            // Keep the selected cache stable while the source changes underneath it.
+            // Clearing the selection lets the next rebuild reconcile the source.
+            self.height = height;
+            self.clamp_scroll();
+            return;
+        }
+        let exact_fold = self.folded && !self.keys.is_empty();
+        let fingerprint = (self.folded && !exact_fold)
+            .then(|| projection_signature(blocks, self.link_root.as_deref()));
+        let unchanged = if exact_fold {
+            self.folded_signature == super::diagrams::revision()
+                && self.folded_link_root == self.link_root
+                && self.keys.len() == blocks.len()
+                && self
+                    .keys
+                    .iter()
+                    .zip(blocks)
+                    .all(|((key, _), block)| key.matches(block))
+        } else {
+            fingerprint == Some(self.folded_signature)
+        };
+        if self.folded
+            && !requested_rehydrate
+            && !width_changed
+            && self.folded_blocks == blocks.len()
+            && unchanged
+        {
             self.height = height;
             self.clamp_scroll();
             return;
@@ -241,7 +316,7 @@ impl TranscriptView {
             }
         }
 
-        if self.rows.len() > MAX_RENDERED_ROWS {
+        if self.rows.len() > MAX_RENDERED_ROWS && self.sel.is_none() {
             let retained = MAX_RENDERED_ROWS.saturating_sub(1);
             let hidden = self.rows.len() - retained;
             let label = if rehydrate_fold {
@@ -274,12 +349,27 @@ impl TranscriptView {
             }
             self.rows.shrink_to_fit();
             self.row_blocks.shrink_to_fit();
-            self.keys.clear();
             self.folded = true;
             self.folded_blocks = blocks.len();
+            self.folded_head = rehydrate_fold;
+            if folded_keys_fit(blocks) {
+                // Row offsets in these keys refer to the full projection. They are only
+                // equality keys while folded; any changed/re-hydrated projection clears
+                // them above before the normal row-cache code can consume those offsets.
+                self.keys.shrink_to_fit();
+                self.folded_signature = super::diagrams::revision();
+                self.folded_link_root = self.link_root.clone();
+            } else {
+                self.keys.clear();
+                self.keys.shrink_to_fit();
+                self.folded_link_root = None;
+                self.folded_signature = fingerprint
+                    .unwrap_or_else(|| projection_signature(blocks, self.link_root.as_deref()));
+            }
         } else {
             self.folded = false;
             self.folded_blocks = 0;
+            self.folded_head = false;
         }
 
         if !width_changed && self.scroll > 0 && self.rows.len() > prev_rows {
@@ -333,6 +423,9 @@ impl TranscriptView {
 
     pub fn scroll_down(&mut self, n: usize) {
         self.scroll = self.scroll.saturating_sub(n);
+        if self.scroll == 0 && self.folded_head {
+            self.folded_blocks = usize::MAX;
+        }
         self.clamp_scroll();
     }
 
@@ -341,6 +434,9 @@ impl TranscriptView {
     }
 
     pub fn follow_tail(&mut self) {
+        if self.folded_head {
+            self.folded_blocks = usize::MAX;
+        }
         self.scroll = 0;
         self.clamp_scroll();
     }
@@ -813,11 +909,12 @@ mod tests {
         let blocks: Vec<Block<'_>> = texts.iter().map(|text| blk("", text)).collect();
         let mut v = view(&blocks, 80, 10);
         assert!(v.rows.len() <= MAX_RENDERED_ROWS + 1);
-        assert!(v.rows.iter().any(|row| row
-            .text
-            .iter()
-            .collect::<String>()
-            .contains("Earlier messages folded")));
+        assert!(v.rows.iter().any(|row| {
+            row.text
+                .iter()
+                .collect::<String>()
+                .contains("Earlier messages folded")
+        }));
         v.scroll_up(1);
         v.rebuild(&blocks, 80, 10);
         assert!(v

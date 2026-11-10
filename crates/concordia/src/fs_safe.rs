@@ -2,6 +2,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub(crate) fn read_text_bounded(path: &Path, limit: usize) -> Option<String> {
+    use std::io::Read;
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > limit {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 pub(crate) fn regular_owned_file(path: &Path, root: &Path) -> bool {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return false;
@@ -43,7 +54,7 @@ pub fn resolve_active_exe() -> PathBuf {
                 .join("concordia")
                 .join("bin")
         });
-    if let Ok(raw) = fs::read_to_string(bin.join("current")) {
+    if let Some(raw) = read_text_bounded(&bin.join("current"), 4096) {
         let p = PathBuf::from(raw.trim());
         if p.is_file() {
             return p;

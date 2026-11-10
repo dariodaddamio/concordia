@@ -215,6 +215,7 @@ pub(crate) fn enrich_codex(
         }
         if detail != raw {
             card.detail = Some(detail);
+            super::stream_cards::bound_card(card);
             changed.push(card.clone());
         }
     }
@@ -314,30 +315,6 @@ pub(crate) fn normalize_acp(card: &mut StreamCard, value: &Value) {
     card.detail = Some(format!("File: {path}\n{detail}"));
 }
 
-#[cfg(test)]
-mod acp_tests {
-    use super::*;
-
-    #[test]
-    fn acp_diff_becomes_the_common_edit_card_evidence() {
-        let mut card = StreamCard {
-            id: "acp-edit".into(),
-            title: "tool_call".into(),
-            status: super::super::CardStatus::Done,
-            detail: None,
-        };
-        normalize_acp(
-            &mut card,
-            &serde_json::json!({"path":"src/main.rs","diff":"@@ -1 +1 @@\n-old\n+new"}),
-        );
-        assert_eq!(card.title, "Edit");
-        let detail = card.detail.unwrap();
-        assert!(detail.contains("File: src/main.rs"));
-        assert!(detail.contains("-old"));
-        assert!(detail.contains("+new"));
-    }
-}
-
 fn normalize_completed_wrapper(card: &mut StreamCard) -> bool {
     if card.status != super::CardStatus::Done {
         return false;
@@ -353,7 +330,7 @@ fn normalize_completed_wrapper(card: &mut StreamCard) -> bool {
         return false;
     };
     let input = input.strip_prefix("input: ").unwrap_or(input);
-    let Some(calls) = super::stream_cards::literal_wrapper_calls(input) else {
+    let Some(calls) = crate::tool_literals::literal_wrapper_calls(input) else {
         return false;
     };
     let output = serde_json::from_str(output).unwrap_or_else(|_| Value::String(output.to_owned()));
@@ -415,4 +392,28 @@ fn normalize_completed_wrapper(card: &mut StreamCard) -> bool {
         preview[0].detail.as_deref().unwrap_or_default()
     ));
     true
+}
+
+#[cfg(test)]
+mod acp_tests {
+    use super::*;
+
+    #[test]
+    fn acp_diff_becomes_the_common_edit_card_evidence() {
+        let mut card = StreamCard {
+            id: "acp-edit".into(),
+            title: "tool_call".into(),
+            status: super::super::CardStatus::Done,
+            detail: None,
+        };
+        normalize_acp(
+            &mut card,
+            &serde_json::json!({"path":"src/main.rs","diff":"@@ -1 +1 @@\n-old\n+new"}),
+        );
+        assert_eq!(card.title, "Edit");
+        let detail = card.detail.unwrap();
+        assert!(detail.contains("File: src/main.rs"));
+        assert!(detail.contains("-old"));
+        assert!(detail.contains("+new"));
+    }
 }

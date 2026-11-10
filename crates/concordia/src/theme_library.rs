@@ -1,6 +1,7 @@
 //! Strict, file-backed theme format. Theme files are data and never executable code.
 use crate::config::{contrast, Rgb};
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub const MAX_THEME_BYTES: usize = 16 * 1024;
@@ -129,10 +130,14 @@ pub fn load(path: &Path) -> Result<ThemeFile, String> {
     if metadata.len() > MAX_THEME_BYTES as u64 {
         return Err(format!("theme file exceeds {MAX_THEME_BYTES} bytes"));
     }
-    parse(
-        &std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?,
-    )
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .and_then(|file| {
+            file.take(MAX_THEME_BYTES as u64 + 1)
+                .read_to_string(&mut text)
+        })
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    parse(&text)
 }
 
 pub fn builtin(name: &str) -> Result<ThemeFile, String> {
@@ -154,11 +159,8 @@ pub fn import(root: &Path, source: &Path) -> Result<ThemeFile, String> {
     std::fs::create_dir_all(library_dir(root))
         .map_err(|e| format!("cannot create theme library: {e}"))?;
     let destination = library_dir(root).join(format!("{}.toml", safe_name(&theme.name)));
-    crate::state_io::write_atomic(
-        &destination,
-        &std::fs::read(source).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("cannot copy theme: {e}"))?;
+    crate::state_io::write_atomic(&destination, serialize(&theme).as_bytes())
+        .map_err(|e| format!("cannot copy theme: {e}"))?;
     Ok(theme)
 }
 
@@ -180,7 +182,12 @@ pub fn export(
 
 pub fn serialize(theme: &ThemeFile) -> String {
     let hex = |c: Rgb| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
-    format!("name = {:?}\nauthor = {:?}\nbackground = \"{}\"\nforeground = \"{}\"\naccent = \"{}\"\ndim = \"{}\"\nsuccess = \"{}\"\nwarning = \"{}\"\nerror = \"{}\"\nselection = \"{}\"\nborder = \"{}\"{}\n", theme.name, theme.author, hex(theme.background), hex(theme.foreground), hex(theme.accent), hex(theme.dim), hex(theme.success), hex(theme.warning), hex(theme.error), hex(theme.selection), hex(theme.border), theme.portrait_tint.map_or(String::new(), |c| format!("\nportrait_tint = \"{}\"", hex(c))))
+    let quote = |text: &str| {
+        serde_json::to_string(text)
+            .expect("string serialization")
+            .replace('\u{7f}', "\\u007f")
+    };
+    format!("name = {}\nauthor = {}\nbackground = \"{}\"\nforeground = \"{}\"\naccent = \"{}\"\ndim = \"{}\"\nsuccess = \"{}\"\nwarning = \"{}\"\nerror = \"{}\"\nselection = \"{}\"\nborder = \"{}\"{}\n", quote(&theme.name), quote(&theme.author), hex(theme.background), hex(theme.foreground), hex(theme.accent), hex(theme.dim), hex(theme.success), hex(theme.warning), hex(theme.error), hex(theme.selection), hex(theme.border), theme.portrait_tint.map_or(String::new(), |c| format!("\nportrait_tint = \"{}\"", hex(c))))
 }
 
 fn safe_name(name: &str) -> String {

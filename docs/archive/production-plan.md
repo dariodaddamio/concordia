@@ -1,7 +1,7 @@
 # Production readiness work plan
 
 Current priorities are local memory management and orchestration, with the source-of-truth
-roadmap in [PLAN.md](../PLAN.md) and acceptance in [context-handoff-plan.md](context-handoff-plan.md).
+roadmap in [PLAN.md](../../PLAN.md) and acceptance in [context-handoff-plan.md](../plans/context-handoff-plan.md).
 The README separates shipped continuity/delegation from the planned native-pointer memory
 manager. Use `concordia --version` for the installed artifact. The scoped pass below is historical;
 its build stamps and counts are historical evidence, not the current release status. Native

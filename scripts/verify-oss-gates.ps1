@@ -73,17 +73,27 @@ $publicThemeFiles = @(
     'CHANGELOG.md', 'PLAN.md', 'crates/concordia/src/config.rs',
     'crates/concordia/src/tui/appearance.rs', 'crates/concordia/src/tui/brand.rs',
     'crates/concordia/src/tui/theme.rs', 'crates/concordia/src/tui/tests.rs',
-    'docs/config.md', 'docs/brand-direction.md', 'docs/chat-rendering.md',
-    'docs/e2e-status.md', 'docs/architecture.md'
+    'docs/config.md', 'docs/archive/brand-direction.md', 'docs/chat-rendering.md',
+    'docs/e2e-status.md', 'docs/architecture.md', 'docs/agent/cleanup-review.md',
+    'docs/quality/e2e-history.md', 'crates/concordia/src/theme_library.rs',
+    ('crates/concordia/src/themes/' + ('op' + 'ifex') + '.toml'), 'crates/concordia/src/tui/raster.rs',
+    'crates/concordia/src/tui/tests/draw.rs', 'crates/concordia/src/tui/tests/input_dispatch.rs',
+    'crates/concordia/src/tui/ux_tests.rs'
 )
 $themeToken = ('op' + 'ifex')
 $binaryExt = '\.(png|jpg|jpeg|gif|ico|mesh|exe|dll|zip|gz|7z|pdf|woff2?)$'
-$tracked = git ls-files | Where-Object { $_ -notmatch $binaryExt -and $_ -ne "Cargo.lock" }
+$tracked = git ls-files --cached --others --exclude-standard | Sort-Object -Unique | Where-Object { $_ -notmatch $binaryExt -and $_ -ne "Cargo.lock" }
+if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate distributable candidates; privacy coverage is unknown.' }
 $privateHits = New-Object System.Collections.Generic.List[string]
 $personalHits = New-Object System.Collections.Generic.List[string]
 foreach ($rel in $tracked) {
     $p = Join-Path $root $rel
     if (-not (Test-Path $p -PathType Leaf)) { continue }
+    $entry = Get-Item -LiteralPath $p -Force -ErrorAction Stop
+    if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        [void]$failures.Add("linked distributable candidate was not read: $rel")
+        continue
+    }
     $t = Get-Content $p -Raw -ErrorAction SilentlyContinue
     if ($null -eq $t) { continue }
     $privateText = if ($publicThemeFiles -contains $rel) { $t -replace ('(?i)\b' + $themeToken + '\b'), 'theme' } else { $t }
@@ -110,7 +120,7 @@ if (-not (Test-Path (Join-Path $root "deny.toml"))) {
 }
 
 Write-Host "=== OSS gate report ==="
-Write-Host ("scanned {0} tracked text files" -f @($tracked).Count)
+Write-Host ("scanned {0} tracked and unignored text files" -f @($tracked).Count)
 if ($failures.Count -eq 0) {
     Write-Host "REQUIRED: PASS"
 } else {

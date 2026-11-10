@@ -7,7 +7,12 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     app.areas.run_cancel = Rect::default();
     app.areas.pinned_card = None;
     app.areas.modal_close = None;
-    let screen = draw_tab_strip(f, app);
+    let (screen, rename_cursor) = draw_tab_strip(f, app);
+    if app.local_terminal.visible() {
+        local_terminal::draw(f, app, screen);
+        theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
+        return;
+    }
     if app
         .picker
         .as_ref()
@@ -128,24 +133,53 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
             cell.set_symbol(&clean);
         }
     }
+    if let Some(cursor) = rename_cursor.filter(|_| {
+        !worker_input::active(app)
+            && !app.raster.active()
+            && !app.project_search.active()
+            && app.picker.is_none()
+            && !app.key_sheet
+    }) {
+        f.set_cursor_position(cursor);
+    }
     theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
 }
 
-/// Browser-style strip on the top row while two or more tabs are open; returns the rest.
-fn draw_tab_strip(f: &mut Frame, app: &mut App) -> Rect {
+/// Keep the title editor in the tab row, including a single-tab window during rename.
+fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
     app.tab_hits.clear();
     app.tab_close_hits.clear();
     let area = f.area();
-    if app.tab_strip.len() < 2 || area.height < 4 {
-        return area;
+    if app.tab_strip.len() < 2 && app.rename_editor.is_none() || area.height < 4 {
+        return (area, None);
     }
     let row = Rect::new(area.x, area.y, area.width, 1);
     f.render_widget(Clear, row);
     let mut x = row.x;
     let mut spans = Vec::new();
-    for (index, label) in app.tab_strip.iter().enumerate() {
-        let text = format!(" {} {label} ×", index + 1);
-        let width = (text.chars().count() as u16).min(row.right().saturating_sub(x));
+    let fallback;
+    let labels = if app.tab_strip.is_empty() {
+        fallback = vec![app.tab_label()];
+        &fallback
+    } else {
+        &app.tab_strip
+    };
+    let mut rename = None;
+    for (index, label) in labels.iter().enumerate() {
+        let prefix = format!(" {} ", index + 1);
+        let editor = app
+            .rename_editor
+            .as_ref()
+            .filter(|_| index == app.tab_index);
+        let edit_width = 24usize
+            .min(usize::from(row.right().saturating_sub(x)).saturating_sub(prefix.len() + 5));
+        let text = if editor.is_some() {
+            format!("{prefix}{}  ×  ", " ".repeat(edit_width))
+        } else {
+            format!("{prefix}{label}  ×  ")
+        };
+        let text_width = Line::raw(text.as_str()).width();
+        let width = text_width.min(usize::from(row.right().saturating_sub(x))) as u16;
         if width == 0 {
             break;
         }
@@ -159,17 +193,58 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> Rect {
         };
         app.tab_hits.push(Rect::new(x, row.y, width, 1));
         app.tab_close_hits.push(Rect::new(
-            x.saturating_add(width.saturating_sub(1)),
+            x.saturating_add(width.saturating_sub(5)),
             row.y,
-            1,
+            if usize::from(width) == text_width {
+                5
+            } else {
+                0
+            },
             1,
         ));
+        if let Some(editor) = editor.filter(|_| edit_width > 0) {
+            let (line, col) = editor.cursor_pos(edit_width);
+            let rows = editor.layout(edit_width);
+            let slice = rows[line];
+            let selection = editor.selection();
+            let title: Vec<_> = (slice.start..slice.end)
+                .map(|i| {
+                    let selected = selection.is_some_and(|(a, b)| i >= a && i < b);
+                    Span::styled(
+                        editor.chars()[i].to_string(),
+                        if selected {
+                            Style::default().fg(Color::White).bg(Color::Blue)
+                        } else {
+                            Style::default().fg(Color::Black).bg(Color::White)
+                        },
+                    )
+                })
+                .collect();
+            rename = Some((
+                Rect::new(x + prefix.len() as u16, row.y, edit_width as u16, 1),
+                title,
+                col,
+            ));
+        }
         spans.push(Span::styled(text, style));
         spans.push(Span::raw(" "));
         x = x.saturating_add(width + 1);
     }
     f.render_widget(Paragraph::new(Line::from(spans)), row);
-    Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+    let cursor = rename.map(|(rect, title, col)| {
+        f.render_widget(
+            Paragraph::new(Line::from(title)).style(Style::default().bg(Color::White)),
+            rect,
+        );
+        Position::new(
+            rect.x + col.min(rect.width.saturating_sub(1) as usize) as u16,
+            rect.y,
+        )
+    });
+    (
+        Rect::new(area.x, area.y + 1, area.width, area.height - 1),
+        cursor,
+    )
 }
 
 fn draw_key_sheet(f: &mut Frame, app: &App) {
@@ -231,8 +306,8 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
         .map(|e| e.help.chars().count() + if e.custom { 8 } else { 0 })
         .max()
         .unwrap_or(12);
-    let width =
-        ((cmd_col + help_col + 4) as u16).clamp(34, f.area().width.saturating_sub(2).max(10));
+    let max_width = f.area().width.saturating_sub(2);
+    let width = (cmd_col + help_col + 4).min(usize::from(max_width)) as u16;
     let y = input.y.saturating_sub(height).max(above.y);
     let rect = Rect {
         x: input.x + 1,
@@ -371,6 +446,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.areas.header_email = None;
     app.areas.header_home = None;
     app.areas.header_credits = None;
+    app.areas.header_attention = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
     let model = if app.model == "?" {
         "model ?".to_string()
@@ -378,11 +454,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         app.model.clone()
     };
     let email = if app.header_email_revealed {
-        app.account_email.as_deref().unwrap_or("email unavailable")
+        app.account_email.as_deref().unwrap_or_default()
     } else if app.account_email.is_some() {
         "view email"
     } else {
-        "email unavailable"
+        ""
     };
     let account = app.account_label();
     let right = String::new();
@@ -419,7 +495,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         "  email".into()
     };
     let email_width = Line::from(email_text.clone()).width();
-    if email_x + email_width <= available {
+    if app.account_email.is_some() && email_x + email_width <= available {
         if app.account_email.is_some() {
             app.areas.header_email = Some(Rect::new(
                 area.x + email_x as u16,
@@ -442,8 +518,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let needs_you = app.needs_you.len();
     if needs_you > 0 {
-        let badge = format!("  Ctrl+N needs you {needs_you}");
+        let badge = format!("  Attention {needs_you} (Ctrl+N)");
         if left.iter().map(Span::width).sum::<usize>() + badge.len() <= available {
+            let x = left.iter().map(Span::width).sum::<usize>() as u16;
+            app.areas.header_attention = Some(Rect::new(area.x + x, area.y, badge.len() as u16, 1));
             left.push(Span::styled(
                 badge,
                 bar.fg(Color::Yellow).add_modifier(Modifier::BOLD),
@@ -1047,6 +1125,9 @@ pub(super) fn detail_lines_parts<'a>(
 ) -> Vec<Line<'a>> {
     let mut output = Vec::new();
     let mut match_cursor = 0;
+    let is_diff = parts
+        .iter()
+        .any(|part| part.lines().any(|line| line.starts_with("@@")));
     for (line_no, line) in parts.iter().flat_map(|p| p.lines()).enumerate() {
         let chars: Vec<char> = line.chars().collect();
         let byte_offsets: Vec<usize> = line
@@ -1062,9 +1143,18 @@ pub(super) fn detail_lines_parts<'a>(
             match_cursor += 1;
         }
         let line_matches = &matches[first..match_cursor];
+        let mut row_match_cursor = 0;
         for (row_start, row_end) in text::wrap_ranges(&chars, width.max(1)) {
+            while row_match_cursor < line_matches.len()
+                && line_matches[row_match_cursor].col + line_matches[row_match_cursor].len
+                    <= row_start
+            {
+                row_match_cursor += 1;
+            }
+            let row_matches = &line_matches[row_match_cursor..];
+            let row_matches = &row_matches[..row_matches.partition_point(|m| m.col < row_end)];
             let mut cuts = vec![row_start, row_end];
-            for m in line_matches {
+            for m in row_matches {
                 let a = m.col.max(row_start);
                 let b = (m.col + m.len).min(row_end);
                 if a < b {
@@ -1080,15 +1170,15 @@ pub(super) fn detail_lines_parts<'a>(
                 if a == b {
                     continue;
                 }
-                while mi < line_matches.len() && line_matches[mi].col + line_matches[mi].len <= a {
+                while mi < row_matches.len() && row_matches[mi].col + row_matches[mi].len <= a {
                     mi += 1;
                 }
-                let active = line_matches
+                let active = row_matches
                     .get(mi)
                     .filter(|m| m.col <= a && b <= m.col + m.len);
                 let style = active
                     .map(|_| {
-                        if first + mi == selected {
+                        if first + row_match_cursor + mi == selected {
                             Style::default()
                                 .fg(Color::Black)
                                 .bg(Color::Cyan)
@@ -1098,10 +1188,7 @@ pub(super) fn detail_lines_parts<'a>(
                         }
                     })
                     .unwrap_or_else(|| {
-                        if parts
-                            .iter()
-                            .any(|part| part.lines().any(|line| line.starts_with("@@")))
-                        {
+                        if is_diff {
                             transcript::diff_line_style(line)
                         } else {
                             Style::default()
@@ -1134,8 +1221,12 @@ impl Widget for DetailRows<'_> {
 }
 
 fn centered_rect(width_pct: u16, height_pct: u16, area: Rect) -> Rect {
-    let w = (area.width * width_pct / 100).max(1).min(area.width);
-    let h = (area.height * height_pct / 100).max(1).min(area.height);
+    let w = (u32::from(area.width) * u32::from(width_pct) / 100)
+        .max(1)
+        .min(u32::from(area.width)) as u16;
+    let h = (u32::from(area.height) * u32::from(height_pct) / 100)
+        .max(1)
+        .min(u32::from(area.height)) as u16;
     Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -1503,9 +1594,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 Some(UsageTone::Mute) => Style::default().fg(Color::DarkGray),
                 None => Style::default(),
             };
-            if r.id.starts_with("model-group:")
-                || (picker.kind == PickerKind::Model && r.detail.contains("deprecated"))
-            {
+            if r.id.starts_with("model-group:") {
                 label_style = Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM);
@@ -1775,11 +1864,17 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     let job_line;
     let idle_footer_hint = format!("{FOOTER_HINT} \u{b7} Ctrl+K options");
     let scrolled = format!("\u{2191} {} rows up \u{b7} PgDn to follow", app.view.scroll);
+    let recovery_hint = format!(
+        "{} saved drafts/requests · /recover",
+        app.keep.recovery_choices.len()
+    );
     let (left, left_style) = if app.recovery_warning().is_some() {
         (
             "draft not saved locally · /recover retry",
             Style::default().fg(Color::Red),
         )
+    } else if let Some(warning) = app.store_warning.as_deref() {
+        (warning, Style::default().fg(Color::Red))
     } else if let Some(m) = flash {
         (m, Style::default().fg(Color::Indexed(179)))
     } else if app
@@ -1860,6 +1955,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
             },
             Style::default().fg(Color::DarkGray),
         )
+    } else if !app.keep.recovery_choices.is_empty() && app.picker.is_none() {
+        (recovery_hint.as_str(), Style::default().fg(Color::DarkGray))
     } else {
         (
             if app.idle_notice.is_some() && app.picker.is_none() {

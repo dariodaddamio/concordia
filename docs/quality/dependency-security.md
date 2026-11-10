@@ -1,5 +1,25 @@
 # Dependency and terminal-output security
 
+## Repository audit snapshot, 2026-11-08
+
+The current lockfile uses the locally patched Crossterm 0.29.0 for input and output. The older
+split-version description below is historical. The local patches and upstream comparison are
+being reconciled in the repository audit. `cargo deny check advisories licenses sources` passed
+for the current checkout (`target/full-audit-dependencies.log`). The exact Bincode maintenance
+exception below remains in `deny.toml`; a passing gate does not remove that accepted risk.
+
+## Embedded terminal, 2026-11-09b
+
+The embedded shell reuses portable-pty 0.9 and the existing owned process-tree lifetime helper.
+VT100 screen parsing adds vt100 0.18.1 (MIT), vte 0.15 and arrayvec; exact versions are locked.
+Default features are disabled for vt100 so the VTE OSC accumulator stays fixed-capacity rather
+than growing with an unterminated escape string. The terminal has bounded input/output queues,
+a bounded pending-input FIFO, a 64 KiB paste limit and 2,000 retained scrollback rows. OSC clipboard
+requests do not access the system clipboard. No external terminal application is required.
+API/source references: [vt100](https://docs.rs/vt100/0.18.1/vt100/),
+[portable-pty](https://docs.rs/portable-pty/0.9.0/portable_pty/).
+Final dependency-policy execution is recorded with the build's verification status.
+
 ## Native workspace delivery, 2026-11-04k
 
 Shared file windows, descriptive tool wrappers and expanded icon resources reuse existing Rust

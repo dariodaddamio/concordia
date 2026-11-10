@@ -610,16 +610,17 @@ pub(crate) struct Collector {
     claude_pending: HashMap<String, (String, String)>,
 }
 impl Collector {
-    fn report_records(
+    async fn report_records(
         &mut self,
         records: impl IntoIterator<Item = Record>,
-        progress: &Option<tokio::sync::mpsc::UnboundedSender<crate::provider::turn::TurnProgress>>,
+        progress: &Option<tokio::sync::mpsc::Sender<crate::provider::turn::TurnProgress>>,
+        handle: &crate::provider::turn::RunningTurn,
     ) {
         for record in records {
             if self.count >= 32 {
                 if !self.limited {
-                    if let Some(tx) = progress {
-                        let _ = tx.send(crate::provider::turn::TurnProgress::Notice("Reported file changes reached its 32 records per attempt limit; native source events remain authoritative".into()));
+                    if progress.is_some() {
+                        let _ = crate::provider::turn::send_progress(progress, crate::provider::turn::TurnProgress::Notice("Reported file changes reached its 32 records per attempt limit; native source events remain authoritative".into()), handle).await;
                     }
                     self.limited = true;
                 }
@@ -631,61 +632,78 @@ impl Collector {
             self.count += 1;
             match save(&crate::store::default_store_root(), &record) {
                 Ok(true) => {
-                    if let Some(tx) = progress {
-                        let _ = tx.send(crate::provider::turn::TurnProgress::Artifact(Box::new(
-                            record,
-                        )));
+                    if progress.is_some() {
+                        let _ = crate::provider::turn::send_progress(
+                            progress,
+                            crate::provider::turn::TurnProgress::Artifact(Box::new(record)),
+                            handle,
+                        )
+                        .await;
                     }
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    if let Some(tx) = progress {
-                        let _ = tx.send(crate::provider::turn::TurnProgress::Notice(format!(
-                            "Reported file metadata was not retained: {error}"
-                        )));
+                    if progress.is_some() {
+                        let _ = crate::provider::turn::send_progress(
+                            progress,
+                            crate::provider::turn::TurnProgress::Notice(format!(
+                                "Reported file metadata was not retained: {error}"
+                            )),
+                            handle,
+                        )
+                        .await;
                     }
                 }
             }
         }
     }
 
-    pub fn report(
+    pub async fn report(
         &mut self,
         owner: Option<&InteractionOwner>,
         session: Option<&str>,
         turn: Option<&str>,
         item: &Value,
-        progress: &Option<tokio::sync::mpsc::UnboundedSender<crate::provider::turn::TurnProgress>>,
+        progress: &Option<tokio::sync::mpsc::Sender<crate::provider::turn::TurnProgress>>,
+        handle: &crate::provider::turn::RunningTurn,
     ) {
         let (Some(owner), Some(session)) = (owner, session) else {
             return;
         };
-        self.report_records(from_item(owner, session, turn, item), progress);
+        self.report_records(from_item(owner, session, turn, item), progress, handle)
+            .await;
     }
 
     /// Record a completed Cursor write/edit report using the same bounded registry and
     /// persistence path as Codex file-change items.
-    pub fn report_cursor(
+    pub async fn report_cursor(
         &mut self,
         owner: Option<&InteractionOwner>,
         session: Option<&str>,
         turn: Option<&str>,
         event: &Value,
-        progress: &Option<tokio::sync::mpsc::UnboundedSender<crate::provider::turn::TurnProgress>>,
+        progress: &Option<tokio::sync::mpsc::Sender<crate::provider::turn::TurnProgress>>,
+        handle: &crate::provider::turn::RunningTurn,
     ) {
         let (Some(owner), Some(session)) = (owner, session) else {
             return;
         };
-        self.report_records(from_cursor_event(owner, session, turn, event), progress);
+        self.report_records(
+            from_cursor_event(owner, session, turn, event),
+            progress,
+            handle,
+        )
+        .await;
     }
 
-    pub fn report_claude(
+    pub async fn report_claude(
         &mut self,
         owner: Option<&InteractionOwner>,
         session: Option<&str>,
         turn: Option<&str>,
         event: &Value,
-        progress: &Option<tokio::sync::mpsc::UnboundedSender<crate::provider::turn::TurnProgress>>,
+        progress: &Option<tokio::sync::mpsc::Sender<crate::provider::turn::TurnProgress>>,
+        handle: &crate::provider::turn::RunningTurn,
     ) {
         let (Some(owner), Some(session)) = (owner, session) else {
             return;
@@ -693,7 +711,7 @@ impl Collector {
         if let Some(record) =
             claude_tool_event(&mut self.claude_pending, owner, session, turn, event)
         {
-            self.report_records([record], progress);
+            self.report_records([record], progress, handle).await;
         }
     }
 }

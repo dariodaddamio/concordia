@@ -1,13 +1,14 @@
 # Feature completion audit: 2026-11-05c
 
-The full roadmap is **not complete**. The current board has seven grouped open/deferred workstreams;
+The full roadmap is **not complete**. The seven grouped open/deferred workstreams below mix
+missing capabilities, qualification and release work; they are not a feature count or a
+percentage of completion. [PLAN.md](../PLAN.md) is the short current-scope overview.
 
-Current follow-up (2026-11-07e): the delegated-worker ceiling is now 12 instead of 3, and the
-worker strip is carved directly above the composer. Image-preview behavior remains under active
-repair; local rendering is separate from unverified provider-side image processing. The installed
-2026-11-07d build does not contain these follow-ups yet.
-they mix missing capabilities, qualification and release work, so they are not a feature count
-or a percentage of completion:
+Recent follow-ups include the worker ceiling/strip changes, chat and preview repairs described
+in [chat rendering](chat-rendering.md), and the scoped [cleanup](agent/cleanup-review.md).
+The installed build and its checks are recorded in [verification status](e2e-status.md).
+Native Home canvas pixels and synthetic streaming were checked on 07g. That evidence does not
+establish provider-side image processing or the broader provider/host matrix below.
 
 The actionable distinction is:
 
@@ -63,7 +64,7 @@ Build 04k adds one-command prebuilt installation, a shared original icon, task-f
 clickable permission selection, descriptive web tools, expandable completed-operation groups,
 full-range compact counts, horizontal file scrolling and shared-document native file windows.
 Local checks and exact-candidate qualification are recorded separately in [E2E status](e2e-status.md).
-The [REA review](rea-review.md) records actual static binary inspection and a current recheck of
+The [REA review](archive/rea-review.md) records actual static binary inspection and a current recheck of
 remaining supported-interface limits. None of these UI/delivery changes close missing native
 measurements, OS confinement or live model-effectiveness evidence.
 
@@ -200,11 +201,11 @@ creation does not change the implementation status recorded here.
 - Approved shared-workspace dependencies now dispatch through the existing durable worker queue.
   `/delegate after ID[,ID] ACCOUNT TASK` binds exact runs; `/delegate graph` explains readiness.
   Failed prerequisites block dependants, stale results pause and restart dispatches nothing.
-  See [second-wave evidence](quality/completion-wave2.md). Cross-worktree dependency integration
+  See [second-wave evidence](archive/quality/completion-wave2.md). Cross-worktree dependency integration
   is now receipt-bound; native filesystem confinement remains a separate capability.
 
 - First completion wave adds bounded read-only project search plus dependency/recovery and native
-  interaction contract foundations. See [scope and verification](quality/completion-wave1.md).
+  interaction contract foundations. See [scope and verification](archive/quality/completion-wave1.md).
   These first-wave foundations alone do not complete dependency dispatch, workspace isolation, native worker
   approvals or provider parity. Existing Cursor ACP permissions/questions now bind to the exact
   conversation/run/attempt/connection, with native options preserved.
@@ -345,4 +346,4 @@ Cursor movement/click feedback are editorial overlays. No real provider
 turn, real account mutation, benchmark comparison, release publication or social-media post is involved.
 
 Reproduction and files: [media](media/README.md). These drafts do not clear the full-feature
-[launch gates](launch-plan.md).
+[launch gates](plans/launch-plan.md).

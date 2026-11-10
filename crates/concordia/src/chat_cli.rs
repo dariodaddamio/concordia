@@ -85,6 +85,15 @@ fn read_history_file(path: &Path, provider: ProviderKind) -> Result<History, Str
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let size = file.metadata().map_err(|e| e.to_string())?.len();
     let start = size.saturating_sub(HISTORY_NATIVE_BYTES);
+    let partial_first = if start > 0 {
+        file.seek(SeekFrom::Start(start - 1))
+            .map_err(|e| e.to_string())?;
+        let mut previous = [0];
+        file.read_exact(&mut previous).map_err(|e| e.to_string())?;
+        previous[0] != b'\n'
+    } else {
+        false
+    };
     file.seek(SeekFrom::Start(start))
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
@@ -92,7 +101,7 @@ fn read_history_file(path: &Path, provider: ProviderKind) -> Result<History, Str
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     // Discard the incomplete first JSON line, including any split UTF-8 character.
-    let begin = if start > 0 {
+    let begin = if partial_first {
         bytes
             .iter()
             .position(|b| *b == b'\n')

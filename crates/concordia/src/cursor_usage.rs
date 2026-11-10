@@ -97,6 +97,7 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
 
 struct Shared {
     buf: Vec<u8>,
+    overflow: bool,
     first: Option<Instant>,
     last: Instant,
 }
@@ -115,6 +116,9 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     let mut cmd = CommandBuilder::new(&spec.program);
     cmd.args(&spec.args);
     cmd.cwd(&spec.cwd);
+    // Account-specific credentials, when supplied, are added below. Never let
+    // an unrelated inherited API key select the account for this observation.
+    cmd.env_remove("CURSOR_API_KEY");
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }
@@ -122,6 +126,13 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("could not start the Cursor agent: {e}"))?;
+    let tree = match crate::process_lifetime::own_pty_process(child.as_ref()) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = child.kill();
+            return Err(error);
+        }
+    };
     drop(pair.slave);
     let pid = child.process_id().unwrap_or(0);
     let master = pair.master;
@@ -135,6 +146,7 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     };
     let shared = Arc::new(Mutex::new(Shared {
         buf: Vec::new(),
+        overflow: false,
         first: None,
         last: Instant::now(),
     }));
@@ -146,6 +158,10 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
                 break;
             }
             let Ok(mut s) = sink.lock() else { break };
+            if s.buf.len().saturating_add(n) > 1024 * 1024 {
+                s.overflow = true;
+                break;
+            }
             s.buf.extend_from_slice(&chunk[..n]);
             let now = Instant::now();
             s.last = now;
@@ -155,7 +171,7 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
 
     let result = drive(&shared, &mut writer, child.as_mut(), timeout);
 
-    crate::provider::turn::kill_process_tree(pid);
+    drop(tree);
     let _ = child.kill();
     let _ = child.wait();
     drop(writer);
@@ -185,6 +201,9 @@ fn drive(
         }
         let (bytes, first, last) = {
             let s = shared.lock().map_err(|_| "poisoned")?;
+            if s.overflow {
+                return Err("Cursor usage output exceeds 1 MiB".into());
+            }
             (s.buf.clone(), s.first, s.last)
         };
         // ConPTY may ask where the cursor is and wait for the answer.

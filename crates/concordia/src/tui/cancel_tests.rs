@@ -114,7 +114,7 @@ fn submitting_while_busy_does_not_replace_active_prompt_or_queue_another_turn() 
     assert_eq!(app.editor.text(), "second prompt");
     assert!(app.busy);
     assert_eq!(app.submitted_prompt.as_deref(), Some("active prompt"));
-    assert!(!app.cancel_requested && !app.queue.force_pending);
+    assert!(!app.cancel_requested && !app.queue.dispatch.is_explicit());
     assert_eq!(app.queue.items, queued);
     assert!(app.busy_send_confirmation.is_some());
     assert!(app.flash.as_ref().unwrap().0.contains("Enter again"));
@@ -123,7 +123,7 @@ fn submitting_while_busy_does_not_replace_active_prompt_or_queue_another_turn() 
     let mut repeat = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     repeat.kind = KeyEventKind::Repeat;
     assert!(!handle_key(&mut app, repeat, &tx));
-    assert!(!app.cancel_requested && !app.queue.force_pending);
+    assert!(!app.cancel_requested && !app.queue.dispatch.is_explicit());
     assert_eq!(app.editor.text(), "second prompt");
 
     // Text identity, turn identity and conversation identity each require a fresh first press.
@@ -173,12 +173,12 @@ fn submitting_while_busy_does_not_replace_active_prompt_or_queue_another_turn() 
     );
     assert!(app.busy_send_confirmation.is_none());
     app.submit_input(&tx);
-    assert!(!app.cancel_requested && !app.queue.force_pending);
+    assert!(!app.cancel_requested && !app.queue.dispatch.is_explicit());
     assert_eq!(app.queue.items, queued);
 
     // The confirmed press requests cancellation; it cannot dispatch a second native process.
     app.submit_input(&tx);
-    assert!(app.busy && app.cancel_requested && app.queue.force_pending);
+    assert!(app.busy && app.cancel_requested && app.queue.dispatch.is_explicit());
     assert!(app.editor.text().is_empty());
     assert_eq!(app.queue.items[0], replacement);
     assert_eq!(&app.queue.items[1..], queued.as_slice());

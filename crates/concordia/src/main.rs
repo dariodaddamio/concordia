@@ -116,7 +116,7 @@ const CLI_HELP: &[CommandSpec] = &[
         name: "sessions",
         aliases: &[],
         args: "prune --empty",
-        help: "list and optionally remove empty native sessions",
+        help: "report empty native sessions without deleting provider files",
         command: Command::Sessions,
     },
     CommandSpec {
@@ -280,33 +280,22 @@ async fn main() -> Result<()> {
             anyhow::bail!("Native app windows require Windows; use concordia --terminal");
         }
         Command::Help => print_help(),
-        Command::Install => {
-            match concordia::update::install_self() {
-                Ok(r) => {
-                    println!("installed {}", r.installed.display());
-                    if r.path_added {
-                        println!(
-                            "added {} to your PATH",
-                            concordia::update::install_bin_dir().display()
-                        );
-                    }
-                    if r.state_adopted {
-                        println!("carried over your settings and registered accounts from the old orc state");
-                    }
-                    if let Some(old) = r.legacy_retired {
-                        println!(
-                        "removed the old `orc` install from your PATH ({}); delete that folder when you are ready",
-                        old.display()
+        Command::Install => match concordia::update::install_self() {
+            Ok(r) => {
+                println!("installed {}", r.installed.display());
+                if r.path_added {
+                    println!(
+                        "added {} to your PATH",
+                        concordia::update::install_bin_dir().display()
                     );
-                    }
-                    println!("open a NEW terminal, then run: concordia --version");
                 }
-                Err(e) => {
-                    eprintln!("install failed: {e:#}");
-                    std::process::exit(1);
-                }
+                println!("open a NEW terminal, then run: concordia --version");
             }
-        }
+            Err(e) => {
+                eprintln!("install failed: {e:#}");
+                std::process::exit(1);
+            }
+        },
         Command::Shortcut => {
             if rest.is_empty()
                 || rest.len() > 2

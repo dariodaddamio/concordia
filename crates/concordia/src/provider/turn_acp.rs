@@ -3,24 +3,29 @@ use super::*;
 use crate::provider::interaction::InteractionConnection;
 use crate::provider::CardStatus;
 use serde_json::{json, Value};
+
+struct QuestionListener(tokio::task::JoinHandle<()>);
+
+impl Drop for QuestionListener {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 struct Connection {
     input: tokio::process::ChildStdin,
     output: BufReader<tokio::process::ChildStdout>,
     handle: Arc<RunningTurn>,
-    progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    progress: Option<mpsc::Sender<TurnProgress>>,
     out: TurnOutcome,
-    bytes: usize,
     session_id: Option<String>,
     interactions: InteractionConnection,
     prompting: bool,
     bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ask_bridge::BridgeRequest>,
-    bridge_task: Option<tokio::task::JoinHandle<()>>,
 }
 impl Connection {
-    fn emit(&self, event: TurnProgress) {
-        if let Some(tx) = &self.progress {
-            let _ = tx.send(event);
-        }
+    async fn emit(&self, event: TurnProgress) {
+        let _ = send_progress(&self.progress, event, &self.handle).await;
     }
     async fn write(&mut self, value: Value) -> Result<()> {
         self.input
@@ -33,6 +38,7 @@ impl Connection {
         self.write(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
         loop {
+            anyhow::ensure!(!self.handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
             let mut bytes = Vec::new();
             let next = tokio::select! {
                 _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
@@ -45,11 +51,6 @@ impl Connection {
             let received = next?;
             anyhow::ensure!(received > 0, "Cursor ACP closed before replying");
             anyhow::ensure!(received <= LINE_MAX, "Cursor ACP response line too large");
-            self.bytes += bytes.len();
-            anyhow::ensure!(
-                self.bytes <= 16 * 1024 * 1024,
-                "Cursor ACP output bound exceeded"
-            );
             let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
                 continue;
             };
@@ -57,7 +58,7 @@ impl Connection {
                 if value.get("id").is_some() {
                     self.request(&value).await?;
                 } else {
-                    self.update(&value);
+                    self.update(&value).await;
                 }
                 continue;
             }
@@ -86,22 +87,30 @@ impl Connection {
             return Ok(());
         };
         let session = session.as_str();
+        let bridge_id = format!("concordia-ask-user-{}", uuid::Uuid::new_v4());
         let Some(questions) = request.questions.as_array() else {
             let _ = request.answer.send(json!(crate::ask_bridge::DISMISSED));
             return Ok(());
         };
-        let native = json!({"sessionId":session,"toolCallId":"concordia-ask-user","prompt":"The agent needs a decision","questions":questions.iter().enumerate().map(|(i,q)| json!({"id":format!("question-{i}"),"prompt":q["question"],"options":q["options"].as_array().unwrap_or(&Vec::new()).iter().enumerate().map(|(j,o)| json!({"id":format!("option-{i}-{j}"),"label":o})).collect::<Vec<_>>(),"allowMultiple":q["multiple"].as_bool().unwrap_or(false)})).collect::<Vec<_>>() });
+        let native = json!({"sessionId":session,"toolCallId":bridge_id,"prompt":"The agent needs a decision","questions":questions.iter().enumerate().map(|(i,q)| json!({"id":format!("question-{i}"),"prompt":q["question"],"options":q["options"].as_array().unwrap_or(&Vec::new()).iter().enumerate().map(|(j,o)| json!({"id":format!("option-{i}-{j}"),"label":o})).collect::<Vec<_>>(),"allowMultiple":q["multiple"].as_bool().unwrap_or(false)})).collect::<Vec<_>>() });
         let (native_request, rx) = self
             .interactions
             .request(
                 session,
-                json!("concordia-ask-user"),
+                json!(bridge_id),
                 "cursor/ask_question".into(),
                 native,
             )
-            .map_err(|e| anyhow::anyhow!(e))?;
-        if let Some(tx) = &self.progress {
-            let _ = tx.send(TurnProgress::Interaction(Box::new(native_request.clone())));
+            .map_err(|e| anyhow::anyhow!(e))?
+            .ok_or_else(|| anyhow::anyhow!("bridge request identity was reused"))?;
+        if !send_progress(
+            &self.progress,
+            TurnProgress::Interaction(Box::new(native_request.clone())),
+            &self.handle,
+        )
+        .await
+        {
+            native_request.cancel();
         }
         let answer = tokio::select! {
             _ = self.handle.wake.notified() => {
@@ -136,7 +145,8 @@ impl Connection {
         {
             self.emit(TurnProgress::Notice(
                 "Native request rejected: session identity mismatch".into(),
-            ));
+            ))
+            .await;
             return self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32602,"message":"Session identity mismatch"}})).await;
         }
         if interactive {
@@ -152,18 +162,23 @@ impl Connection {
                 method.into(),
                 value["params"].clone(),
             ) {
-                Ok(request) => request,
+                Ok(Some(request)) => request,
+                Ok(None) => return Ok(()),
                 Err(reason) => {
                     self.emit(TurnProgress::Notice(format!(
                         "Unsupported native request: {reason}"
-                    )));
+                    )))
+                    .await;
                     return self.write(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}})).await;
                 }
             };
-            if !self.progress.as_ref().is_some_and(|tx| {
-                tx.send(TurnProgress::Interaction(Box::new(request.clone())))
-                    .is_ok()
-            }) {
+            if !send_progress(
+                &self.progress,
+                TurnProgress::Interaction(Box::new(request.clone())),
+                &self.handle,
+            )
+            .await
+            {
                 // A closed/missing UI cannot leave a provider awaiting an invisible grant.
                 request.respond(json!({"outcome":{"outcome":"cancelled"}}));
             }
@@ -178,11 +193,12 @@ impl Connection {
         } else {
             self.emit(TurnProgress::Notice(
                 "Unsupported native interaction method".into(),
-            ));
+            ))
+            .await;
             self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32601,"message":"Client capability is not supported"}})).await
         }
     }
-    fn update(&mut self, value: &Value) {
+    async fn update(&mut self, value: &Value) {
         // session/load replays the old transcript before its response. History belongs to
         // readback, not this turn's answer, thinking stream or active tool cards.
         if !self.prompting {
@@ -198,13 +214,13 @@ impl Connection {
         match update["sessionUpdate"].as_str().unwrap_or("") {
             "agent_message_chunk" => {
                 if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
-                    self.out.text.push_str(text);
-                    self.emit(TurnProgress::TextDelta(text.into()));
+                    append_visible_text(&mut self.out.text, text);
+                    self.emit(TurnProgress::TextDelta(text.into())).await;
                 }
             }
             "agent_thought_chunk" => {
                 if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
-                    self.emit(TurnProgress::ThinkingDelta(text.into()));
+                    self.emit(TurnProgress::ThinkingDelta(text.into())).await;
                 }
             }
             "tool_call" | "tool_call_update" => {
@@ -238,7 +254,7 @@ impl Connection {
                     crate::provider::edit_display::normalize_acp(&mut card, content);
                 }
                 crate::provider::stream_cards::upsert_card(&mut self.out.cards, card.clone());
-                self.emit(TurnProgress::Card(card));
+                self.emit(TurnProgress::Card(card)).await;
             }
             _ => {}
         }
@@ -300,11 +316,13 @@ fn acp_model_id(id: &str, available: &[String]) -> Option<String> {
 /// session over the protocol instead.
 fn acp_argv(print_argv: &[String]) -> Vec<String> {
     let mut argv = Vec::new();
-    if print_argv.iter().any(|a| a == "--force") {
+    if planned_options(print_argv).any(|(flag, _)| flag == "--force") {
         argv.push("--force".into());
     }
-    if let Some(i) = print_argv.iter().position(|a| a == "--sandbox") {
-        argv.extend(print_argv[i..].iter().take(2).cloned());
+    if let Some((flag, Some(value))) =
+        planned_options(print_argv).find(|(flag, _)| *flag == "--sandbox")
+    {
+        argv.extend([flag.into(), value.into()]);
     }
     argv.push("acp".into());
     argv
@@ -315,7 +333,8 @@ pub(super) async fn run(
     plan: &PlannedTurn,
     owner: Option<InteractionOwner>,
     started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    progress: Option<mpsc::Sender<TurnProgress>>,
+    handle: Arc<RunningTurn>,
 ) -> Result<TurnOutcome> {
     anyhow::ensure!(
         req.images.len() <= crate::attachments::MAX_IMAGES,
@@ -333,6 +352,7 @@ pub(super) async fn run(
     } else {
         (String::new(), tokio::spawn(async {}))
     };
+    let _question_listener = QuestionListener(bridge_task);
     let mut env = plan.env.clone();
     if !endpoint.is_empty() {
         env.push(("CONCORDIA_ASK_ENDPOINT".into(), endpoint.clone()));
@@ -345,6 +365,8 @@ pub(super) async fn run(
     })?;
     let mut command = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut command);
+    #[cfg(unix)]
+    command.process_group(0);
     for key in &plan.env_remove {
         command.env_remove(key);
     }
@@ -357,8 +379,15 @@ pub(super) async fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if handle.cancel_flag.load(Ordering::SeqCst) {
+        return Ok(TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
     let mut child = command.spawn().context("could not start Cursor ACP")?;
-    let handle = Arc::new(RunningTurn::new());
+    let _process_tree =
+        crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     let input = child.stdin.take().context("Cursor ACP stdin unavailable")?;
     let output = BufReader::new(
@@ -371,21 +400,7 @@ pub(super) async fn run(
         .stderr
         .take()
         .context("Cursor ACP stderr unavailable")?;
-    let mut stderr_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr);
-        let mut tail = VecDeque::new();
-        let mut line = Vec::new();
-        while read_line_bounded(&mut reader, &mut line)
-            .await
-            .is_ok_and(|n| n > 0)
-        {
-            if tail.len() == STDERR_KEEP_LINES {
-                tail.pop_front();
-            }
-            tail.push_back(decode_line(&line));
-        }
-        tail.into_iter().collect::<Vec<_>>().join("\n")
-    });
+    let mut stderr_task = tokio::spawn(read_stderr_tail(stderr, || {}));
     *handle.child.lock().await = Some(child);
     if let Some(tx) = started {
         if tx.send(handle.clone()).is_err() {
@@ -398,12 +413,10 @@ pub(super) async fn run(
         handle: handle.clone(),
         progress,
         out: TurnOutcome::default(),
-        bytes: 0,
         session_id: req.native_session_id.map(str::to_owned),
         interactions: InteractionConnection::new(owner, handle.cancel_flag.clone()),
         prompting: false,
         bridge_rx,
-        bridge_task: Some(bridge_task),
     };
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
@@ -421,9 +434,9 @@ pub(super) async fn run(
         };
         anyhow::ensure!(!session.get("sessionId").is_some_and(|id| req.native_session_id.is_some_and(|expected| id.as_str()!=Some(expected))), "Cursor ACP loaded a different native session; prompt withheld");
         let sid=req.native_session_id.map(str::to_owned).or_else(||session["sessionId"].as_str().map(str::to_owned)).context("Cursor ACP returned no session id")?;
-        conn.out.session_id=Some(sid.clone());conn.session_id=Some(sid.clone());conn.emit(TurnProgress::Session(sid.clone()));
+        conn.out.session_id=Some(sid.clone());conn.session_id=Some(sid.clone());conn.emit(TurnProgress::Session(sid.clone())).await;
         // Honor the final plan after locked-code enforcement, rather than the requested trust.
-        let mode=if plan.argv.windows(2).any(|v|v==["--mode","plan"]){"plan"}else{"agent"};
+        let mode=if planned_options(&plan.argv).any(|(flag,value)|flag=="--mode"&&value==Some("plan")){"plan"}else{"agent"};
         tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"session/set_mode",json!({"sessionId":sid,"modeId":mode}))).await??;
         if let Some(model)=req.model.filter(|m|!m.is_empty()&&*m!="auto"){
             let available:Vec<String>=session.pointer("/models/availableModels").and_then(Value::as_array).into_iter().flatten()
@@ -443,18 +456,15 @@ pub(super) async fn run(
             conn.out.stderr_tail = message;
             conn.out.failed = true;
         } else if !conn.out.cancelled {
-            conn.emit(TurnProgress::Error(message.clone()));
+            conn.emit(TurnProgress::Error(message.clone())).await;
             conn.out.stderr_tail = message;
             conn.out.failed = true;
         }
     }
     kill_process_tree(handle.pid.load(Ordering::SeqCst));
-    if let Some(task) = conn.bridge_task.take() {
-        task.abort();
-    }
     let mut reaped = false;
     if let Some(mut child) = handle.child.lock().await.take() {
-        let _ = child.kill().await;
+        let _ = child.start_kill();
         reaped = tokio::time::timeout(REAP_TIMEOUT, child.wait())
             .await
             .is_ok_and(|r| r.is_ok());

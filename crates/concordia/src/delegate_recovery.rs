@@ -18,6 +18,7 @@ pub(crate) fn managed_references(
     }
     let mut directories = vec![recovery];
     let mut files = Vec::new();
+    let mut inspected_entries = 0usize;
     for _ in 0..2 {
         let mut next = Vec::new();
         for directory in directories {
@@ -27,6 +28,10 @@ pub(crate) fn managed_references(
                 return Err("linked worker recovery directory; references unknown".into());
             }
             for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+                inspected_entries += 1;
+                if inspected_entries > 4096 {
+                    return Err("worker reference entry budget exceeded; references unknown, retain the workspace".into());
+                }
                 let entry = entry.map_err(|error| error.to_string())?;
                 let metadata = entry.metadata().map_err(|error| error.to_string())?;
                 if metadata.is_dir() {

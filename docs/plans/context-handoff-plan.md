@@ -5,10 +5,10 @@ by the owner. This document describes the target native-source memory manager an
 criteria. Bounded maps, explicit native resume, optional thread logs, token statistics and quota
 handoff are already implemented. Build `2026-10-31s` adds recent Codex/Claude source pointers,
 exact chunk readback, unfinished-request recovery, file-backed Harness pins and bounded recovery
-from explicit capacity errors; see [the shipped slice and limits](native-memory.md).
+from explicit capacity errors; see [the shipped slice and limits](../native-memory.md).
 Build `2026-11-02i` adds bounded whole-history pages, lexical retrieval/explicit lineage, supported
 Cursor ACP replay, optional Codex proactive rollover, documented native compaction controls and
-durable worker recovery/quota failover. [Current bounds and evidence](quality/memory-orchestration-progress.md)
+durable worker recovery/quota failover. [Current bounds and evidence](../quality/memory-orchestration-progress.md)
 distinguish fixture proof from live-provider parity. The rest of this document remains target
 design; historical research is not proof of unsupported provider capabilities.
 
@@ -41,7 +41,7 @@ The pointer-only design remains a target invariant across all storage. Build 202
 verified native references for new thread bodies and persistent prompt recall, and for completed,
 collected worker inputs when exact binding succeeds. Legacy logs and pending/uncertain recovery
 remain preserved. Source-size/format limits can leave protected recovery payloads; see
-[the implemented boundary](native-memory.md). This plan does not authorize deleting or migrating
+[the implemented boundary](../native-memory.md). This plan does not authorize deleting or migrating
 existing logs, drafts or queued work automatically.
 Build 2026-11-05b implements streaming larger captures and explicit, source-bound legacy migration
 with original-byte backups. Intentional legacy/pending retention and declared finite limits remain;
@@ -435,7 +435,7 @@ not enable or implement the proposed pointer-only memory manager.
 The following paragraphs describe the historical research baseline, not the current feature
 inventory. Native-file indexing, related-chat retrieval and capability-gated context rollover have
 since shipped; build 2026-11-04r adds reference-backed recording/recall. See
-[native memory](native-memory.md) and the [current audit](feature-completion-audit.md) for exact
+[native memory](../native-memory.md) and the [current audit](../feature-completion-audit.md) for exact
 bounds, preserved legacy/recovery payloads and missing effectiveness evidence. Provider-native
 compaction remains active unless an explicit supported control changes it.
 

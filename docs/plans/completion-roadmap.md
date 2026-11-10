@@ -1,7 +1,11 @@
 # Remaining feature implementation plan
 
-Active dispatch: [six Luna briefs and coordinator queue](luna-completion/README.md), reconciled
-against build `2026-11-03w`. Use that queue for new work; the original wave order below is historical.
+Historical backlog and acceptance references. This file does not define an active dispatch queue
+or the first-release scope. Use [PLAN.md](../../PLAN.md) for current priorities and
+[verification status](../e2e-status.md) for checked behavior.
+
+The [six Luna briefs and coordinator queue](luna-completion/README.md) were reconciled against
+build `2026-11-03w`; that dispatch order and the original waves below are historical.
 
 Current implementation/capability disposition: [2026-11-03s campaign map](../quality/overnight-roadmap-disposition.md).
 The planning baseline and proposed designs below are historical; shipped contracts are linked there.
@@ -10,8 +14,8 @@ Status: planned, 2026-11-02. Baseline: committed build `2026-11-02j` (`c6d3b7c`)
 This was the execution plan for the remaining features, prepared through three parallel source
 audits. It does not mark these features implemented or authorize provider usage or publication.
 
-Progress: [wave one](../quality/completion-wave1.md) implements D1/P0/search W1;
-[wave two](../quality/completion-wave2.md) connects approved shared-workspace dependencies to
+Progress: [wave one](../archive/quality/completion-wave1.md) implements D1/P0/search W1;
+[wave two](../archive/quality/completion-wave2.md) connects approved shared-workspace dependencies to
 normal dispatch and paused recovery. Other phases below remain planned unless evidence says otherwise.
 The [goal/source slice](../quality/goal-source-associations.md) records M0 implementation separately.
 The [accounting slice](../quality/worker-accounting.md) records U1 and bounded main/worker views;

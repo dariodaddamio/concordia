@@ -10,7 +10,7 @@ fn read_local_cache(home: &Path, relative: &str) -> Option<String> {
     let root = home.canonicalize().ok()?;
     let path = root.join(relative);
     let metadata = fs::symlink_metadata(&path).ok()?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
+    if !metadata.is_file() || crate::workspaces::linked(&metadata) {
         return None;
     }
     if !path.canonicalize().ok()?.starts_with(&root) {
@@ -40,7 +40,7 @@ pub fn list_models(provider: ProviderKind, home: &Path) -> Vec<String> {
 pub fn list_model_details(provider: ProviderKind, home: &Path) -> Vec<(String, String)> {
     match provider {
         ProviderKind::Codex => list_codex_models(home),
-        ProviderKind::Claude => list_claude_models(home),
+        ProviderKind::Claude => Vec::new(),
         ProviderKind::Cursor => list_cursor_models(home),
     }
 }
@@ -49,55 +49,34 @@ fn list_codex_models(home: &Path) -> Vec<(String, String)> {
     let Some(raw) = read_local_cache(home, "models_cache.json") else {
         return Vec::new();
     };
-    let Ok(v) = serde_json::from_str::<Value>(&raw) else {
+    #[derive(serde::Deserialize)]
+    struct NativeModel {
+        slug: String,
+        display_name: String,
+        visibility: String,
+    }
+    let Ok(Value::Object(mut root)) = serde_json::from_str::<Value>(&raw) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    let arr = v
-        .as_array()
-        .cloned()
-        .or_else(|| v.get("models").and_then(|m| m.as_array()).cloned())
-        .unwrap_or_default();
-    for item in arr {
-        if let Some(id) = item
-            .get("slug")
-            .or_else(|| item.get("id"))
-            .or_else(|| item.get("model"))
-            .and_then(|x| x.as_str())
-        {
-            if !id.is_empty() && !out.iter().any(|x: &(String, String)| x.0 == id) {
-                let name = item
-                    .get("display_name")
-                    .and_then(|x| x.as_str())
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or(id)
-                    .to_string();
-                out.push((id.to_string(), name));
-            }
-        } else if let Some(s) = item.as_str() {
-            if !s.is_empty() && !out.iter().any(|x: &(String, String)| x.0 == s) {
-                out.push((s.to_string(), s.to_string()));
-            }
-        }
+    let Some(Value::Array(models)) = root.remove("models") else {
+        return Vec::new();
+    };
+    if models.iter().any(|model| !model.is_object()) {
+        return Vec::new();
     }
-    out
-}
-
-fn list_claude_models(home: &Path) -> Vec<(String, String)> {
-    let mut ids = Vec::new();
-    for rel in [
-        "cache/model-catalog.json",
-        "cache/additionalModelOptionsCache.json",
-    ] {
-        let Some(raw) = read_local_cache(home, rel) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        collect_model_ids(&v, &mut ids);
-    }
-    ids.into_iter().map(|id| (id.clone(), id)).collect()
+    let Ok(models) = serde_json::from_value::<Vec<NativeModel>>(Value::Array(models)) else {
+        // Only the current provider schema is supported; unknown metadata is unavailable.
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    models
+        .into_iter()
+        .filter(|model| {
+            model.visibility == "list" && !model.slug.is_empty() && !model.display_name.is_empty()
+        })
+        .filter(|model| seen.insert(model.slug.clone()))
+        .map(|model| (model.slug, model.display_name))
+        .collect()
 }
 
 fn list_cursor_models(home: &Path) -> Vec<(String, String)> {
@@ -111,43 +90,9 @@ fn list_cursor_models(home: &Path) -> Vec<(String, String)> {
             {
                 out.push((id.to_string(), id.to_string()));
             }
-            if out.is_empty() {
-                out.push(("auto".into(), "auto".into()));
-            }
         }
-    }
-    if out.is_empty() {
-        out.push(("auto".into(), "auto".into()));
     }
     out
-}
-
-fn collect_model_ids(v: &Value, out: &mut Vec<String>) {
-    match v {
-        Value::Array(arr) => {
-            for item in arr {
-                collect_model_ids(item, out);
-            }
-        }
-        Value::Object(map) => {
-            if let Some(id) = map
-                .get("id")
-                .or_else(|| map.get("model"))
-                .or_else(|| map.get("value"))
-                .and_then(|x| x.as_str())
-            {
-                if !id.is_empty() && !out.iter().any(|x| x == id) {
-                    out.push(id.to_string());
-                }
-            }
-            for (k, child) in map {
-                if k == "models" || k == "options" || k == "items" {
-                    collect_model_ids(child, out);
-                }
-            }
-        }
-        _ => {}
-    }
 }
 
 #[cfg(test)]
@@ -161,11 +106,21 @@ mod tests {
         let d = tempdir().unwrap();
         fs::write(
             d.path().join("models_cache.json"),
-            r#"[{"slug":"gpt-5.6-sol"},{"slug":"o3"}]"#,
+            r#"{"models":[{"slug":"gpt-5.6-sol","display_name":"Sol","visibility":"list"},{"slug":"o3","display_name":"O3","visibility":"list"},{"slug":"hidden-native-model","display_name":"Hidden","visibility":"hide"}]}"#,
         )
         .unwrap();
         let m = list_codex_models(d.path());
         assert!(m.iter().any(|(id, _)| id == "gpt-5.6-sol"));
         assert!(m.iter().any(|(id, _)| id == "o3"));
+        assert!(!m.iter().any(|(id, _)| id == "hidden-native-model"));
+        for unsupported in [
+            r#"[{"slug":"old-root-array","display_name":"Old","visibility":"list"}]"#,
+            r#"{"models":[{"id":"id-alias","display_name":"Alias","visibility":"list"}]}"#,
+            r#"{"models":["bare-string"]}"#,
+            r#"{"models":[{"slug":"no-visibility","display_name":"Unknown"}]}"#,
+        ] {
+            fs::write(d.path().join("models_cache.json"), unsupported).unwrap();
+            assert!(list_codex_models(d.path()).is_empty());
+        }
     }
 }

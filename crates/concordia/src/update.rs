@@ -79,9 +79,7 @@ pub use crate::fs_safe::resolve_active_exe;
 pub fn write_current_pointer(path: &Path) -> std::io::Result<()> {
     let bin = install_bin_dir();
     fs::create_dir_all(&bin)?;
-    let tmp = bin.join(format!("current.tmp-{}", std::process::id()));
-    fs::write(&tmp, path.to_string_lossy().as_bytes())?;
-    fs::rename(&tmp, current_pointer_path())
+    crate::state_io::write_atomic(&current_pointer_path(), path.to_string_lossy().as_bytes())
 }
 
 /// Run `<exe> --version` and require an concordia version line. Called before an update is installed:
@@ -291,7 +289,20 @@ fn run_child_with_format(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().context("spawn build")?;
+    let mut tree = match crate::process_lifetime::own_std_process(&child) {
+        Ok(tree) => Some(tree),
+        Err(error) => {
+            let _ = child.kill();
+            bail!("cannot own build process: {error}");
+        }
+    };
+    let read_failed = Arc::new(AtomicBool::new(false));
     let tail: Arc<Mutex<VecDeque<String>>> = Arc::default();
     let mut readers = Vec::new();
     for stream in [
@@ -307,9 +318,24 @@ fn run_child_with_format(
     .into_iter()
     .flatten()
     {
-        let (tail, ctl) = (Arc::clone(&tail), ctl.clone());
+        let (tail, ctl, read_failed) = (Arc::clone(&tail), ctl.clone(), Arc::clone(&read_failed));
         readers.push(std::thread::spawn(move || {
-            for line in BufReader::new(stream).lines().map_while(|l| l.ok()) {
+            let mut reader = BufReader::new(stream);
+            loop {
+                let mut bytes = Vec::new();
+                match reader
+                    .by_ref()
+                    .take(1024 * 1024 + 1)
+                    .read_until(b'\n', &mut bytes)
+                {
+                    Ok(0) => break,
+                    Ok(_) if bytes.len() <= 1024 * 1024 => {}
+                    _ => {
+                        read_failed.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+                let line = String::from_utf8_lossy(&bytes).trim_end().to_owned();
                 if !line.trim().is_empty() {
                     if cargo_json {
                         match serde_json::from_str::<serde_json::Value>(&line) {
@@ -346,16 +372,22 @@ fn run_child_with_format(
         }
     };
     loop {
-        if ctl.cancelled() {
-            crate::provider::turn::kill_process_tree(child.id());
+        if ctl.cancelled() || read_failed.load(Ordering::Relaxed) {
+            drop(tree.take());
             let _ = child.kill();
-            let _ = child.wait();
             finish(readers);
+            if read_failed.load(Ordering::Relaxed) {
+                bail!("build output could not be read or exceeded the 1 MiB line limit");
+            }
             bail!("cancelled");
         }
         match child.try_wait().context("wait for build")? {
             Some(status) => {
+                drop(tree.take());
                 finish(readers);
+                if read_failed.load(Ordering::Relaxed) {
+                    bail!("build output could not be read or exceeded the 1 MiB line limit");
+                }
                 let lines = tail
                     .lock()
                     .map(|t| t.iter().cloned().collect::<Vec<_>>())
@@ -413,7 +445,7 @@ fn record_install_channel(channel: &str) -> Result<()> {
     install_channel()?;
     let dir = install_bin_dir();
     fs::create_dir_all(&dir)?;
-    fs::write(dir.join(CHANNEL_FILE), format!("{channel}\n"))?;
+    crate::state_io::write_atomic(&dir.join(CHANNEL_FILE), format!("{channel}\n").as_bytes())?;
     Ok(())
 }
 
@@ -438,8 +470,8 @@ pub fn source_root_of_exe(exe: &Path) -> Option<PathBuf> {
 pub fn record_source_root(root: &Path) {
     let dir = install_bin_dir();
     if fs::create_dir_all(&dir).is_ok() {
-        let _ = fs::write(
-            dir.join(SOURCE_HINT_FILE),
+        let _ = crate::state_io::write_atomic(
+            &dir.join(SOURCE_HINT_FILE),
             root.to_string_lossy().as_bytes(),
         );
         let _ = record_install_channel("source");
@@ -447,7 +479,15 @@ pub fn record_source_root(root: &Path) {
 }
 
 fn recorded_source_root() -> Option<PathBuf> {
-    let raw = fs::read_to_string(install_bin_dir().join(SOURCE_HINT_FILE)).ok()?;
+    let mut raw = String::new();
+    fs::File::open(install_bin_dir().join(SOURCE_HINT_FILE))
+        .ok()?
+        .take(32769)
+        .read_to_string(&mut raw)
+        .ok()?;
+    if raw.len() > 32768 {
+        return None;
+    }
     let root = PathBuf::from(raw.trim());
     is_source_root(&root).then_some(root)
 }
@@ -492,7 +532,7 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
         ))),
         crate::release::Check::Available(rel) => {
             ctl.say(&format!("Preparing {} update", rel.tag));
-            crate::release::install_release(&cfg, &rel, current, &fetch)
+            crate::release::install_release_controlled(&cfg, &rel, current, &fetch, Some(ctl))
                 .map(UpdateOutcome::Installed)
         }
     }
@@ -794,11 +834,6 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
     )
 }
 
-/// Build `concordia` release and copy into a slot that is not the currently running exe.
-pub fn perform_update(cwd: &Path) -> Result<UpdateResult> {
-    perform_update_ctl(cwd, &JobControl::default())
-}
-
 pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> {
     install_channel()?;
     let root = source_root(cwd).context(
@@ -850,6 +885,7 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
         "rebuilt executable does not match the selected source version; existing install kept"
     );
 
+    anyhow::ensure!(!ctl.cancelled(), "cancelled");
     let install_path = install_binary(&built)?;
     record_source_root(&root);
     Ok(UpdateResult {
@@ -1052,10 +1088,6 @@ pub fn cleanup_obsolete_installs() {
 pub struct InstallReport {
     pub installed: PathBuf,
     pub path_added: bool,
-    /// An install from before the rename (`%LOCALAPPDATA%\orc\bin`) that was taken off PATH.
-    pub legacy_retired: Option<PathBuf>,
-    /// Settings and registered accounts copied over from the pre-rename state folder.
-    pub state_adopted: bool,
 }
 
 pub fn install_self() -> Result<InstallReport> {
@@ -1068,21 +1100,10 @@ pub fn install_self() -> Result<InstallReport> {
         record_install_channel("release")?;
     }
     let explicit_dir = env::var("CONCORDIA_INSTALL_DIR").is_ok_and(|d| !d.trim().is_empty());
-    let state_adopted = !explicit_dir
-        && crate::store::adopt_legacy_state(&crate::store::default_store_root()).unwrap_or(false);
-    let (path_added, legacy_retired) = if explicit_dir {
-        (false, None)
-    } else {
-        (
-            ensure_on_user_path(&install_bin_dir())?,
-            retire_legacy_install().unwrap_or(None),
-        )
-    };
+    let path_added = !explicit_dir && ensure_on_user_path(&install_bin_dir())?;
     Ok(InstallReport {
         installed,
         path_added,
-        legacy_retired,
-        state_adopted,
     })
 }
 
@@ -1182,7 +1203,8 @@ pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
         let parent = path.parent().context("shortcut has no parent")?;
         fs::create_dir_all(parent)?;
         let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT);$s.TargetPath=$env:CONCORDIA_TARGET;$s.Arguments=$env:CONCORDIA_ARGS;$s.WorkingDirectory=$env:CONCORDIA_WORKDIR;$s.IconLocation=$env:CONCORDIA_ICON;$s.Save()";
-        let output = crate::process_ui::command("powershell.exe")
+        let mut command = crate::process_ui::command("powershell.exe");
+        command
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -1197,8 +1219,9 @@ pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
             .env("CONCORDIA_ICON", &spec.icon)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
+            .stderr(Stdio::piped());
+        let output = crate::process_lifetime::capture(command, Duration::from_secs(15), 64 * 1024)
+            .map_err(anyhow::Error::msg)
             .context("create Concordia shortcut")?;
         anyhow::ensure!(
             output.status.success(),
@@ -1224,50 +1247,6 @@ pub fn remove_shortcut(desktop: bool) -> Result<PathBuf> {
         fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
     }
     Ok(path)
-}
-
-/// This product was called `orc` before it was renamed. Its install lived in
-/// `%LOCALAPPDATA%\orc\bin`; left on PATH it would keep answering to `orc` with a stale build.
-pub fn legacy_install_dir() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("orc").join("bin"))
-}
-
-/// `existing` with `dir` removed (same comparison as `path_with_dir`), or `None` if absent.
-pub fn path_without_dir(existing: &str, dir: &Path) -> Option<String> {
-    let norm = |p: &str| p.trim().trim_end_matches(['\\', '/']).to_ascii_lowercase();
-    let want = norm(&dir.to_string_lossy());
-    let parts: Vec<&str> = existing.split(';').collect();
-    if !parts.iter().any(|e| norm(e) == want) {
-        return None;
-    }
-    Some(
-        parts
-            .into_iter()
-            .filter(|e| norm(e) != want && !e.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join(";"),
-    )
-}
-
-/// Take the pre-rename install off the user PATH. Its files are left alone (they hold the old
-/// binary and the homes of accounts created by it); the user can delete them when ready.
-pub fn retire_legacy_install() -> Result<Option<PathBuf>> {
-    let Some(old) = legacy_install_dir().filter(|d| d.is_dir()) else {
-        return Ok(None);
-    };
-    let existing = user_path_ps(
-        "(Get-Item 'HKCU:\\Environment').GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)",
-        &[],
-    )?;
-    if let Some(updated) = path_without_dir(&existing, &old) {
-        user_path_ps(
-            "Set-ItemProperty -Path 'HKCU:\\Environment' -Name Path -Value $env:CONCORDIA_NEW_PATH -Type ExpandString; \
-             [Environment]::SetEnvironmentVariable('CONCORDIA_PATH_REFRESH', [string](Get-Date).Ticks, 'User'); \
-             [Environment]::SetEnvironmentVariable('CONCORDIA_PATH_REFRESH', $null, 'User')",
-            &[("CONCORDIA_NEW_PATH", &updated)],
-        )?;
-    }
-    Ok(Some(old))
 }
 
 /// `existing` with `dir` added at the front, or `None` when it is already present (compared
@@ -1300,7 +1279,9 @@ fn user_path_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().context("run powershell.exe")?;
+    let out = crate::process_lifetime::capture(cmd, Duration::from_secs(15), 64 * 1024)
+        .map_err(anyhow::Error::msg)
+        .context("run powershell.exe")?;
     if !out.status.success() {
         bail!(
             "{}",
@@ -1622,19 +1603,6 @@ mod tests {
         fs::remove_dir_all(checkout.path().join("crates")).unwrap();
         assert!(source_root(elsewhere.path()).is_none());
         std::env::remove_var("CONCORDIA_INSTALL_DIR");
-    }
-
-    #[test]
-    fn removing_a_directory_from_path_is_exact_and_keeps_the_rest() {
-        let old = Path::new(r"C:\Users\me\AppData\Local\orc\bin");
-        let path = r"C:\Windows;C:\USERS\ME\appdata\local\ORC\bin\;%USERPROFILE%\bin;C:\Users\me\AppData\Local\orc\bin2";
-        let got = path_without_dir(path, old).unwrap();
-        assert_eq!(
-            got,
-            r"C:\Windows;%USERPROFILE%\bin;C:\Users\me\AppData\Local\orc\bin2"
-        );
-        // Not present: nothing to do.
-        assert!(path_without_dir(r"C:\Windows;C:\Tools", old).is_none());
     }
 
     #[test]

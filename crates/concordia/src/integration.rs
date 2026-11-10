@@ -198,12 +198,7 @@ fn sync_text_block_checked(
         }
     }
     if write {
-        let res = if !want && new.trim().is_empty() && existed {
-            // We only ever left our own block: do not leave an empty file behind.
-            fs::remove_file(file)
-        } else {
-            atomic_write(file, new.as_bytes())
-        };
+        let res = atomic_write(file, new.as_bytes(), existed.then_some(old.as_bytes()));
         if let Err(e) = res {
             return Outcome::Blocked(format!("cannot write {}: {e}", name_of(file)));
         }
@@ -221,17 +216,21 @@ fn name_of(p: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+fn atomic_write(path: &Path, bytes: &[u8], expected: Option<&[u8]>) -> std::io::Result<()> {
     if bytes.len() > 1024 * 1024 {
         return Err(std::io::Error::other(
             "native configuration exceeds the 1 MiB write bound; original retained",
         ));
     }
-    let tmp = path.with_extension(format!("concordia-tmp-{}", std::process::id()));
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = fs::remove_file(&tmp);
-    })
+    match expected {
+        Some(expected) => crate::file_document::save(
+            path,
+            std::str::from_utf8(expected).map_err(std::io::Error::other)?,
+            std::str::from_utf8(bytes).map_err(std::io::Error::other)?,
+        )
+        .map_err(std::io::Error::other),
+        None => crate::state_io::write_atomic_new(path, bytes),
+    }
 }
 
 /// Pure text edit behind [`sync_text_block`]. `begin` may be a prefix of the line (the TOML marker
@@ -245,7 +244,18 @@ fn splice(text: &str, begin: &str, end: &str, body: Option<&[&str]>) -> Result<S
         lines.push(end);
         lines.join(nl)
     };
-    let found = text.find(begin_key(begin));
+    let markers = |marker: &str| {
+        text.match_indices(marker)
+            .filter(|(index, _)| *index == 0 || text.as_bytes()[index - 1] == b'\n')
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>()
+    };
+    let begins = markers(begin_key(begin));
+    let ends = markers(end);
+    if begins.len() > 1 || ends.len() > 1 || begins.is_empty() && !ends.is_empty() {
+        return Err("ambiguous concordia markers; left alone".into());
+    }
+    let found = begins.first().copied();
     let Some(start) = found else {
         return Ok(match body {
             None => text.to_string(),
@@ -264,10 +274,10 @@ fn splice(text: &str, begin: &str, end: &str, body: Option<&[&str]>) -> Result<S
         });
     };
     let after_begin = start + begin_key(begin).len();
-    let Some(rel) = text[after_begin..].find(end) else {
+    let Some(end_start) = ends.first().copied().filter(|end| *end >= after_begin) else {
         return Err("a concordia:begin marker has no matching end marker; left alone".into());
     };
-    let stop = after_begin + rel + end.len();
+    let stop = end_start + end.len();
     match body {
         Some(b) => Ok(format!("{}{}{}", &text[..start], block(b), &text[stop..])),
         None => {
@@ -388,13 +398,17 @@ fn sync_claude_json(
     write: bool,
 ) -> Outcome {
     let file = home.join(".claude.json");
-    let mut root = match read_configuration(&file) {
-        Ok(b) => match serde_json::from_slice::<serde_json::Value>(&b) {
+    let original = match read_configuration(&file) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Outcome::Blocked(format!("cannot read .claude.json: {error}")),
+    };
+    let mut root = match original.as_ref() {
+        Some(b) => match serde_json::from_slice::<serde_json::Value>(b) {
             Ok(v) if v.is_object() => v,
             _ => return Outcome::Blocked(".claude.json is not a JSON object; left alone".into()),
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(e) => return Outcome::Blocked(format!("cannot read .claude.json: {e}")),
+        None => serde_json::json!({}),
     };
     let existing = root.pointer("/mcpServers/concordia").cloned();
     if let Some(e) = &existing {
@@ -427,7 +441,7 @@ fn sync_claude_json(
         let Ok(text) = serde_json::to_string_pretty(&root) else {
             return Outcome::Blocked("could not serialise .claude.json".into());
         };
-        if let Err(e) = atomic_write(&file, text.as_bytes()) {
+        if let Err(e) = atomic_write(&file, text.as_bytes(), original.as_deref()) {
             return Outcome::Blocked(format!("cannot write .claude.json: {e}"));
         }
     }
@@ -616,12 +630,12 @@ mod tests {
             sync_awareness(&h, ProviderKind::Claude, false, true),
             Outcome::Absent
         );
-        // A file that held only our block is deleted again.
+        // Turning off our only block leaves an empty file through the revision-checked save.
         let h2 = home(tmp.path(), "codex-3");
         sync_awareness(&h2, ProviderKind::Codex, true, true);
         assert!(h2.join("AGENTS.md").exists());
         sync_awareness(&h2, ProviderKind::Codex, false, true);
-        assert!(!h2.join("AGENTS.md").exists());
+        assert!(fs::read_to_string(h2.join("AGENTS.md")).unwrap().is_empty());
         // Cursor has no supported file.
         assert!(matches!(
             sync_awareness(&h, ProviderKind::Cursor, true, true),

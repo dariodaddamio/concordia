@@ -178,6 +178,8 @@ fn mutate(
     }
     let id = relation_id(&workspace, goal, source)?;
     fs::create_dir_all(directory(root)).map_err(|e| e.to_string())?;
+    crate::update::resolved_directory(&directory(root))
+        .ok_or("relationship metadata directory is linked or unavailable; original kept")?;
     crate::state_io::with_lock(&directory(root).join("relations.lock"), || {
         let result = (|| -> Result<(), String> {
             let mut store = load_store(root)?;

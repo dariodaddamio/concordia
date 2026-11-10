@@ -2,6 +2,14 @@
 use super::*;
 use std::collections::HashSet;
 
+/// Whether an automatic retry may proceed. Review and deferral cannot overlap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    Ready,
+    Deferred,
+    RequiresReview,
+}
+
 pub(super) struct State {
     automatic: bool,
     accounts: Vec<String>,
@@ -13,8 +21,7 @@ pub(super) struct State {
     pending: Option<String>,
     retry_draft: Option<String>,
     dispatching: bool,
-    deferred: bool,
-    blocked: bool,
+    retry: Retry,
     recovered: bool,
     run_id: String,
     context_limited: bool,
@@ -31,7 +38,7 @@ impl State {
     pub(super) fn prepare_manual_handoff(&mut self, prompt: String) {
         self.pending = Some(prompt.clone());
         self.retry_draft = Some(prompt);
-        self.blocked = false;
+        self.retry = Retry::Ready;
     }
     pub(super) fn run_id(&self) -> &str {
         &self.run_id
@@ -52,8 +59,7 @@ impl State {
             pending: None,
             retry_draft: None,
             dispatching: false,
-            deferred: false,
-            blocked: false,
+            retry: Retry::Ready,
             recovered: false,
             run_id: uuid::Uuid::new_v4().to_string(),
             context_limited: false,
@@ -74,11 +80,10 @@ impl State {
             self.prompt = Some(prompt.to_owned());
         }
         self.tried.insert(format!("{account} {model}"));
-        self.deferred = false;
+        self.retry = Retry::Ready;
         self.errors.clear();
         self.pending = None;
         self.retry_draft = None;
-        self.blocked = false;
         self.context_limited = false;
     }
 
@@ -122,7 +127,7 @@ impl State {
         self.context_limited = checkpoint.reason == "context-limited";
         self.context_rollovers = checkpoint.context_rollovers;
         self.recovered = true;
-        self.blocked = true; // A restart cannot prove completion of the previous tools.
+        self.retry = Retry::RequiresReview; // A restart cannot prove previous tool completion.
     }
 
     pub(super) fn pending_text(&self) -> Option<&str> {
@@ -138,7 +143,7 @@ impl State {
     pub fn invalidate(&mut self) {
         self.routing = None;
         self.routing_error = None;
-        self.deferred = false;
+        self.retry = Retry::Ready;
         self.pending = None;
         self.prompt = None;
         self.recovered = false;
@@ -147,13 +152,18 @@ impl State {
 
     pub(super) fn pause_for_workspace_reconciliation(&mut self) {
         self.pending = self.prompt.clone();
-        self.blocked = true;
+        self.retry = Retry::RequiresReview;
         self.recovered = true;
-        self.deferred = false;
     }
 
     pub fn waiting(&self) -> bool {
         self.pending.is_some()
+    }
+
+    fn clear_deferred(&mut self) {
+        if self.retry == Retry::Deferred {
+            self.retry = Retry::Ready;
+        }
     }
     pub(super) fn dispatch_request(&self) -> Option<&str> {
         self.dispatching.then_some(self.prompt.as_deref()).flatten()
@@ -243,7 +253,7 @@ impl App {
         self.continuation.routing = None;
         self.continuation.routing_error = None;
         self.freeze_continuation_routes();
-        self.continuation.deferred = false;
+        self.continuation.clear_deferred();
         self.push_system(format!(
             "usage handoff for this session: {}. Future windows keep their saved default.",
             self.handoff_description()
@@ -330,7 +340,7 @@ impl App {
             if crate::provider::turn::thread_recording_failed(self.provider, &outcome.stderr_tail) {
                 self.continuation.pending = self.continuation.prompt.clone();
                 self.continuation.retry_draft = self.last_sent.clone();
-                self.continuation.blocked = true;
+                self.continuation.retry = Retry::RequiresReview;
                 self.continuation.recovered = true; // Explicit continuation must start a fresh session.
                 self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Inspect partial edits, then /continue {} starts a fresh native session with source pointers. No automatic replay was attempted.", self.account));
                 return None;
@@ -340,12 +350,17 @@ impl App {
         }
         self.continuation.pending = self.continuation.prompt.clone();
         self.continuation.retry_draft = self.last_sent.clone();
-        self.continuation.blocked = outcome.exit_code.is_none()
+        let uncertain = outcome.exit_code.is_none()
             || self
                 .live_cards
                 .iter()
                 .chain(&outcome.cards)
                 .any(|card| card.status == CardStatus::Running);
+        self.continuation.retry = if uncertain {
+            Retry::RequiresReview
+        } else {
+            Retry::Ready
+        };
         self.push_system(
             if context_full { "provider reported context capacity exhausted; a new native session can continue using exact-source pointers. Queued prompts stay paused." }
             else if overloaded && !exhausted { "the selected model is at capacity on the provider's servers (not your quota); choose another model or account to continue. Queued prompts stay paused." }
@@ -354,7 +369,7 @@ impl App {
         if !self.continuation.automatic {
             self.open_continuation_picker();
         }
-        if self.continuation.blocked {
+        if self.continuation.retry == Retry::RequiresReview {
             self.push_system("automatic continuation stopped: provider or tool completion is uncertain. Inspect its output before continuing.");
             return None;
         }
@@ -362,7 +377,7 @@ impl App {
             return None;
         }
         if self.continuation.tried.len() >= 4 {
-            self.continuation.deferred = false;
+            self.continuation.clear_deferred();
             self.push_system("automatic continuation stopped after four account/model pairs; choose /continue to review another target");
             self.open_continuation_picker();
             return None;
@@ -377,7 +392,7 @@ impl App {
             None
         };
         if let Some(reason) = paused {
-            self.continuation.deferred = true;
+            self.continuation.retry = Retry::Deferred;
             self.push_system(format!("automatic continuation waiting: {reason}. The unfinished request and queue are kept."));
             return None;
         }
@@ -385,10 +400,9 @@ impl App {
     }
 
     pub(super) fn resume_deferred_usage(&mut self) -> Option<String> {
-        if !self.continuation.deferred
+        if self.continuation.retry != Retry::Deferred
             || !self.continuation.automatic
             || !self.continuation.waiting()
-            || self.continuation.blocked
             || self.busy
             || self.picker.is_some()
             || self.job.is_some()
@@ -397,7 +411,7 @@ impl App {
         {
             return None;
         }
-        self.continuation.deferred = false;
+        self.continuation.retry = Retry::Ready;
         self.next_usage_target()
     }
 
@@ -525,7 +539,7 @@ impl App {
         if self.continuation.accounts.is_empty() && self.continuation.models.is_empty() {
             if let Some(home) = &self.home_path {
                 targets.extend(
-                    crate::catalog::list_models(self.provider, home)
+                    crate::models::ids_at(&self.state_root, self.provider, &self.account, home)
                         .into_iter()
                         .map(|model| Target {
                             account: self.account.clone(),
@@ -591,9 +605,14 @@ impl App {
         if let Some(model) = model {
             let valid = get_account(&self.state_root, target).is_some_and(|account| {
                 account.home_path.as_ref().is_some_and(|home| {
-                    crate::catalog::list_models(account.provider, home)
-                        .iter()
-                        .any(|m| m == model)
+                    crate::models::ids_at(
+                        &self.state_root,
+                        account.provider,
+                        &account.account,
+                        home,
+                    )
+                    .iter()
+                    .any(|m| m == model)
                 })
             });
             if !valid {
@@ -686,7 +705,7 @@ impl App {
             self.persist_draft_now();
         }
         // The failure finalizer paused the queue; continuation must finish before explicit resume.
-        self.queue.advance = false;
+        self.queue.dispatch.clear_automatic();
     }
 }
 
@@ -881,7 +900,7 @@ mod tests {
         }
         exhausted(&mut app, &tx);
         assert!(rx.try_recv().is_err());
-        assert!(!app.continuation.deferred);
+        assert_ne!(app.continuation.retry, Retry::Deferred);
         app.dismiss_picker();
         app.queue_advance(&tx);
         assert!(rx.try_recv().is_err());
@@ -915,7 +934,7 @@ mod tests {
             exhausted(&mut app, &tx);
             if screen {
                 assert!(rx.try_recv().is_err());
-                assert!(app.continuation.deferred);
+                assert_eq!(app.continuation.retry, Retry::Deferred);
                 app.dismiss_picker();
                 app.queue_advance(&tx);
             }
@@ -1068,8 +1087,17 @@ mod tests {
             rx.try_recv().is_err(),
             "storage failures must never automatically replay tools"
         );
-        assert!(app.continuation.waiting() && app.continuation.blocked);
+        assert!(app.continuation.waiting());
+        assert_eq!(app.continuation.retry, Retry::RequiresReview);
         assert_eq!(app.editor.text(), "my newer draft");
+        app.set_session_handoff("automatic");
+        app.dismiss_picker();
+        assert_eq!(app.continuation.retry, Retry::RequiresReview);
+        assert!(app.resume_deferred_usage().is_none());
+        assert!(
+            rx.try_recv().is_err(),
+            "changing policy cannot waive review"
+        );
         let account = app.account.clone();
         app.continue_usage(&account, &tx);
         let prompt = rx.try_recv().unwrap();
@@ -1296,7 +1324,7 @@ mod model_tests {
         std::fs::write(home.join("auth.json"), "synthetic-login-presence-marker").unwrap();
         std::fs::write(
             home.join("models_cache.json"),
-            r#"["model-a","model-b","model-c"]"#,
+            r#"{"models":[{"slug":"model-a","display_name":"model-a","visibility":"list"},{"slug":"model-b","display_name":"model-b","visibility":"list"},{"slug":"model-c","display_name":"model-c","visibility":"list"}]}"#,
         )
         .unwrap();
         std::fs::write(dir.path().join("config.toml"), "[continuation]\nmode='automatic'\naccounts=['synthetic']\nmodels=['missing-model','model-b','model-c']\n").unwrap();

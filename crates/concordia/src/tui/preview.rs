@@ -23,6 +23,7 @@ pub(super) fn run(path: &Path) -> Result<()> {
     execute!(stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     let mut view = TranscriptView::default();
+    view.link_root = path.canonicalize()?.parent().map(Path::to_path_buf);
     let mut first_draw = true;
     loop {
         terminal.draw(|f| {
@@ -65,6 +66,11 @@ pub(super) fn run(path: &Path) -> Result<()> {
                 parts[2],
             );
         })?;
+        // Diagram rendering finishes on a worker. Wake periodically so its cache
+        // revision can repaint a completed preview without another keypress.
+        if !event::poll(Duration::from_millis(200))? {
+            continue;
+        }
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Release {
                 continue;

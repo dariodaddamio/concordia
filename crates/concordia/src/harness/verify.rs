@@ -52,37 +52,7 @@ fn now() -> u64 {
 }
 
 fn write_receipt(path: &Path, body: &Value) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(body)?)?;
-    replace_file(&temporary, path)
-}
-
-fn replace_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        let from: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-        let to: Vec<u16> = destination
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
-        }
-        if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0x1) } == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        fs::rename(temporary, destination)
-    }
+    crate::state_io::write_atomic(path, &serde_json::to_vec_pretty(body)?)
 }
 
 /// Run the adapter's verify command and write a receipt under `store` only for a real denial.
@@ -135,8 +105,8 @@ pub fn verify_in(
         .to_string_lossy()
         .into_owned();
     let policy_path = root.join(enforcement::POLICY_FILE);
-    let before = fs::read(&policy_path)
-        .map(|bytes| enforcement::policy_revision(&bytes))
+    let before = crate::fs_safe::read_text_bounded(&policy_path, 1024 * 1024)
+        .map(|text| enforcement::policy_revision(text.as_bytes()))
         .unwrap_or_default();
     if before.is_empty() {
         return unverified("the locked-code policy could not be read".into());
@@ -165,8 +135,8 @@ pub fn verify_in(
             .unwrap_or("no reason given");
         return unverified(format!("{} reported `{result}`: {reason}", manifest.name));
     }
-    let current = fs::read(&policy_path)
-        .map(|bytes| enforcement::policy_revision(&bytes))
+    let current = crate::fs_safe::read_text_bounded(&policy_path, 1024 * 1024)
+        .map(|text| enforcement::policy_revision(text.as_bytes()))
         .unwrap_or_default();
     let reported_home = report
         .get("home")
@@ -538,7 +508,13 @@ mod tests {
         );
         let receipt = enforcement::slot(f.store.path(), f.project.path()).join("claude.json");
         let old = fs::read_to_string(&receipt).unwrap();
-        fs::create_dir(receipt.with_extension("json.tmp")).unwrap();
+        // UUID staging intentionally ignores stale fixed `.tmp` names. Force a
+        // genuine publication failure instead: temporarily obstruct its parent,
+        // retaining the old directory and receipt byte-for-byte alongside it.
+        let slot = receipt.parent().unwrap();
+        let retained = slot.with_extension("retained");
+        fs::rename(slot, &retained).unwrap();
+        fs::write(slot, b"publication blocked").unwrap();
         let verdict = verify_in(
             f.store.path(),
             &m,
@@ -547,6 +523,8 @@ mod tests {
             &ctx,
             &|_| good(),
         );
+        fs::remove_file(slot).unwrap();
+        fs::rename(&retained, slot).unwrap();
         assert!(matches!(verdict, Verdict::Unverified(why) if why.contains("write")));
         assert_eq!(fs::read_to_string(receipt).unwrap(), old);
     }
