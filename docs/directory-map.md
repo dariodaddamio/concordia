@@ -16,10 +16,10 @@ provider account data and runtime records live outside it. There is no JavaScrip
 | `fixtures/control-plane` | Synthetic transport fixtures | No credentials or personal session data |
 | `scripts` | Cargo/PowerShell verification, install and release tooling | Run only the checks applicable to the task |
 | `docs` | Current product, operation and architecture references | Start with [PLAN.md](../PLAN.md) and [how it works](how-concordia-works.md) |
-| `docs/quality` | Scoped audits, qualifications and historical evidence | Includes the preserved [verification journal](quality/e2e-history.md) |
+| `docs/quality` | Scoped audits and qualifications | Current checks and Git history pointers are in [verification](e2e-status.md) |
 | `docs/plans` | Proposed work and acceptance criteria | Backlog, not shipped feature status |
 | `docs/archive` | Superseded strategy, campaign and dated records | Historical context only; not current status |
-| `docs/agent` | Local task scope and verification records | Preserve existing task records |
+| `docs/agent` | Harness process metadata | Retired task journals are preserved in Git checkpoint `6fea4a9` |
 | `packaging` | Windows distribution metadata/templates | Publication remains owner-controlled |
 | `skills` | Concordia-owned integration instructions | Separate from provider-native skill stores |
 | `experiments/terminal` | Retained WezTerm configuration from the host experiment | Lua is embedded by the production host adapter; the obsolete pane-guessing launcher is retired |

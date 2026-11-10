@@ -1,6 +1,7 @@
 # Images and diagrams in Concordia
 
-Current source: `2026-11-09a`. Provider adapters: Codex, Claude Code and Cursor CLI.
+Guide baseline: `2026-11-09a`; see [verification](e2e-status.md) for the current build and checked scope.
+Provider adapters: Codex, Claude Code and Cursor CLI.
 Claude's native-stdio gate currently pins CLI `2.1.319`; its initialize exchange was observed
 without a model turn. Earlier `2.1.318` image/PDF and native-control results below are historical
 evidence, not live qualification of `2.1.319`.
@@ -189,4 +190,4 @@ Historical build 05c live checks qualified one-page identifier reading on Claude
 and native-stdio production transports. Both replies added an address prefix, so strict response
 formatting failed even though the unique PDF identifier was correct. Complex documents, OCR,
 physical viewer behavior and other providers are not qualified by these two calls. See
-[exact results](quality/e2e-history.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).
+[historical journal retrieval](e2e-status.md#earlier-evidence) for the exact results.

@@ -90,7 +90,7 @@ silently depend on an editor installation for an internal preview.
 For each source slice: bump `BUILD_STAMP`, update the changelog, follow the scoped verification
 rules in [AGENTS.md](../AGENTS.md), and record actual results. Do not rewrite historical validation as proof of a
 new build. Installation/activation and real-provider tests are separate from source verification.
-For this first slice, see [source preview validation](quality/e2e-history.md#source-preview-validation-2026-10-21a).
+The first slice's dated source-preview validation is in the [Git-preserved journal](e2e-status.md#earlier-evidence).
 
 ## Resource and lifecycle requirements
 

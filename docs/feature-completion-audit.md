@@ -5,7 +5,7 @@ missing capabilities, qualification and release work; they are not a feature cou
 percentage of completion. [PLAN.md](../PLAN.md) is the short current-scope overview.
 
 Recent follow-ups include the worker ceiling/strip changes, chat and preview repairs described
-in [chat rendering](chat-rendering.md), and the scoped [cleanup](agent/cleanup-review.md).
+in [chat rendering](chat-rendering.md), and the scoped [cleanup](e2e-status.md#cleanup-closeout).
 The installed build and its checks are recorded in [verification status](e2e-status.md).
 Native Home canvas pixels and synthetic streaming were checked on 07g. That evidence does not
 establish provider-side image processing or the broader provider/host matrix below.

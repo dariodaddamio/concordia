@@ -1,62 +1,41 @@
-# Concordia documentation
+﻿# Concordia documentation
 
-This is the canonical documentation entry point. Read [PLAN.md](../PLAN.md) for the
-current product scope and implemented capability summary. The links below separate
-current behavior from proposed work and historical evidence; a plan or audit is not
-proof that a feature is shipped.
+Concordia is a local Windows application around the official Codex, Claude Code and Cursor
+CLIs. The [work plan](../PLAN.md) records the active documentation rewrite and product interview.
+Feature implementation is paused; purpose and scope are being settled with the owner.
 
-## Current behavior and operating contracts
+## Use Concordia
 
-- [How Concordia works](how-concordia-works.md) — request flow and boundaries.
-- [Architecture](architecture.md) — ownership and invariants.
-- [Verification status](e2e-status.md) — checked behavior and known limits.
-- [Directory map](directory-map.md) — repository ownership and where to look next.
-- [Configuration and commands](config.md) — settings and user-facing commands.
-- [Provider connections](how-concordia-connects-providers.md) — processes, accounts,
-  sessions, approvals and limits.
-- [Memory and delegation](how-concordia-remembers-and-delegates.md) — native-source
-  retrieval, continuity and workers.
-- [Native source pointers](native-memory.md) — current bounded indexing, readback,
-  recovery and explicit limitations.
-- [Prompt construction](how-concordia-builds-prompts.md) — text, references,
-  attachments and MCP inputs.
-- [Runtime and security](how-concordia-runtime.md) — state, integrations, usage,
-  UI and provider boundaries.
-- [Workspace and input](workspace-panes.md) — file panes, previews and editing.
-- [Images and diagrams](images-and-diagrams.md) — supported attachment paths.
-- [Provider terms](provider-terms.md) — credential and provider ownership rules.
+- [Install and update](install.md).
+- [Configuration and commands](config.md).
+- [How it works](how-concordia-works.md).
+- [Workspace and input](workspace-panes.md).
+- [Images and diagrams](images-and-diagrams.md).
+- [Verification and known limits](e2e-status.md).
 
-## Proposed or incomplete work
+## Technical references
 
-These documents describe targets, acceptance criteria or remaining work. They must
-not be cited as current implementation status:
+- [Architecture](architecture.md) and [directory map](directory-map.md).
+- [Provider connections](how-concordia-connects-providers.md).
+- [Memory and delegation](how-concordia-remembers-and-delegates.md).
+- [Native source pointers](native-memory.md).
+- [Prompt construction](how-concordia-builds-prompts.md).
+- [Runtime and security](how-concordia-runtime.md).
+- [Provider terms](provider-terms.md).
+- [Contributing](../CONTRIBUTING.md).
 
-- [Canonical backlog](plans/README.md), with links to detailed acceptance references.
-- [Context handoff plan](plans/context-handoff-plan.md).
-- [Feature completion audit](feature-completion-audit.md).
-- [Release blockers](release-blockers.md).
-- [Overnight roadmap disposition](quality/overnight-roadmap-disposition.md).
+These pages describe implemented behavior within their stated limits. The [paused backlog](plans/README.md)
+and [context handoff design](plans/context-handoff-plan.md) describe future work, not shipped guarantees.
 
-## Evidence, audits and history
+## Historical evidence
 
-Superseded strategy and campaign records, including the old production plan, live in
-the [documentation archive](archive/README.md).
+[Verification](e2e-status.md) owns the current build identity, checks and cleanup exceptions.
+Detailed pre-rewrite journals and task records are preserved in local Git checkpoint `6fea4a9`:
 
-The `quality/` directory contains scoped audits, fixture or installed-build
-qualification, and dated research. Start with [e2e-status](e2e-status.md); read
-[the historical verification journal](quality/e2e-history.md) only when a dated
-record is needed. Documents named `*-audit.md`, campaign/wave records, and dated
-investigations are evidence with explicit scope, not general capability claims.
+```text
+git show 6fea4a9:docs/quality/e2e-history.md
+git show 6fea4a9:docs/agent/cleanup-review.md
+```
 
-## Contributor and task records
-
-- [Contributing](../CONTRIBUTING.md) — development rules.
-- [Contributor internals](contributing-internals.md) — repository-facing notes.
-- `agent/` — local task scopes and review records; preserve as historical working
-  evidence unless a task explicitly reconciles them.
-- [Changelog](../CHANGELOG.md) — historical build changes.
-
-When adding documentation, update this index and label the document at its top as
-current behavior, proposed work, or historical/scoped evidence. Keep one canonical
-page per topic and link older plans to the current source of truth rather than
-duplicating implementation claims.
+Historical results qualify their dated source and artifacts. They do not establish later
+correctness or release readiness. Remaining dated audits are being reconciled during this rewrite.

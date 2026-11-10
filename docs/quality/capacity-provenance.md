@@ -1,7 +1,8 @@
 # Context capacity provenance
 
-Current source `2026-11-09a` pins Claude CLI `2.1.319` for native stdio and capacity metadata.
-The current CLI passed an initialize-only observation; no live 2.1.319 context-usage/model turn
+Scoped source record: `2026-11-09a`; see [verification](../e2e-status.md) for the current build.
+That source pins Claude CLI `2.1.319` for native stdio and capacity metadata.
+That CLI passed an initialize-only observation; no live 2.1.319 context-usage/model turn
 is qualified. The 2.1.318 SDK and execution evidence below is historical. Saved observations must
 match the current version gate, so earlier 2.1.318 observations do not qualify 2.1.319 rollover.
 Source: `provider/claude_capacity.rs` (`CLI_VERSION`) and `provider/turn_claude.rs`.

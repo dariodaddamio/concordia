@@ -6,6 +6,6 @@ Those documents own current behavior; the previous duplicated command inventory 
 [the historical audit](archive/command-audit.md).
 
 The 2026-11-08 repository audit reviews parsing, dispatch, native permissions, identity, drafts,
-background completion and storage boundaries. Coverage and verification are recorded in
-[cleanup review](agent/cleanup-review.md). A fixture proves its stated path, not every command,
+background completion and storage boundaries. Its coverage and verification are preserved in
+[the historical cleanup journal](e2e-status.md#earlier-evidence). A fixture proves its stated path, not every command,
 provider version or possible state ordering.

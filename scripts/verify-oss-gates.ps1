@@ -74,8 +74,7 @@ $publicThemeFiles = @(
     'crates/concordia/src/tui/appearance.rs', 'crates/concordia/src/tui/brand.rs',
     'crates/concordia/src/tui/theme.rs', 'crates/concordia/src/tui/tests.rs',
     'docs/config.md', 'docs/archive/brand-direction.md', 'docs/chat-rendering.md',
-    'docs/e2e-status.md', 'docs/architecture.md', 'docs/agent/cleanup-review.md',
-    'docs/quality/e2e-history.md', 'crates/concordia/src/theme_library.rs',
+    'docs/e2e-status.md', 'docs/architecture.md', 'crates/concordia/src/theme_library.rs',
     ('crates/concordia/src/themes/' + ('op' + 'ifex') + '.toml'), 'crates/concordia/src/tui/raster.rs',
     'crates/concordia/src/tui/tests/draw.rs', 'crates/concordia/src/tui/tests/input_dispatch.rs',
     'crates/concordia/src/tui/ux_tests.rs'

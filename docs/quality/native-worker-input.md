@@ -1,6 +1,7 @@
 # Native worker input and activity presentation
 
-Current source `2026-11-09a` pins Claude's native-stdio contract to CLI `2.1.319`. An
+Scoped source record: `2026-11-09a`; see [verification](../e2e-status.md) for the current build.
+That source pins Claude's native-stdio contract to CLI `2.1.319`. An
 initialize-only exchange was observed; live 2.1.319 permission/question, background-task and
 capacity parity remain unqualified. Earlier 2.1.318 process/live receipts below remain historical.
 
@@ -122,4 +123,4 @@ sentinel files and the main selection stayed unchanged. These helper-driven call
 physical worker-window parity. A no-model worker-window rehearsal stopped at its fake executable's
 unverified version gate before issuing a native request; no fallback or live retry was started.
 Original driver failures and separate manual corrections are retained in
-[the current evidence record](e2e-history.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).
+[the Git-preserved historical journal](../e2e-status.md#earlier-evidence).

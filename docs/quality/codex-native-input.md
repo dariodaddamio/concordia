@@ -88,4 +88,4 @@ sentinel files and the main selection stayed unchanged. These helper-driven call
 physical worker-window parity. A no-model worker-window rehearsal stopped at its fake executable's
 unverified version gate before issuing a native request; no fallback or live retry was started.
 Original driver failures and separate manual corrections are retained in
-[the current evidence record](e2e-history.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).
+[the Git-preserved historical journal](../e2e-status.md#earlier-evidence).

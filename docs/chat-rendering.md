@@ -1,8 +1,8 @@
-﻿# Chat rendering and input
+# Chat rendering and input
 
-Current behavior in build `2026-11-08h`. Start at the [documentation index](README.md).
+Guide baseline: build `2026-11-08h`. See [verification](e2e-status.md) for the current build and checked scope.
 Build history belongs in [CHANGELOG.md](../CHANGELOG.md); scoped verification and its
-limits are in [E2E status](e2e-status.md) and [cleanup review](agent/cleanup-review.md).
+limits are in [verification](e2e-status.md), which also records cleanup closeout and historical retrieval.
 
 ## Conversation and input ownership
 

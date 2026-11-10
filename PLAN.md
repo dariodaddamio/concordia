@@ -1,127 +1,81 @@
-# Concordia plan
+# Concordia work plan
 
-Concordia is a local Windows interface for the official Codex, Claude Code and Cursor CLIs.
-It keeps conversations, account switches, source references and workers in one Rust application.
-Providers own authentication, native sessions, tools and approvals. Concordia owns the interface
-and local coordination. It makes no inference calls for routing, indexing or summaries.
+Current phase: cleanup closeout, documentation rewrite and product interview (2026-11-09).
 
-Status: private, pre-release. The public release is held until the owner resumes publication
-after the pending GitHub Student approval. No scheduled release is authorized.
+## Current instruction
 
-## What works today
+Feature roadmap execution is paused, including the dockable workspace. Finish cleanup, then
+rewrite the documentation while using grill-me to settle Concordia's purpose and direction.
+Do the factual consolidation and product interview together. Publication remains on hold.
 
-| Area | Implemented behavior | Limits |
-| --- | --- | --- |
-| Chat and accounts | Native window or terminal UI; independent tabs; isolated provider accounts; model selection; exact-session resume; usage where reported | Compatibility depends on the installed CLI; unknown usage remains unknown |
-| Memory | Native-source indexing, bounded history/search, explicit chat references and deterministic context maps across providers | Source files must remain available; maps do not transfer native tool or approval state |
-| Workers | Explicit delegation, queues, result collection, durable recovery, bounded quota failover and cooperative path reservations | Broader live approval/host parity and managed worktree integration/retirement remain open |
-| Workspace | File discovery, content search, previews, raw editing with explicit save, image/PDF input and local Mermaid rendering | Native permissions still apply; transport support and rendering proof vary by provider |
-| Customization | Settings, themes, scoped skills/hooks inspection and optional local adapter integrations | Integrations are explicit local connections, not a hosted memory service |
+## Cleanup closeout
 
-Current repair evidence is in [chat rendering](docs/chat-rendering.md) and
-[E2E status](docs/e2e-status.md). Detailed technical references are
-[architecture](docs/architecture.md), [native memory](docs/native-memory.md),
-[delegation](docs/delegation.md) and [workspace panes](docs/workspace-panes.md).
-These documents describe implementation; proposed behavior belongs in the
-[backlog](docs/plans/README.md).
+The audited implementation and its previous documentation are preserved in local commit
+`6fea4a9`. This is a preservation checkpoint, not full release qualification.
 
-## Product direction and claims
+- One worktree remains. The current work branch and `main` are retained. No obsolete build cache,
+  disposable repository archives or unused installer images were found in the final inventory.
+- The installed build is 2026-11-09g. Its executable identity and scoped checks are recorded in
+  [verification status](docs/e2e-status.md).
+- The older executable still mapped by an open window is retained. Four synthetic Temp folders
+  previously blocked by automatic approval review remain a recorded exception; no alternate
+  deletion route is authorized by this plan.
+- Native histories, credentials, drafts, queues and unique recovery records are preserved.
 
-The owner's working direction is a fast, inexpensive TUI IDE across provider accounts.
-The current useful distinction is one local workspace for conversations, original-source
-retrieval and workers across those providers. Rust is the implementation choice; it does not
-by itself prove speed, safety of spawned tools or a competitive advantage.
+Retained-snapshot inspection, broader provider/host qualification, native hook enforcement and
+missing provider signals remain unfinished roadmap work. They are paused, not cleanup deletions.
 
-Do not claim proven memory superiority, token savings, complete native parity, arbitrary
-provider support or a finished IDE. Existing small trials establish scoped behavior, not
-broad effectiveness. Hermes integration and additional providers remain proposals.
-Pointers improve navigation and retrieval; they do not replace or disable native compaction.
-Chat groups support explicit membership; automatic organization of repetitive chats is not
-established by lexical related-chat suggestions. Local adapter connections are explicit local
-integrations, not an autonomous shared-memory service.
-The whole-repository 08g audit and 08h continuity follow-through are complete. The owner postponed
-product direction (step 7) and requested removal of outdated implementations, silent fallbacks,
-obsolete builds/worktrees/branches and redundant backups. Keep one current implementation per
-feature, report unsupported capabilities explicitly, and preserve user data and current tab recovery.
-The audience, distribution destination and remaining feature priorities are owner decisions.
-The owner subsequently requested a Photoshop-style dockable workspace with configurable runtime
-panels. This is a new planned UI feature; its requirements live in the [canonical backlog](docs/plans/README.md#dockable-workspace-and-runtime-panels).
-The broader product/support discussion remains postponed. Existing closeout work is still open:
-retained-snapshot inspection, Git checkpoint/candidate qualification, native hook/provider/host
-verification, missing native signals and documentation consolidation.
+### Remaining cleanup actions after restart
 
-## Execution order
+These are recorded exceptions, not a claim that every leftover has already been deleted.
 
-1. Make daily chat reliable: input, streaming, history, drafts, recovery, account/model controls
-   and accurate context delivery. Reproduce reported failures through actual input paths.
-2. Preserve the completed 08g [repository audit](docs/agent/cleanup-review.md), its repairs and
-   evidence. Work continues here; the earlier desktop transition was cancelled. Keep source identity, recovery and approval
-   contracts intact; preserve records and pending work.
-3. Qualify the selected provider/host scope. Track missing native data separately from bugs:
-   Cursor capacity/external usage and omitted numeric credit balances remain known gaps.
-4. Complete the current feature/artifact cleanup, verify and install the result, and reconcile
-   the source work with Git. Product direction remains postponed until the owner resumes step 7.
-   No publication is implied.
+1. Close all older Concordia windows or reboot, then reopen the installed 2026-11-09g build.
+   In File Explorer, open `%LOCALAPPDATA%\concordia\bin`. Remove only
+   `concordia.exe.old-21228-1794268162761637800` and its matching `.receipt.json` after the old
+   process exits. The image is currently locked by a running process. Leave `concordia.exe`
+   and the install markers intact. Startup cleanup keeps the latest rollback image, so restarting
+   alone need not delete this final copy.
+2. In File Explorer, open `%TEMP%` and remove these four synthetic recovery-test directories:
+   `concordia-09c-recovery-3ybkffdr`, `concordia-09c-recovery-lpvtnubq`,
+   `concordia-09c-recovery-wpseb7db` and `concordia-09c-recovery-z8y6ft08`.
+   Their combined file size was rechecked as 56,889 bytes. Automatic approval review previously
+   rejected agent deletion as "blocked by policy" without further detail. This is not evidence
+   of a Windows permissions problem; manual deletion is the remaining user action. Do not remove
+   similarly named directories or any real provider home as part of this step.
 
-The 09a source cleanup is verified and installed. Three old worktrees/build trees and redundant
-archives are removed. The owner subsequently removed the remaining 7.75 GB main build tree;
-absence was verified before 09b work. 09b is verified and installed: local shell mode, tab interaction
-improvements, noninterrupting clarification replies and the expanded implicit state-machine
-inventory. The single temporary release build tree was removed after verification and installation.
-09c is verified and installed: one chat owner across tabs/windows, orphan interrupted-request
-restoration and checkpoint authority before first native-session delivery. Twenty-one focused
-checks and six exact-binary native-window recovery/navigation scenarios pass, with no model calls.
-09d moves tab renaming into an independent inline editor and is verified and installed. The native
-window check covers save/cancel, both drafts, restart and single-tab editing without model calls.
-09e fixes large Codex app-server frame handling and distinguishes confirmed provider exit from
-unconfirmed tool completion. Real-process and native-window regressions pass; one tiny direct
-native CLI live smoke passes. The installed executable matches the verified candidate hash.
-09f fixes restored-tab email refresh, adds recovery command completion and makes normal startup
-quiet. Exact native-window account/history/recovery checks pass without model calls.
-09g repairs setup command discovery, shared skill/project setup and identical native request
-retransmissions. Focused process, terminal and native protocol checks pass. The optimized executable
-passes the exact-binary terminal replay and is installed with a matching checksum. Version 2 setup
-storage preserves legacy records and prevents older writers erasing shared intent. Native hook
-trust remains a provider-client review step. The 1.8 GiB verification cache and unused installer
-image are removed; the older image still used by the existing window is preserved.
-Current source changes remain local and uncommitted. Product direction (step 7) remains postponed.
+## Documentation and product interview
+
+Concordia currently provides a local Windows interface for the official Codex, Claude Code and
+Cursor CLIs, with conversations, source retrieval, workspaces and worker coordination. Providers
+own authentication, native sessions, tools and approvals. Product direction must distinguish
+these implemented contracts from future ambitions.
+
+Grill: decide whether Concordia primarily owns the complete coding workspace, coordinates AI work
+alongside an editor, or serves as a general AI workbench. The previous working direction was a
+fast TUI IDE across providers; it is not a claim of a finished IDE or proven cost/speed advantage.
+Record settled decisions before writing definitive product promises. Continue consolidating
+implementation facts while awaiting the answer.
+
+Rewrite requirements:
+
+- One clear user entry point and one canonical page per subject. Remove repeated explanations,
+  superseded plans and copied historical journals from the working tree after preserving them in Git.
+- Keep practical commands, source/approval/recovery boundaries and honest provider limitations.
+- Retain licenses, notices, provenance, required policy files and the runtime changelog contract.
+- Keep current verification concise; Git preserves the detailed pre-rewrite history at `6fea4a9`.
+- Keep the paused [backlog](docs/plans/README.md), including the accepted dockable-panel request.
+- Repair links and code/tooling documentation references when consolidating pages.
 
 ## This slice
 
-### Commands and shared setup - anti-slop gate
+### Documentation and direction - anti-slop gate
 
-| Paths | Tendency check | Ownership and deletions |
+| Paths | Checks | Ownership |
 | --- | --- | --- |
-| `provider/interaction.rs`, native transports | 2, 3, 4, 10 | Broker owns request identity; replace unconditional duplicate failure with exact retransmission handling. |
-| Commands, palette, slash, settings, integrations UI | 1, 4, 7 | Register skills/hooks; keep one cancellable setup execution path. |
-| `harness/`, accounts, provider turn entry | 4, 5, 6 | Existing store owns shared intent and receipts; account discovery includes hidden homes for cleanup. |
-| README, changelog, build stamp | 9, 10 | Record verified behavior and remaining native trust requirements. |
-| Existing native-interaction test callers, process fixtures | 3, 9 | Adapt Option admission; verify reported retransmission and setup cases. |
+| Root Markdown and docs Markdown | 1, 4, 6, 10 | Consolidate current facts; remove duplicate pages rather than add another documentation layer. |
+| Documentation links in code and scripts | 5, 9 | Repair references only; feature implementation remains paused. |
+| Legal, notices, policy and generated files | 2, 3 | Preserve required contracts and provenance; inspect dependencies before removing anything. |
 
-Acceptance: commands appear in completion and perform their stated actions; shared setup reaches
-supported provider homes; identical native retransmissions keep one pending answer. Changed
-request payloads, source revisions, cancellation and native consent remain explicit boundaries.
-
-## Engineering contracts
-
-- Bind work to explicit workspace, conversation, account, native-session, run and pane IDs.
-  Never recover through `resume --last`, newest-chat or focused-pane heuristics.
-- Preserve native authentication and approvals. Never overwrite provider homes, collect
-  credentials or silently change provider compaction policy. Pass prompts by arguments/stdin.
-- Prepare context locally; dispatch only an explicitly submitted turn or authorized worker.
-  Unknown usage never means free capacity. Keep failover bounded and eligibility visible.
-- Preserve drafts, queues, original sources and uncertain actions. One owner captures/reconciles
-  each run. Do not blindly replay tools or reset, delete, merge or clean user work.
-- Keep reads bounded and detect missing, replaced or stale source files. Never substitute an
-  unrelated chat. No hosted memory backend, resident model, quota inference probes or Docker.
-- Keep implemented behavior separate from target design in
-  [context handoff](docs/plans/context-handoff-plan.md). Preserve locked-code enforcement and receipts.
-- Follow AGENTS.md's scoped end-to-end development loop. Broad checks belong to explicitly
-  requested delivery qualification. Live verification follows its small-model budget; report
-  fixture, live-provider and physical-host evidence separately.
-- Bump the build stamp for visible changes and record them in CHANGELOG.md. Running windows
-  retain their executable until reopened. Publishing remains a separate owner action.
-
-The [completion audit](docs/feature-completion-audit.md) holds detailed outstanding evidence;
-[release blockers](docs/release-blockers.md) holds packaging, privacy, compatibility and release
-gates. Historical build changes belong in CHANGELOG.md, not this plan.
+Acceptance: current docs are concise and consistent; all local references resolve; documentation
+checks pass; purpose and scope reflect the owner's answers. Native provider ownership, recovery,
+approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout the rewrite.
