@@ -78,7 +78,7 @@ the selected native session. Native tools and approvals are not restored from th
 
 Ctrl+G lists reported native child-agent activity and Concordia worker jobs. Enter
 opens the report; no model call is made by inspection. Native report detail depends on provider
-events. Cross-account worker configuration remains under `/workers` (unlisted) and `/delegate`.
+events. Delegated-agent account selection is owned by the always-on Agents MCP tool.
 
 Cancellation leaves the prompt box unchanged. Use sent history to recall a submitted request
 explicitly; queued work stays paused until resumed.
@@ -166,7 +166,6 @@ default = "ask"          # plan | ask | workspace | full
 
 [delegation]
 protocol = false         # let the orchestrator propose delegations (you still approve)
-max_workers = 12         # 1..=12
 
 [turn]
 idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables it
@@ -188,8 +187,7 @@ idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables 
 | `threads.map_chars` | `1600` | Out of range is clamped to 200..8000 |
 | `threads.mcp` | `false` | Registers the `concordia mcp` server in those homes; `false` removes the entry (see [mcp.md](mcp.md)) |
 | `mode.default` | `"ask"` | Anything else falls back to `ask` |
-| `delegation.protocol` | `false` | Same switch as `/delegate protocol on|off` |
-| `delegation.max_workers` | `12` | 0 becomes 1, above 12 becomes 12 |
+| `delegation.protocol` | `false` | Enables approval-gated delegation proposals from an orchestrator reply |
 | `turn.idle_timeout_minutes` | `10` | Notification interval for provider stdout/stderr silence; `0` disables notifications. |
 
 ### Themes and custom colors
@@ -291,11 +289,7 @@ there wins:
 
 - Permission mode: `[mode] default` applies only until a mode has been saved (first launch). After
   that `/mode` and Shift+Tab own it.
-- Delegation protocol: `/delegate protocol on|off` writes the store; until you use it, the config value applies.
-- `max_workers` is a cap on worker enrollment inside `/delegate`; it is not stored. The default
-  and safety ceiling are 12; resource admission may still limit concurrent execution.
-
-Worker admission uses the configured ceiling and its scheduling contracts. Provider child processes get
+Delegation protocol writes the store; until you use it, the config value applies. Provider child processes get
 `CARGO_BUILD_JOBS`, `MAKEFLAGS`, `npm_config_jobs`, and `CMAKE_BUILD_PARALLEL_LEVEL` defaults
 defaults of one to four build jobs, based on logical cores, only when the user or provider has not set them. Host capacity is read
 locally; no credentials or hosted service is involved.

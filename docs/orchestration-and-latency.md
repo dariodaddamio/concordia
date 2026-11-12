@@ -28,24 +28,16 @@ wrapper benchmark remain open. Synthetic timings cannot establish provider infer
 
 ## Separate main and worker models
 
-The current account/model is the main agent. Register another native account with `/workers add ACCOUNT`.
-Providers can differ. `/delegate model ACCOUNT` lists that worker's locally recorded model ids;
-`/delegate model ACCOUNT MODEL` persists its model for newly submitted jobs, including approved
-proposals. `default` restores the native default. Running/queued jobs retain the selection captured
-when submitted. Catalog ids are validated; models are never invented or silently substituted.
+The current account/model is the main agent. The always-on Agents MCP tool supplies an explicit
+connected account, provider and optional model for each child. Catalog ids are validated; models
+are never invented or silently substituted.
 
-`/delegate ACCOUNT TASK` starts a fresh native worker session with bounded context. Up to twelve
-worker accounts can be enrolled, subject to the configured ceiling and scheduling; each has a queue
-of at most two. The strip and Ctrl+G browser show
+An agent request starts a fresh native worker session with bounded context. The strip and Ctrl+G browser show
 model/state, and inspection shows task, trust, session, output and result-delivery state. Different
 concerns should own different files: shared-folder workers have no automatic merge isolation.
 
-`/delegate collect` sends up to three new successful results together, capped at 3000 result
-characters each. `/delegate use` can select/resend a result with the larger existing cap. Both
-preserve the unsent composer. `/delegate returns auto` opts into collecting when workers and the
-main agent are idle, no command/job/queue edit is open, queued user work is absent, and no quota
-handoff waits. `/delegate returns manual` disables it. Automatic handbacks consume a main-agent
-turn. Result dispatch uses normal checkpoints/context/quota recovery and labels output as
+Completed results are bounded and explicitly returned through the Agents flow. Result dispatch uses
+normal checkpoints/context/quota recovery and labels output as
 untrusted data. Delivery is reserved durably before dispatch. Opening another
 conversation prevents old workers from posting/automatically returning into it; Ctrl+G retains
 inspection. Native approvals are never transferred. Orchestrator proposals still require approval;
@@ -54,7 +46,7 @@ worker output cannot spawn further workers.
 This is a bounded supervisor/worker loop. Pane-owned worker ledgers, paused restart recovery and
 opt-in bounded quota failover are implemented; see [recovery controls and limits](delegation.md).
 Approved shared-workspace task dependencies are implemented with exact-run receipts and verified
-result pointers; see `/delegate after` and `/delegate graph` in the recovery controls. File ownership
+result pointers. File ownership
 enforcement/worktree isolation and external native-session usage import remain open. New main and
 worker attempts now share [attributable accounting](quality/worker-accounting.md), with bounded
 background reads, reported-counter/cost coverage and idempotent recovery.

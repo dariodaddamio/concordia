@@ -42,7 +42,7 @@ entrypoints through native Node when the direct native bridge cannot be verified
 image paths and prompts out of shell parsing and preserves updated package behavior. Custom
 batch launchers remain unsupported for native image inputs. A rejected input before the provider
 starts releases its workspace reservation; older uncertain reservations still require inspection
-and `/scope stopped` acknowledgment because their records lack reliable startup evidence.
+and explicit stopped-process acknowledgment because their records lack reliable startup evidence.
 
 A selected image is copied into app-owned, content-addressed storage. Changing the original file
 after queueing does not change the attached snapshot. Byte hashes are checked before dispatch.

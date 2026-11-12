@@ -21,7 +21,7 @@ Native-source pointers have bounded availability; a missing source
 must be reported rather than replaced with another chat. [Native memory](native-memory.md).
 
 `context.rs` owns pack planning and the binding decision, and `tui/run.rs` prepares
-submitted turns. `tui/continuation.rs` coordinates bounded retry using `routing.rs`. Its review state
+submitted turns. `tui/continuation.rs` coordinates bounded retry with an explicit account picker. Its review state
 prevents automatic replay after uncertain tool completion. [State ownership](tui-states.md).
 
 Verify using the context/continuity unit tests and `tests/control_plane.rs`; live provider evidence

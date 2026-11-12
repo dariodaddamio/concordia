@@ -247,8 +247,6 @@ mod tests {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             let mut blocked = App::new(dir.path().into(), dir.path().into());
             blocked.refresh_binding();
-            // Explicit scheduler scopes remain exclusive; ordinary foreground chats do not.
-            blocked.scope_command("set write:parallel.txt");
             blocked.run_line("Keep this blocked request".into(), &tx);
             rx.try_recv().unwrap();
             let mut conflicting_owner = owner.clone();
@@ -311,7 +309,12 @@ mod tests {
             crate::workspaces::load(dir.path()).unwrap().reservations[0].phase,
             crate::workspaces::Phase::ReconcileRequired
         );
-        app.run_line("/scope stopped".into(), &tx);
+        crate::workspaces::acknowledge_stopped(
+            dir.path(),
+            app.continuation.run_id(),
+            app.deleg.d.conversation_id(),
+        )
+        .unwrap();
         assert!(
             rx.try_recv().is_err(),
             "stopped acknowledgment never replays a turn"

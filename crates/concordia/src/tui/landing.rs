@@ -31,7 +31,6 @@ pub struct ChatGroup {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct LandingMeter {
     pub(crate) provider: crate::store::ProviderKind,
     pub(crate) account: String,

@@ -233,48 +233,6 @@ impl Policy {
 mod tests {
     use super::*;
     #[test]
-    #[cfg(any())]
-    fn native_compaction_controls_are_process_local_and_reversible() {
-        let dir = tempfile::tempdir().unwrap();
-        for provider in [
-            ProviderKind::Codex,
-            ProviderKind::Claude,
-            ProviderKind::Cursor,
-        ] {
-            let mut plan = PlannedTurn {
-                provider,
-                command: "fake".into(),
-                argv: vec!["exec".into(), "literal prompt".into()],
-                prompt: "literal prompt".into(),
-                new_session_id: None,
-                env: Vec::new(),
-                env_remove: Vec::new(),
-                cwd: dir.path().display().to_string(),
-            };
-            apply(&mut plan, &Compaction::Native).unwrap();
-            assert!(plan.env.is_empty());
-            let control = if provider == ProviderKind::Claude {
-                Compaction::ClaudeAutomaticOff
-            } else {
-                Compaction::CodexThreshold(8000)
-            };
-            if provider == ProviderKind::Cursor {
-                assert!(apply(&mut plan, &control).is_err());
-                continue;
-            }
-            apply(&mut plan, &control).unwrap();
-            assert_eq!(plan.argv.last().unwrap(), "literal prompt");
-            if provider == ProviderKind::Claude {
-                assert_eq!(plan.env, vec![("DISABLE_AUTO_COMPACT".into(), "1".into())]);
-            } else {
-                assert!(plan
-                    .argv
-                    .iter()
-                    .any(|a| a == "model_auto_compact_token_limit=8000"));
-            }
-        }
-    }
-    #[test]
     fn unknown_and_cumulative_usage_never_trigger_policy_and_controls_are_provider_bound() {
         let policy = Policy {
             rollover_percent: Some(80),

@@ -7,7 +7,6 @@
 //! wins over the config default (see `docs/config.md`).
 
 use crate::store::{default_store_root, TrustMode};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -416,31 +415,6 @@ impl Config {
         (cfg, warnings)
     }
 
-    /// Stable TOML for the crew portion of config, useful for editors and round-trip tests.
-    #[cfg(any())]
-    pub fn crews_toml(&self) -> String {
-        let quote = |text: &str| {
-            serde_json::to_string(text)
-                .expect("string serialization")
-                .replace('\u{7f}', "\\u007f")
-        };
-        let mut out = String::new();
-        for (name, crew) in &self.crews {
-            out.push_str(&format!(
-                "[crews.{}]\nlead = {}\nworkers = [",
-                quote(name),
-                quote(&crew.lead)
-            ));
-            for (i, worker) in crew.workers.iter().enumerate() {
-                if i != 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&quote(worker));
-            }
-            out.push_str("]\n\n");
-        }
-        out
-    }
 }
 
 fn set_bool(v: &toml::Value, key: &str, slot: &mut bool, warnings: &mut Vec<String>) {
@@ -511,12 +485,6 @@ pub fn ui_token_line() -> bool {
 /// Config default for the delegation protocol (a value saved in the store wins).
 pub fn delegation_protocol() -> bool {
     get().delegation.protocol
-}
-
-/// Config cap on delegated workers (never above [`MAX_WORKERS_CAP`]).
-#[cfg(any())]
-pub fn max_workers() -> usize {
-    get().delegation.max_workers
 }
 
 /// The same config for an explicit state root (store code and tests with temp roots).
@@ -621,7 +589,6 @@ map_chars = 800
 default = "Full"
 [delegation]
 protocol = true
-max_workers = 2
 "#);
         assert!(warn.is_empty(), "{warn:?}");
         assert!(!c.ui.token_line && !c.ui.tips && c.threads.logging);
@@ -709,10 +676,6 @@ max_workers = 2
         assert_eq!(warn.len(), 1);
         let (c, _) = w("[threads]\nmap_chars = 99999\n");
         assert_eq!(c.threads.map_chars, 8000);
-        let (c, warn) = w("[delegation]\nmax_workers = 0\n");
-        assert_eq!(warn.len(), 1);
-        let (c, warn) = w("[delegation]\nmax_workers = 99\n");
-        assert_eq!(warn.len(), 1);
         let (c, warn) = w("[ui]\ntips = \"yes\"\n[threads]\nmap_chars = \"big\"\n");
         assert!(c.ui.tips);
         assert_eq!(c.threads.map_chars, 1600);

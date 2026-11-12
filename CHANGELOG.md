@@ -1,5 +1,8 @@
 # Changelog
 
+- W3e: removed compiled-out delegation routing/crew code, worker registration fields and the
+  user-facing scope command; main-turn and managed-Git safety admission remain internal.
+
 - W3d: Ctrl+G now presents provider-native, delegated and untracked provider runs as a grouped
   Agents tree with status icons, task titles, elapsed time and parent counts. Provider CLI runs
   started from an agent are marked as unable to receive messages or questions; left/right

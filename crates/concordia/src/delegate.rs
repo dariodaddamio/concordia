@@ -9,14 +9,14 @@
 //! This module has no UI: `tui/workers.rs` renders it and wires the commands.
 
 use crate::accounts::{
-    display_account_name, get_account, identity_key, is_logged_in, normalize_account_id, AccountDef,
+    display_account_name, get_account, normalize_account_id, AccountDef,
 };
 use crate::context::{plan_continuity_capped, ContinuityRequest, PackMessage};
 use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
 use crate::provider::turn::{
     run_provider_turn_with_progress, ProviderTurnRequest, RunningTurn, TurnOutcome, TurnProgress,
 };
-use crate::store::{get_settings, modify_store, ChildTrust, ProviderKind, TrustMode};
+use crate::store::{ChildTrust, ProviderKind, TrustMode};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -80,105 +80,6 @@ pub fn fence_untrusted(content: &str) -> String {
 // ---------------------------------------------------------------------------------------------
 // Roles (persisted in store settings)
 // ---------------------------------------------------------------------------------------------
-
-/// Why `account` cannot become a worker, or the account if it can.
-#[cfg(any())]
-pub fn check_add_worker(
-    state_root: &Path,
-    orchestrator: &str,
-    id: &str,
-) -> Result<AccountDef, String> {
-    let want = normalize_account_id(id.trim());
-    let orch = normalize_account_id(orchestrator);
-    if want.is_empty() {
-        return Err("name an account: /workers add <account>".into());
-    }
-    if want == orch {
-        return Err(format!(
-            "{want} is the orchestrator (the conversation you type into); it cannot be its own worker"
-        ));
-    }
-    let Some(acct) = get_account(state_root, &want) else {
-        return Err(format!("no account named {want} - see /use"));
-    };
-    let Some(home) = acct.home_path.clone() else {
-        return Err(format!("{want} has no login folder"));
-    };
-    if !is_logged_in(acct.provider, &home) {
-        return Err(format!(
-            "{want} is not logged in - /use add {} first",
-            acct.provider.as_str()
-        ));
-    }
-    let workers = get_settings(state_root).workers;
-    if workers.iter().any(|w| normalize_account_id(w) == want) {
-        return Err(format!("{want} is already a worker"));
-    }
-    let cap = crate::config::for_root(state_root).delegation.max_workers;
-    if workers.len() >= cap {
-        return Err(format!("at most {cap} workers - /workers remove one first"));
-    }
-    if let Some(key) = identity_key(acct.provider, &home) {
-        let others = std::iter::once(orch.clone()).chain(workers.iter().cloned());
-        for other in others {
-            let Some(o) = get_account(state_root, &other) else {
-                continue;
-            };
-            let Some(oh) = o.home_path.as_ref() else {
-                continue;
-            };
-            if o.provider == acct.provider && identity_key(o.provider, oh).as_deref() == Some(&key)
-            {
-                return Err(format!(
-                    "{want} is the same login as {} - a worker must be a different account",
-                    o.label
-                ));
-            }
-        }
-    }
-    Ok(acct)
-}
-
-#[cfg(any())]
-pub fn add_worker(state_root: &Path, orchestrator: &str, id: &str) -> Result<String, String> {
-    let acct = check_add_worker(state_root, orchestrator, id)?;
-    let cap = crate::config::for_root(state_root).delegation.max_workers;
-    modify_store(state_root, |s| {
-        if !s.settings.workers.contains(&acct.account) {
-            if s.settings.workers.len() >= cap {
-                anyhow::bail!("at most {cap} workers - /workers remove one first");
-            }
-            s.settings.workers.push(acct.account.clone());
-        }
-        Ok(())
-    })
-    .map_err(|e| format!("could not save workers - {e}"))?;
-    Ok(format!(
-        "worker added: {} ({}) - /delegate {} <task> to use it",
-        display_account_name(acct.provider, &acct.account),
-        acct.provider.as_str(),
-        acct.account
-    ))
-}
-
-#[cfg(any())]
-pub fn remove_worker(state_root: &Path, id: &str) -> Result<String, String> {
-    let want = normalize_account_id(id.trim());
-    let removed = modify_store(state_root, |s| {
-        let before = s.settings.workers.len();
-        s.settings
-            .workers
-            .retain(|w| normalize_account_id(w) != want);
-        s.settings.worker_models.remove(&want);
-        Ok(s.settings.workers.len() != before)
-    })
-    .map_err(|e| format!("could not save workers - {e}"))?;
-    if removed {
-        Ok(format!("worker removed: {want}"))
-    } else {
-        Err(format!("{want} is not a worker - see /workers"))
-    }
-}
 
 /// The trust mode a worker runs with: the requested child mode, capped at the user's mode.
 /// `Inherit` selects the user's mode, and the explicit security ordering ensures a worker can
@@ -1755,86 +1656,6 @@ pub fn use_prompt_capped(j: &Job, max: usize) -> String {
         cap_chars(&one_line(&j.task), 160),
         fence_untrusted(&shown)
     )
-}
-
-/// One status line per worker for `/workers`.
-#[cfg(any())]
-pub fn workers_report(
-    state_root: &Path,
-    orchestrator: &str,
-    d: &Delegates,
-    now: Instant,
-) -> Vec<String> {
-    let settings = get_settings(state_root);
-    let orch = normalize_account_id(orchestrator);
-    let mut out = vec![format!(
-        "workers {}/{} \u{b7} orchestrator {} \u{b7} protocol {}",
-        settings.workers.len(),
-        crate::config::for_root(state_root).delegation.max_workers,
-        orch,
-        if crate::store::delegation_protocol_on(state_root) {
-            "on"
-        } else {
-            "off"
-        }
-    )];
-    if settings.workers.is_empty() {
-        out.push(
-            "  none yet - /workers add <account>, then /delegate <account|auto> <task>".into(),
-        );
-        return out;
-    }
-    for w in &settings.workers {
-        let id = normalize_account_id(w);
-        let acct = get_account(state_root, &id);
-        let (name, prov, ready) = match &acct {
-            Some(a) => (
-                display_account_name(a.provider, &a.account),
-                a.provider.as_str(),
-                a.home_path
-                    .as_ref()
-                    .is_some_and(|h| is_logged_in(a.provider, h)),
-            ),
-            None => (id.clone(), "?", false),
-        };
-        let status = if id == orch {
-            "is the orchestrator now - not usable as a worker".to_string()
-        } else if acct.is_none() {
-            "account missing - /workers remove it".into()
-        } else if !ready {
-            "logged out".into()
-        } else if let Some(j) = d.running_for(&id) {
-            format!(
-                "{} {} (#{})",
-                j.state.label(),
-                fmt_elapsed(j.elapsed(now)),
-                j.id
-            )
-        } else {
-            "idle".into()
-        };
-        let last = d
-            .last_finished_for(&id)
-            .map(|j| {
-                format!(
-                    " \u{b7} last: {} #{} {} {} tools{}",
-                    j.state.label(),
-                    j.id,
-                    fmt_elapsed(j.elapsed(now)),
-                    j.tool_cards(),
-                    if j.snippet.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" \"{}\"", cap_chars(&j.snippet, 50))
-                    }
-                )
-            })
-            .unwrap_or_default();
-        out.push(format!(
-            "  {name} ({prov}) \u{b7} {id} \u{b7} {status}{last}"
-        ));
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------------------------

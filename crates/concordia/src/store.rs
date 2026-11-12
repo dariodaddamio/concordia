@@ -173,12 +173,6 @@ pub struct OrchestratorSettings {
     pub trust: TrustMode,
     #[serde(default = "default_child_trust")]
     pub child_trust: ChildTrust,
-    /// Accounts that may run as delegated workers (configured ceiling, never the orchestrator).
-    #[serde(default)]
-    pub workers: Vec<String>,
-    /// Per-worker native model ids. Missing entry means the provider's own default.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub worker_models: std::collections::BTreeMap<String, String>,
     /// Explicit opt-in: return worker batches to their owning conversation.
     #[serde(default)]
     pub delegate_auto_return: bool,
@@ -232,8 +226,6 @@ impl Default for OrchestratorSettings {
             file_action: None,
             trust: TrustMode::Workspace,
             child_trust: ChildTrust::Inherit,
-            workers: Vec::new(),
-            worker_models: Default::default(),
             delegate_auto_return: false,
             delegate_quota_failover: false,
             delegation_protocol: None,
@@ -645,14 +637,6 @@ pub fn set_trust_mode(root: &Path, trust: TrustMode) -> Result<OrchestratorSetti
     })
 }
 
-/// Replace the worker list (validation lives in `delegate`).
-pub fn set_workers(root: &Path, workers: Vec<String>) -> Result<()> {
-    modify_store(root, |store| {
-        store.settings.workers = workers;
-        Ok(())
-    })
-}
-
 pub fn set_delegation_protocol(root: &Path, on: bool) -> Result<()> {
     modify_store(root, |store| {
         store.settings.delegation_protocol = Some(on);
@@ -862,16 +846,14 @@ mod tests {
     }
 
     #[test]
-    fn workers_and_protocol_persist_and_default_off() {
+    fn delegation_protocol_persists_and_uses_config_default() {
         let dir = tempfile::tempdir().unwrap();
         let s = get_settings(dir.path());
-        assert!(s.workers.is_empty() && s.delegation_protocol.is_none());
-        assert!(!delegation_protocol_on(dir.path()));
-        set_workers(dir.path(), vec!["codex-2".into()]).unwrap();
+        assert!(s.delegation_protocol.is_none());
+        assert!(delegation_protocol_on(dir.path()));
         set_delegation_protocol(dir.path(), true).unwrap();
         set_trust_mode(dir.path(), TrustMode::Ask).unwrap();
         let s = get_settings(dir.path());
-        assert_eq!(s.workers, ["codex-2"]);
         assert_eq!(s.delegation_protocol, Some(true));
         assert_eq!(s.trust, TrustMode::Ask);
         // An older store without the new keys still loads.
@@ -880,7 +862,6 @@ mod tests {
             r#"{"version":1,"settings":{"trust":"ask","childTrust":"inherit"}}"#,
         )
         .unwrap();
-        assert!(get_settings(dir.path()).workers.is_empty());
     }
 
     #[test]

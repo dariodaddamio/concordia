@@ -497,17 +497,6 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         None
     ),
     command!(
-        "/scope",
-        [],
-        "...",
-        "declare task paths and reservations",
-        "Declare workspace paths for a task and inspect reservations.",
-        false,
-        CommandCategory::Workspace,
-        None,
-        None
-    ),
-    command!(
         "/recover",
         [],
         "[retry|legacy]",

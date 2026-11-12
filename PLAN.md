@@ -555,6 +555,15 @@ Rewrite requirements:
 
 ## This slice
 
+### W3e final delegation cleanup - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/{delegate,delegate_recovery,config,capacity}.rs` | ok: 1, 4, 10 | Delete compiled-out delegation/routing/crew code and leave one active owner per lifecycle. |
+| `crates/concordia/src/store.rs`, `tui/workers.rs`, `delegate_dependencies.rs` | ok: 4, 6, 10 | Remove persisted worker registration state; active jobs use explicit account identity and native catalog checks. |
+| `crates/concordia/src/tui/workspace_scope.rs`, `tui/app/state.rs`, `commands.rs` | ok: 1, 4, 10 | Remove the public scope surface while retaining internal main-turn admission used by run/checkpoint owners. |
+| `README.md`, `docs/`, `CHANGELOG.md`, `version.rs` | ok: 5, 10 | Update canonical behavior docs and release metadata; preserve historical plans as plans. |
+
 ### W4b table rows and system messages - anti-slop gate
 
 | path | tendency_check | justification |

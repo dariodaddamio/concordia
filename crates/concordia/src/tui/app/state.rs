@@ -1310,13 +1310,6 @@ impl App {
             return;
         }
         if let Some(arg) = line
-            .strip_prefix("/scope")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            self.scope_command(arg.trim());
-            return;
-        }
-        if let Some(arg) = line
             .strip_prefix("/continuation")
             .filter(|arg| arg.is_empty() || arg.starts_with(' '))
         {

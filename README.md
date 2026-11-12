@@ -85,8 +85,8 @@ discovery needs diagnosis.
 
 - Plan, Ask and Workspace modes limit what a provider may do. Full access requires explicit
   `/mode full` confirmation.
-- Workers never exceed the mode selected for their parent conversation.
-- Concordia itself makes no LLM calls; routing, memory and handoff are deterministic local logic.
+- Delegated agents never exceed the mode selected for their parent conversation.
+- Concordia itself makes no LLM calls; memory and handoff are deterministic local logic.
 - Nothing leaves your machine through Concordia. Network traffic comes from the provider CLIs'
   own supported connections (and any explicitly requested update or integration).
 - Native provider authentication, approvals and session state remain authoritative. See
