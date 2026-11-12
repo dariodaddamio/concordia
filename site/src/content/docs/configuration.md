@@ -13,6 +13,13 @@ Project policy controls the working directory, trust mode and locked-code checks
 
 Each account has an explicit provider and home identity. Account display names do not select credentials. A provider's own login flow creates or updates its home.
 
+## Agent roles
+
+`/config` lists the saved agent roles. Each role can name a provider, account, model and reasoning
+effort. The starting roles are `orchestrator`, `implementer`, `reviewer`, `re-reviewer` and
+`general`. The `agents` tool accepts `role`; an explicit provider or model overrides that role's
+default. Role records are stored with Concordia's local orchestrator settings.
+
 ## Continuation
 
 Concordia asks before changing providers after usage exhaustion. Same-provider automatic handoff is separately opt-in, bounded and tied to recorded provider terms acceptance. It never fans work across accounts to multiply throughput.

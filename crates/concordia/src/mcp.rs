@@ -24,7 +24,11 @@ pub struct AgentRecord {
     #[serde(default)]
     pub provider: String,
     #[serde(default)]
+    pub role: String,
+    #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
     pub task: String,
     #[serde(default)]
     pub parent: String,
@@ -109,6 +113,12 @@ pub struct Proposal {
     pub to: String,
     pub task: String,
     #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
     pub from_thread: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -178,7 +188,7 @@ pub fn handle_line(root: &Path, line: &str) -> Option<String> {
         "ping" => result_reply(id, json!({})),
         "tools/list" => result_reply(
             id,
-            json!({"tools":[{"name":"agents","description":"List accounts/models, start an agent, or read its status/result.","inputSchema":{"type":"object","additionalProperties":false,"properties":{"action":{"enum":["list","start","status","result"]},"agent_id":{"type":"string"},"account":{"type":"string"},"provider":{"type":"string"},"routine":{"type":"string"},"model":{"type":"string"},"task":{"type":"string"},"parent":{"type":"string"}},"required":["action"]}}]}),
+            json!({"tools":[{"name":"agents","description":"Start an agent with role (orchestrator, implementer, reviewer, re-reviewer, general) defaults; explicit provider/model win, or read status/result.","inputSchema":{"type":"object","additionalProperties":false,"properties":{"action":{"enum":["list","start","status","result"]},"agent_id":{"type":"string"},"role":{"type":"string"},"account":{"type":"string"},"provider":{"type":"string"},"routine":{"type":"string"},"model":{"type":"string"},"effort":{"type":"string"},"task":{"type":"string"},"parent":{"type":"string"}},"required":["action"]}}]}),
         ),
         "tools/call" => match call_agents(root, &params) {
             Ok(text) => result_reply(id, text_result(text, false)),
@@ -224,7 +234,15 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
             Ok(json!({"agent_id":id,"status":"waiting"}).to_string())
         }
         "start" => {
-            let account = arg(&args, "account")?;
+            let role_name = args.get("role").and_then(Value::as_str).unwrap_or("general");
+            let role = crate::store::get_settings(root)
+                .roles
+                .get(role_name)
+                .cloned()
+                .ok_or_else(|| format!("unknown agent role: {role_name}"))?;
+            let account = args.get("account").and_then(Value::as_str)
+                .or(role.account.as_deref())
+                .ok_or_else(|| "agents needs account or a role account".to_string())?;
             let task = arg(&args, "task")?;
             let connected = crate::accounts::get_account(root, account)
                 .ok_or_else(|| format!("unknown connected account: {account}"))?;
@@ -232,8 +250,14 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
             let record = AgentRecord {
                 agent_id: id.clone(),
                 account: account.into(),
-                provider: connected.provider.as_str().into(),
-                model: args.get("model").and_then(Value::as_str).map(str::to_owned),
+                provider: args.get("provider").and_then(Value::as_str)
+                    .or(role.provider.as_deref())
+                    .unwrap_or(connected.provider.as_str()).into(),
+                role: role_name.into(),
+                model: args.get("model").and_then(Value::as_str).map(str::to_owned)
+                    .or(role.model.clone()),
+                effort: args.get("effort").and_then(Value::as_str).map(str::to_owned)
+                    .or(role.effort.clone()),
                 task: task.into(),
                 parent: args
                     .get("parent")
@@ -251,10 +275,15 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
                     agent_id: id.clone(),
                     to: account.into(),
                     task: task.into(),
+                    role: role_name.into(),
+                    model: args.get("model").and_then(Value::as_str).map(str::to_owned)
+                        .or(role.model),
+                    effort: args.get("effort").and_then(Value::as_str).map(str::to_owned)
+                        .or(role.effort),
                     from_thread: record.parent.clone(),
                 },
             )?;
-            Ok(json!({"agent_id":id,"status":"queued"}).to_string())
+            Ok(json!({"agent_id":id,"status":"queued","role":role_name}).to_string())
         }
         "status" | "result" => Ok(serde_json::to_string(&read_agent(
             root,
@@ -319,7 +348,9 @@ mod tests {
             agent_id: "agent-record-redaction".into(),
             account: secret.into(),
             provider: "synthetic".into(),
+            role: "general".into(),
             model: Some(secret.into()),
+            effort: Some(secret.into()),
             task: secret.into(),
             parent: secret.into(),
             status: "queued".into(),
@@ -337,5 +368,14 @@ mod tests {
         assert_ne!(stored.parent, secret);
         assert_ne!(stored.result.as_deref(), Some(secret));
         assert_ne!(stored.activity[0], secret);
+    }
+
+    #[test]
+    fn tool_schema_names_role_defaults_and_override_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let line = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}).to_string();
+        let reply = handle_line(root.path(), &line).unwrap();
+        assert!(reply.contains("role"));
+        assert!(reply.contains("explicit provider/model"));
     }
 }

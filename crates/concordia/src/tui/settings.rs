@@ -55,6 +55,11 @@ pub(super) fn open(app: &mut App) {
             "Saved selection for the current provider account",
         ),
         row(
+            "roles",
+            format!("Roles · {} configured", crate::store::get_settings(&app.state_root).roles.len()),
+            "Default provider, account, model and effort for delegated agents",
+        ),
+        row(
             "continuation",
             format!(
                 "Default limit handoff · {}",
@@ -179,6 +184,22 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             } else {
                 app.open_model_picker();
             }
+        }
+        "roles" => {
+            let rows = crate::store::get_settings(&app.state_root)
+                .roles
+                .into_iter()
+                .map(|(name, role)| row(
+                    &format!("role:{name}"),
+                    name,
+                    format!("{} · {} · {} · effort {}",
+                        role.provider.as_deref().unwrap_or("provider default"),
+                        role.account.as_deref().unwrap_or("account required"),
+                        role.model.as_deref().unwrap_or("model default"),
+                        role.effort.as_deref().unwrap_or("provider default")),
+                ))
+                .collect();
+            app.show_picker(PickerKind::Settings, "Roles · edit in local settings".into(), rows, true);
         }
         "continuation" => {
             let next = !app.continuation.automatic();

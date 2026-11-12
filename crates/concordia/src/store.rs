@@ -167,6 +167,8 @@ pub struct StoredAccount {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrchestratorSettings {
+    #[serde(default = "default_roles")]
+    pub roles: std::collections::BTreeMap<String, RoleConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_panel_open: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +202,37 @@ pub struct OrchestratorSettings {
     pub thread_log: bool,
 }
 
+/// The provider selection used when an agent asks for a role without a model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+fn default_roles() -> std::collections::BTreeMap<String, RoleConfig> {
+    ["orchestrator", "implementer", "reviewer", "re-reviewer", "general"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_owned(),
+                RoleConfig {
+                    provider: None,
+                    account: None,
+                    model: None,
+                    effort: Some("medium".into()),
+                },
+            )
+        })
+        .collect()
+}
+
 fn default_trust() -> TrustMode {
     TrustMode::Edit
 }
@@ -224,6 +257,7 @@ fn default_child_trust() -> ChildTrust {
 impl Default for OrchestratorSettings {
     fn default() -> Self {
         Self {
+            roles: default_roles(),
             worker_panel_open: None,
             file_action: None,
             trust: TrustMode::Edit,
@@ -318,6 +352,28 @@ mod state_hygiene_tests {
         // The test guard intentionally exempts isolated test roots from this user-facing warning.
         let root = tempfile::tempdir().unwrap();
         assert!(super::outside_profile_warning(root.path()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_settings_ship_the_five_roles() {
+        let roles = OrchestratorSettings::default().roles;
+        assert_eq!(
+            roles.keys().collect::<Vec<_>>(),
+            vec!["general", "implementer", "orchestrator", "re-reviewer", "reviewer"]
+        );
+        assert!(roles.values().all(|role| role.effort.as_deref() == Some("medium")));
+    }
+
+    #[test]
+    fn old_settings_deserialize_with_role_defaults() {
+        let value = serde_json::json!({"trust":"edit","childTrust":"inherit"});
+        let settings: OrchestratorSettings = serde_json::from_value(value).unwrap();
+        assert!(settings.roles.contains_key("orchestrator"));
     }
 }
 

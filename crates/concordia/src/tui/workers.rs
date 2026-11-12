@@ -836,7 +836,7 @@ impl App {
                 let job = self.deleg.d.get(id).ok_or("unknown worker run")?;
                 let declarations: Vec<_> = job.workspace.as_ref().map(|request| request.claims.iter().map(|claim| crate::workspaces::Declaration { path: claim.relative.clone(), access: claim.access }).collect()).unwrap_or_default();
                 let managed = job.workspace.as_ref().and_then(|request| request.binding.managed.as_ref()).map(|managed| managed.id.clone());
-                self.start_delegate_workspace(&account, &task, Origin::User, &[], &declarations, managed.as_deref())
+                self.start_delegate_workspace(&account, &task, Origin::User, &[], &declarations, managed.as_deref(), None)
             }),
             ["recover", id] => {
                 let request = id.parse::<u32>().map_err(|_| "invalid run id".to_string()).and_then(|id| self.deleg.d.recovery_source(id).map(|(root,source)| (id,root,source)));
@@ -1094,7 +1094,7 @@ impl App {
                 crate::mcp::PendingProposal::Delegate(proposal) => {
                     crate::mcp::update_agent(&self.state_root, &proposal.agent_id, "running", None, "accepted by Concordia");
                     if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
-                        match self.start_delegate(&block.to, &block.task, Origin::Protocol) {
+                        match self.start_delegate_with_model(&block.to, &block.task, Origin::Protocol, proposal.model.as_deref()) {
                             Ok(message) => self.push_system(message),
                             Err(error) => self.push_system(format!("delegate failed - {error}")),
                         }
@@ -1163,7 +1163,17 @@ impl App {
         task: &str,
         origin: Origin,
     ) -> Result<String, String> {
-        self.start_delegate_after(target, task, origin, &[])
+        self.start_delegate_with_model(target, task, origin, None)
+    }
+
+    fn start_delegate_with_model(
+        &mut self,
+        target: &str,
+        task: &str,
+        origin: Origin,
+        model: Option<&str>,
+    ) -> Result<String, String> {
+        self.start_delegate_scoped_model(target, task, origin, &[], &[], model)
     }
 
     fn start_delegate_after(
@@ -1173,7 +1183,7 @@ impl App {
         origin: Origin,
         after: &[u32],
     ) -> Result<String, String> {
-        self.start_delegate_scoped(target, task, origin, after, &[])
+        self.start_delegate_scoped_model(target, task, origin, after, &[], None)
     }
 
     fn start_delegate_scoped(
@@ -1184,7 +1194,19 @@ impl App {
         after: &[u32],
         declarations: &[crate::workspaces::Declaration],
     ) -> Result<String, String> {
-        self.start_delegate_workspace(target, task, origin, after, declarations, None)
+        self.start_delegate_scoped_model(target, task, origin, after, declarations, None)
+    }
+
+    fn start_delegate_scoped_model(
+        &mut self,
+        target: &str,
+        task: &str,
+        origin: Origin,
+        after: &[u32],
+        declarations: &[crate::workspaces::Declaration],
+        model: Option<&str>,
+    ) -> Result<String, String> {
+        self.start_delegate_workspace(target, task, origin, after, declarations, None, model)
     }
 
     fn start_delegate_workspace(
@@ -1195,6 +1217,7 @@ impl App {
         after: &[u32],
         declarations: &[crate::workspaces::Declaration],
         managed: Option<&str>,
+        model: Option<&str>,
     ) -> Result<String, String> {
         #[cfg(not(test))]
         if !self.deleg.d.recovery_ready() {
@@ -1236,7 +1259,6 @@ impl App {
         if account.is_empty() {
             return Err("no other connected account is logged in".into());
         }
-        let model = None;
         let acct = get_account(&self.state_root, &account).ok_or_else(|| {
             format!("account {account} no longer exists - /workers remove {account}")
         })?;
@@ -1282,7 +1304,7 @@ impl App {
                 origin,
                 spec: JobSpec {
                     native_input,
-                    model: model.flatten(),
+                    model: model.map(str::to_owned),
                     home,
                     cwd: self.cwd.clone(),
                     prompt: task.to_string(),

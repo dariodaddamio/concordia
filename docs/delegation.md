@@ -1,8 +1,10 @@
 # Delegation
 
 Agents initiate delegation through the always-on MCP `agents` tool. A parent supplies the task and
-connected account, provider and model. Each child inherits the parent's permission mode and keeps
-an explicit parent identity. Concordia does not choose a model through a routing table.
+may supply a role. Roles are stored in Concordia's orchestrator settings and contain a default
+provider, account, model and reasoning effort. An explicit provider or model in the request wins.
+The shipped roles are `orchestrator`, `implementer`, `reviewer`, `re-reviewer` and `general`.
+Each child inherits the parent's permission mode and keeps an explicit parent identity.
 
 The Agents view (Ctrl+G) groups children beneath the chat or agent that started them. Compact rows
 show a themed status icon, task title and elapsed time; parent rows include child status counts.

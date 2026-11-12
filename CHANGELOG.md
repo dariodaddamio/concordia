@@ -1,5 +1,10 @@
 # Changelog
 
+### Added (2026-11-12u)
+
+- Added persisted delegation roles with provider, account, model and effort defaults. The agents
+  tool accepts a role and keeps explicit provider and model selections authoritative.
+
 ### Removed (2026-11-12t)
 
 - Removed pre-release compatibility readers, migration commands, numbered-home discovery,

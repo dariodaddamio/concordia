@@ -1,5 +1,12 @@
 # Configuration and custom commands
 
+## Agent roles
+
+The Settings screen lists the persisted agent roles. Each role stores a default provider, account,
+model and reasoning effort. The starting roles are `orchestrator`, `implementer`, `reviewer`,
+`re-reviewer` and `general`. The `agents` tool accepts a role when it starts an agent. An explicit
+provider or model in that request wins over the role default.
+
 ## Provider questions
 
 Provider questions always reach the user through the question broker and native provider paths.

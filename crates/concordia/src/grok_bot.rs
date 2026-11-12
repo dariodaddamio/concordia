@@ -129,7 +129,9 @@ pub fn start(root: &Path, routine_id: &str, task: &str, parent: &str) -> Result<
         agent_id: agent_id.clone(),
         account: routine.account.clone(),
         provider: "grok-bot".into(),
+        role: "general".into(),
         model: None,
+        effort: None,
         task: task.into(),
         parent: parent.into(),
         status: "starting".into(),
@@ -537,7 +539,7 @@ mod tests {
         let token = "callback-token-test";
         put_secret(&callback_secret_name(root.path()), token).unwrap();
         let run_id = "run-known";
-        write_agent(root.path(), &AgentRecord { agent_id: run_id.into(), account: "acct".into(), provider: "grok-bot".into(), model: None, task: "task".into(), parent: String::new(), status: "waiting".into(), result: None, activity: Vec::new() }).unwrap();
+        write_agent(root.path(), &AgentRecord { agent_id: run_id.into(), account: "acct".into(), provider: "grok-bot".into(), role: "general".into(), model: None, effort: None, task: "task".into(), parent: String::new(), status: "waiting".into(), result: None, activity: Vec::new() }).unwrap();
         let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"grok_bot_callback","arguments":{"run_id":run_id,"kind":"result","content":"untrusted result"}}}).to_string();
         assert!(callback_http(&request("wrong", &body), root.path()).starts_with("HTTP/1.1 401"));
         let unknown = body.replace(run_id, "unknown");
