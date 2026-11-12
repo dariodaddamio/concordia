@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (2026-11-12o)
+
+- Kept agent records and delegation proposals redacted on disk and updated the security check
+  to exercise the current `agents` MCP tool. Needs-attention selection now uses the active
+  conversation's queue, so paused prompts open focused without losing the composer.
+
 ### Fixed (2026-11-12n)
 
 - Kept malformed MCP input bounded to one error per oversized request and refreshed stale

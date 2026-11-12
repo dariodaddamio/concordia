@@ -1210,22 +1210,38 @@ mod tests {
         assert!(!cards[0].title.contains(secret));
         assert!(!cards[0].detail.as_deref().unwrap().contains(token));
 
-        let legacy = crate::threads::ThreadEvent::with_text("assistant", &body);
-        fs::write(
-            crate::threads::threads_dir(d.path()).join("legacy1111.jsonl"),
-            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        let agent_id = "golden-agent";
+        crate::mcp::write_agent(
+            d.path(),
+            &crate::mcp::AgentRecord {
+                agent_id: agent_id.into(),
+                account: body.clone(),
+                provider: body.clone(),
+                model: Some(body.clone()),
+                task: body.clone(),
+                parent: body.clone(),
+                status: body.clone(),
+                result: Some(body.clone()),
+                activity: vec![body.clone()],
+            },
         )
         .unwrap();
         let reply = crate::mcp::handle_line(
             d.path(),
             &serde_json::json!({
                 "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{"name":"thread_read","arguments":{"id":"legacy1111"}}
+                "params":{"name":"agents","arguments":{"action":"status","agent_id":agent_id}}
             })
             .to_string(),
         )
         .unwrap();
         assert!(!reply.contains(secret));
         assert!(reply.contains("[REDACTED:"));
+        let agent_text = fs::read_to_string(crate::mcp::record_path(d.path(), agent_id)).unwrap();
+        assert!(!agent_text.contains(secret));
+        assert!(!agent_text.contains(token));
+        assert!(!agent_text.contains("PRIVATE KEY"));
+        assert!(!agent_text.contains("passphrase"));
+        assert!(agent_text.contains("[REDACTED:"));
     }
 }

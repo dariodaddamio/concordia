@@ -26,7 +26,8 @@ pub fn read_agent(root: &Path, id: &str) -> Result<AgentRecord, String> {
 }
 pub fn write_agent(root: &Path, record: &AgentRecord) -> Result<(), String> {
     std::fs::create_dir_all(agents_dir(root)).map_err(|e| e.to_string())?;
-    crate::state_io::write_atomic(&record_path(root, &record.agent_id), &serde_json::to_vec(record).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    let bytes = serde_json::to_vec(record).map_err(|e| e.to_string())?;
+    crate::state_io::write_atomic(&record_path(root, &record.agent_id), &crate::redact::redact_bytes(&bytes)).map_err(|e| e.to_string())
 }
 pub fn update_agent(root: &Path, id: &str, status: &str, result: Option<String>, activity: &str) {
     if let Ok(mut record) = read_agent(root, id) {
@@ -102,7 +103,7 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
         _ => Err("agents action must be list, start, status or result".into()),
     }
 }
-fn write_proposal(root: &Path, proposal: &Proposal) -> Result<(), String> { let dir = proposals_dir(root); std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?; if std::fs::read_dir(&dir).map_err(|e|e.to_string())?.count() >= MAX_PENDING_PROPOSALS { return Err("too many delegated agents are waiting".into()); } let bytes=serde_json::to_vec(proposal).map_err(|e|e.to_string())?; if bytes.len() as u64 > MAX_PROPOSAL_FILE { return Err("delegation record is too large".into()); } crate::state_io::write_atomic(&dir.join(format!("{}.json",proposal.agent_id)),&bytes).map_err(|e|e.to_string()) }
+fn write_proposal(root: &Path, proposal: &Proposal) -> Result<(), String> { let dir = proposals_dir(root); std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?; if std::fs::read_dir(&dir).map_err(|e|e.to_string())?.count() >= MAX_PENDING_PROPOSALS { return Err("too many delegated agents are waiting".into()); } let bytes=serde_json::to_vec(proposal).map_err(|e|e.to_string())?; let bytes = crate::redact::redact_bytes(&bytes); if bytes.len() as u64 > MAX_PROPOSAL_FILE { return Err("delegation record is too large".into()); } crate::state_io::write_atomic(&dir.join(format!("{}.json",proposal.agent_id)),&bytes).map_err(|e|e.to_string()) }
 pub fn take_proposals(root: &Path) -> Vec<Proposal> { take_pending(root,MAX_PENDING_PROPOSALS).into_iter().map(|p| match p { PendingProposal::Delegate(p)=>p }).collect() }
 pub fn take_pending(root: &Path, limit: usize) -> Vec<PendingProposal> { let mut out=Vec::new(); let Ok(rd)=std::fs::read_dir(proposals_dir(root)) else{return out}; for e in rd.flatten().take(limit) { let p=e.path(); if let Ok(bytes)=std::fs::read(&p) { if let Ok(v)=serde_json::from_slice(&bytes) { let _=std::fs::remove_file(p); out.push(v); } } } out }
 pub fn has_proposals(root: &Path) -> bool { std::fs::read_dir(proposals_dir(root)).is_ok_and(|mut r|r.next().is_some()) }

@@ -998,7 +998,8 @@ impl App {
             self.flash("No questions, approvals or results need your attention.");
             return;
         }
-        let rows = crate::needs_you::snapshot()
+        let rows = self
+            .needs_you
             .items()
             .map(|item| PickerRow {
                 id: format!("needs:{}", item.id),

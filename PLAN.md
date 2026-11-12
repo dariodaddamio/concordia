@@ -677,3 +677,11 @@ approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout 
 | `crates/concordia/src/tui/native_window.rs`, `tui/display_backend.rs`, `tui/theme.rs` | ok: 1, 4, 5, 6, 9 | Keep status calculation in the existing runner and native HWND as the sole owner of taskbar, tray and icon handles; no second status store or test-only production branch. |
 | `crates/concordia/Cargo.toml` | ok: 1, 5 | Enable only the Windows COM surface needed by the existing native window. |
 | `README.md`, `docs/tui-states.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Document the shipped native APIs and user-visible boundary in canonical docs with the required build stamp. |
+
+### W12e final three failing tests - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/mcp.rs`, `crates/concordia/src/tui/persist.rs` | ok: 1, 4, 5, 9, 10 | Keep redaction at the MCP persistence boundary and update the security test to the sole live `agents` surface; no legacy tool compatibility is restored. |
+| `crates/concordia/src/tui/app/state.rs` | ok: 1, 4, 6, 10 | Use the existing per-App Needs-attention queue as the picker owner; retain the global registry only for publication and status aggregation. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs`, `PLAN.md` | ok: 5, 10 | Record the shipped security and paused-queue focus corrections with the required build stamp and scope ledger. |
