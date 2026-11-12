@@ -47,9 +47,9 @@ There is one worktree and no Cargo target directory. Earlier obsolete worktrees,
 archives and superseded source paths were removed. The 09g verification cache removal freed
 1.8 GiB. Unused installer images were removed only after ownership and content checks.
 
-An older image still used by an open window is retained. Four synthetic Temp directories
-(about 57 KB) remain because a previous automatic approval review blocked deletion. No alternate
-route was used. Native histories, credentials, drafts, queues and unique recovery records remain.
+The owner manually removed the older executable, matching receipt and four synthetic Temp
+directories previously blocked by automatic approval review. Their absence was verified on
+2026-11-09. Native histories, credentials, drafts, queues and unique recovery records remain.
 
 ## Documentation rewrite
 
