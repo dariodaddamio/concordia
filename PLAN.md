@@ -575,3 +575,11 @@ approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout 
 | `crates/concordia/src/tui/display_backend.rs`, `crates/concordia/src/tui/run.rs` | ok: 4, 5, 6, 9 | Forward test state from the existing backend and app loop; no duplicate UI state owner. |
 | `crates/concordia/tests/tui_journeys.rs` | ok: 1, 5, 7, 9, 10 | Replace PTY transport with the requested native driver, preserve journey assertions, and omit only `/edit`. |
 | `docs/tui-states.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 1, 5, 10 | Document the shipped boundary and bump the required user-facing build stamp. |
+
+### W3 MCP agents and delegation - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/mcp.rs` | ok: 1, 4, 5, 6, 10 | One `agents` surface owns account discovery and delegated-agent requests; removed tool registrations and legacy tests do not remain public. |
+| `crates/concordia/src/tui/input_dispatch.rs`, `crates/concordia/src/tui/workers.rs` | ok: 1, 4, 10 | Reuses the existing delegation lifecycle and makes Ctrl+G the single Agents-view toggle; no second scheduler or routing policy. |
+| `README.md`, `docs/README.md`, `docs/mcp.md`, `docs/delegation.md`, `CHANGELOG.md` | ok: 1, 5, 10 | Updates canonical catalogs and behavior references in place; does not add a duplicate guide. |

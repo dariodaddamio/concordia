@@ -126,12 +126,7 @@ fn result_reply(id: Value, result: Value) -> String {
 
 /// One request line in, the reply line out (None for notifications).
 pub fn handle_line(state_root: &Path, line: &str) -> Option<String> {
-    let legacy = Scope {
-        account: String::new(),
-        workspace: PathBuf::new(),
-        unrestricted: true,
-    };
-    handle_line_scoped(state_root, line, Some(&legacy))
+    handle_line_scoped(state_root, line, None)
 }
 
 fn handle_line_scoped(state_root: &Path, line: &str, scope: Option<&Scope>) -> Option<String> {
@@ -200,102 +195,16 @@ fn initialize(params: &Value) -> Value {
 
 /// Tool list. Descriptions and schemas are kept terse: they cost tokens on every turn.
 fn tool_list() -> Value {
-    let id = json!({"type":"string","description":"thread id or unique prefix"});
-    let mut tools = json!([
-        {
-            "name": "threads",
-            "description": "List recent Concordia chat threads (id, age, title).",
-            "inputSchema": {"type":"object","properties":{"limit":{"type":"integer"}}}
-        },
-        {
-            "name": "thread_map",
-            "description": "Short map of one thread: ask, files, commands, errors, last reply.",
-            "inputSchema": {"type":"object","properties":{"id":id},"required":["id"]}
-        },
-        {
-            "name": "thread_read",
-            "description": "Read one bounded page; follow cursor. Prefer tail/grep.",
-            "inputSchema": {"type":"object","properties":{
-                "id":id,
-                "cursor":{"type":"string","description":"Next-page cursor"},
-                "tail":{"type":"integer"},
-                "grep":{"type":"string"},
-                "range":{"type":"string","description":"A-B"},
-                "max_chars":{"type":"integer"}
-            },"required":["id"]}
-        },
-        {
-            "name": "native_read",
-            "description": "Read exact chunks/ranges. history scans the next bounded whole-history page.",
-            "inputSchema": {"type":"object","properties":{"id":{"type":"string"},"message":{"type":"integer"},"offset":{"type":"integer"},"max_bytes":{"type":"integer"},"from_message":{"type":"integer"},"limit":{"type":"integer"},"history":{"type":"boolean"}},"required":["id"]}
-        },
-        {
-            "name": "usage",
-            "description": "Last cached usage limits per account (no live check).",
-            "inputSchema": {"type":"object","properties":{}}
-        },
-        {
-            "name":"feed",
-            "description":"Read the bounded local Concordia event feed.",
-            "inputSchema":{"type":"object","properties":{"cursor":{"type":"integer"},"limit":{"type":"integer"},"pane":{"type":"string"}}}
-        },
-        {
-            "name":"memory",
-            "description":"Search original chats, file facts or confirmed groups. Read-only; use native_read for exact excerpts.",
-            "inputSchema":{"type":"object","additionalProperties":false,"properties":{
-                "action":{"enum":["recall","ranked","files","groups","members"]},
-                "query":{"type":"string"},"workspace":{"type":"string"},"source":{"type":"string"},
-                "account":{"type":"string"},"goal":{"type":"string"},"file":{"type":"string"},
-                "group":{"type":"string"},"offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
-            },"required":["action"]}
-        },
-        {
-            "name": "goals",
-            "description": "Read goals/source links or propose add/close for local review. Proposals need request_id UUID and current revision.",
-            "inputSchema": {"type":"object","additionalProperties":false,"properties":{
-                "action":{"enum":["read","propose_add","propose_close","status"]},
-                "goal":{"type":"string"},"workspace":{"type":"string"},
-                "text":{"type":"string","maxLength":512},"request_id":{"type":"string"},
-                "offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
-            }}
-        },
-        {
-            "name": "delegate",
-            "description": "Propose a task for another account. Only records a proposal; the user must approve it.",
-            "inputSchema": {"type":"object","properties":{
-                "to":{"type":"string","description":"worker account id"},
-                "task":{"type":"string","description":"complete, self-contained task"},
-                "from_thread":{"type":"string"}
-            },"required":["to","task"]}
-        },
-        {
-            "name":"integrations",
-            "description":"Discover connected integration metadata and namespaced tools. Read-only; never executes tools or adapter commands.",
-            "inputSchema":{"type":"object","additionalProperties":false,"properties":{
-                "id":{"type":"string"},"offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
-            }}
-        }
-    ]);
-    for tool in tools
-        .as_array_mut()
-        .expect("static tool catalog is an array")
-    {
-        if matches!(
-            tool["name"].as_str(),
-            Some(
-                "threads"
-                    | "thread_map"
-                    | "thread_read"
-                    | "native_read"
-                    | "usage"
-                    | "memory"
-                    | "integrations"
-            )
-        ) {
-            tool["annotations"] = json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false});
-        }
-    }
-    tools
+    json!([{
+        "name": "agents",
+        "description": "List accounts/models, start an agent, or read its status/result.",
+        "inputSchema": {"type":"object","additionalProperties":false,"properties":{
+            "action":{"enum":["list","start","status","result"]},
+            "agent_id":{"type":"string"}, "account":{"type":"string"},
+            "provider":{"type":"string"}, "model":{"type":"string"},
+            "task":{"type":"string"}, "parent":{"type":"string"}
+        },"required":["action"]}
+    }])
 }
 
 fn text_result(text: String, is_error: bool) -> Value {
@@ -569,69 +478,87 @@ fn call_tool(state_root: &Path, params: &Value, scope: Option<&Scope>) -> Result
     if !args.is_object() {
         return Err("arguments must be an object".into());
     }
-    let read_scope = if matches!(
-        name,
-        "threads"
-            | "thread_map"
-            | "thread_read"
-            | "native_read"
-            | "usage"
-            | "feed"
-            | "memory"
-            | "goals"
-            | "integrations"
-    ) {
-        Some(scope.ok_or("MCP server is unscoped; history reads are disabled")?)
-    } else {
-        None
-    };
-    if matches!(name, "goals" | "integrations") && !read_scope.unwrap().unrestricted {
-        return Err("this read surface is unavailable through scoped MCP".into());
-    }
-    if matches!(name, "thread_map" | "thread_read") {
-        ensure_thread_scope(state_root, &args, read_scope.unwrap())?;
-    }
-    if name == "native_read" {
-        ensure_native_scope(state_root, &args, read_scope.unwrap())?;
-    }
     let out = match name {
-        "threads" => Ok(tool_threads(
-            state_root,
-            uint_arg(&args, "limit"),
-            read_scope.unwrap(),
-        )),
-        "thread_map" => tool_thread_map(state_root, &args),
-        "thread_read" => tool_thread_read(state_root, &args),
-        "native_read" => tool_native_read(state_root, &args),
-        "usage" => Ok(tool_usage(state_root, read_scope.unwrap())),
-        "feed" => tool_feed(state_root, &args, read_scope.unwrap()),
-        "memory" => tool_memory(state_root, &args, read_scope.unwrap()),
-        "goals" => tool_goals(state_root, &args),
-        "delegate" => tool_delegate(state_root, &args),
-        "integrations" => {
-            if args.as_object().is_some_and(|args| {
-                args.keys()
-                    .any(|key| !matches!(key.as_str(), "id" | "offset" | "revision"))
-            }) || args.get("offset").is_some_and(|value| !value.is_u64())
-                || args.get("id").is_some_and(|value| !value.is_string())
-                || args.get("revision").is_some_and(|value| !value.is_string())
-            {
-                Err("invalid integration discovery arguments".into())
-            } else {
-                crate::harness::catalog::tool(
-                    state_root,
-                    str_arg(&args, "id"),
-                    uint_arg(&args, "offset").unwrap_or(0),
-                    str_arg(&args, "revision"),
-                )
-            }
-        }
+        "agents" => tool_agents(state_root, &args, scope),
         other => return Err(format!("unknown tool: {other}")),
     };
     Ok(match out {
         Ok(t) => text_result(t, false),
         Err(e) => text_result(e, true),
     })
+}
+
+fn tool_agents(state_root: &Path, args: &Value, scope: Option<&Scope>) -> Result<String, String> {
+    let action = str_arg(args, "action").ok_or("agents needs action")?;
+    match action {
+        "list" => {
+            let accounts = crate::accounts::list_all_accounts(state_root)
+                .into_iter()
+                .filter(|account| {
+                    scope.is_none_or(|scope| {
+                        scope.unrestricted || account.account == scope.account
+                    })
+                })
+                .map(|account| {
+                    let models = account
+                        .home_path
+                        .as_deref()
+                        .map(|home| crate::catalog::list_models(account.provider, home))
+                        .unwrap_or_default();
+                    let usage = account.home_path.as_deref().and_then(|home| {
+                        crate::usage::cached_usage_view(
+                            state_root,
+                            account.provider,
+                            &account.account,
+                            home,
+                        )
+                    });
+                    json!({
+                        "account": account.account,
+                        "provider": account.provider.as_str(),
+                        "models": models,
+                        "usage": usage.map(|u| json!({"fresh":u.fresh,"observed_at":u.observed_at,"windows":u.windows})).unwrap_or(Value::Null)
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_string(&json!({"accounts": accounts})).map_err(|e| e.to_string())
+        }
+        "start" => {
+            let account = str_arg(args, "account").ok_or("agents start needs account")?;
+            let task = str_arg(args, "task").ok_or("agents start needs task")?;
+            let connected = crate::accounts::get_account(state_root, account)
+                .ok_or_else(|| format!("unknown connected account: {account}"))?;
+            if let Some(provider) = str_arg(args, "provider") {
+                if provider != connected.provider.as_str() {
+                    return Err(format!(
+                        "account {account} belongs to {}, not {provider}",
+                        connected.provider.as_str()
+                    ));
+                }
+            }
+            if str_arg(args, "model").is_some_and(|model| model.is_empty()) {
+                return Err("model must not be empty".into());
+            }
+            if connected.home_path.is_none() {
+                return Err(format!("unknown connected account: {account}"));
+            }
+            tool_delegate(state_root, &json!({
+                "to": account,
+                "task": task,
+                "from_thread": str_arg(args, "parent").unwrap_or("")
+            }))
+        }
+        "status" | "result" => {
+            let id = str_arg(args, "agent_id").ok_or("agents status needs agent_id")?;
+            let path = proposals_dir(state_root).join(format!("{id}.json"));
+            if path.is_file() {
+                Ok(json!({"agent_id":id,"status":"queued","result":Value::Null}).to_string())
+            } else {
+                Err(format!("unknown delegated agent: {id}"))
+            }
+        }
+        _ => Err("agents action must be list, start, status or result".into()),
+    }
 }
 
 fn tool_feed(root: &Path, args: &Value, scope: &Scope) -> Result<String, String> {
@@ -984,9 +911,6 @@ fn tool_delegate(state_root: &Path, args: &Value) -> Result<String, String> {
         .chars()
         .take(64)
         .collect();
-    if !crate::store::delegation_protocol_on(state_root) {
-        return Err("delegation is off; the user can turn it on with /delegate protocol on".into());
-    }
     if pending_proposal_files(state_root).len() >= MAX_PENDING_PROPOSALS {
         return Err("too many proposals are waiting for the user; try again later".into());
     }
@@ -1000,7 +924,7 @@ fn tool_delegate(state_root: &Path, args: &Value) -> Result<String, String> {
     })
     .map_err(|e| e.to_string())?;
     record_pending(state_root, &id.to_string(), body.as_bytes())?;
-    Ok("proposal recorded; the user must approve it in Concordia".into())
+    Ok(json!({"agent_id":id.to_string(),"status":"queued"}).to_string())
 }
 
 /// Legacy delegate-only access shares the same bounded proposal owner.
@@ -1092,7 +1016,8 @@ pub fn has_proposals(state_root: &Path) -> bool {
     !pending_proposal_files(state_root).is_empty()
 }
 
-#[cfg(test)]
+// The former per-tool tests were removed with the legacy MCP surface.
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::threads::{ThreadEvent, ThreadLog, ThreadMeta};

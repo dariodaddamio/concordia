@@ -17,7 +17,7 @@ Feature implementation is paused; purpose and scope are being settled with the o
 
 - [Architecture](architecture.md) and [directory map](directory-map.md).
 - [Provider connections](how-concordia-connects-providers.md).
-- [Memory and delegation](how-concordia-remembers-and-delegates.md).
+- [Agents MCP](mcp.md) and [delegation](delegation.md).
 - [Native source pointers](native-memory.md).
 - [Prompt construction](how-concordia-builds-prompts.md).
 - [Runtime and security](how-concordia-runtime.md).

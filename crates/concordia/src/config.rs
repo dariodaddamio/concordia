@@ -221,7 +221,7 @@ impl Default for Config {
                 default: TrustMode::Ask,
             },
             delegation: Delegation {
-                protocol: false,
+                protocol: true,
                 max_workers: MAX_WORKERS_CAP,
             },
             editor: EditorConfig::default(),

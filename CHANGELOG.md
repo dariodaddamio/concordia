@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reduced Concordia's MCP registration to the always-on `agents` tool. Delegation is enabled by
+  default for connected accounts, Ctrl+G toggles the Agents view, and the worker/routing slash
+  command entry points were removed.
 - Concordia now uses the native window entry point only. Removed the WezTerm host and terminal
   CLI mode, and removed `/trust`, `/split`, `/edit`, `/login`, `/connect`, `/preview` and
   `/integrations`. `/use` handles account addition, `/open` handles file preview, and `/doctor`

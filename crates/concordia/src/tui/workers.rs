@@ -1170,16 +1170,15 @@ impl App {
         }
         let slots = MAX_PENDING_CONFIRMS.saturating_sub(self.deleg.confirms.len());
         let mut changed = false;
-        for proposal in crate::mcp::take_pending(
-            &self.state_root,
-            crate::store::delegation_protocol_on(&self.state_root),
-            slots,
-        ) {
+        for proposal in crate::mcp::take_pending(&self.state_root, true, slots) {
             changed = true;
             match proposal {
                 crate::mcp::PendingProposal::Delegate(proposal) => {
                     if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
-                        self.queue_proposals(vec![block]);
+                        match self.start_delegate(&block.to, &block.task, Origin::Protocol) {
+                            Ok(message) => self.push_system(message),
+                            Err(error) => self.push_system(format!("delegate failed - {error}")),
+                        }
                     }
                 }
                 crate::mcp::PendingProposal::Goal(proposal) => {
@@ -1219,16 +1218,12 @@ impl App {
     }
 
     fn queue_proposals(&mut self, blocks: Vec<crate::delegate::DelegateBlock>) {
-        let settings = get_settings(&self.state_root);
         let orch = normalize_account_id(&self.account);
         for b in blocks {
-            let is_worker = settings
-                .workers
-                .iter()
-                .any(|w| normalize_account_id(w) == b.to);
-            if !is_worker || b.to == orch {
+            let is_connected = crate::accounts::get_account(&self.state_root, &b.to).is_some();
+            if !is_connected || b.to == orch {
                 self.push_system(format!(
-                    "the orchestrator proposed delegating to {} - ignored: not one of your workers (/workers)",
+                    "delegation to {} ignored: account is not connected or is the parent account",
                     b.to
                 ));
                 continue;
@@ -1335,48 +1330,36 @@ impl App {
         }
         let settings = get_settings(&self.state_root);
         let orch = normalize_account_id(&self.account);
-        let workers: Vec<String> = settings
-            .workers
-            .iter()
-            .map(|w| normalize_account_id(w))
-            .collect();
-        if workers.is_empty() {
-            return Err("no workers yet - /workers add <account>".into());
-        }
         let manual = if target != "auto" {
             let t = normalize_account_id(target);
             if t == orch {
                 return Err(format!(
-                    "{t} is the orchestrator now; pick one of your workers (/workers)"
+                    "{t} is the parent account; choose another connected account"
                 ));
             }
-            if !workers.contains(&t) {
-                return Err(format!("{t} is not a worker - /workers add {t}"));
+            if crate::accounts::get_account(&self.state_root, &t).is_none() {
+                return Err(format!("{t} is not a connected account"));
             }
             Some(t)
         } else {
             None
         };
-        let (mut targets, context) = self.worker_route_inputs()?;
-        if let Some(account) = &manual {
-            targets = vec![crate::routing::Target {
-                account: account.clone(),
-                model: settings.worker_models.get(account).cloned(),
-            }];
+        let account = manual.unwrap_or_else(|| {
+            crate::accounts::list_all_accounts(&self.state_root)
+                .into_iter()
+                .find(|account| {
+                    normalize_account_id(&account.account) != orch
+                        && account.home_path.as_deref().is_some_and(|home| {
+                            is_logged_in(account.provider, home)
+                        })
+                })
+                .map(|account| account.account)
+                .unwrap_or_default()
+        });
+        if account.is_empty() {
+            return Err("no other connected account is logged in".into());
         }
-        let decision = crate::routing::capture(&self.state_root, &targets, &context);
-        let selected = if manual.is_some() {
-            decision
-                .candidates
-                .iter()
-                .find(|candidate| candidate.eligible)
-        } else {
-            decision.selected()
-        };
-        let model = selected.map(|row| row.candidate.target.model.clone());
-        let account = selected
-            .map(|row| row.candidate.target.account.clone())
-            .ok_or_else(|| format!("no eligible worker; {}", decision.report().join("\n")))?;
+        let model = None;
         let acct = get_account(&self.state_root, &account).ok_or_else(|| {
             format!("account {account} no longer exists - /workers remove {account}")
         })?;

@@ -231,6 +231,12 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     let cmd = parts.next().unwrap_or("").to_lowercase();
     let rest = parts.next().unwrap_or("");
     let words = body.split_whitespace().count();
+    if matches!(
+        cmd.as_str(),
+        "delegate" | "delegates" | "worker" | "workers" | "crew" | "worker-panel" | "scope"
+    ) {
+        return Some((SlashCommand::Unknown(cmd), false));
+    }
     let max_words = match cmd.as_str() {
         "chats" | "resume" | "new" | "config" | "version" | "ver" | "about" | "copy" | "cp"
         | "doctor" | "diag" | "exit" | "quit" | "q" | "agents" | "stats" | "close" => Some(1),

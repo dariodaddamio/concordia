@@ -488,21 +488,6 @@ pub(super) fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
-    if ctrl && shift && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
-        app.worker_panel_open = !app.worker_panel_open;
-        app.worker_panel_explicit = Some(app.worker_panel_open);
-        let choice = app.worker_panel_open;
-        let _ = crate::store::modify_store(&app.state_root, |store| {
-            store.settings.worker_panel_open = Some(choice);
-            Ok(())
-        });
-        app.flash(if app.worker_panel_open {
-            "worker panel open (read-only)"
-        } else {
-            "worker panel closed"
-        });
-        return false;
-    }
     if key.code == KeyCode::F(2)
         && key.modifiers.is_empty()
         && app.rename_editor.is_none()
@@ -523,7 +508,15 @@ pub(super) fn handle_key(
         return false;
     }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
-        app.open_agents_picker();
+        if app
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Agents)
+        {
+            app.dismiss_picker();
+        } else {
+            app.open_agents_picker();
+        }
         return false;
     }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('n' | 'N')) {

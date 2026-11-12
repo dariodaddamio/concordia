@@ -53,16 +53,11 @@ or F11 opens a local shell in the project; F11 returns to chat with its draft in
 | `/usage` | `[all\|refresh]` | limits for every account | everyday |
 | `/new` | `` | start a fresh chat | everyday |
 | `/resume` | `` | continue an earlier chat | everyday |
-| `/delegate` | `ACCOUNT TASK` | run tasks on worker accounts | everyday |
-| `/workers` | `[add\|remove]` | manage worker accounts | everyday |
-| `/crew` | `[list\|use NAME\|clear]` | choose a saved lead and worker preset | everyday |
-| `/worker-panel` | `` | toggle the worker side panel | everyday |
 | `/harness` | `ACTION` | connect and run harness tools | advanced |
 | `/skills` | `[list\|install [PATH]\|remove PATH\|connect PATH\|status]` | inspect skills and connect shared setup | advanced |
 | `/hooks` | `[list\|connect PATH\|verify\|status]` | inspect hooks and verify shared setup | advanced |
 | `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
 | `/search` | `TEXT` | search project file contents | advanced |
-| `/scope` | `...` | declare task paths and reservations | advanced |
 | `/worktree` | `...` | manage explicit Git workspaces | advanced |
 | `/memory` | `...` | search original chats and source links | advanced |
 | `/context` | `` | inspect context rollover policy | advanced |
