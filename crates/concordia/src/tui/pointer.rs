@@ -35,11 +35,10 @@ pub(super) fn reset(out: &mut impl Write) -> io::Result<()> {
 }
 
 pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
-    if app.rename_editor.is_some()
-        && app
-            .tab_hits
-            .get(app.tab_index)
-            .is_some_and(|rect| contains(*rect, x, y))
+    if app
+        .tab_hits
+        .get(app.tab_index)
+        .is_some_and(|rect| contains(*rect, x, y))
         && !app.tab_close_hits.iter().any(|rect| contains(*rect, x, y))
     {
         return "text";

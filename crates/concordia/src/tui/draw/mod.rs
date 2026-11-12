@@ -926,6 +926,27 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     app.view
         .rebuild(&blocks, inner.width as usize, inner.height as usize);
     f.render_widget(Paragraph::new(app.view.lines()).block(block), area);
+    if inner.height > 1 && inner.width > 1 && app.view.rows.len() > app.view.height() {
+        let rail_x = inner.right().saturating_sub(1);
+        let rail = Rect::new(rail_x, inner.y, 1, inner.height);
+        for y in rail.y..rail.bottom() {
+            f.buffer_mut()[(rail.x, y)]
+                .set_symbol("│")
+                .set_style(Style::default().fg(Color::Indexed(238)));
+        }
+        let total = app.view.rows.len().max(1);
+        let thumb_height =
+            (u32::from(inner.height) * u32::from(inner.height) / total as u32).max(1) as u16;
+        let max_offset = inner.height.saturating_sub(thumb_height);
+        let thumb_y = inner.y
+            + max_offset.saturating_mul(app.view.scroll as u16)
+                / app.view.rows.len().saturating_sub(app.view.height()).max(1) as u16;
+        for y in thumb_y..thumb_y.saturating_add(thumb_height).min(inner.bottom()) {
+            f.buffer_mut()[(rail.x, y)]
+                .set_symbol("┃")
+                .set_style(Style::default().fg(Color::Cyan));
+        }
+    }
     // Paint the complete user block, including blank and trailing cells. Line styling alone
     // leaves empty paragraph rows at the terminal's default background.
     for (row, index) in app.view.visible().enumerate() {

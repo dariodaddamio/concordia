@@ -1599,6 +1599,12 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
             if j.snippet.starts_with("silent ") {
                 j.snippet.clear();
             }
+            if !j.thinking.is_empty()
+                && !matches!(j.thinking.chars().last(), Some('\n' | ' ' | '\t'))
+                && !matches!(t.chars().next(), Some('\n' | ' ' | '\t'))
+            {
+                crate::provider::turn::append_visible_text(&mut j.thinking, "\n");
+            }
             crate::provider::turn::append_visible_text(&mut j.thinking, &t);
         }
         TurnProgress::TextDelta(t) => {

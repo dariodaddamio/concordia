@@ -157,7 +157,9 @@ impl tabs::TabState for RunTab {
 fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     let mut app = App::new(state_root.to_path_buf(), cwd.to_path_buf());
     app.refresh_binding();
-    app.retry_recovery_now();
+    // App::new already owns the tab's recovery lease. Retrying it synchronously here forced a
+    // durable draft write for every Ctrl+T, even though a new Home tab has no draft to recover.
+    // The normal persist tick still retries a real dirty lease when the tab is used.
     app.prior_provider = app.provider;
     app.prior_home = app.continuity_home();
     app.workspace.set_native_windows(use_window);

@@ -164,6 +164,12 @@ impl App {
                 self.clear_idle_notice();
                 self.commit_live_text();
                 self.phase = Phase::Thinking;
+                if !self.live_thinking.is_empty()
+                    && !matches!(self.live_thinking.chars().last(), Some('\n' | ' ' | '\t'))
+                    && !matches!(t.chars().next(), Some('\n' | ' ' | '\t'))
+                {
+                    crate::provider::turn::append_visible_text(&mut self.live_thinking, "\n");
+                }
                 crate::provider::turn::append_visible_text(&mut self.live_thinking, &t);
             }
             TurnProgress::Text(t) => {

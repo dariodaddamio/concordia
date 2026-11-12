@@ -337,10 +337,22 @@ impl TranscriptView {
                 web_links: Vec::new(),
             };
             if rehydrate_fold {
-                self.rows.truncate(retained);
-                self.row_blocks.truncate(retained);
-                self.rows.push(stub);
-                self.row_blocks.push((None, 0));
+                // Keep a bounded window around the requested position. Previously this kept
+                // the first rows, making one upward wheel tick jump to the transcript's top.
+                let target_first = self.rows.len().saturating_sub(height + self.scroll);
+                let window_start = target_first.saturating_sub(retained.saturating_sub(height));
+                let window_end = (window_start + retained).min(self.rows.len());
+                let target_first =
+                    target_first.clamp(window_start, window_end.saturating_sub(height));
+                self.rows = self.rows[window_start..window_end].to_vec();
+                self.row_blocks = self.row_blocks[window_start..window_end].to_vec();
+                self.rows.insert(0, stub);
+                self.row_blocks.insert(0, (None, 0));
+                self.scroll = self
+                    .rows
+                    .len()
+                    .saturating_sub(1 + target_first.saturating_sub(window_start) + height);
+                self.folded_head = window_end < blocks.len();
             } else {
                 self.rows.drain(..hidden);
                 self.row_blocks.drain(..hidden);
@@ -443,6 +455,10 @@ impl TranscriptView {
 
     pub fn visible(&self) -> std::ops::Range<usize> {
         self.first..(self.first + self.height).min(self.rows.len())
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
     }
 
     // ---- hit-testing -----------------------------------------------------------------
@@ -917,10 +933,12 @@ mod tests {
         }));
         v.scroll_up(1);
         v.rebuild(&blocks, 80, 10);
-        assert!(v
-            .rows
-            .iter()
-            .any(|row| row.text.iter().collect::<String>().contains("message 0")));
+        assert!(v.rows.iter().any(|row| {
+            row.text
+                .iter()
+                .collect::<String>()
+                .contains(&format!("message {MAX_RENDERED_ROWS}"))
+        }));
     }
 
     #[test]

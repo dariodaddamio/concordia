@@ -24,6 +24,7 @@ use std::{
 use unicode_width::UnicodeWidthStr;
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Graphics::Dwm::DwmSetWindowAttribute,
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
     UI::{
@@ -41,6 +42,7 @@ const SHUTDOWN: u32 = WM_APP + 4;
 const TEST_CONTROL: u32 = WM_APP + 5;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
+const DWMWA_CAPTION_COLOR: u32 = 35;
 
 /// Decoded attachment pixels and their cell-aligned viewport. Provider input retains
 /// its separate immutable file snapshot; this is only a display overlay.
@@ -1508,6 +1510,7 @@ unsafe fn window_thread(
     window.resized(hwnd);
     DragAcceptFiles(hwnd, 1);
     SetTimer(hwnd, 1, 500, None);
+    set_caption_color(hwnd);
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
     let _ = ready.send(Ok(()));
@@ -1700,6 +1703,7 @@ unsafe extern "system" fn window_proc(
             0
         }
         UPDATE => {
+            set_caption_color(hwnd);
             if super::theme::brand_color() != window.icon_color {
                 refresh_icon(hwnd, window);
             }
@@ -1972,6 +1976,18 @@ unsafe extern "system" fn window_proc(
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
     }
+}
+
+unsafe fn set_caption_color(hwnd: HWND) {
+    let [red, green, blue] = super::theme::native_default(false);
+    // DWMWA_CAPTION_COLOR takes a COLORREF (BGR packed in a DWORD), not a ratatui RGB value.
+    let color = u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16);
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CAPTION_COLOR,
+        (&color as *const u32).cast(),
+        std::mem::size_of::<u32>() as u32,
+    );
 }
 
 unsafe fn dropped_files(window: &Window, drop: windows_sys::Win32::UI::Shell::HDROP) -> bool {

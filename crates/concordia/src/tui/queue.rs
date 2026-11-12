@@ -604,8 +604,11 @@ fn edit_key(
         }
         KeyCode::Char(c) if ctrl && !alt => match c.to_ascii_lowercase() {
             'c' => {
-                app.close_queue_edit();
-                app.queue_changed();
+                let text = ed
+                    .selection()
+                    .map(|(start, end)| ed.chars()[start..end].iter().collect::<String>())
+                    .unwrap_or_else(|| ed.text());
+                app.write_clipboard(&text);
             }
             'j' => ed.insert_char('\n'),
             'a' => ed.select_all(),

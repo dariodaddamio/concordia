@@ -477,7 +477,24 @@ impl App {
         } else {
             self.session_ui.title.as_deref().unwrap_or("New chat")
         };
-        let mut label: String = title
+        let last_user = self.messages.iter().rposition(|m| m.role == MsgRole::User);
+        let failed = last_user.is_some_and(|start| {
+            self.messages[start..]
+                .iter()
+                .rev()
+                .find(|m| m.role == MsgRole::System)
+                .is_some_and(|m| super::super::level_of(&m.text) == super::super::Level::Error)
+        });
+        let status = if self.busy && self.questions.waiting() {
+            "⚠"
+        } else if self.busy {
+            "◉"
+        } else if failed {
+            "×"
+        } else {
+            "✓"
+        };
+        let mut label: String = format!("{status} {title}")
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")

@@ -583,3 +583,14 @@ approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout 
 | `crates/concordia/src/mcp.rs` | ok: 1, 4, 5, 6, 10 | One `agents` surface owns account discovery and delegated-agent requests; removed tool registrations and legacy tests do not remain public. |
 | `crates/concordia/src/tui/input_dispatch.rs`, `crates/concordia/src/tui/workers.rs` | ok: 1, 4, 10 | Reuses the existing delegation lifecycle and makes Ctrl+G the single Agents-view toggle; no second scheduler or routing policy. |
 | `README.md`, `docs/README.md`, `docs/mcp.md`, `docs/delegation.md`, `CHANGELOG.md` | ok: 1, 5, 10 | Updates canonical catalogs and behavior references in place; does not add a duplicate guide. |
+
+### W4 daily bugs and small interface fixes - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/tui/transcript.rs`, `crates/concordia/src/tui/draw/mod.rs` | ok: 1, 4, 5, 10 | Keeps transcript ownership in the existing view, bounds rehydration, and adds one visual scrollbar without a second scroll model. |
+| `crates/concordia/src/tui/run.rs` | ok: 1, 5, 8, 10 | Removes the synchronous recovery write from new-tab creation; normal persistence remains the owner of recovery retries. |
+| `crates/concordia/src/tui/app/turn.rs`, `crates/concordia/src/delegate.rs` | ok: 1, 4, 7, 10 | Adds separators only at reasoning-delta boundaries, preserving assistant delta semantics and existing provider ownership. |
+| `crates/concordia/src/tui/app/state.rs`, `crates/concordia/src/tui/pointer.rs` | ok: 1, 4, 6, 10 | Derives tab status from existing chat state and uses the existing pointer owner; no duplicate status store or interaction layer. |
+| `crates/concordia/src/tui/queue.rs` | ok: 1, 2, 9, 10 | Reuses the existing queue editor and clipboard writer; Ctrl+C copies its text instead of changing queue state. |
+| `crates/concordia/src/tui/native_window.rs`, `crates/concordia/Cargo.toml` | ok: 1, 5, 10 | Applies the active theme's existing RGB value through the Windows caption API; no custom window host or theme source is added. |

@@ -344,11 +344,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         thumb.width,
         thumb.height,
         &thumb.hash[..12],
-        if app.raster.native && !app.no_color {
-            "image preview"
-        } else {
-            "cell preview"
-        }
+        "cell preview"
     );
     f.render_widget(
         Paragraph::new(footer),
@@ -453,6 +449,10 @@ fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {
                 f.buffer_mut()[(x, y)].set_fg(marker).set_bg(marker);
             }
         }
+        // Keep the bounded cell preview in the buffer as an observable fallback. The native
+        // window paints the original pixels over these cells after the frame is submitted, so
+        // this does not change native image fidelity or aspect-ratio fitting.
+        paint(f, content, thumb, false);
         app.raster
             .native_draws
             .borrow_mut()
@@ -480,10 +480,13 @@ pub(super) fn native_images(f: &mut Frame, app: &App) -> Vec<super::native_windo
             for y in area.y..area.bottom() {
                 for x in area.x..area.right() {
                     let cell = &f.buffer_mut()[(x, y)];
-                    if cell.symbol() != " "
-                        || cell.fg != super::theme::image_marker()
-                        || cell.bg != super::theme::image_marker()
-                    {
+                    let marker = cell.symbol() == " "
+                        && cell.fg == super::theme::image_marker()
+                        && cell.bg == super::theme::image_marker();
+                    let fallback = cell.symbol() == "▀"
+                        && matches!(cell.fg, Color::Rgb(..))
+                        && matches!(cell.bg, Color::Rgb(..));
+                    if !marker && !fallback {
                         return None;
                     }
                 }

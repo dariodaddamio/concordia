@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix gradual transcript scrolling after folded-history rehydration, speed up Ctrl+T by removing
+  an unnecessary synchronous recovery write, preserve reasoning separators, add tab status marks,
+  copy support in queued-message editing, a visible chat scrollbar, and theme-coloured Windows
+  title bars. Markdown table wrapping/separators, queue send-now/editing, system-message styling,
+  and image aspect-ratio scaling remain in their existing owners.
 - Reduced Concordia's MCP registration to the always-on `agents` tool. Delegation is enabled by
   default for connected accounts, Ctrl+G toggles the Agents view, and the worker/routing slash
   command entry points were removed.
