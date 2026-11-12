@@ -1,42 +1,7 @@
 use super::super::*;
 
 impl App {
-    pub(in crate::tui) fn feed(&self) -> crate::feed::FeedWriter {
-        crate::feed::FeedWriter::new(
-            &self.state_root,
-            self.thread_id().unwrap_or("main"),
-            crate::config::get().feed.enabled,
-        )
-        .identity(&self.account, self.provider.as_str())
-    }
     pub(in crate::tui) fn apply_progress(&mut self, ev: TurnProgress) {
-        let feed = self.feed();
-        match &ev {
-            TurnProgress::Text(text) => {
-                let _ = feed.emit("text", text);
-            }
-            TurnProgress::TextDelta(text) => {
-                let _ = feed.emit_text_delta(text);
-            }
-            TurnProgress::TextBoundary => {
-                let _ = feed.emit("message_boundary", "");
-            }
-            TurnProgress::Card(card) => {
-                let _ = feed.emit("tool", &card.title);
-            }
-            TurnProgress::Interaction(_) => {
-                let _ = feed.emit("question", "native approval/question waiting");
-            }
-            TurnProgress::Error(error) => {
-                if !is_cli_noise_block(error) {
-                    let _ = feed.emit("error", error);
-                }
-            }
-            TurnProgress::Usage(usage) => {
-                let _ = feed.emit("usage", format!("{:?}", usage));
-            }
-            _ => {}
-        }
         match ev {
             TurnProgress::Artifact(record) => {
                 if self.native_owner.as_ref() == Some(&record.owner)
@@ -164,6 +129,12 @@ impl App {
                 self.clear_idle_notice();
                 self.commit_live_text();
                 self.phase = Phase::Thinking;
+                if !self.live_thinking.is_empty()
+                    && !matches!(self.live_thinking.chars().last(), Some('\n' | ' ' | '\t'))
+                    && !matches!(t.chars().next(), Some('\n' | ' ' | '\t'))
+                {
+                    crate::provider::turn::append_visible_text(&mut self.live_thinking, "\n");
+                }
                 crate::provider::turn::append_visible_text(&mut self.live_thinking, &t);
             }
             TurnProgress::Text(t) => {
@@ -352,16 +323,6 @@ impl App {
         }
     }
     pub(in crate::tui) fn finalize_turn(&mut self, outcome: TurnOutcome) {
-        let feed = self.feed();
-        let _ = feed.flush_text_delta();
-        let _ = feed.emit(
-            "turn_end",
-            if outcome.failed {
-                "failed"
-            } else {
-                "completed"
-            },
-        );
         self.clear_idle_notice();
         self.busy_send_confirmation = None;
         self.submitted_prompt = None;
@@ -502,7 +463,7 @@ impl App {
             }
         }
         if outcome.cancelled {
-            self.push_system("cancelled - queued work paused; completed actions were not undone");
+            self.push_system("Cancelled. Queued messages are paused. Finished actions were kept.");
         }
         if failed && outcome.stderr_tail.contains("already has an active writer") {
             self.push_system("this Codex session is open in another client or pane. Close its active turn, then retry the restored prompt; /new starts a separate conversation. Concordia will not replay it automatically.");
@@ -550,7 +511,6 @@ impl App {
         self.streamed_text_committed = false;
         self.live_thinking.clear();
         self.turn_finished(outcome.cancelled, failed);
-        self.scan_delegation(&scan_text);
         // The turn used some of this account's limits: re-check them in the background.
         self.usage_fetcher.invalidate(&self.account);
         self.refresh_usage();
@@ -647,7 +607,6 @@ impl App {
         visible_change |= self.poll_file_jobs();
         visible_change |= self.poll_session_history();
         visible_change |= self.poll_memory();
-        visible_change |= self.poll_project_search();
         visible_change |= self.workspace.poll();
         if let Some(notice) = self.workspace.take_notice() {
             self.flash(notice);

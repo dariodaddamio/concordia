@@ -1,6 +1,6 @@
 use crate::identity::cursor_api_key_for_home;
 use crate::store::TrustMode;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ pub fn plan_cursor_turn_with(
         TrustMode::Full => {
             argv.push("--force".into());
         }
-        TrustMode::Workspace => {
+        TrustMode::Edit => {
             // Cursor agent 2026.10.22 trust table: Plan=`--mode plan`, Ask=default,
             // Workspace=default workspace sandbox, Full=`--force`. Its help only offers
             // `--sandbox enabled|disabled`; Workspace must never use `disabled`.
@@ -114,8 +114,10 @@ pub(crate) fn account_auth(home: Option<&Path>) -> Result<AccountAuth> {
         }
         let default_home =
             dirs::home_dir().and_then(|profile| profile.join(".cursor").canonicalize().ok());
-        anyhow::ensure!(default_home.as_ref() == Some(&selected),
-            "custom Cursor OAuth homes are unsupported by the native CLI; select its default home or an account with its own native API key");
+        anyhow::ensure!(
+            default_home.as_ref() == Some(&selected),
+            "custom Cursor OAuth homes are unsupported by the native CLI; select its default home or an account with its own native API key"
+        );
     }
     Ok(AccountAuth {
         env: Vec::new(),
@@ -227,9 +229,11 @@ mod tests {
         let error = super::account_auth(Some(root.path()))
             .err()
             .expect("custom OAuth home must be refused");
-        assert!(error
-            .to_string()
-            .contains("custom Cursor OAuth homes are unsupported"));
+        assert!(
+            error
+                .to_string()
+                .contains("custom Cursor OAuth homes are unsupported")
+        );
         let native = super::account_auth(None).unwrap();
         assert!(native.env.is_empty());
         assert!(native.env_remove.iter().any(|key| key == "CURSOR_API_KEY"));
@@ -242,14 +246,18 @@ mod tests {
         assert!(selected.env.iter().any(
             |(key, value)| key == "CURSOR_API_KEY" && value == "synthetic-selected-account-key"
         ));
-        assert!(!selected
-            .env_remove
-            .iter()
-            .any(|key| key == "CURSOR_API_KEY"));
-        assert!(selected
-            .env_remove
-            .iter()
-            .any(|key| key == "CURSOR_AUTH_TOKEN"));
+        assert!(
+            !selected
+                .env_remove
+                .iter()
+                .any(|key| key == "CURSOR_API_KEY")
+        );
+        assert!(
+            selected
+                .env_remove
+                .iter()
+                .any(|key| key == "CURSOR_AUTH_TOKEN")
+        );
     }
 
     #[test]

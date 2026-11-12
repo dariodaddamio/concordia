@@ -3,15 +3,15 @@
 Status: build `2026-11-04k` adds horizontal scrolling and shared-document native file windows.
 Build `2026-11-01d` adds bounded chat/recent/workspace file discovery and directory browsing.
 Build `2026-11-01c` adds internal editing and pane-owned file recovery to the existing
-preview/search/reload/current-chat suggestion surface. Markdown/JSON open formatted by default;
+preview/find/reload/current-chat suggestion surface. Markdown/JSON open formatted by default;
 Alt+V or the view bar switches modes. Formatted view is read-only. Source code opens raw,
 editable and syntax-colored. Ctrl+S saves; Ctrl+Z/Ctrl+Y undo/redo; Ctrl+F finds; F3/Shift+F3
 navigate matches. Raw letters such as `v`, `r`, `/` and `q` are file content.
-Visible pointer shapes depend on the terminal host; the installed WezTerm 2024 build does not
+Visible pointer shapes depend on the native renderer; unsupported shapes do not
 implement the requested control. [Chat rendering](chat-rendering.md) records the evidence and
 the newer table/link rendering and input-scroll behavior.
 The initial preview slice shipped in local build `2026-10-21b`.
-`/open` uses internal panes; `/edit PATH` (unlisted) preserves the external-editor route. The
+`/open` uses internal panes and the file action picker can launch the configured GUI editor. The
 search/replacement stage below is implemented with explicit source-bound previews. Keep the stable
 installed binary usable while developing this feature. No live providers are required here.
 
@@ -22,7 +22,7 @@ cancel. Save errors retain the buffer. Editing is paused if recovery storage is 
 File drafts, baseline, cursor, mode and split layout are stored in the pane's recovery lease,
 debounced 250 ms and flushed at normal exit. Recovery checks canonical workspace/path bindings;
 changed or missing originals never silently replace recovered edits. Recovery retains the newest
-buffer, not the prior undo stack. The existing `/recover` flow claims interrupted pane records.
+buffer, not the prior undo stack. Interrupted pane records restore into tabs and remain paused.
 
 Concordia should provide a graphical workspace inside the terminal: chat and files share one
 screen, with mouse operations and slash commands controlling the same pane state. Harness owns
@@ -114,7 +114,7 @@ window with shared undo/save state, rather than opening an independent editor fr
 
 ## Project content search
 
-Use `/search`, or Ctrl+F while the `/open` file browser is visible, to search UTF-8 project file
+Use the file pane's built-in find controls while a file is open to search its UTF-8 contents
 contents. The search surface owns its query separately from the chat draft. Enter scans or opens a
 selected result; Esc closes it. Case controls and completeness/limit reasons are shown on screen.
 File-pane Ctrl+F remains in-file search. Existing queues and running provider turns are preserved.

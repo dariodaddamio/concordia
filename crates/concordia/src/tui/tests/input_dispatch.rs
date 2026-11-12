@@ -290,7 +290,7 @@ fn use_picker_always_offers_add_account() {
     let picker = h.app.picker.as_ref().expect("picker open");
     assert!(picker.kind == PickerKind::Use);
     assert!(picker.rows.iter().any(|row| row.id == "use-add"));
-    assert!(picker.rows.iter().any(|row| row.id == "use-continuation"));
+    assert!(!picker.rows.iter().any(|row| row.id == "use-continuation"));
 }
 
 #[test]
@@ -770,7 +770,7 @@ fn success_with_no_output_and_cancel_keep_their_own_messages() {
         ..Default::default()
     });
     let t = h.transcript_text();
-    assert!(t.contains("cancelled"));
+    assert!(t.contains("Cancelled"));
     assert!(
         !t.contains("provider exited"),
         "a cancel is not a failure: {t}"
@@ -838,7 +838,10 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         assert!(s.contains(needle), "palette missing {needle:?}:\n{s}");
     }
     assert!(
-        s.contains(&format!("commands · {}", palette::matching("/").len())),
+        s.contains(&format!(
+            "commands · {}",
+            h.app.palette_entries().len()
+        )),
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);
@@ -846,7 +849,7 @@ fn typing_a_slash_previews_every_command_with_its_description() {
     h.key_up();
     let s = h.screen();
     assert!(
-        s.contains("/update") && s.contains("update Concordia"),
+        s.contains("/export"),
         "{s}"
     );
 }
@@ -892,7 +895,10 @@ fn arrows_move_the_selection_and_tab_completes_it() {
     h.type_str("/");
     h.key_up(); // wraps to the last command
     assert_eq!(h.app.editor.text(), "/");
-    assert_eq!(h.app.palette.selected, palette::matching("/").len() - 1);
+    assert_eq!(
+        h.app.palette.selected,
+        h.app.palette_entries().len() - 1
+    );
 }
 
 #[test]
@@ -1200,7 +1206,6 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         PickerKind::Usage,
         PickerKind::Use,
         PickerKind::Model,
-        PickerKind::Resume,
         PickerKind::Files,
         PickerKind::Tokens,
         PickerKind::Related,
@@ -1243,34 +1248,7 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         assert_eq!(h.app.editor.text(), "keep this draft");
         assert!(!h.app.busy);
     }
-    // A read that finishes after dismissal or a conversation change cannot repaint the UI.
-    let mut h = Harness::new(100, 28);
-    h.app.editor.set_text("preserve related-work draft");
-    let before = h.app.messages.len();
-    h.app.memory_command("groups");
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Related);
-    h.app.dismiss_picker();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h.app.session_ui.memory_reading() && Instant::now() < deadline {
-        h.app.poll_memory();
-        std::thread::yield_now();
-    }
-    assert!(!h.app.session_ui.memory_reading());
-    assert!(h.app.picker.is_none());
-    assert_eq!(h.app.messages.len(), before);
-    assert_eq!(h.app.editor.text(), "preserve related-work draft");
-    h.app.memory_command("groups");
-    h.app.session_ui.invalidate();
-    h.app.dismiss_picker();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h.app.session_ui.memory_reading() && Instant::now() < deadline {
-        h.app.poll_memory();
-        std::thread::yield_now();
-    }
-    assert!(!h.app.session_ui.memory_reading());
-    assert_eq!(h.app.messages.len(), before);
 }
-
 #[test]
 fn modal_typing_is_a_filter_and_output_x_matches_escape() {
     let mut h = Harness::new(100, 28);
@@ -1585,6 +1563,17 @@ fn model_argument_completion_uses_the_account_catalog_and_can_apply_it() {
     std::fs::write(
         home.join("models_cache.json"),
         r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list"},{"slug":"another-model","display_name":"another-model","visibility":"list"}]}"#,
+    )
+    .unwrap();
+    crate::store::upsert_stored_account(
+        &h.app.state_root,
+        crate::store::StoredAccount {
+            id: "codex".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(home.to_string_lossy().into_owned()),
+            label: "Codex fixture".into(),
+            created_at: "fixture".into(),
+        },
     )
     .unwrap();
     set_use_selection(

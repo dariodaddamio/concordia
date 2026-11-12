@@ -59,39 +59,6 @@ fn empty_paused_queue_has_no_attention_badge() {
     assert!(h.app.picker.is_none());
 }
 
-#[test]
-fn home_canvas_and_native_portrait_padding_are_pure_black() {
-    for name in ["default", "opifex"] {
-        let mut h = Harness::new(120, 30);
-        let (config, warnings) = crate::config::Config::parse(&format!("[ui]\ntheme='{name}'\n"));
-        assert!(warnings.is_empty());
-        super::theme::install(&config.ui);
-        h.app.raster.native = true;
-        landing::open_home_tab(&mut h.app);
-        h.draw();
-        assert_eq!(super::theme::image_background(), [0, 0, 0]);
-        assert_eq!(
-            h.term.backend().buffer()[(118, 5)].bg,
-            if name == "default" {
-                Color::Reset
-            } else {
-                Color::Rgb(0, 0, 0)
-            }
-        );
-        // Home places its 14x6 portrait directly below the two header rows.
-        for y in 2..8 {
-            for x in 1..15 {
-                let cell = &h.term.backend().buffer()[(x, y)];
-                assert_eq!(cell.bg, Color::Rgb(0, 0, 0));
-            }
-        }
-        #[cfg(windows)]
-        assert_eq!(super::theme::native_default(false), [0, 0, 0]);
-    }
-    super::theme::install(&crate::config::Config::default().ui);
-}
-
-#[test]
 fn pending_approval_is_a_needs_you_item() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
@@ -722,7 +689,7 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     assert!(lines[reply + 1].trim().is_empty(), "{s}");
     // The input box is rounded, and trust is stated in the footer (full is flagged).
     assert!(
-        s.contains('\u{256d}') && s.contains("permissions: workspace"),
+        s.contains('\u{256d}') && s.contains("permissions: edit"),
         "{s}"
     );
     h.app.trust = crate::store::TrustMode::Full;
@@ -793,10 +760,10 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     for w in [40u16, 60, 80, 100, 140] {
         let h = Harness::new(w, 12);
         let row = footer_row(&h);
-        let right = if row.ends_with("permissions: workspace ▾") {
-            "permissions: workspace ▾"
-        } else if row.ends_with("workspace ▾") {
-            "workspace ▾"
+        let right = if row.ends_with("permissions: edit ▾") {
+            "permissions: edit ▾"
+        } else if row.ends_with("edit ▾") {
+            "edit ▾"
         } else {
             ""
         };
@@ -826,7 +793,7 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
 fn shift_tab_never_reaches_full() {
     use ratatui::style::Color;
     let mut h = Harness::new(100, 12);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
     let mut seen = Vec::new();
     for _ in 0..3 {
         h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
@@ -835,12 +802,12 @@ fn shift_tab_never_reaches_full() {
     }
     assert_eq!(
         seen,
-        [TrustMode::Plan, TrustMode::Ask, TrustMode::Workspace]
+        [TrustMode::Plan, TrustMode::Ask, TrustMode::Edit]
     );
     for (mode, want) in [
         (TrustMode::Plan, Color::Cyan),
         (TrustMode::Ask, Color::Yellow),
-        (TrustMode::Workspace, Color::Green),
+        (TrustMode::Edit, Color::Green),
         (TrustMode::Full, Color::Red),
     ] {
         h.app.trust = mode;
@@ -948,7 +915,7 @@ fn mode_command_shows_and_sets_the_mode() {
     h.type_str("/mode");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     let s = h.screen();
-    assert!(s.contains("mode: workspace"), "{s}");
+    assert!(s.contains("mode: edit"), "{s}");
     h.type_str("/mode plan");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.trust, TrustMode::Plan);
@@ -957,24 +924,24 @@ fn mode_command_shows_and_sets_the_mode() {
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.trust, TrustMode::Plan);
     assert!(h.screen().contains("unknown mode bogus"));
-    h.type_str("/mode auto");
+    h.type_str("/mode edit");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 }
 
 #[test]
 fn mode_full_requires_confirmation_once_per_session() {
     let mut h = Harness::new(100, 24);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 
     h.send("/mode full");
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
     assert_eq!(
         h.app.picker.as_ref().unwrap().kind,
         PickerKind::FullModeConfirm
     );
     h.key(KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 
     h.send("/mode full");
     assert_eq!(

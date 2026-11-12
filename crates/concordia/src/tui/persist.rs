@@ -453,6 +453,7 @@ impl super::App {
                         self.queue.items = data.queue;
                         self.restore_pending_edit(data.pending_edit);
                         self.queue.paused = true;
+                        self.push_system("Your unsent draft and queued messages were restored.");
                     }
                 }
                 Err(error) => {
@@ -462,7 +463,7 @@ impl super::App {
         }
         if super::recovery::legacy_available(&self.state_root) {
             self.push_system(
-                "legacy shared draft or queue found; use /recover to import it safely",
+                "legacy shared draft or queue found; it remains retained for inspection",
             );
         }
         self.restore_turn_checkpoint();
@@ -625,7 +626,7 @@ impl super::App {
         self.queue.dispatch.clear_automatic();
     }
 
-    /// Choices for the parent `/recover` picker. Selected records are claimed by explicit id.
+    /// Saved records available for automatic restoration into tabs.
     pub(super) fn recovery_choices(&self) -> &[super::recovery::RecoveryChoice] {
         &self.keep.recovery_choices
     }
@@ -1108,10 +1109,10 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(screen.contains("draft not saved locally"));
-        assert!(screen.contains("/recover retry"));
+        assert!(!screen.contains("/recover"));
         fs::remove_dir(&record).unwrap();
         fs::rename(&backup, &record).unwrap();
-        assert!(app.handle_slash("/recover retry"));
+        app.persist_draft_now();
         assert!(app.recovery_warning().is_none());
         assert_eq!(
             lease.data().unwrap().draft,
@@ -1209,22 +1210,38 @@ mod tests {
         assert!(!cards[0].title.contains(secret));
         assert!(!cards[0].detail.as_deref().unwrap().contains(token));
 
-        let legacy = crate::threads::ThreadEvent::with_text("assistant", &body);
-        fs::write(
-            crate::threads::threads_dir(d.path()).join("legacy1111.jsonl"),
-            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        let agent_id = "golden-agent";
+        crate::mcp::write_agent(
+            d.path(),
+            &crate::mcp::AgentRecord {
+                agent_id: agent_id.into(),
+                account: body.clone(),
+                provider: body.clone(),
+                model: Some(body.clone()),
+                task: body.clone(),
+                parent: body.clone(),
+                status: body.clone(),
+                result: Some(body.clone()),
+                activity: vec![body.clone()],
+            },
         )
         .unwrap();
         let reply = crate::mcp::handle_line(
             d.path(),
             &serde_json::json!({
                 "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{"name":"thread_read","arguments":{"id":"legacy"}}
+                "params":{"name":"agents","arguments":{"action":"status","agent_id":agent_id}}
             })
             .to_string(),
         )
         .unwrap();
         assert!(!reply.contains(secret));
         assert!(reply.contains("[REDACTED:"));
+        let agent_text = fs::read_to_string(crate::mcp::record_path(d.path(), agent_id)).unwrap();
+        assert!(!agent_text.contains(secret));
+        assert!(!agent_text.contains(token));
+        assert!(!agent_text.contains("PRIVATE KEY"));
+        assert!(!agent_text.contains("passphrase"));
+        assert!(agent_text.contains("[REDACTED:"));
     }
 }

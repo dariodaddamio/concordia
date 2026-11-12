@@ -1,4 +1,4 @@
-//! Bounded lexical retrieval and explicit source relationships. No persisted conversation text.
+//! Bounded lexical retrieval and observed handoffs. No persisted conversation text.
 use super::*;
 
 const CANDIDATES: usize = 8;
@@ -174,14 +174,6 @@ pub fn recall(
     Ok(report)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Link {
-    pub parent: String,
-    pub child: String,
-    pub reason: String,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Handoff {
@@ -215,55 +207,6 @@ pub fn observe_handoff(
     crate::state_io::write_atomic(&path, &bytes).map_err(|e| e.to_string())
 }
 
-fn link_path(root: &Path, parent: &str, child: &str) -> Result<PathBuf, String> {
-    if !valid_id(parent) || !valid_id(child) || parent == child {
-        return Err("link needs two distinct source ids".into());
-    }
-    Ok(directory(root)
-        .join("lineage")
-        .join(format!("{}-{}.json", parent, child)))
-}
-
-/// A link means an explicit user confirmation or an observed Concordia context handoff. Both
-/// ends must still pass native revision verification. It does not claim provider-native ancestry.
-pub fn link(root: &Path, parent: &str, child: &str, reason: &str) -> Result<(), String> {
-    if !matches!(reason, "user-confirmed" | "context-handoff" | "worker") {
-        return Err("unsupported link reason".into());
-    }
-    let path = link_path(root, parent, child)?;
-    for id in [parent, child] {
-        let index = load(root, id)?;
-        let _ = open_index_source(root, &index)?;
-    }
-    let bytes = serde_json::to_vec(&Link {
-        parent: parent.into(),
-        child: child.into(),
-        reason: reason.into(),
-    })
-    .map_err(|e| e.to_string())?;
-    crate::state_io::write_atomic(&path, &bytes).map_err(|e| e.to_string())
-}
-
-pub fn detach(root: &Path, parent: &str, child: &str) -> Result<(), String> {
-    let path = link_path(root, parent, child)?;
-    let p = load(root, parent)?.binding;
-    let c = load(root, child)?.binding;
-    if let Ok(entries) = fs::read_dir(directory(root).join("handoffs")) {
-        for entry in entries.take(512).flatten() {
-            let path = entry.path();
-            let event = read_handoff(&path)?;
-            if event.parent == p && event.child == c {
-                fs::remove_file(path).map_err(|e| e.to_string())?;
-            }
-        }
-    }
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
 pub(super) fn read_handoff(path: &Path) -> Result<Handoff, String> {
     let mut bytes = Vec::new();
     File::open(path)
@@ -275,48 +218,11 @@ pub(super) fn read_handoff(path: &Path) -> Result<Handoff, String> {
     serde_json::from_slice(&bytes).map_err(|_| "invalid handoff metadata".into())
 }
 
-pub fn links(root: &Path, id: &str) -> Result<Value, String> {
+pub fn handoffs(root: &Path, id: &str) -> Result<Value, String> {
     let index = load(root, id)?;
     let _ = open_index_source(root, &index)?;
     let mut rows = Vec::new();
     let mut incomplete = false;
-    if let Ok(entries) = fs::read_dir(directory(root).join("lineage")) {
-        for (n, entry) in entries.enumerate() {
-            if n >= 512 {
-                incomplete = true;
-                break;
-            }
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if !name.starts_with(id) && !name.ends_with(&format!("{id}.json")) {
-                continue;
-            }
-            let bytes = File::open(path)
-                .and_then(|f| {
-                    let mut b = Vec::new();
-                    f.take(4096).read_to_end(&mut b)?;
-                    Ok(b)
-                })
-                .map_err(|e| e.to_string())?;
-            let edge: Link =
-                serde_json::from_slice(&bytes).map_err(|_| "invalid lineage record")?;
-            if edge.parent != id && edge.child != id {
-                return Err("lineage identity mismatch".into());
-            }
-            let other = if edge.parent == id {
-                &edge.child
-            } else {
-                &edge.parent
-            };
-            let available = load(root, other)
-                .and_then(|i| open_index_source(root, &i))
-                .is_ok();
-            rows.push(json!({"link":edge,"source_available":available}));
-        }
-    }
     if let Ok(entries) = fs::read_dir(directory(root).join("handoffs")) {
         for (n, entry) in entries.enumerate() {
             if n >= 512 {
@@ -345,39 +251,8 @@ pub fn links(root: &Path, id: &str) -> Result<Value, String> {
 }
 
 pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
-    let usage = "chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR] | chat file-facts INDEX [OFFSET REVISION] | chat lineage INDEX | chat link PARENT CHILD | chat detach PARENT CHILD";
+    let usage = "chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR] | chat file-facts INDEX [OFFSET REVISION] | chat handoffs INDEX";
     let value = match args.first().map(String::as_str) {
-        Some("ranked") => {
-            let text = args.get(1).ok_or("chat ranked TEXT [--source ID] [--account ID] [--workspace DIR] [--goal ID] [--file PATH] [--from ID] [--at RFC3339]")?;
-            let mut request = super::rank::Request {
-                text,
-                source: None,
-                account: None,
-                workspace: None,
-                goal: None,
-                file: None,
-                from: None,
-                at: None,
-            };
-            let mut seen = std::collections::BTreeSet::new();
-            for pair in args[2..].chunks(2) {
-                if pair.len() != 2 || !seen.insert(pair[0].as_str()) {
-                    return Err("ranked options require unique flag/value pairs".into());
-                }
-                match pair[0].as_str() {
-                    "--source" => request.source = Some(&pair[1]),
-                    "--account" => request.account = Some(&pair[1]),
-                    "--workspace" => request.workspace = Some(Path::new(&pair[1])),
-                    "--goal" => request.goal = Some(&pair[1]),
-                    "--file" => request.file = Some(&pair[1]),
-                    "--from" => request.from = Some(&pair[1]),
-                    "--at" => request.at = Some(&pair[1]),
-                    _ => return Err("unknown ranked option".into()),
-                }
-            }
-            serde_json::to_value(super::rank::recall(root, request)?)
-                .map_err(|error| error.to_string())?
-        }
         Some("file-facts") => super::files::command(root, args)?,
         Some("recall") => {
             let query = args.get(1).ok_or(usage)?;
@@ -399,15 +274,7 @@ pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
             serde_json::to_value(recall(root, query, source, account, workspace)?)
                 .map_err(|e| e.to_string())?
         }
-        Some("link" | "detach") if args.len() == 3 => {
-            if args[0] == "link" {
-                link(root, &args[1], &args[2], "user-confirmed")?;
-            } else {
-                detach(root, &args[1], &args[2])?;
-            }
-            json!({"ok":true})
-        }
-        Some("lineage") if args.len() == 2 => links(root, &args[1])?,
+        Some("handoffs") if args.len() == 2 => handoffs(root, &args[1])?,
         _ => return Err(usage.into()),
     };
     serde_json::to_string_pretty(&value).map_err(|e| e.to_string())

@@ -26,8 +26,8 @@ Source owners: [TUI runner](../crates/concordia/src/tui/run.rs),
 ## Processes and data
 
 Browser tabs share one process; each retains a complete conversation state and provider channels.
-A WezTerm pane runs another process. Providers, workers and explicit external actions run as tracked
-children. Internal file previews/editors belong to their conversation workspace.
+Providers, workers and explicit external actions run as tracked children. Internal file
+previews/editors belong to their conversation project.
 
 `<state>` defaults to `%LOCALAPPDATA%/concordia` (`CONCORDIA_STATE_DIR` overrides it).
 User configuration is `config.toml`; saved account/settings choices are `.ao/store.json`.
@@ -49,7 +49,7 @@ better memory than the provider's own session.
 - [Architecture and ownership](architecture.md)
 - [Exactly what is added to prompts](how-concordia-builds-prompts.md)
 - [Provider connections](how-concordia-connects-providers.md)
-- [Memory and delegation details](how-concordia-remembers-and-delegates.md)
+- [Memory and delegation details](delegation.md)
 - [Runtime and data details](how-concordia-runtime.md)
 - [Verification status](e2e-status.md)
 - [Commands and controls](ui-glossary.md), [configuration](config.md), [images/PDFs](images-and-diagrams.md)

@@ -1,5 +1,5 @@
 use crate::provider::stream_cards::{
-    parse_codex_stream_chunk, upsert_card, StreamCard, StreamPart,
+    StreamCard, StreamPart, parse_codex_stream_chunk, upsert_card,
 };
 use crate::store::TrustMode;
 use anyhow::Result;
@@ -56,7 +56,7 @@ pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Res
             argv.push("-s".into());
             argv.push("read-only".into());
         }
-        TrustMode::Workspace => {
+        TrustMode::Edit => {
             argv.push("--skip-git-repo-check".into());
             argv.push("--approve-for-me".into());
         }

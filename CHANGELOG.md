@@ -1,5 +1,150 @@
 # Changelog
 
+### Fixed (2026-11-12r)
+
+- Finished Grok Bot routine setup in `/use` with a masked Credential Manager-backed key field,
+  HTTPS-only webhook validation, edit/remove/token-rotation actions, loopback listener lifecycle,
+  and focused callback trust-boundary proofs.
+
+### Added (2026-11-12q)
+
+- Added an Astro Starlight documentation site scaffold for GitHub Pages with a vendored Opifex
+  Studio theme, source-derived install and usage pages, and a Windows security warnings guide.
+
+### Added (2026-11-12p)
+
+- Added the two-way Grok Bot routine bridge: Credential Manager-backed routine keys and callback
+  tokens, localhost-only one-tool callbacks, explicit run identity checks, bounded untrusted
+  results, and Agents MCP start/status integration.
+
+### Fixed (2026-11-12o)
+
+- Kept agent records and delegation proposals redacted on disk and updated the security check
+  to exercise the current `agents` MCP tool. Needs-attention selection now uses the active
+  conversation's queue, so paused prompts open focused without losing the composer.
+
+### Fixed (2026-11-12n)
+
+- Kept malformed MCP input bounded to one error per oversized request and refreshed stale
+  cleanup-closeout assertions for the current queue, landing, handoff-map and provider surfaces.
+
+### Added (2026-11-12m)
+
+- Diagnosed task-backed chats that cannot be opened, showing the concrete native pointer cause in
+  `/resume` and `/doctor`. The repair action starts a fresh session from the stored handoff map
+  while preserving the unsent draft.
+
+### Fixed (2026-11-12l)
+
+- Routed provider slash commands through the transports Concordia actually uses: Codex
+  app-server compaction/review RPCs, Claude Agent SDK stream-json commands, and ACP advertised
+  commands through `session/prompt`. Unsupported commands now show their transport-specific reason.
+
+### Added (2026-11-12k)
+
+- Added theme-coloured Windows taskbar status overlays and unpackaged shell notifications for
+  background questions and approvals. Notification clicks focus the existing window and open
+  Needs attention without reopening it automatically.
+
+### Fixed (2026-11-12j)
+
+- Clear an unsubmitted provider slash command when cancelling its busy-turn confirmation;
+  retained queue, draft, chat-history and capacity journeys now match the current command surface.
+
+### Fixed (2026-11-12i)
+
+- Restored automatic usage-limit continuation across configured accounts and native models,
+  including bounded retry-pair tracking and manual continuation while its picker is open.
+
+### Fixed (2026-11-12h)
+
+- Filtered provider-native slash commands by the typed prefix so ordinary prompts and
+  Concordia command history are submitted and recalled without palette interference.
+
+### Added (2026-11-12g)
+
+- Added the fake-fixture-backed Grok Build provider over ACP, with explicit session resume,
+  native authentication/permission handling, account homes and bounded model metadata.
+- Documented the confirmed Grok Build interface and its unverified usage/history boundaries.
+
+- W9: the Needs attention picker now uses enriched shared request records for foreground chats
+  and worker conversations, preserving provider-owned answer paths and showing project, chat,
+  agent, source and waiting context. Native requests are retained by their explicit interaction
+  owner instead of being discarded by the generic worker progress path. The native test snapshot
+  exposes the process-wide working/needs-attention/idle status state.
+
+- W8: provider-native slash commands are discoverable in the active-provider picker, while
+  Concordia-owned cross-provider commands keep their single owner. Unknown slash names now pass
+  through to the active provider instead of stopping at an unknown-command message.
+
+- W7: enriched the deterministic v2 handoff map with verbatim goal redirects, structured-tool
+  file counts, the last recorded error, the previous agent's bounded final message, restorable
+  pointers and current state, under one fixed character budget.
+
+- W6a: removed public recovery commands and the `/use` continuation row; interruptions,
+  usage-limit handoff and failed-request retry now stay inline. Renamed the Workspace permission
+  mode to Edit, made `/harness` the sole harness action path, and report provider-command
+  shadows for user shortcuts.
+
+- W3f: Ctrl+G now keeps provider-native subagents with unmatched provider thread senders as
+  root agents, includes restored transcript cards in the same Agents projection, and keeps the
+  footer count and tree aligned for native, agents-tool and untracked provider runs.
+
+- W3e: removed compiled-out delegation routing/crew code, worker registration fields and the
+  user-facing scope command; main-turn and managed-Git safety admission remain internal.
+
+- W3d: Ctrl+G now presents provider-native, delegated and untracked provider runs as a grouped
+  Agents tree with status icons, task titles, elapsed time and parent counts. Provider CLI runs
+  started from an agent are marked as unable to receive messages or questions; left/right
+  collapses a parent without changing provider ownership.
+
+- W3c: removed the legacy slash-command delegation, routing-policy and worker test surfaces;
+  agent-initiated delegation remains available through the single `agents` MCP tool, and
+  usage-limit continuation now uses the plain account picker.
+
+- W4b: separated Markdown table body rows with horizontal rules and gave Concordia system
+  notices an icon and tinted transcript band; cancellation notices now use plain sentences.
+
+- W2e: folded local thread history under `concordia chat thread`, removed project-wide search and
+  replacement, removed `/context` policy mutation and compaction overrides, and made native
+  pointer failures identify replacement, truncation, header changes, home changes and oversized records.
+
+- W3b: removed the legacy MCP test surface; `agents` now stores delegated-agent lifecycle
+  records and bounded final results for status/result reads.
+
+## Unreleased
+
+- W2d cleanup removes provider awareness injection, `/context`, `/search`, `/worktree`, the local
+  output feed, and their public catalogs; local-time headers are configurable and enabled by default.
+
+- Removed goals, goal/source relations, memory groups, ranking/evaluation extras, manual memory
+  links, and thread pin journals. Native source indexing, exact readback and plain chat search
+  remain available; stale pointers report their concrete cause.
+
+- Fix gradual transcript scrolling after folded-history rehydration, speed up Ctrl+T by removing
+  an unnecessary synchronous recovery write, preserve reasoning separators, add tab status marks,
+  copy support in queued-message editing, a visible chat scrollbar, and theme-coloured Windows
+  title bars. Markdown table wrapping/separators, queue send-now/editing, system-message styling,
+  and image aspect-ratio scaling remain in their existing owners.
+- Reduced Concordia's MCP registration to the always-on `agents` tool. Delegation is enabled by
+  default for connected accounts, Ctrl+G toggles the Agents view, and the worker/routing slash
+  command entry points were removed.
+- Concordia now uses the native window entry point only. Removed the WezTerm host and terminal
+  CLI mode, and removed `/trust`, `/split`, `/edit`, `/login`, `/connect`, `/preview` and
+  `/integrations`. `/use` handles account addition, `/open` handles file preview, and `/doctor`
+  remains the diagnostics entry point. Questions always reach the user, and every retained slash
+  command appears in the picker.
+
+## 2026-11-11b
+
+- Fix native-window journey control compilation and preserve native key, paste, mouse, resize,
+  and authenticated control-channel behavior in the fake-provider UI journeys.
+
+## 2026-11-11a
+
+- Add an opt-in authenticated loopback control channel for native-window UI journeys. Test
+  input is dispatched through the native Windows event path and snapshots read ratatui cells.
+
 ## 2026-11-09g
 
 - Make `/skills` and `/hooks` discoverable commands with shared Harness connection,

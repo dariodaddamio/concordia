@@ -15,27 +15,18 @@ impl App {
                 return;
             }
         };
-        let dirty = self
-            .workspace
-            .replacement_blockers()
-            .iter()
-            .any(|path| path == &file.path);
         let mut rows = Vec::new();
-        for (index, action) in [FileAction::Preview, FileAction::Split, FileAction::Editor]
+        for (index, action) in [FileAction::Preview, FileAction::Editor]
             .into_iter()
             .enumerate()
         {
             rows.push(PickerRow {
                 id: format!("action:{index}"),
                 label: action.label().into(),
-                detail: if dirty && action != FileAction::Preview {
-                    "Opens the disk version; your unsaved pane is retained".into()
-                } else {
-                    file.path.to_string_lossy().into_owned()
-                },
+                detail: file.path.to_string_lossy().into_owned(),
             });
         }
-        for (index, action) in [FileAction::Preview, FileAction::Split, FileAction::Editor]
+        for (index, action) in [FileAction::Preview, FileAction::Editor]
             .into_iter()
             .enumerate()
         {
@@ -57,8 +48,7 @@ impl App {
         };
         let action = match index {
             "0" => FileAction::Preview,
-            "1" => FileAction::Split,
-            "2" => FileAction::Editor,
+            "1" => FileAction::Editor,
             _ => return,
         };
         if kind == "default" {
@@ -67,7 +57,7 @@ impl App {
                 return;
             }
         }
-        self.perform_file_action(file, action, base, None);
+        self.perform_file_action(file, action, base);
     }
     pub(in crate::tui) fn default_file_action(&self) -> FileAction {
         crate::store::get_settings(&self.state_root)
@@ -84,16 +74,10 @@ impl App {
         file: file_links::ResolvedFile,
         action: FileAction,
         base: PathBuf,
-        verified: Option<crate::workspace_search::VerifiedHit>,
     ) -> bool {
-        let host = file_open::host_from_environment(
-            crate::host::wezterm::find_wezterm(),
-            std::env::var_os("WEZTERM_PANE"),
-        )
-        .ok();
         let config = crate::config::Config::load(&self.state_root).config.editor;
         let editor = if action == FileAction::Editor {
-            if config.program.is_empty() && config.launch == file_open::EditorLaunch::Gui {
+            if config.program.is_empty() {
                 None
             } else if config.program.is_empty() {
                 ["nvim", "hx", "vim"]
@@ -123,9 +107,7 @@ impl App {
             action,
             &file,
             &base,
-            host.as_ref(),
             editor.as_ref().map(|editor| (editor, config.launch)),
-            &exe,
         ) {
             Ok(action) => action,
             Err(error) => {
@@ -161,11 +143,7 @@ impl App {
                     return true;
                 }
                 let path = file.path.clone();
-                let result = if let Some(verified) = verified {
-                    self.workspace.open_verified(verified)
-                } else {
-                    self.workspace.open(file)
-                };
+                let result = self.workspace.open(file);
                 match result {
                     Ok(()) => {
                         self.related_files.remember(&path);
@@ -192,11 +170,7 @@ impl App {
                     }
                     let (tx, rx) = mpsc::unbounded_channel();
                     self.file_jobs.push(rx);
-                    self.flash(if action == FileAction::Split {
-                        "Opening independent file editor"
-                    } else {
-                        "Opening editor on disk version; internal edits retained"
-                    });
+                    self.flash("Opening editor on disk version; internal edits retained");
                     tokio::spawn(async move {
                         let message = launch(plan, detached).await.unwrap_or_else(|error| error);
                         let _ = tx.send(message);

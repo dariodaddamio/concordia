@@ -62,7 +62,7 @@ pub fn split(provider: ProviderKind, usage: &TurnUsage) -> (u64, u64, u64) {
     let cached = usage.cached.unwrap_or(0);
     let new_input = match provider {
         ProviderKind::Codex => input.saturating_sub(cached),
-        ProviderKind::Claude | ProviderKind::Cursor => input,
+        ProviderKind::Claude | ProviderKind::Cursor | ProviderKind::Grok => input,
     };
     (new_input, cached, usage.output.unwrap_or(0))
 }

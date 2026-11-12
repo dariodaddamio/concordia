@@ -1,5 +1,5 @@
-//! The landing page: recent chats grouped by project folder, the person's goals, and each
-//! project's open work as its Harness ledger reports it. It replaces the empty transcript until
+//! The landing page: recent chats grouped by project folder and each project's open work as its
+//! Harness ledger reports it. It replaces the empty transcript until
 //! the person types, resumes a chat or presses Esc.
 
 use super::{App, MsgRole, FOOTER_HINT};
@@ -18,7 +18,7 @@ use std::time::Instant;
 /// How many recent chats the page lists, and how many projects it asks for open work.
 const RECENT_CHATS: usize = 40;
 const WORK_PROJECTS: usize = 6;
-/// Below this width the goals pane is left out and the chats use the whole row.
+/// Below this width the work pane is left out and the chats use the whole row.
 const TWO_PANES_MIN: u16 = 70;
 
 #[derive(Debug, Clone)]
@@ -31,7 +31,6 @@ pub struct ChatGroup {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct LandingMeter {
     pub(crate) provider: crate::store::ProviderKind,
     pub(crate) account: String,
@@ -189,11 +188,26 @@ fn display_groups(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
 /// The project identity, or for a git worktree its main repository: a worktree's
 /// `.git` is a file reading `gitdir: <repo>/.git/worktrees/<name>`.
 fn project_root(folder: &Path) -> PathBuf {
-    crate::native_memory::relations::groups::project_root(folder)
+    let pointer = folder.join(".git");
+    let main = std::fs::symlink_metadata(&pointer)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .and_then(|_| std::fs::File::open(&pointer).ok())
+        .and_then(|file| {
+            use std::io::Read;
+            let mut text = String::new();
+            file.take(4097).read_to_string(&mut text).ok()?;
+            if text.len() > 4096 {
+                return None;
+            }
+            let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+            let gitdir = if gitdir.is_absolute() { gitdir } else { folder.join(gitdir) };
+            let dot_git = gitdir.parent()?.parent()?;
+            (dot_git.file_name()? == ".git").then(|| dot_git.parent().map(Path::to_path_buf))?
+        });
+    let root = main.as_deref().unwrap_or(folder);
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
-
-use crate::goals::read_goals;
-pub use crate::goals::{load_goals, save_goals, Goal};
 
 /// One project's open work. `None` when its Harness predates `plan:open --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,7 +263,6 @@ fn harness_program(state_root: &Path) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Chats,
-    Goals,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,7 +288,7 @@ pub struct Landing {
     show_all: bool,
     pub(crate) hidden_temp_root: Option<PathBuf>,
     groups: Vec<ChatGroup>,
-    goals: Vec<Goal>,
+    goals: Vec<String>,
     pane: Pane,
     mode: Mode,
     chat_sel: usize,
@@ -288,6 +301,7 @@ pub struct Landing {
     work_rx: Option<mpsc::Receiver<ProjectWork>>,
     /// Where the rows were drawn, for the mouse.
     chats_area: Rect,
+    work_area: Rect,
     goals_area: Rect,
     last_click: Option<(usize, Instant)>,
     /// Tokens through Concordia in the last 24 hours, read once when the page opens.
@@ -321,12 +335,6 @@ impl Landing {
         rows
     }
 
-    fn open_goals(&self) -> Vec<usize> {
-        (0..self.goals.len())
-            .filter(|&i| !self.goals[i].done)
-            .collect()
-    }
-
     /// Open work is still being read.
     #[cfg(test)]
     pub fn work_pending(&self) -> bool {
@@ -334,14 +342,7 @@ impl Landing {
     }
 
     fn hint(&self) -> &'static str {
-        match (&self.mode, self.pane) {
-            (Mode::AddGoal(_), _) => "Enter save · Esc cancel",
-            (Mode::ConfirmDone, _) => "Enter mark done · Esc keep",
-            (Mode::Browse, Pane::Chats) => {
-                "Enter open chat · F6 related work · Tab goals · Esc chat"
-            }
-            (Mode::Browse, Pane::Goals) => "a add goal · Enter mark done · Tab chats · Esc chat",
-        }
+        "Enter open chat · Esc chat"
     }
 }
 
@@ -466,13 +467,6 @@ fn open_with_mode(
             });
         rx
     });
-    let goals = match read_goals(&app.state_root) {
-        Ok(goals) => goals,
-        Err(_) => {
-            app.flash("Goals could not be loaded; the original file was kept unchanged");
-            Vec::new()
-        }
-    };
     let landing = Landing {
         welcome,
         provider_health: crate::doctor::fast_provider_status(),
@@ -481,7 +475,7 @@ fn open_with_mode(
         show_all: false,
         hidden_temp_root,
         groups,
-        goals,
+        goals: Vec::new(),
         pane: Pane::Chats,
         mode: Mode::Browse,
         chat_sel: 0,
@@ -493,6 +487,7 @@ fn open_with_mode(
         work: Vec::new(),
         work_rx,
         chats_area: Rect::default(),
+        work_area: Rect::default(),
         goals_area: Rect::default(),
         last_click: None,
         tokens_24h: 0,
@@ -535,31 +530,16 @@ pub(super) fn close(app: &mut App) {
     }
 }
 
-/// Drafting keeps the landing page visible. Goal entry keeps its own input.
+/// Drafting keeps the landing page visible.
 pub(super) fn handle_paste(app: &mut App, text: &str) -> bool {
     if !visible(app) || text.is_empty() {
         return false;
     }
-    match &mut app.landing.as_mut().expect("visible landing page").mode {
-        Mode::AddGoal(goal) => {
-            goal.push_str(text);
-            true
-        }
-        Mode::ConfirmDone => true,
-        Mode::Browse => {
-            set_pane(app, Pane::Chats);
-            false
-        }
-    }
+    let _ = text;
+    false
 }
 
 /// On screen: opened, nothing said in this chat yet, and no picker over it.
-pub(super) fn editing_goal(app: &App) -> bool {
-    app.landing
-        .as_ref()
-        .is_some_and(|landing| !matches!(&landing.mode, Mode::Browse))
-}
-
 pub(super) fn visible(app: &App) -> bool {
     app.landing.is_some()
         && app.picker.is_none()
@@ -576,11 +556,15 @@ pub(super) fn visible(app: &App) -> bool {
                     .any(|m| matches!(m.role, MsgRole::User | MsgRole::Assistant))))
 }
 
+pub(super) fn editing_goal(_app: &App) -> bool {
+    false
+}
+
 /// The landing usage pane owns subscription facts whenever it is actually drawn.
 pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
     visible(app)
         && app.landing.as_ref().is_some_and(|landing| {
-            !landing.meters.is_empty() && (width >= TWO_PANES_MIN || landing.pane == Pane::Goals)
+            !landing.meters.is_empty() && width >= TWO_PANES_MIN
         })
 }
 
@@ -609,29 +593,6 @@ pub(super) fn poll(app: &mut App) -> bool {
                 return true;
             }
         }
-    }
-}
-
-fn save(app: &mut App) -> bool {
-    let Some(landing) = app.landing.as_ref() else {
-        return false;
-    };
-    let selected_id = landing
-        .open_goals()
-        .get(landing.goal_sel)
-        .map(|&i| landing.goals[i].id.clone());
-    if let Err(e) = save_goals(&app.state_root, &landing.goals) {
-        app.flash(format!("goals could not be saved: {e}"));
-        false
-    } else {
-        let goals = load_goals(&app.state_root);
-        let landing = app.landing.as_mut().expect("landing page is open");
-        landing.goals = goals;
-        let open = landing.open_goals();
-        landing.goal_sel = selected_id
-            .and_then(|id| open.iter().position(|&i| landing.goals[i].id == id))
-            .unwrap_or_else(|| landing.goal_sel.min(open.len().saturating_sub(1)));
-        true
     }
 }
 
@@ -699,10 +660,6 @@ pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
-    if key.code == KeyCode::F(6) {
-        app.memory_command("groups");
-        return true;
-    }
     // Slash completion owns its keys even while the landing lists stay visible.
     if app
         .landing
@@ -720,101 +677,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     let plain = !key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-    if landing.pane == Pane::Goals {
-        landing.goal_follow = true;
-    }
-    match landing.mode.clone() {
-        Mode::AddGoal(mut text) => {
-            match key.code {
-                KeyCode::Esc => landing.mode = Mode::Browse,
-                KeyCode::Enter => {
-                    landing.mode = Mode::Browse;
-                    if !text.trim().is_empty() {
-                        let now = super::now_stamp();
-                        landing.goals.push(Goal {
-                            id: format!("g-{}", uuid::Uuid::new_v4()),
-                            text: text.trim().to_string(),
-                            done: false,
-                            added_at: now,
-                            closed_at: None,
-                            origin: Some(crate::goals::Attribution::user()),
-                            closed_origin: None,
-                            ..Default::default()
-                        });
-                        landing.goal_sel = landing.open_goals().len().saturating_sub(1);
-                        if !save(app) {
-                            let landing = app.landing.as_mut().expect("goal editor is open");
-                            landing.goals.pop();
-                            landing.mode = Mode::AddGoal(text);
-                        }
-                    }
-                }
-                KeyCode::Backspace => {
-                    text.pop();
-                    landing.mode = Mode::AddGoal(text);
-                }
-                KeyCode::Char(c) if plain || key.modifiers.contains(KeyModifiers::ALT) => {
-                    text.push(c);
-                    landing.mode = Mode::AddGoal(text);
-                }
-                KeyCode::Char(c)
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !key.modifiers.contains(KeyModifiers::ALT)
-                        && matches!(c.to_ascii_lowercase(), 'v' | 'c') =>
-                {
-                    return false
-                }
-                // Goal entry owns input until saved or cancelled. Letting navigation
-                // or undo fall through would silently edit the prompt underneath.
-                _ => return true,
-            }
-            let hint = app
-                .landing
-                .as_ref()
-                .map(Landing::hint)
-                .unwrap_or(FOOTER_HINT);
-            app.footer_left = hint.into();
-            return true;
-        }
-        Mode::ConfirmDone => {
-            match key.code {
-                KeyCode::Enter => {
-                    let open = landing.open_goals();
-                    let previous = open
-                        .get(landing.goal_sel)
-                        .map(|&index| (index, landing.goals[index].clone(), landing.goal_sel));
-                    if let Some(&i) = open.get(landing.goal_sel) {
-                        landing.goals[i].done = true;
-                        landing.goals[i].closed_at = Some(super::now_stamp());
-                        landing.goals[i].closed_origin = Some(crate::goals::Attribution::user());
-                    }
-                    landing.mode = Mode::Browse;
-                    landing.goal_sel = landing
-                        .goal_sel
-                        .min(landing.open_goals().len().saturating_sub(1));
-                    if !save(app) {
-                        let landing = app.landing.as_mut().expect("goal confirmation is open");
-                        if let Some((index, goal, selected)) = previous {
-                            landing.goals[index] = goal;
-                            landing.goal_sel = selected;
-                        }
-                        landing.mode = Mode::ConfirmDone;
-                    }
-                }
-                KeyCode::Esc => landing.mode = Mode::Browse,
-                _ => return true,
-            }
-            let hint = app
-                .landing
-                .as_ref()
-                .map(Landing::hint)
-                .unwrap_or(FOOTER_HINT);
-            app.footer_left = hint.into();
-            return true;
-        }
-        Mode::Browse => {}
-    }
-    // A nonempty draft owns editing and Enter; Tab still reaches the goals, and Up/Down still
+    // A nonempty draft owns editing and Enter; Up/Down still
     // move through the chats while the draft is one line.
     let list_key = matches!(key.code, KeyCode::Up | KeyCode::Down)
         && plain
@@ -837,15 +700,10 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     let rows = landing.rows().len();
-    let goals = landing.open_goals().len();
     match (key.code, landing.pane) {
         (KeyCode::Esc, _) => back_to_chat(app),
-        (KeyCode::Tab | KeyCode::BackTab, Pane::Chats) => set_pane(app, Pane::Goals),
-        (KeyCode::Tab | KeyCode::BackTab, Pane::Goals) => set_pane(app, Pane::Chats),
         (KeyCode::Up, Pane::Chats) => landing.chat_sel = previous(landing.chat_sel, rows),
         (KeyCode::Down, Pane::Chats) => landing.chat_sel = next(landing.chat_sel, rows),
-        (KeyCode::Up, Pane::Goals) => landing.goal_sel = previous(landing.goal_sel, goals),
-        (KeyCode::Down, Pane::Goals) => landing.goal_sel = next(landing.goal_sel, goals),
         (KeyCode::Enter, Pane::Chats) => activate_chat(app),
         (KeyCode::Char(' '), Pane::Chats)
             if matches!(
@@ -854,14 +712,6 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             ) =>
         {
             activate_chat(app)
-        }
-        (KeyCode::Enter, Pane::Goals) if goals > 0 => {
-            landing.mode = Mode::ConfirmDone;
-            app.footer_left = landing.hint().into();
-        }
-        (KeyCode::Char('a'), Pane::Goals) if plain => {
-            landing.mode = Mode::AddGoal(String::new());
-            app.footer_left = landing.hint().into();
         }
         (KeyCode::Char('h'), Pane::Chats)
             if plain
@@ -889,7 +739,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.footer_left = landing.hint().into();
         }
         (KeyCode::Char(_), _) if plain => {
-            // Drafting keeps chats and goals visible.
+            // Drafting keeps the landing page visible.
             set_pane(app, Pane::Chats);
             return false;
         }
@@ -933,10 +783,7 @@ pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     app.landing.as_ref().is_some_and(|l| {
         (super::contains(l.chats_area, x, y)
             && l.chat_top + ((y - l.chats_area.y) as usize) < l.rows().len())
-            || (super::contains(l.goals_area, x, y)
-                && l.goal_hits
-                    .get((y - l.goals_area.y) as usize)
-                    .is_some_and(Option::is_some))
+            || super::contains(l.work_area, x, y)
     })
 }
 
@@ -983,14 +830,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         MouseEventKind::ScrollDown if inside(landing.chats_area) => {
             landing.chat_sel = (landing.chat_sel + 3).min(rows.saturating_sub(1));
         }
-        MouseEventKind::ScrollUp if inside(landing.goals_area) => {
-            landing.goal_top = landing.goal_top.saturating_sub(3);
-            landing.goal_follow = false;
-        }
-        MouseEventKind::ScrollDown if inside(landing.goals_area) => {
-            landing.goal_top = landing.goal_top.saturating_add(3);
-            landing.goal_follow = false;
-        }
         MouseEventKind::Down(MouseButton::Left) if inside(landing.chats_area) => {
             let row = landing.chat_top + (m.row - landing.chats_area.y) as usize;
             if row >= rows {
@@ -1006,14 +845,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
                 activate_chat(app);
             }
         }
-        MouseEventKind::Down(MouseButton::Left) if inside(landing.goals_area) => {
-            let row = (m.row - landing.goals_area.y) as usize;
-            if let Some(Some(goal)) = landing.goal_hits.get(row) {
-                landing.goal_sel = *goal;
-                landing.goal_follow = true;
-            }
-            set_pane(app, Pane::Goals);
-        }
         _ => return false,
     }
     true
@@ -1021,12 +852,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
 
 /// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
 fn goal_rows(landing: &Landing, width: usize) -> usize {
-    let open = landing.open_goals();
-    let goals = open
-        .iter()
-        .map(|&i| wrapped_rows(&format!("  {}", goal_label(&landing.goals[i])), width))
-        .sum::<usize>()
-        + usize::from(landing.mode != Mode::Browse);
     let work: usize = landing
         .work
         .iter()
@@ -1041,16 +866,15 @@ fn goal_rows(landing: &Landing, width: usize) -> usize {
             None => 2,
         })
         .sum();
-    let goals_content = goals.max(if open.is_empty() && work == 0 { 6 } else { 3 });
     let usage = if landing.meters.is_empty() {
         0
     } else {
         meter_rows(&landing.meters, width) + 2
     };
     if work == 0 {
-        goals_content.max(usage + 5)
+        work.max(3).max(usage + 5)
     } else {
-        goals_content.max(usage + 5) + usize::from(goals > 0) + 1 + work
+        work.max(3).max(usage + 5)
     }
 }
 
@@ -1132,14 +956,12 @@ fn meter_rows(meters: &[LandingMeter], width: usize) -> usize {
     meters.iter().map(|m| meter_lines(m, width).len()).sum()
 }
 
-fn goal_label(goal: &Goal) -> String {
-    let proposed = goal.origin.as_ref().is_some_and(|origin| {
-        origin.source == crate::goals::ChangeSource::McpProposalApprovedLocally
-    });
+fn goal_label(_goal: &str) -> String {
+    let proposed = false;
     format!(
         "{} {}{}",
         if proposed { "◇" } else { "○" },
-        goal.text,
+        "",
         if proposed {
             " [MCP proposal · approved locally]"
         } else {
@@ -1255,27 +1077,16 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         && crate::store::load_store(&app.state_root)
             .accounts
             .is_empty();
-    let goals_width = if area.width >= TWO_PANES_MIN {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(area)[1]
-            .width
-    } else {
-        area.width
-    }
-    .saturating_sub(2) as usize;
     let content = landing
         .rows()
         .len()
-        .max(goal_rows(landing, goals_width))
         .max(if welcome_visible { 7 } else { 0 })
         .min(u16::MAX as usize - 2) as u16;
     let area = Rect {
         height: (content + 2).clamp(3, area.height.max(3)).min(area.height),
         ..area
     };
-    let narrow_goals = area.width < TWO_PANES_MIN && landing.pane == Pane::Goals;
+    let narrow_goals = false;
     let panes = if area.width >= TWO_PANES_MIN {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -1514,59 +1325,32 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" goals ")
-        .border_style(border(landing.pane == Pane::Goals));
+        .title(" open work ")
+        .border_style(border(false));
     let inner = block.inner(right);
     f.render_widget(block, right);
-    landing.goals_area = inner;
     let mut lines: Vec<Line> = Vec::new();
-    let mut hits = Vec::new();
+    let mut hits: Vec<Option<usize>> = Vec::new();
     let mut focus = None;
-    for (row, &i) in landing.open_goals().iter().enumerate() {
-        let focused = row == landing.goal_sel && landing.pane == Pane::Goals;
-        let style = if focused { selected } else { Style::default() };
-        if focused {
-            focus = Some(lines.len());
-        }
-        lines.push(Line::from(vec![
-            Span::styled(if focused { "> " } else { "  " }, style),
-            Span::styled(goal_label(&landing.goals[i]), style),
-        ]));
-        hits.push(Some(row));
-        if focused && landing.mode == Mode::ConfirmDone {
-            lines.push(Line::styled("    Mark done? Enter yes · Esc no", dim));
-            hits.push(Some(row));
-            focus = Some(lines.len() - 1);
-        }
-    }
-    if let Mode::AddGoal(text) = &landing.mode {
-        focus = Some(lines.len());
-        lines.push(Line::from(vec![
-            Span::styled("> ○ ", selected),
-            Span::raw(text.clone()),
-            Span::styled("▏", selected),
-        ]));
-        hits.push(None);
-    }
     if lines.is_empty() && landing.work.is_empty() {
         // An empty pane must still say what it is for and how to fill it. Open work, when
         // present, already fills the pane and keeps its rows.
         for (text, style) in [
             (
-                "No goals yet.",
+                "No open work.",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             ("", dim),
             (
-                "Goals are the outcomes you are working toward across chats.",
+                "Open work from the connected Harness appears here.",
                 dim,
             ),
             (
-                "Agents can read them and propose new ones for you to approve.",
+                "Use the chat and repository files for task objectives.",
                 dim,
             ),
             ("", dim),
-            ("Press Tab, then a, to add one.", Style::default()),
+            ("Open a chat to continue.", Style::default()),
         ] {
             lines.push(Line::styled(text, style));
             hits.push(None);
@@ -1634,11 +1418,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
     }
     landing.goal_top = landing.goal_top.min(visual.len().saturating_sub(height));
-    landing.goal_hits = visual_hits
-        .into_iter()
-        .skip(landing.goal_top)
-        .take(height)
-        .collect();
+    landing.goal_hits.clear();
     f.render_widget(
         Paragraph::new(
             visual
@@ -1703,481 +1483,8 @@ fn chat_title(app: &App, session: &SessionSummary) -> String {
         .unwrap_or_else(|| crate::sessions::clean_preview(session.preview.as_deref(), 80))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::store::ProviderKind;
-    use tempfile::tempdir;
 
-    fn session(folder: &str, id: &str, modified_ms: u128) -> SessionSummary {
-        SessionSummary {
-            account: "a".into(),
-            provider: ProviderKind::Codex,
-            session_id: id.into(),
-            cwd: Some(format!("C:/work/{folder}")),
-            preview: Some(id.into()),
-            modified_ms,
-            user_messages: 1,
-        }
-    }
 
-    #[test]
-    fn groups_current_first_and_newest_first() {
-        let groups = group_sessions(
-            vec![
-                session("older", "o1", 1),
-                session("here", "new", 3),
-                session("here", "old", 2),
-                session("newer", "n1", 9),
-            ],
-            Path::new("C:/work/here"),
-        );
-        assert_eq!(
-            groups.iter().map(|g| g.folder.as_str()).collect::<Vec<_>>(),
-            ["here", "newer", "older"]
-        );
-        assert!(groups[0].expanded && !groups[1].expanded);
-        assert_eq!(groups[0].sessions[0].session_id, "new");
-    }
 
-    #[test]
-    fn hidden_workspace_rules() {
-        let root = Path::new(r"C:\tmp\fixture");
-        for p in [
-            r"C:\tmp\fixture\x",
-            r"C:\code\target\x",
-            r"C:\concordia-test-1",
-            r"C:\concordia-qual-1",
-            r"C:\live-qualification-20261104",
-        ] {
-            assert!(hidden_workspace(Path::new(p), Some(root)));
-        }
-        for p in [
-            r"C:\code\latest",
-            r"C:\code\contest",
-            r"C:\notes\temp-notes",
-            r"C:\code\pytest-demo",
-            r"\\?\C:\code\latest",
-            "C:/code/latest",
-        ] {
-            assert!(!hidden_workspace(Path::new(p), None));
-        }
-    }
 
-    #[test]
-    fn display_path_strips_extended_and_unc_prefixes() {
-        assert_eq!(display_path(Path::new(r"\\?\C:\x")), PathBuf::from(r"C:\x"));
-        assert_eq!(
-            display_path(Path::new(r"\\?\UNC\server\share\x")),
-            PathBuf::from(r"\\server\share\x")
-        );
-        assert_eq!(display_path(Path::new(r"C:\x")), PathBuf::from(r"C:\x"));
-    }
 
-    #[test]
-    fn duplicate_folder_names_get_their_parent() {
-        let groups = group_sessions(
-            vec![
-                SessionSummary {
-                    cwd: Some(r"C:\dev\concordia".into()),
-                    ..session("concordia", "a", 1)
-                },
-                SessionSummary {
-                    cwd: Some(r"D:\work\concordia".into()),
-                    ..session("concordia", "b", 2)
-                },
-                session("unique", "c", 3),
-            ],
-            Path::new(r"C:\none"),
-        );
-        let names: Vec<_> = groups.iter().map(|g| g.folder.as_str()).collect();
-        assert!(names.contains(&"dev/concordia"));
-        assert!(names.contains(&"work/concordia"));
-        assert!(names.contains(&"unique"));
-    }
-
-    #[test]
-    fn quick_questions_collect_short_old_chats_per_folder() {
-        let now = 10 * 86_400_000u128;
-        let mut old = session("one", "old", now - 2 * 86_400_000);
-        old.user_messages = 2;
-        let mut long = session("one", "long", now - 2 * 86_400_000);
-        long.user_messages = 3;
-        let recent = session("one", "recent", now - 3_600_000);
-        let groups = display_groups_at(vec![old, long, recent], Path::new(r"C:\none"), now);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(
-            groups[0]
-                .sessions
-                .iter()
-                .map(|s| s.session_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["recent", "long"]
-        );
-        assert_eq!(groups[0].quick_sessions[0].session_id, "old");
-        assert!(!groups[0].quick_questions);
-    }
-
-    #[test]
-    fn worktree_chats_join_their_repository_and_probe_chats_are_skipped() {
-        let dir = tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        let tree = dir.path().join("repo-feature");
-        std::fs::create_dir_all(repo.join(".git/worktrees/repo-feature")).unwrap();
-        std::fs::create_dir_all(&tree).unwrap();
-        std::fs::write(
-            tree.join(".git"),
-            format!(
-                "gitdir: {}\n",
-                repo.join(".git/worktrees/repo-feature").display()
-            ),
-        )
-        .unwrap();
-        let at = |cwd: &Path, id: &str, ms| SessionSummary {
-            cwd: Some(cwd.to_string_lossy().into_owned()),
-            ..session("x", id, ms)
-        };
-        let groups = group_sessions(
-            vec![
-                at(&repo, "main", 2),
-                at(&tree, "branch", 3),
-                at(&crate::cursor_usage::probe_dir(), "probe", 9),
-            ],
-            &repo,
-        );
-        assert_eq!(groups.len(), 1, "{groups:?}");
-        assert_eq!(groups[0].folder, "repo");
-        assert_eq!(groups[0].sessions.len(), 2);
-    }
-
-    fn test_meter() -> LandingMeter {
-        let mut snapshot = crate::usage::UsageSnapshot::no_data("cached", "fixture");
-        snapshot.windows = vec![
-            crate::usage::UsageWindow {
-                label: "5h".into(),
-                used_pct: 23.0,
-                resets: Some("3h".into()),
-            },
-            crate::usage::UsageWindow {
-                label: "7d".into(),
-                used_pct: 76.0,
-                resets: Some("2d".into()),
-            },
-        ];
-        LandingMeter {
-            provider: ProviderKind::Codex,
-            account: "fixture".into(),
-            snapshot,
-        }
-    }
-
-    #[test]
-    fn usage_box_sits_above_goals_and_goals_keep_their_cta() {
-        let meter = test_meter();
-        assert!(meter_lines(&meter, 120)[0].starts_with("codex fixture"));
-        let boxes = ["usage", "goals"];
-        assert_eq!(boxes[0], "usage");
-        assert_eq!(boxes[1], "goals");
-        assert!("Press Tab, then a, to add one.".contains("add one"));
-    }
-
-    #[test]
-    fn meters_show_a_heading_and_every_window_without_wrapping() {
-        let mut meter = test_meter();
-        meter.snapshot.plan = Some("Max".into());
-        meter.snapshot.windows.push(crate::usage::UsageWindow {
-            label: "7d Opus".into(),
-            used_pct: 10.0,
-            resets: Some("4d".into()),
-        });
-        for width in [34, 42, 120] {
-            let lines = meter_lines(&meter, width);
-            assert_eq!(lines.len(), 4, "{lines:?}");
-            assert!(lines[0].contains("Max"));
-            assert!(lines[3].contains("7d Opus"));
-            assert!(lines
-                .iter()
-                .all(|l| !l.contains('\n') && l.chars().count() <= width));
-        }
-        assert!(meter_lines(&meter, 120)[1].contains("resets 3h"));
-    }
-
-    #[test]
-    fn a_long_goal_counts_every_wrapped_row() {
-        let goal = Goal {
-            text: "word ".repeat(40),
-            ..Default::default()
-        };
-        assert!(wrapped_rows(&format!("  {}", goal_label(&goal)), 40) >= 5);
-        assert!(goal_rows_stub(3, 2) >= 3);
-    }
-
-    #[test]
-    fn reset_times_say_reset_at_when_past_and_resets_when_future() {
-        assert_eq!(
-            meter_reset_label("Nov 5, 11:54pm", true),
-            "reset at Nov 5, 11:54pm"
-        );
-        assert_eq!(meter_reset_label("12:20pm", false), "resets 12:20pm");
-    }
-
-    #[test]
-    fn chats_from_missing_folders_are_hidden_until_show_all() {
-        let dir = tempdir().unwrap();
-        let missing = dir.path().join("removed-worktree");
-        let chat = SessionSummary {
-            cwd: Some(missing.to_string_lossy().into_owned()),
-            ..session("removed-worktree", "chat", 1)
-        };
-        assert!(landing_sessions(vec![chat.clone()], dir.path(), false, None).is_empty());
-        let groups = display_groups_at(
-            landing_sessions(vec![chat.clone()], dir.path(), true, None),
-            dir.path(),
-            86_400_001,
-        );
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].folder, "removed-worktree");
-        assert_eq!(groups[0].quick_sessions[0].session_id, "chat");
-        assert_eq!(hidden_count(&[chat], dir.path(), None), 1);
-    }
-
-    fn goal_rows_stub(goals: usize, meters: usize) -> usize {
-        goals.max(3).max(meters + 5)
-    }
-
-    #[test]
-    fn goals_round_trip() {
-        let dir = tempdir().unwrap();
-        let mut goals = vec![Goal {
-            id: "g-1".into(),
-            text: "ship".into(),
-            done: false,
-            added_at: "now".into(),
-            closed_at: None,
-            ..Default::default()
-        }];
-        goals[0].extra.insert(
-            "external_note".into(),
-            serde_json::json!("keep existing metadata"),
-        );
-        std::fs::write(
-            dir.path().join("goals.json"),
-            serde_json::to_vec(&goals).unwrap(),
-        )
-        .unwrap();
-        let legacy = std::fs::read(dir.path().join("goals.json")).unwrap();
-        assert_eq!(load_goals(dir.path()), goals);
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            legacy,
-            "reading does not migrate data"
-        );
-        save_goals(dir.path(), &goals).unwrap();
-        assert!(
-            serde_json::from_slice::<Vec<Goal>>(
-                &std::fs::read(dir.path().join("goals.json")).unwrap()
-            )
-            .is_err(),
-            "legacy writers must fail closed on attributed goal stores"
-        );
-        assert_eq!(load_goals(dir.path()), goals);
-        let mut close = goals[0].clone();
-        close.done = true;
-        close.text = "must not replace the immutable text".into();
-        close.added_at = "must not replace original creation".into();
-        close.closed_at = Some("closed".into());
-        save_goals(dir.path(), &[close]).unwrap();
-        save_goals(dir.path(), &goals).unwrap();
-        let saved = load_goals(dir.path());
-        assert!(saved[0].done);
-        assert_eq!(saved[0].text, "ship");
-        assert_eq!(saved[0].added_at, "now");
-        assert_eq!(saved[0].extra["external_note"], "keep existing metadata");
-
-        use crate::goals::{changes, ChangeSource};
-        let request = uuid::Uuid::new_v4().to_string();
-        let revision = crate::goals::revision(&saved).unwrap();
-        let before = std::fs::read(dir.path().join("goals.json")).unwrap();
-        let add =
-            changes::propose_add(dir.path(), &request, &revision, "Agent-proposed exact goal")
-                .unwrap();
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            before
-        );
-        changes::apply(dir.path(), &add).unwrap();
-        let added = load_goals(dir.path());
-        let goal = added.iter().find(|goal| goal.id == add.goal_id()).unwrap();
-        assert_eq!(
-            goal.origin.as_ref().unwrap().source,
-            ChangeSource::McpProposalApprovedLocally
-        );
-        assert_eq!(
-            goal.origin.as_ref().unwrap().request_id.as_deref(),
-            Some(request.as_str())
-        );
-        let applied_bytes = std::fs::read(dir.path().join("goals.json")).unwrap();
-        changes::apply(dir.path(), &add).unwrap();
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            applied_bytes
-        );
-        assert!(
-            changes::propose_add(dir.path(), &request, &revision, "different reused request")
-                .is_err()
-        );
-        assert_eq!(
-            changes::propose_add(dir.path(), &request, &revision, "Agent-proposed exact goal")
-                .unwrap(),
-            add
-        );
-
-        let stale = changes::propose_add(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &crate::goals::revision(&added).unwrap(),
-            "Stale proposal",
-        )
-        .unwrap();
-        save_goals(
-            dir.path(),
-            &[Goal {
-                id: "concurrent-user-goal".into(),
-                text: "User goal".into(),
-                added_at: "now".into(),
-                origin: Some(crate::goals::Attribution::user()),
-                ..Default::default()
-            }],
-        )
-        .unwrap();
-        let concurrent = std::fs::read(dir.path().join("goals.json")).unwrap();
-        assert!(changes::apply(dir.path(), &stale)
-            .unwrap_err()
-            .contains("goals changed"));
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            concurrent
-        );
-
-        let close = changes::propose_close(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &crate::goals::revision(&load_goals(dir.path())).unwrap(),
-            &add.goal_id(),
-        )
-        .unwrap();
-        changes::apply(dir.path(), &close).unwrap();
-        let closed = load_goals(dir.path());
-        let closed_goal = closed.iter().find(|goal| goal.id == add.goal_id()).unwrap();
-        assert!(closed_goal.done);
-        assert_eq!(
-            closed_goal
-                .closed_origin
-                .as_ref()
-                .unwrap()
-                .request_id
-                .as_deref(),
-            Some(close.request_id.as_str())
-        );
-        let duplicate = changes::propose_close(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &crate::goals::revision(&closed).unwrap(),
-            &add.goal_id(),
-        )
-        .unwrap();
-        assert!(changes::apply(dir.path(), &duplicate)
-            .unwrap()
-            .contains("already complete"));
-        assert_eq!(load_goals(dir.path()), closed);
-
-        let current_revision = crate::goals::revision(&closed).unwrap();
-        let declined = changes::propose_add(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &current_revision,
-            "Declined goal",
-        )
-        .unwrap();
-        changes::decline(dir.path(), &declined).unwrap();
-        assert!(changes::apply(dir.path(), &declined)
-            .unwrap_err()
-            .contains("declined"));
-        assert_eq!(load_goals(dir.path()), closed);
-        let uncertain = changes::propose_add(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &current_revision,
-            "Uncertain goal",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join(".ao/goal-changes").join(format!("{}.json", uncertain.request_id)), serde_json::to_vec(&serde_json::json!({"version":1,"proposal":uncertain,"proposal_sha256":uncertain.hash().unwrap(),"status":"prepared"})).unwrap()).unwrap();
-        assert!(changes::apply(dir.path(), &uncertain)
-            .unwrap_err()
-            .contains("unconfirmed"));
-        assert!(changes::status(dir.path(), &uncertain.request_id)
-            .unwrap()
-            .contains("\"current_goal_matches_request\":false"));
-        assert_eq!(load_goals(dir.path()), closed);
-
-        let receipt_path = dir
-            .path()
-            .join(".ao/goal-changes")
-            .join(format!("{request}.json"));
-        let mut receipt: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&receipt_path).unwrap()).unwrap();
-        receipt["status"] = serde_json::json!("prepared");
-        std::fs::write(receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
-        assert!(changes::apply(dir.path(), &add)
-            .unwrap_err()
-            .contains("unconfirmed"));
-        assert!(changes::status(dir.path(), &request)
-            .unwrap()
-            .contains("\"current_goal_matches_request\":true"));
-        assert_eq!(load_goals(dir.path()), closed);
-
-        let pending = changes::propose_add(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &current_revision,
-            "Future schema refusal",
-        )
-        .unwrap();
-        let future = serde_json::to_vec(&serde_json::json!({"version":99,"goals":closed})).unwrap();
-        std::fs::write(dir.path().join("goals.json"), &future).unwrap();
-        assert!(changes::apply(dir.path(), &pending).is_err());
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            future
-        );
-    }
-
-    #[test]
-    fn open_work_reads_plans_then_rows_and_rejects_other_output() {
-        let items = parse_open_work(
-            r#"{"plans":[{"plan":"p","slice":"Ship the plan","owner":"o","status":"open","next":"n"}],
-                "rows":[{"section":"backlog","id":"B2","item":"Parked","status":"queued"},
-                        {"section":"backlog","id":"B3","item":"Doing","status":"open"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            items,
-            [
-                WorkItem {
-                    text: "Ship the plan".into(),
-                    queued: false
-                },
-                WorkItem {
-                    text: "Parked".into(),
-                    queued: true
-                },
-                WorkItem {
-                    text: "Doing".into(),
-                    queued: false
-                },
-            ]
-        );
-        assert_eq!(parse_open_work("PASS plan:open: 0 open row(s)"), None);
-        assert_eq!(parse_open_work(r#"{"rows":[]}"#), None);
-    }
-}

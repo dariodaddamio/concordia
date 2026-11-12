@@ -408,23 +408,6 @@ mod tests {
         assert!(run_usage_in_pty(&spec, Duration::from_secs(4)).is_err());
     }
 
-    /// One real fetch against the installed Cursor agent. It only types `/usage`; no prompt is
-    /// ever sent. Run by hand: `cargo test -p concordia --lib real_cursor -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "drives the real Cursor agent"]
-    fn real_cursor_usage_screen() {
-        let home = tempfile::tempdir().unwrap();
-        let r = fetch_cursor_usage_text(home.path());
-        match &r {
-            Ok(text) => println!(
-                "OK\n{text}\n--- parsed: {:?}",
-                crate::usage::parse_cursor_usage(text)
-            ),
-            Err(e) => println!("ERR {e}"),
-        }
-        assert!(r.is_ok());
-    }
-
     #[test]
     fn screen_text_turns_cursor_moves_into_lines() {
         let raw = "\u{1b}[?25l\u{1b}[2;1HIncluded\u{1b}[5C27% used\u{1b}[3;1H\u{1b}[1mAuto\u{1b}[0m\u{1b}]0;title\u{7}";

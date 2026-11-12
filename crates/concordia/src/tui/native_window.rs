@@ -9,7 +9,9 @@ use ratatui::{
     style::{Color, Modifier},
 };
 use std::{
+    collections::VecDeque,
     io, mem,
+    net::{SocketAddr, TcpListener, TcpStream},
     ptr::{null, null_mut},
     sync::{
         atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering},
@@ -17,16 +19,19 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 use unicode_width::UnicodeWidthStr;
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Graphics::Dwm::DwmSetWindowAttribute,
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
+    System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED},
     UI::{
         HiDpi::*,
         Input::KeyboardAndMouse::*,
-        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW},
+        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW},
         WindowsAndMessaging::*,
     },
 };
@@ -35,8 +40,12 @@ const UPDATE: u32 = WM_APP + 1;
 const TITLE: u32 = WM_APP + 2;
 const POINTER: u32 = WM_APP + 3;
 const SHUTDOWN: u32 = WM_APP + 4;
+const TEST_CONTROL: u32 = WM_APP + 5;
+const TRAY_NOTIFY: u32 = WM_APP + 6;
+const TRAY_ID: u32 = 1;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
+const DWMWA_CAPTION_COLOR: u32 = 35;
 
 /// Decoded attachment pixels and their cell-aligned viewport. Provider input retains
 /// its separate immutable file snapshot; this is only a display overlay.
@@ -71,6 +80,43 @@ struct Shared {
     dirty: AtomicBool,
     closing: AtomicBool,
     screen: Mutex<Screen>,
+    requested_status: Mutex<StatusDot>,
+    test_control: Option<TestControl>,
+}
+
+#[derive(Default)]
+struct TestControl {
+    state: Mutex<TestState>,
+    queue: Mutex<VecDeque<TestRequest>>,
+}
+
+#[derive(Default)]
+struct TestState {
+    focused_tab: String,
+    overlays: Vec<String>,
+    status_dot: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StatusDot {
+    Idle,
+    Working,
+    NeedsAttention,
+}
+
+impl StatusDot {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::NeedsAttention => "needs_attention",
+        }
+    }
+}
+
+struct TestRequest {
+    request: serde_json::Value,
+    reply: mpsc::SyncSender<String>,
 }
 
 /// Signed cells belong to the captured mouse-up message, before terminal clamping.
@@ -116,6 +162,8 @@ fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend
             title: "Concordia".into(),
             images: Vec::new(),
         }),
+        requested_status: Mutex::new(StatusDot::Idle),
+        test_control: std::env::var_os("CONCORDIA_TEST_CONTROL").map(|_| TestControl::default()),
     });
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (stopped_tx, stopped) = mpsc::sync_channel(1);
@@ -149,6 +197,21 @@ fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend
 }
 
 impl WindowBackend {
+    pub(super) fn set_test_state(&mut self, focused_tab: String, overlays: Vec<String>) {
+        let Some(test) = self.shared.test_control.as_ref() else {
+            return;
+        };
+        let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.focused_tab = focused_tab;
+        state.overlays = overlays;
+    }
+    pub(super) fn set_status_dot(&mut self, status: StatusDot) {
+        *self.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        if let Some(test) = self.shared.test_control.as_ref() {
+            test.state.lock().unwrap_or_else(|e| e.into_inner()).status_dot = status.as_str().into();
+        }
+        let _ = self.post(UPDATE);
+    }
     pub(super) fn set_images(&mut self, images: Vec<RasterImage>) -> io::Result<()> {
         if images.len() > 4
             || images.iter().any(|image| {
@@ -359,6 +422,11 @@ struct Window {
     emoji_fonts: [HFONT; 16],
     glyph_fonts: [std::collections::HashMap<String, u8>; 16],
     icons: [HICON; 2],
+    overlay_icons: [HICON; 2],
+    taskbar: *mut TaskbarList3,
+    com_initialized: bool,
+    status_dot: StatusDot,
+    tray_added: bool,
     icon_color: crate::config::Rgb,
     icon_active: bool,
     icon_frame: u8,
@@ -373,6 +441,20 @@ struct Window {
     surface: Option<Surface>,
     image_pixels: Vec<BitmapPixels>,
 }
+
+#[repr(C)]
+struct TaskbarList3 {
+    vtable: *const *const (),
+}
+
+const CLSID_TASKBAR_LIST: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0x56fdf344, data2: 0xfd6d, data3: 0x11d0,
+    data4: [0x95, 0x8a, 0x00, 0x60, 0x97, 0xc9, 0xa0, 0x90],
+};
+const IID_ITASKBAR_LIST3: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0xea1afb91, data2: 0x9e28, data3: 0x4b86,
+    data4: [0x90, 0xe9, 0x9e, 0x9f, 0x8a, 0x5e, 0xea, 0x84],
+};
 
 struct BitmapPixels {
     source: Arc<image::RgbaImage>,
@@ -403,6 +485,21 @@ impl Drop for Surface {
 }
 impl Drop for Window {
     fn drop(&mut self) {
+        for icon in self.overlay_icons {
+            if !icon.is_null() {
+                unsafe { DestroyIcon(icon); }
+            }
+        }
+        if self.tray_added {
+            unsafe { notify_tray(self.shared.hwnd.load(Ordering::Acquire) as HWND, NIM_DELETE, None); }
+        }
+        if !self.taskbar.is_null() {
+            unsafe {
+                let release: unsafe extern "system" fn(*mut TaskbarList3) -> u32 = mem::transmute(*(*self.taskbar).vtable.add(2));
+                release(self.taskbar);
+            }
+        }
+        if self.com_initialized { unsafe { CoUninitialize(); } }
         for font in self.fonts {
             if !font.is_null() {
                 unsafe {
@@ -425,8 +522,42 @@ impl Drop for Window {
             }
         }
     }
+
 }
 impl Window {
+    unsafe fn set_status(&mut self, hwnd: HWND, status: StatusDot) {
+        if self.status_dot == status {
+            if status == StatusDot::NeedsAttention && !self.focused && !self.tray_added {
+                notify_tray(hwnd, NIM_ADD, Some("Concordia needs your attention"));
+                self.tray_added = true;
+            } else if self.focused && self.tray_added {
+                notify_tray(hwnd, NIM_DELETE, None);
+                self.tray_added = false;
+            }
+            return;
+        }
+        self.status_dot = status;
+        let icon = match status {
+            StatusDot::Idle => null_mut(),
+            StatusDot::Working | StatusDot::NeedsAttention => status_icon(16, super::theme::status_color(status)),
+        };
+        if status != StatusDot::Idle && !icon.is_null() {
+            let index = if status == StatusDot::Working { 0 } else { 1 };
+            if !self.overlay_icons[index].is_null() { DestroyIcon(self.overlay_icons[index]); }
+            self.overlay_icons[index] = icon;
+            if !self.taskbar.is_null() { taskbar_overlay(self.taskbar, hwnd, icon); }
+        } else if !self.taskbar.is_null() {
+            taskbar_overlay(self.taskbar, hwnd, null_mut());
+        }
+        if status == StatusDot::NeedsAttention && !self.focused && !self.tray_added {
+            notify_tray(hwnd, NIM_ADD, Some("Concordia needs your attention"));
+            self.tray_added = true;
+        } else if status != StatusDot::NeedsAttention && self.tray_added {
+            notify_tray(hwnd, NIM_DELETE, None);
+            self.tray_added = false;
+        }
+    }
+
     fn emit(&self, event: Event) {
         send_until_closed(
             &self.events,
@@ -859,6 +990,169 @@ impl Window {
     }
 }
 
+fn test_modifiers(value: Option<&serde_json::Value>) -> KeyModifiers {
+    let mut modifiers = KeyModifiers::NONE;
+    for name in value
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+    {
+        modifiers |= match name.to_ascii_uppercase().as_str() {
+            "CTRL" | "CONTROL" => KeyModifiers::CONTROL,
+            "ALT" => KeyModifiers::ALT,
+            "SHIFT" => KeyModifiers::SHIFT,
+            "SUPER" | "META" => KeyModifiers::SUPER,
+            _ => KeyModifiers::NONE,
+        };
+    }
+    modifiers
+}
+
+fn test_key(value: &str) -> Option<KeyCode> {
+    Some(match value {
+        "Enter" => KeyCode::Enter,
+        "Esc" | "Escape" => KeyCode::Esc,
+        "Tab" => KeyCode::Tab,
+        "Backspace" => KeyCode::Backspace,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        "Delete" => KeyCode::Delete,
+        "Insert" => KeyCode::Insert,
+        value if value.len() == 1 => KeyCode::Char(value.chars().next()?),
+        value
+            if value
+                .strip_prefix('F')
+                .and_then(|n| n.parse::<u8>().ok())
+                .is_some() =>
+        {
+            KeyCode::F(value[1..].parse().ok()?)
+        }
+        _ => return None,
+    })
+}
+
+fn test_response(shared: &Shared, request: &serde_json::Value) -> serde_json::Value {
+    if request.get("op").and_then(|v| v.as_str()) != Some("snapshot") {
+        return serde_json::json!({"ok": true});
+    }
+    let screen = shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(test) = shared.test_control.as_ref() else {
+        return serde_json::json!({"ok": false, "error": "test control disabled"});
+    };
+    let state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+    let rows = (0..screen.size.height)
+        .map(|row| {
+            (0..screen.size.width)
+                .map(|column| {
+                    screen.cells
+                        [usize::from(row) * usize::from(screen.size.width) + usize::from(column)]
+                    .symbol()
+                    .to_owned()
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "ok": true,
+        "title": screen.title,
+        "focused_tab": state.focused_tab,
+        "overlays": state.overlays,
+        "status_dot": state.status_dot,
+        "columns": screen.size.width,
+        "rows": screen.size.height,
+        "grid": rows,
+    })
+}
+
+unsafe fn handle_test_control(window: &mut Window) {
+    let Some(test) = window.shared.test_control.as_ref() else {
+        return;
+    };
+    let requests = {
+        let mut queue = test.queue.lock().unwrap_or_else(|e| e.into_inner());
+        queue.drain(..).collect::<Vec<_>>()
+    };
+    for request in requests {
+        match request.request.get("op").and_then(|v| v.as_str()) {
+            Some("key") => {
+                if let Some(code) = request
+                    .request
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .and_then(test_key)
+                {
+                    window.emit(Event::Key(KeyEvent::new(
+                        code,
+                        test_modifiers(request.request.get("modifiers")),
+                    )));
+                }
+            }
+            Some("text") => {
+                if let Some(text) = request.request.get("text").and_then(|v| v.as_str()) {
+                    if !text.is_empty() {
+                        window.emit(Event::Paste(text.to_owned()));
+                    }
+                }
+            }
+            Some("mouse") => {
+                let x = request
+                    .request
+                    .get("x")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32
+                    * window.cell_width;
+                let y = request
+                    .request
+                    .get("y")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32
+                    * window.cell_height;
+                let kind = match request.request.get("kind").and_then(|v| v.as_str()) {
+                    Some("down") => MouseEventKind::Down(MouseButton::Left),
+                    Some("up") => MouseEventKind::Up(MouseButton::Left),
+                    Some("scroll_up") => MouseEventKind::ScrollUp,
+                    Some("scroll_down") => MouseEventKind::ScrollDown,
+                    _ => MouseEventKind::Moved,
+                };
+                window.mouse(kind, x, y);
+            }
+            Some("resize") => {
+                let width = request
+                    .request
+                    .get("columns")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(120) as i32
+                    * window.cell_width;
+                let height = request
+                    .request
+                    .get("rows")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(40) as i32
+                    * window.cell_height;
+                SetWindowPos(
+                    window.shared.hwnd.load(Ordering::Acquire) as HWND,
+                    null_mut(),
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            _ => {}
+        }
+        let response = test_response(&window.shared, &request.request);
+        let _ = request.reply.send(response.to_string());
+    }
+}
+
 /// Tiny application status marks must never depend on a fallback font or script substitution.
 /// Keep their ordinary Unicode text in the shared UI and copied output; only native paint is geometric.
 unsafe fn paint_status_symbol(dc: HDC, symbol: &str, rect: &RECT) -> bool {
@@ -1229,6 +1523,57 @@ unsafe fn refresh_icon(hwnd: HWND, window: &mut Window) {
     window.icon_color = super::theme::brand_color();
 }
 
+unsafe fn taskbar_hr_init(taskbar: *mut TaskbarList3) {
+    let method: unsafe extern "system" fn(*mut TaskbarList3) -> i32 = mem::transmute(*(*taskbar).vtable.add(3));
+    let _ = method(taskbar);
+}
+
+unsafe fn taskbar_overlay(taskbar: *mut TaskbarList3, hwnd: HWND, icon: HICON) {
+    let method: unsafe extern "system" fn(*mut TaskbarList3, HWND, HICON, *const u16) -> i32 = mem::transmute(*(*taskbar).vtable.add(17));
+    let _ = method(taskbar, hwnd, icon, null());
+}
+
+unsafe fn status_icon(size: i32, [red, green, blue]: crate::config::Rgb) -> HICON {
+    let mut pixels = image::RgbaImage::new(size as u32, size as u32);
+    let center = (size as f32 - 1.0) / 2.0;
+    let radius = center - 1.0;
+    for y in 0..size as u32 {
+        for x in 0..size as u32 {
+            let distance = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
+            if distance <= radius { pixels.put_pixel(x, y, image::Rgba([blue, green, red, 255])); }
+        }
+    }
+    let mut data = vec![0u8; 40];
+    let mut header = |offset: usize, value: u32| data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    header(0, 40); header(4, size as u32); header(8, (size * 2) as u32);
+    data[12..14].copy_from_slice(&1u16.to_le_bytes());
+    data[14..16].copy_from_slice(&32u16.to_le_bytes());
+    for y in (0..size as u32).rev() { for x in 0..size as u32 { data.extend_from_slice(&pixels.get_pixel(x, y).0); } }
+    data.resize(data.len() + ((size as usize).div_ceil(32) * 4) * size as usize, 0);
+    CreateIconFromResourceEx(data.as_mut_ptr(), data.len() as u32, 1, 0x00030000, size, size, 0)
+}
+
+unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
+    let mut data: NOTIFYICONDATAW = mem::zeroed();
+    data.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
+    data.hWnd = hwnd;
+    data.uID = TRAY_ID;
+    data.uFlags = NIF_MESSAGE | NIF_ICON | if message.is_some() { NIF_INFO } else { 0 };
+    data.uCallbackMessage = TRAY_NOTIFY;
+    data.hIcon = status_icon(16, super::theme::status_color(StatusDot::NeedsAttention));
+    if let Some(message) = message {
+        let mut text = message.encode_utf16().take(255).collect::<Vec<_>>();
+        text.resize(256, 0);
+        data.szInfo.copy_from_slice(&text);
+        let mut title = "Concordia".encode_utf16().collect::<Vec<_>>();
+        title.resize(64, 0);
+        data.szInfoTitle.copy_from_slice(&title);
+        data.dwInfoFlags = 1;
+    }
+    let _ = Shell_NotifyIconW(operation, &data);
+    if !data.hIcon.is_null() { DestroyIcon(data.hIcon); }
+}
+
 unsafe fn window_thread(
     shared: Arc<Shared>,
     events: SyncSender<NativeEvent>,
@@ -1259,6 +1604,11 @@ unsafe fn window_thread(
         emoji_fonts: [null_mut(); 16],
         glyph_fonts: std::array::from_fn(|_| std::collections::HashMap::new()),
         icons: [app_icon(32, None), app_icon(16, None)],
+        overlay_icons: [null_mut(), null_mut()],
+        taskbar: null_mut(),
+        com_initialized: false,
+        status_dot: StatusDot::Idle,
+        tray_added: false,
         icon_color: super::theme::brand_color(),
         icon_active: false,
         icon_frame: 0,
@@ -1293,7 +1643,23 @@ unsafe fn window_thread(
     if hwnd.is_null() {
         return Err(io::Error::last_os_error());
     }
+    let com_initialized = CoInitializeEx(null_mut(), COINIT_APARTMENTTHREADED as u32) >= 0;
+    window.com_initialized = com_initialized;
+    if com_initialized {
+        let mut taskbar = null_mut();
+        if CoCreateInstance(
+            &CLSID_TASKBAR_LIST,
+            null_mut(),
+            CLSCTX_INPROC_SERVER,
+            &IID_ITASKBAR_LIST3,
+            (&mut taskbar as *mut *mut TaskbarList3).cast(),
+        ) >= 0 {
+            window.taskbar = taskbar;
+            taskbar_hr_init(taskbar);
+        }
+    }
     shared.hwnd.store(hwnd as isize, Ordering::Release);
+    start_test_control(&shared, hwnd);
     if !window.icons[0].is_null() {
         SendMessageW(
             hwnd,
@@ -1314,6 +1680,7 @@ unsafe fn window_thread(
     window.resized(hwnd);
     DragAcceptFiles(hwnd, 1);
     SetTimer(hwnd, 1, 500, None);
+    set_caption_color(hwnd);
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
     let _ = ready.send(Ok(()));
@@ -1328,6 +1695,83 @@ unsafe fn window_thread(
     }
     shared.hwnd.store(0, Ordering::Release);
     Ok(())
+}
+
+/// Test-only control is an authenticated, local loopback channel. It is deliberately
+/// attached to the native message thread: injected events and real Win32 input share
+/// the same `Window::emit`/`Window::mouse` path and therefore the same input precedence.
+fn start_test_control(shared: &Arc<Shared>, hwnd: HWND) {
+    let Some(spec) = std::env::var_os("CONCORDIA_TEST_CONTROL") else {
+        return;
+    };
+    let Ok(spec) = spec.into_string() else { return };
+    let Some((address, token)) = spec.split_once(';') else {
+        return;
+    };
+    let Ok(address) = address.parse::<SocketAddr>() else {
+        return;
+    };
+    if !address.ip().is_loopback() || token.is_empty() {
+        return;
+    }
+    let Ok(listener) = TcpListener::bind(address) else {
+        return;
+    };
+    let hwnd = hwnd as isize;
+    let token = token.to_owned();
+    let shared = shared.clone();
+    thread::Builder::new()
+        .name("concordia-test-control".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let shared = shared.clone();
+                let token = token.to_owned();
+                thread::spawn(move || test_control_client(stream, shared, hwnd, &token));
+            }
+        })
+        .ok();
+}
+
+fn test_control_client(stream: TcpStream, shared: Arc<Shared>, hwnd: isize, token: &str) {
+    use std::io::{BufRead, BufReader, Write};
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() || line.is_empty() {
+            break;
+        }
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if request.get("token").and_then(|v| v.as_str()) != Some(token) {
+            continue;
+        }
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let Some(test) = shared.test_control.as_ref() else {
+            break;
+        };
+        test.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(TestRequest {
+                request,
+                reply: reply_tx,
+            });
+        unsafe {
+            PostMessageW(hwnd as HWND, TEST_CONTROL, 0, 0);
+        }
+        let Ok(reply) = reply_rx.recv_timeout(Duration::from_secs(5)) else {
+            break;
+        };
+        if reader.get_mut().write_all(reply.as_bytes()).is_err() {
+            break;
+        }
+        if reader.get_mut().write_all(b"\n").is_err() {
+            break;
+        }
+        let _ = reader.get_mut().flush();
+    }
 }
 
 unsafe extern "system" fn window_proc(
@@ -1351,6 +1795,10 @@ unsafe extern "system" fn window_proc(
     match message {
         SHUTDOWN => {
             DestroyWindow(hwnd);
+            return 0;
+        }
+        TEST_CONTROL => {
+            handle_test_control(&mut *pointer);
             return 0;
         }
         WM_DESTROY => {
@@ -1382,6 +1830,8 @@ unsafe extern "system" fn window_proc(
             | UPDATE
             | TITLE
             | POINTER
+            | TRAY_NOTIFY
+            | TEST_CONTROL
             | WM_SETCURSOR
             | WM_TIMER
             | WM_SIZE
@@ -1424,11 +1874,23 @@ unsafe extern "system" fn window_proc(
             0
         }
         UPDATE => {
+            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            window.set_status(hwnd, status);
+            set_caption_color(hwnd);
             if super::theme::brand_color() != window.icon_color {
                 refresh_icon(hwnd, window);
             }
             window.blink = true;
             InvalidateRect(hwnd, null(), 0);
+            0
+        }
+        TRAY_NOTIFY if lparam as u32 == WM_LBUTTONUP || lparam as u32 == WM_LBUTTONDBLCLK => {
+            if window.status_dot == StatusDot::NeedsAttention {
+                SetForegroundWindow(hwnd);
+                window.emit(Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)));
+                notify_tray(hwnd, NIM_DELETE, None);
+                window.tray_added = false;
+            }
             0
         }
         TITLE => {
@@ -1522,12 +1984,16 @@ unsafe extern "system" fn window_proc(
         WM_SETFOCUS => {
             window.focused = true;
             window.blink = true;
+            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            window.set_status(hwnd, status);
             window.emit(Event::FocusGained);
             InvalidateRect(hwnd, null(), 0);
             0
         }
         WM_KILLFOCUS => {
             window.focused = false;
+            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            window.set_status(hwnd, status);
             let pressed = window.pressed.take();
             if let Some(button) = pressed {
                 let mut point: POINT = mem::zeroed();
@@ -1696,6 +2162,18 @@ unsafe extern "system" fn window_proc(
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
     }
+}
+
+unsafe fn set_caption_color(hwnd: HWND) {
+    let [red, green, blue] = super::theme::native_default(false);
+    // DWMWA_CAPTION_COLOR takes a COLORREF (BGR packed in a DWORD), not a ratatui RGB value.
+    let color = u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16);
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CAPTION_COLOR,
+        (&color as *const u32).cast(),
+        std::mem::size_of::<u32>() as u32,
+    );
 }
 
 unsafe fn dropped_files(window: &Window, drop: windows_sys::Win32::UI::Shell::HDROP) -> bool {

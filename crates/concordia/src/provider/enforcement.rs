@@ -15,7 +15,7 @@
 //! harness manifest identity, including a current hash for file manifests.
 
 use crate::store::{ProviderKind, TrustMode};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -278,7 +278,9 @@ pub fn gate_in(store: &Path, cwd: &Path, provider: ProviderKind, home: Option<&P
                 ));
             }
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Gate::ReadOnly(format!("{name}: locked-code policy inspection failed; enforcement is unverified: {error}"));
+                return Gate::ReadOnly(format!(
+                    "{name}: locked-code policy inspection failed; enforcement is unverified: {error}"
+                ));
             }
             _ => {}
         }
@@ -346,6 +348,7 @@ pub fn is_read_only_argv(provider: ProviderKind, argv: &[String]) -> bool {
         ProviderKind::Claude => pair(&["--permission-mode"], "plan"),
         ProviderKind::Cursor => pair(&["--mode"], "plan"),
         ProviderKind::Codex => pair(&["-s", "--sandbox"], "read-only"),
+        ProviderKind::Grok => pair(&["--always-approve"], "ACP permission mode"),
     }
 }
 
@@ -696,7 +699,7 @@ mod tests {
     fn write_capable_trust_drops_to_plan_with_a_notice() {
         let (store, dir) = dirs2();
         locked_project(dir.path());
-        for trust in [TrustMode::Ask, TrustMode::Workspace, TrustMode::Full] {
+        for trust in [TrustMode::Ask, TrustMode::Edit, TrustMode::Full] {
             let (effective, notice) =
                 effective_trust_in(store.path(), dir.path(), ProviderKind::Claude, None, trust);
             assert_eq!(effective, TrustMode::Plan, "{trust:?}");

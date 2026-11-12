@@ -1666,7 +1666,7 @@ mod tests {
                         }),
                     )
                 }
-                ProviderKind::Cursor => {
+                ProviderKind::Cursor | ProviderKind::Grok => {
                     connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
                     (
                         "cursor/ask_question",
@@ -1770,7 +1770,7 @@ mod tests {
                         serde_json::json!({"sessionId":session,"toolCall":{"toolCallId":"ask"},"questions":[{"id":"route","prompt":"Route?","options":[{"id":"Direct","label":"Direct"},{"id":"Review","label":"Review"}]}]}),
                     )
                 }
-                ProviderKind::Cursor => {
+                ProviderKind::Cursor | ProviderKind::Grok => {
                     connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
                     (
                         "cursor/ask_question",

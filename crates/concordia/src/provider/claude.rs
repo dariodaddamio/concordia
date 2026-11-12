@@ -1,5 +1,5 @@
 use crate::store::TrustMode;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 #[derive(Debug, Clone)]
 pub struct ClaudeTurnRequest<'a> {
@@ -60,7 +60,7 @@ pub fn plan_claude_turn_with(
             argv.push("--permission-mode".into());
             argv.push("manual".into());
         }
-        TrustMode::Workspace => {
+        TrustMode::Edit => {
             argv.push("--permission-mode".into());
             argv.push("acceptEdits".into());
         }

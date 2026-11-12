@@ -435,7 +435,7 @@ mod tests {
         assert!(p.pack_chars <= threads::MAP_CHARS, "{}", p.pack_chars);
         assert!(p
             .text
-            .contains("concordia thread read 3f9a1111-2222-3333-4444-555555555555"));
+            .contains("concordia chat thread read 3f9a1111-2222-3333-4444-555555555555"));
         assert!(p.labeled.contains("tools/approvals NOT transferred"));
         assert!(!p.text.contains("question 3 "), "no transcript dump");
     }
@@ -446,7 +446,7 @@ mod tests {
         let p = build_context_pack(&msgs, ProviderKind::Claude, ProviderKind::Codex, 6000, None)
             .unwrap();
         assert!(p.text.contains("not stored"));
-        assert!(p.text.contains("asked: question 0"));
+        assert!(!p.text.contains("asked: question 0"), "maps do not dump the transcript");
         assert!(p.pack_chars <= threads::MAP_CHARS);
     }
 }

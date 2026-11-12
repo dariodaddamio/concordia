@@ -1,0 +1,201 @@
+/* Vendored from C:/Users/dario/dev/opifex / packages/ui/src/css/base.css
+ * Opifex Studio source version: 1.3.0
+ * Refresh with: npm run sync:opifex
+ */
+/* Box model, cursors, root, corner geometry, scrollport, focus tone. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+/*
+  Cursor intent map (see docs/preferences/ui.md → Cursors).
+  Components may override; disabled always wins not-allowed.
+*/
+a[href],
+button:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+summary,
+[role="button"]:not([aria-disabled="true"]):not(:disabled),
+[role="option"]:not([aria-disabled="true"]):not(:disabled),
+[role="menuitem"]:not([aria-disabled="true"]):not(:disabled),
+[role="tab"]:not([aria-disabled="true"]):not(:disabled),
+[role="switch"]:not([aria-disabled="true"]):not(:disabled),
+[role="checkbox"]:not([aria-disabled="true"]):not(:disabled),
+[role="radio"]:not([aria-disabled="true"]):not(:disabled),
+[role="link"]:not([aria-disabled="true"]):not(:disabled),
+[role="combobox"]:not(:disabled):not([aria-disabled="true"]):not(
+  [aria-busy="true"]
+) {
+  cursor: pointer;
+}
+select:not(:disabled) {
+  cursor: pointer;
+}
+input:not([type]):not(:disabled):not([readonly]):not([aria-busy="true"]),
+input:is(
+  [type="text"],
+  [type="email"],
+  [type="search"],
+  [type="password"],
+  [type="url"],
+  [type="tel"],
+  [type="number"]
+):not(:disabled):not([readonly]):not([aria-busy="true"]),
+textarea:not(:disabled):not([readonly]):not([aria-busy="true"]),
+[contenteditable="true"]:not([aria-busy="true"]) {
+  cursor: text;
+}
+/* Read-only text has no insertion point, so it keeps the default cursor. */
+input[readonly]:not(:disabled),
+textarea[readonly]:not(:disabled) {
+  cursor: default;
+}
+input:is([type="radio"], [type="checkbox"], [type="range"]):not(:disabled) {
+  cursor: pointer;
+}
+[aria-busy="true"] {
+  cursor: progress;
+}
+/* After busy so a pending control that is also inert keeps not-allowed. */
+:disabled,
+[aria-disabled="true"],
+[data-disabled="true"] {
+  cursor: not-allowed;
+}
+html {
+  /* When a classic scrollbar is necessary, keep the rail stable. */
+  scrollbar-gutter: stable;
+}
+@media (pointer: fine) {
+  html,
+  .opx-root {
+    overscroll-behavior: none;
+  }
+}
+/* Explicit classic scrollport (visible bar + stable gutter). Do not use with
+   fully hidden scrollbars on the same element. Pair with `.opx-scrollport-clip`
+   when the host has border-radius so the square native rail does not poke out. */
+.opx-scrollport-clip {
+  overflow: hidden;
+}
+.opx-scrollport-classic {
+  overflow: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+.opx-root {
+  min-width: var(--opx-viewport-minimum);
+  color: var(--opx-text);
+  font-family: var(--opx-font-ui);
+  /* Prefer nicer wrap (fewer orphans) in product UI. Long-form prose opts out. */
+  text-wrap: pretty;
+}
+.opx-prose-long,
+.opx-article,
+article.opx-prose {
+  text-wrap: wrap;
+}
+/*
+  Normal rounded rectangles are the default.
+  `corner-shape` does not inherit, so apply the inherited token to all elements.
+  Squircle uses the CSS squircle curve, superellipse(2).
+  Opt-in utilities live in squircle.css (`squircle-sm` … `squircle-xl`, `.squircle`).
+*/
+@supports (corner-shape: superellipse(2)) {
+  *,
+  *::before,
+  *::after {
+    corner-shape: var(--opx-corner-shape, round);
+  }
+
+  [data-corner="round"],
+  [data-corner="round"]::before,
+  [data-corner="round"]::after,
+  .opx-corner-round,
+  .opx-corner-round::before,
+  .opx-corner-round::after,
+  .opx-status-dot,
+  .opx-skeleton--avatar {
+    corner-shape: round;
+  }
+}
+[data-geometry="squircle"],
+[data-geometry="squircle"] *,
+[data-geometry="squircle"] *::before,
+[data-geometry="squircle"] *::after,
+[data-corner="squircle"],
+[data-corner="squircle"]::before,
+[data-corner="squircle"]::after {
+  --opx-corner-shape: var(--opx-squircle-shape);
+  --corner-shape: var(--opx-squircle-shape);
+}
+@supports (corner-shape: superellipse(2)) {
+  [data-geometry="squircle"],
+  [data-geometry="squircle"] *,
+  [data-geometry="squircle"] *::before,
+  [data-geometry="squircle"] *::after,
+  [data-corner="squircle"],
+  [data-corner="squircle"]::before,
+  [data-corner="squircle"]::after {
+    corner-shape: var(--opx-squircle-shape);
+  }
+}
+.opx-root :where(button, input, select, textarea) {
+  font: inherit;
+}
+.opx-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.opx-scroll-quiet {
+  scrollbar-width: none;
+}
+.opx-scroll-quiet::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Horizontal content keeps native scrolling but does not reserve a rail. */
+.opx-scroll-quiet-x {
+  scrollbar-width: none;
+  overscroll-behavior-inline: contain;
+}
+.opx-scroll-quiet-x::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.opx-scroll-quiet-x::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.opx-root[data-focus-tone="accent"],
+[data-focus-tone="accent"] {
+  --opx-stroke-strong: var(--opx-focus-accent);
+  --opx-focus: var(--opx-stroke-strong);
+}
+/* Menu / hot rows: fill is the focus cue. No second orange/gray ring. */
+.opx-menu__item:focus,
+.opx-menu__item:focus-visible,
+.opx-option:focus,
+.opx-option:focus-visible {
+  outline: none;
+}
+.opx-nav-link:focus-visible {
+  outline: none;
+}
+
+/* The fallback owns background/border/shadow paint. Native transitions on
+   those same properties make its source reads capture the previous palette. */
+body [data-hyperellipse-host] {
+  transition-property: color, filter, opacity, transform, translate, scale;
+}

@@ -143,6 +143,7 @@ pub(in crate::tui) struct PendingLogin {
 pub(in crate::tui) enum PickerKind {
     Doctor,
     DoctorConfirm,
+    ChatRepair,
     Settings,
     FilePreferences,
     Customization,
@@ -158,7 +159,6 @@ pub(in crate::tui) enum PickerKind {
     Integrations,
     Related,
     Agents,
-    Recovery,
     Files,
     FileActions,
     Artifacts,
@@ -167,6 +167,8 @@ pub(in crate::tui) enum PickerKind {
     Trust,
     FullModeConfirm,
     Use,
+    GrokBotForm,
+    GrokBotActions,
     AddProvider,
     Remove,
     RemoveConfirm,
@@ -177,6 +179,16 @@ pub(in crate::tui) enum PickerKind {
     ResumeDeleteConfirm,
     Update,
     NeedsYou,
+}
+
+#[derive(Default)]
+pub(in crate::tui) struct GrokBotForm {
+    pub(in crate::tui) account: String,
+    pub(in crate::tui) routine_id: String,
+    pub(in crate::tui) name: String,
+    pub(in crate::tui) webhook_url: String,
+    pub(in crate::tui) key: String,
+    pub(in crate::tui) active: usize,
 }
 
 pub(in crate::tui) struct Picker {
@@ -264,7 +276,6 @@ pub(crate) struct App {
         Option<crate::provider::interaction::InteractionOwner>,
     pub(in crate::tui) scopes: workspace_scope::State,
     pub(in crate::tui) managed_workspaces: managed_workspaces::State,
-    pub(in crate::tui) project_search: workspace_search::State,
     pub(in crate::tui) file_action_target: Option<(crate::file_links::ResolvedFile, PathBuf)>,
     pub(in crate::tui) continuation_target: Option<String>,
     pub(in crate::tui) state_root: PathBuf,
@@ -330,11 +341,13 @@ pub(crate) struct App {
     pub(in crate::tui) trust: TrustMode,
     pub(in crate::tui) native_session_id: Option<String>,
     pub(in crate::tui) task_id: Option<String>,
+    pub(in crate::tui) pending_repair_map: Option<String>,
     pub(in crate::tui) session_chip: Option<String>,
     pub(in crate::tui) session_ui: session_ui::State,
     pub(in crate::tui) native_agents: native_agents::State,
     pub(in crate::tui) footer_left: String,
     pub(in crate::tui) picker: Option<Picker>,
+    pub(in crate::tui) repair_task: Option<String>,
     pub(in crate::tui) doctor: Option<DoctorUi>,
     pub(in crate::tui) doctor_applier: Box<dyn crate::doctor::FixApplier>,
     pub(in crate::tui) model_refresh: Option<ModelRefresh>,
@@ -399,6 +412,7 @@ pub(crate) struct App {
     pub(in crate::tui) signed_out_confirmation: Option<(String, String)>,
     pub(in crate::tui) signed_out_overrides: HashSet<String>,
     pub(in crate::tui) needs_you: crate::needs_you::Queue,
+    pub(in crate::tui) grok_bot_form: Option<GrokBotForm>,
 }
 
 impl App {
@@ -477,7 +491,24 @@ impl App {
         } else {
             self.session_ui.title.as_deref().unwrap_or("New chat")
         };
-        let mut label: String = title
+        let last_user = self.messages.iter().rposition(|m| m.role == MsgRole::User);
+        let failed = last_user.is_some_and(|start| {
+            self.messages[start..]
+                .iter()
+                .rev()
+                .find(|m| m.role == MsgRole::System)
+                .is_some_and(|m| super::super::level_of(&m.text) == super::super::Level::Error)
+        });
+        let status = if self.busy && self.questions.waiting() {
+            "⚠"
+        } else if self.busy {
+            "◉"
+        } else if failed {
+            "×"
+        } else {
+            "✓"
+        };
+        let mut label: String = format!("{status} {title}")
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -594,7 +625,7 @@ impl App {
 
     /// Suggestions for the prompt as typed (empty when closed, dismissed, or not a slash prompt).
     pub(in crate::tui) fn palette_entries(&self) -> Vec<palette::Entry> {
-        if self.editor.text().starts_with("/open ") || self.editor.text().starts_with("/preview ") {
+        if self.editor.text().starts_with("/open ") {
             return Vec::new();
         }
         // Not while a recalled prompt is on screen: up/down must keep walking history.
@@ -624,11 +655,15 @@ impl App {
             };
             return palette::matching_arguments(&input, &accounts, &models);
         }
-        palette::matching_with(&input, &self.user_cmds)
+        palette::matching_for_provider(&input, &self.user_cmds, Some(self.provider))
     }
 
     /// Put the chosen command in the prompt.
     pub(in crate::tui) fn complete_palette(&mut self, entry: palette::Entry) {
+        if entry.disabled {
+            self.flash("provider command unavailable: Concordia uses the provider's print/exec mode; type it to send it as a provider prompt");
+            return;
+        }
         let complete_branch = self.editor.text().eq_ignore_ascii_case(&entry.command)
             && palette::is_branch(&entry.command);
         self.editor.set_text(&if complete_branch {
@@ -712,7 +747,6 @@ impl App {
             && !self.questions.focused
             && self.activity.detail.is_none()
             && !worker_input::active(self)
-            && !self.project_search.active()
         {
             self.start_image_import(None, true);
             return;
@@ -848,6 +882,15 @@ impl App {
         use crate::needs_you::{Item, ItemKind};
         self.questions.refresh_native();
         let session = self.needs_you_session();
+        let project = self.cwd.file_name().map_or_else(
+            || "project".into(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let chat = self
+            .session_ui
+            .title
+            .clone()
+            .unwrap_or_else(|| "New chat".into());
         let approval = self.questions.native_approval_waiting();
         let current = [
             (
@@ -884,13 +927,26 @@ impl App {
         for (suffix, present, kind, title) in current {
             self.needs_you.remove_suffix(suffix);
             let id = format!("{session}:{suffix}");
+            crate::needs_you::withdraw(&id);
             if present {
-                self.needs_you.add(Item {
-                    id,
+                let item = Item {
+                    id: id.clone(),
                     session_id: session.clone(),
                     title: title.into(),
                     kind,
-                });
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: self.provider.as_str().into(),
+                    request: suffix.into(),
+                    context: self
+                        .questions
+                        .native_session_id()
+                        .unwrap_or_else(|| "Waiting for a response".into()),
+                    source: "conversation".into(),
+                    created: std::time::Instant::now(),
+                };
+                crate::needs_you::publish(item.clone());
+                self.needs_you.add(item);
             }
         }
         self.needs_you.remove_kind(ItemKind::WorkerResult);
@@ -902,9 +958,49 @@ impl App {
                     session_id: job.session_id.clone().unwrap_or_else(|| job.id.to_string()),
                     title: format!("worker {} finished", job.id),
                     kind: ItemKind::WorkerResult,
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: format!("worker #{}", job.id),
+                    request: "result".into(),
+                    context: job.snippet.clone(),
+                    source: "worker conversation".into(),
+                    created: std::time::Instant::now(),
                 });
             } else {
                 self.needs_you.remove(&id);
+            }
+            for request in job.native_inputs() {
+                let id = format!("worker-native:{}:{}", job.id, request.envelope().request_id);
+                let approval = matches!(
+                    request.kind(),
+                    crate::provider::interaction::NativeInteraction::Permission { .. }
+                        | crate::provider::interaction::NativeInteraction::CodexPermission { .. }
+                        | crate::provider::interaction::NativeInteraction::PlanApproval { .. }
+                );
+                let item = Item {
+                    id: id.clone(),
+                    session_id: request.envelope().native_session_id.clone(),
+                    title: if approval {
+                        "worker approval"
+                    } else {
+                        "worker question"
+                    }
+                    .into(),
+                    kind: if approval {
+                        ItemKind::Approval
+                    } else {
+                        ItemKind::Question
+                    },
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: format!("worker #{}", job.id),
+                    request: request.envelope().request_id.to_string(),
+                    context: request.params.to_string().chars().take(512).collect(),
+                    source: "worker conversation".into(),
+                    created: std::time::Instant::now(),
+                };
+                crate::needs_you::publish(item.clone());
+                self.needs_you.add(item);
             }
         }
     }
@@ -920,8 +1016,15 @@ impl App {
             .items()
             .map(|item| PickerRow {
                 id: format!("needs:{}", item.id),
-                label: item.title.clone(),
-                detail: format!("{} · {}", item.kind.label(), item.session_id),
+                label: format!("{} - {}", item.project, item.title),
+                detail: format!(
+                    "{} · {} · {} · waiting {}s · {}",
+                    item.chat,
+                    item.agent,
+                    item.kind.label(),
+                    item.created.elapsed().as_secs(),
+                    item.source
+                ),
             })
             .collect();
         self.show_picker(PickerKind::NeedsYou, "needs you".into(), rows, false);
@@ -932,6 +1035,7 @@ impl App {
             ProviderKind::Codex => "Codex",
             ProviderKind::Claude => "Claude Code",
             ProviderKind::Cursor => "Cursor",
+            ProviderKind::Grok => "Grok Build",
         }
     }
 
@@ -1148,6 +1252,7 @@ impl App {
         if line.trim().is_empty() {
             return;
         }
+        let provider_passthrough = crate::commands::is_provider_passthrough(&line);
         let user_prompt = match crate::user_commands::expand(&self.user_cmds, &line) {
             Ok(prompt) => prompt,
             Err(error) => {
@@ -1159,7 +1264,7 @@ impl App {
             self.flash("recent messages are loading; your draft is kept");
             return;
         }
-        if self.busy && (!line.starts_with('/') || user_prompt.is_some()) {
+        if self.busy && (!line.starts_with('/') || user_prompt.is_some() || provider_passthrough) {
             let confirmed = self.busy_send_confirmation.take().is_some_and(|armed| {
                 armed.prompt == original_prompt
                     && armed.conversation == self.deleg.d.conversation_id()
@@ -1175,6 +1280,14 @@ impl App {
                 });
                 self.flash("Enter again to interrupt and send this message; Tab queues it.");
                 return;
+            }
+            // A slash command typed while a turn is busy is only an interrupt
+            // confirmation, not a submitted prompt. Do not leave that command
+            // in the composer when Esc cancels the running turn.
+            if line.starts_with('/') {
+                self.editor.clear();
+                self.clear_selections();
+                self.persist_draft_now();
             }
             if self.queue.dispatch.is_explicit() {
                 self.flash("Stopping the active turn before sending the pending message…");
@@ -1205,7 +1318,7 @@ impl App {
             return;
         }
         if !self.busy
-            && (!line.starts_with('/') || user_prompt.is_some())
+            && (!line.starts_with('/') || user_prompt.is_some() || provider_passthrough)
             && self.reference_journal.backlogged()
         {
             self.flash("Finishing history references; your draft is kept.");
@@ -1235,7 +1348,6 @@ impl App {
         self.persist_draft_now();
         if !was_busy && self.busy && self.submitted_prompt.is_some() {
             self.submitted_prompt = Some(original_prompt);
-            let _ = self.feed().emit("turn_start", "");
         }
     }
 
@@ -1276,45 +1388,6 @@ impl App {
         }
         if !line.starts_with('/') {
             self.questions.clear();
-        }
-        if let Some(arg) = line
-            .strip_prefix("/continue")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            if arg.trim().is_empty() {
-                self.show_unfinished_request();
-                return;
-            }
-            if self
-                .picker
-                .as_ref()
-                .is_some_and(|picker| picker.kind == PickerKind::Continuation)
-            {
-                self.dismiss_picker();
-            }
-            self.continue_usage(arg.trim(), turn_tx);
-            return;
-        }
-        if let Some(arg) = line
-            .strip_prefix("/worktree")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            self.managed_workspace_command(arg.trim());
-            return;
-        }
-        if let Some(arg) = line
-            .strip_prefix("/scope")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            self.scope_command(arg.trim());
-            return;
-        }
-        if let Some(arg) = line
-            .strip_prefix("/continuation")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            self.continuation_command(arg.trim());
-            return;
         }
         if self.session_ui.loading() && !line.starts_with('/') {
             self.flash("recent messages are loading; wait before sending");
@@ -1393,7 +1466,6 @@ impl App {
         self.submitted_prompt = Some(request.clone());
         self.continuation
             .begin(&self.account, &self.model, &original_line);
-        self.freeze_continuation_routes();
         if let Err(error) = self.bind_main_scope() {
             self.push_system(format!(
                 "workspace scope not approved: {error}; request kept"
@@ -1417,12 +1489,6 @@ impl App {
             self.push_user(incoming.display());
         }
         self.turn_started = Some(Instant::now());
-        let feed = crate::feed::FeedWriter::new(
-            &self.state_root,
-            self.thread_id().unwrap_or("main"),
-            crate::config::for_root(&self.state_root).feed.enabled,
-        );
-        let _ = feed.emit("turn_start", &request);
         self.phase = Phase::Waiting;
         self.live_thinking.clear();
         self.busy = true;
@@ -1438,6 +1504,12 @@ impl App {
     }
 
     pub(in crate::tui) fn request_cancel(&mut self) {
+        if self.editor.text().starts_with('/') {
+            self.busy_send_confirmation = None;
+            self.editor.clear();
+            self.clear_selections();
+            self.persist_draft_now();
+        }
         self.questions.cancel_native();
         self.native_owner = None;
         if self.cancel_requested {
@@ -1535,7 +1607,6 @@ impl App {
             native_accounting_owner: None,
             scopes: workspace_scope::State::default(),
             managed_workspaces: managed_workspaces::State::default(),
-            project_search: workspace_search::State::default(),
             file_action_target: None,
             images: images::State::default(),
             raster: raster::State::default(),
@@ -1570,14 +1641,16 @@ impl App {
             account: "codex".into(),
             home_path: None,
             model: "?".into(),
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             native_session_id: None,
             task_id: None,
+            pending_repair_map: None,
             session_chip: None,
             session_ui: session_ui::State::default(),
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            repair_task: None,
             doctor: None,
             doctor_applier: Box::new(crate::doctor::DoctorAppliers),
             model_refresh: None,
@@ -1644,6 +1717,7 @@ impl App {
             signed_out_confirmation: None,
             signed_out_overrides: HashSet::new(),
             needs_you: crate::needs_you::Queue::default(),
+            grok_bot_form: None,
         }
     }
 }

@@ -32,6 +32,18 @@ impl DisplayBackend {
             Self::Window(window) => window.set_pointer(shape),
         }
     }
+    pub fn test_state(&mut self, focused_tab: String, overlays: Vec<String>) {
+        #[cfg(windows)]
+        if let Self::Window(window) = self {
+            window.set_test_state(focused_tab, overlays);
+        }
+    }
+    #[cfg(windows)]
+    pub fn status_dot(&mut self, status: super::native_window::StatusDot) {
+        if let Self::Window(window) = self {
+            window.set_status_dot(status);
+        }
+    }
 }
 
 impl Write for DisplayBackend {

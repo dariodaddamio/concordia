@@ -125,6 +125,118 @@ pub struct PickerRow {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatOpenability {
+    Openable,
+    Unopenable(crate::native_memory::PointerFailureCause),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatDiagnostic {
+    pub task_id: String,
+    pub title: String,
+    pub account: String,
+    pub provider: ProviderKind,
+    pub native_session_id: String,
+    pub status: ChatOpenability,
+    pub handoff_map: Option<String>,
+}
+
+impl ChatDiagnostic {
+    pub fn cause(&self) -> Option<crate::native_memory::PointerFailureCause> {
+        match self.status {
+            ChatOpenability::Openable => None,
+            ChatOpenability::Unopenable(cause) => Some(cause),
+        }
+    }
+
+    pub fn repair_detail(&self) -> String {
+        match self.cause() {
+            Some(cause) => format!(
+                "{} · start a fresh session from the handoff map (draft kept)",
+                cause.label()
+            ),
+            None => "chat is openable".into(),
+        }
+    }
+}
+
+/// Diagnose durable task chats without changing provider files or Concordia state.
+pub fn diagnose_task(root: &Path, task: &crate::store::TaskRecord) -> ChatDiagnostic {
+    let session = task.sessions.last();
+    let (account, provider, native_session_id) = session.map_or_else(
+        || (String::new(), ProviderKind::Codex, String::new()),
+        |session| {
+            (
+                session.account.clone(),
+                session.provider,
+                session.native_session_id.clone(),
+            )
+        },
+    );
+    let handoff_map = task.last_map.as_ref().and_then(|map| {
+        crate::threads::ThreadLog::open(root, &map.thread_id)
+            .read_map(crate::config::for_root(root).threads.map_chars)
+            .ok()
+    });
+    let status = if session.is_none() || (task.last_map.is_some() && handoff_map.is_none()) {
+        ChatOpenability::Unopenable(crate::native_memory::PointerFailureCause::RecordUnreadable)
+    } else {
+        match crate::accounts::get_account(root, &account) {
+            None => ChatOpenability::Unopenable(
+                crate::native_memory::PointerFailureCause::AccountHomeChanged,
+            ),
+            Some(account_def)
+                if account_def
+                    .home_path
+                    .as_deref()
+                    .is_none_or(|home| !Path::new(home).is_dir()) =>
+            {
+                ChatOpenability::Unopenable(
+                    crate::native_memory::PointerFailureCause::AccountHomeChanged,
+                )
+            }
+            Some(_) => match find_native_record(root, &account, Some(provider), &native_session_id)
+            {
+                Ok(Some(_)) => match crate::chat_cli::read_history(
+                    root,
+                    &account,
+                    provider,
+                    &native_session_id,
+                ) {
+                    Ok(_) => ChatOpenability::Openable,
+                    Err(error) => ChatOpenability::Unopenable(
+                        crate::native_memory::PointerFailureCause::from_error(&error),
+                    ),
+                },
+                Ok(None) => ChatOpenability::Unopenable(
+                    crate::native_memory::PointerFailureCause::FileDeletedOrMoved,
+                ),
+                Err(error) => ChatOpenability::Unopenable(
+                    crate::native_memory::PointerFailureCause::from_error(&error),
+                ),
+            },
+        }
+    };
+    ChatDiagnostic {
+        task_id: task.id.clone(),
+        title: task.title.clone(),
+        account,
+        provider,
+        native_session_id,
+        status,
+        handoff_map,
+    }
+}
+
+pub fn unopenable_tasks(root: &Path) -> Vec<ChatDiagnostic> {
+    crate::store::list_tasks(root)
+        .iter()
+        .map(|task| diagnose_task(root, task))
+        .filter(|diagnostic| diagnostic.cause().is_some())
+        .collect()
+}
+
 /// Rows for the durable task view. The latest session is shown inline; the full chain is kept in
 /// the task record and can be inspected without changing provider-native history.
 pub fn tasks_to_picker_rows(tasks: &[crate::store::TaskRecord]) -> Vec<PickerRow> {
@@ -687,6 +799,7 @@ fn summarize_one(
         ProviderKind::Codex => summarize_codex(account, path, ms),
         ProviderKind::Claude => summarize_claude(account, path, ms),
         ProviderKind::Cursor => summarize_cursor(account, path, ms),
+        ProviderKind::Grok => None,
     }?;
     Some((summary, path.to_path_buf()))
 }
@@ -731,6 +844,11 @@ fn scan_native_records(
             ProviderKind::Codex => discover_codex(home, file_limit, entries_left),
             ProviderKind::Claude => discover_claude(home, file_limit, entries_left),
             ProviderKind::Cursor => discover_cursor(home, file_limit, entries_left),
+            ProviderKind::Grok => Discovery {
+                files: Vec::new(),
+                truncated: false,
+                entries_scanned: 0,
+            },
         };
         let files_seen = discovery.files.len();
         let cut = discovery.truncated;
@@ -955,6 +1073,11 @@ pub fn find_native_record(
         ProviderKind::Codex => discover_codex(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
         ProviderKind::Claude => discover_claude(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
         ProviderKind::Cursor => discover_cursor(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
+        ProviderKind::Grok => Discovery {
+            files: Vec::new(),
+            truncated: false,
+            entries_scanned: 0,
+        },
     };
     if discovery.truncated {
         return Err(
@@ -971,6 +1094,7 @@ pub fn find_native_record(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
+            ProviderKind::Grok => String::new(),
         };
         if uuid_id && filename_id != session_id {
             continue;
@@ -1061,7 +1185,7 @@ pub fn trust_picker_rows(current: crate::store::TrustMode) -> Vec<PickerRow> {
         },
         PickerRow {
             id: "trust:workspace".into(),
-            label: format!("Workspace{}", cur(TrustMode::Workspace)),
+            label: format!("Edit{}", cur(TrustMode::Edit)),
             detail: "Allow workspace edits; provider rules apply.".into(),
         },
         PickerRow {
@@ -1282,51 +1406,6 @@ mod tests {
     }
 
     #[test]
-    fn concordia_awareness_note_is_not_a_title() {
-        let dir = tempfile::tempdir().unwrap();
-        let codex = dir.path().join("codex.jsonl");
-        let claude = dir.path().join("claude.jsonl");
-        let cursor = dir.path().join("cursor");
-        fs::create_dir(&cursor).unwrap();
-        let note = crate::integration::AWARE_TEXT;
-        let wrapped = format!(
-            "{}\n{}\n{}",
-            crate::integration::AWARE_BEGIN,
-            note,
-            crate::integration::AWARE_END
-        );
-        fs::write(
-            &codex,
-            format!(
-                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"text\":{wrapped:?}}}]}}}}\n"
-            ),
-        )
-        .unwrap();
-        fs::write(
-            &claude,
-            format!("{{\"type\":\"user\",\"message\":{{\"content\":{note:?}}}}}\n"),
-        )
-        .unwrap();
-        fs::create_dir_all(&cursor).unwrap();
-        fs::write(cursor.join("meta.json"), "{}\n").unwrap();
-        fs::write(
-            cursor.join("prompt_history.json"),
-            format!("[{wrapped:?}, \"Repair the picker\"]"),
-        )
-        .unwrap();
-
-        let codex_summary = summarize_codex("codex", &codex, 1).unwrap();
-        assert_eq!(codex_summary.preview, None);
-        assert_eq!(codex_summary.user_messages, 0);
-        let claude_summary = summarize_claude("claude", &claude, 1).unwrap();
-        assert_eq!(claude_summary.preview, None);
-        assert_eq!(claude_summary.user_messages, 0);
-        let cursor_summary = summarize_cursor("cursor", &cursor, 1).unwrap();
-        assert_eq!(cursor_summary.preview.as_deref(), Some("Repair the picker"));
-        assert_eq!(cursor_summary.user_messages, 1);
-    }
-
-    #[test]
     fn empty_native_report_preserves_all_sources() {
         let dir = tempfile::tempdir().unwrap();
         let providers = [
@@ -1505,5 +1584,32 @@ mod tests {
             native,
             "Home filtering never edits provider history"
         );
+    }
+
+    #[test]
+    fn missing_task_account_is_an_unopenable_chat_with_a_repair_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let task = crate::store::TaskRecord {
+            id: "task-missing-account".into(),
+            title: "Keep the draft".into(),
+            workspace: dir.path().to_string_lossy().into_owned(),
+            created_at: "0".into(),
+            updated_at: "0".into(),
+            sessions: vec![crate::store::TaskSession {
+                provider: ProviderKind::Codex,
+                account: "removed-account".into(),
+                native_session_id: "session-1".into(),
+                workspace: dir.path().to_string_lossy().into_owned(),
+                linked_at: "0".into(),
+            }],
+            state: crate::store::TaskState::Active,
+            last_map: None,
+        };
+        let diagnostic = diagnose_task(dir.path(), &task);
+        assert_eq!(
+            diagnostic.cause(),
+            Some(crate::native_memory::PointerFailureCause::AccountHomeChanged)
+        );
+        assert!(diagnostic.repair_detail().contains("draft kept"));
     }
 }

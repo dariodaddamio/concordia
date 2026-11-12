@@ -1,13 +1,14 @@
 //! Unified provider turns with tracked cancel (Ctrl+C).
 
-use crate::provider::claude::{plan_claude_turn, ClaudeTurnRequest};
-use crate::provider::codex::{self, apply_stream_parts, plan_turn_argv, TurnRequest as CodexReq};
-use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
+use crate::provider::claude::{ClaudeTurnRequest, plan_claude_turn};
+use crate::provider::codex::{self, TurnRequest as CodexReq, apply_stream_parts, plan_turn_argv};
+use crate::provider::cursor::{CursorTurnRequest, plan_cursor_turn};
 use crate::provider::enforcement;
+use crate::provider::grok::{GrokTurnRequest, plan_grok_turn};
 use crate::provider::interaction::InteractionOwner;
 pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
-use crate::provider::stream_cards::{classify_codex_event, StreamCard, StreamPart, TurnUsage};
+use crate::provider::stream_cards::{StreamCard, StreamPart, TurnUsage, classify_codex_event};
 use crate::provider::stream_json::{Flavor, StreamParser};
 #[path = "turn_acp.rs"]
 mod acp;
@@ -20,12 +21,12 @@ use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc};
 
 /// Lines of provider stderr kept for error reporting.
 const STDERR_KEEP_LINES: usize = 12;
@@ -117,6 +118,7 @@ pub struct ProviderTurnRequest<'a> {
     /// When set, the prompt opens with this time and the relative times it mentions resolved
     /// (`prompt_time::header`). Every user and worker turn sets it; `None` sends the text as is.
     pub local_time: Option<crate::prompt_time::LocalTime>,
+    /// Native compaction is provider-owned; retained only in fixtures and observation records.
     pub compaction: crate::capacity::Compaction,
 }
 
@@ -227,6 +229,7 @@ pub fn attach_images(
             ));
         }
         ProviderKind::Cursor => anyhow::bail!("Cursor image input requires ACP"),
+        ProviderKind::Grok => anyhow::bail!("Grok Build image input requires ACP"),
     }
     Ok(())
 }
@@ -276,7 +279,6 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         ..req.clone()
     };
     let mut plan = plan_provider_turn_raw(req)?;
-    crate::capacity::apply(&mut plan, &req.compaction).map_err(anyhow::Error::msg)?;
     // Current structured/native controls stay explicit; unsupported observed interfaces fail.
     crate::provider::compat::validate_planned(&plan, req.trust)?;
     // A turn the gate made read-only must still be read-only, or it does not start.
@@ -378,6 +380,26 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 prompt: prompt.clone(),
                 new_session_id: None,
                 provider: ProviderKind::Cursor,
+            })
+        }
+        ProviderKind::Grok => {
+            let plan = plan_grok_turn(&GrokTurnRequest {
+                prompt: &prompt,
+                cwd: req.cwd,
+                home_path: req.home_path,
+                model: req.model,
+                native_session_id: req.native_session_id,
+                trust: req.trust,
+            })?;
+            Ok(PlannedTurn {
+                command: plan.command,
+                argv: plan.argv,
+                env: plan.env,
+                env_remove: plan.env_remove,
+                cwd: plan.cwd,
+                prompt: prompt.clone(),
+                new_session_id: None,
+                provider: ProviderKind::Grok,
             })
         }
     }
@@ -531,6 +553,7 @@ pub async fn run_provider_turn_with_transport(
         .map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
         (mode != crate::native_input::Mode::CursorAcp || req.provider == ProviderKind::Cursor)
+            && (mode != crate::native_input::Mode::GrokAcp || req.provider == ProviderKind::Grok)
             && (mode != crate::native_input::Mode::CodexAppServer
                 || req.provider == ProviderKind::Codex)
             && (mode != crate::native_input::Mode::ClaudeStdio
@@ -683,16 +706,22 @@ async fn run_provider_turn_inner(
         })
         .await?
         .map_err(anyhow::Error::msg)?;
-        anyhow::ensure!(super::compat::version_token(&version).as_deref() == Some(claude_native::SUPPORTED_VERSION),
-            "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained", claude_native::SUPPORTED_VERSION);
+        anyhow::ensure!(
+            super::compat::version_token(&version).as_deref()
+                == Some(claude_native::SUPPORTED_VERSION),
+            "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained",
+            claude_native::SUPPORTED_VERSION
+        );
     }
     if let (Some(tx), Some(notice)) = (&on_progress, enforcement_notice(req)) {
         tx.send(TurnProgress::Notice(notice))
             .await
             .map_err(|_| anyhow::anyhow!("progress receiver closed before provider startup"))?;
     }
-    if req.provider == ProviderKind::Cursor
-        && (!req.images.is_empty() || mode == crate::native_input::Mode::CursorAcp)
+    if matches!(req.provider, ProviderKind::Cursor | ProviderKind::Grok)
+        && (!req.images.is_empty()
+            || mode == crate::native_input::Mode::CursorAcp
+            || mode == crate::native_input::Mode::GrokAcp)
     {
         let out = acp::run(
             req,
@@ -718,8 +747,7 @@ async fn run_provider_turn_inner(
             && owner.is_some()
             // Test/diagnostic launchers speak the exec stream contract, not Codex app-server.
             // Keep them on the stream path; real Codex uses the native popup transport.
-            && std::env::var_os("CONCORDIA_CODEX_BIN").is_none()
-            && crate::config::ui_question_popups())
+            && std::env::var_os("CONCORDIA_CODEX_BIN").is_none())
     {
         return appserver::run(req, &plan, owner, on_started, on_progress, handle).await;
     }
@@ -866,7 +894,7 @@ async fn run_provider_turn_inner(
     let mut out = TurnOutcome::default();
     let flavor = match plan.provider {
         ProviderKind::Claude => Some(Flavor::Claude),
-        ProviderKind::Cursor => Some(Flavor::Cursor),
+        ProviderKind::Cursor | ProviderKind::Grok => Some(Flavor::Cursor),
         ProviderKind::Codex => None,
     };
     let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));
@@ -1103,8 +1131,12 @@ async fn run_provider_turn_inner(
     }
     crate::logging::info(&format!(
         "provider-timing provider={} setup_ms={setup_ms} spawn_ms={spawn_ms} first_event_ms={} parse_us={} events={events} total_ms={}",
-        plan.provider.as_str(), first_event_ms.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into()),
-        parse_time.as_micros(), timing.elapsed().as_millis()
+        plan.provider.as_str(),
+        first_event_ms
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        parse_time.as_micros(),
+        timing.elapsed().as_millis()
     ));
     Ok(out)
 }
@@ -1216,8 +1248,10 @@ mod replay_tests {
             assert!(!events.repeated(snapshot));
             assert!(!events.repeated(snapshot));
         }
-        assert!(!CompletedEvents::default()
-            .repeated(r#"{"type":"item.completed","item":{"id":"one","text":"done"}}"#));
+        assert!(
+            !CompletedEvents::default()
+                .repeated(r#"{"type":"item.completed","item":{"id":"one","text":"done"}}"#)
+        );
     }
 }
 
@@ -1441,7 +1475,7 @@ mod gate_tests {
             home_path: None,
             model: None,
             native_session_id: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             context_prefix: Some("<concordia_context>last week</concordia_context>"),
             local_time: Some(now),
             compaction: Default::default(),
@@ -1515,7 +1549,7 @@ mod gate_tests {
             home_path: None,
             model: None,
             native_session_id: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             context_prefix: None,
             local_time: None,
             compaction: Default::default(),
@@ -1533,7 +1567,7 @@ mod gate_tests {
 
     #[test]
     fn a_locked_project_refuses_a_turn_whose_cli_cannot_run_read_only() {
-        use crate::provider::compat::{caps_for, set_caps, Caps};
+        use crate::provider::compat::{Caps, caps_for, set_caps};
         let dir = tempfile::tempdir().unwrap();
         locked(dir.path());
         let before = caps_for(ProviderKind::Cursor);

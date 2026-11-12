@@ -1,0 +1,858 @@
+/* Vendored from C:/Users/dario/dev/opifex / apps/studio/src/styles/studio-shell.css
+ * Opifex Studio source version: 1.3.0
+ * Refresh with: npm run sync:opifex
+ */
+* {
+  box-sizing: border-box;
+}
+html {
+  height: 100%;
+  max-height: 100dvh;
+  overflow: hidden;
+  background: var(--dossier-bg);
+  scroll-behavior: auto;
+}
+body {
+  margin: 0;
+  height: 100%;
+  max-height: 100dvh;
+  min-width: 320px;
+  overflow: hidden;
+  background: var(--dossier-bg);
+  color: var(--dossier-bone);
+}
+@media (pointer: fine) {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+}
+html,
+body {
+  scrollbar-width: thin;
+  scrollbar-color: var(--dossier-amber-dim) transparent;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+.studio-library::-webkit-scrollbar,
+.studio-crt-frame::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
+.studio-library::-webkit-scrollbar-track,
+.studio-crt-frame::-webkit-scrollbar-track {
+  background: transparent;
+}
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
+.studio-library::-webkit-scrollbar-thumb,
+.studio-crt-frame::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--dossier-amber-dim) 75%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html::-webkit-scrollbar-button,
+body::-webkit-scrollbar-button,
+.studio-library::-webkit-scrollbar-button,
+.studio-crt-frame::-webkit-scrollbar-button,
+.studio-scroll::-webkit-scrollbar-button,
+.opx-scroll-thin::-webkit-scrollbar-button {
+  display: none;
+  min-width: 0;
+  min-height: 0;
+  width: 0;
+  height: 0;
+  inline-size: 0;
+  block-size: 0;
+}
+button,
+input {
+  font: inherit;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+code,
+pre {
+  font-family: var(--opx-font-mono);
+}
+
+.studio-library {
+  position: relative;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+  overflow-x: clip;
+  background: var(--dossier-bg);
+  color: var(--dossier-bone);
+  font-family: var(--dossier-font);
+  --studio-panel-stroke: var(--dossier-stroke) solid var(--dossier-line);
+  --studio-control-target: var(--dossier-target-min);
+  --studio-feedback-ink: var(--dossier-amber);
+}
+
+/* CRT stack stays in the outer host gutter. Frame interior is flat black. */
+.studio-crt-edge {
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+  --studio-crt-gutter: 0.75rem;
+}
+.studio-crt-edge--top,
+.studio-crt-edge--bottom {
+  left: 0;
+  right: 0;
+  height: var(--studio-crt-gutter);
+}
+.studio-crt-edge--left,
+.studio-crt-edge--right {
+  top: 0;
+  bottom: 0;
+  width: var(--studio-crt-gutter);
+}
+.studio-crt-edge--top {
+  top: 0;
+}
+.studio-crt-edge--bottom {
+  bottom: 0;
+}
+.studio-crt-edge--left {
+  left: 0;
+}
+.studio-crt-edge--right {
+  right: 0;
+}
+.studio-crt-edge::before,
+.studio-crt-edge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+/* Grain: fixed-size tile so the noise rasterizes once, not per viewport. */
+.studio-crt-edge::before {
+  opacity: 0.18;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+}
+/* Scanlines: one 3px tile repeated, not a viewport-sized repeating gradient. */
+.studio-crt-edge::after {
+  opacity: 0.55;
+  background:
+    linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 2px,
+      rgba(0, 0, 0, 0.28) 3px
+    )
+    0 0 / 100% 3px repeat;
+}
+.studio-crt-vignette {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 40%,
+    rgba(0, 0, 0, 0.55) 100%
+  );
+}
+.studio-crt-shell {
+  position: relative;
+  z-index: 10;
+  isolation: isolate;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-height: 100dvh;
+  overflow: hidden;
+  padding: 0.75rem;
+}
+.studio-crt-frame {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dossier-bg);
+}
+
+/* Portfolio amber thin scrollbar */
+.studio-scroll {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dossier-amber-dim) transparent;
+}
+.studio-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.studio-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.studio-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--dossier-amber-dim) 75%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.studio-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--dossier-amber) 80%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.studio-library .opx-overlay__panel > .opx-dialog__close,
+.studio-library .opx-drawer__close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+}
+.studio-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  padding: 8px 24px;
+  background: var(--dossier-bg);
+  font-family: var(--dossier-font);
+}
+.studio-wordmark {
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 44px;
+  align-items: center;
+  width: max-content;
+  color: var(--dossier-amber);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-shadow: none;
+  white-space: nowrap;
+}
+.studio-wordmark small {
+  padding-left: 2px;
+  color: var(--dossier-muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-shadow: none;
+}
+.studio-header__actions {
+  display: none;
+  justify-content: flex-start;
+  gap: 12px;
+  align-items: center;
+}
+
+/* Saved history positions own scrolling while the returning page settles. */
+.studio-content[data-restore-scroll="true"] {
+  overflow-anchor: none;
+}
+.studio-header__utilities {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.studio-github-link {
+  display: grid;
+  min-width: var(--dossier-target-min);
+  min-height: var(--dossier-target-min);
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--dossier-muted);
+  cursor: pointer;
+}
+/* Icon-only header controls change ink on hover; only focus draws a ring. */
+.studio-icon-button {
+  display: grid;
+  min-width: var(--dossier-target-min);
+  min-height: var(--dossier-target-min);
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dossier-muted);
+  cursor: pointer;
+}
+.studio-github-link:hover,
+.studio-icon-button:hover {
+  color: var(--studio-feedback-ink);
+}
+.studio-github-link:focus-visible,
+.studio-icon-button:focus-visible {
+  color: var(--studio-feedback-ink);
+  outline: 2px solid var(--dossier-amber);
+  outline-offset: -2px;
+}
+.studio-header__nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.studio-header__nav a {
+  display: grid;
+  min-height: 44px;
+  place-items: center;
+  padding: 0 10px;
+  color: var(--dossier-bone);
+  font-family: var(--dossier-font);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.studio-header__nav a:hover,
+.studio-header__nav a:focus-visible {
+  background: color-mix(in srgb, var(--dossier-amber) 10%, transparent);
+  color: var(--studio-feedback-ink);
+  outline: none;
+}
+.studio-header__nav a[aria-current="page"] {
+  background: color-mix(in srgb, var(--dossier-amber) 18%, transparent);
+  color: var(--studio-feedback-ink);
+}
+.studio-control {
+  display: grid;
+  gap: 4px;
+  min-width: 140px;
+}
+.studio-control__label {
+  color: var(--dossier-muted);
+  font-family: var(--dossier-font);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.studio-control select {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--dossier-amber);
+  padding: 0 8px;
+  font-family: var(--dossier-font);
+}
+.studio-control select:focus {
+  outline: none;
+  border-color: var(--dossier-line);
+}
+.studio-control small {
+  display: none;
+}
+.studio-choice {
+  display: flex;
+  align-items: center;
+  width: max-content;
+  min-width: var(--studio-choice-min, 16ch);
+}
+.studio-choice [data-slot="select-trigger"],
+.studio-choice .opx-control.opx-select__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: var(--studio-choice-min, 16ch);
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: var(--dossier-bg);
+  color: var(--dossier-amber);
+  font-family: var(--dossier-font);
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--dossier-line);
+  outline: none;
+}
+.studio-choice [data-slot="select-trigger"] > svg {
+  flex: 0 0 auto;
+  color: var(--dossier-amber);
+  pointer-events: none;
+}
+.studio-choice [data-slot="select-trigger"] .studio-choice__value {
+  color: var(--dossier-amber);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.studio-choice [data-slot="select-trigger"][aria-expanded="true"],
+.studio-choice [data-slot="select-trigger"]:hover,
+.studio-choice [data-slot="select-trigger"]:focus-visible,
+.studio-choice .opx-control.opx-select__trigger:hover:not(:disabled),
+.studio-choice .opx-control.opx-select__trigger:focus-visible {
+  border: 0;
+  box-shadow: 0 0 0 1px var(--dossier-amber);
+  outline: none;
+}
+body .studio-choice__menu,
+body .opx-menu.studio-choice__menu {
+  z-index: 220;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--dossier-line);
+  border-radius: 0;
+  background: var(--dossier-bg);
+  color: var(--dossier-amber);
+  box-shadow: none;
+  --opx-row-fill: transparent;
+  --opx-surface: var(--dossier-bg);
+  --opx-surface-muted: var(--dossier-bg);
+  --opx-border: var(--dossier-line);
+  --opx-text: var(--dossier-amber);
+  --opx-text-muted: var(--dossier-amber);
+  --opx-shadow: 0 0 0 transparent;
+}
+/* Only the Studio host shell opts into the dossier skin. Specimen portals stay Opifex. */
+body > .opx-tooltip.studio-dossier-tooltip {
+  z-index: 230;
+  border: 1px solid var(--dossier-amber);
+  border-radius: 0;
+  background: var(--dossier-bg-elev);
+  box-shadow: none;
+  color: var(--dossier-amber);
+  font-family: var(--dossier-font);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+body .studio-choice__menu .opx-separator,
+body .opx-menu.studio-choice__menu .opx-separator {
+  display: none;
+}
+body .opx-menu.studio-choice__menu .opx-menu__item,
+body .opx-menu.studio-choice__menu .opx-menu__item:hover:not(:disabled),
+body .opx-menu.studio-choice__menu .opx-menu__item[data-hot="true"],
+body .opx-menu.studio-choice__menu .opx-menu__item[aria-selected="true"],
+body
+  .opx-menu.studio-choice__menu
+  .opx-menu__item:is([data-hot="true"], :hover:not(:disabled))
+  + .opx-menu__item:is([data-hot="true"], :hover:not(:disabled)),
+body
+  .opx-menu.studio-choice__menu
+  .opx-menu__item:is([data-hot="true"], :hover:not(:disabled)):has(
+    + .opx-menu__item:is([data-hot="true"], :hover:not(:disabled))
+  ) {
+  --opx-row-fill: transparent;
+  --opx-surface-muted: var(--dossier-bg);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+body .studio-choice__menu button,
+body .studio-choice__menu [data-slot="select-item"],
+body .opx-menu.studio-choice__menu .opx-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: var(--dossier-target-min);
+  border: 0;
+  border-radius: 0;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--dossier-amber);
+  font-family: var(--dossier-font);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+}
+/* LOCKED: studio-choice-states START - Studio picker: selected is the hard highlight, hover the soft one. */
+/* Hover and selected are separate states: selected is the stronger fill so it
+   stays readable while another row is hovered. */
+body .studio-choice__menu button:hover,
+body .studio-choice__menu [data-slot="select-item"]:hover,
+body .opx-menu.studio-choice__menu .opx-menu__item:hover,
+body .opx-menu.studio-choice__menu .opx-menu__item[data-hot="true"] {
+  --opx-row-fill: color-mix(
+    in srgb,
+    var(--dossier-amber) 10%,
+    var(--dossier-bg)
+  );
+  background: color-mix(in srgb, var(--dossier-amber) 10%, var(--dossier-bg));
+  color: var(--dossier-amber);
+  box-shadow: none;
+}
+body .studio-choice__menu button[aria-selected="true"],
+body .studio-choice__menu [data-slot="select-item"][aria-selected="true"],
+body .opx-menu.studio-choice__menu .opx-menu__item[aria-selected="true"] {
+  --opx-row-fill: color-mix(
+    in srgb,
+    var(--dossier-amber) 22%,
+    var(--dossier-bg)
+  );
+  background: color-mix(in srgb, var(--dossier-amber) 22%, var(--dossier-bg));
+  color: var(--dossier-amber);
+  box-shadow: none;
+}
+/* LOCKED: studio-choice-states END */
+.studio-mobile-trigger {
+  display: none;
+  min-width: var(--dossier-target-min);
+  min-height: var(--dossier-target-min);
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--dossier-amber);
+}
+.studio-mobile-trigger:hover {
+  color: var(--studio-feedback-ink);
+}
+.theme-menu {
+  position: relative;
+}
+.theme-menu summary {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  list-style: none;
+  place-items: center;
+  border-radius: 5px;
+}
+.theme-menu summary:hover {
+  background: var(--opx-surface-muted);
+}
+.theme-menu summary::-webkit-details-marker {
+  display: none;
+}
+.theme-menu__panel {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  display: grid;
+  width: min(270px, calc(100vw - 24px));
+  gap: 13px;
+  padding: 16px;
+  border: 1px solid var(--opx-border);
+  border-radius: 7px;
+  background: var(--opx-surface);
+  box-shadow: var(--opx-shadow-lg);
+}
+.theme-menu:not([open]) > .theme-menu__panel {
+  display: none;
+}
+.theme-color {
+  display: grid;
+  grid-template-columns: 1fr 34px 82px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.theme-color input[type="color"] {
+  width: 34px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--opx-border);
+  border-radius: 4px;
+  background: transparent;
+}
+.theme-color code {
+  color: var(--opx-text-muted);
+  font-size: 11px;
+}
+
+.studio-frame {
+  position: relative;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  overflow-x: clip;
+}
+.studio-frame--landing {
+  grid-template-columns: minmax(0, 1fr);
+}
+.studio-frame--landing .studio-sidebar {
+  display: none;
+}
+.studio-frame--landing .studio-content {
+  overflow: hidden;
+}
+.studio-content {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: clip;
+  background: var(--dossier-bg);
+}
+.studio-sidebar {
+  position: relative;
+  top: 0;
+  align-self: stretch;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 22px 18px 40px;
+  border-right: 1px solid var(--dossier-line);
+  background: var(--dossier-bg);
+}
+.studio-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+  padding: 0 10px;
+  border: 1px solid var(--dossier-line);
+  color: var(--dossier-amber);
+}
+.studio-search:focus-within {
+  border-color: var(--dossier-amber);
+  color: var(--dossier-amber);
+  outline: 1px solid var(--dossier-amber);
+  outline-offset: -1px;
+}
+.studio-search svg {
+  flex: 0 0 auto;
+  color: var(--dossier-amber);
+}
+.studio-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--dossier-amber);
+  font-family: var(--dossier-font);
+  font-size: 12px;
+}
+.studio-search input::placeholder {
+  color: var(--dossier-muted);
+}
+.studio-search input:focus {
+  outline: none;
+}
+.studio-search__clear {
+  display: grid;
+  min-width: var(--dossier-target-min);
+  min-height: var(--dossier-target-min);
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dossier-muted);
+  cursor: pointer;
+}
+.studio-search__clear:hover,
+.studio-search__clear:focus-visible {
+  color: var(--studio-feedback-ink);
+  outline: none;
+}
+.studio-search-wrap {
+  position: relative;
+  margin-left: auto;
+  min-width: min(320px, 36vw);
+}
+.studio-header__utilities .studio-search-wrap {
+  margin-left: 0;
+}
+.studio-header-search {
+  margin: 0;
+  min-width: 0;
+}
+.studio-header-search .studio-search {
+  margin-bottom: 0;
+}
+.studio-search-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 100%;
+  max-height: min(280px, 45vh);
+  overflow: auto;
+  border: 1px solid var(--dossier-line);
+  background: var(--dossier-bg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.studio-search-menu--rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 6px 0 10px;
+}
+.studio-search-menu__empty {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--dossier-muted);
+  font-family: var(--dossier-font);
+  font-size: 12px;
+}
+.studio-search-menu__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+}
+.studio-search-menu__heading {
+  margin: 10px 12px 4px;
+  font-family: var(--dossier-font);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dossier-muted);
+}
+.studio-search-menu__subheading {
+  margin: 8px 12px 3px 22px;
+  color: var(--dossier-muted);
+  font-family: var(--dossier-font);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.studio-search-menu__item {
+  display: block;
+  min-height: var(--dossier-target-min);
+  align-content: center;
+  padding: 6px 12px;
+  color: var(--dossier-bone);
+  font-family: var(--dossier-font);
+  font-size: 13px;
+  text-decoration: none;
+}
+.studio-search-menu__item--nested {
+  padding-left: 22px;
+}
+.studio-search-menu__item:hover,
+.studio-search-menu__item:focus-visible {
+  background: color-mix(in srgb, var(--dossier-amber) 12%, transparent);
+  color: var(--studio-feedback-ink);
+  outline: none;
+}
+
+/* Canonical host recipes. */
+.studio-crt-frame {
+  border: var(--studio-panel-stroke);
+}
+.studio-header {
+  border-bottom: var(--studio-panel-stroke);
+}
+:where(
+  .studio-control select,
+  .studio-search input,
+  .studio-choice [data-slot="select-trigger"]
+) {
+  min-height: var(--studio-control-target);
+}
+
+/* Reconciled ownership from the Studio surface split. */
+@media (max-width: 920px) {
+  .studio-header {
+    grid-template-columns: 1fr auto;
+    padding: 0 16px;
+  }
+  .studio-mobile-trigger {
+    display: inline-flex;
+  }
+  .studio-frame {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .studio-sidebar {
+    position: absolute;
+    z-index: 35;
+    inset-block: 0;
+    inset-inline-start: 0;
+    align-self: stretch;
+    width: min(320px, 88vw);
+    height: auto;
+    max-height: none;
+    border-left: 0;
+    border-right: 1px solid var(--dossier-line);
+    transform: translateX(-100%);
+    transition: transform var(--dossier-motion-fast) var(--dossier-ease-out);
+    box-shadow: none;
+    will-change: transform;
+  }
+  .studio-frame--landing .studio-sidebar {
+    display: block;
+  }
+  .studio-sidebar.is-open {
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 620px) {
+  .theme-menu summary,
+  .studio-mobile-trigger {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .studio-sidebar {
+    transition-duration: 1ms;
+  }
+}
+
+@media (max-width: 620px) {
+  .specimen-controls,
+  .studio-choice {
+    width: 100%;
+  }
+  .studio-choice [data-slot="select-trigger"] {
+    width: 100%;
+  }
+  .studio-header {
+    gap: 4px;
+    padding-inline: 8px;
+  }
+  .studio-header__utilities .studio-search-wrap {
+    min-width: 96px;
+  }
+}
+
+@media (max-width: 360px) {
+  /* The repository link is nonessential metadata at 320px; theme and search stay. */
+  .studio-header__repo {
+    display: none;
+  }
+  .studio-wordmark {
+    font-size: 11px;
+  }
+  .studio-header__utilities .studio-search-wrap {
+    min-width: 82px;
+  }
+  .studio-search {
+    padding-inline: 6px;
+  }
+}
+
+/* Reconciled ownership from the component surface audit. */
+@media (max-width: 920px) {
+  .studio-header__nav {
+    display: none;
+  }
+  .studio-header__actions {
+    display: flex;
+  }
+}
+
+@media (max-width: 620px) {
+  .studio-header__utilities {
+    gap: 2px;
+  }
+}

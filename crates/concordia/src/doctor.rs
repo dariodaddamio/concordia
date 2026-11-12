@@ -327,7 +327,6 @@ pub fn next_action(row: &Check) -> Option<String> {
         }
         "accounts" => "/use to add an account".into(),
         "path" => "concordia install".into(),
-        "wezterm" => "winget install --id wez.wezterm -e".into(),
         "clipboard" => "install or restore powershell.exe on PATH".into(),
         "install" => "re-run scripts\\install-dev.ps1".into(),
         "store" => "move the corrupt store aside, then restart Concordia".into(),
@@ -392,10 +391,8 @@ pub struct Env<'a> {
     pub provider_bin:
         &'a dyn Fn(ProviderKind) -> Result<crate::provider::Located, crate::provider::NotFound>,
     pub which: &'a dyn Fn(&str) -> Option<PathBuf>,
-    pub wezterm_bin: &'a dyn Fn() -> Option<PathBuf>,
     /// `--version` of a CLI; `None` skips probing (fast mode for the TUI).
     pub version_of: Option<VersionProbe<'a>>,
-    pub in_wezterm: bool,
     pub source_checkout: Option<PathBuf>,
     /// `owner/name` of the configured release feed, if any.
     pub release_repo: Option<String>,
@@ -415,6 +412,7 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
     out.push(check_path_resolution(env));
     out.push(check_state_dir(&env.state_root));
     out.push(check_store(&env.state_root));
+    out.extend(check_unopenable_chats(&env.state_root));
     out.push(check_log(&env.state_root));
     out.push(check_config(&env.state_root));
     out.push(check_user_commands(&env.state_root));
@@ -430,26 +428,6 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
             detail,
         ));
     }
-    out.push(match (env.wezterm_bin)() {
-        Some(p) => check(
-            Level::Ok,
-            "wezterm",
-            format!(
-                "{}{}",
-                p.display(),
-                if env.in_wezterm {
-                    " (this pane is in WezTerm)"
-                } else {
-                    ""
-                }
-            ),
-        ),
-        None => check(
-            Level::Warn,
-            "wezterm",
-            "not found; /split and login windows fall back to a plain PowerShell console",
-        ),
-    });
     out.push(match (env.which)("powershell.exe") {
         Some(_) => check(
             Level::Ok,
@@ -485,6 +463,28 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
         },
     });
     out
+}
+
+fn check_unopenable_chats(root: &Path) -> Vec<Check> {
+    crate::sessions::unopenable_tasks(root)
+        .into_iter()
+        .map(|chat| {
+            let cause = chat
+                .cause()
+                .expect("unopenable_tasks only returns failed diagnostics");
+            check(
+                Level::Fail,
+                "chat",
+                format!(
+                    "{} ({}/{}) is unopenable: {}; repair: start a fresh session from its handoff map; draft kept",
+                    chat.title,
+                    chat.provider.as_str(),
+                    chat.account,
+                    cause.label()
+                ),
+            )
+        })
+        .collect()
 }
 
 fn check_binary(env: &Env<'_>) -> Check {
@@ -666,7 +666,7 @@ fn check_config(root: &Path) -> Check {
     }
 }
 
-/// `<state>/commands/*.md`: count, plus a warning for skipped files and built-in name clashes.
+/// `<state>/commands/*.md`: count, plus warnings for skipped files and command shadows.
 fn check_user_commands(root: &Path) -> Check {
     let s = crate::user_commands::scan(root);
     let mut detail = format!("{} custom command(s)", s.commands.len());
@@ -677,6 +677,18 @@ fn check_user_commands(root: &Path) -> Check {
             "; {} clash(es) with built-in commands (built-in wins): {}",
             s.clashes.len(),
             s.clashes
+                .iter()
+                .map(|n| format!("/{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.provider_clashes.is_empty() {
+        level = Level::Warn;
+        detail.push_str(&format!(
+            "; {} shadow(s) provider commands (provider wins): {}",
+            s.provider_clashes.len(),
+            s.provider_clashes
                 .iter()
                 .map(|n| format!("/{n}"))
                 .collect::<Vec<_>>()
@@ -701,7 +713,7 @@ fn check_store(root: &Path) -> Check {
                 s.accounts.len(),
                 s.settings.trust.as_str(),
                 if s.settings.trust == crate::store::TrustMode::Full {
-                    " (provider approvals and sandboxing are bypassed; /trust to change)"
+                    " (provider approvals and sandboxing are bypassed; /mode changes this)"
                 } else {
                     ""
                 }
@@ -725,6 +737,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
         ("codex", ProviderKind::Codex),
         ("claude", ProviderKind::Claude),
         ("cursor", ProviderKind::Cursor),
+        ("grok", ProviderKind::Grok),
     ] {
         match (env.provider_bin)(kind) {
             Err(missing) => rows.push(check(
@@ -799,6 +812,7 @@ fn provider_variable(kind: ProviderKind) -> &'static str {
         ProviderKind::Codex => "CONCORDIA_CODEX_BIN",
         ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
         ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
+        ProviderKind::Grok => "CONCORDIA_GROK_BIN",
     }
 }
 
@@ -947,9 +961,7 @@ pub fn real_env<'a>(
         pointer: std::fs::read_to_string(crate::update::current_pointer_path()).ok(),
         provider_bin,
         which,
-        wezterm_bin: &|| crate::host::wezterm::find_wezterm(),
         version_of,
-        in_wezterm: std::env::var_os("WEZTERM_PANE").is_some(),
         source_checkout: crate::update::source_root(&cwd),
         release_repo: crate::release::config_from_env(crate::version::VERSION).map(|c| c.repo),
     }
@@ -1002,6 +1014,7 @@ pub fn format_not_found_turn_error(
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude Code",
         ProviderKind::Cursor => "Cursor agent",
+        ProviderKind::Grok => "Grok Build",
     };
     format!(
         "{name} CLI was not found. Concordia looked in: {}. Run `concordia doctor`.",
@@ -1104,9 +1117,15 @@ pub fn run_fast_report() -> String {
 }
 
 pub fn run_fast_checks() -> Vec<Check> {
+    run_fast_checks_at(&crate::store::default_store_root())
+}
+
+pub fn run_fast_checks_at(state_root: &Path) -> Vec<Check> {
     let provider_bin = resolve_provider_bin;
     let which = |n: &str| which::which(n).ok();
-    run(&real_env(&provider_bin, &which, None))
+    let mut env = real_env(&provider_bin, &which, None);
+    env.state_root = state_root.to_path_buf();
+    run(&env)
 }
 
 #[cfg(test)]
@@ -1179,9 +1198,7 @@ mod tests {
             active_exe: active,
             provider_bin,
             which,
-            wezterm_bin: &|| None,
             version_of: None,
-            in_wezterm: false,
             source_checkout: None,
             release_repo: None,
         }
@@ -1205,10 +1222,8 @@ mod tests {
                 Err(crate::provider::NotFound { searched: vec![] })
             }
         };
-        let wz = fx.exe_file("wezterm.exe");
         let ps = fx.exe_file("powershell.exe");
         let which = move |n: &str| match n {
-            "wezterm" => Some(wz.clone()),
             "powershell.exe" => Some(ps.clone()),
             _ => None,
         };
@@ -1511,16 +1526,14 @@ mod tests {
     fn the_report_is_readable_and_summarises() {
         let checks = vec![
             check(Level::Ok, "build", "concordia"),
-            check(Level::Warn, "wezterm", "missing"),
             check(Level::Fail, "install", "broken"),
         ];
         let r = format_report(&checks);
         assert!(r.contains("ok    build"));
-        assert!(r.contains("warn  wezterm"));
         assert!(r.contains("FAIL  install"));
-        assert!(r.ends_with("1 problem(s), 1 warning(s)"));
+        assert!(r.ends_with("1 problem(s), 0 warning(s)"));
         assert!(format_report(&checks[..1]).ends_with("all good"));
-        assert!(format_report(&checks[..2]).ends_with("no problems, 1 warning(s)"));
+        assert!(format_report(&checks[..2]).ends_with("1 problem(s), 0 warning(s)"));
     }
 
     #[test]
@@ -1542,7 +1555,6 @@ mod tests {
                 "C:\\fixture\\concordia is writable; state directory is not owner-only",
             ),
             check(Level::Warn, "path", "not on PATH"),
-            check(Level::Warn, "wezterm", "missing"),
             check(Level::Fail, "install", "broken"),
             check(
                 Level::Warn,

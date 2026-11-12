@@ -1,7 +1,4 @@
 use super::*;
-pub fn run_file_preview(path: &Path) -> Result<()> {
-    preview::run(path)
-}
 #[path = "file_editor.rs"]
 mod file_editor;
 #[path = "window_session.rs"]
@@ -160,7 +157,9 @@ impl tabs::TabState for RunTab {
 fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     let mut app = App::new(state_root.to_path_buf(), cwd.to_path_buf());
     app.refresh_binding();
-    app.retry_recovery_now();
+    // App::new already owns the tab's recovery lease. Retrying it synchronously here forced a
+    // durable draft write for every Ctrl+T, even though a new Home tab has no draft to recover.
+    // The normal persist tick still retries a real dirty lease when the tab is used.
     app.prior_provider = app.provider;
     app.prior_home = app.continuity_home();
     app.workspace.set_native_windows(use_window);
@@ -466,7 +465,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         ($app:ident, $force:expr) => {
             if $force || (dirty && (!key_burst.active() || !terminal_input.poll(Duration::ZERO)?)) {
                 let app = &mut *$app;
-                let mut screen_text = String::new();
                 if !use_window {
                     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 }
@@ -477,17 +475,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     .draw(|f| {
                         raster::begin_frame(&app);
                         draw_ui(f, &mut *app);
-                        if crate::config::get().feed.screen {
-                            let area = f.area();
-                            for y in area.top()..area.bottom() {
-                                for x in area.left()..area.right() {
-                                    if let Some(cell) = f.buffer_mut().cell((x, y)) {
-                                        screen_text.push_str(cell.symbol());
-                                    }
-                                }
-                                screen_text.push('\n');
-                            }
-                        }
                         #[cfg(windows)]
                         {
                             image = raster::native_images(f, &app);
@@ -505,14 +492,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 };
                 drawn?;
                 ended?;
-                if !screen_text.is_empty() && crate::config::get().feed.screen {
-                    let writer = crate::feed::FeedWriter::new(
-                        &app.state_root,
-                        app.thread_id().unwrap_or("main"),
-                        true,
-                    );
-                    let _ = writer.screen(&screen_text);
-                }
                 dirty = false;
                 if use_window {
                     if let Some((x, y)) = window_mouse {
@@ -570,6 +549,23 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
             }
             let active = tabs.active;
+            #[cfg(windows)]
+            if use_window {
+                let mut needs_attention = false;
+                let mut working = false;
+                for tab in &mut tabs.tabs {
+                    tab.app.sync_needs_you();
+                    needs_attention |= !tab.app.needs_you.is_empty();
+                    working |= tab.app.busy || tab.app.deleg.d.any_active();
+                }
+                terminal.backend_mut().status_dot(if needs_attention {
+                    super::native_window::StatusDot::NeedsAttention
+                } else if working {
+                    super::native_window::StatusDot::Working
+                } else {
+                    super::native_window::StatusDot::Idle
+                });
+            }
             let labels: Vec<String> = if tabs.has_multiple() {
                 tabs.tabs.iter().map(|t| t.app.tab_label()).collect()
             } else {
@@ -588,6 +584,21 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 // Drain pending paste chunks before repainting the growing prompt.
                 draw_if_needed!(app, redraw_always);
                 let title = app.window_title();
+                if use_window {
+                    let overlays = app
+                        .picker
+                        .as_ref()
+                        .map(|picker| picker.title.clone())
+                        .into_iter()
+                        .chain(
+                            app.workspace
+                                .focused
+                                .as_ref()
+                                .map(|id| format!("workspace:{id}")),
+                        )
+                        .collect();
+                    terminal.backend_mut().test_state(app.tab_label(), overlays);
+                }
                 if title != previous_title {
                     terminal.backend_mut().title(&title)?;
                     previous_title = title;
@@ -729,9 +740,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     app.local_terminal.paste(&s);
                                 } else if app.rename_editor.is_some() {
                                     app.paste_text(&s);
-                                } else if app.project_search.active()
-                                    || !questions::paste(&mut *app, &s)
-                                {
+                                } else if !questions::paste(&mut *app, &s) {
                                     if s.is_empty() && clipboard::has_attachment() {
                                         app.paste_clipboard();
                                     } else {
@@ -1004,6 +1013,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         pack_msgs
                     };
                     let native_sources = app.native_sources.clone();
+                    let repair_map = app.pending_repair_map.take();
                     let preparing_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                     app.preparing_cancel = Some(preparing_cancel.clone());
                     let need_pack_hint = app.need_context_pack;
@@ -1065,7 +1075,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             )
                             .ok()
                         });
-                        let policy = match binding
+                        let mut policy = match binding
                             .as_ref()
                             .map(|b| crate::capacity::load(&state_root, b))
                             .transpose()
@@ -1079,6 +1089,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 return;
                             }
                         };
+                        if crate::config::for_root(&state_root)
+                            .continuation
+                            .proactive_rollover
+                            && provider == crate::store::ProviderKind::Codex
+                        {
+                            policy.rollover_percent = Some(85);
+                        }
                         let native_input = match crate::native_input::for_home(
                             &state_root,
                             provider,
@@ -1158,6 +1175,12 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         } else {
                             None
                         };
+                        if let Some(map) = repair_map {
+                            prefix = Some(match prefix {
+                                Some(prefix) => format!("{prefix}\n\n[repair handoff map]\n{map}"),
+                                None => format!("[repair handoff map]\n{map}"),
+                            });
+                        }
                         if need_pack_hint && !decision.native_resume && !native_sources.is_empty() {
                             let memory_root = state_root.clone();
                             let indexed = tokio::task::spawn_blocking(move || {
@@ -1228,8 +1251,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             native_session_id: session_out.as_deref(),
                             trust,
                             context_prefix: prefix.as_deref(),
-                            local_time: Some(crate::prompt_time::now()),
-                            compaction: policy.compaction,
+                            local_time: crate::config::for_root(&state_root)
+                                .ui
+                                .time_header
+                                .then(crate::prompt_time::now),
+                            compaction: Default::default(),
                         };
                         // Validate plan even if spawn fails (argv safety).
                         let checked_plan = match plan_provider_turn(&req) {
@@ -1468,7 +1494,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     drop(saved_window);
     input_result?;
     if let Some(path) = reexec {
-        let code = crate::update::reexec_into_mode(&path, &cwd, !use_window)?;
+        let code = crate::update::reexec_into(&path, &cwd)?;
         std::process::exit(code);
     }
     Ok(())
@@ -1734,7 +1760,6 @@ mod panic_log_tests {
         let mut original = new_tab_app(dir.path(), dir.path(), false);
         original.editor.set_text("draft belongs to previous chat");
         original.queue.items.push("queued in previous chat".into());
-        let original_record = original.keep.lease.as_ref().unwrap().record_id();
         let mut tabs = tabs::TabSet::new(RunTab::new(original));
         landing::open_home(&mut tabs.active_mut().app);
         assert_eq!(
@@ -1745,10 +1770,6 @@ mod panic_log_tests {
         landing::open_home_tab(&mut home);
         assert!(home.editor.is_empty());
         assert!(home.queue.items.is_empty());
-        assert_ne!(
-            home.keep.lease.as_ref().unwrap().record_id(),
-            original_record
-        );
         tabs.add(RunTab::new(home));
         assert!(landing::visible(&tabs.active().app));
         tabs.next(true);

@@ -106,10 +106,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     {
         draw_picker(f, screen, app);
     }
-    if app.project_search.active() {
-        app.areas = Areas::default();
-        app.project_search.draw(f, screen);
-    }
     // Cover every widget, including provider-controlled titles, menus and detail panes.
     if worker_input::active(app) {
         app.areas = Areas::default();
@@ -136,7 +132,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     if let Some(cursor) = rename_cursor.filter(|_| {
         !worker_input::active(app)
             && !app.raster.active()
-            && !app.project_search.active()
             && app.picker.is_none()
             && !app.key_sheet
     }) {
@@ -303,7 +298,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
         + 2;
     let help_col = entries
         .iter()
-        .map(|e| e.help.chars().count() + if e.custom { 8 } else { 0 })
+        .map(|e| e.help.chars().count() + if e.custom || e.provider { 10 } else { 0 })
         .max()
         .unwrap_or(12);
     let max_width = f.area().width.saturating_sub(2);
@@ -335,7 +330,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                 ),
                 Span::styled(e.help.clone(), Style::default().fg(Color::Indexed(245))),
                 Span::styled(
-                    if e.custom { "  custom" } else { "" },
+                    if e.provider { "  provider" } else if e.custom { "  custom" } else { "" },
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
@@ -438,6 +433,7 @@ pub(super) fn provider_color(p: ProviderKind) -> Color {
         ProviderKind::Codex => Color::Indexed(114),
         ProviderKind::Claude => Color::Indexed(215),
         ProviderKind::Cursor => Color::Indexed(111),
+        ProviderKind::Grok => Color::Indexed(208),
     }
 }
 
@@ -793,7 +789,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     Color::Indexed(245)
                 };
-                (g, Style::default().fg(col), Style::default().fg(text_col))
+                let band = Color::Indexed(237);
+                (
+                    g,
+                    Style::default().fg(col).bg(band),
+                    Style::default().fg(text_col).bg(band),
+                )
             }
             MsgRole::Thinking => (
                 "▸ ",
@@ -926,18 +927,43 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     app.view
         .rebuild(&blocks, inner.width as usize, inner.height as usize);
     f.render_widget(Paragraph::new(app.view.lines()).block(block), area);
+    if inner.height > 1 && inner.width > 1 && app.view.rows.len() > app.view.height() {
+        let rail_x = inner.right().saturating_sub(1);
+        let rail = Rect::new(rail_x, inner.y, 1, inner.height);
+        for y in rail.y..rail.bottom() {
+            f.buffer_mut()[(rail.x, y)]
+                .set_symbol("│")
+                .set_style(Style::default().fg(Color::Indexed(238)));
+        }
+        let total = app.view.rows.len().max(1);
+        let thumb_height =
+            (u32::from(inner.height) * u32::from(inner.height) / total as u32).max(1) as u16;
+        let max_offset = inner.height.saturating_sub(thumb_height);
+        let thumb_y = inner.y
+            + max_offset.saturating_mul(app.view.scroll as u16)
+                / app.view.rows.len().saturating_sub(app.view.height()).max(1) as u16;
+        for y in thumb_y..thumb_y.saturating_add(thumb_height).min(inner.bottom()) {
+            f.buffer_mut()[(rail.x, y)]
+                .set_symbol("┃")
+                .set_style(Style::default().fg(Color::Cyan));
+        }
+    }
     // Paint the complete user block, including blank and trailing cells. Line styling alone
     // leaves empty paragraph rows at the terminal's default background.
     for (row, index) in app.view.visible().enumerate() {
-        if app.view.rows[index]
+        let role = app.view.rows[index]
             .identity
             .and_then(|i| app.messages.get(i))
-            .is_some_and(|m| m.role == MsgRole::User)
-            && !app.no_color
-        {
+            .map(|m| m.role);
+        if !app.no_color && matches!(role, Some(MsgRole::User | MsgRole::System)) {
+            let bg = if role == Some(MsgRole::System) {
+                Color::Indexed(237)
+            } else {
+                Color::Indexed(235)
+            };
             f.buffer_mut().set_style(
                 Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
-                Style::default().bg(Color::Indexed(235)),
+                Style::default().bg(bg),
             );
         }
     }
@@ -1334,6 +1360,18 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(picker) = app.picker.as_mut() else {
         return;
     };
+    if picker.kind == PickerKind::GrokBotForm {
+        if let Some(form) = &app.grok_bot_form {
+            let values = [&form.account, &form.routine_id, &form.name, &form.webhook_url];
+            let labels = ["Account", "Routine ID", "Display name", "Webhook URL (HTTPS)"];
+            for ((row, label), value) in picker.rows.iter_mut().take(4).zip(labels).zip(values) {
+                row.label = format!("{label}: {}", if value.is_empty() { "<empty>" } else { value });
+            }
+            if let Some(row) = picker.rows.get_mut(4) {
+                row.label = format!("Webhook key: {}", if form.key.is_empty() { "<empty>" } else { "••••••••" });
+            }
+        }
+    }
     if matches!(
         picker.kind,
         PickerKind::Update
@@ -1444,7 +1482,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     Style::default()
                 };
-                let mut head = vec![Span::styled(label.to_owned(), label_style)];
+                let mut head = if picker.kind == PickerKind::Agents {
+                    let status_color = if label.contains("●") { Color::Yellow } else if label.contains("×") { Color::Red } else { Color::Green };
+                    if let Some((prefix, rest)) = label.split_once(' ') {
+                        vec![Span::styled(prefix.to_owned(), label_style), Span::styled(" ", label_style), Span::styled(rest.to_owned(), label_style.fg(status_color))]
+                    } else { vec![Span::styled(label.to_owned(), label_style)] }
+                } else { vec![Span::styled(label.to_owned(), label_style)] };
                 if current {
                     head.push(Span::styled(
                         " \u{b7} current",
@@ -1865,12 +1908,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     let idle_footer_hint = format!("{FOOTER_HINT} \u{b7} Ctrl+K options");
     let scrolled = format!("\u{2191} {} rows up \u{b7} PgDn to follow", app.view.scroll);
     let recovery_hint = format!(
-        "{} saved drafts/requests · /recover",
+        "{} saved drafts/requests retained",
         app.keep.recovery_choices.len()
     );
     let (left, left_style) = if app.recovery_warning().is_some() {
         (
-            "draft not saved locally · /recover retry",
+            "draft not saved locally · retrying persistence",
             Style::default().fg(Color::Red),
         )
     } else if let Some(warning) = app.store_warning.as_deref() {

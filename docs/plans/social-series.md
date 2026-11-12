@@ -64,9 +64,9 @@ A suggested cadence is one installment per day, replying to the previous install
 
 ### 5. Restart recovery (215 characters)
 
-5/8 An unfinished task, a newer draft and a queue are different things. Concordia saves them separately. After restart, unfinished work comes back paused. /continue lets you review it and choose where to pick it up.
+5/8 An unfinished task, a newer draft and a queue are different things. Concordia saves them separately. After restart, unfinished work comes back paused in its tab, with an inline action to choose where to pick it up.
 
-**GIF:** 10-12s: fail a synthetic turn, retain a newer draft, restart isolated Concordia, show paused unfinished request and /continue choices. Stop before a provider dispatch. Keep draft and request separately visible.
+**GIF:** 10-12s: fail a synthetic turn, retain a newer draft, restart isolated Concordia, show the paused unfinished request tab and its inline choices. Stop before a provider dispatch. Keep draft and request separately visible.
 
 ### 6. Files beside the chat (217 characters)
 

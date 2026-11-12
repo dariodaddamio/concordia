@@ -8,46 +8,88 @@
 <circle cx="40" cy="18" r="6" fill="#febc2e"/>
 <circle cx="60" cy="18" r="6" fill="#28c840"/>
 <text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia — working</text>
-<rect x="14" y="36" width="225" height="19" fill="#303030"/>
-<rect x="239" y="36" width="81" height="19" fill="#87d787"/>
-<rect x="320" y="36" width="684" height="19" fill="#303030"/>
+<rect x="14" y="36" width="297" height="19" fill="#303030"/>
+<rect x="311" y="36" width="81" height="19" fill="#87d787"/>
+<rect x="392" y="36" width="612" height="19" fill="#303030"/>
 <rect x="14" y="55" width="990" height="19" fill="#303030"/>
+<rect x="14" y="74" width="9" height="19" fill="#000000"/>
+<rect x="23" y="74" width="972" height="19" fill="#3a3a3a"/>
+<rect x="995" y="74" width="9" height="19" fill="#000000"/>
+<rect x="14" y="93" width="9" height="19" fill="#000000"/>
+<rect x="23" y="93" width="972" height="19" fill="#3a3a3a"/>
+<rect x="995" y="93" width="9" height="19" fill="#000000"/>
+<rect x="14" y="112" width="990" height="19" fill="#000000"/>
+<rect x="14" y="131" width="9" height="19" fill="#000000"/>
 <rect x="23" y="131" width="972" height="19" fill="#262626"/>
-<rect x="410" y="549" width="63" height="19" fill="#444444"/>
+<rect x="995" y="131" width="9" height="19" fill="#000000"/>
+<rect x="14" y="150" width="990" height="19" fill="#000000"/>
+<rect x="14" y="169" width="990" height="19" fill="#000000"/>
+<rect x="14" y="188" width="990" height="19" fill="#000000"/>
+<rect x="14" y="207" width="990" height="19" fill="#000000"/>
+<rect x="14" y="226" width="990" height="19" fill="#000000"/>
+<rect x="14" y="245" width="990" height="19" fill="#000000"/>
+<rect x="14" y="264" width="990" height="19" fill="#000000"/>
+<rect x="14" y="283" width="990" height="19" fill="#000000"/>
+<rect x="14" y="302" width="990" height="19" fill="#000000"/>
+<rect x="14" y="321" width="990" height="19" fill="#000000"/>
+<rect x="14" y="340" width="990" height="19" fill="#000000"/>
+<rect x="14" y="359" width="990" height="19" fill="#000000"/>
+<rect x="14" y="378" width="990" height="19" fill="#000000"/>
+<rect x="14" y="397" width="990" height="19" fill="#000000"/>
+<rect x="14" y="416" width="990" height="19" fill="#000000"/>
+<rect x="14" y="435" width="990" height="19" fill="#000000"/>
+<rect x="14" y="454" width="990" height="19" fill="#000000"/>
+<rect x="14" y="473" width="990" height="19" fill="#000000"/>
+<rect x="14" y="492" width="990" height="19" fill="#000000"/>
+<rect x="14" y="511" width="990" height="19" fill="#000000"/>
+<rect x="14" y="530" width="990" height="19" fill="#000000"/>
+<rect x="14" y="549" width="990" height="19" fill="#000000"/>
+<rect x="14" y="568" width="990" height="19" fill="#000000"/>
+<rect x="14" y="587" width="990" height="19" fill="#000000"/>
+<rect x="14" y="606" width="990" height="19" fill="#000000"/>
+<rect x="14" y="625" width="990" height="19" fill="#000000"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
-<text x="23" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-03u</text>
-<text x="248" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
-<text x="338" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
-<text x="545" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
-<text x="23" y="69" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Credits: not reported  │</text>
-<text x="257" y="69" textLength="351" lengthAdjust="spacingAndGlyphs" fill="#666666">Subscription: 5h 59% left · 7d 41% left</text>
+<text x="23" y="50" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffb000">← Home</text>
+<text x="95" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-12o</text>
+<text x="320" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#0c0c0c" font-weight="700">Codex 3</text>
+<text x="410" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
+<text x="518" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">gpt-5.1-codex</text>
+<text x="23" y="69" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#ffb000">Credits: not reported</text>
+<text x="221" y="69" textLength="378" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">│  Subscription: 5h 59% left · 7d 41% left</text>
 <text x="23" y="88" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#5fafff">| i</text>
-<text x="59" y="88" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
+<text x="59" y="88" textLength="837" lengthAdjust="spacingAndGlyphs" fill="#a7a7a7">Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc</text>
 <text x="23" y="107" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff">|</text>
-<text x="59" y="107" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">interrupts.</text>
+<text x="59" y="107" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#a7a7a7">interrupts.</text>
 <text x="23" y="145" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#87d7ff" font-weight="700">You ›</text>
-<text x="77" y="145" textLength="495" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Why does the nightly sync skip rows with a null region?</text>
+<text x="77" y="145" textLength="495" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">Why does the nightly sync skip rows with a null region?</text>
 <text x="23" y="164" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3 · gpt-5.1-codex</text>
-<text x="23" y="183" textLength="360" lengthAdjust="spacingAndGlyphs" fill="#87af87">▸ │ ✓ Run command  rg -n region src/sync</text>
-<text x="23" y="202" textLength="315" lengthAdjust="spacingAndGlyphs" fill="#87af87">▸ │ ✓ Read file  src/sync/filter.rs</text>
-<text x="23" y="221" textLength="378" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">▸ │ ◉ Run command  cargo test sync::filter</text>
-<text x="23" y="240" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc" font-style="italic">~</text>
-<text x="41" y="240" textLength="576" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">Checking how the region filter treats a null before it compares.</text>
-<text x="41" y="259" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">The comparison runs first, so a missing region never matches and the row is dropped.</text>
-<text x="41" y="278" textLength="531" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">Running the filter tests to confirm before proposing a fix.</text>
-<text x="23" y="563" textLength="279" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">◈ Working through the next step</text>
-<text x="311" y="563" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#666666">· 8m 20s ·</text>
-<text x="410" y="563" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#ffffff" font-weight="700">[ Esc ]</text>
-<text x="482" y="563" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">cancel</text>
-<text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">╭</text>
-<text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
-<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
-<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">│</text>
-<text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
-<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">│</text>
-<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#bc3fbc">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="23" y="639" textLength="369" lengthAdjust="spacingAndGlyphs" fill="#666666">Tab queue · Ctrl+O expand · Ctrl+C cancel</text>
-<text x="797" y="639" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">permissions: workspace</text>
+<text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#68c58b">✓</text>
+<text x="77" y="183" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Inspect project</text>
+<text x="221" y="183" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">· 2 operations · completed</text>
+<text x="464" y="183" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="23" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">◉</text>
+<text x="77" y="202" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Run tests</text>
+<text x="167" y="202" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="23" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c19bea" font-style="italic">~</text>
+<text x="41" y="221" textLength="576" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">Checking how the region filter treats a null before it compares.</text>
+<text x="41" y="240" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">The comparison runs first, so a missing region never matches and the row is dropped.</text>
+<text x="41" y="259" textLength="531" lengthAdjust="spacingAndGlyphs" fill="#808080" font-style="italic">Running the filter tests to confirm before proposing a fix.</text>
+<text x="23" y="563" textLength="279" lengthAdjust="spacingAndGlyphs" fill="#c19bea">◈ Working through the next step</text>
+<text x="311" y="563" textLength="162" lengthAdjust="spacingAndGlyphs" fill="#868177">· 8m 20s · [ Esc ]</text>
+<text x="482" y="563" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">cancel</text>
+<text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c19bea">╭</text>
+<text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#868177">message</text>
+<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#c19bea">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c19bea">│</text>
+<text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">&gt;</text>
+<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c19bea">│</text>
+<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#c19bea">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="23" y="639" textLength="369" lengthAdjust="spacingAndGlyphs" fill="#868177">Tab queue · Ctrl+O expand · Ctrl+C cancel</text>
+<text x="824" y="639" textLength="171" lengthAdjust="spacingAndGlyphs" fill="#68c58b" font-weight="700">permissions: edit ▾</text>
 </g>
 </g>
 <rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>

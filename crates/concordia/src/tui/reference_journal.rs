@@ -736,7 +736,6 @@ pub(super) fn fixture_proof() {
         sources: vec![binding.clone()],
         tried: Vec::new(),
         reason: "reference transaction pending".into(),
-        routing: None,
         scope: None,
         conversation: None,
     };

@@ -9,7 +9,7 @@ use std::{
     path::Path,
 };
 
-const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|claude|cursor] [--json] [--limit N]\n       concordia chat read SESSION --account ID [--provider codex|claude|cursor] [--tail N] [--grep TEXT] [--max-chars N]\n       concordia chat search TEXT [--account ID] [--provider codex|claude|cursor] [--json] [--limit N] (session IDs and previews/titles only)";
+const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|claude|cursor|grok] [--json] [--limit N]\n       concordia chat read SESSION --account ID [--provider codex|claude|cursor|grok] [--tail N] [--grep TEXT] [--max-chars N]\n       concordia chat search TEXT [--account ID] [--provider codex|claude|cursor|grok] [--json] [--limit N] (session IDs and previews/titles only)\n       concordia chat thread list [--json] | map ID | read ID [--cursor TOKEN] [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]";
 const MAX_CHAT_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
 /// Read-only restoration data. Loading it never dispatches a provider turn.
@@ -403,30 +403,13 @@ fn bounded_field(value: &str, max_chars: usize) -> String {
 }
 
 pub fn run(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
-    if args.first().is_some_and(|operation| {
-        matches!(
-            operation.as_str(),
-            "groups" | "group-create" | "group-members" | "group-link" | "group-unlink"
-        )
-    }) {
-        let cwd = std::env::current_dir().map_err(|error| (error.to_string(), 2))?;
-        return crate::native_memory::relations::groups::command(root, args, &cwd)
-            .map_err(|error| (error, 2));
-    }
-    if args.first().is_some_and(|operation| {
-        matches!(
-            operation.as_str(),
-            "goals" | "goal-sources" | "goal-link" | "goal-unlink"
-        )
-    }) {
-        let cwd = std::env::current_dir().map_err(|error| (error.to_string(), 2))?;
-        return crate::native_memory::relations::command(root, args, &cwd)
-            .map_err(|error| (error, 2));
+    if args.first().is_some_and(|operation| operation == "thread") {
+        return crate::threads::run_chat_cli(root, &args[1..]);
     }
     if args.first().is_some_and(|s| {
         matches!(
             s.as_str(),
-            "recall" | "ranked" | "lineage" | "link" | "detach" | "file-facts"
+            "recall" | "file-facts"
         )
     }) {
         return crate::native_memory::retrieval::command(root, args).map_err(|e| (e, 2));

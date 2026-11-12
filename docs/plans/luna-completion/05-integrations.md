@@ -1,7 +1,7 @@
 # L5: integration management from F10
 
 Read the [common worker instructions](README.md), [catalog evidence](../../quality/integrations-catalog.md)
-and the integration phases in [workspace and inputs](../workspace-input-completion.md).
+and the integration phases in [images and diagrams](../../images-and-diagrams.md).
 
 ## Outcome and ownership
 

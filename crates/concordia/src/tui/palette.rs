@@ -4,6 +4,7 @@
 //! should put in the prompt. Drawing and key handling live in `tui/mod.rs`.
 
 use crate::commands::command_registry;
+use crate::store::ProviderKind;
 use crate::user_commands::UserCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,13 +13,9 @@ pub struct Entry {
     pub help: String,
     /// A user command from `<state>/commands` (drawn with a dim "custom" marker).
     pub custom: bool,
-}
-
-fn everyday(command: &str) -> bool {
-    command_registry()
-        .iter()
-        .find(|c| c.name == command)
-        .is_some_and(|c| c.everyday)
+    /// Provider-native commands are discoverable; unsupported transport operations stay disabled.
+    pub provider: bool,
+    pub disabled: bool,
 }
 
 /// Commands whose full text starts with what the user has typed. Only a single-line prompt that
@@ -30,6 +27,14 @@ pub fn matching(input: &str) -> Vec<Entry> {
 
 /// Like [`matching`], with the user's commands listed after the built-ins.
 pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
+    matching_for_provider(input, user, None)
+}
+
+pub fn matching_for_provider(
+    input: &str,
+    user: &[UserCommand],
+    provider: Option<ProviderKind>,
+) -> Vec<Entry> {
     if !input.starts_with('/') || input.contains('\n') {
         return Vec::new();
     }
@@ -37,11 +42,32 @@ pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
     let builtin = command_registry()
         .iter()
         .filter(|c| c.name.starts_with(&typed))
-        .filter(|c| typed != "/" || everyday(c.name))
+        .filter(|c| typed != "/" || !c.name.is_empty())
         .map(|c| Entry {
             command: c.name.to_string(),
             help: c.description.to_string(),
             custom: false,
+            provider: false,
+            disabled: false,
+        });
+    let provider_commands = provider
+        .into_iter()
+        .flat_map(crate::provider::command_specs)
+        .filter(|c| c.name.starts_with(&typed))
+        .map(|c| Entry {
+            command: c.name.to_string(),
+            help: if crate::provider::command_supported(provider.unwrap(), c.name) {
+                format!("{} (provider transport)", c.description)
+            } else {
+                format!(
+                    "{} (disabled: {})",
+                    c.description,
+                    crate::provider::command_unavailable_reason(provider.unwrap(), c.name)
+                )
+            },
+            custom: false,
+            provider: true,
+            disabled: !crate::provider::command_supported(provider.unwrap(), c.name),
         });
     let custom = user
         .iter()
@@ -50,8 +76,10 @@ pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
             command: c.command.to_string(),
             help: c.description.to_string(),
             custom: true,
+            provider: false,
+            disabled: false,
         });
-    let mut entries: Vec<_> = builtin.chain(custom).collect();
+    let mut entries: Vec<_> = builtin.chain(provider_commands).chain(custom).collect();
     if let Some(index) = entries.iter().position(|entry| entry.command == input) {
         let exact = entries.remove(index);
         entries.insert(0, exact);
@@ -104,15 +132,11 @@ mod tests {
     #[test]
     fn a_bare_slash_lists_every_command() {
         let all = cmds("/");
-        assert_eq!(
-            all.len(),
-            command_registry().iter().filter(|c| c.everyday).count()
-        );
+        assert_eq!(all.len(), command_registry().len());
         assert_eq!(
             all,
             command_registry()
                 .iter()
-                .filter(|c| c.everyday)
                 .map(|c| c.name)
                 .collect::<Vec<_>>()
         );
@@ -120,8 +144,6 @@ mod tests {
 
     #[test]
     fn typing_narrows_by_prefix_case_insensitively() {
-        assert_eq!(cmds("/mem"), ["/memory"]);
-        assert!(!cmds("/").iter().any(|cmd| cmd == "/memory"));
         assert_eq!(cmds("/up"), ["/update"]);
         assert_eq!(cmds("/UP"), ["/update"]);
         assert_eq!(cmds("/use a"), Vec::<&str>::new());
@@ -164,10 +186,7 @@ go",
         .unwrap();
         let user = crate::user_commands::scan(dir.path()).commands;
         let all = matching_with("/", &user);
-        assert_eq!(
-            all.len(),
-            command_registry().iter().filter(|c| c.everyday).count() + 1
-        );
+        assert_eq!(all.len(), command_registry().len() + 1);
         let last = all.last().unwrap();
         assert_eq!(
             (last.command.as_str(), last.help.as_str(), last.custom),
@@ -176,6 +195,25 @@ go",
         assert!(all[..all.len() - 1].iter().all(|e| !e.custom));
         assert_eq!(matching_with("/sh", &user).len(), 1);
         assert!(matching_with("/sh", &[]).is_empty());
+    }
+
+    #[test]
+    fn provider_commands_reflect_transport_support() {
+        let entries = matching_for_provider("/", &[], Some(ProviderKind::Cursor));
+        let entry = entries
+            .iter()
+            .find(|entry| entry.command == "/auto-run")
+            .unwrap();
+        assert!(entry.provider);
+        assert!(!entry.disabled);
+        assert!(entry.help.contains("provider transport"));
+        let entries = matching_for_provider("/", &[], Some(ProviderKind::Codex));
+        let entry = entries
+            .iter()
+            .find(|entry| entry.command == "/diff")
+            .unwrap();
+        assert!(entry.disabled);
+        assert!(entry.help.contains("no matching RPC"));
     }
 
     #[test]
@@ -258,6 +296,8 @@ pub fn matching_arguments(
                 command,
                 help,
                 custom: false,
+                provider: false,
+                disabled: false,
             });
         }
     };
@@ -285,7 +325,7 @@ pub fn matching_arguments(
                 "/use rename".into(),
                 "ACCOUNT NICKNAME - rename for display; omit nickname to reset".into(),
             );
-            for provider in ["codex", "claude", "cursor"]
+            for provider in ["codex", "claude", "cursor", "grok"]
                 .into_iter()
                 .filter(|_| typed.starts_with("/use add"))
             {
@@ -330,12 +370,12 @@ pub fn matching_arguments(
         "/mode" => {
             add(
                 "/mode".into(),
-                "plan | ask | auto | full - Enter shows the permission mode".into(),
+                "plan | ask | edit | full - Enter shows the permission mode".into(),
             );
             for (mode, help) in [
                 ("plan", "read-only analysis"),
                 ("ask", "use provider approvals"),
-                ("auto", "allow workspace edits"),
+                ("edit", "allow workspace edits"),
                 ("full", "full access using provider-supported controls"),
             ] {
                 add(format!("/mode {mode}"), help.into());
@@ -415,15 +455,11 @@ pub fn matching_arguments(
         cmd @ ("/skills" | "/hooks") => {
             add(
                 cmd.into(),
-                "Enter inspects this account's sources; connect applies shared setup".into(),
+                "Enter inspects this account's sources; shared setup runs through /harness".into(),
             );
             add(
                 format!("{cmd} list"),
                 "inspect this account's local sources".into(),
-            );
-            add(
-                format!("{cmd} connect"),
-                "PATH [--current] - connect setup across accounts".into(),
             );
             add(
                 format!("{cmd} status"),
@@ -437,11 +473,6 @@ pub fn matching_arguments(
                 add(
                     format!("{cmd} install"),
                     "[PATH] [--current] - share skill folders across accounts".into(),
-                );
-            } else {
-                add(
-                    format!("{cmd} verify"),
-                    "[NAME] [--current] - run verification across accounts".into(),
                 );
             }
         }
@@ -538,17 +569,7 @@ mod discovery_tests {
     #[test]
     fn advertised_children_use_supported_command_syntax() {
         for root in [
-            "/use",
-            "/model",
-            "/mode",
-            "/update",
-            "/workers",
-            "/delegate",
-            "/delegate protocol",
-            "/harness",
-            "/skills",
-            "/hooks",
-            "/usage",
+            "/use", "/model", "/mode", "/update", "/harness", "/skills", "/hooks", "/usage",
         ] {
             let entries = matching_arguments(root, &[], &[]);
             assert_eq!(entries[0].command, root);

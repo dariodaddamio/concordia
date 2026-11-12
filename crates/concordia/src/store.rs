@@ -21,9 +21,6 @@ fn read_store_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
 }
 
 /// Routing overrides have a separately versioned bounded transaction, preserving config.toml.
-pub fn route_policy(root: &Path) -> Result<crate::routing::Policies, String> {
-    crate::routing::load_policies(root)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,6 +28,7 @@ pub enum ProviderKind {
     Codex,
     Claude,
     Cursor,
+    Grok,
 }
 
 impl ProviderKind {
@@ -39,6 +37,7 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Cursor => "cursor",
+            Self::Grok => "grok",
         }
     }
 }
@@ -49,7 +48,7 @@ pub enum TrustMode {
     /// Read-only planning: the provider analyses and proposes, it does not edit.
     Plan,
     Ask,
-    Workspace,
+    Edit,
     Full,
 }
 
@@ -59,7 +58,7 @@ impl TrustMode {
         match self {
             Self::Plan => 0,
             Self::Ask => 1,
-            Self::Workspace => 2,
+            Self::Edit => 2,
             Self::Full => 3,
         }
     }
@@ -68,7 +67,7 @@ impl TrustMode {
         match self {
             Self::Plan => "plan",
             Self::Ask => "ask",
-            Self::Workspace => "workspace",
+            Self::Edit => "edit",
             Self::Full => "full",
         }
     }
@@ -176,12 +175,6 @@ pub struct OrchestratorSettings {
     pub trust: TrustMode,
     #[serde(default = "default_child_trust")]
     pub child_trust: ChildTrust,
-    /// Accounts that may run as delegated workers (configured ceiling, never the orchestrator).
-    #[serde(default)]
-    pub workers: Vec<String>,
-    /// Per-worker native model ids. Missing entry means the provider's own default.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub worker_models: std::collections::BTreeMap<String, String>,
     /// Explicit opt-in: return worker batches to their owning conversation.
     #[serde(default)]
     pub delegate_auto_return: bool,
@@ -208,7 +201,7 @@ pub struct OrchestratorSettings {
 }
 
 fn default_trust() -> TrustMode {
-    TrustMode::Workspace
+    TrustMode::Edit
 }
 
 fn default_handoff_cap() -> usize {
@@ -219,7 +212,7 @@ fn default_handoff_cap() -> usize {
 #[serde(rename_all = "lowercase")]
 pub enum ChildTrust {
     Ask,
-    Workspace,
+    Edit,
     Full,
     Inherit,
 }
@@ -233,10 +226,8 @@ impl Default for OrchestratorSettings {
         Self {
             worker_panel_open: None,
             file_action: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             child_trust: ChildTrust::Inherit,
-            workers: Vec::new(),
-            worker_models: Default::default(),
             delegate_auto_return: false,
             delegate_quota_failover: false,
             delegation_protocol: None,
@@ -358,10 +349,10 @@ pub fn store_path(root: &Path) -> PathBuf {
 
 fn sanitize_settings(settings: OrchestratorSettings) -> OrchestratorSettings {
     match settings.trust {
-        TrustMode::Plan | TrustMode::Ask | TrustMode::Workspace | TrustMode::Full => {}
+        TrustMode::Plan | TrustMode::Ask | TrustMode::Edit | TrustMode::Full => {}
     }
     match settings.child_trust {
-        ChildTrust::Ask | ChildTrust::Workspace | ChildTrust::Full | ChildTrust::Inherit => {}
+        ChildTrust::Ask | ChildTrust::Edit | ChildTrust::Full | ChildTrust::Inherit => {}
     }
     settings
 }
@@ -648,14 +639,6 @@ pub fn set_trust_mode(root: &Path, trust: TrustMode) -> Result<OrchestratorSetti
     })
 }
 
-/// Replace the worker list (validation lives in `delegate`).
-pub fn set_workers(root: &Path, workers: Vec<String>) -> Result<()> {
-    modify_store(root, |store| {
-        store.settings.workers = workers;
-        Ok(())
-    })
-}
-
 pub fn set_delegation_protocol(root: &Path, on: bool) -> Result<()> {
     modify_store(root, |store| {
         store.settings.delegation_protocol = Some(on);
@@ -865,16 +848,14 @@ mod tests {
     }
 
     #[test]
-    fn workers_and_protocol_persist_and_default_off() {
+    fn delegation_protocol_persists_and_uses_config_default() {
         let dir = tempfile::tempdir().unwrap();
         let s = get_settings(dir.path());
-        assert!(s.workers.is_empty() && s.delegation_protocol.is_none());
-        assert!(!delegation_protocol_on(dir.path()));
-        set_workers(dir.path(), vec!["codex-2".into()]).unwrap();
+        assert!(s.delegation_protocol.is_none());
+        assert!(delegation_protocol_on(dir.path()));
         set_delegation_protocol(dir.path(), true).unwrap();
         set_trust_mode(dir.path(), TrustMode::Ask).unwrap();
         let s = get_settings(dir.path());
-        assert_eq!(s.workers, ["codex-2"]);
         assert_eq!(s.delegation_protocol, Some(true));
         assert_eq!(s.trust, TrustMode::Ask);
         // An older store without the new keys still loads.
@@ -883,7 +864,6 @@ mod tests {
             r#"{"version":1,"settings":{"trust":"ask","childTrust":"inherit"}}"#,
         )
         .unwrap();
-        assert!(get_settings(dir.path()).workers.is_empty());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! What Concordia leaves inside homes it created: the awareness block and the optional MCP entry.
+//! What Concordia leaves inside homes it created: the optional MCP entry.
 //!
 //! Rules (docs/mcp.md, AGENTS.md): only homes under `<state>/homes` that Concordia created are ever
 //! touched, never a user's own `.claude` / `.codex`. Everything lives between explicit markers or in
@@ -17,8 +17,6 @@ use crate::store::ProviderKind;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const AWARE_BEGIN: &str = "<!-- concordia:begin -->";
-pub const AWARE_END: &str = "<!-- concordia:end -->";
 const TOML_BEGIN: &str =
     "# concordia:begin (managed by Concordia; remove with [threads] mcp = false)";
 const TOML_BEGIN_KEY: &str = "# concordia:begin";
@@ -29,9 +27,6 @@ pub const SERVER_NAME: &str = "concordia";
 pub const STATE_ENV: &str = "CONCORDIA_STATE_DIR";
 /// JSON object containing the account id and workspace root fixed at registration time.
 pub const SCOPE_ENV: &str = "CONCORDIA_MCP_SCOPE";
-
-/// The awareness text, at most 45 words.
-pub const AWARE_TEXT: &str = "You are running inside Concordia, a terminal app that runs several accounts. A [concordia map] block is a pointer to an earlier conversation; run `concordia thread read <id>` (add --grep TEXT or --tail N) to read details. Do not paste whole threads.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -52,7 +47,6 @@ pub struct HomeReport {
     pub account: String,
     pub provider: ProviderKind,
     pub home: PathBuf,
-    pub awareness: Outcome,
     pub mcp: Outcome,
 }
 
@@ -66,7 +60,7 @@ pub fn created_homes(state_root: &Path) -> Vec<(String, ProviderKind, PathBuf)> 
         .collect()
 }
 
-/// Bring every Concordia-created home in line with `[threads] awareness` / `mcp`.
+/// Bring every Concordia-created home in line with `[threads] mcp`.
 pub fn refresh(state_root: &Path, exe: &Path) -> Vec<HomeReport> {
     run(state_root, exe, true)
 }
@@ -86,7 +80,6 @@ fn run(state_root: &Path, exe: &Path, write: bool) -> Vec<HomeReport> {
     created_homes(state_root)
         .into_iter()
         .map(|(account, provider, home)| HomeReport {
-            awareness: sync_awareness(&home, provider, cfg.awareness, write),
             mcp: sync_mcp_for_account(&home, provider, cfg.mcp, exe, state_root, &account, write),
             account,
             provider,
@@ -99,7 +92,7 @@ fn run(state_root: &Path, exe: &Path, write: bool) -> Vec<HomeReport> {
 pub fn summary_lines(reports: &[HomeReport]) -> Vec<String> {
     let mut out = Vec::new();
     for r in reports {
-        for (what, o) in [("awareness", &r.awareness), ("mcp", &r.mcp)] {
+        for (what, o) in [("mcp", &r.mcp)] {
             match o {
                 Outcome::Updated => out.push(format!("{}: {what} set up", r.account)),
                 Outcome::Removed => out.push(format!("{}: {what} removed", r.account)),
@@ -115,7 +108,7 @@ pub fn summary_lines(reports: &[HomeReport]) -> Vec<String> {
 pub fn doctor_rows(state_root: &Path, exe: &Path) -> Vec<(bool, &'static str, String)> {
     let mut out = Vec::new();
     for r in check(state_root, exe) {
-        for (name, o) in [("awareness", &r.awareness), ("mcp", &r.mcp)] {
+        for (name, o) in [("mcp", &r.mcp)] {
             let (warn, text) = match o {
                 Outcome::Current => (false, "set up".to_string()),
                 Outcome::Updated => (false, "out of date; /use refreshes it".to_string()),
@@ -133,36 +126,8 @@ pub fn doctor_rows(state_root: &Path, exe: &Path) -> Vec<(bool, &'static str, St
 }
 
 // ---------------------------------------------------------------------------------------------
-// Awareness block
+// Shared marker-block editing
 // ---------------------------------------------------------------------------------------------
-
-fn instructions_file(home: &Path, provider: ProviderKind) -> Option<PathBuf> {
-    match provider {
-        ProviderKind::Claude => Some(home.join("CLAUDE.md")),
-        ProviderKind::Codex => Some(home.join("AGENTS.md")),
-        ProviderKind::Cursor => None,
-    }
-}
-
-pub fn sync_awareness(home: &Path, provider: ProviderKind, want: bool, write: bool) -> Outcome {
-    let Some(file) = instructions_file(home, provider) else {
-        return Outcome::Blocked("not supported for this provider".into());
-    };
-    sync_text_block(&file, AWARE_BEGIN, AWARE_END, &[AWARE_TEXT], want, write)
-}
-
-/// Replace, add or remove the marker-delimited block in a text file. User text outside it is kept
-/// byte for byte. `validate` runs on the new text before anything is written.
-fn sync_text_block(
-    file: &Path,
-    begin: &str,
-    end: &str,
-    body: &[&str],
-    want: bool,
-    write: bool,
-) -> Outcome {
-    sync_text_block_checked(file, begin, end, body, want, write, &|_| Ok(()))
-}
 
 fn sync_text_block_checked(
     file: &Path,
@@ -348,6 +313,7 @@ fn sync_mcp_for_account(
         ProviderKind::Claude => sync_claude_json(home, want, exe, state_root, account, write),
         ProviderKind::Codex => sync_codex_toml(home, want, exe, state_root, account, write),
         ProviderKind::Cursor => Outcome::Blocked("not supported for this provider".into()),
+        ProviderKind::Grok => Outcome::Blocked("Grok Build integrations are provider-owned".into()),
     }
 }
 
@@ -533,114 +499,10 @@ fn sync_codex_toml(
 mod tests {
     use super::*;
 
-    fn word_count(s: &str) -> usize {
-        s.split_whitespace().count()
-    }
-
-    #[test]
-    fn the_awareness_text_stays_short_and_names_the_pointer() {
-        assert!(word_count(AWARE_TEXT) <= 45, "{}", word_count(AWARE_TEXT));
-        assert!(AWARE_TEXT.contains("concordia thread read <id>"));
-        assert!(AWARE_TEXT.contains("[concordia map]"));
-    }
-
-    #[test]
-    fn splice_adds_replaces_removes_and_keeps_user_text() {
-        let b = ["one"];
-        let added = splice("my notes\n", AWARE_BEGIN, AWARE_END, Some(&b)).unwrap();
-        assert_eq!(
-            added,
-            format!("my notes\n\n{AWARE_BEGIN}\none\n{AWARE_END}\n")
-        );
-        let again = splice(&added, AWARE_BEGIN, AWARE_END, Some(&b)).unwrap();
-        assert_eq!(again, added, "idempotent");
-        let changed = splice(&added, AWARE_BEGIN, AWARE_END, Some(&["two"])).unwrap();
-        assert!(
-            changed.contains("two") && !changed.contains("one") && changed.starts_with("my notes")
-        );
-        let gone = splice(&changed, AWARE_BEGIN, AWARE_END, None).unwrap();
-        assert_eq!(gone, "my notes\n");
-        assert!(splice(
-            &format!("{AWARE_BEGIN}\nx"),
-            AWARE_BEGIN,
-            AWARE_END,
-            Some(&b)
-        )
-        .is_err());
-        let crlf = splice("a\r\nb\r\n", AWARE_BEGIN, AWARE_END, Some(&b)).unwrap();
-        assert!(crlf.contains(&format!("{AWARE_BEGIN}\r\none\r\n{AWARE_END}\r\n")));
-    }
-
-    #[test]
-    fn text_after_the_block_survives_a_replace_and_a_removal() {
-        let t = format!("top\n{AWARE_BEGIN}\nold\n{AWARE_END}\nbottom\n");
-        let r = splice(&t, AWARE_BEGIN, AWARE_END, Some(&["new"])).unwrap();
-        assert_eq!(r, format!("top\n{AWARE_BEGIN}\nnew\n{AWARE_END}\nbottom\n"));
-        assert_eq!(
-            splice(&t, AWARE_BEGIN, AWARE_END, None).unwrap(),
-            "top\nbottom\n"
-        );
-    }
-
     fn home(tmp: &Path, name: &str) -> PathBuf {
         let h = tmp.join(name);
         fs::create_dir_all(&h).unwrap();
         h
-    }
-
-    #[test]
-    fn awareness_create_update_preserve_and_off() {
-        let tmp = tempfile::tempdir().unwrap();
-        let h = home(tmp.path(), "claude-2");
-        let f = h.join("CLAUDE.md");
-        assert_eq!(
-            sync_awareness(&h, ProviderKind::Claude, true, false),
-            Outcome::Updated
-        );
-        assert!(!f.exists(), "dry run writes nothing");
-        assert_eq!(
-            sync_awareness(&h, ProviderKind::Claude, true, true),
-            Outcome::Updated
-        );
-        assert!(fs::read_to_string(&f).unwrap().contains(AWARE_TEXT));
-        assert_eq!(
-            sync_awareness(&h, ProviderKind::Claude, true, true),
-            Outcome::Current
-        );
-        // User text outside the block, and a stale block, both handled.
-        fs::write(
-            &f,
-            format!("# mine\n\n{AWARE_BEGIN}\nstale\n{AWARE_END}\n\nafter\n"),
-        )
-        .unwrap();
-        assert_eq!(
-            sync_awareness(&h, ProviderKind::Claude, true, true),
-            Outcome::Updated
-        );
-        let s = fs::read_to_string(&f).unwrap();
-        assert!(s.starts_with("# mine") && s.contains("after") && !s.contains("stale"));
-        // Off removes only the block.
-        assert_eq!(
-            sync_awareness(&h, ProviderKind::Claude, false, true),
-            Outcome::Removed
-        );
-        let s = fs::read_to_string(&f).unwrap();
-        assert!(s.contains("# mine") && s.contains("after") && !s.contains("concordia:"));
-        assert_eq!(
-            sync_awareness(&h, ProviderKind::Claude, false, true),
-            Outcome::Absent
-        );
-        // Turning off our only block leaves an empty file through the revision-checked save.
-        let h2 = home(tmp.path(), "codex-3");
-        sync_awareness(&h2, ProviderKind::Codex, true, true);
-        assert!(h2.join("AGENTS.md").exists());
-        sync_awareness(&h2, ProviderKind::Codex, false, true);
-        assert!(fs::read_to_string(h2.join("AGENTS.md")).unwrap().is_empty());
-        // Cursor has no supported file.
-        assert!(matches!(
-            sync_awareness(&h, ProviderKind::Cursor, true, true),
-            Outcome::Blocked(_)
-        ));
     }
 
     #[test]

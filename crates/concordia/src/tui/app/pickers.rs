@@ -29,6 +29,20 @@ impl App {
             .cloned()
             .collect();
         let mut rows = tasks_to_picker_rows(&tasks);
+        for row in &mut rows {
+            let Some(task_id) = row.id.strip_prefix("task:") else {
+                continue;
+            };
+            if let Some(task) = tasks.iter().find(|task| task.id == task_id) {
+                let diagnostic = crate::sessions::diagnose_task(&self.state_root, task);
+                if let Some(cause) = diagnostic.cause() {
+                    row.detail = format!(
+                        "unopenable · {} · Enter to repair (fresh session from handoff map; draft kept)",
+                        cause.label()
+                    );
+                }
+            }
+        }
         rows.extend(native_session_picker_rows(&native));
         let here = count_sessions_here(&sessions, Some(&self.cwd));
         let folder = self
@@ -63,6 +77,58 @@ impl App {
             Ok(None) => self.push_system("resume failed: exact native session was not found in the selected account; use /use to select its account"),
             Err(error) => self.push_system(format!("resume unavailable: {error}")),
         }
+    }
+
+    pub(in crate::tui) fn open_chat_repair(
+        &mut self,
+        task: crate::store::TaskRecord,
+        diagnostic: crate::sessions::ChatDiagnostic,
+    ) {
+        let Some(cause) = diagnostic.cause() else {
+            self.request_resume_session(&diagnostic.account, &diagnostic.native_session_id);
+            return;
+        };
+        self.repair_task = Some(task.id);
+        self.show_picker(
+            PickerKind::ChatRepair,
+            format!("repair chat · {}", diagnostic.title),
+            vec![PickerRow {
+                id: "chat-repair:start".into(),
+                label: "Start fresh session from handoff map".into(),
+                detail: format!("cause: {} · the current draft is kept", cause.label()),
+            }],
+            false,
+        );
+    }
+
+    pub(in crate::tui) fn start_chat_repair(&mut self) {
+        let Some(task_id) = self.repair_task.take() else {
+            self.push_system("chat repair unavailable: task record is missing; draft kept");
+            return;
+        };
+        let Some(task) = crate::store::task(&self.state_root, &task_id) else {
+            self.push_system("chat repair unavailable: task record is missing; draft kept");
+            return;
+        };
+        let Some(map) = task.last_map else {
+            self.push_system("chat repair unavailable: handoff map is unreadable; draft kept");
+            return;
+        };
+        let Some(map_text) = crate::threads::ThreadLog::open(&self.state_root, &map.thread_id)
+            .read_map(crate::config::for_root(&self.state_root).threads.map_chars)
+            .ok()
+        else {
+            self.push_system("chat repair unavailable: handoff map is unreadable; draft kept");
+            return;
+        };
+        let draft = self.editor.text().to_owned();
+        self.handle_slash("/new");
+        self.editor.set_text(&draft);
+        self.task_id = Some(task_id);
+        self.pending_repair_map = Some(map_text);
+        self.need_context_pack = true;
+        self.landing = None;
+        self.push_system("Started a fresh session from the handoff map. Your draft is kept.");
     }
     pub(in crate::tui) fn prepare_resume_delete(&mut self) {
         let Some(picker) = self.picker.as_ref() else {
@@ -144,7 +210,9 @@ impl App {
                     mode_label(self.trust),
                     mode_blurb(self.trust)
                 ));
-                self.push_system("set with /mode plan | ask | auto | full  (Shift+Tab cycles plan/ask/workspace)");
+                self.push_system(
+                    "set with /mode plan | ask | edit | full  (Shift+Tab cycles plan/ask/edit)",
+                );
             }
             Some(a) => match parse_mode(a) {
                 Some(mode) => {
@@ -165,7 +233,7 @@ impl App {
                         ));
                     }
                 }
-                None => self.push_system(format!("unknown mode {a} - use plan, ask, auto or full")),
+                None => self.push_system(format!("unknown mode {a} - use plan, ask, edit or full")),
             },
         }
     }
@@ -252,13 +320,6 @@ impl App {
                 detail,
             });
         }
-        if self.continuation.waiting() {
-            rows.push(PickerRow {
-                id: "use-continue".into(),
-                label: "continue unfinished request".into(),
-                detail: "review the request and choose a target".into(),
-            });
-        }
         rows.push(PickerRow {
             id: "use-add".into(),
             label: "+ add account".into(),
@@ -276,21 +337,63 @@ impl App {
             });
         }
         rows.push(PickerRow {
-            id: "use-continuation".into(),
-            label: "limit handoff (save default)".into(),
-            detail: if self.continuation.automatic() {
-                "continue on another account automatically (Enter toggles to pause)".into()
-            } else {
-                "pause at a usage limit (Enter toggles to continue)".into()
-            },
-        });
-        rows.push(PickerRow {
             id: "use-handoff".into(),
             label: "next provider for this session".into(),
             detail: self.handoff_description(),
         });
+        rows.extend(
+            crate::grok_bot::list(&self.state_root)
+                .into_iter()
+                .map(|routine| PickerRow {
+                    id: format!("use-grok-bot:{}", routine.routine_id),
+                    label: format!("Grok Bot · {}", routine.name),
+                    detail: format!(
+                        "account {} · routine {} · global",
+                        routine.account, routine.routine_id
+                    ),
+                }),
+        );
+        rows.push(PickerRow {
+            id: "use-grok-bot-setup".into(),
+            label: "+ configure Grok Bot routine".into(),
+            detail: "webhook key stays in Windows Credential Manager; see Grok Bot setup guide"
+                .into(),
+        });
         self.show_picker(PickerKind::Use, "accounts".into(), rows, true);
     }
+    fn open_grok_bot_form(&mut self, existing: Option<crate::grok_bot::Routine>) {
+        let form = existing.map_or_else(crate::tui::GrokBotForm::default, |r| crate::tui::GrokBotForm {
+            account: r.account, routine_id: r.routine_id, name: r.name, webhook_url: r.webhook_url, ..Default::default()
+        });
+        self.grok_bot_form = Some(form);
+        self.show_picker(PickerKind::GrokBotForm, "Grok Bot routine · Tab next · final Enter saves".into(), vec![
+            PickerRow { id: "account".into(), label: "Account".into(), detail: String::new() },
+            PickerRow { id: "routine".into(), label: "Routine ID".into(), detail: String::new() },
+            PickerRow { id: "name".into(), label: "Display name".into(), detail: String::new() },
+            PickerRow { id: "url".into(), label: "Webhook URL (HTTPS)".into(), detail: String::new() },
+            PickerRow { id: "key".into(), label: "Webhook key ·••••••••".into(), detail: "stored only in Windows Credential Manager".into() },
+        ], false);
+    }
+
+    pub(in crate::tui) fn grok_bot_form_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(form) = self.grok_bot_form.as_mut() else { return };
+        let active = form.active;
+        match key.code {
+            crossterm::event::KeyCode::Esc => { self.grok_bot_form = None; self.dismiss_picker(); }
+            crossterm::event::KeyCode::Tab => form.active = (active + 1) % 5,
+            crossterm::event::KeyCode::Enter if active < 4 => form.active += 1,
+            crossterm::event::KeyCode::Backspace => match active { 0 => { form.account.pop(); }, 1 => { form.routine_id.pop(); }, 2 => { form.name.pop(); }, 3 => { form.webhook_url.pop(); }, _ => { form.key.pop(); } },
+            crossterm::event::KeyCode::Char(c) if !c.is_control() => match active { 0 => form.account.push(c), 1 => form.routine_id.push(c), 2 => form.name.push(c), 3 => form.webhook_url.push(c), _ => form.key.push(c) },
+            crossterm::event::KeyCode::Enter => {
+                let routine = crate::grok_bot::Routine { provider: "grok-bot".into(), account: form.account.trim().into(), routine_id: form.routine_id.trim().into(), name: form.name.trim().into(), description: String::new(), webhook_url: form.webhook_url.trim().into() };
+                let result = crate::grok_bot::register(&self.state_root, routine, &form.key);
+                self.grok_bot_form = None; self.dismiss_picker();
+                match result { Ok(()) => self.push_system("Grok Bot routine saved; key is stored only in Credential Manager"), Err(e) => self.push_system(format!("Grok Bot setup failed · {e}")) }
+            }
+            _ => {}
+        }
+    }
+
     pub(in crate::tui) fn show_unfinished_request(&mut self) {
         if let Some(prompt) = self.continuation.pending_text() {
             let text = format!("Unfinished request (not sent):\n{prompt}");
@@ -619,7 +722,7 @@ impl App {
         self.show_picker_at(kind, title, rows, filterable, 0);
     }
     pub(in crate::tui) fn open_doctor(&mut self) {
-        let checks = crate::doctor::run_fast_checks();
+        let checks = crate::doctor::run_fast_checks_at(&self.state_root);
         let fixes = crate::doctor::proposed_fixes(&self.state_root, &checks);
         self.doctor = Some(DoctorUi {
             checks,
@@ -710,7 +813,7 @@ impl App {
                     .nth(1)
                     .unwrap_or("unknown backup")
                     .to_string();
-                let checks = crate::doctor::run_fast_checks();
+                let checks = crate::doctor::run_fast_checks_at(&self.state_root);
                 if let Some(doctor) = self.doctor.as_mut() {
                     doctor.checks = checks;
                     doctor.fixes = crate::doctor::proposed_fixes(&self.state_root, &doctor.checks);
@@ -807,19 +910,6 @@ impl App {
         }
     }
     pub(in crate::tui) fn dismiss_picker(&mut self) {
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Recovery)
-        {
-            if let Some(root) = &self.keep.recovery_root {
-                if let Err(error) =
-                    super::super::recovery::dismiss(root, &self.keep.recovery_choices)
-                {
-                    self.push_system(format!("could not remember saved-draft dismissal: {error}"));
-                }
-            }
-        }
         let restore_handoff = self
             .picker
             .as_ref()
@@ -998,8 +1088,17 @@ impl App {
                         match item.kind {
                             crate::needs_you::ItemKind::Question
                             | crate::needs_you::ItemKind::Approval => {
-                                self.queue.focused = false;
-                                self.questions.focused = true;
+                                if let Some(job) = item
+                                    .id
+                                    .strip_prefix("worker-native:")
+                                    .and_then(|value| value.split(':').next())
+                                    .and_then(|value| value.parse().ok())
+                                {
+                                    self.inspect_worker(job);
+                                } else {
+                                    self.queue.focused = false;
+                                    self.questions.focused = true;
+                                }
                             }
                             crate::needs_you::ItemKind::PausedQueue => {
                                 self.queue.focused = true;
@@ -1021,13 +1120,6 @@ impl App {
                     }
                 }
             }
-            PickerKind::Recovery => {
-                if let Some(id) = id.strip_prefix("recover-preview:") {
-                    self.preview_recovery(id);
-                } else if let Some(id) = id.strip_prefix("recover:") {
-                    self.choose_recovery(id);
-                }
-            }
             PickerKind::Resume => {
                 if id == "none" {
                     return;
@@ -1047,6 +1139,11 @@ impl App {
                         self.push_system("resume failed: task is no longer present");
                         return;
                     };
+                    let diagnostic = crate::sessions::diagnose_task(&self.state_root, &task);
+                    if diagnostic.cause().is_some() {
+                        self.open_chat_repair(task, diagnostic);
+                        return;
+                    }
                     let Some(session) = task.sessions.last() else {
                         self.push_system("resume failed: task has no native sessions");
                         return;
@@ -1058,13 +1155,18 @@ impl App {
                     }
                 }
             }
+            PickerKind::ChatRepair => {
+                if id == "chat-repair:start" {
+                    self.start_chat_repair();
+                }
+            }
             PickerKind::Trust => {
                 if let Some(mode) = id.strip_prefix("trust:") {
                     let trust = match mode {
                         "plan" => TrustMode::Plan,
                         "ask" => TrustMode::Ask,
                         "full" => TrustMode::Full,
-                        _ => TrustMode::Workspace,
+                        _ => TrustMode::Edit,
                     };
                     if let Err(e) = set_trust_mode(&self.state_root, trust) {
                         self.push_system(format!("trust save failed — {e}"));
@@ -1074,7 +1176,7 @@ impl App {
                     self.push_system(match trust {
                         TrustMode::Plan => "trust → plan (read-only: analyse and propose)",
                         TrustMode::Full => "trust → full (skip all permissions — careful)",
-                        TrustMode::Workspace => "trust → workspace (cwd write, no trust dialogs)",
+                        TrustMode::Edit => "trust → edit (cwd write, no trust dialogs)",
                         TrustMode::Ask => "trust → ask (may hang headless)",
                     });
                     if self.busy {
@@ -1117,8 +1219,16 @@ impl App {
                     self.open_handoff_settings();
                     return;
                 }
-                if id == "use-continue" {
-                    self.show_unfinished_request();
+                if id == "use-grok-bot-setup" {
+                    self.open_grok_bot_form(None);
+                    return;
+                }
+                if let Some(routine_id) = id.strip_prefix("use-grok-bot:") {
+                    self.show_picker(PickerKind::GrokBotActions, "Grok Bot routine".into(), vec![
+                        PickerRow { id: format!("edit:{routine_id}"), label: "edit routine".into(), detail: "replace URL or key".into() },
+                        PickerRow { id: format!("rotate:{routine_id}"), label: "rotate callback token".into(), detail: "invalidate the previous token".into() },
+                        PickerRow { id: format!("remove:{routine_id}"), label: "remove routine".into(), detail: "stop listening when this is the last routine".into() },
+                    ], false);
                     return;
                 }
                 if id == "use-add" {
@@ -1127,24 +1237,6 @@ impl App {
                 }
                 if id == "use-remove" {
                     self.open_remove_picker(None);
-                    return;
-                }
-                if id == "use-continuation" {
-                    let next = !self.continuation.automatic();
-                    if let Err(error) =
-                        crate::store::set_continuation_automatic(&self.state_root, next)
-                    {
-                        self.push_system(format!(
-                            "could not save usage handoff preference: {error}"
-                        ));
-                        return;
-                    }
-                    let automatic = self.continuation.toggle_automatic();
-                    self.push_system(if automatic {
-                        "usage handoff → automatic"
-                    } else {
-                        "usage handoff → pause"
-                    });
                     return;
                 }
                 if let Some(account) = id.strip_prefix("use:") {
@@ -1165,6 +1257,18 @@ impl App {
                     ));
                 }
             }
+            PickerKind::GrokBotActions => {
+                let (action, routine_id) = id.split_once(':').unwrap_or(("", ""));
+                if action == "edit" {
+                    self.open_grok_bot_form(crate::grok_bot::list(&self.state_root).into_iter().find(|r| r.routine_id == routine_id));
+                } else if action == "rotate" {
+                    match crate::grok_bot::rotate_callback_token(&self.state_root) { Ok(_) => self.push_system("Grok Bot callback token rotated"), Err(e) => self.push_system(format!("callback token rotation failed · {e}")) }
+                } else if action == "remove" {
+                    if let Some(r) = crate::grok_bot::list(&self.state_root).into_iter().find(|r| r.routine_id == routine_id) { let _ = crate::grok_bot::remove(&self.state_root, &r.provider, &r.account, &r.routine_id); }
+                    self.build_use_picker();
+                }
+            }
+            PickerKind::GrokBotForm => {}
             PickerKind::Model => {
                 if let Some(model) = id
                     .strip_prefix(TYPED_MODEL_PREFIX)

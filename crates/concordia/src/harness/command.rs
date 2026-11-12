@@ -1225,7 +1225,7 @@ mod tests {
             "status",
             &|_: &[String]| ok(),
         ));
-        assert!(out.contains("no harness connected"), "{out}");
+        assert!(out.contains("no setup connected"), "{out}");
     }
 
     #[test]
@@ -1618,7 +1618,7 @@ mod tests {
             "status",
             &|_: &[String]| ok(),
         ));
-        assert!(status.contains("no harness connected"), "{status}");
+        assert!(status.contains("no setup connected"), "{status}");
         let again = text(&dispatch(
             &session(&w, ProviderKind::Claude),
             "disconnect mine",

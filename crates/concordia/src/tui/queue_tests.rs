@@ -597,17 +597,12 @@ fn queue_command_lists_and_clears() {
     h.send("one");
     h.queue("two");
     h.queue("three\nlines");
-    h.send("/queue");
-    let t: Vec<String> = h.app.messages.iter().map(|m| m.text.clone()).collect();
-    assert!(t.iter().any(|l| l == "2 queued"), "{t:?}");
-    assert!(t.iter().any(|l| l == "queued 2: three lines"), "{t:?}");
-    h.send("/queue clear");
+    let listed = h.app.queue_command("");
+    assert!(listed.iter().any(|l| l == "2 queued"), "{listed:?}");
+    assert!(listed.iter().any(|l| l == "queued 2: three lines"), "{listed:?}");
+    let cleared = h.app.queue_command("clear");
     assert!(h.app.queue.items.is_empty());
-    assert!(h
-        .app
-        .messages
-        .iter()
-        .any(|m| m.text.contains("cleared 2 queued prompts")));
+    assert_eq!(cleared, ["cleared 2 queued prompts".to_string()]);
     assert!(queue_json(h.root()).is_none());
     assert!(
         h.sent() == vec!["one".to_string()],
@@ -651,7 +646,7 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     assert!(h.app.queue.paused);
     assert!(h.app.messages.iter().any(|m| m
         .text
-        .contains("restored your unsent draft and queued prompts")));
+        .contains("Your unsent draft and queued messages were restored.")));
     assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
     h.key(KeyCode::Char('r'), KeyModifiers::CONTROL);
     h.app.queue_advance(&h.tx);
@@ -757,7 +752,7 @@ fn the_draft_is_restored_with_a_notice_and_ctrl_z_clears_it() {
         .app
         .messages
         .iter()
-        .any(|m| m.text.contains("restored your unsent draft")));
+        .any(|m| m.text.contains("Your unsent draft and queued messages were restored.")));
     h.key(KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "");
     // restoring did not make it look edited: no rewrite until the user changes something

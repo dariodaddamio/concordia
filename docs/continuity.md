@@ -17,11 +17,23 @@ configured map budget. It contains typed intent and source pointers; it does not
 native tool state, approvals or a complete transcript. [Map format](continuity-map-v2.md).
 
 Concordia records exact source bindings and checks revisions for readback. Optional thread logs,
-pins and native-source fallback have different retention/availability limits; a missing source
+Native-source pointers have bounded availability; a missing source
 must be reported rather than replaced with another chat. [Native memory](native-memory.md).
 
+## Unopenable chats
+
+Task-backed chats are diagnosed before Concordia replaces the current tab. The diagnostic reuses
+the native pointer causes: file deleted or moved, file replaced, record rewritten or truncated,
+header changed, account home changed, record too large, session rejected by the provider, and
+record unreadable. `/resume` presents the cause and one repair action. The action starts a fresh
+native session and sends the stored deterministic handoff map with the next prompt; it never
+replays the old provider session. The composer draft remains intact.
+
+`/doctor` reports the same failed chat rows and repair action. A missing or damaged handoff map is
+reported as `record unreadable`, and Concordia keeps the original state for inspection.
+
 `context.rs` owns pack planning and the binding decision, and `tui/run.rs` prepares
-submitted turns. `tui/continuation.rs` coordinates bounded retry using `routing.rs`. Its review state
+submitted turns. `tui/continuation.rs` coordinates bounded retry with an explicit account picker. Its review state
 prevents automatic replay after uncertain tool completion. [State ownership](tui-states.md).
 
 Verify using the context/continuity unit tests and `tests/control_plane.rs`; live provider evidence

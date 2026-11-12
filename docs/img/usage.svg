@@ -8,94 +8,179 @@
 <circle cx="40" cy="18" r="6" fill="#febc2e"/>
 <circle cx="60" cy="18" r="6" fill="#28c840"/>
 <text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia — usage</text>
-<rect x="14" y="36" width="225" height="19" fill="#303030"/>
-<rect x="239" y="36" width="81" height="19" fill="#87d787"/>
-<rect x="320" y="36" width="684" height="19" fill="#303030"/>
+<rect x="14" y="36" width="297" height="19" fill="#303030"/>
+<rect x="311" y="36" width="81" height="19" fill="#87d787"/>
+<rect x="392" y="36" width="612" height="19" fill="#303030"/>
 <rect x="14" y="55" width="990" height="19" fill="#303030"/>
+<rect x="14" y="74" width="9" height="19" fill="#000000"/>
+<rect x="23" y="74" width="972" height="19" fill="#3a3a3a"/>
+<rect x="995" y="74" width="9" height="19" fill="#000000"/>
+<rect x="14" y="93" width="990" height="19" fill="#000000"/>
+<rect x="14" y="112" width="9" height="19" fill="#000000"/>
 <rect x="23" y="112" width="972" height="19" fill="#262626"/>
+<rect x="995" y="112" width="9" height="19" fill="#000000"/>
+<rect x="14" y="131" width="990" height="19" fill="#000000"/>
+<rect x="14" y="150" width="990" height="19" fill="#000000"/>
+<rect x="14" y="169" width="990" height="19" fill="#000000"/>
+<rect x="14" y="188" width="990" height="19" fill="#000000"/>
+<rect x="14" y="207" width="990" height="19" fill="#000000"/>
+<rect x="14" y="226" width="990" height="19" fill="#000000"/>
+<rect x="14" y="245" width="288" height="19" fill="#000000"/>
 <rect x="302" y="245" width="54" height="19" fill="#303030"/>
+<rect x="356" y="245" width="648" height="19" fill="#000000"/>
+<rect x="14" y="264" width="990" height="19" fill="#000000"/>
+<rect x="14" y="283" width="990" height="19" fill="#000000"/>
+<rect x="14" y="302" width="45" height="19" fill="#000000"/>
 <rect x="59" y="302" width="234" height="19" fill="#303030"/>
+<rect x="293" y="302" width="711" height="19" fill="#000000"/>
+<rect x="14" y="321" width="990" height="19" fill="#000000"/>
+<rect x="14" y="340" width="990" height="19" fill="#000000"/>
+<rect x="14" y="359" width="990" height="19" fill="#000000"/>
+<rect x="14" y="378" width="990" height="19" fill="#000000"/>
+<rect x="14" y="397" width="9" height="19" fill="#000000"/>
 <rect x="23" y="397" width="9" height="19" fill="#303030"/>
+<rect x="32" y="397" width="954" height="19" fill="#000000"/>
+<rect x="986" y="397" width="9" height="19" fill="#303030"/>
+<rect x="995" y="397" width="9" height="19" fill="#000000"/>
+<rect x="14" y="416" width="9" height="19" fill="#000000"/>
 <rect x="23" y="416" width="9" height="19" fill="#303030"/>
+<rect x="32" y="416" width="954" height="19" fill="#000000"/>
+<rect x="986" y="416" width="9" height="19" fill="#303030"/>
+<rect x="995" y="416" width="9" height="19" fill="#000000"/>
+<rect x="14" y="435" width="9" height="19" fill="#000000"/>
 <rect x="23" y="435" width="9" height="19" fill="#303030"/>
+<rect x="32" y="435" width="954" height="19" fill="#000000"/>
+<rect x="986" y="435" width="9" height="19" fill="#303030"/>
+<rect x="995" y="435" width="9" height="19" fill="#000000"/>
+<rect x="14" y="454" width="990" height="19" fill="#000000"/>
+<rect x="14" y="473" width="990" height="19" fill="#000000"/>
+<rect x="14" y="492" width="990" height="19" fill="#000000"/>
+<rect x="14" y="511" width="990" height="19" fill="#000000"/>
+<rect x="14" y="530" width="990" height="19" fill="#000000"/>
+<rect x="14" y="549" width="9" height="19" fill="#000000"/>
 <rect x="23" y="549" width="9" height="19" fill="#262626"/>
+<rect x="32" y="549" width="954" height="19" fill="#000000"/>
 <rect x="986" y="549" width="9" height="19" fill="#262626"/>
+<rect x="995" y="549" width="9" height="19" fill="#000000"/>
+<rect x="14" y="568" width="990" height="19" fill="#000000"/>
+<rect x="14" y="587" width="990" height="19" fill="#000000"/>
+<rect x="14" y="606" width="990" height="19" fill="#000000"/>
+<rect x="14" y="625" width="990" height="19" fill="#000000"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
-<text x="23" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-03u</text>
-<text x="248" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
-<text x="338" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
-<text x="545" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
-<text x="23" y="69" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Credits: not reported  │</text>
-<text x="257" y="69" textLength="351" lengthAdjust="spacingAndGlyphs" fill="#666666">Subscription: 5h 59% left · 7d 41% left</text>
+<text x="23" y="50" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffb000">← Home</text>
+<text x="95" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-12o</text>
+<text x="320" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#0c0c0c" font-weight="700">Codex 3</text>
+<text x="410" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
+<text x="518" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">gpt-5.1-codex</text>
+<text x="23" y="69" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#ffb000">Credits: not reported</text>
+<text x="221" y="69" textLength="378" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">│  Subscription: 5h 59% left · 7d 41% left</text>
 <text x="23" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff">|</text>
-<text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">interrupts.</text>
+<text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#a7a7a7">interrupts.</text>
+<text x="986" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="107" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="23" y="126" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#87d7ff" font-weight="700">You ›</text>
-<text x="77" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Add a /doctor check for duplicate accounts and show me the diff</text>
+<text x="77" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">Add a /doctor check for duplicate accounts and show me the diff</text>
+<text x="986" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="23" y="145" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3 · gpt-5.1-codex</text>
-<text x="23" y="164" textLength="342" lengthAdjust="spacingAndGlyphs" fill="#87af87">▸ │ ✓ Run command  rg -n duplicate src</text>
-<text x="23" y="183" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">▸ │ ✓ Edit file  src/doctor.rs</text>
-<text x="23" y="202" textLength="378" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">▸ │ ◉ Run command  cargo test -p concordia</text>
+<text x="986" y="145" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#68c58b">✓</text>
+<text x="77" y="164" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Ran search</text>
+<text x="176" y="164" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="986" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#68c58b">✓</text>
+<text x="77" y="183" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Edit File</text>
+<text x="167" y="183" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="986" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">◉</text>
+<text x="77" y="202" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Run tests</text>
+<text x="167" y="202" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="986" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="23" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f" font-weight="700">●</text>
-<text x="41" y="221" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">What I changed</text>
-<text x="41" y="259" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">I added a</text>
-<text x="131" y="259" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">duplicate check</text>
-<text x="275" y="259" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to</text>
+<text x="41" y="221" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">What I changed</text>
+<text x="986" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="240" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="259" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">I added a</text>
+<text x="131" y="259" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0" font-weight="700">duplicate check</text>
+<text x="275" y="259" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">to</text>
 <text x="302" y="259" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
-<text x="356" y="259" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">. It groups accounts by provider and email, so two slots signed in to</text>
-<text x="41" y="278" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the same login are reported once.</text>
-<text x="41" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
+<text x="356" y="259" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">. It groups accounts by provider and email, so two slots signed in to</text>
+<text x="986" y="259" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="278" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">the same login are reported once.</text>
+<text x="986" y="278" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="297" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">•</text>
 <text x="59" y="316" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">accounts::duplicate_groups</text>
-<text x="302" y="316" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">finds the groups</text>
-<text x="32" y="335" textLength="918" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">┌usage────────────────────────────────────────────────────────────────────────────────────────────────</text>
-<text x="959" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">X</text>
-<text x="977" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">┐</text>
-<text x="32" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="50" y="354" textLength="486" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt; Codex 3 · Email: member@example.invalid · Plan: Plus</text>
-<text x="977" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="68" y="373" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">5h 59% left</text>
-<text x="176" y="373" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700" fill-opacity="0.6">(41% used) · resets in 3h</text>
-<text x="977" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="68" y="392" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">7d 41% left</text>
-<text x="176" y="392" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700" fill-opacity="0.6">(59% used) · resets in 3d</text>
-<text x="977" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="68" y="411" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#0dbc79">Claude 1 · Email: member@example.invalid · Plan: Pro</text>
-<text x="977" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="430" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│   5h</text>
-<text x="95" y="430" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">77% left</text>
-<text x="176" y="430" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(23% used) · resets in 4h</text>
-<text x="977" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="449" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│   7d</text>
-<text x="95" y="449" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">36% left</text>
-<text x="176" y="449" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(64% used) · resets in 2d</text>
-<text x="977" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="68" y="468" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#e5e510">Claude 2 · Email: member@example.invalid · Plan: Pro</text>
-<text x="977" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="487" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│   5h</text>
-<text x="95" y="487" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#e5e510" font-weight="700">8% left</text>
-<text x="167" y="487" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" fill-opacity="0.6">(92% used) · resets in 1h</text>
-<text x="977" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="68" y="506" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#666666">Cursor 1 · Email: member@example.invalid · Plan: Pro</text>
-<text x="977" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="68" y="525" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#666666">not shown by Cursor CLI</text>
-<text x="977" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="32" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
-<text x="68" y="544" textLength="846" lengthAdjust="spacingAndGlyphs" fill="#666666">Cursor's CLI has no usage command, so Concordia cannot show it. See cursor.com/dashboard/usage</text>
-<text x="977" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">│</text>
+<text x="302" y="316" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">finds the groups</text>
+<text x="986" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="335" textLength="918" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">┌usage────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="959" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">X</text>
+<text x="977" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">┐</text>
+<text x="986" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="50" y="354" textLength="486" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">&gt; Codex 3 · Email: member@example.invalid · Plan: Plus</text>
+<text x="977" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="68" y="373" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">5h 59% left</text>
+<text x="176" y="373" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#ad7800" font-weight="700">(41% used) · resets in 3h</text>
+<text x="977" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="68" y="392" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">7d 41% left</text>
+<text x="176" y="392" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#ad7800" font-weight="700">(59% used) · resets in 3d</text>
+<text x="977" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="68" y="411" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#68c58b">Claude 1 · Email: member@example.invalid · Plan: Pro</text>
+<text x="977" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="430" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│   5h</text>
+<text x="95" y="430" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#68c58b" font-weight="700">77% left</text>
+<text x="176" y="430" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#938d83">(23% used) · resets in 4h</text>
+<text x="977" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="449" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│   7d</text>
+<text x="95" y="449" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#68c58b" font-weight="700">36% left</text>
+<text x="176" y="449" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#938d83">(64% used) · resets in 2d</text>
+<text x="977" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="68" y="468" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#e6c16f">Claude 2 · Email: member@example.invalid · Plan: Pro</text>
+<text x="977" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="487" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│   5h</text>
+<text x="95" y="487" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#e6c16f" font-weight="700">8% left</text>
+<text x="167" y="487" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#938d83">(92% used) · resets in 1h</text>
+<text x="977" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="68" y="506" textLength="468" lengthAdjust="spacingAndGlyphs" fill="#868177">Cursor 1 · Email: member@example.invalid · Plan: Pro</text>
+<text x="977" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="68" y="525" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#868177">not shown by Cursor CLI</text>
+<text x="977" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="32" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="68" y="544" textLength="846" lengthAdjust="spacingAndGlyphs" fill="#868177">Cursor's CLI has no usage command, so Concordia cannot show it. See cursor.com/dashboard/usage</text>
+<text x="977" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">│</text>
+<text x="986" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="23" y="563" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#87d7ff" font-weight="700">Y</text>
-<text x="32" y="563" textLength="954" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">└────────────────────────────────────────────────────────────────────────────────────────────────────────┘</text>
-<text x="14" y="582" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ message · paused ──────────────────────────────────────────────────────────────────────────────────────────╮</text>
-<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="41" y="601" textLength="513" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Esc or X closes usage. r refreshes. Chat input is paused.</text>
-<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#666666">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="23" y="639" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#666666">↑↓ Enter · r refresh · Esc</text>
-<text x="797" y="639" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">permissions: workspace</text>
+<text x="32" y="563" textLength="954" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">└────────────────────────────────────────────────────────────────────────────────────────────────────────┘</text>
+<text x="986" y="563" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8f8f8f">│</text>
+<text x="14" y="582" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#868177">╭ message · paused ──────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="41" y="601" textLength="513" lengthAdjust="spacingAndGlyphs" fill="#ffb000">Esc or X closes usage. r refreshes. Chat input is paused.</text>
+<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#868177">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="23" y="639" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#868177">↑↓ Enter · r refresh · Esc</text>
+<text x="824" y="639" textLength="171" lengthAdjust="spacingAndGlyphs" fill="#68c58b" font-weight="700">permissions: edit ▾</text>
 </g>
 </g>
 <rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>

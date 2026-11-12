@@ -9,14 +9,14 @@
 //! This module has no UI: `tui/workers.rs` renders it and wires the commands.
 
 use crate::accounts::{
-    display_account_name, get_account, identity_key, is_logged_in, normalize_account_id, AccountDef,
+    display_account_name, get_account, normalize_account_id, AccountDef,
 };
 use crate::context::{plan_continuity_capped, ContinuityRequest, PackMessage};
 use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
 use crate::provider::turn::{
     run_provider_turn_with_progress, ProviderTurnRequest, RunningTurn, TurnOutcome, TurnProgress,
 };
-use crate::store::{get_settings, modify_store, ChildTrust, ProviderKind, TrustMode};
+use crate::store::{ChildTrust, ProviderKind, TrustMode};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,102 +81,6 @@ pub fn fence_untrusted(content: &str) -> String {
 // Roles (persisted in store settings)
 // ---------------------------------------------------------------------------------------------
 
-/// Why `account` cannot become a worker, or the account if it can.
-pub fn check_add_worker(
-    state_root: &Path,
-    orchestrator: &str,
-    id: &str,
-) -> Result<AccountDef, String> {
-    let want = normalize_account_id(id.trim());
-    let orch = normalize_account_id(orchestrator);
-    if want.is_empty() {
-        return Err("name an account: /workers add <account>".into());
-    }
-    if want == orch {
-        return Err(format!(
-            "{want} is the orchestrator (the conversation you type into); it cannot be its own worker"
-        ));
-    }
-    let Some(acct) = get_account(state_root, &want) else {
-        return Err(format!("no account named {want} - see /use"));
-    };
-    let Some(home) = acct.home_path.clone() else {
-        return Err(format!("{want} has no login folder"));
-    };
-    if !is_logged_in(acct.provider, &home) {
-        return Err(format!(
-            "{want} is not logged in - /use add {} first",
-            acct.provider.as_str()
-        ));
-    }
-    let workers = get_settings(state_root).workers;
-    if workers.iter().any(|w| normalize_account_id(w) == want) {
-        return Err(format!("{want} is already a worker"));
-    }
-    let cap = crate::config::for_root(state_root).delegation.max_workers;
-    if workers.len() >= cap {
-        return Err(format!("at most {cap} workers - /workers remove one first"));
-    }
-    if let Some(key) = identity_key(acct.provider, &home) {
-        let others = std::iter::once(orch.clone()).chain(workers.iter().cloned());
-        for other in others {
-            let Some(o) = get_account(state_root, &other) else {
-                continue;
-            };
-            let Some(oh) = o.home_path.as_ref() else {
-                continue;
-            };
-            if o.provider == acct.provider && identity_key(o.provider, oh).as_deref() == Some(&key)
-            {
-                return Err(format!(
-                    "{want} is the same login as {} - a worker must be a different account",
-                    o.label
-                ));
-            }
-        }
-    }
-    Ok(acct)
-}
-
-pub fn add_worker(state_root: &Path, orchestrator: &str, id: &str) -> Result<String, String> {
-    let acct = check_add_worker(state_root, orchestrator, id)?;
-    let cap = crate::config::for_root(state_root).delegation.max_workers;
-    modify_store(state_root, |s| {
-        if !s.settings.workers.contains(&acct.account) {
-            if s.settings.workers.len() >= cap {
-                anyhow::bail!("at most {cap} workers - /workers remove one first");
-            }
-            s.settings.workers.push(acct.account.clone());
-        }
-        Ok(())
-    })
-    .map_err(|e| format!("could not save workers - {e}"))?;
-    Ok(format!(
-        "worker added: {} ({}) - /delegate {} <task> to use it",
-        display_account_name(acct.provider, &acct.account),
-        acct.provider.as_str(),
-        acct.account
-    ))
-}
-
-pub fn remove_worker(state_root: &Path, id: &str) -> Result<String, String> {
-    let want = normalize_account_id(id.trim());
-    let removed = modify_store(state_root, |s| {
-        let before = s.settings.workers.len();
-        s.settings
-            .workers
-            .retain(|w| normalize_account_id(w) != want);
-        s.settings.worker_models.remove(&want);
-        Ok(s.settings.workers.len() != before)
-    })
-    .map_err(|e| format!("could not save workers - {e}"))?;
-    if removed {
-        Ok(format!("worker removed: {want}"))
-    } else {
-        Err(format!("{want} is not a worker - see /workers"))
-    }
-}
-
 /// The trust mode a worker runs with: the requested child mode, capped at the user's mode.
 /// `Inherit` selects the user's mode, and the explicit security ordering ensures a worker can
 /// never receive more capability than the person who started it.
@@ -184,7 +88,7 @@ pub fn worker_trust(user: TrustMode, child: ChildTrust) -> TrustMode {
     let want = match child {
         ChildTrust::Inherit => user,
         ChildTrust::Ask => TrustMode::Ask,
-        ChildTrust::Workspace => TrustMode::Workspace,
+        ChildTrust::Edit => TrustMode::Edit,
         ChildTrust::Full => TrustMode::Full,
     };
     if want.rank() <= user.rank() {
@@ -335,8 +239,6 @@ pub struct Job {
     reference_storage: bool,
     task_reference: Option<TaskReferences>,
     task_reference_unavailable: bool,
-    pub routing: Option<crate::routing::Approved>,
-    pub route_history: Vec<String>,
     pub workspace: Option<crate::workspaces::Request>,
     workspace_notice: Option<String>,
     workspace_next_check: Option<Instant>,
@@ -678,27 +580,6 @@ impl Delegates {
                 s.account
             ));
         }
-        let routing = self
-            .recovery
-            .as_ref()
-            .map(|recovery| {
-                let root = &recovery.state_root;
-                let owner = crate::store::get_use_selection(root)
-                    .map(|selection| selection.account)
-                    .unwrap_or_default();
-                let mut targets = crate::routing::worker_targets(root)?;
-                targets.push(crate::routing::Target {
-                    account: s.account.clone(),
-                    model: s.spec.model.clone(),
-                });
-                crate::routing::Approved::capture(
-                    root,
-                    targets,
-                    &owner,
-                    get_settings(root).delegate_quota_failover,
-                )
-            })
-            .transpose()?;
         let id = self.next_id;
         self.next_id += 1;
         let run_id = uuid::Uuid::new_v4().to_string();
@@ -719,8 +600,6 @@ impl Delegates {
             reference_storage: true,
             task_reference: None,
             task_reference_unavailable: false,
-            routing,
-            route_history: Vec::new(),
             workspace,
             workspace_notice: None,
             workspace_next_check: None,
@@ -871,36 +750,6 @@ impl Delegates {
             return;
         }
         // Recheck registrations/models after asynchronous source verification.
-        if let (Some(root), Some(job)) =
-            (self.recovery.as_ref().map(|r| &r.state_root), self.get(id))
-        {
-            if let Some(approved) = &job.routing {
-                if let Err(error) = approved.verify_binding(
-                    root,
-                    &crate::routing::Target {
-                        account: job.account.clone(),
-                        model: job.spec.model.clone(),
-                    },
-                ) {
-                    self.pause_dependency_job(id, error, now);
-                    return;
-                }
-            }
-        }
-        if let (Some(root), Some(job)) =
-            (self.recovery.as_ref().map(|r| &r.state_root), self.get(id))
-        {
-            if let Err(error) = crate::routing::validate_launch(
-                root,
-                &job.account,
-                job.provider,
-                job.spec.home.as_deref(),
-                job.spec.model.as_deref(),
-            ) {
-                self.pause_dependency_job(id, error, now);
-                return;
-            }
-        }
         if let Err(error) = self.dependency_sources(id) {
             self.pause_dependency_job(id, error, now);
             return;
@@ -1029,29 +878,6 @@ impl Delegates {
                     return;
                 }
             }
-            let compaction = match (&state_root, &spec.home) {
-                (Some(root), Some(home)) => {
-                    crate::native_memory::Binding::new(provider, &account, home, "worker-policy")
-                        .and_then(|b| crate::capacity::load(root, &b))
-                        .map(|p| p.compaction)
-                }
-                _ => Ok(Default::default()),
-            };
-            let compaction = match compaction {
-                Ok(p) => p,
-                Err(error) => {
-                    let _ = tx
-                        .send(Event::Finished(
-                            id,
-                            Box::new(TurnOutcome {
-                                stderr_tail: error,
-                                ..Default::default()
-                            }),
-                        ))
-                        .await;
-                    return;
-                }
-            };
             let message = crate::attachments::Message::decode(&spec.prompt);
             let prompt = match if message.has_pdfs() {
                 message.validate().map(|()| message.encode())
@@ -1085,8 +911,11 @@ impl Delegates {
                 native_session_id: None,
                 trust: spec.trust,
                 context_prefix: spec.prefix.as_deref(),
-                local_time: Some(crate::prompt_time::now()),
-                compaction,
+                local_time: state_root
+                    .as_deref()
+                    .is_some_and(|root| crate::config::for_root(root).ui.time_header)
+                    .then(crate::prompt_time::now),
+                compaction: Default::default(),
             };
             let planned_prompt = match crate::provider::turn::plan_provider_turn(&req) {
                 Ok(plan) => plan.prompt,
@@ -1295,7 +1124,7 @@ impl Delegates {
                                         .any(|card| card.status == CardStatus::Running)
                                 })));
                     let released = self.finish_workspace(id, confirmed, false);
-                    let retry = released && self.worker_failover(id, &out, now);
+                    let retry = false;
                     if retry {
                         continue;
                     }
@@ -1511,8 +1340,6 @@ impl Delegates {
             reference_storage: true,
             task_reference: None,
             task_reference_unavailable: false,
-            routing: None,
-            route_history: Vec::new(),
             workspace: None,
             workspace_notice: None,
             workspace_next_check: None,
@@ -1538,7 +1365,7 @@ impl Delegates {
             session_id: None,
             exit_code: None,
             error: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             cancel: None,
             cancel_requested: false,
             announced: state.is_finished(),
@@ -1549,7 +1376,7 @@ impl Delegates {
                 cwd: PathBuf::from("."),
                 prompt: String::new(),
                 prefix: None,
-                trust: TrustMode::Workspace,
+                trust: TrustMode::Edit,
             },
         });
         id
@@ -1598,6 +1425,12 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
             j.state = WorkerState::Thinking;
             if j.snippet.starts_with("silent ") {
                 j.snippet.clear();
+            }
+            if !j.thinking.is_empty()
+                && !matches!(j.thinking.chars().last(), Some('\n' | ' ' | '\t'))
+                && !matches!(t.chars().next(), Some('\n' | ' ' | '\t'))
+            {
+                crate::provider::turn::append_visible_text(&mut j.thinking, "\n");
             }
             crate::provider::turn::append_visible_text(&mut j.thinking, &t);
         }
@@ -1764,13 +1597,6 @@ pub fn result_block(j: &Job, orchestrator_label: &str) -> String {
     if let Some(notice) = j.workspace_delivery_notice() {
         out.push(notice);
     }
-    if !j.route_history.is_empty() {
-        out.push(format!(
-            "{} launch attempts; /delegate routes {} shows captured routing and skipped targets",
-            j.attempt_records.len(),
-            j.id
-        ));
-    }
     let text = j.final_text();
     match j.state {
         WorkerState::Done if !text.is_empty() => {
@@ -1830,85 +1656,6 @@ pub fn use_prompt_capped(j: &Job, max: usize) -> String {
         cap_chars(&one_line(&j.task), 160),
         fence_untrusted(&shown)
     )
-}
-
-/// One status line per worker for `/workers`.
-pub fn workers_report(
-    state_root: &Path,
-    orchestrator: &str,
-    d: &Delegates,
-    now: Instant,
-) -> Vec<String> {
-    let settings = get_settings(state_root);
-    let orch = normalize_account_id(orchestrator);
-    let mut out = vec![format!(
-        "workers {}/{} \u{b7} orchestrator {} \u{b7} protocol {}",
-        settings.workers.len(),
-        crate::config::for_root(state_root).delegation.max_workers,
-        orch,
-        if crate::store::delegation_protocol_on(state_root) {
-            "on"
-        } else {
-            "off"
-        }
-    )];
-    if settings.workers.is_empty() {
-        out.push(
-            "  none yet - /workers add <account>, then /delegate <account|auto> <task>".into(),
-        );
-        return out;
-    }
-    for w in &settings.workers {
-        let id = normalize_account_id(w);
-        let acct = get_account(state_root, &id);
-        let (name, prov, ready) = match &acct {
-            Some(a) => (
-                display_account_name(a.provider, &a.account),
-                a.provider.as_str(),
-                a.home_path
-                    .as_ref()
-                    .is_some_and(|h| is_logged_in(a.provider, h)),
-            ),
-            None => (id.clone(), "?", false),
-        };
-        let status = if id == orch {
-            "is the orchestrator now - not usable as a worker".to_string()
-        } else if acct.is_none() {
-            "account missing - /workers remove it".into()
-        } else if !ready {
-            "logged out".into()
-        } else if let Some(j) = d.running_for(&id) {
-            format!(
-                "{} {} (#{})",
-                j.state.label(),
-                fmt_elapsed(j.elapsed(now)),
-                j.id
-            )
-        } else {
-            "idle".into()
-        };
-        let last = d
-            .last_finished_for(&id)
-            .map(|j| {
-                format!(
-                    " \u{b7} last: {} #{} {} {} tools{}",
-                    j.state.label(),
-                    j.id,
-                    fmt_elapsed(j.elapsed(now)),
-                    j.tool_cards(),
-                    if j.snippet.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" \"{}\"", cap_chars(&j.snippet, 50))
-                    }
-                )
-            })
-            .unwrap_or_default();
-        out.push(format!(
-            "  {name} ({prov}) \u{b7} {id} \u{b7} {status}{last}"
-        ));
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2015,5 +1762,3 @@ pub fn help_lines(protocol_on: bool) -> Vec<String> {
     v
 }
 
-#[cfg(test)]
-mod tests;

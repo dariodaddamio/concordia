@@ -5,6 +5,8 @@
 //! - `hang`:   write our pid to `FAKE_PROVIDER_PID`, print a session line, then sleep.
 //! - `silent-hang`: write our pid to `FAKE_PROVIDER_PID`, then sleep without output.
 //! - `fail`:   print to stderr and exit 3.
+//! - app-server fixtures: answerable Codex question/approval requests from
+//!   `appserver-fixture.json`, including an optional question-then-approval sequence.
 //!
 //! In every mode, if `FAKE_PROVIDER_OUT` is set we record what we received: one `ARG:<hex>` line
 //! per argument (hex so newlines and quotes survive), the isolating env vars, our cwd, and the
@@ -53,7 +55,7 @@ fn fake_acp() {
         std::fs::write(
             root.join("acp-environment.json"),
             serde_json::json!({
-                "config_dir":std::env::var("CURSOR_CONFIG_DIR").ok(),
+                "config_dir":std::env::var("CURSOR_CONFIG_DIR").ok().or_else(|| std::env::var("GROK_HOME").ok()),
                 "api_key_present":std::env::var_os("CURSOR_API_KEY").is_some(),
                 "auth_token_present":std::env::var_os("CURSOR_AUTH_TOKEN").is_some(),
             })
@@ -126,7 +128,7 @@ fn fake_acp() {
                 }
                 serde_json::json!({})
             }
-            "session/set_mode" | "session/set_model" => serde_json::json!({}),
+            "authenticate" | "session/set_mode" | "session/set_model" | "session/set_config_option" => serde_json::json!({}),
             "session/prompt" => {
                 if fixture["quota"] == true {
                     emit(
@@ -165,6 +167,8 @@ fn fake_appserver() {
         std::io::stdout().flush().unwrap();
     };
     let mut thread = "native-fixture-thread".to_owned();
+    let mut question_answered = false;
+    let mut approval_sent = false;
     let large_tool = |thread: &str| {
         if let Some(bytes) = fixture["large_tool_bytes"].as_u64() {
             emit(
@@ -173,6 +177,16 @@ fn fake_appserver() {
         }
     };
     let finish = |thread: &str, answered: bool| {
+        if let Some(gate) = fixture["finish_wait_for"].as_str() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !root.join(gate).exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "native message fixture completion gate timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
         if answered && fixture["question"] != true {
             emit(
                 json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"completed","exitCode":0}}}),
@@ -204,8 +218,27 @@ fn fake_appserver() {
             .open(root.join("appserver-calls.jsonl"))
             .unwrap();
         writeln!(journal, "{line}").unwrap();
-        if value["id"] == 100 && value.get("method").is_none() {
-            finish(&thread, true);
+        if value.get("method").is_none()
+            && ((value["id"] == 100) || (approval_sent && value["id"] == 101))
+        {
+            if fixture["question_then_approval"] == true && !question_answered {
+                question_answered = true;
+                approval_sent = true;
+                emit(json!({
+                    "id": 101,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {
+                        "threadId": thread,
+                        "turnId": "native-turn",
+                        "itemId": "command-1",
+                        "command": "synthetic command",
+                        "cwd": root,
+                        "availableDecisions": ["accept", "acceptForSession", "decline", "cancel"]
+                    }
+                }));
+            } else {
+                finish(&thread, true);
+            }
             continue;
         }
         let result = match value["method"].as_str().unwrap_or("") {
@@ -538,7 +571,9 @@ fn main() {
         println!("codex-cli 0.166.0");
         return;
     }
-    if args.first().is_some_and(|a| a == "acp") {
+    if args.first().is_some_and(|a| a == "acp")
+        || args.windows(2).any(|pair| pair == ["agent", "stdio"])
+    {
         fake_acp();
         return;
     }

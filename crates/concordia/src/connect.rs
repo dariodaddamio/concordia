@@ -6,7 +6,6 @@
 //! child's environment (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) exactly as it does for chat turns.
 
 use crate::accounts::{is_logged_in, list_all_accounts, profile_home};
-use crate::host::wezterm::find_wezterm;
 use crate::store::{upsert_stored_account, ProviderKind, StoredAccount};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -33,6 +32,7 @@ fn capitalized(p: ProviderKind) -> &'static str {
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude",
         ProviderKind::Cursor => "Cursor",
+        ProviderKind::Grok => "Grok Build",
     }
 }
 
@@ -113,6 +113,7 @@ pub fn plan_login(
                 ("cursor-agent", "cursor-agent login", None)
             }
         }
+        ProviderKind::Grok => ("grok", "grok login", Some("GROK_HOME")),
     };
     if !has_bin(bin) {
         return Err(format!(
@@ -133,28 +134,17 @@ pub fn plan_login(
 }
 
 /// The process to spawn for a plan: WezTerm window when available, else a new console.
-pub fn login_command(plan: &LoginPlan, wezterm: Option<&Path>) -> Command {
+pub fn login_command(plan: &LoginPlan) -> Command {
     let ps = ["-NoLogo", "-NoProfile", "-NoExit", "-Command", plan.script];
-    let mut cmd = match wezterm {
-        Some(w) => {
-            // Provider login must be visible so the user can complete native authentication.
-            let mut c = Command::new(w); // visible-spawn: provider login is an interactive window.
-            c.args(["start", "--", "powershell.exe"]).args(ps);
-            c
-        }
-        None => {
-            // Provider login must be visible so the user can complete native authentication.
-            let mut c = Command::new("powershell.exe"); // visible-spawn: provider login is interactive.
-            c.args(ps);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-                c.creation_flags(CREATE_NEW_CONSOLE);
-            }
-            c
-        }
-    };
+    // Provider login must be visible so the user can complete native authentication.
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(ps);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        cmd.creation_flags(CREATE_NEW_CONSOLE);
+    }
     for (k, v) in &plan.env {
         cmd.env(k, v);
     }
@@ -165,8 +155,7 @@ pub fn login_command(plan: &LoginPlan, wezterm: Option<&Path>) -> Command {
 }
 
 fn launch_login(plan: &LoginPlan) -> Result<(), String> {
-    let wez = find_wezterm();
-    login_command(plan, wez.as_deref())
+    login_command(plan)
         .spawn()
         .map(drop)
         .map_err(|e| format!("could not open a login window: {e}"))
@@ -577,6 +566,10 @@ mod tests {
                 r#"{"claudeAiOauth":{"accessToken":"x"}}"#,
             )
             .unwrap(),
+            ProviderKind::Grok => {
+                fs::write(home.join("config.toml"), "[models]\ndefault = \"grok-build\"\n").unwrap();
+                fs::write(home.join("auth.json"), "{}").unwrap();
+            }
         }
     }
 
@@ -741,9 +734,8 @@ mod tests {
         let home = PathBuf::from(r"C:\Users\o'brien\concordia\homes\codex-3");
         let plan = plan_login(ProviderKind::Codex, Some(&home), &all_bins).unwrap();
 
-        let wez = PathBuf::from(r"C:\WezTerm\wezterm.exe");
-        let cmd = login_command(&plan, Some(&wez));
-        assert_eq!(cmd.get_program(), wez.as_os_str());
+        let cmd = login_command(&plan);
+        assert_eq!(cmd.get_program(), "powershell.exe");
         let args: Vec<_> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -751,9 +743,6 @@ mod tests {
         assert_eq!(
             args,
             [
-                "start",
-                "--",
-                "powershell.exe",
                 "-NoLogo",
                 "-NoProfile",
                 "-NoExit",
@@ -769,10 +758,6 @@ mod tests {
         assert!(envs.iter().any(|(k, v)| {
             *k == "CODEX_HOME" && v.map(|v| v.to_string_lossy().contains("o'brien")) == Some(true)
         }));
-
-        // Without WezTerm we fall back to a plain PowerShell console.
-        let bare = login_command(&plan, None);
-        assert_eq!(bare.get_program(), "powershell.exe");
     }
 
     #[test]
@@ -783,51 +768,6 @@ mod tests {
             manual_login_hint(&plan),
             "$env:CODEX_HOME='C:\\o''brien'; codex login"
         );
-    }
-
-    // ---- awareness block and MCP registration ----------------------------------------------
-
-    #[test]
-    fn add_writes_the_awareness_block_only_into_the_new_concordia_home() {
-        let sb = Sandbox::new();
-        let own = sb.base().join(".codex");
-        codex_login(&own, "me@example.com");
-        let r = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
-        let agents = r.home.join("AGENTS.md");
-        let text = fs::read_to_string(&agents).unwrap();
-        assert!(text.contains("concordia:begin") && text.contains("concordia thread read"));
-        assert!(
-            !own.join("AGENTS.md").exists(),
-            "a user's own home is never written"
-        );
-        assert!(!r.home.join("config.toml").exists(), "mcp is opt-in");
-        // The user adds text, switches awareness off in config, and the next refresh removes
-        // only the block.
-        fs::write(&agents, format!("mine\n\n{text}")).unwrap();
-        fs::write(
-            sb.state().join("config.toml"),
-            "[threads]\nawareness = false\n",
-        )
-        .unwrap();
-        let _cfg = crate::config::env_guard();
-        let reports = crate::integration::refresh(sb.state(), Path::new("c.exe"));
-        assert_eq!(reports.len(), 1);
-        assert_eq!(fs::read_to_string(&agents).unwrap(), "mine\n");
-    }
-
-    #[test]
-    fn foreign_and_hidden_homes_never_get_a_block() {
-        let sb = Sandbox::new();
-        let elsewhere = sb.base().join("precious");
-        codex_login(&elsewhere, "x@example.com");
-        register(&sb, "codex-9", &elsewhere);
-        let own = sb.base().join(".codex");
-        codex_login(&own, "me@example.com");
-        remove_account(sb.state(), "codex", RemoveMode::Hide).unwrap();
-        assert!(crate::integration::created_homes(sb.state()).is_empty());
-        let _cfg = crate::config::env_guard();
-        assert!(crate::integration::refresh(sb.state(), Path::new("c.exe")).is_empty());
-        assert!(!elsewhere.join("AGENTS.md").exists() && !own.join("AGENTS.md").exists());
     }
 
     #[test]
@@ -849,9 +789,6 @@ mod tests {
         let _cfg = crate::config::env_guard();
         let exe = Path::new("c.exe");
         let rows = crate::integration::doctor_rows(sb.state(), exe);
-        assert!(rows
-            .iter()
-            .any(|(warn, n, d)| !warn && *n == "awareness" && d.ends_with("set up")));
         assert!(rows
             .iter()
             .any(|(warn, n, d)| !warn && *n == "mcp" && d.ends_with("off")));

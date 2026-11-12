@@ -24,7 +24,7 @@ different revisions retain distinct identities. The execution directory's filesy
 also binds later opening. Reports are metadata, not proof of file authorship or current existence.
 
 Cards show the reported path/change and source identities. The file browser has **Reported file
-outputs**. Enter inspects full provenance; O offers the existing preview/split/editor choices,
+outputs**. Enter inspects full provenance; O offers the existing preview/editor choices,
 R returns to the refreshed catalog, and Esc restores the draft. Inspection reads metadata only.
 Opening revalidates a regular file under the exact execution root, exclusions, link/canonical
 identity and the retained execution-directory identity. Missing/replaced/outside-root files give

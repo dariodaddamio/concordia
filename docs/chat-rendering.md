@@ -7,7 +7,7 @@ limits are in [verification](e2e-status.md), which also records cleanup closeout
 ## Conversation and input ownership
 
 Windows uses an app-owned GDI window around the shared Ratatui layout and event loop.
-`--terminal` uses the same conversation/provider logic with a terminal backend. Native
+The native window uses the same conversation/provider logic with the application renderer. Native
 windows own clipboard, drop, mouse, focus and resize events. They are not a complete
 native widget or accessibility toolkit. Pixel images use smooth scaling in the native
 window; terminal previews use cells. Rendering does not alter provider attachments.
@@ -33,10 +33,10 @@ use explicit session resume to reload later changes made through an external nat
 Layout encoding/reads are capped at 32 MiB and 512
 tabs. Unsupported or unreadable layouts remain unchanged with a warning. Pre-layout builds did
 not save tab order; an existing interrupted record can recover its exact bound history, while
-multiple older orphaned records remain available through `/recover`.
+multiple older orphaned records remain retained and are restored into their own tabs when capacity allows.
 
 Open modal controls own their keys. Esc dismisses saved-draft offers for the saved revision
-without deleting work; `/recover` offers them again for explicit restoration. Attention and
+without deleting work. Attention and
 Ctrl+N open pending questions, approvals, queued work, worker results or account controls.
 
 While a turn runs, Enter first preserves the draft and explains the interrupt action. A second
@@ -99,7 +99,7 @@ Folded rows check source content and diagram revision even when message count is
 clearing a selection reconciles source updates, and Bottom/End returns to the actual tail.
 
 Native recording failures preserve unfinished work and pause the queue. Reconcile partial actions
-before `/continue ACCOUNT`; recording failure is not a quota signal. [Recovery](continuity.md).
+before using the inline continue action; recording failure is not a quota signal. [Recovery](continuity.md).
 
 ## Markdown and file navigation
 

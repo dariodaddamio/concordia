@@ -15,7 +15,7 @@ workspace are rejected. Source:
 Built-in accounts point at the user's existing provider homes and are discovered without claiming
 ownership. `/use add` creates later accounts below `<state>/homes/<account-id>`, records that exact
 home, and opens the provider's own visible login command. Codex receives `CODEX_HOME`; Claude
-receives `CLAUDE_CONFIG_DIR`; the first Cursor account uses `agent login`, while extra Cursor slots
+receives `CLAUDE_CONFIG_DIR`; Grok receives `GROK_HOME`; the first Cursor account uses `agent login`, while extra Cursor slots
 are explicit local API-key folders. Source:
 [`accounts.rs` (`builtin_accounts`, `list_all_accounts`)](../crates/concordia/src/accounts.rs) and
 [`connect.rs` (`pick_slot`, `plan_login`, `add_account_with`)](../crates/concordia/src/connect.rs).
@@ -41,6 +41,7 @@ Source: [`provider/launch.rs` (`BATCH_ARGV_MAX`, `EXE_ARGV_MAX`, `prompt_needs_s
 | Codex | `codex exec --json ... PROMPT` | `resume SESSION` inside `exec` | Codex JSONL |
 | Claude | `claude -p --output-format stream-json --verbose ... PROMPT` | `--session-id UUID` on first turn; `--resume SESSION` later | stream-json |
 | Cursor | `agent --print --output-format stream-json --stream-partial-output ... PROMPT` | `agent create-chat`, then `--resume CHAT`; exact existing ids use `--resume CHAT` | stream-json |
+| Grok Build | `grok agent stdio` | ACP `session/new` and `session/load` with the exact session id | ACP JSON-RPC |
 
 Exact construction is in
 [`provider/codex.rs` (`plan_turn_argv_with`)](../crates/concordia/src/provider/codex.rs),
@@ -72,6 +73,9 @@ These are not silent fallbacks to a different model path:
   for a text-only turn; other ACP failures are reported. Source:
   [`provider/turn_acp.rs` (`acp_argv`, `run`)](../crates/concordia/src/provider/turn_acp.rs) and
   [`provider/turn.rs` (`run_provider_turn_inner`)](../crates/concordia/src/provider/turn.rs).
+- **Grok Build ACP** launches `grok agent stdio`, authenticates with the advertised cached-token
+  method, creates or loads an exact session, passes `mcpServers`, and uses
+  `session/set_config_option` for model selection. See the [Grok provider page](provider-grok-build.md).
 - **Codex app-server** is version-gated to the qualified `codex-cli 0.166.0`. It verifies that the
   initialized app-server reports the expected `CODEX_HOME`, starts/resumes the exact thread,
   verifies cwd and approval policy, and sends `turn/start`. A transport failure does not start a
@@ -91,7 +95,7 @@ Trust modes have an ordered local meaning, but providers do not expose the same 
 | --- | --- | --- | --- |
 | Plan | `--skip-git-repo-check -s read-only` | `--permission-mode plan` | `--mode plan`; ACP sets session mode `plan` |
 | Ask | same read-only Codex sandbox (Codex exec has no separate plan/ask flag) | `--permission-mode manual` | no extra print flag; ACP uses agent mode and native permission requests |
-| Workspace | `--skip-git-repo-check --approve-for-me` | `--permission-mode acceptEdits` | default workspace sandbox; never `--sandbox disabled` |
+| Edit | `--skip-git-repo-check --approve-for-me` | `--permission-mode acceptEdits` | default workspace sandbox; never `--sandbox disabled` |
 | Full | `--skip-git-repo-check --dangerously-bypass-approvals-and-sandbox` | `--dangerously-skip-permissions` | `--force` |
 
 Native trust translation reads planner-owned options before stdin/image transport rewriting. It
@@ -104,7 +108,7 @@ The planners are
 [`cursor::plan_cursor_turn_with`](../crates/concordia/src/provider/cursor.rs).
 
 Codex app-server derives a native `sandboxPolicy` and `approvalPolicy` from the final enforced
-plan. Read-only uses `approvalPolicy: never`; Workspace uses workspace-write plus `on-request` and
+plan. Read-only uses `approvalPolicy: never`; Edit uses workspace-write plus `on-request` and
 keeps the user as reviewer; Full uses danger-full-access. Native requests are scoped to the exact
 connection/run/attempt before the UI can reply. Source:
 [`provider/turn_appserver.rs` (`run`)](../crates/concordia/src/provider/turn_appserver.rs) and

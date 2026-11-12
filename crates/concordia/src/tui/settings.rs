@@ -64,7 +64,7 @@ pub(super) fn open(app: &mut App) {
                     "Pause"
                 }
             ),
-            format!("Saved for future sessions; context: {} at {}% (Cursor disables fresh when usage is unreported)", context_label(app), crate::config::for_root(&app.state_root).continuation.context.threshold),
+            "Saved for future sessions; proactive rollover is Codex-only and off by default",
         ),
         row(
             "same-provider",
@@ -133,14 +133,6 @@ pub(super) fn open(app: &mut App) {
     );
 }
 
-fn context_label(app: &App) -> String {
-    let c = crate::config::for_root(&app.state_root)
-        .continuation
-        .context;
-    let (mode, _) = c.for_provider(app.provider);
-    mode.to_owned()
-}
-
 pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     if kind == PickerKind::Customization {
         if let Some(path) = id.strip_prefix("file:") {
@@ -151,7 +143,6 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     if kind == PickerKind::FilePreferences {
         let action = match id {
             "preview" => crate::file_open::FileAction::Preview,
-            "split" => crate::file_open::FileAction::Split,
             "editor" => crate::file_open::FileAction::Editor,
             _ => return,
         };
@@ -239,7 +230,6 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             "File links · saved default".into(),
             vec![
                 row("preview", "Preview here", "Open inside the current window"),
-                row("split", "Split off", "Open in an independent window"),
                 row(
                     "editor",
                     "External editor",
@@ -400,6 +390,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
         ProviderKind::Codex => ".agents",
         ProviderKind::Claude => ".claude",
         ProviderKind::Cursor => ".cursor",
+        ProviderKind::Grok => ".grok",
     };
     for root in roots {
         if hooks {
@@ -422,6 +413,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                 ProviderKind::Codex => {
                     hook_rows(&root.join(".codex/hooks.json"), "Project", &mut rows)
                 }
+                ProviderKind::Grok => {}
             }
         } else {
             skill_rows(
@@ -453,6 +445,11 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                     );
                     rows.push(row("notice", "Native hook trust", "This inventory shows configured sources. Review native /hooks in this provider home; only native consent can enable untrusted hooks."));
                 }
+                ProviderKind::Grok => hook_rows(
+                    &home.join("hooks.json"),
+                    "User Â· selected account",
+                    &mut rows,
+                ),
             }
         } else {
             skill_rows(

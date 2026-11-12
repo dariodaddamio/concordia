@@ -367,7 +367,6 @@ fn local_now() -> Option<WallTime> {
 }
 
 #[cfg(windows)]
-#[cfg_attr(test, allow(dead_code))]
 fn system_now() -> Option<WallTime> {
     #[repr(C)]
     #[derive(Default)]
@@ -397,7 +396,6 @@ fn system_now() -> Option<WallTime> {
 }
 
 #[cfg(not(windows))]
-#[cfg_attr(test, allow(dead_code))]
 fn system_now() -> Option<WallTime> {
     None
 }

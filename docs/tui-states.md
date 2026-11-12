@@ -13,6 +13,34 @@ inside every subsystem. Source remains authoritative, including changes under qu
 
 ## Runtime and conversation ownership
 
+### Native-window journey control
+
+Journey tests use the native Windows backend when `CONCORDIA_TEST_CONTROL` is set to
+`<loopback-address>;<random-token>`. The backend binds only for that opt-in process and
+authenticates every line-delimited JSON request with the token. `key`, `text`, `mouse` and
+`resize` requests are posted to the window message thread; keys call the same event emitter and
+mouse requests call the same cell-coordinate conversion used by Win32 messages. `snapshot`
+returns the backend's ratatui cell grid, title, focused tab label and current picker/workspace
+overlays. The channel is absent, has no listener and adds no work when the environment variable
+is not present. It is a test driver, not a second renderer or a provider transport.
+
+### Windows status and background attention
+
+The native window applies the process-wide status projection to the Windows taskbar through
+[`ITaskbarList3::SetOverlayIcon`](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist3-setoverlayicon).
+Working uses the current theme success colour; Needs attention uses the current theme warning
+colour and wins over working; idle clears the overlay. Icons are generated in memory and owned by
+the native window thread.
+
+When Needs attention arrives while the window is unfocused, Concordia uses the unpackaged desktop
+shell notification API
+[`Shell_NotifyIconW`](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw)
+with an `NIF_INFO` balloon. This API does not require MSIX packaging or a package identity. A
+notification click foregrounds the existing window and opens the existing Needs attention picker;
+Concordia never reopens the window or foregrounds it without that click. The picker and the source
+conversation read the same request record, so answering in either path resolves the same native
+request.
+
 | Boundary and source | States / events | Guard and completion owner | Persistence |
 | --- | --- | --- | --- |
 | Tab double click: `tui/run.rs` | No prior click; first tab-label click; second click on the same tab/cell within the OS double-click interval; reset | Close targets take precedence. Keyboard input, non-tab clicks and structural tab actions reset the tracker. A double click selects the exact tab, hides its shell view and invokes the existing guarded F2 title editor. | Transient click tracking is not persisted; saved titles use the existing conversation/native binding. |
@@ -35,7 +63,7 @@ its preceding progress together, without starting another queued request during 
 | Queue: `tui/queue.rs` | `Dispatch::{Idle, Automatic, Explicit}` plus items, paused, focus and edit | Clean completion arms Automatic. Failure/cancel clears automatic intent and pauses items. Automatic dispatch requires idle, unpaused, no queue editor/history load and ordinary admission. Explicit selected send intentionally may cancel a foreground turn; it is a separate user action. | Queue contents, pause/edit recovery belong to the pane. An in-memory dispatch enum is not permission to replay work after restart. |
 | Queue rejection: `dispatch_queued` | Remove candidate, attempt normal submission, reject/retain | Rejected submission reinserts the queued request, restores the independent composer and pauses the queue. Empty queue clamping resets selection, focus, edit and pause. | Rejected work remains recoverable rather than being silently consumed. |
 | Main continuation: `tui/continuation.rs`, `routing.rs` | `Retry::{Ready, Deferred, RequiresReview}`; begin, bounded target selection, deferred resume, invalidate, recover | Eligibility is distinct from `automatic`, `dispatching`, `recovered`, `context_limited` and rollover count. Review cannot be waived by toggling automatic handoff or closing a picker. Uncertain tool effects, unresolved workspace reconciliation or unproven exit prevent automatic retry. | Run/checkpoint provenance, exact account/home/session and routing approval constrain recovery. Restart does not prove earlier effects completed. |
-| Account/model/crew switch: `context.rs`, `tui/app/pickers.rs`, `tui/app/login.rs`, `tui/app/state.rs` | Selected binding, pending selection, continuity decision, applied or rejected | Account/provider/home determine exact resume versus a new native session with bounded context. Active work blocks destructive account removal. Duplicate login identity is not authority to delete an existing home. | Store settings and native-source bindings persist. Removing the final account leaves dispatch blocked pending an explicit valid selection. |
+| Account/model switch: `context.rs`, `tui/app/pickers.rs`, `tui/app/login.rs`, `tui/app/state.rs` | Selected binding, pending selection, continuity decision, applied or rejected | Account/provider/home determine exact resume versus a new native session with bounded context. Active work blocks destructive account removal. Duplicate login identity is not authority to delete an existing home. | Store settings and native-source bindings persist. Removing the final account leaves dispatch blocked pending an explicit valid selection. |
 
 ### Clarifications are two different transitions
 
@@ -63,7 +91,7 @@ not prove the cause of an external host's cancellation without the corresponding
 | Attachments and raster: `tui/images.rs`, `tui/raster.rs`, `tui/related_files.rs` | Import jobs, ready attachments, selected preview/editor, close/save/cancel | Immutable attachment snapshots and explicit target govern dispatch; raster focus has its own input owner. Failure returns to recoverable composition. | Attachment envelope and file identity are distinct from transient preview/selection. |
 | Artifact projection: `tui/artifacts.rs`, `tui/artifacts_inline.rs` | List/detail/activity/inline jobs pending, records/selection available | Conversation/source keys bind results. Projection-pending checks include every job before idle pruning; idle derived state can be cleared without deleting original artifacts. | Native artifact metadata/originals remain; displayed cards are derived projections. |
 | Login and metadata jobs: `tui/app/login.rs`, `tui/app/state.rs`, `tui/tokens.rs`, `tui/integrations.rs` | Pending receiver/job, completed result, error/disconnected, invalidated selection | Polling applies an appropriate current binding. Model refresh is an explicit Result and validates selected home; failure cannot claim a fresh successful catalog. Doctor/update jobs have their own explicit preview/apply controls. | Registered account/config/cache observations persist; pending receivers do not. |
-| Display and auxiliary controls: `tui/appearance.rs`, `tui/settings.rs`, `tui/activity.rs`, `tui/chatref.rs`, `tui/native_agents.rs`, `tui/reference_journal.rs`, `tui/workspace_search.rs` | Open/focus/selection, background read generation, cached projection or saved preference | These are separate owners, not foreground execution authority. Their internal transition products are not exhaustively enumerated here. | Settings/references may persist; screen geometry, presses, selection and most job state are transient. |
+| Display and auxiliary controls: `tui/appearance.rs`, `tui/settings.rs`, `tui/activity.rs`, `tui/chatref.rs`, `tui/native_agents.rs`, `tui/reference_journal.rs` | Open/focus/selection, cached projection or saved preference | These are separate owners, not foreground execution authority. Their internal transition products are not exhaustively enumerated here. | Settings/references may persist; screen geometry, presses, selection and most job state are transient. |
 
 ## Local terminal
 
@@ -140,7 +168,7 @@ the execution guard; view ownership does not authorize dispatch.
 Window restoration reads the saved layout and also inspects unclaimed unfinished request records.
 It appends at most eight eligible paused requests without changing the selected tab. Duplicate
 saved chat snapshots remain in the canonical window record, with their recovery records available
-through `/recover`. First-send checkpoints include conversation identity even without a context
+through automatic tab restoration. First-send checkpoints include conversation identity even without a context
 map; the original request is persisted before the cleared composer is saved. Restoring either
 record never replays uncertain actions.
 

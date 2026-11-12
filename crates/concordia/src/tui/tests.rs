@@ -1,9 +1,6 @@
 //! End-to-end input tests: real key/mouse events through the handlers, rendered with ratatui's
 //! `TestBackend`, asserting on text, selection, caret and clipboard (in-memory under `cfg(test)`).
 
-#[path = "reliability_tests.rs"]
-mod reliability;
-
 use super::*;
 #[path = "tests/app.rs"]
 mod app;

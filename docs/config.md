@@ -1,40 +1,20 @@
 # Configuration and custom commands
 
-## Feed
+## Provider questions
 
-The local output feed is enabled by default and is bounded and redacted. Screen snapshots remain
-off unless requested.
-
-```toml
-[feed]
-enabled = true
-screen = false
-```
-
-## Provider question popups
-
-Question popups are enabled by default for provider questions and the per-turn `ask_user` MCP
-bridge. Set `[ui] question_popups = false` to disable this UI path; native provider tools remain
-available according to each provider's own behavior.
+Provider questions always reach the user through the question broker and native provider paths.
 
 Cursor ACP receives a per-turn `concordia-ask` MCP server in both new and loaded sessions.
-Codex uses its app-server request channel when popups are enabled because `codex exec --json`
+Codex uses its app-server request channel because `codex exec --json`
 cannot answer a pending `request_user_input` event. Claude's native stdio transport normalizes
 `AskUserQuestion` directly into the same popup broker.
 
 ## Limit continuation and unfinished work
 
-In `/use`, **next provider for this session** opens choices to pause at a limit, choose
-automatically, or try a specific connected provider account first. `/continuation` opens the
-same screen. These choices apply to the current window without switching the active turn or
-changing the saved default. A selected account takes priority over configured model/account
-preferences; if it also reaches a limit, bounded automatic selection continues through the
-remaining targets. `/continuation manual|automatic` changes the session mode directly and clears
-the session's preferred account. Choosing a policy does not send an already paused request;
-use `/continue` to review and continue it.
-
-The limit handoff row in `/use` pauses or automatically continues when usage runs out. A paused
-request offers account and cached-model choices. The toggle is saved for future windows. Persistent defaults:
+Usage-limit handling stays inline in the affected chat. The failed or exhausted request remains
+paused in Needs attention, where Retry or continue-on-another-account actions offer the available
+account and cached-model choices. These actions do not switch an active turn or silently replay
+uncertain provider work. Persistent handoff defaults:
 
 ```toml
 [continuation]
@@ -69,11 +49,10 @@ queued edit defers handoff until it closes; still-running/uncertain tool complet
 Handoff keeps the conversation and title, starts a new native session in the selected account's
 home and sends the bounded map plus revision-checked native-source pointers where supported,
 with an instruction to reconcile completed actions. Unfinished requests survive restart separately
-from newer drafts and queues, paused for explicit continuation. `/continue` reviews the request;
-`/continue ACCOUNT [MODEL]` chooses a target. See [native memory](native-memory.md).
+from newer drafts and queues, paused in their restored tabs. See [native memory](native-memory.md).
 Native tool/approval state is not transferred. Queued prompts remain paused for explicit resume.
-There are no model calls for quota checks or summarization. Codex limits use the supported read-only `account/rateLimits/read` interface; no thread or turn is created. `/continue ACCOUNT MODEL` explicitly chooses a
-cached model after a usage failure. The `/use` handoff toggle is stored locally and overrides the
+There are no model calls for quota checks or summarization. Codex limits use the supported read-only `account/rateLimits/read` interface; no thread or turn is created. An inline account action explicitly chooses a
+cached model after a usage failure. The handoff preference is stored locally and overrides the
 config default for future launches.
 
 ## Titles, resume and agent reports
@@ -91,7 +70,7 @@ the selected native session. Native tools and approvals are not restored from th
 
 Ctrl+G lists reported native child-agent activity and Concordia worker jobs. Enter
 opens the report; no model call is made by inspection. Native report detail depends on provider
-events. Cross-account worker configuration remains under `/workers` (unlisted) and `/delegate`.
+events. Delegated-agent account selection is owned by the always-on Agents MCP tool.
 
 Cancellation leaves the prompt box unchanged. Use sent history to recall a submitted request
 explicitly; queued work stays paused until resumed.
@@ -113,8 +92,8 @@ formatted mode consumes those events without editing. Small terminals hide panes
 content. Pane-owned recovery restores file buffers, cursor, mode and split layout; external
 changes are retained and block conflicting saves. Recovery does not restore the undo stack.
 
-`/edit PATH` (unlisted) opens a separate configured terminal editor. Missing paths, preview errors or
-launch failures are shown in Concordia. References never run as shell commands.
+The file action picker can open a configured GUI editor. Missing paths, preview errors or launch
+failures are shown in Concordia. References never run as shell commands.
 
 Concordia finds an installed `nvim`, `hx` or `vim`, or uses your explicit executable and argv:
 
@@ -126,17 +105,14 @@ args = ["+{line}", "--", "{file}"]
 
 `{file}`, `{line}` and `{column}` expand within individual arguments; the executable is one
 path, not a shell command string. If `{file}` is absent the file is appended as one argument.
-The standalone CLI `concordia preview FILE` remains a read-only Markdown/text viewer with scrolling,
-Home/End and q/Esc to close, requiring no extra preview package. Input is UTF-8 and capped at
-2 MiB. `/edit` and separate terminals require WezTerm; internal file panes do not.
-`CONCORDIA_WEZTERM_BIN` can name its executable. See [workspace requirements](workspace-panes.md)
+Input is UTF-8 and capped at 2 MiB. See [workspace requirements](workspace-panes.md)
 for the editing/recovery and search/replacement stages.
 
 ## Native chat access from the CLI
 
 `concordia chat list --json` lists recent native chats across the user's discovered/registered
 accounts, labeled with provider, account and session ID. Filter with `--account ID` or
-`--provider codex|claude|cursor`; `--limit N` is capped at 1000. `chat search TEXT` searches
+`--provider codex|claude|cursor|grok`; `--limit N` is capped at 1000. `chat search TEXT` searches
 preview/ID metadata only. `chat read SESSION --account ID` reads Codex/Claude user/assistant
 text with optional `--tail N`, `--grep TEXT`, and `--max-chars N`. It does not select an account,
 resume a session, copy credentials, or transfer context to a provider. Explicit reads resolve in
@@ -182,7 +158,6 @@ default = "ask"          # plan | ask | workspace | full
 
 [delegation]
 protocol = false         # let the orchestrator propose delegations (you still approve)
-max_workers = 12         # 1..=12
 
 [turn]
 idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables it
@@ -202,11 +177,9 @@ idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables 
 | `ui.stats` | `false` | Footer memory and CPU for Concordia and the agents it started (`/stats` toggles it) |
 | `threads.logging` | `"off"` | Explicit `"on"` enables metadata/native-reference recording; existing logs are preserved |
 | `threads.map_chars` | `1600` | Out of range is clamped to 200..8000 |
-| `threads.awareness` | `true` | One short block in `CLAUDE.md` / `AGENTS.md` of homes Concordia created; `false` removes it |
 | `threads.mcp` | `false` | Registers the `concordia mcp` server in those homes; `false` removes the entry (see [mcp.md](mcp.md)) |
 | `mode.default` | `"ask"` | Anything else falls back to `ask` |
-| `delegation.protocol` | `false` | Same switch as `/delegate protocol on|off` |
-| `delegation.max_workers` | `12` | 0 becomes 1, above 12 becomes 12 |
+| `delegation.protocol` | `false` | Enables approval-gated delegation proposals from an orchestrator reply |
 | `turn.idle_timeout_minutes` | `10` | Notification interval for provider stdout/stderr silence; `0` disables notifications. |
 
 ### Themes and custom colors
@@ -308,11 +281,7 @@ there wins:
 
 - Permission mode: `[mode] default` applies only until a mode has been saved (first launch). After
   that `/mode` and Shift+Tab own it.
-- Delegation protocol: `/delegate protocol on|off` writes the store; until you use it, the config value applies.
-- `max_workers` is a cap on worker enrollment inside `/delegate`; it is not stored. The default
-  and safety ceiling are 12; resource admission may still limit concurrent execution.
-
-Worker admission uses the configured ceiling and its scheduling contracts. Provider child processes get
+Delegation protocol writes the store; until you use it, the config value applies. Provider child processes get
 `CARGO_BUILD_JOBS`, `MAKEFLAGS`, `npm_config_jobs`, and `CMAKE_BUILD_PARALLEL_LEVEL` defaults
 defaults of one to four build jobs, based on logical cores, only when the user or provider has not set them. Host capacity is read
 locally; no credentials or hosted service is involved.
@@ -368,10 +337,9 @@ responses retain Worked for and a local stopped timestamp, including when token 
 ## Images, diagrams and update history (`2026-11-01e`)
 
 File actions now share a resolver. F4 on a file-browser row or focused pane, or Alt-click on a
-transcript file link, offers Preview here, Split off and Open in editor. Always choices persist
-in Concordia-owned settings. `[ui].file_action = "preview" | "split" | "editor"` supplies a default.
-`[editor].launch = "terminal"` preserves existing behavior; explicit `"gui"` opens a configured
-native executable directly. See [file actions and independent recovery](quality/file-actions.md).
+transcript file link, offers Preview here and Open in editor. Always choices persist in
+Concordia-owned settings. `[ui].file_action = "preview" | "editor"` supplies a default. The
+configured editor opens as a native GUI executable. See [file actions and independent recovery](quality/file-actions.md).
 
 `/attach` opens the image chooser; `/attach PATH` imports a snapshot; `/attach clear` removes draft
 images. Ctrl+V reads clipboard images in the ordinary composer, with text paste as fallback.

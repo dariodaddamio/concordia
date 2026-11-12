@@ -64,8 +64,8 @@ hosted memory, resident inference, automatic summaries and model-based routing a
 | Usage and cost accounting | [Orchestration](orchestration-completion.md) | Run/attempt-bound main and worker usage, deduplicated totals, explicitly unknown costs |
 | Memory relationships and grouping | [Memory and providers](memory-provider-completion.md) | Goal/file relationships, discoverable related chats, verified provenance and measurable retrieval |
 | Context and native interactions | [Memory and providers](memory-provider-completion.md) | Capability-checked capacity policy and owner-bound native requests across main/worker runs |
-| Search/replace and file opening | [Workspace and inputs](workspace-input-completion.md) | Bounded cwd search, version-checked replacement previews and the accepted file-opening choices |
-| Images, documents, artifacts and integrations | [Workspace and inputs](workspace-input-completion.md) | Capability-gated inputs/rendering and explicit tool/plugin ownership |
+| File opening | [Workspace panes](../workspace-panes.md) | Bounded read-only panes and the accepted file-opening choices |
+| Images, documents, artifacts and integrations | [Images and diagrams](../images-and-diagrams.md) | Capability-gated inputs/rendering and explicit tool/plugin ownership |
 | Provider, host and distribution evidence | [Validation and release](validation-release-completion.md) | Reproducible evidence for the exact candidate; claims and publication gates remain explicit |
 
 Each detailed plan identifies current code, changes by phase, resource bounds, failure states,

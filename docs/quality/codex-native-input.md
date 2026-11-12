@@ -30,7 +30,7 @@ the warning distinguishes this case from an unconfirmed provider exit. No failed
 automatically replayed.
 
 Trust comes from the final enforcement plan: read-only remains read-only without escalation,
-workspace mode requests native user approvals with workspace writes and no default network,
+edit mode requests native user approvals with workspace writes and no default network,
 and explicit full trust retains its existing meaning. Local compaction overrides remain process
 arguments. Image bytes are hash-verified and sent as native data URLs over stdin.
 

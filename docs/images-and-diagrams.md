@@ -27,7 +27,7 @@ Registered PNG clipboard streams are accepted even when the clipboard has no bit
 An explicit empty bracketed-paste event checks for an image; unbracketed file-drop character
 bursts recognize the whole local path before inserting ordinary text.
 
-Explicit `--terminal` mode still depends on the host forwarding paste input. Windows Terminal
+The native window handles paste input directly. Windows Terminal
 binds Ctrl+V and Ctrl+Shift+V to its own paste action, which can consume bitmap-only paste without
 an input event. Normal Windows launches use Concordia's own window instead of asking users to
 change global bindings. No host settings, global keyboard listener or hook is installed.
@@ -42,7 +42,7 @@ entrypoints through native Node when the direct native bridge cannot be verified
 image paths and prompts out of shell parsing and preserves updated package behavior. Custom
 batch launchers remain unsupported for native image inputs. A rejected input before the provider
 starts releases its workspace reservation; older uncertain reservations still require inspection
-and `/scope stopped` acknowledgment because their records lack reliable startup evidence.
+and explicit stopped-process acknowledgment because their records lack reliable startup evidence.
 
 A selected image is copied into app-owned, content-addressed storage. Changing the original file
 after queueing does not change the attached snapshot. Byte hashes are checked before dispatch.
@@ -77,7 +77,7 @@ pixels directly, fitting the available area with smooth scaling and no upscaling
 composer thumbnails stay small; their cache is limited to 512 pixels per edge. The enlarged
 viewer loads original resolution and retains detail beyond the old 256-pixel
 thumbnail. Neither preview changes the original attachment bytes sent to the provider.
-Explicit terminal mode uses true-color half-block cells; no-color mode uses luminance characters.
+Rendered previews use true-color half-block cells; no-color mode uses luminance characters.
 Those terminal previews have character-cell resolution. Native pixels need no terminal image protocol.
 GIF links retain the existing system-viewer action; the inline decoder does not enable GIF.
 

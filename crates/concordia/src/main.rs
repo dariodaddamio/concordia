@@ -6,20 +6,13 @@ use concordia::version::version_line;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
-    Terminal,
-    Host,
     Window,
     Install,
     Shortcut,
-    Wezterm,
     Doctor,
     Chat,
-    Preview,
     FileEdit,
-    Sessions,
-    Thread,
     Mcp,
-    Feed,
     AskMcp,
     Help,
     Version,
@@ -39,22 +32,8 @@ const CLI_HELP: &[CommandSpec] = &[
         name: "concordia",
         aliases: &[],
         args: "",
-        help: "native app window (image paste and file drop, or terminal chat)",
+        help: "native app window (image paste and file drop)",
         command: Command::Window,
-    },
-    CommandSpec {
-        name: "--terminal",
-        aliases: &["terminal"],
-        args: "",
-        help: "chat TUI in this terminal",
-        command: Command::Terminal,
-    },
-    CommandSpec {
-        name: "--host",
-        aliases: &["host"],
-        args: "",
-        help: "launch the default app interface",
-        command: Command::Host,
     },
     CommandSpec {
         name: "--window",
@@ -78,13 +57,6 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::Shortcut,
     },
     CommandSpec {
-        name: "wezterm",
-        aliases: &[],
-        args: "",
-        help: "launch WezTerm running Concordia",
-        command: Command::Wezterm,
-    },
-    CommandSpec {
         name: "doctor",
         aliases: &["--doctor"],
         args: "",
@@ -94,16 +66,9 @@ const CLI_HELP: &[CommandSpec] = &[
     CommandSpec {
         name: "chat",
         aliases: &[],
-        args: "list|read|search|index|sources|excerpt|recall|lineage|link|detach",
+        args: "list|read|search|index|sources|excerpt|recall",
         help: "bounded native CLI chats and history pointers",
         command: Command::Chat,
-    },
-    CommandSpec {
-        name: "preview",
-        aliases: &[],
-        args: "FILE",
-        help: "read-only Markdown preview",
-        command: Command::Preview,
     },
     CommandSpec {
         name: "file-edit",
@@ -111,41 +76,6 @@ const CLI_HELP: &[CommandSpec] = &[
         args: "FILE",
         help: "independent file editor",
         command: Command::FileEdit,
-    },
-    CommandSpec {
-        name: "sessions",
-        aliases: &[],
-        args: "prune --empty",
-        help: "report empty native sessions without deleting provider files",
-        command: Command::Sessions,
-    },
-    CommandSpec {
-        name: "thread",
-        aliases: &[],
-        args: "list|map|read|migrate",
-        help: "read and migrate recorded threads",
-        command: Command::Thread,
-    },
-    CommandSpec {
-        name: "mcp",
-        aliases: &[],
-        args: "",
-        help: "stdio MCP server",
-        command: Command::Mcp,
-    },
-    CommandSpec {
-        name: "feed",
-        aliases: &[],
-        args: "[--follow] [--since N] [--pane ID] [--json] [--screen]",
-        help: "follow the local event feed",
-        command: Command::Feed,
-    },
-    CommandSpec {
-        name: "ask-mcp",
-        aliases: &[],
-        args: "",
-        help: "stdio question MCP server",
-        command: Command::AskMcp,
     },
     CommandSpec {
         name: "--help",
@@ -196,11 +126,11 @@ fn print_help() {
         .collect::<Vec<_>>()
         .join("\n");
     println!("{}\n\n{commands}\n\n         \n\
-         Slash: /use [add] /model /usage /resume /agents /trust /config /new /threads /split /update /version /copy /doctor /exit\n\
-         Files: /open PATH[:LINE[:COLUMN]] · /preview PATH (internal read-only panes) · /close ID · /edit PATH (external editor)\n\
+         Slash: /use [add] /model /usage /resume /agents /config /new /threads /update /version /copy /doctor /exit\n\
+         Files: /open PATH[:LINE[:COLUMN]] · /close ID\n\
          Delegate: /workers [add|remove] /delegate <account|auto> <task> /delegate stop|use|help (docs/delegation.md)\n\
          Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
-         Connect: /use add [codex|claude|cursor] makes an isolated home and opens its login.\n\
+         Connect: /use add [codex|claude|cursor|grok] makes an isolated home and opens its login.\n\
          Mouse: click places the caret, drag selects, double/triple-click picks word/line,\n\
          wheel scrolls, right-click copies the selection or pastes.\n\
          Keys: Ctrl+A/X/V select-all/cut/paste · Shift+Enter or Ctrl+J newline · PgUp/PgDn scroll.\n\
@@ -233,6 +163,7 @@ async fn main() -> Result<()> {
     if let Some(warning) = concordia::store::outside_profile_warning(&default_store_root()) {
         eprintln!("warn: {warning}");
     }
+    concordia::grok_bot::start_listener(&default_store_root());
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         run_default_chat().await?;
@@ -253,31 +184,12 @@ async fn main() -> Result<()> {
                 std::process::exit(code);
             }
         },
-        Command::Feed => match concordia::feed::cli(&default_store_root(), rest) {
-            Ok(output) => print!("{output}"),
-            Err((message, code)) => {
-                eprintln!("{message}");
-                std::process::exit(code);
-            }
-        },
         Command::FileEdit => tui::run_file_editor(rest)?,
-        Command::Preview => {
-            if rest.len() != 1 {
-                anyhow::bail!("usage: concordia preview FILE");
-            }
-            tui::run_file_preview(std::path::Path::new(&rest[0]))?;
-        }
-        Command::Host => {
-            run_default_chat().await?;
-        }
-        Command::Terminal => {
-            tui::run_chat_tui().await?;
-        }
         Command::Window => {
             #[cfg(windows)]
             tui::run_chat_window().await?;
             #[cfg(not(windows))]
-            anyhow::bail!("Native app windows require Windows; use concordia --terminal");
+            anyhow::bail!("Native app windows require Windows");
         }
         Command::Help => print_help(),
         Command::Install => match concordia::update::install_self() {
@@ -314,36 +226,11 @@ async fn main() -> Result<()> {
             };
             println!("{} {}", rest[0], path.display());
         }
-        Command::Wezterm => {
-            if let Err(e) = concordia::host::wezterm::launch_window() {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
         Command::Doctor => {
             let (report, healthy) = concordia::doctor::run_cli_report();
             println!("{report}");
             if !healthy {
                 std::process::exit(1);
-            }
-        }
-        Command::Thread => match concordia::threads::run_cli(&default_store_root(), rest) {
-            Ok(out) => print!("{out}"),
-            Err((msg, code)) => {
-                eprintln!("{msg}");
-                std::process::exit(code);
-            }
-        },
-        Command::Sessions => {
-            if rest != ["prune", "--empty"] {
-                anyhow::bail!("usage: concordia sessions prune --empty");
-            }
-            match concordia::sessions::prune_empty_cli(&default_store_root()) {
-                Ok(output) => print!("{output}"),
-                Err((message, code)) => {
-                    eprintln!("{message}");
-                    std::process::exit(code);
-                }
             }
         }
         Command::Mcp => {
@@ -380,7 +267,7 @@ mod tests {
         let commands: HashSet<_> = CLI_HELP.iter().map(|spec| spec.name).collect();
         assert_eq!(commands.len(), CLI_HELP.len());
         assert!(commands.contains("chat"));
-        assert!(commands.contains("thread"));
+        assert!(!commands.contains("thread"));
     }
 
     #[test]

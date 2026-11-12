@@ -14,7 +14,7 @@ explains the flow; this page identifies the code that owns each invariant.
 | Account selection | `accounts.rs`, `store.rs`, `connect.rs` | Explicit account/provider/home identity; isolated native authentication |
 | Continuity | `context.rs` | Same-home exact resume when valid; bounded map for a new native session |
 | Sources and retrieval | `native_memory.rs`, `native_references.rs`, `memory_*.rs` | Bounded reads, explicit provenance, source revision checks and honest unavailability |
-| Optional thread record | `threads.rs` | Metadata/references plus bounded pinned spans; legacy compatibility |
+| Optional thread record | `threads.rs` | Metadata and body-free native references; legacy compatibility |
 | Main-turn retry | `tui/continuation.rs`, `routing.rs` | Explicit retry eligibility, configured targets, bounded attempts and review of uncertain work |
 | Workers | `delegate.rs`, `delegate/`, `delegate_*.rs` | Per-run ownership, scheduling, result collection, recovery and native permission bounds |
 | Workspace ownership | `workspaces.rs`, `workspace_paths.rs`, `managed_*.rs` | Cooperative reservations and explicit managed Git workspaces; not a replacement for native confinement |
@@ -44,7 +44,7 @@ require explicit action instead of silently replaying them.
 ## Memory and delivery
 
 Native provider history is authoritative. Concordia indexes source identity and serves bounded
-excerpts; configured thread recording and local pins provide additional bounded retention.
+excerpts; configured thread recording provides additional bounded metadata retention.
 A map is a table of contents with source pointers, not a model-generated summary or a complete
 transfer of native memory. Native compaction still follows the selected provider/policy.
 

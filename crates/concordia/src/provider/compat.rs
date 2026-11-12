@@ -14,7 +14,7 @@ use crate::store::{ProviderKind, TrustMode};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -185,6 +185,14 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
             sandbox: has("--sandbox"),
             known: true,
         },
+        ProviderKind::Grok => Caps {
+            stream_json: false,
+            permission_mode: false,
+            plan_mode: false,
+            partial_messages: false,
+            sandbox: false,
+            known: true,
+        },
     };
     Some(caps)
 }
@@ -298,6 +306,7 @@ fn shim_target(provider: ProviderKind, bin: &Path) -> Option<String> {
                 modified.subsec_nanos()
             ))
         }
+        ProviderKind::Grok => Some("grok".into()),
     }
 }
 
@@ -554,8 +563,12 @@ fn plan_enforcement_error(provider: ProviderKind) -> String {
         ProviderKind::Claude => ("Claude Code", "--permission-mode plan"),
         ProviderKind::Cursor => ("Cursor", "--mode plan"),
         ProviderKind::Codex => ("Codex", "--sandbox read-only"),
+        ProviderKind::Grok => ("Grok Build", "ACP permission mode"),
     };
-    format!("{cli} {} can't enforce Plan mode (its help has no {flag}). Use a CLI that provides the current required interface.", version_for(provider))
+    format!(
+        "{cli} {} can't enforce Plan mode (its help has no {flag}). Use a CLI that provides the current required interface.",
+        version_for(provider)
+    )
 }
 
 fn ensure_plan_supported(
@@ -599,9 +612,12 @@ fn validate_argv(
             "-s" | "--sandbox" => !caps.sandbox,
             _ => false,
         };
-        anyhow::ensure!(!missing,
+        anyhow::ensure!(
+            !missing,
             "{} {} does not declare required {flag}; this current provider interface is unsupported",
-            provider.as_str(), version_for(provider));
+            provider.as_str(),
+            version_for(provider)
+        );
     }
     Ok(())
 }
@@ -1026,7 +1042,7 @@ mod tests {
         assert_eq!(a, original);
         caps.stream_json = true;
         caps.permission_mode = false;
-        assert!(validate_argv(ProviderKind::Claude, &a, TrustMode::Workspace, &caps).is_err());
+        assert!(validate_argv(ProviderKind::Claude, &a, TrustMode::Edit, &caps).is_err());
         assert_eq!(a, original);
     }
 
@@ -1150,7 +1166,7 @@ mod tests {
 #[cfg(test)]
 mod planning_tests {
     use super::*;
-    use crate::provider::turn::{plan_provider_turn, ProviderTurnRequest};
+    use crate::provider::turn::{ProviderTurnRequest, plan_provider_turn};
 
     #[test]
     fn a_planned_claude_turn_keeps_plan_and_refuses_missing_plan_support() {
@@ -1169,10 +1185,11 @@ mod planning_tests {
             compaction: Default::default(),
         };
         let plan = plan_provider_turn(&req).unwrap();
-        assert!(plan
-            .argv
-            .windows(2)
-            .any(|w| w == ["--output-format", "stream-json"]));
+        assert!(
+            plan.argv
+                .windows(2)
+                .any(|w| w == ["--output-format", "stream-json"])
+        );
         let caps = Caps {
             stream_json: false,
             plan_mode: false,
@@ -1184,14 +1201,16 @@ mod planning_tests {
         };
         let done = validate_caps(&plan, TrustMode::Plan, &caps);
         assert!(done.is_err());
-        assert!(plan
-            .argv
-            .windows(2)
-            .any(|w| w == ["--output-format", "stream-json"]));
-        assert!(plan
-            .argv
-            .windows(2)
-            .any(|w| w == ["--permission-mode", "plan"]));
+        assert!(
+            plan.argv
+                .windows(2)
+                .any(|w| w == ["--output-format", "stream-json"])
+        );
+        assert!(
+            plan.argv
+                .windows(2)
+                .any(|w| w == ["--permission-mode", "plan"])
+        );
         assert!(plan.argv.contains(&"--verbose".to_string()));
         assert_eq!(plan.argv.last().map(String::as_str), Some("hello"));
         assert_eq!(plan.prompt, "hello");

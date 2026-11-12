@@ -128,7 +128,7 @@ Field names and counts only; no message content was read.
 | Piece | State |
 | --- | --- |
 | Thread map, deterministic, no model (`threads::build_map`) | Built, 1600-character budget |
-| Thread log and `concordia thread read <id> --tail / --grep / --range` | Built, off by default (`CONCORDIA_THREADS=1` or the `thread_log` setting) |
+| Thread log and `concordia chat thread read <id> --tail / --grep / --range` | Built, off by default (`CONCORDIA_THREADS=1` or the `thread_log` setting) |
 | MCP server for chat read and search (`mcp.rs`) | Built; opt-in registration in Concordia-owned homes through `[threads] mcp` |
 | Short awareness note in Concordia-owned homes | Built; controlled by `[threads] awareness`, without copying user-owned provider setup |
 | Explicit session binding on resume | Built |

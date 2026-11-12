@@ -716,10 +716,6 @@ struct SavedJob {
     origin: Origin,
     source: Option<String>,
     #[serde(default)]
-    routing: Option<crate::routing::Approved>,
-    #[serde(default)]
-    route_history: Vec<String>,
-    #[serde(default)]
     workspace: Option<crate::workspaces::Request>,
     #[serde(default)]
     workspace_notice: Option<String>,
@@ -961,7 +957,6 @@ impl Delegates {
                     || saved.attempts.len() > 4
                     || saved.attempt_records.len() > 4
                     || saved.attempt_records.iter().any(|attempt| !attempt.valid())
-                    || saved.route_history.len() > 4
                     || saved.workspace.as_ref().is_some_and(|request| {
                         !request.structurally_valid() || request.binding.owner != workspace
                     })
@@ -969,14 +964,6 @@ impl Delegates {
                         .workspace_notice
                         .as_ref()
                         .is_some_and(|notice| notice.len() > 4096)
-                    || saved
-                        .route_history
-                        .iter()
-                        .any(|report| report.len() > 32_000)
-                    || saved
-                        .routing
-                        .as_ref()
-                        .is_some_and(|routing| !routing.valid())
                     || std::fs::canonicalize(&saved.spec.cwd).ok().as_ref()
                         != Some(
                             saved
@@ -1019,7 +1006,7 @@ impl Delegates {
                 }
                 jobs.push(Job {
                     input:input::State::default(),
-                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable, routing:saved.routing, route_history:saved.route_history,
+                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable,
                     workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None, preparation_cancel:Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
                     task:saved.task, model:saved.spec.model.clone(), trust:saved.spec.trust, spec:saved.spec,
@@ -1109,8 +1096,6 @@ impl Delegates {
                     state: j.state,
                     origin: j.origin,
                     source: j.source_id.clone(),
-                    routing: j.routing.clone(),
-                    route_history: j.route_history.clone(),
                     workspace: j.workspace.clone(),
                     workspace_notice: j.workspace_notice.clone(),
                     native_session: j.session_id.clone(),
@@ -1265,118 +1250,5 @@ impl Delegates {
         }
         job.text = result;
         Ok(())
-    }
-
-    pub(super) fn worker_failover(&mut self, id: u32, out: &TurnOutcome, now: Instant) -> bool {
-        let Some(root) = self.recovery.as_ref().map(|r| r.state_root.clone()) else {
-            return false;
-        };
-        let settings = get_settings(&root);
-        if !settings.delegate_quota_failover {
-            return false;
-        }
-        let Some(job) = self.get(id) else {
-            return false;
-        };
-        let Some(approved) = &job.routing else {
-            return false;
-        };
-        if !approved.failover {
-            return false;
-        }
-        // A confirmed terminal quota error before any work is safe to reroute. Any tool or partial
-        // answer, cancellation, or unconfirmed exit requires reconciliation instead.
-        if job.cancel_requested
-            || job.spec.native_input != crate::native_input::Mode::Standard
-            || job.input.observed()
-            || out.cancelled
-            || out.exit_code.is_none()
-            || !(out.failed || out.exit_code != Some(0))
-            || job.attempts.len() >= 4
-            || !job.cards.is_empty()
-            || !out.cards.is_empty()
-            || !job.text.trim().is_empty()
-            || !out.text.trim().is_empty()
-            || !crate::provider::stream_cards::usage_exhausted(&format!(
-                "{}\n{}",
-                out.stderr_tail,
-                job.error.as_deref().unwrap_or("")
-            ))
-        {
-            return false;
-        }
-        let mut context = crate::routing::Context::new(
-            crate::routing::Purpose::WorkerFailover,
-            &job.account,
-            job.provider,
-            job.spec.home.clone(),
-            job.model.clone(),
-        );
-        context.owner_account = approved.owner.clone();
-        context.workers = Some(settings.workers.iter().cloned().collect());
-        context
-            .attempted_accounts
-            .extend(job.attempts.iter().cloned());
-        context
-            .attempted_pairs
-            .extend(job.attempt_records.iter().filter_map(|attempt| {
-                attempt
-                    .model
-                    .as_ref()
-                    .map(|model| (attempt.account.clone(), model.clone()))
-            }));
-        for target in &approved.targets {
-            if self.jobs.iter().any(|other| {
-                other.id != id && other.account == target.target.account && other.state.is_running()
-            }) {
-                context.running.insert(target.target.account.clone());
-            }
-        }
-        let Ok(decision) = approved.evaluate(&root, &context) else {
-            return false;
-        };
-        let report: String = decision.report().join("\n").chars().take(8000).collect();
-        if let Some(job) = self.get_mut(id) {
-            if job.route_history.len() < 4 {
-                job.route_history.push(report);
-            }
-        }
-        let Some(selected) = decision.selected() else {
-            return false;
-        };
-        let Some(target) = get_account(&root, &selected.candidate.target.account) else {
-            return false;
-        };
-        let target_home = target
-            .home_path
-            .as_ref()
-            .and_then(|home| home.canonicalize().ok());
-        if target_home.is_none() {
-            return false;
-        }
-        let model = selected.candidate.target.model.clone();
-        if let Some(job) = self.get_mut(id) {
-            job.attempts.push(target.account.clone());
-            job.attempt_records.push(Attempt::new(
-                &target.account,
-                target.provider,
-                target_home.clone(),
-                model.clone(),
-            ));
-            job.account = target.account;
-            job.provider = target.provider;
-            job.model = model.clone();
-            job.spec.home = target_home;
-            job.spec.model = model;
-            job.session_id = None;
-            job.source_id = None;
-            job.error = None;
-            job.exit_code = None;
-            job.cancel = None;
-            job.state = WorkerState::Queued;
-            job.snippet = "Explicit quota exhaustion; moving to the next configured worker".into();
-        }
-        self.launch(id, now);
-        true
     }
 }

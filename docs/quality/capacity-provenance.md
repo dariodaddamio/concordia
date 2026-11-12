@@ -22,7 +22,7 @@ readable as source history but cannot trigger proactive rollover. Source replace
 or append during measurement rejects that observation. Percent comparisons use widened integer
 arithmetic. Observations are re-read before a future turn rather than cached across launches.
 
-Before-turn notices expose the observation's identity and revision. `/context` explains the
+Before-turn notices expose the observation's identity and revision. The persisted rollover setting controls the
 selected account's evidence requirement; policy changes retain their account/home binding.
 Native compaction defaults and the separately implemented one-attempt reactive capacity-error
 recovery are preserved. No in-flight turn is interrupted or replayed to implement this policy.

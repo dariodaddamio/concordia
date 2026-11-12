@@ -100,10 +100,9 @@ record answers and open proposals; they are not approved final product wording o
   - Command-surface audit (2026-11-11, README command table and `commands.rs`): overlapping
     entry points for multi-agent work (`/delegate`, `/workers`, `/crew`, `/worker-panel`, plus the
     planned Agents panel), account management (`/use add`, `/login`, `/connect`, `/workers add`),
-    file preview (`/open`, `/preview`), shared setup (`/skills connect`, `/hooks connect`,
-    `/harness connect`) and recovery (`/recover`, `/continue`, the `/use` continue row, the planned
-    "continue where you left off"). Remaining "workspace" terms: the Workspace permission mode
-    and `/worktree` "Git workspaces". Each consolidation awaits an owner decision.
+    file preview (`/open`, `/preview`), shared setup (`/skills`, `/hooks`, `/harness`) and recovery
+    (inline retry/account handoff, automatic draft/queue restoration). The permission mode is
+    named Edit; `/worktree` "Git workspaces" remains a separate filesystem concept.
   - Grok research (2026-11-11, official xAI docs, partly unverified): Grok Build is a beta `grok`
     CLI with headless streaming JSON, session resume and an ACP agent (`grok agent stdio`), so it
     can likely reuse the Cursor ACP path. Grok Bot is a cloud-hosted assistant used through chat,
@@ -164,7 +163,16 @@ record answers and open proposals; they are not approved final product wording o
   docs vendor the Opifex Studio theme (tokens, CSS and any components used) at a pinned Opifex
   version with a sync script, keeping the look consistent with Opifex Studio and the portfolio.
   Switch to the published package once Opifex is public. It must also explain Windows Defender and SmartScreen warnings
-  for the unsigned executable (Hermes documents a similar case on GitHub; not yet reviewed).
+  for the unsigned executable. Research (2026-11-11; Microsoft SmartScreen and reputation docs,
+  NousResearch/hermes-agent README, Upscayl, yt-dlp, espanso): the docs page "Windows security
+  warnings" covers why SmartScreen warns on files without reputation (not a malware verdict);
+  "More info" then "Run anyway" for the official release file only; verification before running
+  (published SHA-256 checksums, `Get-FileHash`, `gh attestation verify`, building from source);
+  Smart App Control, which can block unsigned files with no override; Defender false positives,
+  folder exclusion as the user's own choice with its risk, and reporting through
+  microsoft.com/wdsi/filesubmission; and the signing plan through SignPath Foundation, noting
+  warnings can persist for weeks after signing and SignPath's required "Code signing policy"
+  wording. Releases must publish checksums and build attestations.
 - Tabs: each chat tab shows the same status icons as the Agents view (working, needs attention,
   finished, failed). Ctrl+T new-tab latency remains a reported problem.
 - Chat rendering: markdown tables are hard to read in the terminal because rows have no
@@ -275,6 +283,42 @@ record answers and open proposals; they are not approved final product wording o
   requests into the integration branch. Removing a feature removes its tests in the same change.
   Agents do not add new unit or integration tests unless the owner asks. A later pass measures
   the slowest suites (for example the TUI journey tests) and trims overlapping coverage.
+- UI test driver (2026-11-11): end-to-end UI tests drive the native window, not terminal mode.
+  The native window gains a test control channel (enabled only by an environment variable set
+  by the test harness) that accepts real key and mouse input and returns the rendered cell grid
+  and window state, so journeys stay deterministic without screen scraping. The journey tests
+  move to it before terminal mode is removed.
+- Reported (2026-11-11): a Claude Code turn that leaves background tasks running stays on
+  "putting the answer together" after its final reply, and the next message kills those tasks.
+  Concordia should mark the turn answered when the final reply arrives and show remaining
+  background tasks as subagents in the Agents tree rather than holding the turn open. Observed
+  the same day: processes an agent starts detached (`Start-Process`) are also killed when the
+  turn ends, which suggests Concordia terminates the whole process tree or job. Long-running
+  work an agent deliberately detaches should survive, or Concordia should show and own it.
+- Requested (2026-11-11): Concordia's own system messages (for example "cancelled - queued work
+  paused; completed actions were not undone") must stand out from chat text through colour, icon
+  and plain wording. Tabs show an I-beam cursor over the title so renaming is discoverable.
+  Queued messages: a way to send one now, double-click to edit, and copy from the edit box.
+- Testing decision (2026-11-12): use deterministic tests wherever they can prove the behaviour,
+  including a regression test for each bug fix, and run live provider turns wherever a change
+  depends on real provider behaviour (questions, approvals, transports, usage, images, command
+  passthrough, new providers). Fake-provider runs never count as verification of provider
+  behaviour.
+- Roles and models (2026-11-12, owner direction): users choose which model fills each role, for
+  example orchestrator, implementer, reviewer, re-reviewer and general helper. The Agents view
+  shows each agent's role, model, effort, context use and turn count, as in the owner's
+  reference screenshot. How this relates to the earlier "routing lives in the user's skill"
+  decision, and BYOK support for API-key models such as DeepSeek and other open models, are
+  open questions.
+- Idea (2026-11-12, owner interest; not decided): token savings in the style of Spotify's Portal
+  "shunt" plugin (engineering.atspotify.com, Sep 2026), which reports about 90% fewer tokens on
+  bulk file reads. A Claude Code hook blocks large file reads, a cheaper model reads the files
+  and returns a structured answer, and generated code is written straight to disk. The article
+  states the limits: editing and reasoning cannot be delegated, and each delegation adds
+  10 to 30 seconds. A Concordia version would route bulk reading through the `agents` tool to a
+  cheaper model on the user's own account (Concordia makes no model call itself) and return
+  exact line ranges as pointers so the main agent reads only those lines. The read-size hook
+  is policy, so it belongs to the user's harness.
 - Tabs and panes (2026-11-11): manage them browser-style with both drag and keyboard: drag tabs
   to reorder, keyboard shortcuts for switching, moving and closing, built so the same
   interactions extend to Photoshop-style docking later.
@@ -555,6 +599,75 @@ Rewrite requirements:
 
 ## This slice
 
+### W15 documentation site scaffold - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `site/**` | ok: 1, 4, 6, 7, 10 | Add one isolated Starlight publication layer, keep the Rust crate independent, and derive pages from current canonical docs. |
+| `site/src/styles/opifex/**`, `site/scripts/sync-opifex.mjs` | ok: 1, 5, 6, 10 | Vendor only the Opifex token and Studio CSS needed by Starlight, with one refresh owner and pinned provenance. |
+| `.github/workflows/docs.yml` | ok: 1, 4, 10 | Add one GitHub Pages build and deployment path without enabling Pages or changing release workflows. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs`, `PLAN.md` | ok: 5, 10 | Record the user-facing documentation scaffold and its build identity in the existing metadata owners. |
+
+### W9c Needs attention app-server journey - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/tests/support/fake_provider.rs` | ok: 1, 4, 7, 9, 10 | Extend the existing app-server fixture with one concrete question-then-approval sequence and a bounded filesystem completion gate; no production test branch or second provider simulator. |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 5, 6, 9, 10 | Reuse the native control channel, existing snapshot/status state and existing journey session; the new assertions exercise the user flow rather than duplicate UI state. |
+
+### W14 Grok Bot two-way integration - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/grok_bot.rs` | ok: 1, 2, 4, 5, 6, 8 | One concrete routine/callback owner validates both HTTP trust boundaries; secrets stay in Credential Manager and no polling or duplicate MCP surface is added. |
+| `crates/concordia/src/mcp.rs`, `tui/native_agents.rs`, `tui/app/pickers.rs` | ok: 4, 5, 6, 10 | Reuse the existing `agents` record and Agents-tree projection; Grok Bot is one provider branch and `/use` remains the account/integration picker owner. |
+| `README.md`, `docs/provider-grok-bot.md`, `docs/README.md`, `CHANGELOG.md`, `version.rs` | ok: 5, 10 | Correct the two stale safety promises and document the implemented callback boundary and limits. |
+
+### W11 provider command passthrough - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | -------------- | ------------- |
+| `crates/concordia/src/provider/mod.rs`, `tui/palette.rs` | ok: 1, 4, 5, 6, 10 | Keep provider command metadata and transport support at the existing provider/palette owners; no second command registry or generic adapter. |
+| `crates/concordia/src/provider/turn_appserver.rs`, `turn_acp.rs` | ok: 1, 2, 4, 5, 7 | Invoke only documented RPC/prompt methods over the existing verified session connection; retain explicit thread/session identity and bounded reads. |
+| `docs/command-audit.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Replace the stale transport premise and record confirmed versus unverified behavior in the canonical ownership table. |
+
+### W3e final delegation cleanup - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/{delegate,delegate_recovery,config,capacity}.rs` | ok: 1, 4, 10 | Delete compiled-out delegation/routing/crew code and leave one active owner per lifecycle. |
+| `crates/concordia/src/store.rs`, `tui/workers.rs`, `delegate_dependencies.rs` | ok: 4, 6, 10 | Remove persisted worker registration state; active jobs use explicit account identity and native catalog checks. |
+| `crates/concordia/src/tui/workspace_scope.rs`, `tui/app/state.rs`, `commands.rs` | ok: 1, 4, 10 | Remove the public scope surface while retaining internal main-turn admission used by run/checkpoint owners. |
+| `README.md`, `docs/`, `CHANGELOG.md`, `version.rs` | ok: 5, 10 | Update canonical behavior docs and release metadata; preserve historical plans as plans. |
+
+### W3f Ctrl+G Agents projection - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/native_agents.rs` | ok: 1, 4, 6, 10 | Keep the existing Agents projection as the owner; treat unmatched provider sender IDs as root rows and rebuild it from the restored transcript. |
+| `crates/concordia/src/tui/window_session.rs` | ok: 4, 6 | Rehydrate the existing projection immediately after the existing saved-message owner restores a tab; no second store is added. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Record the user-facing Ctrl+G correction and bump the build stamp. |
+
+### W4b table rows and system messages - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/tui/markdown_tables.rs` | ok: 1, 4, 5, 10 | Add the missing row rule in the existing Markdown table renderer; no new layout owner. |
+| `crates/concordia/src/tui/draw/mod.rs`, `app/turn.rs` | ok: 1, 4, 5, 10 | Style existing system blocks and revise their cancellation wording at the current message owner. |
+| `crates/concordia/src/tui/queue_tests.rs` | ok: 9, 10 | Align the stale assertion with the existing recovery message; do not disable the failing test. |
+| `crates/concordia/src/version.rs`, `CHANGELOG.md` | ok: 10 | Record the user-facing rendering and wording change under the required release metadata. |
+
+### W2d small removals and settings - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/integration.rs`, `config.rs`, `connect.rs` | ok: 1, 4, 6, 10 | Delete provider-home awareness ownership and its setting; MCP registration remains the sole integration owner. |
+| `crates/concordia/src/capacity.rs`, `ui/app/slash.rs`, `config.rs` | ok: 1, 4, 10 | Remove the `/context` command and compaction overrides while retaining only the requested Codex proactive-rollover setting. |
+| `crates/concordia/src/feed.rs`, `workspace_replace.rs`, command and MCP callers | ok: 1, 5, 9, 10 | Remove obsolete surfaces and their tests rather than replacing them with compatibility wrappers. |
+| `crates/concordia/src/main.rs`, `chat_cli.rs`, `threads.rs`, `sessions.rs` | ok: 1, 4, 7 | Make `chat` the single public history entry point and keep the existing bounded readers as implementation owners. |
+| `crates/concordia/src/config.rs`, `ui` time-header callers | ok: 1, 6 | Add one persisted setting at the existing config owner, defaulting on, with no duplicate UI state. |
+| `README.md`, `docs/`, `CHANGELOG.md`, catalogs, `version.rs` | ok: 5, 10 | Update canonical catalogs and shipped-behavior docs with each deletion/settings change. |
+
 ### Documentation and direction - anti-slop gate
 
 | Paths | Checks | Ownership |
@@ -566,3 +679,78 @@ Rewrite requirements:
 Acceptance: current docs are concise and consistent; all local references resolve; documentation
 checks pass; purpose and scope reflect the owner's answers. Native provider ownership, recovery,
 approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout the rewrite.
+
+### W0 native-window journey driver - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/tui/native_window.rs` | ok: 1, 2, 4, 5, 6, 7, 8, 9, 10 | One opt-in, loopback-only test channel owned by the native message thread; no production listener or alternate renderer. |
+| `crates/concordia/src/tui/display_backend.rs`, `crates/concordia/src/tui/run.rs` | ok: 4, 5, 6, 9 | Forward test state from the existing backend and app loop; no duplicate UI state owner. |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 1, 5, 7, 9, 10 | Replace PTY transport with the requested native driver, preserve journey assertions, and omit only `/edit`. |
+| `docs/tui-states.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 1, 5, 10 | Document the shipped boundary and bump the required user-facing build stamp. |
+
+### W3 MCP agents and delegation - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/mcp.rs` | ok: 1, 4, 5, 6, 10 | One `agents` surface owns account discovery and delegated-agent requests; removed tool registrations and legacy tests do not remain public. |
+| `crates/concordia/src/tui/input_dispatch.rs`, `crates/concordia/src/tui/workers.rs` | ok: 1, 4, 10 | Reuses the existing delegation lifecycle and makes Ctrl+G the single Agents-view toggle; no second scheduler or routing policy. |
+| `README.md`, `docs/README.md`, `docs/mcp.md`, `docs/delegation.md`, `CHANGELOG.md` | ok: 1, 5, 10 | Updates canonical catalogs and behavior references in place; does not add a duplicate guide. |
+
+### W4 daily bugs and small interface fixes - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/tui/transcript.rs`, `crates/concordia/src/tui/draw/mod.rs` | ok: 1, 4, 5, 10 | Keeps transcript ownership in the existing view, bounds rehydration, and adds one visual scrollbar without a second scroll model. |
+| `crates/concordia/src/tui/run.rs` | ok: 1, 5, 8, 10 | Removes the synchronous recovery write from new-tab creation; normal persistence remains the owner of recovery retries. |
+| `crates/concordia/src/tui/app/turn.rs`, `crates/concordia/src/delegate.rs` | ok: 1, 4, 7, 10 | Adds separators only at reasoning-delta boundaries, preserving assistant delta semantics and existing provider ownership. |
+| `crates/concordia/src/tui/app/state.rs`, `crates/concordia/src/tui/pointer.rs` | ok: 1, 4, 6, 10 | Derives tab status from existing chat state and uses the existing pointer owner; no duplicate status store or interaction layer. |
+| `crates/concordia/src/tui/queue.rs` | ok: 1, 2, 9, 10 | Reuses the existing queue editor and clipboard writer; Ctrl+C copies its text instead of changing queue state. |
+| `crates/concordia/src/tui/native_window.rs`, `crates/concordia/Cargo.toml` | ok: 1, 5, 10 | Applies the active theme's existing RGB value through the Windows caption API; no custom window host or theme source is added. |
+
+### W5j remaining UI journeys - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 5, 9, 10 | Delete journeys for removed `/delegate`, `/workers`, `/recover`, `/context`, `/memory`, standalone preview and ConPTY-only behavior; retain the sandbox-only file replacement journey and adjust the native driver assertions in place. |
+
+### W5k full test-suite closeout - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/**`, `crates/concordia/src/tui/**`, `README.md` | ok: 1, 4, 9, 10 | Classify existing failures against PLAN decisions; remove tests for removed goals/delegation/recovery surfaces, update stale expectations, and fix only confirmed product regressions. No new tests or compatibility layers. |
+
+### W6a recovery, mode and connect consolidation - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/commands.rs`, `src/tui/app/{state,slash,pickers}.rs`, `src/tui/recovery_ui.rs` | ok: 1, 4, 10 | Remove public recovery commands and the `/use` continuation row; retain the existing continuation state only for inline retry/account handoff behavior. |
+| `crates/concordia/src/store.rs`, `src/config.rs`, provider planners, `src/tui/**`, tests | ok: 1, 4, 5, 10 | Rename the permission enum and serialized/UI vocabulary to `edit` at the existing trust owner; no compatibility alias. |
+| `crates/concordia/src/commands.rs`, `src/harness/**`, `src/tui/**` | ok: 1, 4, 10 | Make `/harness` the sole connect/status/verify/disconnect action owner; `/skills` and `/hooks` remain views and `/skills` keeps switches. |
+| `crates/concordia/src/user_commands.rs`, `src/doctor.rs`, `src/tui/**` | ok: 1, 4, 6, 10 | Keep one bounded shortcut scan and report provider-command shadows without adding a second command registry. |
+| `README.md`, `docs/**`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Synchronize catalogs and user-facing documentation with the code and record the shipped change. |
+
+### W10 Grok Build provider - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/provider/{grok,turn_acp,turn}.rs` | ok: 1, 4, 6, 10 | Reuse one ACP runner for Cursor and Grok; keep exact session identity and native interaction ownership in the provider transport. |
+| `crates/concordia/src/{accounts,connect,identity,models,catalog,store}.rs` | ok: 1, 2, 4, 6 | Add only the Grok account/home and bounded metadata seams; login detection checks markers without reading token contents. |
+| `crates/concordia/tests/{images.rs,live_providers.rs,support/fake_provider.rs}` | ok: 5, 9, 10 | Exercise the existing ACP fixture path and retain real-provider tests ignored; never add a fake-only production branch. |
+| `README.md`, `docs/{README.md,how-concordia-connects-providers.md,provider-grok-build.md}`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Update the canonical provider catalog and record confirmed versus unverified behavior. |
+
+### W9b taskbar status and Windows notifications - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/native_window.rs`, `tui/display_backend.rs`, `tui/theme.rs` | ok: 1, 4, 5, 6, 9 | Keep status calculation in the existing runner and native HWND as the sole owner of taskbar, tray and icon handles; no second status store or test-only production branch. |
+| `crates/concordia/Cargo.toml` | ok: 1, 5 | Enable only the Windows COM surface needed by the existing native window. |
+| `README.md`, `docs/tui-states.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Document the shipped native APIs and user-visible boundary in canonical docs with the required build stamp. |
+
+### W12e final three failing tests - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/mcp.rs`, `crates/concordia/src/tui/persist.rs` | ok: 1, 4, 5, 9, 10 | Keep redaction at the MCP persistence boundary and update the security test to the sole live `agents` surface; no legacy tool compatibility is restored. |
+| `crates/concordia/src/tui/app/state.rs` | ok: 1, 4, 6, 10 | Use the existing per-App Needs-attention queue as the picker owner; retain the global registry only for publication and status aggregation. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs`, `PLAN.md` | ok: 5, 10 | Record the shipped security and paused-queue focus corrections with the required build stamp and scope ledger. |

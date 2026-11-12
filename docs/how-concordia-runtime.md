@@ -53,7 +53,7 @@ beside the manifest. Source:
 
 ### What discovery does
 
-F10/`/integrations` and MCP `integrations` call the catalog reader. It reads already recorded
+F10/`/harness` and MCP `integrations` call the catalog reader. It reads already recorded
 connections and file-backed manifests, validates the saved SHA-256 revision, displays bounded
 bindings and eight tools per page, and labels descriptions as untrusted manifest data. It does not
 run connect, verify, tool or command-backed-manifest commands. A command-backed manifest stays

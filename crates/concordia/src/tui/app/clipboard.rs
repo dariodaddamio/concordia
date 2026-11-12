@@ -15,7 +15,6 @@ impl App {
     pub(in crate::tui) fn paste_text_chunk(&mut self, text: &str, continues: bool) {
         let title_focus = !worker_input::active(self)
             && !self.raster.active()
-            && !self.project_search.active()
             && self.picker.is_none();
         if let Some(editor) = self.rename_editor.as_mut().filter(|_| title_focus) {
             let capacity = 256usize.saturating_sub(
@@ -42,10 +41,6 @@ impl App {
         }
         if worker_input::active(self) {
             worker_input::paste(self, text);
-            return;
-        }
-        if self.project_search.active() {
-            self.project_search.paste(text);
             return;
         }
         // Paste can arrive as one Event::Paste or as a buffered burst split into overflow

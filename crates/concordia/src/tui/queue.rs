@@ -604,8 +604,11 @@ fn edit_key(
         }
         KeyCode::Char(c) if ctrl && !alt => match c.to_ascii_lowercase() {
             'c' => {
-                app.close_queue_edit();
-                app.queue_changed();
+                let text = ed
+                    .selection()
+                    .map(|(start, end)| ed.chars()[start..end].iter().collect::<String>())
+                    .unwrap_or_else(|| ed.text());
+                app.write_clipboard(&text);
             }
             'j' => ed.insert_char('\n'),
             'a' => ed.select_all(),
@@ -802,6 +805,11 @@ impl App {
     /// leaves the draft alone on cancellation. Only failure offers its prompt for retry.
     pub(super) fn turn_finished(&mut self, cancelled: bool, failed: bool) {
         let sent = self.last_sent.take();
+        if cancelled && self.editor.text().starts_with('/') {
+            self.editor.clear();
+            self.clear_selections();
+            self.persist_draft_now();
+        }
         if cancelled || failed {
             self.queue.dispatch.clear_automatic();
             self.pause_queue();

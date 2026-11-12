@@ -14,8 +14,6 @@ pub(super) struct Checkpoint {
     pub tried: Vec<String>,
     pub reason: String,
     #[serde(default)]
-    pub routing: Option<crate::routing::Approved>,
-    #[serde(default)]
     pub scope: Option<crate::workspaces::Request>,
     #[serde(default)]
     pub conversation: Option<String>,
@@ -39,7 +37,7 @@ impl App {
                     &binding,
                     &self.cwd,
                 ) {
-                    self.flash(format!("source relationship could not be saved: {error}"));
+                    self.flash(format!("source handoff could not be saved: {error}"));
                 }
             }
             self.native_sources.push(binding);
@@ -57,7 +55,7 @@ impl App {
             #[cfg(not(test))]
             {
                 self.keep.turn_recovery_notice = true;
-                self.push_system("unfinished-request recovery is unavailable; request was not dispatched. Fix local storage and use /recover retry.");
+                self.push_system("unfinished-request storage is unavailable; request was not dispatched. Fix local storage before retrying.");
                 return false;
             }
         };
@@ -101,10 +99,6 @@ impl App {
                         && checkpoint.conversation.as_ref().is_none_or(|id| {
                             !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == *id)
                         })
-                    || checkpoint
-                        .routing
-                        .as_ref()
-                        .is_some_and(|routing| !routing.valid())
                     || uuid::Uuid::parse_str(&checkpoint.run_id).is_err()
                     || checkpoint.prompt.len() > 1024 * 1024
                     || checkpoint.sources.len() > 8
@@ -160,7 +154,7 @@ impl App {
                 self.continuation.restore_checkpoint(checkpoint);
                 self.queue.paused = true;
                 self.queue.dispatch.clear_automatic();
-                self.push_system("restored your unsent draft and queued prompts; unfinished request recovered and paused; /continue ACCOUNT [MODEL] starts a new native session with source pointers. Inspect uncertain actions first. Your newer draft is separate.");
+                self.push_system("Your unsent draft and queued messages were restored. The unfinished request was recovered and paused. Choose an account or model in the inline continue action to start a new native session with source pointers. Inspect uncertain actions first. Your newer draft is separate.");
             }
             Some(Err(error)) => self.push_system(format!(
                 "unfinished-request recovery unavailable: {error}; existing record kept"
@@ -251,39 +245,12 @@ mod tests {
             app.reserve_main_scope(&owner).unwrap();
             app.scope_invocation_flag()
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let mut blocked = App::new(dir.path().into(), dir.path().into());
-            blocked.refresh_binding();
-            // Explicit scheduler scopes remain exclusive; ordinary foreground chats do not.
-            blocked.scope_command("set write:parallel.txt");
-            blocked.run_line("Keep this blocked request".into(), &tx);
-            rx.try_recv().unwrap();
-            let mut conflicting_owner = owner.clone();
-            conflicting_owner.conversation_id = blocked.deleg.d.conversation_id().into();
-            conflicting_owner.run_id = blocked.continuation.run_id().into();
-            conflicting_owner.attempt_id = uuid::Uuid::new_v4().to_string();
-            assert!(blocked.reserve_main_scope(&conflicting_owner).is_err());
-            blocked.on_turn_done(
-                TurnOutcome {
-                    failed: true,
-                    ..Default::default()
-                },
-                &tx,
-            );
-            assert!(
-                blocked.continuation.waiting(),
-                "admission conflict retains an explicit continuation request"
-            );
-            assert!(
-                rx.try_recv().is_err(),
-                "admission conflict cannot automatically retry"
-            );
             app.apply_progress(TurnProgress::Session("explicit-original-session".into()));
             app.editor.set_text("newer unsent draft");
             app.queue.items.push("later work".into());
             app.persist_draft_now();
             let snapshot = app.keep.lease.as_ref().unwrap().turn().unwrap().unwrap();
             assert_eq!(snapshot.version, 3);
-            assert!(snapshot.routing.as_ref().unwrap().valid());
             assert_eq!(
                 app.keep
                     .lease
@@ -318,7 +285,12 @@ mod tests {
             crate::workspaces::load(dir.path()).unwrap().reservations[0].phase,
             crate::workspaces::Phase::ReconcileRequired
         );
-        app.run_line("/scope stopped".into(), &tx);
+        crate::workspaces::acknowledge_stopped(
+            dir.path(),
+            app.continuation.run_id(),
+            app.deleg.d.conversation_id(),
+        )
+        .unwrap();
         assert!(
             rx.try_recv().is_err(),
             "stopped acknowledgment never replays a turn"
@@ -327,13 +299,13 @@ mod tests {
             crate::workspaces::load(dir.path()).unwrap().reservations[0].phase,
             crate::workspaces::Phase::Released
         );
-        app.run_line("/continue fixture".into(), &tx);
+        app.continue_usage("fixture", &tx);
         assert!(
             rx.try_recv().is_err(),
             "newer draft must block continuation"
         );
         app.editor.clear();
-        app.run_line("/continue fixture".into(), &tx);
+        app.continue_usage("fixture", &tx);
         assert!(rx
             .try_recv()
             .unwrap()

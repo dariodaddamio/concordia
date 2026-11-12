@@ -17,7 +17,7 @@ fn request<'a>(cwd: &'a std::path::Path) -> ProviderTurnRequest<'a> {
         home_path: None,
         model: None,
         native_session_id: None,
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
         context_prefix: None,
         local_time: None,
         compaction: Default::default(),

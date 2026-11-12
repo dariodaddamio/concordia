@@ -1,7 +1,6 @@
 # UI glossary
 
-This glossary lists each
-visible run phase, tool toggle, worker mark, transcript gutter, notice and terminal-tab state.
+This glossary lists each visible run phase, tool toggle, worker mark, transcript gutter and notice.
 The phase text is authoritative when a terminal font cannot render a symbol.
 
 ## Tabs and terminals
@@ -12,8 +11,7 @@ a tab label to rename that conversation; the title editor preserves the independ
 F11 or `/terminal` opens a local shell in the workspace; F11 returns to chat. Hiding keeps the shell
 alive, while `/terminal close` or Ctrl+Shift+W in the shell stops it. Ctrl+C inside the shell interrupts
 the shell command; it does not cancel the model's task. Shell sessions are transient and are stopped
-when their owning tab/window closes. `concordia --terminal` selects the host for the chat UI and is
-separate from this in-app command terminal.
+when their owning tab/window closes.
 
 ## Account identity
 
@@ -45,7 +43,7 @@ paths and `/open FILE[:LINE[:COLUMN]]` share the same internal file pane. Prefix
 is accepted, including `/open @README.md`. A click opens a pane; a drag selects text. File references
 in the prompt remain provider-visible text, rather than silently reading/attaching local contents.
 File panes are bounded to three files, 2 MiB and 50,000 UTF-8 lines per file.
-`/open` and `/preview` show formatted Markdown or pretty-printed JSON; source files open raw.
+`/open` shows formatted Markdown or pretty-printed JSON; source files open raw.
 Alt+V or the view bar switches modes. Formatted view is read-only; raw mode edits with explicit
 Ctrl+S save and dirty-close decisions. Terminal controls are
 removed before rendering. Divider hover/drag requests `ew-resize` or `ns-resize`; close and view
@@ -62,14 +60,14 @@ Ctrl+P or a file-row click previews;
 Tab/Enter inserts a literal reference and leaves the draft unsent. Discovery uses bounded recent
 messages/tool cards, deduplicates canonical paths and excludes automatic credential suggestions.
 Reference completion does not silently attach file contents. Sending a selected chat reference
-supplies its bounded map. `/search` searches workspace contents with visible bounds and explicit
+supplies its bounded map. File-pane find searches the open file with visible bounds and explicit
 replacement previews. A side-by-side chat viewer remains planned. See
 [workspace controls](workspace-panes.md) and [memory design](plans/context-handoff-plan.md).
 
 ## Unfinished requests and previews
 
 Restart restores unfinished work paused, with its original source identities and a separate newer
-draft. `/continue` reviews the request and target choices; `/use` also has a continue row. No turn
+draft. The inline continue action reviews the request and target choices; `/use` contains account actions only. No turn
 is sent merely by reopening the app. In a focused file pane, `/` searches, `n`/`N` navigate matches,
 and `r` reloads. A changed-on-disk indicator comes from background metadata checks. These controls
 never send a chat prompt. [Native memory](native-memory.md) defines the limits and recovery rules.

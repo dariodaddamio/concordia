@@ -26,8 +26,6 @@ pub(super) struct State {
     run_id: String,
     context_limited: bool,
     context_rollovers: u8,
-    routing: Option<crate::routing::Approved>,
-    routing_error: Option<String>,
 }
 
 impl State {
@@ -64,15 +62,11 @@ impl State {
             run_id: uuid::Uuid::new_v4().to_string(),
             context_limited: false,
             context_rollovers: 0,
-            routing: None,
-            routing_error: None,
         }
     }
 
     pub fn begin(&mut self, account: &str, model: &str, prompt: &str) {
         if !self.dispatching {
-            self.routing = None;
-            self.routing_error = None;
             self.tried.clear();
             self.run_id = uuid::Uuid::new_v4().to_string();
             self.recovered = false;
@@ -97,7 +91,6 @@ impl State {
             .as_ref()
             .map(|prompt| turn_checkpoint::Checkpoint {
                 version: 2,
-                routing: self.routing.clone(),
                 scope: None,
                 conversation: None,
                 run_id: self.run_id.clone(),
@@ -117,8 +110,6 @@ impl State {
     }
 
     pub(super) fn restore_checkpoint(&mut self, checkpoint: turn_checkpoint::Checkpoint) {
-        self.routing = checkpoint.routing;
-        self.routing_error = None;
         self.prompt = Some(checkpoint.prompt.clone());
         self.pending = Some(checkpoint.prompt);
         self.retry_draft = None;
@@ -141,8 +132,6 @@ impl State {
     }
 
     pub fn invalidate(&mut self) {
-        self.routing = None;
-        self.routing_error = None;
         self.retry = Retry::Ready;
         self.pending = None;
         self.prompt = None;
@@ -250,9 +239,6 @@ impl App {
         };
         self.continuation.automatic = value != "manual";
         self.continuation.preferred_account = preferred;
-        self.continuation.routing = None;
-        self.continuation.routing_error = None;
-        self.freeze_continuation_routes();
         self.continuation.clear_deferred();
         self.push_system(format!(
             "usage handoff for this session: {}. Future windows keep their saved default.",
@@ -267,39 +253,6 @@ impl App {
             format!("try {account} first, then choose automatically")
         } else {
             "choose automatically".into()
-        }
-    }
-
-    pub(super) fn continuation_command(&mut self, arg: &str) {
-        match arg {
-            "automatic" | "manual" => self.set_session_handoff(arg),
-            "routes" => {
-                if self.continuation.routing.is_none() {
-                    if let Err(error) = crate::store::route_policy(&self.state_root) {
-                        self.push_system(error);
-                        return;
-                    }
-                }
-                let (targets, context) = self.continuation_route_inputs();
-                if let Some(error) = &self.continuation.routing_error {
-                    self.push_system(error.clone());
-                } else {
-                    self.inspect_routes(targets, context, self.continuation.routing.clone());
-                }
-            }
-            "" => self.open_handoff_settings(),
-            command if command == "policy" || command.starts_with("policy ") => {
-                let result = crate::routing::policy_command(
-                    &self.state_root,
-                    false,
-                    command.strip_prefix("policy").unwrap_or("").trim(),
-                )
-                .unwrap_or_else(|error| error);
-                self.push_system(result);
-            }
-            _ => {
-                self.push_system("usage: /continuation [manual|automatic|routes]; /continue ACCOUNT continues an interrupted request");
-            }
         }
     }
 
@@ -342,7 +295,7 @@ impl App {
                 self.continuation.retry_draft = self.last_sent.clone();
                 self.continuation.retry = Retry::RequiresReview;
                 self.continuation.recovered = true; // Explicit continuation must start a fresh session.
-                self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Inspect partial edits, then /continue {} starts a fresh native session with source pointers. No automatic replay was attempted.", self.account));
+                self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Inspect partial edits, then use the inline continue action for {} to start a fresh native session with source pointers. No automatic replay was attempted.", self.account));
                 return None;
             }
             self.continuation.pending = None;
@@ -378,7 +331,7 @@ impl App {
         }
         if self.continuation.tried.len() >= 4 {
             self.continuation.clear_deferred();
-            self.push_system("automatic continuation stopped after four account/model pairs; choose /continue to review another target");
+            self.push_system("automatic continuation stopped after four account/model pairs; choose another target in the inline picker");
             self.open_continuation_picker();
             return None;
         }
@@ -416,114 +369,20 @@ impl App {
     }
 
     fn next_usage_target(&mut self) -> Option<String> {
-        if self.continuation.context_limited {
-            if self.continuation.context_rollovers < 1 {
-                return Some(self.account.clone());
-            }
-            self.push_system("automatic context rollover stopped after one attempt; inspect the source and choose a target explicitly");
-            self.open_continuation_picker();
-            return None;
+        if self.continuation.context_limited && self.continuation.context_rollovers < 1 {
+            return Some(self.account.clone());
         }
-        let (targets, context) = self.continuation_route_inputs();
-        if let Some(error) = &self.continuation.routing_error {
-            self.push_system(format!("automatic continuation paused: {error}"));
-            return None;
-        }
-        let decision = match &self.continuation.routing {
-            Some(approved) => match approved.evaluate(&self.state_root, &context) {
-                Ok(decision) => decision,
-                Err(error) => {
-                    self.push_system(error);
-                    return None;
-                }
-            },
-            None => crate::routing::capture(&self.state_root, &targets, &context),
-        };
-        if let Some(selected) = decision.selected() {
-            let target = &selected.candidate.target;
-            let day = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                / 86_400;
-            if !crate::store::automatic_handoff_allowed(
-                &self.state_root,
-                &target.account,
-                &day.to_string(),
-            ) {
-                self.push_system("automatic continuation stopped: this account reached its daily handoff cap; choose explicitly");
-                self.open_continuation_picker();
-                return None;
-            }
-            let _ = crate::store::record_automatic_handoff(
-                &self.state_root,
-                &target.account,
-                &day.to_string(),
-            );
-            let target = match &target.model {
-                Some(model) => format!("{} {model}", target.account),
-                None => target.account.clone(),
-            };
-            self.push_system(decision.summary());
-            return Some(target);
-        }
-        self.push_system("automatic continuation stopped: no untried eligible account/model; /continuation routes explains candidates");
-        self.open_continuation_picker();
-        None
-    }
-
-    pub(super) fn continuation_route_inputs(
-        &self,
-    ) -> (Vec<crate::routing::Target>, crate::routing::Context) {
-        use crate::routing::{Context, Purpose, Target};
-        let mut context = Context::new(
-            Purpose::MainContinuation,
-            &self.account,
-            self.provider,
-            self.home_path.clone(),
-            Some(self.model.clone()),
-        );
-        context.allow_same_provider_automatic =
-            crate::store::same_provider_automatic(&self.state_root)
-                && crate::store::same_provider_terms_accepted(&self.state_root, self.provider);
-        for key in &self.continuation.tried {
-            if let Some((account, model)) = key.split_once(' ') {
-                context.attempted_accounts.insert(account.into());
-                context
-                    .attempted_pairs
-                    .insert((account.into(), model.into()));
-            }
-        }
-        if let Some(approved) = &self.continuation.routing {
-            return (
-                approved
-                    .targets
-                    .iter()
-                    .map(|row| row.target.clone())
-                    .collect(),
-                context,
-            );
-        }
-        let mut targets = Vec::new();
+        let mut candidates = Vec::new();
         if let Some(account) = &self.continuation.preferred_account {
-            targets.push(Target {
-                account: account.clone(),
-                model: None,
-            });
+            candidates.push((account.clone(), None));
         }
-        match crate::store::route_policy(&self.state_root) {
-            Ok(policies) => {
-                if let Some(policy) = policies.main {
-                    targets.extend(policy);
-                    return (targets, context);
-                }
-            }
-            Err(_) => return (Vec::new(), context),
-        }
-        targets.extend(self.continuation.models.iter().map(|model| Target {
-            account: self.account.clone(),
-            model: Some(model.clone()),
-        }));
+        candidates.extend(
+            self.continuation
+                .models
+                .iter()
+                .cloned()
+                .map(|model| (self.account.clone(), Some(model))),
+        );
         let accounts = if self.continuation.accounts.is_empty() {
             accounts_with_auth(&self.state_root)
                 .into_iter()
@@ -532,48 +391,49 @@ impl App {
         } else {
             self.continuation.accounts.clone()
         };
-        targets.extend(accounts.into_iter().map(|account| Target {
-            account,
-            model: None,
-        }));
+        candidates.extend(accounts.into_iter().map(|account| (account, None)));
         if self.continuation.accounts.is_empty() && self.continuation.models.is_empty() {
             if let Some(home) = &self.home_path {
-                targets.extend(
+                candidates.extend(
                     crate::models::ids_at(&self.state_root, self.provider, &self.account, home)
                         .into_iter()
-                        .map(|model| Target {
-                            account: self.account.clone(),
-                            model: Some(model),
-                        }),
+                        .map(|model| (self.account.clone(), Some(model))),
                 );
             }
         }
-        (targets, context)
+
+        candidates.into_iter().find_map(|(account, model)| {
+            let Some(def) = get_account(&self.state_root, &account) else {
+                return None;
+            };
+            let Some(home) = def.home_path.as_ref() else {
+                return None;
+            };
+            if model.as_ref().is_some_and(|model| {
+                !crate::models::ids_at(&self.state_root, def.provider, &account, home)
+                    .iter()
+                    .any(|available| available == model)
+            }) {
+                return None;
+            }
+            let pair = format!("{} {}", account, model.as_deref().unwrap_or(&self.model));
+            if self.continuation.tried.contains(&pair)
+                || (account == self.account
+                    && model.as_deref().is_none_or(|model| model == self.model))
+            {
+                return None;
+            }
+            Some(match model {
+                Some(model) => format!("{account} {model}"),
+                None => account,
+            })
+        })
+        .or_else(|| {
+            self.open_continuation_picker();
+            None
+        })
     }
 
-    pub(super) fn freeze_continuation_routes(&mut self) {
-        if self.continuation.routing.is_some() || self.continuation.routing_error.is_some() {
-            return;
-        }
-        let result = crate::store::route_policy(&self.state_root).and_then(|_| {
-            let (targets, _) = self.continuation_route_inputs();
-            crate::routing::Approved::capture(
-                &self.state_root,
-                targets,
-                &self.account,
-                self.continuation.automatic,
-            )
-        });
-        match result {
-            Ok(approved) => self.continuation.routing = Some(approved),
-            Err(error) => {
-                self.push_system(format!(
-                    "automatic routing unavailable: {error}; manual requests remain available"
-                ));
-                self.continuation.routing_error = Some(error);
-            }
-        }
-    }
     pub(super) fn continue_usage(&mut self, target: &str, tx: &mpsc::UnboundedSender<String>) {
         let (target, model) = target
             .split_once(' ')
@@ -583,7 +443,10 @@ impl App {
             || self.session_ui.loading()
             || self.job.is_some()
             || self.queue.edit.is_some()
-            || self.picker.is_some()
+            || self
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.kind != PickerKind::Continuation)
         {
             self.push_system(
                 "finish the active turn, history load, update or queued edit before continuing",
@@ -591,7 +454,7 @@ impl App {
             return;
         }
         let Some(prompt) = self.continuation.pending.clone() else {
-            self.push_system("no usage-limited request to continue; /continuation [manual|automatic] controls handoff");
+            self.push_system("no usage-limited request to continue; choose a target from the inline picker");
             return;
         };
         if target.is_empty()
@@ -599,7 +462,7 @@ impl App {
                 && !self.continuation.same_account_allowed()
                 && model.is_none_or(|m| m == self.model))
         {
-            self.push_system("usage: /continue ACCOUNT [MODEL] (choose another account or model)");
+            self.push_system("choose another account or model in the inline picker");
             return;
         }
         if let Some(model) = model {
@@ -626,25 +489,6 @@ impl App {
             self.push_system(
                 "choose a different account with an explicit home from /use before continuing",
             );
-            return;
-        }
-        let (_, mut context) = self.continuation_route_inputs();
-        context.attempted_accounts.clear();
-        context.attempted_pairs.clear();
-        context.allow_same_target = self.continuation.same_account_allowed();
-        let decision = crate::routing::capture(
-            &self.state_root,
-            &[crate::routing::Target {
-                account: target.into(),
-                model: model.map(str::to_owned),
-            }],
-            &context,
-        );
-        if decision.selected().is_none() {
-            self.push_system(format!(
-                "continuation paused: {}",
-                decision.report().join("\n")
-            ));
             return;
         }
         let original = crate::attachments::Message::decode(&prompt);
@@ -735,8 +579,8 @@ mod tests {
         )
         .unwrap();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        app.continuation_command("manual");
-        app.continuation_command("");
+        app.set_session_handoff("manual");
+        app.open_handoff_settings();
         let picker = app.picker.as_mut().unwrap();
         let index = picker
             .rows
@@ -765,109 +609,10 @@ mod tests {
         exhausted(&mut app, &tx);
         assert!(rx.try_recv().is_err());
         app.dismiss_picker();
-        app.continuation_command("automatic");
+        app.set_session_handoff("automatic");
         assert!(app.continuation.preferred_account.is_none());
         app.set_session_handoff("account:missing-account");
         assert!(app.continuation.preferred_account.is_none());
-    }
-
-    #[test]
-    fn session_handoff_screen_changes_policy_without_sending_paused_work() {
-        let (mut app, dir) = setup();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        app.continuation_command("manual");
-        app.run_line("Finish the change".into(), &tx);
-        rx.try_recv().unwrap();
-        exhausted(&mut app, &tx);
-        assert!(rx.try_recv().is_err());
-        app.dismiss_picker();
-        app.editor.set_text("draft stays");
-        app.continuation_command("");
-        let picker = app.picker.as_mut().unwrap();
-        assert_eq!(picker.kind, PickerKind::HandoffSettings);
-        picker.state.select(Some(1));
-        app.apply_picker_selection(Some(&tx));
-        assert!(app.continuation.automatic);
-        assert!(app.continuation.waiting());
-        assert_eq!(app.editor.text(), "draft stays");
-        app.queue_advance(&tx);
-        assert!(rx.try_recv().is_err());
-        let config = std::fs::read(dir.path().join("config.toml")).unwrap();
-        let approved = app.continuation.routing.clone().unwrap();
-        app.continuation_command("policy set third backup");
-        assert!(
-            rx.try_recv().is_err(),
-            "editing routing never sends the paused request"
-        );
-        assert_eq!(app.editor.text(), "draft stays");
-        assert_eq!(
-            app.continuation.routing.as_ref().unwrap().revision,
-            approved.revision,
-            "an approved task keeps its policy when a future-task override changes"
-        );
-        let mut reopened = App::new(dir.path().into(), dir.path().into());
-        reopened.run_line("new request".into(), &tx);
-        rx.try_recv().unwrap();
-        assert_eq!(
-            reopened.continuation.routing.as_ref().unwrap().targets[0]
-                .target
-                .account,
-            "third"
-        );
-        assert_eq!(
-            std::fs::read(dir.path().join("config.toml")).unwrap(),
-            config
-        );
-
-        let (_, context) = app.continuation_route_inputs();
-        assert_eq!(
-            approved
-                .evaluate(dir.path(), &context)
-                .unwrap()
-                .selected()
-                .unwrap()
-                .candidate
-                .target
-                .account,
-            "backup"
-        );
-        let replacement = dir.path().join("replacement-backup");
-        std::fs::create_dir_all(&replacement).unwrap();
-        std::fs::write(
-            replacement.join("auth.json"),
-            "synthetic-login-presence-marker",
-        )
-        .unwrap();
-        crate::store::modify_store(dir.path(), |store| {
-            store
-                .accounts
-                .iter_mut()
-                .find(|account| account.id == "backup")
-                .unwrap()
-                .home_path = Some(replacement.to_string_lossy().into());
-            Ok(())
-        })
-        .unwrap();
-        let changed = approved.evaluate(dir.path(), &context).unwrap();
-        let backup = changed
-            .candidates
-            .iter()
-            .find(|candidate| candidate.candidate.target.account == "backup")
-            .unwrap();
-        assert!(
-            !backup.eligible
-                && backup
-                    .blocked
-                    .contains(&crate::routing::Reason::BindingChanged)
-        );
-        assert!(approved
-            .verify_binding(dir.path(), &backup.candidate.target)
-            .is_err());
-
-        let policy = dir.path().join("routing-policy.json");
-        std::fs::write(&policy, b"{broken").unwrap();
-        assert!(crate::routing::policy_command(dir.path(), false, "legacy").is_err());
-        assert_eq!(std::fs::read(&policy).unwrap(), b"{broken");
     }
 
     #[test]
@@ -1306,7 +1051,7 @@ mod tests {
                 assert_eq!(app.queue.items, ["later task"]);
             }
             if case == "manual" {
-                app.run_line("/continue backup".into(), &tx);
+                app.continue_usage("backup", &tx);
                 assert!(rx.try_recv().unwrap().contains("Fix the graph"));
             }
         }

@@ -8,87 +8,168 @@
 <circle cx="40" cy="18" r="6" fill="#febc2e"/>
 <circle cx="60" cy="18" r="6" fill="#28c840"/>
 <text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia — command options</text>
-<rect x="14" y="36" width="225" height="19" fill="#303030"/>
-<rect x="239" y="36" width="81" height="19" fill="#87d787"/>
-<rect x="320" y="36" width="684" height="19" fill="#303030"/>
+<rect x="14" y="36" width="297" height="19" fill="#303030"/>
+<rect x="311" y="36" width="81" height="19" fill="#87d787"/>
+<rect x="392" y="36" width="612" height="19" fill="#303030"/>
 <rect x="14" y="55" width="990" height="19" fill="#303030"/>
+<rect x="14" y="74" width="9" height="19" fill="#000000"/>
+<rect x="23" y="74" width="972" height="19" fill="#3a3a3a"/>
+<rect x="995" y="74" width="9" height="19" fill="#000000"/>
+<rect x="14" y="93" width="990" height="19" fill="#000000"/>
+<rect x="14" y="112" width="9" height="19" fill="#000000"/>
 <rect x="23" y="112" width="972" height="19" fill="#262626"/>
+<rect x="995" y="112" width="9" height="19" fill="#000000"/>
+<rect x="14" y="131" width="990" height="19" fill="#000000"/>
+<rect x="14" y="150" width="990" height="19" fill="#000000"/>
+<rect x="14" y="169" width="990" height="19" fill="#000000"/>
+<rect x="14" y="188" width="990" height="19" fill="#000000"/>
+<rect x="14" y="207" width="990" height="19" fill="#000000"/>
+<rect x="14" y="226" width="990" height="19" fill="#000000"/>
+<rect x="14" y="245" width="288" height="19" fill="#000000"/>
 <rect x="302" y="245" width="54" height="19" fill="#303030"/>
+<rect x="356" y="245" width="648" height="19" fill="#000000"/>
+<rect x="14" y="264" width="990" height="19" fill="#000000"/>
+<rect x="14" y="283" width="990" height="19" fill="#000000"/>
+<rect x="14" y="302" width="45" height="19" fill="#000000"/>
 <rect x="59" y="302" width="234" height="19" fill="#303030"/>
+<rect x="293" y="302" width="711" height="19" fill="#000000"/>
+<rect x="14" y="321" width="45" height="19" fill="#000000"/>
 <rect x="59" y="321" width="54" height="19" fill="#303030"/>
+<rect x="113" y="321" width="891" height="19" fill="#000000"/>
+<rect x="14" y="340" width="81" height="19" fill="#000000"/>
 <rect x="95" y="340" width="36" height="19" fill="#303030"/>
-<rect x="23" y="397" width="369" height="19" fill="#303030"/>
-<rect x="23" y="416" width="189" height="19" fill="#303030"/>
-<rect x="23" y="435" width="45" height="19" fill="#303030"/>
+<rect x="131" y="340" width="873" height="19" fill="#000000"/>
+<rect x="14" y="359" width="990" height="19" fill="#000000"/>
+<rect x="14" y="378" width="990" height="19" fill="#000000"/>
+<rect x="14" y="397" width="9" height="19" fill="#000000"/>
+<rect x="23" y="397" width="972" height="19" fill="#303030"/>
+<rect x="995" y="397" width="9" height="19" fill="#000000"/>
+<rect x="14" y="416" width="9" height="19" fill="#000000"/>
+<rect x="23" y="416" width="972" height="19" fill="#303030"/>
+<rect x="995" y="416" width="9" height="19" fill="#000000"/>
+<rect x="14" y="435" width="9" height="19" fill="#000000"/>
+<rect x="23" y="435" width="972" height="19" fill="#303030"/>
+<rect x="995" y="435" width="9" height="19" fill="#000000"/>
+<rect x="14" y="454" width="990" height="19" fill="#000000"/>
+<rect x="14" y="473" width="18" height="19" fill="#000000"/>
 <rect x="32" y="473" width="693" height="19" fill="#444444"/>
+<rect x="725" y="473" width="279" height="19" fill="#000000"/>
+<rect x="14" y="492" width="990" height="19" fill="#000000"/>
+<rect x="14" y="511" width="990" height="19" fill="#000000"/>
+<rect x="14" y="530" width="990" height="19" fill="#000000"/>
+<rect x="14" y="549" width="720" height="19" fill="#000000"/>
 <rect x="734" y="549" width="261" height="19" fill="#262626"/>
+<rect x="995" y="549" width="9" height="19" fill="#000000"/>
+<rect x="14" y="568" width="990" height="19" fill="#000000"/>
+<rect x="14" y="587" width="990" height="19" fill="#000000"/>
+<rect x="14" y="606" width="990" height="19" fill="#000000"/>
+<rect x="14" y="625" width="990" height="19" fill="#000000"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
-<text x="23" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-03u</text>
-<text x="248" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
-<text x="338" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
-<text x="545" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
-<text x="23" y="69" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Credits: not reported  │</text>
-<text x="257" y="69" textLength="351" lengthAdjust="spacingAndGlyphs" fill="#666666">Subscription: 5h 59% left · 7d 41% left</text>
+<text x="23" y="50" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffb000">← Home</text>
+<text x="95" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-12o</text>
+<text x="320" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#0c0c0c" font-weight="700">Codex 3</text>
+<text x="410" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
+<text x="518" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">gpt-5.1-codex</text>
+<text x="23" y="69" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#ffb000">Credits: not reported</text>
+<text x="221" y="69" textLength="378" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">│  Subscription: 5h 59% left · 7d 41% left</text>
 <text x="23" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#5fafff">|</text>
-<text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">interrupts.</text>
+<text x="59" y="88" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#a7a7a7">interrupts.</text>
+<text x="986" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="107" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="23" y="126" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#87d7ff" font-weight="700">You ›</text>
-<text x="77" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Add a /doctor check for duplicate accounts and show me the diff</text>
+<text x="77" y="126" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">Add a /doctor check for duplicate accounts and show me the diff</text>
+<text x="986" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="23" y="145" textLength="207" lengthAdjust="spacingAndGlyphs" fill="#87d787" font-weight="700">Codex 3 · gpt-5.1-codex</text>
-<text x="23" y="164" textLength="342" lengthAdjust="spacingAndGlyphs" fill="#87af87">▸ │ ✓ Run command  rg -n duplicate src</text>
-<text x="23" y="183" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#87af87">▸ │ ✓ Edit file  src/doctor.rs</text>
-<text x="23" y="202" textLength="378" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">▸ │ ◉ Run command  cargo test -p concordia</text>
+<text x="986" y="145" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#68c58b">✓</text>
+<text x="77" y="164" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Ran search</text>
+<text x="176" y="164" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="986" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#68c58b">✓</text>
+<text x="77" y="183" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Edit File</text>
+<text x="167" y="183" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="986" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">◉</text>
+<text x="77" y="202" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Run tests</text>
+<text x="167" y="202" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="986" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="23" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f" font-weight="700">●</text>
-<text x="41" y="221" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">What I changed</text>
-<text x="41" y="259" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">I added a</text>
-<text x="131" y="259" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">duplicate check</text>
-<text x="275" y="259" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to</text>
+<text x="41" y="221" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">What I changed</text>
+<text x="986" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="240" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="259" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">I added a</text>
+<text x="131" y="259" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0" font-weight="700">duplicate check</text>
+<text x="275" y="259" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">to</text>
 <text x="302" y="259" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
-<text x="356" y="259" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">. It groups accounts by provider and email, so two slots signed in to</text>
-<text x="41" y="278" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the same login are reported once.</text>
-<text x="41" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
+<text x="356" y="259" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">. It groups accounts by provider and email, so two slots signed in to</text>
+<text x="986" y="259" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="278" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">the same login are reported once.</text>
+<text x="986" y="278" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="297" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">•</text>
 <text x="59" y="316" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">accounts::duplicate_groups</text>
-<text x="302" y="316" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">finds the groups</text>
-<text x="41" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
+<text x="302" y="316" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">finds the groups</text>
+<text x="986" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">•</text>
 <text x="59" y="335" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
-<text x="122" y="335" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">prints a warning per group, naming both accounts and the fix</text>
-<text x="41" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="354" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the</text>
+<text x="122" y="335" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">prints a warning per group, naming both accounts and the fix</text>
+<text x="986" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">•</text>
+<text x="59" y="354" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">the</text>
 <text x="95" y="354" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use</text>
-<text x="140" y="354" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">picker marks each side with</text>
-<text x="392" y="354" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-style="italic">same login as ...</text>
-<text x="59" y="392" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">rust</text>
+<text x="140" y="354" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">picker marks each side with</text>
+<text x="392" y="354" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0" font-style="italic">same login as ...</text>
+<text x="986" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="59" y="392" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#868177" font-style="italic">rust</text>
+<text x="986" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="59" y="411" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">for group in duplicate_groups(root) {</text>
+<text x="986" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="95" y="430" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">warn(&amp;group);</text>
+<text x="986" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
 <text x="59" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">}</text>
-<text x="23" y="468" textLength="711" lengthAdjust="spacingAndGlyphs" fill="#666666">╭ /use options ───────────────────────────────────────────────────────────────╮</text>
-<text x="23" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="32" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">&gt;</text>
-<text x="50" y="487" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use</text>
-<text x="167" y="487" textLength="558" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" font-weight="700">ACCOUNT | add PROVIDER | remove ACCOUNT - Enter opens accounts</text>
-<text x="725" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="506" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use add</text>
+<text x="986" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="468" textLength="711" lengthAdjust="spacingAndGlyphs" fill="#868177">╭ /use options ───────────────────────────────────────────────────────────────╮</text>
+<text x="986" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="32" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0" font-weight="700">&gt;</text>
+<text x="50" y="487" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">/use</text>
+<text x="167" y="487" textLength="558" lengthAdjust="spacingAndGlyphs" fill="#b3b3b3" font-weight="700">ACCOUNT | add PROVIDER | remove ACCOUNT - Enter opens accounts</text>
+<text x="725" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="986" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="50" y="506" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">/use add</text>
 <text x="167" y="506" textLength="513" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">connect a provider account - Enter opens provider choices</text>
-<text x="725" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="525" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use remove</text>
+<text x="725" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="986" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="50" y="525" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">/use remove</text>
 <text x="167" y="525" textLength="423" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">remove an account - Enter opens removal choices</text>
-<text x="725" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="50" y="544" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">/use rename</text>
+<text x="725" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="986" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="50" y="544" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">/use rename</text>
 <text x="167" y="544" textLength="549" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">ACCOUNT NICKNAME - rename for display; omit nickname to reset</text>
-<text x="725" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#666666">│</text>
-<text x="23" y="563" textLength="711" lengthAdjust="spacingAndGlyphs" fill="#666666">╰─────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">╭</text>
-<text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
-<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
-<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
-<text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
-<text x="41" y="601" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">/use</text>
-<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
-<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#585858">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="23" y="639" textLength="432" lengthAdjust="spacingAndGlyphs" fill="#666666">↑↓ select · Tab complete · Enter run · Esc close</text>
-<text x="797" y="639" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">permissions: workspace</text>
+<text x="725" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="986" y="544" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="563" textLength="711" lengthAdjust="spacingAndGlyphs" fill="#868177">╰─────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="986" y="563" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8f8f8f">│</text>
+<text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#797979">╭</text>
+<text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#868177">message</text>
+<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#797979">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#797979">│</text>
+<text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">&gt;</text>
+<text x="41" y="601" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">/use</text>
+<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#797979">│</text>
+<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#797979">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="23" y="639" textLength="432" lengthAdjust="spacingAndGlyphs" fill="#868177">↑↓ select · Tab complete · Enter run · Esc close</text>
+<text x="824" y="639" textLength="171" lengthAdjust="spacingAndGlyphs" fill="#68c58b" font-weight="700">permissions: edit ▾</text>
 </g>
 </g>
 <rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>

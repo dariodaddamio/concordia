@@ -37,6 +37,7 @@ pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude",
         ProviderKind::Cursor => "Cursor",
+        ProviderKind::Grok => "Grok Build",
     };
     let id = normalize_account_id(account);
     if id == provider.as_str() {
@@ -90,6 +91,7 @@ fn dir_logged_in(provider: ProviderKind, home: &Path) -> bool {
                 .unwrap_or(false)
         }
         ProviderKind::Cursor => cursor_home_ready(home),
+        ProviderKind::Grok => home.join("config.toml").is_file() && home.join("auth.json").is_file(),
     }
 }
 
@@ -168,6 +170,17 @@ pub fn builtin_accounts() -> Vec<AccountDef> {
             label: "Cursor".into(),
             custom: false,
         },
+        AccountDef {
+            provider: ProviderKind::Grok,
+            account: "grok".into(),
+            home_path: Some(
+                std::env::var("AO_GROK_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| home.join(".grok")),
+            ),
+            label: "Grok Build".into(),
+            custom: false,
+        },
     ]
 }
 
@@ -217,6 +230,7 @@ fn discover_numbered_homes(
                 ProviderKind::Codex => "Codex",
                 ProviderKind::Claude => "Claude",
                 ProviderKind::Cursor => "Cursor",
+                ProviderKind::Grok => "Grok Build",
             },
             suffix
         );

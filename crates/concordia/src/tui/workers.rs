@@ -8,14 +8,13 @@
 use super::text::char_width;
 use super::{contains, provider_color, App, Phase};
 use crate::accounts::{get_account, is_logged_in, normalize_account_id};
-use crate::commands::SlashCommand;
 use crate::delegate::{
-    add_worker, build_worker_context, extract_delegate_blocks, fmt_elapsed, help_lines,
-    remove_worker, result_block, use_prompt, worker_trust, Delegates, Job, JobSpec, Origin, Submit,
+    build_worker_context, extract_delegate_blocks, fmt_elapsed, result_block, use_prompt,
+    worker_trust, Delegates, Job, JobSpec, Origin, Submit,
     WorkerState, MAX_PENDING_CONFIRMS,
 };
 use crate::provider::stream_cards::format_card_line;
-use crate::store::{get_settings, set_delegation_protocol, ChildTrust, TrustMode};
+use crate::store::{get_settings, ChildTrust, TrustMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -48,10 +47,6 @@ pub(super) struct Panel {
     auto_return_paused: bool,
     recovery_notice: bool,
     recoveries: Vec<RecoveryRead>,
-    route_read: Option<(
-        u64,
-        std::sync::mpsc::Receiver<Result<crate::routing::Decision, String>>,
-    )>,
     delivery_read: Option<DeliveryRead>,
 }
 
@@ -117,7 +112,7 @@ struct Confirm {
     /// When it became the front prompt. A bare y/n only answers after `ARM_AFTER`, so type-ahead
     /// that happens to start with y or n can never approve or decline by accident.
     since: Instant,
-    goal: Option<crate::goals::changes::Proposal>,
+    goal: Option<()>,
     goal_armed: std::cell::Cell<bool>,
     goal_visible: std::cell::Cell<bool>,
     goal_draft_revision: std::cell::Cell<u64>,
@@ -336,7 +331,6 @@ fn draw_confirm(f: &mut Frame, over: Rect, app: &App, c: &Confirm) {
             || app.workspace.focused.is_some()
             || app.activity.detail.is_some()
             || app.questions.focused
-            || app.project_search.active()
             || app.deleg.input.is_some()
         {
             c.goal_armed.set(false);
@@ -352,7 +346,7 @@ fn draw_confirm(f: &mut Frame, over: Rect, app: &App, c: &Confirm) {
             "F7 focuses goal review; your message draft is preserved."
         };
         let rows = wrap_plain(
-            &format!("{}\n{prompt}", goal.description()),
+            &format!("{prompt}"),
             over.width.saturating_sub(4) as usize,
         );
         let full = rows.len().saturating_add(2) <= over.height as usize;
@@ -812,60 +806,6 @@ impl App {
         true
     }
 
-    pub(super) fn worker_route_inputs(
-        &self,
-    ) -> Result<(Vec<crate::routing::Target>, crate::routing::Context), String> {
-        let settings = get_settings(&self.state_root);
-        let mut context = crate::routing::Context::new(
-            crate::routing::Purpose::Worker,
-            &self.account,
-            self.provider,
-            self.home_path.clone(),
-            Some(self.model.clone()),
-        );
-        context.workers = Some(
-            settings
-                .workers
-                .iter()
-                .map(|account| normalize_account_id(account))
-                .collect(),
-        );
-        let targets = crate::routing::worker_targets(&self.state_root)?;
-        for account in &settings.workers {
-            if self.deleg.d.running_for(account).is_some() {
-                context.running.insert(account.clone());
-            }
-            context
-                .queued
-                .insert(account.clone(), self.deleg.d.queued_for(account));
-        }
-        Ok((targets, context))
-    }
-
-    pub(super) fn inspect_routes(
-        &mut self,
-        targets: Vec<crate::routing::Target>,
-        context: crate::routing::Context,
-        approved: Option<crate::routing::Approved>,
-    ) {
-        if self.deleg.route_read.is_some() {
-            self.push_system("A local route inspection is already running.");
-            return;
-        }
-        let root = self.state_root.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.deleg.route_read = Some((self.deleg.generation, rx));
-        std::thread::spawn(move || {
-            let decision = approved
-                .map(|approved| approved.evaluate(&root, &context))
-                .unwrap_or_else(|| Ok(crate::routing::capture(&root, &targets, &context)));
-            let _ = tx.send(decision);
-        });
-        self.push_system(
-            "Reading local route facts; capacity remains unknown without a verified observation.",
-        );
-    }
-
     pub(super) fn restore_workers(&mut self) {
         let Some(lease) = self.keep.lease.as_ref() else {
             return;
@@ -964,34 +904,6 @@ impl App {
         let mut changed = self.deleg.d.any_active();
         changed |= self.poll_dependency_delivery();
         changed |= self.poll_managed_workspaces();
-        changed |= self.poll_scope_inspection();
-        if let Some((generation, rx)) = &self.deleg.route_read {
-            match rx.try_recv() {
-                Ok(decision) => {
-                    let current = *generation == self.deleg.generation;
-                    self.deleg.route_read = None;
-                    changed = true;
-                    if current {
-                        self.push_system(
-                            decision
-                                .map(|decision| decision.report().join("\n"))
-                                .unwrap_or_else(|error| error),
-                        );
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    let current = *generation == self.deleg.generation;
-                    self.deleg.route_read = None;
-                    changed = true;
-                    if current {
-                        self.push_system(
-                            "Local route inspection stopped; retry the inspection command.",
-                        );
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
         let now = Instant::now();
         let finished = self.deleg.d.poll(now);
         if let Some(error) = self.deleg.d.recovery_error() {
@@ -1046,6 +958,13 @@ impl App {
             let Some(j) = self.deleg.d.get(id) else {
                 continue;
             };
+            crate::mcp::update_matching(
+                &self.state_root,
+                &j.account,
+                &j.task,
+                if j.state == WorkerState::Done { "finished" } else { "failed" },
+                Some(j.final_text()),
+            );
             crate::logging::info(&format!(
                 "delegate-finish id={} worker={} state={} ms={} cards={} origin={:?}",
                 j.id,
@@ -1140,7 +1059,6 @@ impl App {
             || self.workspace.focused.is_some()
             || self.activity.detail.is_some()
             || self.questions.focused
-            || self.project_search.active()
             || self.deleg.viewer.is_some()
             || self.deleg.input.is_some()
             || self.queue.focused
@@ -1170,48 +1088,17 @@ impl App {
         }
         let slots = MAX_PENDING_CONFIRMS.saturating_sub(self.deleg.confirms.len());
         let mut changed = false;
-        for proposal in crate::mcp::take_pending(
-            &self.state_root,
-            crate::store::delegation_protocol_on(&self.state_root),
-            slots,
-        ) {
+        for proposal in crate::mcp::take_pending(&self.state_root, slots) {
             changed = true;
             match proposal {
                 crate::mcp::PendingProposal::Delegate(proposal) => {
+                    crate::mcp::update_agent(&self.state_root, &proposal.agent_id, "running", None, "accepted by Concordia");
                     if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
-                        self.queue_proposals(vec![block]);
-                    }
-                }
-                crate::mcp::PendingProposal::Goal(proposal) => {
-                    if self.deleg.confirms.iter().any(|confirm| {
-                        confirm
-                            .goal
-                            .as_ref()
-                            .is_some_and(|goal| goal.request_id == proposal.request_id)
-                    }) {
-                        continue;
-                    }
-                    match crate::goals::changes::existing_status(&self.state_root, &proposal) {
-                        Ok(Some(status)) => {
-                            self.push_system(status);
-                            continue;
+                        match self.start_delegate(&block.to, &block.task, Origin::Protocol) {
+                            Ok(message) => self.push_system(message),
+                            Err(error) => self.push_system(format!("delegate failed - {error}")),
                         }
-                        Err(error) => {
-                            self.push_system(format!("Goal proposal unavailable: {error}"));
-                            continue;
-                        }
-                        Ok(None) => {}
                     }
-                    super::landing::close(self);
-                    self.deleg.confirms.push_back(Confirm {
-                        to: "goals".into(),
-                        task: proposal.description(),
-                        since: Instant::now(),
-                        goal: Some(proposal),
-                        goal_armed: std::cell::Cell::new(false),
-                        goal_visible: std::cell::Cell::new(false),
-                        goal_draft_revision: std::cell::Cell::new(0),
-                    });
                 }
             }
         }
@@ -1219,16 +1106,12 @@ impl App {
     }
 
     fn queue_proposals(&mut self, blocks: Vec<crate::delegate::DelegateBlock>) {
-        let settings = get_settings(&self.state_root);
         let orch = normalize_account_id(&self.account);
         for b in blocks {
-            let is_worker = settings
-                .workers
-                .iter()
-                .any(|w| normalize_account_id(w) == b.to);
-            if !is_worker || b.to == orch {
+            let is_connected = crate::accounts::get_account(&self.state_root, &b.to).is_some();
+            if !is_connected || b.to == orch {
                 self.push_system(format!(
-                    "the orchestrator proposed delegating to {} - ignored: not one of your workers (/workers)",
+                    "delegation to {} ignored: account is not connected or is the parent account",
                     b.to
                 ));
                 continue;
@@ -1262,17 +1145,6 @@ impl App {
             next.since = Instant::now();
             next.goal_armed.set(false);
             next.goal_visible.set(false);
-        }
-        if let Some(goal) = c.goal {
-            let result = if yes {
-                crate::goals::changes::apply(&self.state_root, &goal)
-            } else {
-                crate::goals::changes::decline(&self.state_root, &goal)
-            };
-            self.push_system(
-                result.unwrap_or_else(|error| format!("Goal proposal not applied: {error}")),
-            );
-            return;
         }
         crate::logging::info(&format!("delegate-answer to={} approved={yes}", c.to));
         if !yes {
@@ -1335,48 +1207,36 @@ impl App {
         }
         let settings = get_settings(&self.state_root);
         let orch = normalize_account_id(&self.account);
-        let workers: Vec<String> = settings
-            .workers
-            .iter()
-            .map(|w| normalize_account_id(w))
-            .collect();
-        if workers.is_empty() {
-            return Err("no workers yet - /workers add <account>".into());
-        }
         let manual = if target != "auto" {
             let t = normalize_account_id(target);
             if t == orch {
                 return Err(format!(
-                    "{t} is the orchestrator now; pick one of your workers (/workers)"
+                    "{t} is the parent account; choose another connected account"
                 ));
             }
-            if !workers.contains(&t) {
-                return Err(format!("{t} is not a worker - /workers add {t}"));
+            if crate::accounts::get_account(&self.state_root, &t).is_none() {
+                return Err(format!("{t} is not a connected account"));
             }
             Some(t)
         } else {
             None
         };
-        let (mut targets, context) = self.worker_route_inputs()?;
-        if let Some(account) = &manual {
-            targets = vec![crate::routing::Target {
-                account: account.clone(),
-                model: settings.worker_models.get(account).cloned(),
-            }];
+        let account = manual.unwrap_or_else(|| {
+            crate::accounts::list_all_accounts(&self.state_root)
+                .into_iter()
+                .find(|account| {
+                    normalize_account_id(&account.account) != orch
+                        && account.home_path.as_deref().is_some_and(|home| {
+                            is_logged_in(account.provider, home)
+                        })
+                })
+                .map(|account| account.account)
+                .unwrap_or_default()
+        });
+        if account.is_empty() {
+            return Err("no other connected account is logged in".into());
         }
-        let decision = crate::routing::capture(&self.state_root, &targets, &context);
-        let selected = if manual.is_some() {
-            decision
-                .candidates
-                .iter()
-                .find(|candidate| candidate.eligible)
-        } else {
-            decision.selected()
-        };
-        let model = selected.map(|row| row.candidate.target.model.clone());
-        let account = selected
-            .map(|row| row.candidate.target.account.clone())
-            .ok_or_else(|| format!("no eligible worker; {}", decision.report().join("\n")))?;
+        let model = None;
         let acct = get_account(&self.state_root, &account).ok_or_else(|| {
             format!("account {account} no longer exists - /workers remove {account}")
         })?;
@@ -1403,7 +1263,7 @@ impl App {
         let requested_trust = match settings.child_trust {
             ChildTrust::Inherit => self.trust,
             ChildTrust::Ask => TrustMode::Ask,
-            ChildTrust::Workspace => TrustMode::Workspace,
+            ChildTrust::Edit => TrustMode::Edit,
             ChildTrust::Full => TrustMode::Full,
         };
         let trust = worker_trust(self.trust, settings.child_trust);
@@ -1468,203 +1328,6 @@ impl App {
     }
 
     /// Handle `/workers` and `/delegate`. Returns false for every other command.
-    pub(super) fn try_delegate_slash(&mut self, cmd: &SlashCommand) -> bool {
-        let root = self.state_root.clone();
-        match cmd {
-            SlashCommand::CrewList => {
-                let crews = crate::config::Config::load(&root).config.crews;
-                if crews.is_empty() { self.push_system("No crews configured in config.toml."); }
-                else { self.push_system(format!("Crews: {}", crews.keys().cloned().collect::<Vec<_>>().join(", "))); }
-            }
-            SlashCommand::CrewClear => {
-                match clear_crew(&root) {
-                    Ok(()) => self.push_system("Crew cleared; worker enrollment and preset models reset."),
-                    Err(error) => self.push_system(format!("crew clear failed - {error}")),
-                }
-            }
-            SlashCommand::CrewUse(name) => {
-                if self.busy || self.preparing_cancel.is_some() || self.cancel_handle.is_some() {
-                    self.push_system("Finish or cancel the active turn before changing crew lead or model.");
-                    return true;
-                }
-                let crews = crate::config::Config::load(&root).config.crews;
-                match crews.get(name.trim()) {
-                    Some(crew) => {
-                        match apply_crew(&root, &self.account, crew) {
-                            Ok((lead, workers)) => {
-                                self.refresh_account_continuity();
-                                self.push_system(format!(
-                                    "Crew '{}' selected: lead {} ({}); enrolled {} worker(s). Worker trust remains capped at {}.",
-                                    name,
-                                    lead.0,
-                                    lead.1.as_deref().unwrap_or("provider default"),
-                                    workers,
-                                    self.trust.as_str()
-                                ));
-                            }
-                            Err(error) => self.push_system(format!("crew failed - {error}")),
-                        }
-                    }
-                    None => self.push_system(format!("Crew '{}' is unavailable; no such crew in config.toml.", name)),
-                }
-            }
-            SlashCommand::Workers => {
-                let lines =
-                    crate::delegate::workers_report(&root, &self.account, &self.deleg.d, Instant::now());
-                for l in lines {
-                    self.push_system(l);
-                }
-            }
-            SlashCommand::WorkersAdd(None) | SlashCommand::WorkersRemove(None) => {
-                self.push_system("usage: /workers add <account> | /workers remove <account> (accounts: /use)");
-            }
-            SlashCommand::WorkersAdd(Some(a)) => {
-                match add_worker(&root, &self.account, a) {
-                    Ok(m) | Err(m) => self.push_system(m),
-                }
-            }
-            SlashCommand::WorkersRemove(Some(a)) => {
-                let id = normalize_account_id(a);
-                if self.deleg.d.running_for(&id).is_some() {
-                    self.push_system(format!("{id} is running a task - /delegate stop {id} first"));
-                } else {
-                    match remove_worker(&root, a) {
-                        Ok(m) | Err(m) => self.push_system(m),
-                    }
-                }
-            }
-            SlashCommand::Delegate { target, task } => {
-                if task.trim().is_empty() {
-                    self.push_system("usage: /delegate <account|auto> <task> (see /delegate help)");
-                } else {
-                    match self.start_delegate(target, task.trim(), Origin::User) {
-                        Ok(m) => self.push_system(m),
-                        Err(e) => self.push_system(format!("delegate failed - {e}")),
-                    }
-                }
-            }
-            SlashCommand::DelegateStop(acct) => self.delegate_stop(acct.as_deref()),
-            SlashCommand::DelegateAfter { after, target, task } => {
-                match self.start_delegate_after(target, task, Origin::User, after) {
-                    Ok(message) => self.push_system(message),
-                    Err(error) => self.push_system(format!("delegate failed - {error}")),
-                }
-            }
-            SlashCommand::DelegateGraph => {
-                let lines: Vec<_> = self.deleg.d.jobs.iter()
-                    .filter(|job| job.conversation_id == self.deleg.d.conversation_id())
-                    .map(|job| {
-                        let status = self.deleg.d.dependency_status(job.id);
-                        let parents: Vec<_> = self.deleg.d.dependency_graph().tasks().iter()
-                            .find(|task| task.run_id() == job.run_id)
-                            .map(|task| task.prerequisites().iter().map(|p| p.run_id.clone()).collect())
-                            .unwrap_or_default();
-                        let delivery = self.deleg.d.dependency_graph().tasks().iter().find(|task| task.run_id() == job.run_id).and_then(|task| task.delivery()).map(|receipt| format!("{} / {}", receipt.mode.label(), receipt.hash)).unwrap_or_else(|| "no cross-worktree acceptance".into());
-                        format!("#{} {}: {:?}\nrun {}\nprerequisite runs: {}\ndelivery: {}", job.id, job.account, status,
-                            job.run_id, if parents.is_empty() { "none".into() } else { parents.join(", ") }, delivery)
-                    }).collect();
-                if lines.is_empty() {
-                    self.push_system("No dependency tasks in this conversation.");
-                }
-                for line in lines { self.push_system(line); }
-            }
-            SlashCommand::DelegateDelivery(arguments) => self.dependency_delivery_command(arguments),
-            SlashCommand::DelegateRoutes(Some(id)) => {
-                self.push_system(self.deleg.d.get(*id).map(|job| job.routing_summary()).unwrap_or_else(|| "Unknown worker job".into()));
-            }
-            SlashCommand::DelegateRoutes(None) => {
-                match self.worker_route_inputs() {
-                    Ok((targets, context)) => self.inspect_routes(targets, context, None),
-                    Err(error) => self.push_system(error),
-                }
-            }
-            SlashCommand::DelegatePolicy(command) => {
-                let result = crate::routing::policy_command(&self.state_root, true, command).unwrap_or_else(|error| error);
-                self.push_system(result);
-            }
-            SlashCommand::DelegateScoped { account, declarations, task } => {
-                let result = self.start_delegate_scoped(account, task, Origin::User, &[], declarations)
-                    .unwrap_or_else(|error| format!("scoped worker not dispatched: {error}"));
-                self.push_system(result);
-            }
-            SlashCommand::DelegateWorktree { workspace, account, task } => {
-                let result = self.start_delegate_workspace(account, task, Origin::User, &[], &[], Some(workspace))
-                    .unwrap_or_else(|error| format!("managed worker not dispatched: {error}"));
-                self.push_system(result);
-            }
-            SlashCommand::DelegateScope(command) => {
-                let parts: Vec<_> = command.split_whitespace().collect();
-                let message = match parts.as_slice() {
-                    [] => {
-                        let mut jobs: Vec<_> = self.deleg.d.jobs.iter().collect();
-                        jobs.sort_by_key(|job| (job.state.is_finished(), job.id));
-                        let mut rows: Vec<_> = jobs.iter().take(16).map(|job| {
-                            let cwd = job.workspace.as_ref().map(|request| request.binding.execution.to_string_lossy().chars().take(180).collect::<String>()).unwrap_or_else(|| "legacy/unmanaged".into());
-                            format!("#{} {}: {} / {} declared paths / cwd {}\n/delegate scope {} inspects the full captured scope", job.id, job.account, job.state.label(), job.workspace.as_ref().map_or(0, |request| request.claims.len()), cwd, job.id)
-                        }).collect();
-                        if jobs.len() > 16 { rows.push(format!("Partial list: 16 of {} jobs; inspect an exact job ID for older entries", jobs.len())); }
-                        rows.join("\n")
-                    },
-                    [id] => id.parse::<u32>().ok().and_then(|id| self.deleg.d.get(id)).map(|job| job.workspace_summary()).unwrap_or_else(|| "Unknown worker job".into()),
-                    ["stopped", id] => match id.parse::<u32>() {
-                        Ok(id) => self.deleg.d.acknowledge_workspace_stopped(id).map(|_| "Stopped-process acknowledgment saved; inspect before retrying the task".into()).unwrap_or_else(|error| error),
-                        Err(_) => "Invalid worker job ID".into(),
-                    },
-                    _ => "usage: /delegate scope [ID|stopped ID]".into(),
-                };
-                self.push_system(if message.is_empty() { "No worker workspace declarations yet".into() } else { message });
-            }
-            SlashCommand::DelegateUse(acct) => self.delegate_use(acct.as_deref()),
-            SlashCommand::DelegateCollect => self.delegate_collect(),
-            SlashCommand::DelegateReturns(mode) => {
-                if let Some(auto) = mode {
-                    if let Err(e) = crate::store::modify_store(&root, |s| {
-                        s.settings.delegate_auto_return = *auto;
-                        Ok(())
-                    }) {
-                        self.push_system(format!("could not save return mode: {e}"));
-                        return true;
-                    }
-                    self.deleg.auto_return_paused = false;
-                    if !auto {
-                        self.deleg.outbox = None;
-                    }
-                }
-                self.push_system(if get_settings(&root).delegate_auto_return {
-                    "Worker returns: auto. Completed batches start a main-agent turn when idle; drafts stay intact. Proposals still need approval. /delegate returns manual disables this."
-                } else {
-                    "Worker returns: manual. /delegate collect sends new completed results together; /delegate returns auto enables automatic batches."
-                });
-            }
-            SlashCommand::DelegateModel { account, model } => {
-                let result = self.worker_model(account, model.as_deref());
-                self.push_system(result);
-            }
-            SlashCommand::DelegateHelp => {
-                for l in help_lines(crate::store::delegation_protocol_on(&root)) {
-                    self.push_system(l);
-                }
-            }
-            SlashCommand::DelegateProtocol(None) => {
-                let on = crate::store::delegation_protocol_on(&root);
-                self.push_system(format!(
-                    "delegation protocol is {} - /delegate protocol on|off (see /delegate help)",
-                    if on { "on" } else { "off" }
-                ));
-            }
-            SlashCommand::DelegateProtocol(Some(on)) => match set_delegation_protocol(&root, *on) {
-                Ok(()) => self.push_system(if *on {
-                    "delegation protocol on: orchestrator replies may propose delegations; each one needs your y"
-                } else {
-                    "delegation protocol off"
-                }),
-                Err(e) => self.push_system(format!("could not save - {e}")),
-            },
-            _ => return false,
-        }
-        true
-    }
-
     fn delegate_stop(&mut self, acct: Option<&str>) {
         let now = Instant::now();
         let n = match acct {
@@ -1743,15 +1406,8 @@ impl App {
 
     fn worker_model(&self, account: &str, model: Option<&str>) -> String {
         let account = normalize_account_id(account);
-        let settings = get_settings(&self.state_root);
         if account.is_empty() {
-            return format!(
-                "/delegate model ACCOUNT [MODEL|default]\nWorkers: {}",
-                settings.workers.join(", ")
-            );
-        }
-        if !settings.workers.contains(&account) {
-            return format!("{account} is not a worker; /workers add {account} first");
+            return "/delegate model ACCOUNT [MODEL|default]".into();
         }
         let Some(acct) = get_account(&self.state_root, &account) else {
             return "worker account is unavailable".into();
@@ -1763,26 +1419,13 @@ impl App {
             .unwrap_or_default();
         let Some(model) = model else {
             return format!("{account}: {}\nNative models: {}\n/delegate model {account} MODEL | default (applies to new jobs)",
-                settings.worker_models.get(&account).map(String::as_str).unwrap_or("provider default"),
+                "provider default",
                 if models.is_empty() { "catalog unavailable".into() } else { models.join(", ") });
         };
         if model != "default" && !models.iter().any(|m| m == model) {
             return format!("model is not in {account}'s local catalog; /delegate model {account} lists available ids");
         }
-        match crate::store::modify_store(&self.state_root, |store| {
-            if model == "default" {
-                store.settings.worker_models.remove(&account);
-            } else {
-                store
-                    .settings
-                    .worker_models
-                    .insert(account.clone(), model.to_string());
-            }
-            Ok(())
-        }) {
-            Ok(()) => format!("{account} model: {model}; applies to new jobs, including proposals"),
-            Err(e) => format!("could not save worker model: {e}"),
-        }
+        format!("{account} model {model} is available for this request; worker model selection is not persisted")
     }
 
     /// One main-agent turn for up to three newly completed results, preserving the composer.
@@ -1828,95 +1471,6 @@ impl App {
 
 /// Parse the compact local crew spelling `ACCOUNT:MODEL`. Account-only entries use the provider
 /// default model. The account id is deliberately opaque; only the final separator is meaningful.
-fn crew_target(value: &str) -> Result<(String, Option<String>), String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err("crew entries cannot be empty".into());
-    }
-    let (account, model) = value
-        .split_once(':')
-        .map_or((value, None), |(account, model)| (account, Some(model)));
-    let account = normalize_account_id(account);
-    if account.is_empty() {
-        return Err(format!("invalid crew account in {value:?}"));
-    }
-    let model = model
-        .map(str::trim)
-        .filter(|m| !m.is_empty())
-        .map(str::to_owned);
-    if model.as_deref().is_some_and(|m| {
-        !m.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "._-:/[]".contains(c))
-    }) {
-        return Err(format!("invalid model in {value:?}"));
-    }
-    Ok((account, model))
-}
-
-fn apply_crew(
-    root: &std::path::Path,
-    orchestrator: &str,
-    crew: &crate::config::Crew,
-) -> Result<((String, Option<String>), usize), String> {
-    let lead = crew_target(&crew.lead)?;
-    let account = crate::accounts::get_account(root, &lead.0)
-        .ok_or_else(|| format!("no lead account named {}", lead.0))?;
-    let mut workers = Vec::new();
-    for entry in &crew.workers {
-        let target = crew_target(entry)?;
-        if target.0 == lead.0 || target.0 == normalize_account_id(orchestrator) {
-            return Err(format!("{} cannot be both lead and worker", target.0));
-        }
-        if workers
-            .iter()
-            .any(|(account, _): &(String, Option<String>)| account == &target.0)
-        {
-            continue;
-        }
-        crate::delegate::check_add_worker(root, &lead.0, &target.0)?;
-        workers.push(target);
-    }
-    let cap = crate::config::for_root(root).delegation.max_workers;
-    if workers.len() > cap {
-        return Err(format!(
-            "crew has {} workers, but the configured cap is {cap}",
-            workers.len()
-        ));
-    }
-    crate::store::modify_store(root, |store| {
-        store.selection = Some(crate::store::UseSelection {
-            provider: account.provider,
-            account: account.account.clone(),
-            home_path: account
-                .home_path
-                .as_ref()
-                .map(|home| home.to_string_lossy().into_owned()),
-            model: lead.1.clone(),
-            updated_at: super::now_stamp(),
-        });
-        store.settings.workers = workers.iter().map(|(account, _)| account.clone()).collect();
-        store.settings.worker_models = workers
-            .iter()
-            .filter_map(|(account, model)| model.clone().map(|model| (account.clone(), model)))
-            .collect();
-        Ok(())
-    })
-    .map_err(|error| format!("could not save crew - {error}"))?;
-    Ok((lead, workers.len()))
-}
-
-fn clear_crew(root: &std::path::Path) -> Result<(), String> {
-    crate::store::modify_store(root, |store| {
-        store.settings.workers.clear();
-        store.settings.worker_models.clear();
-        Ok(())
-    })
-    .map_err(|error| format!("could not save crew - {error}"))
-}
-
-#[cfg(test)]
-mod tests;
-
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     app.deleg.viewer.is_none() && app.deleg.rects.iter().any(|(r, _)| contains(*r, x, y))
 }
