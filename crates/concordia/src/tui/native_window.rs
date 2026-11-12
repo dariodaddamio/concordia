@@ -90,6 +90,24 @@ struct TestControl {
 struct TestState {
     focused_tab: String,
     overlays: Vec<String>,
+    status_dot: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StatusDot {
+    Idle,
+    Working,
+    NeedsAttention,
+}
+
+impl StatusDot {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::NeedsAttention => "needs_attention",
+        }
+    }
 }
 
 struct TestRequest {
@@ -181,6 +199,11 @@ impl WindowBackend {
         let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
         state.focused_tab = focused_tab;
         state.overlays = overlays;
+    }
+    pub(super) fn set_status_dot(&mut self, status: StatusDot) {
+        if let Some(test) = self.shared.test_control.as_ref() {
+            test.state.lock().unwrap_or_else(|e| e.into_inner()).status_dot = status.as_str().into();
+        }
     }
     pub(super) fn set_images(&mut self, images: Vec<RasterImage>) -> io::Result<()> {
         if images.len() > 4
@@ -966,6 +989,7 @@ fn test_response(shared: &Shared, request: &serde_json::Value) -> serde_json::Va
         "title": screen.title,
         "focused_tab": state.focused_tab,
         "overlays": state.overlays,
+        "status_dot": state.status_dot,
         "columns": screen.size.width,
         "rows": screen.size.height,
         "grid": rows,

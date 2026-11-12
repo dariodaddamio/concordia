@@ -969,8 +969,12 @@ impl App {
                         match item.kind {
                             crate::needs_you::ItemKind::Question
                             | crate::needs_you::ItemKind::Approval => {
-                                self.queue.focused = false;
-                                self.questions.focused = true;
+                                if let Some(job) = item.id.strip_prefix("worker-native:").and_then(|value| value.split(':').next()).and_then(|value| value.parse().ok()) {
+                                    self.inspect_worker(job);
+                                } else {
+                                    self.queue.focused = false;
+                                    self.questions.focused = true;
+                                }
                             }
                             crate::needs_you::ItemKind::PausedQueue => {
                                 self.queue.focused = true;

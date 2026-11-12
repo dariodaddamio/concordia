@@ -866,6 +866,8 @@ impl App {
         use crate::needs_you::{Item, ItemKind};
         self.questions.refresh_native();
         let session = self.needs_you_session();
+        let project = self.cwd.file_name().map_or_else(|| "project".into(), |name| name.to_string_lossy().into_owned());
+        let chat = self.session_ui.title.clone().unwrap_or_else(|| "New chat".into());
         let approval = self.questions.native_approval_waiting();
         let current = [
             (
@@ -902,13 +904,20 @@ impl App {
         for (suffix, present, kind, title) in current {
             self.needs_you.remove_suffix(suffix);
             let id = format!("{session}:{suffix}");
+            crate::needs_you::withdraw(&id);
             if present {
-                self.needs_you.add(Item {
-                    id,
+                let item = Item {
+                    id: id.clone(),
                     session_id: session.clone(),
                     title: title.into(),
                     kind,
-                });
+                    project: project.clone(), chat: chat.clone(),
+                    agent: self.provider.as_str().into(), request: suffix.into(),
+                    context: self.questions.native_session_id().unwrap_or_else(|| "Waiting for a response".into()),
+                    source: "conversation".into(), created: std::time::Instant::now(),
+                };
+                crate::needs_you::publish(item.clone());
+                self.needs_you.add(item);
             }
         }
         self.needs_you.remove_kind(ItemKind::WorkerResult);
@@ -920,9 +929,31 @@ impl App {
                     session_id: job.session_id.clone().unwrap_or_else(|| job.id.to_string()),
                     title: format!("worker {} finished", job.id),
                     kind: ItemKind::WorkerResult,
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: format!("worker #{}", job.id),
+                    request: "result".into(),
+                    context: job.snippet.clone(),
+                    source: "worker conversation".into(),
+                    created: std::time::Instant::now(),
                 });
             } else {
                 self.needs_you.remove(&id);
+            }
+            for request in job.native_inputs() {
+                let id = format!("worker-native:{}:{}", job.id, request.envelope().request_id);
+                let approval = matches!(request.kind(), crate::provider::interaction::NativeInteraction::Permission { .. } | crate::provider::interaction::NativeInteraction::CodexPermission { .. } | crate::provider::interaction::NativeInteraction::PlanApproval { .. });
+                let item = Item {
+                    id: id.clone(), session_id: request.envelope().native_session_id.clone(),
+                    title: if approval { "worker approval" } else { "worker question" }.into(),
+                    kind: if approval { ItemKind::Approval } else { ItemKind::Question },
+                    project: project.clone(), chat: chat.clone(), agent: format!("worker #{}", job.id),
+                    request: request.envelope().request_id.to_string(),
+                    context: request.params.to_string().chars().take(512).collect(),
+                    source: "worker conversation".into(), created: std::time::Instant::now(),
+                };
+                crate::needs_you::publish(item.clone());
+                self.needs_you.add(item);
             }
         }
     }
@@ -933,13 +964,12 @@ impl App {
             self.flash("No questions, approvals or results need your attention.");
             return;
         }
-        let rows = self
-            .needs_you
+        let rows = crate::needs_you::snapshot()
             .items()
             .map(|item| PickerRow {
                 id: format!("needs:{}", item.id),
-                label: item.title.clone(),
-                detail: format!("{} · {}", item.kind.label(), item.session_id),
+                label: format!("{} - {}", item.project, item.title),
+                detail: format!("{} · {} · {} · waiting {}s · {}", item.chat, item.agent, item.kind.label(), item.created.elapsed().as_secs(), item.source),
             })
             .collect();
         self.show_picker(PickerKind::NeedsYou, "needs you".into(), rows, false);

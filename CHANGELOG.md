@@ -1,5 +1,11 @@
 # Changelog
 
+- W9: the Needs attention picker now uses enriched shared request records for foreground chats
+  and worker conversations, preserving provider-owned answer paths and showing project, chat,
+  agent, source and waiting context. Native requests are retained by their explicit interaction
+  owner instead of being discarded by the generic worker progress path. The native test snapshot
+  exposes the process-wide working/needs-attention/idle status state.
+
 - W8: provider-native slash commands are discoverable in the active-provider picker, while
   Concordia-owned cross-provider commands keep their single owner. Unknown slash names now pass
   through to the active provider instead of stopping at an unknown-command message.

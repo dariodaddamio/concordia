@@ -38,6 +38,12 @@ impl DisplayBackend {
             window.set_test_state(focused_tab, overlays);
         }
     }
+    #[cfg(windows)]
+    pub fn status_dot(&mut self, status: super::native_window::StatusDot) {
+        if let Self::Window(window) = self {
+            window.set_status_dot(status);
+        }
+    }
 }
 
 impl Write for DisplayBackend {

@@ -549,6 +549,23 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
             }
             let active = tabs.active;
+            #[cfg(windows)]
+            if use_window {
+                let mut needs_attention = false;
+                let mut working = false;
+                for tab in &mut tabs.tabs {
+                    tab.app.sync_needs_you();
+                    needs_attention |= !tab.app.needs_you.is_empty();
+                    working |= tab.app.busy || tab.app.deleg.d.any_active();
+                }
+                terminal.backend_mut().status_dot(if needs_attention {
+                    super::native_window::StatusDot::NeedsAttention
+                } else if working {
+                    super::native_window::StatusDot::Working
+                } else {
+                    super::native_window::StatusDot::Idle
+                });
+            }
             let labels: Vec<String> = if tabs.has_multiple() {
                 tabs.tabs.iter().map(|t| t.app.tab_label()).collect()
             } else {
