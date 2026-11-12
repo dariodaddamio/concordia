@@ -11,7 +11,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_concordia");
@@ -1053,6 +1053,11 @@ fn setup(root: &Path, provider: ProviderKind) {
         std::fs::create_dir_all(profile.join(name)).unwrap();
         std::fs::write(profile.join(name).join(marker), body).unwrap();
     }
+    std::fs::write(
+        profile.join(".cursor/concordia-api-key"),
+        "synthetic-cursor-api-key",
+    )
+    .unwrap();
     std::fs::create_dir_all(root.join("workspace")).unwrap();
     std::fs::write(
         root.join("config.toml"),
@@ -1153,7 +1158,7 @@ impl Session {
         for arg in args {
             cmd.arg(arg);
         }
-        cmd.cwd(workspace);
+        cmd.current_dir(workspace);
         for key in [
             "NO_COLOR",
             "CONCORDIA_CONFIG",
@@ -1197,7 +1202,7 @@ impl Session {
                 Err(error) => panic!("native test control did not start: {error}"),
             }
         };
-        let mut session = Self {
+        let session = Self {
             child,
             control,
             token,
@@ -1208,62 +1213,137 @@ impl Session {
     }
 
     fn send(&mut self, text: &str) {
+        if text.chars().count() > 1
+            && !text.contains('\x1b')
+            && (text.contains('\r') || text.contains('\n'))
+        {
+            self.request(serde_json::json!({"op":"text","text":text}));
+            std::thread::sleep(Duration::from_millis(90));
+            return;
+        }
         let mut chars = text.chars().peekable();
         while let Some(character) = chars.next() {
             if character == '\x1b' {
                 if chars.next_if_eq(&'[').is_some() {
                     let mut sequence = String::new();
-                    while let Some(next) = chars.next() {
+                    for next in chars.by_ref() {
                         sequence.push(next);
-                        if next.is_ascii_alphabetic() || next == 'M' || next == 'm' {
+                        if ('@'..='~').contains(&next) {
                             break;
                         }
                     }
                     self.send_escape(&sequence);
+                } else if let Some(next) = chars.next() {
+                    self.request(serde_json::json!({
+                        "op":"key",
+                        "code":next.to_string(),
+                        "modifiers":["ALT"]
+                    }));
+                } else {
+                    self.request(serde_json::json!({"op":"key","code":"Esc"}));
                 }
             } else if character == '\r' || character == '\n' {
                 self.request(serde_json::json!({"op":"key","code":"Enter"}));
+            } else if character == '\t' {
+                self.request(serde_json::json!({"op":"key","code":"Tab"}));
+            } else if character == '\u{8}' {
+                self.request(serde_json::json!({
+                    "op":"key","code":"Backspace","modifiers":["CTRL"]
+                }));
+            } else if character == '\u{7f}' {
+                self.request(serde_json::json!({"op":"key","code":"Backspace"}));
             } else if character.is_control() {
                 let code = ((character as u32) + b'a' as u32 - 1) as u8 as char;
                 self.request(
                     serde_json::json!({"op":"key","code":code.to_string(),"modifiers":["CTRL"]}),
                 );
             } else {
-                self.request(serde_json::json!({"op":"text","text":character.to_string()}));
+                self.request(serde_json::json!({
+                    "op":"key",
+                    "code":character.to_string()
+                }));
             }
         }
         std::thread::sleep(Duration::from_millis(90));
     }
 
     fn send_escape(&mut self, sequence: &str) {
-        let code = match sequence {
-            "A" => "Up",
-            "B" => "Down",
-            "C" => "Right",
-            "D" => "Left",
-            "H" => "Home",
-            "F" => "End",
-            "5~" => "PageUp",
-            "6~" => "PageDown",
-            "3~" => "Delete",
+        if let Some(mouse) = sequence.strip_prefix('<') {
+            let kind = mouse.chars().last().unwrap_or_default();
+            let fields: Vec<_> = mouse[..mouse.len().saturating_sub(kind.len_utf8())]
+                .split(';')
+                .collect();
+            if fields.len() == 3 {
+                if let (Ok(button), Ok(x), Ok(y)) = (
+                    fields[0].parse::<u16>(),
+                    fields[1].parse::<u16>(),
+                    fields[2].parse::<u16>(),
+                ) {
+                    let kind = match (button, kind) {
+                        (0, 'M') => "down",
+                        (0, 'm') => "up",
+                        (64, 'M') => "scroll_up",
+                        (65, 'M') => "scroll_down",
+                        _ => return,
+                    };
+                    self.request(serde_json::json!({
+                        "op":"mouse",
+                        "kind":kind,
+                        "x":x.saturating_sub(1),
+                        "y":y.saturating_sub(1)
+                    }));
+                }
+            }
+            return;
+        }
+        let (code, modifiers) = match sequence {
+            "A" => ("Up", Vec::new()),
+            "B" => ("Down", Vec::new()),
+            "C" => ("Right", Vec::new()),
+            "D" => ("Left", Vec::new()),
+            "H" => ("Home", Vec::new()),
+            "F" => ("End", Vec::new()),
+            "1;2A" => ("Up", vec!["SHIFT"]),
+            "1;2B" => ("Down", vec!["SHIFT"]),
+            "1;2C" => ("Right", vec!["SHIFT"]),
+            "1;2D" => ("Left", vec!["SHIFT"]),
+            "1;3A" => ("Up", vec!["ALT"]),
+            "1;3B" => ("Down", vec!["ALT"]),
+            "1;3C" => ("Right", vec!["ALT"]),
+            "1;3D" => ("Left", vec!["ALT"]),
+            "1;5A" => ("Up", vec!["CTRL"]),
+            "1;5B" => ("Down", vec!["CTRL"]),
+            "1;5C" => ("Right", vec!["CTRL"]),
+            "1;5D" => ("Left", vec!["CTRL"]),
+            "5~" => ("PageUp", Vec::new()),
+            "6~" => ("PageDown", Vec::new()),
+            "3~" => ("Delete", Vec::new()),
+            "14~" => ("F4", Vec::new()),
+            "17~" => ("F6", Vec::new()),
+            "18~" => ("F7", Vec::new()),
+            "19~" => ("F8", Vec::new()),
+            "20~" => ("F9", Vec::new()),
+            "21~" => ("F10", Vec::new()),
             _ => return,
         };
-        self.request(serde_json::json!({"op":"key","code":code}));
+        self.request(serde_json::json!({"op":"key","code":code,"modifiers":modifiers}));
     }
 
-    fn request(&mut self, mut value: Value) -> Value {
+    fn request(&self, mut value: Value) -> Value {
         value["token"] = Value::String(self.token.clone());
         let line = format!("{}\n", value);
-        self.control.write_all(line.as_bytes()).unwrap();
-        self.control.flush().unwrap();
-        let mut reader = BufReader::new(self.control.try_clone().unwrap());
+        let mut stream = self.control.try_clone().unwrap();
+        stream.write_all(line.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream);
         let mut response = String::new();
         reader.read_line(&mut response).unwrap();
         serde_json::from_str(response.trim()).unwrap()
     }
 
     fn paste(&mut self, text: &str) {
-        self.send(&format!("\x1b[200~{text}\x1b[201~"));
+        self.request(serde_json::json!({"op":"text","text":text}));
+        std::thread::sleep(Duration::from_millis(90));
     }
     fn enter(&mut self) {
         self.send("\r");
@@ -1817,7 +1897,9 @@ fn framed_pastes_and_tab_stay_separate_in_a_single_terminal_write() {
     s.submit("[wait] first");
     s.until("turn started", |s| s.prompts().len() == 1);
     // No timing boundary exists between these messages: framing must carry the intent.
-    s.send("\x1b[200~queued\tcode\r\nfirst\x1b[201~\t\x1b[200~draft\r\n/exit\r\nsecond\x1b[201~");
+    s.request(serde_json::json!({"op":"text","text":"queued\tcode\r\nfirst"}));
+    s.request(serde_json::json!({"op":"key","code":"Tab"}));
+    s.request(serde_json::json!({"op":"text","text":"draft\r\n/exit\r\nsecond"}));
     s.until("framed paste and action identities preserved", |s| {
         s.queue() == ["queued    code\nfirst"] && s.draft() == "draft\n/exit\nsecond"
     });
@@ -1877,6 +1959,8 @@ fn abandoned_drafts_offer_a_choice_and_other_workspaces_are_isolated() {
     assert!(!separate.screen().contains("abandoned draft"));
     separate.exit();
     let mut s = Session::launch(dir.path());
+    s.send("\x01\x08");
+    s.submit("/recover");
     s.until("recovery chooser", |s| {
         s.screen().contains("first abandoned draft")
             && s.screen().contains("second abandoned draft")

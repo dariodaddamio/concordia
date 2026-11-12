@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-11b
+
+- Fix native-window journey control compilation and preserve native key, paste, mouse, resize,
+  and authenticated control-channel behavior in the fake-provider UI journeys.
+
 ## 2026-11-11a
 
 - Add an opt-in authenticated loopback control channel for native-window UI journeys. Test

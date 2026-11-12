@@ -929,7 +929,7 @@ fn test_key(value: &str) -> Option<KeyCode> {
         value
             if value
                 .strip_prefix('F')
-                .and_then(|n| n.parse().ok())
+                .and_then(|n| n.parse::<u8>().ok())
                 .is_some() =>
         {
             KeyCode::F(value[1..].parse().ok()?)
@@ -978,7 +978,6 @@ unsafe fn handle_test_control(window: &mut Window) {
         let mut queue = test.queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.drain(..).collect::<Vec<_>>()
     };
-    drop(test);
     for request in requests {
         match request.request.get("op").and_then(|v| v.as_str()) {
             Some("key") => {
@@ -995,18 +994,10 @@ unsafe fn handle_test_control(window: &mut Window) {
                 }
             }
             Some("text") => {
-                for character in request
-                    .request
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .chars()
-                    .filter(|c| !c.is_control())
-                {
-                    window.emit(Event::Key(KeyEvent::new(
-                        KeyCode::Char(character),
-                        KeyModifiers::NONE,
-                    )));
+                if let Some(text) = request.request.get("text").and_then(|v| v.as_str()) {
+                    if !text.is_empty() {
+                        window.emit(Event::Paste(text.to_owned()));
+                    }
                 }
             }
             Some("mouse") => {
@@ -1553,6 +1544,8 @@ fn start_test_control(shared: &Arc<Shared>, hwnd: HWND) {
     let Ok(listener) = TcpListener::bind(address) else {
         return;
     };
+    let hwnd = hwnd as isize;
+    let token = token.to_owned();
     let shared = shared.clone();
     thread::Builder::new()
         .name("concordia-test-control".into())
@@ -1567,7 +1560,7 @@ fn start_test_control(shared: &Arc<Shared>, hwnd: HWND) {
         .ok();
 }
 
-fn test_control_client(stream: TcpStream, shared: Arc<Shared>, hwnd: HWND, token: &str) {
+fn test_control_client(stream: TcpStream, shared: Arc<Shared>, hwnd: isize, token: &str) {
     use std::io::{BufRead, BufReader, Write};
     let mut reader = BufReader::new(stream);
     loop {
@@ -1593,7 +1586,7 @@ fn test_control_client(stream: TcpStream, shared: Arc<Shared>, hwnd: HWND, token
                 reply: reply_tx,
             });
         unsafe {
-            PostMessageW(hwnd, TEST_CONTROL, 0, 0);
+            PostMessageW(hwnd as HWND, TEST_CONTROL, 0, 0);
         }
         let Ok(reply) = reply_rx.recv_timeout(Duration::from_secs(5)) else {
             break;
