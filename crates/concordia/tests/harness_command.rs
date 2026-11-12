@@ -17,7 +17,7 @@ fn shared_skills_keep_one_current_source_across_providers_and_future_accounts() 
     let root = tempfile::tempdir().unwrap();
     let state_file = root.path().join("harness/connections.json");
     std::fs::create_dir_all(state_file.parent().unwrap()).unwrap();
-    std::fs::write(&state_file, r#"{"version":1,"connections":[{"name":"legacy","version":null,"manifestPath":"legacy-manifest","manifestSha256":"legacy-sha","skill":null,"entries":[] }]}"#).unwrap();
+    std::fs::write(&state_file, r#"{"version":1,"connections":[{"name":"saved","version":null,"manifestPath":"saved-manifest","manifestSha256":"saved-sha","skill":null,"entries":[] }]}"#).unwrap();
     assert!(connections::shared_skill_sources(root.path())
         .unwrap()
         .is_empty());
@@ -130,7 +130,7 @@ fn shared_skills_keep_one_current_source_across_providers_and_future_accounts() 
     assert!(connections::shared_skill_sources(root.path())
         .unwrap()
         .is_empty());
-    assert_eq!(connections::load(root.path()).unwrap()[0].name, "legacy");
+    assert_eq!(connections::load(root.path()).unwrap()[0].name, "saved");
     let unsupported = r#"{"version":99,"connections":[]}"#;
     std::fs::write(&state_file, unsupported).unwrap();
     assert!(connections::load(root.path()).is_err());

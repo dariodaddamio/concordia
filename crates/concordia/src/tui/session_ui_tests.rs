@@ -166,7 +166,7 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
 }
 
 #[test]
-fn resume_of_legacy_session_without_task_record_works() {
+fn resume_of_session_without_task_record_works() {
     let (mut app, _dir, home) = setup();
     crate::tui::landing::open_home_tab(&mut app);
     select_account(&app.state_root, "synthetic").unwrap();

@@ -9,6 +9,7 @@ const OWNER: &str = "concordia-native-history-v1";
 const FILE_BYTES: u64 = 4 * 1024 * 1024;
 const EVENT_COUNT: usize = 255; // Reserve one of the 256 slots for an explicit gap.
 const EVENT_BYTES: usize = 4 * 1024 * 1024 - 4096;
+const HISTORY_TEXT_BYTES: usize = 16 * 1024 * 1024;
 type Work = Box<dyn FnOnce() + Send + 'static>;
 
 struct Completion {
@@ -77,7 +78,6 @@ struct Active {
 
 #[derive(Default)]
 struct Loaded {
-    legacy: Vec<String>,
     messages: Vec<String>,
     unavailable: usize,
 }
@@ -239,10 +239,7 @@ impl State {
         let (tx, rx) = channel::channel();
         self.load = Some(rx);
         std::thread::spawn(move || {
-            let legacy = super::persist::load_history_status(&root);
             let mut loaded = load_references(&root);
-            loaded.legacy = legacy.messages;
-            loaded.unavailable += legacy.unavailable;
             let _ = tx.send(loaded);
         });
     }
@@ -260,12 +257,7 @@ impl State {
             Err(channel::TryRecvError::Empty) => None,
         }) {
             self.load = None;
-            let mut merged = result.legacy;
-            for message in result.messages {
-                if merged.last() != Some(&message) {
-                    merged.push(message);
-                }
-            }
+            let mut merged = result.messages;
             // New messages typed while the background read ran stay newest.
             for message in history
                 .iter()
@@ -275,14 +267,8 @@ impl State {
                     merged.push(message.clone());
                 }
             }
-            let mut bytes = merged.iter().map(String::len).sum::<usize>();
-            result.unavailable += usize::from(bytes > super::persist::HISTORY_TEXT_BYTES);
             let mut remove = 0;
-            while remove < merged.len()
-                && (merged.len() - remove > super::HISTORY_MAX
-                    || bytes > super::persist::HISTORY_TEXT_BYTES)
-            {
-                bytes -= merged[remove].len();
+            while remove < merged.len() && merged.len() - remove > super::HISTORY_MAX {
                 remove += 1;
             }
             merged.drain(..remove);
@@ -605,7 +591,7 @@ fn load_references(root: &Path) -> Loaded {
                 };
                 if message.validate().is_ok() {
                     let encoded = message.encode();
-                    if bytes.saturating_add(encoded.len()) > super::persist::HISTORY_TEXT_BYTES {
+                    if bytes.saturating_add(encoded.len()) > HISTORY_TEXT_BYTES {
                         result.unavailable += 1;
                         break;
                     }
@@ -700,9 +686,6 @@ pub(super) fn fixture_proof() {
     let scope = native::fresh_scope(root, &binding).unwrap();
     let range = original_range(full, "hello 雪", "hello 雪").unwrap();
     let reference = native::capture_projected_text(root, &scope, "user", full, &range).unwrap();
-    let legacy = root.join("history.jsonl");
-    std::fs::write(&legacy, "\"OLD LEGACY BODY\"\n").unwrap();
-    let old = std::fs::read(&legacy).unwrap();
     append_reference(
         root,
         HistoryEntry {
@@ -720,7 +703,6 @@ pub(super) fn fixture_proof() {
     let stored = std::fs::read_to_string(path(root)).unwrap();
     assert!(!stored.contains("hello") && !stored.contains('雪') && !stored.contains("CONTEXT"));
     assert_eq!(load_references(root).messages, ["hello 雪"]);
-    assert_eq!(std::fs::read(&legacy).unwrap(), old);
     assert!(original_range(full, "different", "hello").is_none());
     let mut app = super::App::new(root.to_path_buf(), root.to_path_buf());
     let lease =
@@ -793,5 +775,4 @@ pub(super) fn fixture_proof() {
     assert_eq!(unavailable.unavailable, 2);
     assert!(unavailable.messages.is_empty());
     assert_eq!(std::fs::read_to_string(path(root)).unwrap(), stored);
-    assert_eq!(std::fs::read(&legacy).unwrap(), old);
 }

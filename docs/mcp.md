@@ -14,7 +14,7 @@ always-on tool, `agents`, with four actions:
 calling agent or its harness; Concordia does not apply a routing table. The child stays within the
 parent chat's permission mode. Task text is the Agents view title, never raw task JSON.
 
-The server does not expose chat history, memory, usage, integrations or legacy delegation tools.
+The server does not expose chat history, memory, usage or integrations.
 History remains available through the `concordia chat` CLI and handoff pointers. The per-turn
 `ask_user` bridge is separate and unchanged. MCP registration in Concordia-created provider homes
 remains controlled by `[threads] mcp = true`; personal provider homes are never edited.

@@ -31,7 +31,6 @@ fn dismissed_recovery_stays_available_without_reappearing_at_startup() {
     drop(saved);
     assert!(startup_with_restore(dir.path()).unwrap().1.is_some());
 }
-
 #[test]
 fn concurrent_panes_own_distinct_records_and_workspace_roots() {
     let d = tempfile::tempdir().unwrap();
@@ -51,7 +50,6 @@ fn concurrent_panes_own_distinct_records_and_workspace_roots() {
     assert_ne!(one.id(), two.id());
     assert!(claim(&root_a, one.id()).is_err());
 }
-
 #[test]
 fn abandoned_record_is_claimed_and_restored() {
     let d = tempfile::tempdir().unwrap();
@@ -66,7 +64,6 @@ fn abandoned_record_is_claimed_and_restored() {
     assert_eq!(data.draft, "draft");
     assert_eq!(data.queue, vec!["queued"]);
 }
-
 #[test]
 fn multiple_records_require_explicit_choice_and_corruption_is_preserved() {
     let d = tempfile::tempdir().unwrap();
@@ -103,25 +100,6 @@ fn multiple_records_require_explicit_choice_and_corruption_is_preserved() {
 }
 
 #[test]
-fn legacy_import_copies_without_deleting_shared_files() {
-    let d = tempfile::tempdir().unwrap();
-    crate::tui::persist::save_draft(d.path(), "legacy draft");
-    crate::tui::persist::save_queue(d.path(), &["legacy queue".into()]);
-    let lease = create(&d.path().join("records")).unwrap();
-    assert!(legacy_available(d.path()));
-    import_legacy(d.path(), &lease).unwrap();
-    assert_eq!(lease.data().unwrap().draft, "legacy draft");
-    assert_eq!(
-        crate::tui::persist::load_draft(d.path()).as_deref(),
-        Some("legacy draft")
-    );
-    assert_eq!(
-        crate::tui::persist::load_queue(d.path()),
-        vec!["legacy queue"]
-    );
-}
-
-#[test]
 fn pending_edit_round_trips_and_old_record_json_defaults_it() {
     let d = tempfile::tempdir().unwrap();
     let lease = create(d.path()).unwrap();
@@ -143,8 +121,8 @@ fn pending_edit_round_trips_and_old_record_json_defaults_it() {
     assert_eq!(loaded.queue, vec!["one", "two"]);
     assert_eq!(loaded.pending_edit, Some(edit));
 
-    let legacy = br#"{"owner_pid":1,"draft":"old","queue":[],"updated_unix_ms":1}"#;
-    let decoded: RecoveryData = serde_json::from_slice(legacy).unwrap();
+    let old_record = br#"{"owner_pid":1,"draft":"old","queue":[],"updated_unix_ms":1}"#;
+    let decoded: RecoveryData = serde_json::from_slice(old_record).unwrap();
     assert_eq!(decoded.pending_edit, None);
 }
 
@@ -163,19 +141,3 @@ fn failed_atomic_save_keeps_previous_record_and_can_be_repaired() {
     assert_eq!(lease.data().unwrap().draft, "dirty revision");
 }
 
-#[test]
-fn legacy_import_refuses_to_overwrite_an_existing_pane_record() {
-    let d = tempfile::tempdir().unwrap();
-    crate::tui::persist::save_draft(d.path(), "legacy draft");
-    let lease = create(&d.path().join("records")).unwrap();
-    lease
-        .save("current pane", &["current queued".into()])
-        .unwrap();
-    assert_eq!(
-        import_legacy(d.path(), &lease).unwrap_err().kind(),
-        io::ErrorKind::AlreadyExists
-    );
-    let current = lease.data().unwrap();
-    assert_eq!(current.draft, "current pane");
-    assert_eq!(current.queue, vec!["current queued"]);
-}

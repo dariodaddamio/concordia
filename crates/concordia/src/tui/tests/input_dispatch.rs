@@ -331,7 +331,7 @@ fn add_account_flow_from_the_picker_to_a_connected_announcement() {
     let before = h.app.account.clone();
     h.tick(10);
     assert!(h.app.pending_login.is_none());
-    assert!(h.transcript_text().contains("Codex 3 connected"));
+    assert!(h.transcript_text().contains("Codex 1 connected"));
     assert_eq!(h.app.account, before, "must not switch accounts on its own");
 }
 
@@ -1000,38 +1000,6 @@ fn a_different_login_is_kept_and_announced_with_its_address() {
 }
 
 #[test]
-fn the_account_picker_names_each_account_and_marks_duplicates() {
-    let iso = Isolated::new();
-    codex_login(&iso.base.path().join(".codex"), "same@example.com");
-    codex_login(&iso.base.path().join(".codex-2"), "same@example.com");
-    codex_login(&iso.base.path().join(".codex-3"), "different@example.com");
-    let mut h = Harness::new(100, 30);
-    h.type_str("/use");
-    h.enter();
-    let rows = &h.app.picker.as_ref().unwrap().rows;
-    let by_id = |id: &str| {
-        rows.iter()
-            .find(|r| r.id == id)
-            .unwrap_or_else(|| panic!("no row {id}"))
-    };
-    assert!(
-        by_id("use:codex").label.starts_with("Codex "),
-        "{}",
-        by_id("use:codex").label
-    );
-    assert!(
-        by_id("use:codex-2").label.starts_with("Codex 2"),
-        "{}",
-        by_id("use:codex-2").label
-    );
-    assert!(by_id("use:codex-3").label.starts_with("Codex 3"));
-    assert!(by_id("use:codex").detail.contains("same login as Codex 2"));
-    assert!(by_id("use:codex-2").detail.contains("same login as Codex"));
-    assert!(!by_id("use:codex-3").detail.contains("same login"));
-    assert!(h.picker_ids().contains(&"use-remove".to_string()));
-}
-
-#[test]
 fn removing_an_account_through_the_picker_deletes_what_concordia_created() {
     let _iso = Isolated::new();
     let mut h = Harness::new(100, 30);
@@ -1041,10 +1009,10 @@ fn removing_an_account_through_the_picker_deletes_what_concordia_created() {
 
     h.type_str("/use remove");
     h.enter();
-    assert_eq!(h.picker_ids(), ["rmpick:codex-3"]);
+    assert_eq!(h.picker_ids(), ["rmpick:codex-1"]);
     h.enter(); // choose the account
     let ids = h.picker_ids();
-    assert_eq!(ids, ["rm:delete:codex-3", "rm:unreg:codex-3", "rm:cancel"]);
+    assert_eq!(ids, ["rm:delete:codex-1", "rm:unreg:codex-1", "rm:cancel"]);
     h.enter(); // "Remove and delete its login data"
     assert!(!home.exists());
     assert!(h.transcript_text().contains("deleted its login folder"));
@@ -1057,7 +1025,7 @@ fn cancelling_the_confirmation_changes_nothing() {
     let mut h = Harness::new(100, 30);
     h.fake_connect();
     let home = h.add_codex_signed_in_as("solo@example.com");
-    h.type_str("/use remove codex-3"); // straight to the confirmation
+    h.type_str("/use remove codex-1"); // straight to the confirmation
     h.enter();
     assert!(h.picker_ids().contains(&"rm:cancel".to_string()));
     h.key_down();

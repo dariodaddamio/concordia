@@ -32,7 +32,7 @@ pub(crate) fn with_lock_file<T>(
             Ok(file) => Ok((file, true)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 match options.open(path) {
-                    // A legacy writer may remove its pathname between the two opens.
+                    // Another writer may remove its pathname between the two opens.
                     Err(error)
                         if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline =>
                     {

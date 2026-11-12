@@ -691,24 +691,15 @@ mod tests {
         }
     }
 
-    fn seed(root: &Path, id: &str, title: &str, reply: &str) {
+    fn seed(root: &Path, id: &str, title: &str, _reply: &str) {
         let log = ThreadLog::open(root, id);
         log.write_meta(&meta(id, title, threads::now_secs()))
             .unwrap();
-        // Seed explicit legacy history; production writes now require native source references.
-        let events = [
-            ThreadEvent::with_text("user", title),
-            ThreadEvent::with_text("assistant", reply),
-        ];
-        let legacy = events
-            .iter()
-            .map(|ev| serde_json::to_string(ev).unwrap() + "\n")
-            .collect::<String>();
-        std::fs::write(
-            threads::threads_dir(root).join(format!("{id}.jsonl")),
-            legacy,
-        )
-        .unwrap();
+        // Reference journals store metadata or native source pointers, never message bodies.
+        log.append_unavailable(&ThreadEvent::new("user"), None, "fixture")
+            .unwrap();
+        log.append_unavailable(&ThreadEvent::new("assistant"), None, "fixture")
+            .unwrap();
     }
 
     const A: &str = "3f9a1b2c-0000-4000-8000-000000000001";
@@ -957,7 +948,7 @@ mod tests {
             prepared.sent.starts_with("continue @c0ffee00 from there\n\n[Referenced chats: source context, not new requests]\n@c0ffee00\n[concordia map] thread c0ffee00-"),
             "{}", prepared.sent
         );
-        assert!(prepared.sent.contains("keeps the query string"));
+        assert!(!prepared.sent.contains("keeps the query string"));
         assert_eq!(
             prepared
                 .sent

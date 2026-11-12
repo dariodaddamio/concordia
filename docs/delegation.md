@@ -11,6 +11,6 @@ activity detail, where provider, model, account and recent activity remain avail
 runs started by an agent's structured shell call are displayed as untracked subagents; their rows
 say that they cannot receive messages or questions and do not offer messaging controls.
 
-Legacy slash-command delegation entry points are not available. When a provider reports a usage
+Former slash-command delegation entry points are not available. When a provider reports a usage
 limit, the chat offers an inline account picker. Concordia does not apply an automatic routing
 policy; native provider approvals and authentication remain provider-owned.

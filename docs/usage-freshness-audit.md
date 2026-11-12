@@ -23,7 +23,7 @@ local cache data and is not sent to MCP clients; MCP displays only provider and 
 Fetch completion carries the full identity. A delayed worker can only update the matching entry;
 changing selection while a fetch runs does not put its result in the selected account's cache. A
 matching cache survives process restart. Prior `<account>.json` entries have no identity binding
-and are not loaded into the live fetcher; a fresh fetch is requested instead. MCP also excludes these unbound legacy entries.
+and are not loaded into the live fetcher; a fresh fetch is requested instead. MCP also excludes these unbound entries.
 
 Codex uses the same account/provider/home-bound fetch cache for live limits. Build
 `2026-11-01d` starts the official CLI's app-server, initializes it, then sends only
@@ -62,7 +62,7 @@ rendering state in that helper.
 MCP `usage` never refreshes. It labels entries `recent cache` when their timestamp is less than
 120 seconds old, otherwise `stale cache`. It iterates registered accounts and reads only the exact
 provider/account/home-bound cache through `cached_usage_view`; it neither scans arbitrary cache filenames
-nor starts a provider. Legacy, malformed, mismatched and future entries are excluded. Each read is
+nor starts a provider. Unbound, malformed, mismatched and future entries are excluded. Each read is
 bounded to 64 KiB and validates regular owned storage plus bounded, finite percentage metadata. Expired windows
 are rendered as current usage unknown rather than as a percentage of capacity after reset. MCP
 continues to show stale cached percentages because it is a read-only historical view, with the
@@ -75,11 +75,9 @@ stale label beside them.
 - Added coverage holds a home A fetch while home B finishes for the same account id, then releases
   A and verifies B remains selected and warm after restart. The same case verifies provider changes
   have separate identities.
-- Added coverage seeds an old unbound cache and verifies the fetcher requests a bound reading
-  instead of showing the legacy percentage.
 - Added coverage forces a failed refresh after a success and verifies the successful values remain
   visibly identified as cached.
-- MCP tests cover recent and stale bound entries, exclusion of legacy/future entries, reset
+- MCP tests cover recent and stale bound entries, exclusion of unbound/future entries, reset
   windows without a fabricated percentage, and the read-only behavior (no files are added or
   removed during the call).
 

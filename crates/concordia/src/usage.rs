@@ -1021,9 +1021,7 @@ struct CachedUsage {
     /// Plan and similar, shown after the windows (Cursor).
     #[serde(default)]
     note: String,
-    /// Missing on legacy cache files; such readings are not bound to an account identity.
-    #[serde(default)]
-    identity: Option<UsageIdentity>,
+    identity: UsageIdentity,
 }
 
 #[derive(Debug, Clone)]
@@ -1097,7 +1095,7 @@ fn load_cache(state_root: &Path, identity: &UsageIdentity) -> Option<CachedUsage
     }
     let raw = crate::fs_safe::read_text_bounded(&path, 64 * 1024)?;
     let cached: CachedUsage = serde_json::from_str(&raw).ok()?;
-    (cached.identity.as_ref() == Some(identity)
+    (cached.identity == *identity
         && cached.fetched_at <= unix_now()
         && cached.windows.len() <= 16
         && cached.note.len() <= 4096
@@ -1114,10 +1112,7 @@ fn load_cache(state_root: &Path, identity: &UsageIdentity) -> Option<CachedUsage
 }
 
 fn save_cache(state_root: &Path, c: &CachedUsage) {
-    let Some(identity) = c.identity.as_ref() else {
-        return;
-    };
-    let path = identity.cache_path(state_root);
+    let path = c.identity.cache_path(state_root);
     if let Some(dir) = path.parent() {
         if fs::create_dir_all(dir).is_err() || crate::workspaces::directory_id(dir).is_err() {
             return;
@@ -1252,7 +1247,7 @@ impl UsageFetcher {
         let usable_cache = e
             .cached
             .as_ref()
-            .filter(|c| c.identity.as_ref() == Some(&identity) && c.fetched_at <= now)
+            .filter(|c| c.identity == identity && c.fetched_at <= now)
             .cloned();
         let stale = usable_cache
             .as_ref()
@@ -1403,7 +1398,7 @@ impl UsageFetcher {
                     windows,
                     codex_limits,
                     note,
-                    identity: Some(identity.clone()),
+                    identity: identity.clone(),
                 })
             });
             if cursor {
@@ -2463,55 +2458,6 @@ mod tests {
         assert!(warm.summary.contains("5h 58% left"), "{}", warm.summary);
         let provider_switch = restarted.snapshot(ProviderKind::Cursor, "same-account", &home_b);
         assert_eq!(provider_switch.summary, "checking limits...");
-    }
-
-    #[test]
-    fn legacy_unbound_cache_is_not_reused_as_a_current_identity() {
-        let root = tempfile::tempdir().unwrap();
-        let cache_dir = root.path().join("usage-cache");
-        fs::create_dir_all(&cache_dir).unwrap();
-        fs::write(
-            cache_dir.join("claude-legacy.json"),
-            serde_json::json!({
-                "fetched_at": unix_now(),
-                "windows": [{"label":"5h","used_pct":1.0,"resets":null}]
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let home = root.path().join("account-home");
-        let identity = UsageIdentity::new(ProviderKind::Claude, "claude-legacy", &home);
-        fs::write(
-            identity.cache_path(root.path()),
-            serde_json::to_string(&CachedUsage {
-                fetched_at: unix_now().saturating_add(3600),
-                codex_limits: None,
-                windows: vec![UsageWindow {
-                    label: "5h".into(),
-                    used_pct: 1.0,
-                    resets: None,
-                }],
-                note: String::new(),
-                identity: Some(identity),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let calls2 = Arc::clone(&calls);
-        let runner: UsageRunner = Arc::new(move |_| {
-            calls2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(SAMPLE.to_string())
-        });
-        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), runner);
-        let initial = f.snapshot(ProviderKind::Claude, "claude-legacy", &home);
-        assert_eq!(initial.summary, "checking limits...");
-        wait_for(&mut f);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(f
-            .snapshot(ProviderKind::Claude, "claude-legacy", &home)
-            .summary
-            .contains("5h 93% left"));
     }
 
     #[test]

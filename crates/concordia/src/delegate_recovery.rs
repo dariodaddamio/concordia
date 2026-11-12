@@ -329,7 +329,7 @@ mod tests {
         );
         assert!(
             stored.contains("task_reference") && stored.contains("original explicit task"),
-            "legacy bodies remain untouched"
+            "stored bodies remain untouched"
         );
         drop(d);
         let mut d = Delegates::default();
@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(
             std::fs::read(recovery.join("workers.json")).unwrap(),
             forged,
-            "foreign references never trigger migration or fallback"
+            "foreign references never trigger conversion or fallback"
         );
     }
 
@@ -631,61 +631,6 @@ mod tests {
         assert_eq!(d.dependency_graph(), &before);
     }
 
-    #[test]
-    fn legacy_ledgers_migrate_without_replay_and_invalid_graphs_keep_original_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let recovery = dir.path().join("pane");
-        let mut d = Delegates::default();
-        d.attach_recovery(&recovery, dir.path(), dir.path())
-            .unwrap();
-        let id = d.push_test_job(
-            "synthetic",
-            ProviderKind::Codex,
-            WorkerState::Tool,
-            "in progress",
-            0,
-        );
-        d.get_mut(id).unwrap().spec.cwd = dir.path().into();
-        d.save_recovery().unwrap();
-        drop(d);
-        let path = recovery.join("workers.json");
-        let mut legacy: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        legacy["version"] = serde_json::json!(1);
-        legacy.as_object_mut().unwrap().remove("schedule");
-        for row in legacy["jobs"].as_array_mut().unwrap() {
-            row.as_object_mut().unwrap().remove("reference_storage");
-            row.as_object_mut().unwrap().remove("task_reference");
-        }
-        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let mut restored = Delegates::default();
-        restored
-            .attach_recovery(&recovery, dir.path(), dir.path())
-            .unwrap();
-        assert_eq!(restored.get(id).unwrap().state, WorkerState::Paused);
-        assert_eq!(
-            restored.dependency_graph().tasks()[0].state(),
-            schedule::RunState::PausedRecovery
-        );
-        drop(restored);
-        let mut corrupt: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(corrupt["version"], 8);
-        corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
-        let bytes = serde_json::to_vec(&corrupt).unwrap();
-        std::fs::write(&path, &bytes).unwrap();
-        assert!(Delegates::default()
-            .attach_recovery(&recovery, dir.path(), dir.path())
-            .is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        corrupt["version"] = serde_json::json!(99);
-        let bytes = serde_json::to_vec(&corrupt).unwrap();
-        std::fs::write(&path, &bytes).unwrap();
-        assert!(Delegates::default()
-            .attach_recovery(&recovery, dir.path(), dir.path())
-            .is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -907,7 +852,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1..=9)
+            if !matches!(ledger.version, 2..=9)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -922,10 +867,6 @@ impl Delegates {
                     .schedule
                     .ok_or("worker dependency graph missing; original kept")?;
                 graph.validate()?;
-            } else if ledger.schedule.is_some() {
-                return Err(
-                    "legacy ledger contains unexpected dependency metadata; original kept".into(),
-                );
             }
             let mut ids = std::collections::HashSet::new();
             let mut runs = std::collections::HashSet::new();
@@ -977,9 +918,7 @@ impl Delegates {
                     );
                 }
                 let run_state = dependency_state(saved.state);
-                if ledger.version == 1 {
-                    graph.observe_run(&saved.conversation, &saved.run_id, run_state)?;
-                } else if !graph.matches_run(&saved.conversation, &saved.run_id, run_state) {
+                if !graph.matches_run(&saved.conversation, &saved.run_id, run_state) {
                     return Err(
                         "worker dependency receipt does not match its run; original kept".into(),
                     );

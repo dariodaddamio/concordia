@@ -702,7 +702,7 @@ pub fn context_observation(
     } else if observation.native_turn_id.is_none() {
         observation.measurement = None;
         observation.invalidation_reason = Some(
-            "native source does not identify the exact turn; legacy capacity remains unknown"
+            "native source does not identify the exact turn; capacity remains unknown"
                 .into(),
         );
     }

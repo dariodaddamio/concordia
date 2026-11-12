@@ -5,7 +5,7 @@
 //! script. The login command is a constant per provider; the isolated home travels through the
 //! child's environment (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) exactly as it does for chat turns.
 
-use crate::accounts::{is_logged_in, list_all_accounts, profile_home};
+use crate::accounts::{is_logged_in, list_all_accounts};
 use crate::store::{upsert_stored_account, ProviderKind, StoredAccount};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -36,11 +36,6 @@ fn capitalized(p: ProviderKind) -> &'static str {
     }
 }
 
-/// Legacy per-user dir name for numbered homes (`~/.codex-3`), which concordia discovers read-only.
-fn legacy_dir_name(p: ProviderKind, n: u32) -> String {
-    format!(".{}-{n}", p.as_str())
-}
-
 /// Choose the account slot for a new connection. Pure over disk state; creates nothing.
 pub fn pick_slot(state_root: &Path, provider: ProviderKind) -> Slot {
     let accounts = list_all_accounts(state_root);
@@ -64,18 +59,11 @@ pub fn pick_slot(state_root: &Path, provider: ProviderKind) -> Slot {
     }
 
     let taken: HashSet<&str> = accounts.iter().map(|a| a.account.as_str()).collect();
-    let legacy_base = profile_home();
-    // codex-2 is the built-in second Codex account, so Codex numbering starts at 3.
-    let mut n = if provider == ProviderKind::Codex {
-        3
-    } else {
-        2
-    };
+    let mut n = 1;
     loop {
         let id = format!("{}-{n}", provider.as_str());
         let home = homes.join(&id);
-        let legacy = legacy_base.join(legacy_dir_name(provider, n));
-        let in_use = taken.contains(id.as_str()) || legacy.exists() || home.exists();
+        let in_use = taken.contains(id.as_str()) || home.exists();
         if !in_use {
             return Slot {
                 label: format!("{} {n}", capitalized(provider)),
@@ -574,14 +562,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_slots_start_at_three_and_other_providers_at_two() {
-        let sb = Sandbox::new();
-        assert_eq!(pick_slot(sb.state(), ProviderKind::Codex).id, "codex-3");
-        assert_eq!(pick_slot(sb.state(), ProviderKind::Claude).id, "claude-2");
-        assert_eq!(pick_slot(sb.state(), ProviderKind::Cursor).id, "cursor-2");
-    }
-
-    #[test]
     fn new_homes_live_under_concordia_state_never_the_users_profile() {
         let sb = Sandbox::new();
         let slot = pick_slot(sb.state(), ProviderKind::Codex);
@@ -590,25 +570,17 @@ mod tests {
     }
 
     #[test]
-    fn existing_user_numbered_homes_are_never_claimed() {
-        let sb = Sandbox::new();
-        fs::create_dir_all(sb.base().join(".codex-3")).unwrap(); // user's own, even if empty
-        fs::create_dir_all(sb.base().join(".codex-4")).unwrap();
-        assert_eq!(pick_slot(sb.state(), ProviderKind::Codex).id, "codex-5");
-    }
-
-    #[test]
     fn add_creates_concordia_owned_home_stores_account_and_launches_login() {
         let sb = Sandbox::new();
         let (r, launched) = run(&sb, ProviderKind::Codex, &all_bins);
         let r = r.unwrap();
-        assert_eq!(r.account, "codex-3");
+        assert_eq!(r.account, "codex-1");
         assert!(r.watch);
         assert!(r.home.is_dir());
         assert!(r.home.starts_with(homes_dir(sb.state())));
 
         // Registered, so /use can see it once logged in.
-        let acct = get_account(sb.state(), "codex-3").unwrap();
+        let acct = get_account(sb.state(), "codex-1").unwrap();
         assert!(acct.custom);
         assert_eq!(acct.home_path.as_deref(), Some(r.home.as_path()));
 
@@ -635,7 +607,7 @@ mod tests {
         let r = r.unwrap();
         assert_eq!(launched[0].script, "claude login");
         assert_eq!(launched[0].env[0].0, "CLAUDE_CONFIG_DIR");
-        assert_eq!(r.account, "claude-2");
+        assert_eq!(r.account, "claude-1");
     }
 
     #[test]
@@ -653,7 +625,7 @@ mod tests {
     fn an_abandoned_slot_is_reused_instead_of_piling_up() {
         let sb = Sandbox::new();
         let first = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
-        // Login never completes; adding again reuses codex-3.
+        // Login never completes; adding again reuses the pending slot.
         let (again, launched) = run(&sb, ProviderKind::Codex, &all_bins);
         let again = again.unwrap();
         assert_eq!(again.account, first.account);
@@ -669,8 +641,8 @@ mod tests {
         let first = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
         mark_logged_in(ProviderKind::Codex, &first.home);
         let second = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
-        assert_eq!(first.account, "codex-3");
-        assert_eq!(second.account, "codex-4");
+        assert_eq!(first.account, "codex-1");
+        assert_eq!(second.account, "codex-3");
         assert_eq!(crate::store::list_stored_accounts(sb.state()).len(), 2);
     }
 
@@ -691,7 +663,7 @@ mod tests {
         assert!(text.contains("boom"));
         assert!(text.contains("$env:CODEX_HOME='"));
         assert!(text.contains("codex login"));
-        assert!(get_account(sb.state(), "codex-3").is_some());
+        assert!(get_account(sb.state(), "codex-1").is_some());
     }
 
     #[test]
@@ -712,7 +684,7 @@ mod tests {
         let (r, launched) = run(&sb, ProviderKind::Cursor, &all_bins);
         let r = r.unwrap();
         assert!(launched.is_empty());
-        assert_eq!(r.account, "cursor-2");
+        assert_eq!(r.account, "cursor-1");
         let text = r.message.join("\n");
         assert!(text.contains("concordia-api-key"), "{text}");
         assert!(r.home.is_dir());

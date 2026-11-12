@@ -1,5 +1,5 @@
 //! Body-free projections into one explicitly owned native turn's appended source records.
-//! Legacy logs and unfinished request recovery are deliberately outside this module.
+//! Full-text logs and unfinished request recovery are deliberately outside this module.
 use super::*;
 
 const TEXT_BYTES: usize = 1024 * 1024;

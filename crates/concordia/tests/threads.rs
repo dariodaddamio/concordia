@@ -61,7 +61,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     }
     assert_eq!(outcome.exit_code, Some(0));
 
-    // Seed the legacy format explicitly to preserve CLI read compatibility coverage.
+    // Seed a current thread record for CLI read coverage.
     let id = "3f9a0000-1111-2222-3333-444444444444";
     let log = ThreadLog::open(state.path(), id);
     log.write_meta(&ThreadMeta {
@@ -72,21 +72,65 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
         account: Some("codex".into()),
     })
     .unwrap();
-    let mut events = vec![ThreadEvent::with_text("user", "say hello")];
-    for c in &outcome.cards {
-        events.push(ThreadEvent::card(&c.title, c.detail.as_deref(), "done"));
-    }
-    events.push(ThreadEvent::with_text("assistant", &outcome.text).who("codex", "codex", "m"));
-    events.push(ThreadEvent::with_text("user", &"long ".repeat(5000)));
-    let legacy = events
-        .iter()
-        .map(|ev| serde_json::to_string(ev).unwrap() + "\n")
-        .collect::<String>();
-    std::fs::write(
-        concordia::threads::threads_dir(state.path()).join(format!("{id}.jsonl")),
-        legacy,
+    let home = state.path().join("synthetic-codex-home");
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    concordia::store::upsert_stored_account(
+        state.path(),
+        concordia::store::StoredAccount {
+            id: "synthetic-codex".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(home.to_string_lossy().into_owned()),
+            label: "Synthetic Codex account".into(),
+            created_at: "0".into(),
+        },
     )
     .unwrap();
+    let session = "00000000-0000-4000-8000-00000000007b";
+    let long = (0..5000)
+        .map(|n| format!("long-{n} "))
+        .collect::<String>();
+    let native = [
+        serde_json::json!({"type":"session_meta","payload":{"id":session}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"say hello"}]}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":outcome.text}]}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":long}]}}),
+    ];
+    std::fs::write(
+        home.join("sessions").join(format!("{session}.jsonl")),
+        native
+            .iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let binding = concordia::native_memory::Binding::new(
+        ProviderKind::Codex,
+        "synthetic-codex",
+        &home,
+        session,
+    )
+    .unwrap();
+    let source = concordia::native_memory::index_bound(state.path(), &binding).unwrap();
+    let scope = concordia::native_memory::references::historical_scope(state.path(), &source.id)
+        .unwrap();
+    let events = [
+        ThreadEvent::with_text("user", "say hello").who("codex", "synthetic-codex", "m"),
+        ThreadEvent::with_text("assistant", &outcome.text)
+            .who("codex", "synthetic-codex", "m"),
+        ThreadEvent::with_text("user", &long).who("codex", "synthetic-codex", "m"),
+    ];
+    for event in &events {
+        let role = event.k.as_str();
+        let body = event.text.as_deref().unwrap();
+        let reference = concordia::native_memory::references::capture_text(
+            state.path(),
+            &scope,
+            role,
+            body,
+        )
+        .unwrap();
+        log.append_referenced(event, reference).unwrap();
+    }
 
     let list = thread_cmd(state.path(), &["list"]);
     assert!(list.status.success());
@@ -120,76 +164,6 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     let range = thread_cmd(state.path(), &["read", id, "--range", "1-1"]);
     assert_eq!(text(&range).lines().count(), 1);
 
-    // The existing CLI migrates explicitly selected legacy rows without a provider turn.
-    let home = state.path().join("migration-native-home");
-    std::fs::create_dir_all(home.join("sessions")).unwrap();
-    concordia::store::upsert_stored_account(
-        state.path(),
-        concordia::store::StoredAccount {
-            id: "codex".into(),
-            provider: ProviderKind::Codex,
-            home_path: Some(home.to_string_lossy().into_owned()),
-            label: "Synthetic migration native source".into(),
-            created_at: "0".into(),
-        },
-    )
-    .unwrap();
-    let session = "00000000-0000-4000-8000-00000000007b";
-    let native = [
-        serde_json::json!({"type":"session_meta","payload":{"id":session}}),
-        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"say hello"}]}}),
-        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":outcome.text}]}}),
-    ];
-    std::fs::write(
-        home.join("sessions").join(format!("{session}.jsonl")),
-        native
-            .iter()
-            .map(|row| format!("{row}\n"))
-            .collect::<String>(),
-    )
-    .unwrap();
-    let binding =
-        concordia::native_memory::Binding::new(ProviderKind::Codex, "codex", &home, session)
-            .unwrap();
-    let source = concordia::native_memory::index_bound(state.path(), &binding)
-        .unwrap()
-        .id;
-    let path = concordia::threads::threads_dir(state.path()).join(format!("{id}.jsonl"));
-    let original = std::fs::read(&path).unwrap();
-    let preview = thread_cmd(
-        state.path(),
-        &["migrate", "preview", id, "--source", &source],
-    );
-    assert!(
-        preview.status.success(),
-        "{}",
-        String::from_utf8_lossy(&preview.stderr)
-    );
-    let plan: serde_json::Value = serde_json::from_str(&text(&preview)).unwrap();
-    assert!(plan["convertible_rows"].as_u64().unwrap() >= 1);
-    assert_eq!(std::fs::read(&path).unwrap(), original);
-    let plan_id = plan["plan"].as_str().unwrap();
-    let applied = thread_cmd(state.path(), &["migrate", "apply", plan_id]);
-    assert!(
-        applied.status.success(),
-        "{}",
-        String::from_utf8_lossy(&applied.stderr)
-    );
-    assert!(text(&applied).contains("\"status\":\"applied\""));
-    let again = thread_cmd(state.path(), &["migrate", "apply", plan_id]);
-    assert!(again.status.success());
-    assert!(text(&thread_cmd(state.path(), &["read", id, "--range", "1-1"])).contains("say hello"));
-    assert_eq!(
-        std::fs::read(
-            state
-                .path()
-                .join(".ao/legacy-migrations")
-                .join(plan_id)
-                .join("original.jsonl")
-        )
-        .unwrap(),
-        original
-    );
 }
 
 #[test]

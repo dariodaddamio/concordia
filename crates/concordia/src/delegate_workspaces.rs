@@ -154,7 +154,7 @@ impl Job {
 
     pub fn workspace_summary(&self) -> String {
         let Some(request) = &self.workspace else {
-            return "Workspace: legacy/unmanaged reservation unavailable".into();
+            return "Workspace: unmanaged reservation unavailable".into();
         };
         let binding = request
             .binding

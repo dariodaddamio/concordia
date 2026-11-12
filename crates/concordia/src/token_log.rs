@@ -1,4 +1,4 @@
-//! Per-attempt token usage and legacy logs, so totals and breakdowns cost no provider
+//! Per-attempt token usage, so totals and breakdowns cost no provider
 //! call. Providers count differently: Codex's input includes the cached part, Claude's and
 //! Cursor's do not. Entries store the same three parts for every provider.
 
@@ -6,7 +6,6 @@ use crate::provider::stream_cards::TurnUsage;
 use crate::store::ProviderKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 #[path = "token_events.rs"]
 mod events;
@@ -67,26 +66,12 @@ pub fn split(provider: ProviderKind, usage: &TurnUsage) -> (u64, u64, u64) {
     (new_input, cached, usage.output.unwrap_or(0))
 }
 
-fn path(state_root: &Path) -> PathBuf {
-    state_root.join("token-log.jsonl")
-}
-
-/// Record one turn: attributed events are idempotent; legacy records retain their append format.
+/// Record one attributed turn.
 pub fn record(state_root: &Path, entry: &Entry) -> std::io::Result<()> {
-    if entry.attribution.is_some() {
-        return events::record_once(state_root, entry);
+    if entry.attribution.is_none() {
+        return Err(std::io::Error::other("usage entry requires account and run attribution"));
     }
-    events::validate_legacy(state_root)?;
-    std::fs::create_dir_all(state_root)?;
-    let mut line = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
-    line.push(b'\n');
-    crate::state_io::with_lock(&state_root.join("token-log.lock"), || {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path(state_root))?;
-        file.write_all(&line)
-    })
+    events::record_once(state_root, entry)
 }
 
 /// Compatibility convenience for the first bounded page. Use `load_page` for coverage/cursors.
@@ -189,55 +174,6 @@ mod tests {
         assert_eq!(split(ProviderKind::Codex, &usage), (500, 1500, 100));
         assert_eq!(split(ProviderKind::Claude, &usage), (2000, 1500, 100));
         assert_eq!(split(ProviderKind::Cursor, &usage), (2000, 1500, 100));
-    }
-
-    #[test]
-    fn the_log_round_trips_and_skips_a_damaged_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = entry("codex", "x", 1, (1, 2, 3));
-        record(dir.path(), &first).unwrap();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(path(dir.path()))
-            .unwrap()
-            .write_all(b"{not json\n")
-            .unwrap();
-        let second = entry("cursor", "y", 2, (4, 5, 6));
-        record(dir.path(), &second).unwrap();
-        assert_eq!(load(dir.path()), [first, second]);
-        let usage = TurnUsage {
-            input: Some(2000),
-            cached: Some(1500),
-            output: Some(100),
-            cost_usd: None,
-        };
-        let mut worker = entry("codex", "work", 3, (500, 1500, 100));
-        worker.attribution = Some(Attribution::new(
-            Origin::Worker,
-            &uuid::Uuid::new_v4().to_string(),
-            &uuid::Uuid::new_v4().to_string(),
-            Some(dir.path()),
-            &usage,
-            "succeeded",
-            true,
-        ));
-        record(dir.path(), &worker).unwrap();
-        record(dir.path(), &worker).unwrap();
-        let report = load_page(dir.path(), None).unwrap();
-        assert_eq!(report.entries.len(), 3);
-        assert!(report.incomplete && report.skipped == 1);
-        assert_eq!(totals(&report.entries).incomplete_events, 2);
-        assert_eq!(totals(&report.entries).reported_cost_events, 0);
-        worker.output += 1;
-        assert!(record(dir.path(), &worker).is_err());
-        assert_eq!(
-            load(dir.path())
-                .iter()
-                .find(|entry| entry.attribution.is_some())
-                .unwrap()
-                .output,
-            100
-        );
     }
 
     #[test]

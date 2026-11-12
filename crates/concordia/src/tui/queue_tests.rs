@@ -653,17 +653,6 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     assert_eq!(h.sent(), vec!["two"]);
 }
 
-#[test]
-fn a_corrupt_queue_file_is_preserved_and_import_reports_error() {
-    let mut h = H::new(100, 24);
-    std::fs::write(h.root().join("queue.json"), b"{{{").unwrap();
-    h.relaunch();
-    assert!(h.app.import_legacy_recovery().is_err());
-    assert!(h.app.queue.items.is_empty());
-    assert_eq!(std::fs::read(h.root().join("queue.json")).unwrap(), b"{{{");
-    assert!(!h.root().join("queue.json.bad").exists());
-}
-
 // ---- undo / redo keys --------------------------------------------------------------------
 
 #[test]
@@ -763,20 +752,6 @@ fn the_draft_is_restored_with_a_notice_and_ctrl_z_clears_it() {
 }
 
 #[test]
-fn a_corrupt_draft_file_does_not_crash_launch() {
-    let mut h = H::new(80, 24);
-    std::fs::write(h.root().join("draft.json"), b"\x00\x01 not json").unwrap();
-    h.relaunch();
-    assert!(h.app.import_legacy_recovery().is_err());
-    assert_eq!(h.app.editor.text(), "");
-    assert_eq!(
-        std::fs::read(h.root().join("draft.json")).unwrap(),
-        b"\x00\x01 not json"
-    );
-    assert!(!h.root().join("draft.json.bad").exists());
-}
-
-#[test]
 fn sent_prompts_persist_for_up_after_a_restart_but_slash_commands_do_not() {
     use crate::native_memory::{references as native, Binding};
     use serde_json::json;
@@ -864,7 +839,7 @@ fn sent_prompts_persist_for_up_after_a_restart_but_slash_commands_do_not() {
     assert!(!file.contains("/queue") && !file.contains("first prompt") && !file.contains("second"));
     assert!(
         !h.root().join("history.jsonl").exists(),
-        "new history stores references, not duplicate legacy prompt bodies"
+        "new history stores references, not duplicate prompt bodies"
     );
     h.relaunch();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -896,7 +871,6 @@ fn history_persistence_can_be_turned_off() {
         "in-memory history still works"
     );
     // and a file left from an earlier run is not loaded
-    persist::append_history(h.root(), "old", &mut 0);
     std::fs::write(
         h.root().join("config.toml"),
         "[ui]\npersist_history = false\n",

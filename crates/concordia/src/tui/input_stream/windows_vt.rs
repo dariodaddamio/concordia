@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn vt_crlf_matches_the_legacy_conpty_enter_and_ctrl_enter_events() {
+    fn vt_crlf_matches_conpty_enter_and_ctrl_enter_events() {
         assert_eq!(
             parse(b"\r\n"),
             [

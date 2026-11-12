@@ -128,7 +128,7 @@ impl Job {
 
     pub fn usage_summary(&self) -> String {
         if self.attempt_records.is_empty() {
-            return "Usage: legacy attribution unavailable".into();
+            return "Usage attribution unavailable".into();
         }
         self.attempt_records
             .iter()
@@ -141,7 +141,7 @@ impl Job {
                 format!(
                     "{} attempt {}: input {}, cached {}, output {}, cost {}; {}",
                     attempt.account,
-                    attempt.id.as_deref().unwrap_or("legacy/unknown"),
+                    attempt.id.as_deref().unwrap_or("unknown"),
                     counter(attempt.usage.input),
                     counter(attempt.usage.cached),
                     counter(attempt.usage.output),

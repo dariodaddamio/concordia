@@ -424,7 +424,7 @@ fn key() -> [u8; 32] {
     *INSTALL_KEY.get_or_init(|| {
         // Keep token generation independent of process-wide test/application environment.
         // The state directory is intentionally not consulted here: lib tests run concurrently
-        // and some legacy tests temporarily alter CONCORDIA_STATE_DIR while exercising isolated
+        // and some isolated tests temporarily alter CONCORDIA_STATE_DIR while exercising
         // storage.  Reading it during lazy initialization made the redaction key depend on which
         // test happened to win the race (and could create redact.key in another test's state).
         let digest =

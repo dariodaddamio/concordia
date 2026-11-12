@@ -1,8 +1,8 @@
-//! Immutable per-attempt accounting and bounded, revision-bound reads of new and legacy records.
+//! Immutable per-attempt accounting and bounded, revision-bound reads.
 use super::*;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const PAGE_BYTES: usize = 32 * 1024 * 1024;
@@ -70,9 +70,6 @@ impl Attribution {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cursor {
-    legacy_offset: u64,
-    skip_legacy_line: bool,
-    legacy_revision: String,
     event_offset: usize,
     events_revision: String,
 }
@@ -122,10 +119,6 @@ fn require_owned(path: &Path, directory: bool) -> std::io::Result<()> {
         ));
     }
     Ok(())
-}
-
-pub(super) fn validate_legacy(root: &Path) -> std::io::Result<()> {
-    require_owned(&path(root), false)
 }
 
 fn event_key(entry: &Entry) -> std::io::Result<String> {
@@ -249,30 +242,41 @@ pub(super) fn record_once(root: &Path, entry: &Entry) -> std::io::Result<()> {
     }
     require_owned(&directory(root), true)?;
     fs::create_dir_all(directory(root))?;
-    crate::state_io::with_lock(&root.join("token-events.lock"), || {
-        let path = directory(root).join(format!("{key}.json"));
-        require_owned(&path, false)?;
-        match File::open(&path) {
-            Ok(file) => {
-                let mut old = Vec::new();
-                file.take(EVENT_BYTES + 1).read_to_end(&mut old)?;
-                if old == bytes {
-                    return Ok(());
-                }
-                return Err(std::io::Error::other(
-                    "usage event already exists with different counters; original kept",
-                ));
+    let path = directory(root).join(format!("{key}.json"));
+    require_owned(&path, false)?;
+    match File::open(&path) {
+        Ok(file) => {
+            let mut old = Vec::new();
+            file.take(EVENT_BYTES + 1).read_to_end(&mut old)?;
+            if old == bytes {
+                return Ok(());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        if catalog(root, None)?.0.len() >= MAX_EVENTS {
             return Err(std::io::Error::other(
-                "usage event store is full; existing records kept",
+                "usage event already exists with different counters; original kept",
             ));
         }
-        crate::state_io::write_atomic(&path, &bytes)
-    })
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    match crate::state_io::write_atomic_new(&path, &bytes) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // A concurrent writer may have published the same immutable event between
+            // cataloging and publication. Treat that idempotent race as success.
+            let mut existing = Vec::new();
+            match File::open(&path) {
+                Ok(file) => {
+                    file.take(EVENT_BYTES + 1).read_to_end(&mut existing)?;
+                    if existing == bytes {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                }
+                Err(_) => Err(error),
+            }
+        }
+    }
 }
 
 pub fn load_page(root: &Path, cursor: Option<&Cursor>) -> std::io::Result<Report> {
@@ -325,20 +329,15 @@ fn load_internal(
     cancel: Option<&AtomicBool>,
 ) -> std::io::Result<Report> {
     check_cancel(cancel)?;
-    validate_legacy(root)?;
-    let legacy_revision = revision(&path(root))?;
     let (paths, events_revision) = catalog(root, cancel)?;
     if cursor.is_some_and(|cursor| {
-        cursor.legacy_revision != legacy_revision || cursor.events_revision != events_revision
+        cursor.events_revision != events_revision
     }) {
         return Err(std::io::Error::other(
             "usage snapshot changed; restart from the first page",
         ));
     }
     let mut position = cursor.cloned().unwrap_or(Cursor {
-        legacy_offset: 0,
-        skip_legacy_line: false,
-        legacy_revision: legacy_revision.clone(),
         event_offset: 0,
         events_revision: events_revision.clone(),
     });
@@ -346,10 +345,7 @@ fn load_internal(
     let mut skipped = 0;
     let mut consumed_bytes = 0;
     let mut records = 0;
-    let legacy_len = fs::metadata(path(root))
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    if position.legacy_offset > legacy_len || position.event_offset > paths.len() {
+    if position.event_offset > paths.len() {
         return Err(std::io::Error::other(
             "usage cursor is outside this snapshot",
         ));
@@ -382,51 +378,12 @@ fn load_internal(
             }
         }
     }
-    if position.event_offset == paths.len()
-        && position.legacy_offset < legacy_len
-        && records < PAGE_EVENTS
-        && consumed_bytes < PAGE_BYTES
-    {
-        let mut file = File::open(path(root))?;
-        file.seek(SeekFrom::Start(position.legacy_offset))?;
-        let mut bytes = Vec::new();
-        file.take(PAGE_BYTES.saturating_sub(consumed_bytes) as u64)
-            .read_to_end(&mut bytes)?;
-        for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-            check_cancel(cancel)?;
-            if records >= PAGE_EVENTS {
-                break;
-            }
-            let newline = line.ends_with(b"\n");
-            if !newline
-                && position.legacy_offset + (line.len() as u64) < legacy_len
-                && line.len() as u64 <= EVENT_BYTES
-            {
-                break;
-            }
-            position.legacy_offset += line.len() as u64;
-            records += 1;
-            if position.skip_legacy_line {
-                position.skip_legacy_line = !newline;
-                continue;
-            }
-            if line.len() as u64 > EVENT_BYTES {
-                skipped += 1;
-                position.skip_legacy_line = !newline;
-                continue;
-            }
-            match serde_json::from_slice::<Entry>(line) {
-                Ok(entry) if entry.attribution.is_none() => entries.push(entry),
-                _ => skipped += 1,
-            }
-        }
-    }
-    if revision(&path(root))? != legacy_revision || catalog(root, cancel)?.1 != events_revision {
+    if catalog(root, cancel)?.1 != events_revision {
         return Err(std::io::Error::other(
             "usage snapshot changed during read; restart from the first page",
         ));
     }
-    let has_more = position.legacy_offset < legacy_len || position.event_offset < paths.len();
+    let has_more = position.event_offset < paths.len();
     Ok(Report {
         entries,
         next: has_more.then_some(position),

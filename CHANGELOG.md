@@ -1,5 +1,11 @@
 # Changelog
 
+### Removed (2026-11-12t)
+
+- Removed pre-release compatibility readers, migration commands, numbered-home discovery,
+  unscoped token and usage records, full-text thread fallback, shared draft and queue import,
+  and version-1 worker-ledger recovery.
+
 ### Fixed (2026-11-12s)
 
 - Keep screenshot comparisons in temporary output, require explicit opt-in to regenerate committed

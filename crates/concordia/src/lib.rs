@@ -19,7 +19,6 @@ pub mod grok_bot;
 pub mod harness;
 pub mod identity;
 pub mod integration;
-pub mod legacy_migration;
 pub mod logging;
 pub mod mcp;
 pub mod models;

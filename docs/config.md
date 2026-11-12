@@ -144,7 +144,7 @@ theme = "default"       # default | dark | light | terminal | opifex
 motion = true           # reserved appearance setting; Home portrait is static
 token_line = true        # per-turn "in 12.3k out 1.4k 8.2s" under each reply
 tips = true              # a rotating tip while idle
-persist_history = true   # native-source recall references; legacy prompt history remains readable
+persist_history = true   # native-source recall references
 stats = false            # footer: mem 41 MB - cpu 1% (and the provider processes)
 
 [threads]

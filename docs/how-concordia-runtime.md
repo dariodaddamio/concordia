@@ -15,8 +15,7 @@ and [`config.rs` (`Config::parse`, `for_root`)](../crates/concordia/src/config.r
 Retention is intentionally not described as “body-free everywhere”:
 
 - provider native transcripts remain in provider homes;
-- thread logging is optional and new records prefer native references, but legacy thread records
-  and pinned spans can contain redacted text;
+- thread logging is optional and records use native references;
 - pane recovery can contain drafts, queues and unfinished requests;
 - attachment snapshots contain the user-selected file bytes;
 - token logs contain counters/identity metadata, not prompt/reply bodies;
@@ -175,7 +174,7 @@ and [`usage.rs` (`UsageSnapshot`, `credit_balance_text`)](../crates/concordia/sr
 ### Turn tokens
 
 Structured provider stream usage updates `TurnUsage`; completed main and worker attempts append
-provider/account/model/project/chat-bound records to `token-log.jsonl`. Counts retain input,
+provider/account/model/project/chat-bound records in the attributed token event store. Counts retain input,
 output, cache read/write and reported cost only where the provider supplied them. Cursor coverage
 is not inferred when its transport reports no counters, and Claude native-subagent/resumed-session
 coverage is explicitly not invented. Source:

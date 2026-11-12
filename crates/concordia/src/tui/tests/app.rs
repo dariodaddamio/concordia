@@ -555,7 +555,7 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     let usage = crate::token_log::load(&h.app.state_root);
     let bound = usage
         .iter()
-        .find(|entry| entry.attribution.is_some())
+        .find(|entry| entry.account == "owner-account")
         .unwrap();
     assert_eq!(bound.provider, "codex");
     assert_eq!(bound.account, "owner-account");

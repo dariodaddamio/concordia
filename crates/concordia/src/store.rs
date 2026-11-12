@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn native_sessions_have_direct_resume_rows() {
         let sessions = vec![crate::sessions::SessionSummary {
-            account: "legacy".into(),
+            account: "historical".into(),
             provider: ProviderKind::Claude,
             session_id: "native-1".into(),
             cwd: Some("C:\\work".into()),
@@ -823,7 +823,7 @@ mod tests {
         }];
         let rows = crate::sessions::native_session_picker_rows(&sessions);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "resume:legacy:native-1");
+        assert_eq!(rows[0].id, "resume:historical:native-1");
     }
 
     #[test]
@@ -974,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn an_old_unmarked_lock_blocks_writes_until_the_legacy_owner_removes_it() {
+    fn an_unmarked_lock_blocks_writes_until_its_owner_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(store_dir(dir.path())).unwrap();
         let lock = store_dir(dir.path()).join("store.lock");
@@ -990,7 +990,7 @@ mod tests {
         assert!(error.to_string().contains("older Concordia writer"));
         assert_eq!(fs::read(&lock).unwrap(), b"");
         assert!(!store_path(dir.path()).exists());
-        // Simulate only this synthetic legacy owner releasing its fixture pathname.
+        // Simulate only this synthetic owner releasing its fixture pathname.
         fs::remove_file(&lock).unwrap();
         upsert_stored_account(dir.path(), acct("a")).unwrap();
         assert_eq!(load_store(dir.path()).accounts.len(), 1);

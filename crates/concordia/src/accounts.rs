@@ -184,68 +184,6 @@ pub fn builtin_accounts() -> Vec<AccountDef> {
     ]
 }
 
-fn discover_numbered_homes(
-    provider: ProviderKind,
-    prefix: &str,
-    skip_ids: &[&str],
-) -> Vec<AccountDef> {
-    let home = profile_home();
-    let Ok(entries) = fs::read_dir(&home) else {
-        return Vec::new();
-    };
-    let mut found = Vec::new();
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else {
-            continue;
-        };
-        if !ft.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == prefix {
-            continue;
-        }
-        let pattern = format!("{prefix}-");
-        let Some(suffix) = name.strip_prefix(&pattern) else {
-            continue;
-        };
-        if !suffix.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let id = if provider == ProviderKind::Codex && suffix == "2" {
-            "codex-2".to_string()
-        } else {
-            format!("{}-{}", provider.as_str(), suffix)
-        };
-        if skip_ids.contains(&id.as_str()) {
-            continue;
-        }
-        let home_path = entry.path();
-        if !dir_logged_in(provider, &home_path) {
-            continue;
-        }
-        let label = format!(
-            "{}{}",
-            match provider {
-                ProviderKind::Codex => "Codex",
-                ProviderKind::Claude => "Claude",
-                ProviderKind::Cursor => "Cursor",
-                ProviderKind::Grok => "Grok Build",
-            },
-            suffix
-        );
-        found.push(AccountDef {
-            provider,
-            account: id,
-            home_path: Some(home_path),
-            label,
-            custom: false,
-        });
-    }
-    found.sort_by(|a, b| a.account.cmp(&b.account));
-    found
-}
-
 pub fn list_all_accounts(state_root: &Path) -> Vec<AccountDef> {
     list_accounts(state_root, false)
 }
@@ -259,15 +197,6 @@ fn list_accounts(state_root: &Path, include_hidden: bool) -> Vec<AccountDef> {
     let mut by_id: HashMap<String, AccountDef> = HashMap::new();
     for a in builtin_accounts() {
         by_id.insert(a.account.clone(), a);
-    }
-    for a in discover_numbered_homes(ProviderKind::Codex, ".codex", &["codex-2"]) {
-        by_id.entry(a.account.clone()).or_insert(a);
-    }
-    for a in discover_numbered_homes(ProviderKind::Claude, ".claude", &[]) {
-        by_id.entry(a.account.clone()).or_insert(a);
-    }
-    for a in discover_numbered_homes(ProviderKind::Cursor, ".cursor", &[]) {
-        by_id.entry(a.account.clone()).or_insert(a);
     }
     for s in list_stored_accounts(state_root) {
         merge_stored(&mut by_id, s);

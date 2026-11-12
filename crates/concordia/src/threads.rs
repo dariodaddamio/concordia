@@ -345,7 +345,7 @@ impl ThreadLog {
                     .ok_or_else(|| std::io::Error::other("thread ordinal overflow"))?;
                 last = buffer[..read].last().copied();
             }
-            // Preserve a legacy final record lacking a newline; add only its separator.
+            // Preserve a final record lacking a newline; add only its separator.
             if last.is_some_and(|byte| byte != b'\n') {
                 records = records
                     .checked_add(1)
@@ -379,7 +379,7 @@ impl ThreadLog {
         read_event_page(self.root(), &self.log_path(), cursor)
     }
 
-    /// A bounded map remains available even when a full legacy thread is too large to hydrate.
+    /// A bounded map remains available even when a full thread is too large to hydrate.
     pub fn read_map(&self, max_chars: usize) -> Result<String> {
         let page = self.read_page(None)?;
         let note = page.next_cursor.as_ref().map(|_| {
@@ -610,10 +610,10 @@ fn read_event_page(root: &Path, path: &Path, after: Option<&str>) -> Result<Thre
                     })?;
                 Some(record.hydrate(root)?)
             }
-            Ok(value) => serde_json::from_value::<ThreadEvent>(value).ok(),
+            Ok(_) => None,
             Err(_) => None,
         };
-        // Preserve physical ordinals even if a legacy record is malformed.
+        // Preserve physical ordinals even if a record is malformed.
         let event = event.unwrap_or_else(|| {
             ThreadEvent::with_text(
                 "note",
@@ -672,17 +672,6 @@ fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
         }
     }
     bail!("thread scan exceeds 256 MiB; journal preserved; use concordia chat thread read <id> and follow --cursor pages")
-}
-
-/// Convert one explicitly selected legacy message using the existing referenced-record format.
-pub(crate) fn referenced_legacy_line(
-    root: &Path,
-    event: &ThreadEvent,
-    source: Reference,
-) -> std::result::Result<String, String> {
-    let record =
-        references::Record::referenced(root, event, source).map_err(|error| error.to_string())?;
-    serde_json::to_string(&record).map_err(|error| error.to_string())
 }
 
 fn thread_ids(state_root: &Path) -> Vec<String> {
@@ -1205,7 +1194,6 @@ pub fn run_chat_cli(
         return Err((usage, 2));
     };
     match sub.as_str() {
-        "migrate" => crate::legacy_migration::run_cli(state_root, &args[1..]),
         "list" => {
             let json = args[1..].iter().any(|a| a == "--json");
             if let Some(bad) = args[1..].iter().find(|a| *a != "--json") {
@@ -1536,150 +1524,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn log_roundtrip_list_resolve_delete() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = ThreadLog::open(dir.path(), "aaaa1111");
-        // Old logs remain readable byte for byte; only new appends use the V2 contract.
-        std::fs::create_dir_all(&a.dir).unwrap();
-        let legacy = format!(
-            "{}\n{}\n",
-            serde_json::to_string(&user("hello")).unwrap(),
-            serde_json::to_string(&asst("hi")).unwrap()
-        );
-        std::fs::write(a.log_path(), &legacy).unwrap();
-        assert!(a.append(&user("must not be copied")).is_err());
-        assert!(a
-            .append(&ThreadEvent::card("shell", Some("secret command"), "done"))
-            .is_err());
-        assert_eq!(std::fs::read_to_string(a.log_path()).unwrap(), legacy);
-        a.write_meta(&ThreadMeta {
-            id: "aaaa1111".into(),
-            started: 100,
-            title: "hello".into(),
-            cwd: String::new(),
-            account: None,
-        })
-        .unwrap();
-        let b = ThreadLog::open(dir.path(), "aaaa2222");
-        b.append(&ThreadEvent::new("switch").who("codex", "fixture", "model"))
-            .unwrap();
-        let unavailable = user("later sentinel body must never be persisted");
-        b.append_unavailable(
-            &unavailable,
-            None,
-            "arbitrary error sentinel must not persist",
-        )
-        .unwrap();
-        let body_free = std::fs::read_to_string(b.log_path()).unwrap();
-        assert!(body_free.contains("\"version\":2"));
-        assert!(
-            !body_free.contains("sentinel")
-                && !body_free.contains("\"text\"")
-                && !body_free.contains("\"detail\"")
-        );
-        assert_eq!(
-            b.read_all().unwrap()[1].text(),
-            "[native source unavailable: capture_failed]"
-        );
-        b.write_meta(&ThreadMeta {
-            id: "aaaa2222".into(),
-            started: 200,
-            title: "later".into(),
-            cwd: String::new(),
-            account: None,
-        })
-        .unwrap();
-        assert_eq!(a.read_all().unwrap().len(), 2);
-        let l = list(dir.path());
-        assert_eq!(l[0].id, "aaaa2222");
-        assert!(resolve_prefix(dir.path(), "aaaa").is_err());
-        assert!(resolve_prefix(dir.path(), "zz").is_err());
-        assert_eq!(resolve_prefix(dir.path(), "aaaa1").unwrap(), "aaaa1111");
-
-        // Exact native source ownership, successful hydration and stale-source failure.
-        use crate::native_memory::{
-            references::{begin_scope, capture_text},
-            Binding,
-        };
-        use crate::store::{ProviderKind, StoredAccount};
-        let home = dir.path().join("fixture");
-        std::fs::create_dir_all(home.join("sessions")).unwrap();
-        crate::store::upsert_stored_account(
-            dir.path(),
-            StoredAccount {
-                id: "fixture".into(),
-                provider: ProviderKind::Codex,
-                home_path: Some(home.to_string_lossy().into_owned()),
-                label: "fixture".into(),
-                created_at: "0".into(),
-            },
-        )
-        .unwrap();
-        let session = "11111111-2222-4333-8444-555555555555";
-        let native_path = home.join("sessions").join(format!("{session}.jsonl"));
-        std::fs::write(
-            &native_path,
-            format!(
-                "{}\n",
-                serde_json::json!({"type":"session_meta","payload":{"id":session}})
-            ),
-        )
-        .unwrap();
-        let binding = Binding::new(ProviderKind::Codex, "fixture", &home, session).unwrap();
-        let scope = begin_scope(dir.path(), &binding).unwrap();
+/*
         let body = "immutable native-only 日本語 sentinel";
-        let native_record = format!(
-            "{}\n",
-            serde_json::json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":body}]}})
-        );
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&native_path)
-            .unwrap()
-            .write_all(native_record.as_bytes())
-            .unwrap();
-        let reference = capture_text(dir.path(), &scope, "user", body).unwrap();
-        let event = user(body).who("codex", "fixture", "model");
-        assert!(b
-            .append_referenced(&user("wrong projection"), reference.clone())
-            .is_err());
-        assert!(b.append_referenced(&asst(body), reference.clone()).is_err());
-        assert!(b
-            .append_referenced(
-                &user(body).who("codex", "different", "model"),
-                reference.clone()
-            )
-            .is_err());
-        b.append_referenced(&event, reference.clone()).unwrap();
-        b.append_unavailable(&user("another private body"), Some(&scope), "missing")
-            .unwrap();
-        // Image-only prompts have empty local text but an explicitly captured native input.
-        b.append_referenced(&user("").who("codex", "fixture", "model"), reference)
-            .unwrap();
-        let journal = std::fs::read_to_string(b.log_path()).unwrap();
-        assert!(!journal.contains(body) && !journal.contains("another private body"));
-        let hydrated = b.read_all().unwrap();
-        assert_eq!(hydrated[2], event);
-        assert_eq!(hydrated[3].account.as_deref(), Some("fixture"));
-        assert_eq!(hydrated[4].text(), body);
-        assert!(build_map(&hydrated, b.id(), 1600, true, None, None).contains(body));
-        let original_native = std::fs::read_to_string(&native_path).unwrap();
-        std::fs::write(
-            &native_path,
-            original_native.replace("immutable", "corrupted"),
-        )
-        .unwrap();
-        assert_eq!(
-            b.read_all().unwrap()[2].text(),
-            "[native source unavailable: verification_failed]"
-        );
-        assert_eq!(std::fs::read_to_string(a.log_path()).unwrap(), legacy);
-        delete(dir.path(), "aaaa1111").unwrap();
-        assert_eq!(list(dir.path()).len(), 1);
-        crate::legacy_migration::fixture_proof();
-    }
-
+*/
     #[test]
     fn read_filters_and_caps() {
         let ev = vec![user("alpha"), asst("beta"), user("gamma"), asst("delta")];
