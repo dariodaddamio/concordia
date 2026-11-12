@@ -588,6 +588,21 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 // Drain pending paste chunks before repainting the growing prompt.
                 draw_if_needed!(app, redraw_always);
                 let title = app.window_title();
+                if use_window {
+                    let overlays = app
+                        .picker
+                        .as_ref()
+                        .map(|picker| picker.title.clone())
+                        .into_iter()
+                        .chain(
+                            app.workspace
+                                .focused
+                                .as_ref()
+                                .map(|id| format!("workspace:{id}")),
+                        )
+                        .collect();
+                    terminal.backend_mut().test_state(app.tab_label(), overlays);
+                }
                 if title != previous_title {
                     terminal.backend_mut().title(&title)?;
                     previous_title = title;

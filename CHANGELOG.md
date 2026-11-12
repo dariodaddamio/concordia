@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-11a
+
+- Add an opt-in authenticated loopback control channel for native-window UI journeys. Test
+  input is dispatched through the native Windows event path and snapshots read ratatui cells.
+
 ## 2026-11-09g
 
 - Make `/skills` and `/hooks` discoverable commands with shared Harness connection,

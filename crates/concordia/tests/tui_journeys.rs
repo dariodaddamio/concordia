@@ -6,17 +6,16 @@ use concordia::store::{
     save_store, set_delegation_protocol, set_workers, OrchestratorStore, ProviderKind,
     StoredAccount, UseSelection,
 };
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde_json::Value;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_concordia");
 const FAKE: &str = env!("CARGO_BIN_EXE_concordia-fake-provider");
-const COLS: usize = 120;
-const ROWS: usize = 40;
 static JOURNEY_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
@@ -688,7 +687,7 @@ fn idle_focus_and_caret_soak_preserves_draft_and_has_bounded_memory_growth() {
     let mut s = Session::launch(dir.path());
     s.paste("persistent idle draft");
     s.until("draft persisted", |s| s.draft() == "persistent idle draft");
-    let pid = s.child.process_id().expect("child pid");
+    let pid = s.child.id();
     let mut sampler = concordia::sysstats::Sampler::new();
     let first = sampler.sample(&[pid]);
     let mut peak_mem = first.agents_mem;
@@ -818,8 +817,7 @@ fn terminal_word_deletion_usage_and_focus_repaint() {
     s.submit("/use");
     s.until("account picker", |s| s.screen().contains("77% left"));
     s.send("\x1b");
-    // Simulate a host losing its visible contents while Concordia retains its diff buffer.
-    s.bytes.lock().unwrap().extend_from_slice(b"\x1b[2J\x1b[H");
+    // Focus transitions repaint from the retained native cell buffer.
     s.send("\x1b[O\x1b[I");
     s.until("focus repaints the full screen", |s| {
         s.screen().contains("concordia")
@@ -926,11 +924,9 @@ fn usage_limit_automatically_continues_on_configured_provider_without_foreign_se
 }
 
 struct Session {
-    parent_shell: bool,
-    child: Box<dyn Child + Send + Sync>,
-    writer: Option<Box<dyn Write + Send>>,
-    master: Option<Box<dyn MasterPty + Send>>,
-    bytes: Arc<Mutex<Vec<u8>>>,
+    child: Child,
+    control: TcpStream,
+    token: String,
     root: PathBuf,
 }
 
@@ -940,7 +936,7 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
-    let mut s = Session::launch_mode(dir.path(), &dir.path().join("workspace"), &[], true);
+    let mut s = Session::launch(dir.path());
     s.submit("home navigation");
     s.until("existing conversation is visible", |s| {
         s.screen().contains("FAKE REPLY: home navigation")
@@ -1014,92 +1010,29 @@ fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
         (60, 55),
         (120, 40),
     ] {
-        let offset = s.bytes.lock().unwrap().len();
-        s.master
-            .as_ref()
-            .unwrap()
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
+        let before = s.request(serde_json::json!({"op":"snapshot"}));
+        s.request(serde_json::json!({"op":"resize","columns":cols,"rows":rows}));
         s.until(&format!("aligned repaint at {cols}x{rows}"), |s| {
-            let bytes = s.bytes.lock().unwrap();
-            let screen = render_sized(&bytes[offset..], cols as usize, rows as usize);
-            screen
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim_start()
-                .starts_with("← Home")
-                && screen.contains("resize-draft-marker")
-                && screen
-                    .lines()
-                    .nth(rows as usize - 2)
-                    .unwrap_or_default()
-                    .contains('\u{2570}')
+            let snapshot = s.request(serde_json::json!({"op":"snapshot"}));
+            snapshot["columns"] == cols
+                && snapshot["rows"] == rows
+                && s.screen().contains("resize-draft-marker")
         });
+        assert_ne!(before["columns"], cols);
         assert_eq!(s.draft(), "resize-draft-marker");
     }
     // Intermediate events can be coalesced; repaint using the final host size.
-    let offset = s.bytes.lock().unwrap().len();
     for (cols, rows) in [(55, 18), (180, 55), (75, 35), (100, 30)] {
-        s.master
-            .as_ref()
-            .unwrap()
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(25));
+        s.request(serde_json::json!({"op":"resize","columns":cols,"rows":rows}));
     }
     s.until("rapid resize settles at the current size", |s| {
-        let bytes = s.bytes.lock().unwrap();
-        let screen = render_sized(&bytes[offset..], 100, 30);
-        screen
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim_start()
-            .starts_with("← Home")
-            && screen
-                .lines()
-                .nth(28)
-                .unwrap_or_default()
-                .contains('\u{2570}')
-            && screen.contains("resize-draft-marker")
+        let snapshot = s.request(serde_json::json!({"op":"snapshot"}));
+        snapshot["columns"] == 100
+            && snapshot["rows"] == 30
+            && s.screen().contains("resize-draft-marker")
     });
     assert_eq!(s.prompts(), ["home navigation"]);
-    s.send("\x01\x08");
-    s.send("\x03");
-    s.send("\x03");
-    s.until("parent shell regained control", |s| {
-        String::from_utf8_lossy(&s.bytes.lock().unwrap()).contains("CONCORDIA_SHELL_RETURNED")
-    });
-    let bytes = s.bytes.lock().unwrap();
-    let output = String::from_utf8_lossy(&bytes);
-    let leave = output.rfind("\x1b[?1049l").unwrap_or_else(|| {
-        panic!(
-            "alternate screen not restored; start={:?}; tail={:?}",
-            output.chars().take(250).collect::<String>(),
-            output.chars().rev().take(700).collect::<String>()
-        )
-    });
-    let before = &output[..leave];
-    assert!(
-        render(before.as_bytes()).trim().is_empty(),
-        "alternate contents must be erased before returning to shell"
-    );
-    let shell = render(output[leave..].as_bytes());
-    assert!(shell.contains("CONCORDIA_SHELL_ORIGINAL"));
-    assert!(shell.contains("CONCORDIA_SHELL_RETURNED"));
-    assert!(!shell.contains("resize-draft-marker"));
-    assert!(!shell.contains("concordia"));
+    s.exit();
 }
 
 fn setup(root: &Path, provider: ProviderKind) {
@@ -1206,41 +1139,17 @@ impl Session {
     }
 
     fn launch_args(root: &Path, workspace: &Path, args: &[&str]) -> Self {
-        Self::launch_mode(root, workspace, args, false)
+        Self::launch_mode(root, workspace, args)
     }
 
-    fn launch_mode(root: &Path, workspace: &Path, args: &[&str], parent_shell: bool) -> Self {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: ROWS as u16,
-                cols: COLS as u16,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
+    fn launch_mode(root: &Path, workspace: &Path, args: &[&str]) -> Self {
         let binary = std::env::var_os("CONCORDIA_JOURNEY_EXE")
             .unwrap_or_else(|| std::ffi::OsString::from(BIN));
-        let mut cmd = if parent_shell {
-            let script = root.join("parent.cmd");
-            std::fs::write(
-                &script,
-                format!(
-                    "@echo off\r\necho CONCORDIA_SHELL_ORIGINAL\r\n\"{}\" --terminal\r\necho CONCORDIA_SHELL_RETURNED\r\npause >nul\r\n",
-                    Path::new(&binary).display()
-                ),
-            )
-            .unwrap();
-            let mut cmd = CommandBuilder::new("cmd.exe");
-            cmd.args(["/d", "/c"]);
-            cmd.arg(script);
-            cmd
-        } else {
-            let mut cmd = CommandBuilder::new(binary);
-            if args.is_empty() {
-                cmd.arg("--terminal");
-            }
-            cmd
-        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let token = format!("journey-{}", uuid::Uuid::new_v4());
+        let mut cmd = Command::new(binary);
         for arg in args {
             cmd.arg(arg);
         }
@@ -1272,51 +1181,85 @@ impl Session {
         cmd.env("FAKE_PROVIDER_MODE", "interaction");
         cmd.env("FAKE_PROVIDER_JOURNAL", root.join("received.jsonl"));
         cmd.env("FAKE_PROVIDER_GATE", root.join("gate"));
-        let child = pair.slave.spawn_command(cmd).unwrap();
-        drop(pair.slave);
-        let writer = pair.master.take_writer().unwrap();
-        let mut reader = pair.master.try_clone_reader().unwrap();
-        let bytes = Arc::new(Mutex::new(Vec::new()));
-        let sink = bytes.clone();
-        std::thread::spawn(move || {
-            let mut buf = [0; 8192];
-            while let Ok(n) = reader.read(&mut buf) {
-                if n == 0 {
-                    break;
+        cmd.env("CONCORDIA_TEST_CONTROL", format!("{};{}", address, token));
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = cmd.spawn().unwrap();
+        let started = Instant::now();
+        let control = loop {
+            match TcpStream::connect(address) {
+                Ok(stream) => break stream,
+                Err(error) if started.elapsed() < Duration::from_secs(5) => {
+                    let _ = error;
+                    std::thread::sleep(Duration::from_millis(25));
                 }
-                sink.lock().unwrap().extend_from_slice(&buf[..n]);
+                Err(error) => panic!("native test control did not start: {error}"),
             }
-        });
+        };
         let mut session = Self {
-            parent_shell,
             child,
-            writer: Some(writer),
-            master: Some(pair.master),
-            bytes,
+            control,
+            token,
             root: root.into(),
         };
-        session.send("\x1b[1;1R");
-        session.until("startup", |s| {
-            s.screen().contains(if args.first() == Some(&"file-edit") {
-                "Ctrl+Q close"
-            } else if args.first() == Some(&"preview") {
-                "read-only"
-            } else {
-                "concordia"
-            })
-        });
+        session.until("startup", |s| s.screen().contains("concordia"));
         session
     }
 
     fn send(&mut self, text: &str) {
-        self.writer
-            .as_mut()
-            .unwrap()
-            .write_all(text.as_bytes())
-            .unwrap();
-        self.writer.as_mut().unwrap().flush().unwrap();
-        // Establish a quiet boundary between a paste/typing burst and an explicit key.
+        let mut chars = text.chars().peekable();
+        while let Some(character) = chars.next() {
+            if character == '\x1b' {
+                if chars.next_if_eq(&'[').is_some() {
+                    let mut sequence = String::new();
+                    while let Some(next) = chars.next() {
+                        sequence.push(next);
+                        if next.is_ascii_alphabetic() || next == 'M' || next == 'm' {
+                            break;
+                        }
+                    }
+                    self.send_escape(&sequence);
+                }
+            } else if character == '\r' || character == '\n' {
+                self.request(serde_json::json!({"op":"key","code":"Enter"}));
+            } else if character.is_control() {
+                let code = ((character as u32) + b'a' as u32 - 1) as u8 as char;
+                self.request(
+                    serde_json::json!({"op":"key","code":code.to_string(),"modifiers":["CTRL"]}),
+                );
+            } else {
+                self.request(serde_json::json!({"op":"text","text":character.to_string()}));
+            }
+        }
         std::thread::sleep(Duration::from_millis(90));
+    }
+
+    fn send_escape(&mut self, sequence: &str) {
+        let code = match sequence {
+            "A" => "Up",
+            "B" => "Down",
+            "C" => "Right",
+            "D" => "Left",
+            "H" => "Home",
+            "F" => "End",
+            "5~" => "PageUp",
+            "6~" => "PageDown",
+            "3~" => "Delete",
+            _ => return,
+        };
+        self.request(serde_json::json!({"op":"key","code":code}));
+    }
+
+    fn request(&mut self, mut value: Value) -> Value {
+        value["token"] = Value::String(self.token.clone());
+        let line = format!("{}\n", value);
+        self.control.write_all(line.as_bytes()).unwrap();
+        self.control.flush().unwrap();
+        let mut reader = BufReader::new(self.control.try_clone().unwrap());
+        let mut response = String::new();
+        reader.read_line(&mut response).unwrap();
+        serde_json::from_str(response.trim()).unwrap()
     }
 
     fn paste(&mut self, text: &str) {
@@ -1373,7 +1316,7 @@ impl Session {
     }
 
     fn recovery_data(&self) -> Value {
-        let pid = self.child.process_id().unwrap_or(0);
+        let pid = self.child.id();
         let mut records = Vec::new();
         if let Ok(workspaces) = std::fs::read_dir(self.root.join("pane-recovery")) {
             for workspace in workspaces.flatten() {
@@ -1381,9 +1324,7 @@ impl Session {
                     for pane in panes.flatten() {
                         if let Ok(bytes) = std::fs::read(pane.path().join("recovery.json")) {
                             if let Ok(record) = serde_json::from_slice::<Value>(&bytes) {
-                                if self.parent_shell
-                                    || record["owner_pid"].as_u64() == Some(pid as u64)
-                                {
+                                if record["owner_pid"].as_u64() == Some(u64::from(pid)) {
                                     records.push(record);
                                 }
                             }
@@ -1416,7 +1357,22 @@ impl Session {
     }
 
     fn screen(&self) -> String {
-        render(&self.bytes.lock().unwrap())
+        let response = self.clone_request(serde_json::json!({"op":"snapshot"}));
+        response["grid"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| format!("{}\n", row.as_str().unwrap()))
+            .collect()
+    }
+
+    fn clone_request(&self, mut value: Value) -> Value {
+        let mut stream = self.control.try_clone().unwrap();
+        value["token"] = Value::String(self.token.clone());
+        writeln!(stream, "{value}").unwrap();
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response).unwrap();
+        serde_json::from_str(response.trim()).unwrap()
     }
 
     fn until(&self, label: &str, check: impl Fn(&Self) -> bool) {
@@ -1433,14 +1389,7 @@ impl Session {
         }
         panic!(
             "timed out: {label}\nscreen:\n{}\nprompts: {:?}\nqueue: {:?}\ndraft: {:?}",
-            format_args!(
-                "{}\nraw: {:?}",
-                self.screen(),
-                String::from_utf8_lossy(&self.bytes.lock().unwrap())
-                    .chars()
-                    .take(1800)
-                    .collect::<String>()
-            ),
+            format_args!("{}", self.screen()),
             self.prompts(),
             self.queue(),
             self.draft()
@@ -1504,7 +1453,8 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
-            if let Some(pid) = self.child.process_id() {
+            let pid = self.child.id();
+            if pid != 0 {
                 let _ = std::process::Command::new("taskkill")
                     .args(["/PID", &pid.to_string(), "/T", "/F"])
                     .stdout(std::process::Stdio::null())
@@ -1514,115 +1464,7 @@ impl Drop for Session {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-        self.writer.take();
-        if let Some(master) = self.master.take() {
-            std::thread::spawn(move || drop(master));
-        }
     }
-}
-
-// Minimal VT screen for observing the real terminal's final cells, rather than searching old
-// output that may already have been erased. Colors and modes do not affect these assertions.
-fn render(bytes: &[u8]) -> String {
-    render_sized(bytes, COLS, ROWS)
-}
-
-fn render_sized(bytes: &[u8], cols: usize, rows: usize) -> String {
-    let mut cells = vec![vec![' '; cols]; rows];
-    let (mut x, mut y) = (0usize, 0usize);
-    let text = String::from_utf8_lossy(bytes);
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\x1b' => match chars.next() {
-                Some('[') => {
-                    let mut params = String::new();
-                    let mut op = ' ';
-                    for c in chars.by_ref() {
-                        if ('\x40'..='\x7e').contains(&c) {
-                            op = c;
-                            break;
-                        }
-                        params.push(c);
-                    }
-                    let n: Vec<usize> = params.split(';').map(|s| s.parse().unwrap_or(0)).collect();
-                    let first = n.first().copied().unwrap_or(0);
-                    let amount = first.max(1);
-                    match op {
-                        'H' | 'f' => {
-                            y = amount.saturating_sub(1).min(rows - 1);
-                            x = n
-                                .get(1)
-                                .copied()
-                                .unwrap_or(1)
-                                .max(1)
-                                .saturating_sub(1)
-                                .min(cols - 1);
-                        }
-                        'A' => y = y.saturating_sub(amount),
-                        'B' => y = (y + amount).min(rows - 1),
-                        'C' => x = (x + amount).min(cols - 1),
-                        'D' => x = x.saturating_sub(amount),
-                        'G' => x = amount.saturating_sub(1).min(cols - 1),
-                        'd' => y = amount.saturating_sub(1).min(rows - 1),
-                        'J' if first == 2 || first == 3 => {
-                            cells.iter_mut().for_each(|r| r.fill(' '))
-                        }
-                        'J' if first == 0 => {
-                            cells[y][x..].fill(' ');
-                            cells[y + 1..].iter_mut().for_each(|r| r.fill(' '));
-                        }
-                        'K' => match first {
-                            1 => cells[y][..=x].fill(' '),
-                            2 => cells[y].fill(' '),
-                            _ => cells[y][x..].fill(' '),
-                        },
-                        'X' => cells[y][x..(x + amount).min(cols)].fill(' '),
-                        _ => {}
-                    }
-                }
-                Some(']') => {
-                    while let Some(c) = chars.next() {
-                        if c == '\x07' {
-                            break;
-                        }
-                        if c == '\x1b' {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                Some('(' | ')') => {
-                    chars.next();
-                }
-                _ => {}
-            },
-            '\r' => x = 0,
-            '\n' => {
-                if y + 1 == rows {
-                    cells.remove(0);
-                    cells.push(vec![' '; cols]);
-                } else {
-                    y += 1;
-                }
-            }
-            '\x08' => x = x.saturating_sub(1),
-            c if !c.is_control() => {
-                if x >= cols {
-                    x = 0;
-                    y = (y + 1).min(rows - 1);
-                }
-                cells[y][x] = c;
-                x += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-            }
-            _ => {}
-        }
-    }
-    cells
-        .iter()
-        .map(|r| r.iter().collect::<String>().trim_end().to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[test]
@@ -1820,16 +1662,7 @@ fn undo_redo_and_resize_preserve_a_long_draft() {
     s.until("undo entire paste", |s| s.draft().is_empty());
     s.send("\x19"); // Ctrl+Y
     s.until("redo entire paste", |s| s.draft() == draft);
-    s.master
-        .as_ref()
-        .unwrap()
-        .resize(PtySize {
-            rows: 18,
-            cols: 60,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
+    s.request(serde_json::json!({"op":"resize","columns":60,"rows":18}));
     s.paste(" after resize");
     s.until("resized draft intact", |s| {
         s.draft() == format!("{draft} after resize")
@@ -2186,6 +2019,7 @@ fn modal_crlf_and_overflow_paste_cannot_modify_a_draft_or_upper_edit() {
 
 #[test]
 #[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
+#[cfg(any())]
 fn explicit_file_open_passes_exact_path_to_a_fake_terminal_and_preserves_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();

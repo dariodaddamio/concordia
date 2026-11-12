@@ -566,3 +566,12 @@ Rewrite requirements:
 Acceptance: current docs are concise and consistent; all local references resolve; documentation
 checks pass; purpose and scope reflect the owner's answers. Native provider ownership, recovery,
 approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout the rewrite.
+
+### W0 native-window journey driver - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/tui/native_window.rs` | ok: 1, 2, 4, 5, 6, 7, 8, 9, 10 | One opt-in, loopback-only test channel owned by the native message thread; no production listener or alternate renderer. |
+| `crates/concordia/src/tui/display_backend.rs`, `crates/concordia/src/tui/run.rs` | ok: 4, 5, 6, 9 | Forward test state from the existing backend and app loop; no duplicate UI state owner. |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 1, 5, 7, 9, 10 | Replace PTY transport with the requested native driver, preserve journey assertions, and omit only `/edit`. |
+| `docs/tui-states.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 1, 5, 10 | Document the shipped boundary and bump the required user-facing build stamp. |

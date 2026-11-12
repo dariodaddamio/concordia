@@ -13,6 +13,17 @@ inside every subsystem. Source remains authoritative, including changes under qu
 
 ## Runtime and conversation ownership
 
+### Native-window journey control
+
+Journey tests use the native Windows backend when `CONCORDIA_TEST_CONTROL` is set to
+`<loopback-address>;<random-token>`. The backend binds only for that opt-in process and
+authenticates every line-delimited JSON request with the token. `key`, `text`, `mouse` and
+`resize` requests are posted to the window message thread; keys call the same event emitter and
+mouse requests call the same cell-coordinate conversion used by Win32 messages. `snapshot`
+returns the backend's ratatui cell grid, title, focused tab label and current picker/workspace
+overlays. The channel is absent, has no listener and adds no work when the environment variable
+is not present. It is a test driver, not a second renderer or a provider transport.
+
 | Boundary and source | States / events | Guard and completion owner | Persistence |
 | --- | --- | --- | --- |
 | Tab double click: `tui/run.rs` | No prior click; first tab-label click; second click on the same tab/cell within the OS double-click interval; reset | Close targets take precedence. Keyboard input, non-tab clicks and structural tab actions reset the tracker. A double click selects the exact tab, hides its shell view and invokes the existing guarded F2 title editor. | Transient click tracking is not persisted; saved titles use the existing conversation/native binding. |

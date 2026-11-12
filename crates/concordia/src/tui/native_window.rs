@@ -9,7 +9,9 @@ use ratatui::{
     style::{Color, Modifier},
 };
 use std::{
+    collections::VecDeque,
     io, mem,
+    net::{SocketAddr, TcpListener, TcpStream},
     ptr::{null, null_mut},
     sync::{
         atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering},
@@ -17,6 +19,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 use unicode_width::UnicodeWidthStr;
 use windows_sys::Win32::{
@@ -35,6 +38,7 @@ const UPDATE: u32 = WM_APP + 1;
 const TITLE: u32 = WM_APP + 2;
 const POINTER: u32 = WM_APP + 3;
 const SHUTDOWN: u32 = WM_APP + 4;
+const TEST_CONTROL: u32 = WM_APP + 5;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
 
@@ -71,6 +75,24 @@ struct Shared {
     dirty: AtomicBool,
     closing: AtomicBool,
     screen: Mutex<Screen>,
+    test_control: Option<TestControl>,
+}
+
+#[derive(Default)]
+struct TestControl {
+    state: Mutex<TestState>,
+    queue: Mutex<VecDeque<TestRequest>>,
+}
+
+#[derive(Default)]
+struct TestState {
+    focused_tab: String,
+    overlays: Vec<String>,
+}
+
+struct TestRequest {
+    request: serde_json::Value,
+    reply: mpsc::SyncSender<String>,
 }
 
 /// Signed cells belong to the captured mouse-up message, before terminal clamping.
@@ -116,6 +138,7 @@ fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend
             title: "Concordia".into(),
             images: Vec::new(),
         }),
+        test_control: std::env::var_os("CONCORDIA_TEST_CONTROL").map(|_| TestControl::default()),
     });
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (stopped_tx, stopped) = mpsc::sync_channel(1);
@@ -149,6 +172,14 @@ fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend
 }
 
 impl WindowBackend {
+    pub(super) fn set_test_state(&mut self, focused_tab: String, overlays: Vec<String>) {
+        let Some(test) = self.shared.test_control.as_ref() else {
+            return;
+        };
+        let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.focused_tab = focused_tab;
+        state.overlays = overlays;
+    }
     pub(super) fn set_images(&mut self, images: Vec<RasterImage>) -> io::Result<()> {
         if images.len() > 4
             || images.iter().any(|image| {
@@ -859,6 +890,177 @@ impl Window {
     }
 }
 
+fn test_modifiers(value: Option<&serde_json::Value>) -> KeyModifiers {
+    let mut modifiers = KeyModifiers::NONE;
+    for name in value
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+    {
+        modifiers |= match name.to_ascii_uppercase().as_str() {
+            "CTRL" | "CONTROL" => KeyModifiers::CONTROL,
+            "ALT" => KeyModifiers::ALT,
+            "SHIFT" => KeyModifiers::SHIFT,
+            "SUPER" | "META" => KeyModifiers::SUPER,
+            _ => KeyModifiers::NONE,
+        };
+    }
+    modifiers
+}
+
+fn test_key(value: &str) -> Option<KeyCode> {
+    Some(match value {
+        "Enter" => KeyCode::Enter,
+        "Esc" | "Escape" => KeyCode::Esc,
+        "Tab" => KeyCode::Tab,
+        "Backspace" => KeyCode::Backspace,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        "Delete" => KeyCode::Delete,
+        "Insert" => KeyCode::Insert,
+        value if value.len() == 1 => KeyCode::Char(value.chars().next()?),
+        value
+            if value
+                .strip_prefix('F')
+                .and_then(|n| n.parse().ok())
+                .is_some() =>
+        {
+            KeyCode::F(value[1..].parse().ok()?)
+        }
+        _ => return None,
+    })
+}
+
+fn test_response(shared: &Shared, request: &serde_json::Value) -> serde_json::Value {
+    if request.get("op").and_then(|v| v.as_str()) != Some("snapshot") {
+        return serde_json::json!({"ok": true});
+    }
+    let screen = shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(test) = shared.test_control.as_ref() else {
+        return serde_json::json!({"ok": false, "error": "test control disabled"});
+    };
+    let state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+    let rows = (0..screen.size.height)
+        .map(|row| {
+            (0..screen.size.width)
+                .map(|column| {
+                    screen.cells
+                        [usize::from(row) * usize::from(screen.size.width) + usize::from(column)]
+                    .symbol()
+                    .to_owned()
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "ok": true,
+        "title": screen.title,
+        "focused_tab": state.focused_tab,
+        "overlays": state.overlays,
+        "columns": screen.size.width,
+        "rows": screen.size.height,
+        "grid": rows,
+    })
+}
+
+unsafe fn handle_test_control(window: &mut Window) {
+    let Some(test) = window.shared.test_control.as_ref() else {
+        return;
+    };
+    let requests = {
+        let mut queue = test.queue.lock().unwrap_or_else(|e| e.into_inner());
+        queue.drain(..).collect::<Vec<_>>()
+    };
+    drop(test);
+    for request in requests {
+        match request.request.get("op").and_then(|v| v.as_str()) {
+            Some("key") => {
+                if let Some(code) = request
+                    .request
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .and_then(test_key)
+                {
+                    window.emit(Event::Key(KeyEvent::new(
+                        code,
+                        test_modifiers(request.request.get("modifiers")),
+                    )));
+                }
+            }
+            Some("text") => {
+                for character in request
+                    .request
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .chars()
+                    .filter(|c| !c.is_control())
+                {
+                    window.emit(Event::Key(KeyEvent::new(
+                        KeyCode::Char(character),
+                        KeyModifiers::NONE,
+                    )));
+                }
+            }
+            Some("mouse") => {
+                let x = request
+                    .request
+                    .get("x")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32
+                    * window.cell_width;
+                let y = request
+                    .request
+                    .get("y")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32
+                    * window.cell_height;
+                let kind = match request.request.get("kind").and_then(|v| v.as_str()) {
+                    Some("down") => MouseEventKind::Down(MouseButton::Left),
+                    Some("up") => MouseEventKind::Up(MouseButton::Left),
+                    Some("scroll_up") => MouseEventKind::ScrollUp,
+                    Some("scroll_down") => MouseEventKind::ScrollDown,
+                    _ => MouseEventKind::Moved,
+                };
+                window.mouse(kind, x, y);
+            }
+            Some("resize") => {
+                let width = request
+                    .request
+                    .get("columns")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(120) as i32
+                    * window.cell_width;
+                let height = request
+                    .request
+                    .get("rows")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(40) as i32
+                    * window.cell_height;
+                SetWindowPos(
+                    window.shared.hwnd.load(Ordering::Acquire) as HWND,
+                    null_mut(),
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            _ => {}
+        }
+        let response = test_response(&window.shared, &request.request);
+        let _ = request.reply.send(response.to_string());
+    }
+}
+
 /// Tiny application status marks must never depend on a fallback font or script substitution.
 /// Keep their ordinary Unicode text in the shared UI and copied output; only native paint is geometric.
 unsafe fn paint_status_symbol(dc: HDC, symbol: &str, rect: &RECT) -> bool {
@@ -1294,6 +1496,7 @@ unsafe fn window_thread(
         return Err(io::Error::last_os_error());
     }
     shared.hwnd.store(hwnd as isize, Ordering::Release);
+    start_test_control(&shared, hwnd);
     if !window.icons[0].is_null() {
         SendMessageW(
             hwnd,
@@ -1330,6 +1533,81 @@ unsafe fn window_thread(
     Ok(())
 }
 
+/// Test-only control is an authenticated, local loopback channel. It is deliberately
+/// attached to the native message thread: injected events and real Win32 input share
+/// the same `Window::emit`/`Window::mouse` path and therefore the same input precedence.
+fn start_test_control(shared: &Arc<Shared>, hwnd: HWND) {
+    let Some(spec) = std::env::var_os("CONCORDIA_TEST_CONTROL") else {
+        return;
+    };
+    let Ok(spec) = spec.into_string() else { return };
+    let Some((address, token)) = spec.split_once(';') else {
+        return;
+    };
+    let Ok(address) = address.parse::<SocketAddr>() else {
+        return;
+    };
+    if !address.ip().is_loopback() || token.is_empty() {
+        return;
+    }
+    let Ok(listener) = TcpListener::bind(address) else {
+        return;
+    };
+    let shared = shared.clone();
+    thread::Builder::new()
+        .name("concordia-test-control".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let shared = shared.clone();
+                let token = token.to_owned();
+                thread::spawn(move || test_control_client(stream, shared, hwnd, &token));
+            }
+        })
+        .ok();
+}
+
+fn test_control_client(stream: TcpStream, shared: Arc<Shared>, hwnd: HWND, token: &str) {
+    use std::io::{BufRead, BufReader, Write};
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() || line.is_empty() {
+            break;
+        }
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if request.get("token").and_then(|v| v.as_str()) != Some(token) {
+            continue;
+        }
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let Some(test) = shared.test_control.as_ref() else {
+            break;
+        };
+        test.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(TestRequest {
+                request,
+                reply: reply_tx,
+            });
+        unsafe {
+            PostMessageW(hwnd, TEST_CONTROL, 0, 0);
+        }
+        let Ok(reply) = reply_rx.recv_timeout(Duration::from_secs(5)) else {
+            break;
+        };
+        if reader.get_mut().write_all(reply.as_bytes()).is_err() {
+            break;
+        }
+        if reader.get_mut().write_all(b"\n").is_err() {
+            break;
+        }
+        let _ = reader.get_mut().flush();
+    }
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     message: u32,
@@ -1351,6 +1629,10 @@ unsafe extern "system" fn window_proc(
     match message {
         SHUTDOWN => {
             DestroyWindow(hwnd);
+            return 0;
+        }
+        TEST_CONTROL => {
+            handle_test_control(&mut *pointer);
             return 0;
         }
         WM_DESTROY => {
@@ -1382,6 +1664,7 @@ unsafe extern "system" fn window_proc(
             | UPDATE
             | TITLE
             | POINTER
+            | TEST_CONTROL
             | WM_SETCURSOR
             | WM_TIMER
             | WM_SIZE
