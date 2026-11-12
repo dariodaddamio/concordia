@@ -1,5 +1,9 @@
 # Changelog
 
+- W7: enriched the deterministic v2 handoff map with verbatim goal redirects, structured-tool
+  file counts, the last recorded error, the previous agent's bounded final message, restorable
+  pointers and current state, under one fixed character budget.
+
 - W6a: removed public recovery commands and the `/use` continuation row; interruptions,
   usage-limit handoff and failed-request retry now stay inline. Renamed the Workspace permission
   mode to Edit, made `/harness` the sole harness action path, and report provider-command

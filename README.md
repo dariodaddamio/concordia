@@ -96,6 +96,7 @@ discovery needs diagnosis.
 - [How Concordia works, end to end](docs/how-concordia-works.md)
 - [Current capabilities and limits](PLAN.md)
 - [Architecture and data boundaries](docs/architecture.md)
+- [Deterministic handoff map layout](docs/continuity-map-v2.md)
 - [Verified behavior and remaining limits](docs/e2e-status.md)
 - [Contributing](CONTRIBUTING.md)
 - [License](LICENSE)
