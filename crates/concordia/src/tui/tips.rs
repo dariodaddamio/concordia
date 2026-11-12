@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn tips_are_contextual_and_rate_limited() {
-        assert!(contextual_tip(true, true, true, 1).starts_with("Tab"));
+        assert!(contextual_tip(true, true, true, 1).contains("/workers"));
         assert!(contextual_tip(false, false, true, 1).contains("/use"));
         let mut limiter = RateLimiter::new(2);
         assert!(limiter.take("x").is_some());

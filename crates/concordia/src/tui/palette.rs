@@ -53,6 +53,7 @@ pub fn matching_for_provider(
     let provider_commands = provider
         .into_iter()
         .flat_map(crate::provider::command_specs)
+        .filter(|c| c.name.starts_with(&typed))
         .map(|c| Entry {
             command: c.name.to_string(),
             help: format!("{} (unavailable in Concordia's provider mode)", c.description),

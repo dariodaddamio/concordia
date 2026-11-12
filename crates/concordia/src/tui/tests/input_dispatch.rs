@@ -838,7 +838,10 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         assert!(s.contains(needle), "palette missing {needle:?}:\n{s}");
     }
     assert!(
-        s.contains(&format!("commands · {}", palette::matching("/").len())),
+        s.contains(&format!(
+            "commands · {}",
+            h.app.palette_entries().len()
+        )),
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);
@@ -892,7 +895,10 @@ fn arrows_move_the_selection_and_tab_completes_it() {
     h.type_str("/");
     h.key_up(); // wraps to the last command
     assert_eq!(h.app.editor.text(), "/");
-    assert_eq!(h.app.palette.selected, palette::matching("/").len() - 1);
+    assert_eq!(
+        h.app.palette.selected,
+        h.app.palette_entries().len() - 1
+    );
 }
 
 #[test]

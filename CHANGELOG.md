@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-12h)
+
+- Filtered provider-native slash commands by the typed prefix so ordinary prompts and
+  Concordia command history are submitted and recalled without palette interference.
+
 ### Added (2026-11-12g)
 
 - Added the fake-fixture-backed Grok Build provider over ACP, with explicit session resume,

@@ -75,7 +75,7 @@
 <rect x="14" y="625" width="990" height="19" fill="#000000"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
 <text x="23" y="50" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffb000">← Home</text>
-<text x="95" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-12b</text>
+<text x="95" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-12g</text>
 <text x="320" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#0c0c0c" font-weight="700">Codex 3</text>
 <text x="410" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
 <text x="518" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">gpt-5.1-codex</text>
@@ -174,7 +174,7 @@
 <text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#797979">│</text>
 <text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#797979">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
 <text x="23" y="639" textLength="738" lengthAdjust="spacingAndGlyphs" fill="#868177">Enter send · F9 attach · / cmds · Shift+Tab perms · drag select · Ctrl+C copy/stop</text>
-<text x="779" y="639" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#68c58b" font-weight="700">permissions: workspace ▾</text>
+<text x="824" y="639" textLength="171" lengthAdjust="spacingAndGlyphs" fill="#68c58b" font-weight="700">permissions: edit ▾</text>
 </g>
 </g>
 <rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>

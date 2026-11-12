@@ -722,7 +722,7 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     assert!(lines[reply + 1].trim().is_empty(), "{s}");
     // The input box is rounded, and trust is stated in the footer (full is flagged).
     assert!(
-        s.contains('\u{256d}') && s.contains("permissions: workspace"),
+        s.contains('\u{256d}') && s.contains("permissions: edit"),
         "{s}"
     );
     h.app.trust = crate::store::TrustMode::Full;
@@ -793,10 +793,10 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     for w in [40u16, 60, 80, 100, 140] {
         let h = Harness::new(w, 12);
         let row = footer_row(&h);
-        let right = if row.ends_with("permissions: workspace ▾") {
-            "permissions: workspace ▾"
-        } else if row.ends_with("workspace ▾") {
-            "workspace ▾"
+        let right = if row.ends_with("permissions: edit ▾") {
+            "permissions: edit ▾"
+        } else if row.ends_with("edit ▾") {
+            "edit ▾"
         } else {
             ""
         };

@@ -261,7 +261,7 @@ fn enter_on_a_chat_resumes_exactly_that_chat() {
     // The fake account is not registered, so the resume path reports it by name.
     assert!(
         h.screen()
-            .contains("resume failed: account is no longer registered"),
+            .contains("resume unavailable: chat account is no longer registered"),
         "{}",
         h.screen()
     );
@@ -278,7 +278,7 @@ fn enter_on_a_folder_expands_it_and_the_selection_wraps() {
     h.key(KeyCode::Down, KeyModifiers::NONE);
     h.enter();
     assert!(
-        h.screen().contains("resume failed"),
+        h.screen().contains("resume unavailable"),
         "the selected row is the lock chat"
     );
 }
@@ -312,7 +312,7 @@ fn a_double_click_opens_a_chat_and_a_single_click_selects_it() {
     assert!(h.screen().lines().nth(y as usize).unwrap().contains("> "));
     h.click(10, y);
     assert!(h.app.landing.is_none(), "second click opens it");
-    assert!(h.screen().contains("resume failed"));
+    assert!(h.screen().contains("resume unavailable"));
 }
 
 
