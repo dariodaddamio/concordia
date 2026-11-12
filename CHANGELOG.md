@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (2026-11-12s)
+
+- Keep screenshot comparisons in temporary output, require explicit opt-in to regenerate committed
+  SVGs, and keep native-window journey windows hidden, nonactivating and out of the taskbar.
+- Add deterministic coverage for Ctrl+T persistence, image aspect ratio, reasoning separators and
+  palette filtering while retaining the existing scroll and agent-record redaction regressions.
+
 ### Fixed (2026-11-12r)
 
 - Finished Grok Bot routine setup in `/use` with a masked Credential Manager-backed key field,

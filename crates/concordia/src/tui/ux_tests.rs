@@ -56,6 +56,47 @@ fn mermaid_is_rendered_inside_chat_and_completion_metrics_have_no_link_targets()
         }
     }
 }
+
+#[test]
+fn slash_palette_prefix_filter_does_not_disable_prompt_history() {
+    let mut ui = Ui::new();
+    ui.app.remember_prompt("previous prompt");
+    ui.app.editor.set_text("/up");
+    assert_eq!(
+        ui.app
+            .palette_entries()
+            .into_iter()
+            .map(|entry| entry.command)
+            .collect::<Vec<_>>(),
+        vec!["/update"]
+    );
+    ui.app.history_prev();
+    assert_eq!(ui.app.editor.text(), "previous prompt");
+}
+
+#[test]
+fn reasoning_chunks_are_separated_only_at_reasoning_boundaries() {
+    let mut ui = Ui::new();
+    ui.app.apply_progress(crate::provider::turn::TurnProgress::Thinking(
+        "first".into(),
+    ));
+    ui.app
+        .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
+            "second".into(),
+        ));
+    ui.app
+        .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
+            "third\n".into(),
+        ));
+    ui.app.commit_live_thinking();
+    let thinking = ui
+        .app
+        .messages
+        .iter()
+        .find(|message| message.role == MsgRole::Thinking)
+        .unwrap();
+    assert_eq!(thinking.text, "first\nsecond\nthird\n");
+}
 struct Ui {
     app: App,
     terminal: Terminal<TestBackend>,
@@ -438,7 +479,10 @@ fn run_status_sits_below_transcript_and_user_rows_have_background_and_completion
     }
     ui.draw();
     ui.app.view.scroll_up(10);
+    let first_visible = ui.app.view.visible().start;
     ui.draw();
     assert!(ui.app.areas.bottom_button.width > 0);
+    assert_eq!(ui.app.view.scroll, 10);
+    assert_eq!(ui.app.view.visible().start, first_visible);
 }
 

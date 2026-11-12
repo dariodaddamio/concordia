@@ -1781,6 +1781,17 @@ mod panic_log_tests {
     }
 
     #[test]
+    fn creating_a_new_tab_does_not_retry_recovery_persistence_synchronously() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let _tab = new_tab_app(dir.path(), dir.path(), false);
+        assert!(
+            !dir.path().join("pane-recovery").exists(),
+            "Ctrl+T setup must leave recovery persistence to the normal tick"
+        );
+    }
+
+    #[test]
     fn panic_log_line_never_contains_payload_text() {
         let secret = "SECRET-PANIC-PAYLOAD";
         let payload = secret.to_string();

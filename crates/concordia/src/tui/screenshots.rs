@@ -7,9 +7,11 @@
 //! cargo test -p concordia --lib screenshots -- --ignored
 //! ```
 //!
-//! That writes `docs/img/{hero,palette,usage,waiting}.svg`. The ignored `bench_draw_ui` test prints
-//! a `DRAW_UI_BENCH` line that `scripts/metrics.ps1` collects. Everything here is synthetic: no
-//! provider CLI runs and no real account, path or name appears in the output.
+//! The ignored screenshot test compares generated SVG to `docs/img/*.svg`. Set
+//! `CONCORDIA_REGENERATE_SCREENSHOTS=1` to update the committed images. The ignored
+//! `bench_draw_ui` test prints a `DRAW_UI_BENCH` line that `scripts/metrics.ps1` collects.
+//! Everything here is synthetic: no provider CLI runs and no real account, path or name appears
+//! in the output.
 
 use super::*;
 use ratatui::backend::TestBackend;
@@ -633,14 +635,69 @@ fn xterm_palette_matches_known_entries() {
     assert_eq!(indexed_hex(114), "#87d787");
 }
 
-/// Writes docs/img/*.svg. Run: cargo test -p concordia --lib screenshots -- --ignored
+/// Replaces build stamps such as `2026-11-12s` and normalizes line endings, so neither a stamp
+/// bump nor a CRLF checkout fails the comparison.
+fn mask_stamps(svg: &str) -> String {
+    let svg = svg.replace("\r\n", "\n");
+    let svg = svg.as_str();
+    let bytes = svg.as_bytes();
+    let mut out = String::with_capacity(svg.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let date = bytes.len() - i >= 10
+            && bytes[i..i + 10].iter().enumerate().all(|(k, b)| match k {
+                4 | 7 => *b == b'-',
+                _ => b.is_ascii_digit(),
+            });
+        if date {
+            let mut end = i + 10;
+            while end < bytes.len() && bytes[end].is_ascii_lowercase() {
+                end += 1;
+            }
+            out.push_str("STAMP");
+            i = end;
+        } else {
+            let c = svg[i..].chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
+/// Compares docs/img/*.svg without writing the checkout. Set CONCORDIA_REGENERATE_SCREENSHOTS=1
+/// to intentionally replace the committed images.
 #[test]
 #[ignore]
 fn write_screenshots() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/img");
-    std::fs::create_dir_all(&dir).unwrap();
+    let committed = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/img");
+    let temp = tempfile::tempdir().unwrap();
+    let regenerate = matches!(
+        std::env::var_os("CONCORDIA_REGENERATE_SCREENSHOTS").as_deref(),
+        Some(value) if value == "1"
+    );
     for (name, svg) in scenes() {
-        std::fs::write(dir.join(format!("{name}.svg")), svg).unwrap();
+        let path = temp.path().join(format!("{name}.svg"));
+        std::fs::write(&path, svg).unwrap();
+        if !regenerate {
+            let expected = std::fs::read_to_string(committed.join(format!("{name}.svg"))).unwrap();
+            let actual = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                mask_stamps(&actual),
+                mask_stamps(&expected),
+                "generated screenshot differs: {name}.svg"
+            );
+        }
+    }
+    if regenerate {
+        std::fs::create_dir_all(&committed).unwrap();
+        for (name, _) in scenes() {
+            std::fs::copy(
+                temp.path().join(format!("{name}.svg")),
+                committed.join(format!("{name}.svg")),
+            )
+            .unwrap();
+        }
     }
 }
 

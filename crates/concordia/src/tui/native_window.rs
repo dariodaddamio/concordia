@@ -886,17 +886,31 @@ impl Window {
 
     /// Pixel rectangle an image covers: scaled down to fit its cells, never up, top-left aligned.
     fn image_rect(&self, image: &RasterImage, client: &RECT) -> Option<RECT> {
-        let left = i32::from(image.area.x) * self.cell_width;
-        let top = i32::from(image.area.y) * self.cell_height;
-        let available_width =
-            (i32::from(image.area.width) * self.cell_width).min(client.right - left);
-        let available_height =
-            (i32::from(image.area.height) * self.cell_height).min(client.bottom - top);
+        Self::image_rect_for(
+            image.area,
+            image.pixels.width(),
+            image.pixels.height(),
+            client,
+            self.cell_width,
+            self.cell_height,
+        )
+    }
+
+    fn image_rect_for(
+        area: Rect,
+        width: u32,
+        height: u32,
+        client: &RECT,
+        cell_width: i32,
+        cell_height: i32,
+    ) -> Option<RECT> {
+        let left = i32::from(area.x) * cell_width;
+        let top = i32::from(area.y) * cell_height;
+        let available_width = (i32::from(area.width) * cell_width).min(client.right - left);
+        let available_height = (i32::from(area.height) * cell_height).min(client.bottom - top);
         if available_width <= 0 || available_height <= 0 {
             return None;
         }
-        let width = image.pixels.width();
-        let height = image.pixels.height();
         let scale = (f64::from(available_width) / f64::from(width))
             .min(f64::from(available_height) / f64::from(height))
             .min(1.0);
@@ -1626,13 +1640,14 @@ unsafe fn window_thread(
     let dpi = GetDpiForSystem().clamp(96, 768) as i32;
     let initial_width = (1120 * dpi / 96).min((GetSystemMetrics(SM_CXSCREEN) * 9 / 10).max(400));
     let initial_height = (860 * dpi / 96).min((GetSystemMetrics(SM_CYSCREEN) * 9 / 10).max(280));
+    let test_window = shared.test_control.is_some();
     let hwnd = CreateWindowExW(
-        WS_EX_ACCEPTFILES,
+        WS_EX_ACCEPTFILES | if test_window { WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE } else { 0 },
         class.as_ptr(),
         wide("Concordia").as_ptr(),
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
+        if test_window { -32000 } else { CW_USEDEFAULT },
+        if test_window { -32000 } else { CW_USEDEFAULT },
         initial_width,
         initial_height,
         null_mut(),
@@ -1681,7 +1696,10 @@ unsafe fn window_thread(
     DragAcceptFiles(hwnd, 1);
     SetTimer(hwnd, 1, 500, None);
     set_caption_color(hwnd);
-    ShowWindow(hwnd, SW_SHOW);
+    // Keep journey windows rendered at their off-screen position.  SW_HIDE prevents normal
+    // paint delivery on some Windows versions, while NOACTIVATE and TOOLWINDOW keep this
+    // test-only window out of focus and the taskbar.
+    ShowWindow(hwnd, if test_window { SW_SHOWNOACTIVATE } else { SW_SHOW });
     UpdateWindow(hwnd);
     let _ = ready.send(Ok(()));
     let mut message: MSG = mem::zeroed();
@@ -2292,6 +2310,7 @@ fn dim(foreground: u32, background: u32) -> u32 {
         |shift: u32| (((foreground >> shift) & 255u32) + ((background >> shift) & 255u32)) / 2;
     blend(0) | (blend(8) << 8) | (blend(16) << 16)
 }
+
 fn color(color: Color, foreground: bool) -> u32 {
     let index = match color {
         Color::Reset => {
@@ -2347,3 +2366,23 @@ fn color(color: Color, foreground: bool) -> u32 {
     let value = index - 16;
     rgb(level(value / 36), level(value / 6 % 6), level(value % 6))
 }
+
+#[cfg(test)]
+mod image_rect_tests {
+    use super::*;
+
+    #[test]
+    fn preview_preserves_source_aspect_ratio_when_fitted_to_cells() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 400,
+            bottom: 400,
+        };
+        let rect = Window::image_rect_for(Rect::new(0, 0, 20, 20), 400, 200, &client, 9, 20)
+            .unwrap();
+        assert_eq!(rect.right - rect.left, 180);
+        assert_eq!(rect.bottom - rect.top, 90);
+    }
+}
+

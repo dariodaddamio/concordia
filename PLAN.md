@@ -651,6 +651,15 @@ Going public:
 
 ## This slice
 
+### N2 test hygiene and regression tests - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/screenshots.rs` | ok: 1, 4, 5, 10 | Keep screenshot generation in its existing test owner; compare through a temporary directory and require an explicit regeneration environment variable for committed-image writes. |
+| `crates/concordia/src/tui/native_window.rs` | ok: 1, 4, 5, 9 | Apply the existing test-control state at the native HWND boundary so controlled windows stay hidden, nonactivating and absent from the taskbar while using the same renderer and input path. |
+| `crates/concordia/src/tui/run.rs`, `crates/concordia/src/tui/ux_tests.rs` | ok: 1, 5, 9, 10 | Add focused regressions beside the existing owners for Ctrl+T, palette history and reasoning chunk boundaries; do not add a test-only production interface. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 10 | Record the user-facing test-driver and regression coverage change and advance the existing build stamp. |
+
 ### W15 documentation site scaffold - anti-slop gate
 
 | path | tendency_check | justification |

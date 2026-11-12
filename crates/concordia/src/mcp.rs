@@ -305,3 +305,37 @@ pub fn take_pending(root: &Path, limit: usize) -> Vec<PendingProposal> {
 pub fn has_proposals(root: &Path) -> bool {
     std::fs::read_dir(proposals_dir(root)).is_ok_and(|mut r| r.next().is_some())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_record_storage_redacts_every_user_supplied_field() {
+        let root = tempfile::tempdir().unwrap();
+        let secret = "agent-record-secret-20261112";
+        crate::redact::register_runtime_secret(secret);
+        let record = AgentRecord {
+            agent_id: "agent-record-redaction".into(),
+            account: secret.into(),
+            provider: "synthetic".into(),
+            model: Some(secret.into()),
+            task: secret.into(),
+            parent: secret.into(),
+            status: "queued".into(),
+            result: Some(secret.into()),
+            activity: vec![secret.into()],
+        };
+
+        write_agent(root.path(), &record).unwrap();
+        let raw = std::fs::read_to_string(record_path(root.path(), &record.agent_id)).unwrap();
+        assert!(!raw.contains(secret));
+        let stored = read_agent(root.path(), &record.agent_id).unwrap();
+        assert_ne!(stored.account, secret);
+        assert_ne!(stored.model.as_deref(), Some(secret));
+        assert_ne!(stored.task, secret);
+        assert_ne!(stored.parent, secret);
+        assert_ne!(stored.result.as_deref(), Some(secret));
+        assert_ne!(stored.activity[0], secret);
+    }
+}

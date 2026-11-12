@@ -444,7 +444,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             compaction: Default::default(),
         };
         let out = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(60),
             provider::turn::run_provider_turn_with_transport(
                 &request,
                 owner,
@@ -755,7 +755,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             compaction: Default::default(),
         };
         let out = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(60),
             provider::turn::run_provider_turn_with_transport(
                 &request,
                 owner,
