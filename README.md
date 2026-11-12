@@ -90,6 +90,11 @@ does not prove that hooks are trusted, active or able to protect every source la
 Use `/doctor` inside Concordia, or `concordia doctor` in a terminal, when setup or provider
 discovery needs diagnosis.
 
+If a saved chat can no longer be opened because its provider session or Concordia record is
+missing or stale, `/resume` and `/doctor` show the concrete cause. Choose the repair action to
+start a fresh provider session from the chat's deterministic handoff map; any unsent draft stays
+in the composer.
+
 ## Safety at a glance
 
 - Plan, Ask and Edit modes limit what a provider may do. Full access requires explicit

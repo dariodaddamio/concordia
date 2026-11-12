@@ -19,6 +19,64 @@ const MAX_MESSAGES: usize = 128;
 const INDEX_BYTES: u64 = 256 * 1024;
 const EXCERPT_BYTES: usize = 8192;
 
+/// Stable user-facing categories for a native source that can no longer be trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerFailureCause {
+    FileDeletedOrMoved,
+    Replaced,
+    RewrittenOrTruncated,
+    HeaderChanged,
+    AccountHomeChanged,
+    RecordTooLarge,
+    SessionRejectedByProvider,
+    RecordUnreadable,
+}
+
+impl PointerFailureCause {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FileDeletedOrMoved => "file deleted or moved",
+            Self::Replaced => "file replaced",
+            Self::RewrittenOrTruncated => "record rewritten or truncated",
+            Self::HeaderChanged => "header changed",
+            Self::AccountHomeChanged => "account home changed",
+            Self::RecordTooLarge => "record too large",
+            Self::SessionRejectedByProvider => "session rejected by provider",
+            Self::RecordUnreadable => "record unreadable",
+        }
+    }
+
+    /// Convert existing native-reader errors into the small diagnostic taxonomy.
+    pub fn from_error(error: &str) -> Self {
+        let text = error.to_ascii_lowercase();
+        if text.contains("home changed") || text.contains("home is unavailable") {
+            Self::AccountHomeChanged
+        } else if text.contains("record too large") || text.contains("exceeds the read bound") {
+            Self::RecordTooLarge
+        } else if text.contains("header changed") {
+            Self::HeaderChanged
+        } else if text.contains("truncated")
+            || text.contains("indexed message changed")
+            || text.contains("rewritten")
+            || text.contains("compacted")
+        {
+            Self::RewrittenOrTruncated
+        } else if text.contains("replaced") {
+            Self::Replaced
+        } else if text.contains("rejected") || text.contains("session identity mismatch") {
+            Self::SessionRejectedByProvider
+        } else if text.contains("not found")
+            || text.contains("missing")
+            || text.contains("deleted")
+            || text.contains("moved")
+        {
+            Self::FileDeletedOrMoved
+        } else {
+            Self::RecordUnreadable
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -26,7 +84,11 @@ pub(crate) mod tests {
 
     pub(super) fn fixture(provider: ProviderKind, root: &Path, account: &str) -> (PathBuf, String) {
         let home = root.join(account);
-        let folder = home.join(if provider == ProviderKind::Codex { "sessions" } else { "projects/fixture" });
+        let folder = home.join(if provider == ProviderKind::Codex {
+            "sessions"
+        } else {
+            "projects/fixture"
+        });
         fs::create_dir_all(&folder).unwrap();
         let session = "11111111-2222-4333-8444-555555555555".to_string();
         let path = folder.join(format!("{session}.jsonl"));
@@ -36,10 +98,17 @@ pub(crate) mod tests {
             json!({"type":"system","sessionId":session})
         };
         fs::write(&path, format!("{header}\n")).unwrap();
-        crate::store::upsert_stored_account(root, crate::store::StoredAccount {
-            id: account.into(), provider, home_path: Some(home.to_string_lossy().into_owned()),
-            label: account.into(), created_at: "0".into(),
-        }).unwrap();
+        crate::store::upsert_stored_account(
+            root,
+            crate::store::StoredAccount {
+                id: account.into(),
+                provider,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: account.into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
         (path, session)
     }
 
@@ -52,7 +121,12 @@ pub(crate) mod tests {
     }
 
     pub(super) fn append(path: &Path, bytes: &[u8]) {
-        fs::OpenOptions::new().append(true).open(path).unwrap().write_all(bytes).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
     }
 }
 
@@ -77,10 +151,19 @@ fn timestamp_ms(text: &str) -> Option<i64> {
             .flatten()
     };
     let (year, month, day, hour, minute, second) = (
-        number(0, 4)?, number(5, 7)?, number(8, 10)?, number(11, 13)?,
-        number(14, 16)?, number(17, 19)?,
+        number(0, 4)?,
+        number(5, 7)?,
+        number(8, 10)?,
+        number(11, 13)?,
+        number(14, 16)?,
+        number(17, 19)?,
     );
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
         return None;
     }
     let zone = &text[19..];
@@ -94,21 +177,34 @@ fn timestamp_ms(text: &str) -> Option<i64> {
         (parse_zone(zone)?, None)
     };
     let days = days_from_civil(year as i64, month as i64, day as i64)?;
-    Some((days * 86_400 + hour as i64 * 3600 + minute as i64 * 60 + second as i64) * 1000
-        + fraction.unwrap_or(0) - offset_minutes * 60_000)
+    Some(
+        (days * 86_400 + hour as i64 * 3600 + minute as i64 * 60 + second as i64) * 1000
+            + fraction.unwrap_or(0)
+            - offset_minutes * 60_000,
+    )
 }
 
 fn parse_zone(zone: &str) -> Option<i64> {
-    if zone.eq_ignore_ascii_case("z") { return Some(0); }
-    let sign = match zone.as_bytes().first()? { b'+' => 1, b'-' => -1, _ => return None };
-    if zone.len() != 6 || zone.as_bytes()[3] != b':' { return None; }
+    if zone.eq_ignore_ascii_case("z") {
+        return Some(0);
+    }
+    let sign = match zone.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    if zone.len() != 6 || zone.as_bytes()[3] != b':' {
+        return None;
+    }
     let hours: i64 = zone[1..3].parse().ok()?;
     let minutes: i64 = zone[4..6].parse().ok()?;
     (hours <= 23 && minutes <= 59).then_some(sign * (hours * 60 + minutes))
 }
 
 fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
-    if day == 0 { return None; }
+    if day == 0 {
+        return None;
+    }
     let year = year - i64::from(month <= 2);
     let era = if year >= 0 { year } else { year - 399 } / 400;
     let yoe = year - era * 400;
@@ -1666,8 +1762,6 @@ pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
     Ok(output + "\n")
 }
 
-
-
 #[cfg(test)]
 mod more_tests {
     use super::*;
@@ -1718,6 +1812,26 @@ mod more_tests {
         assert!(
             !prefix.contains("modified tool result"),
             "handoff includes pointers rather than copied messages"
+        );
+    }
+
+    #[test]
+    fn pointer_failure_cause_reuses_native_error_categories() {
+        assert_eq!(
+            PointerFailureCause::from_error("native source is stale: file replaced"),
+            PointerFailureCause::Replaced
+        );
+        assert_eq!(
+            PointerFailureCause::from_error("native source is stale: original header changed"),
+            PointerFailureCause::HeaderChanged
+        );
+        assert_eq!(
+            PointerFailureCause::from_error("native source record too large"),
+            PointerFailureCause::RecordTooLarge
+        );
+        assert_eq!(
+            PointerFailureCause::from_error("session rejected by provider"),
+            PointerFailureCause::SessionRejectedByProvider
         );
     }
 }
@@ -1780,5 +1894,3 @@ pub fn handoff_prefix(root: &Path, bindings: &[Binding]) -> (String, Vec<String>
     };
     (format!("[native source pointers]\n{body}\n{instructions}\nNative tool/approval state is not transferred."), notices)
 }
-
-

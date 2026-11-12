@@ -29,6 +29,20 @@ impl App {
             .cloned()
             .collect();
         let mut rows = tasks_to_picker_rows(&tasks);
+        for row in &mut rows {
+            let Some(task_id) = row.id.strip_prefix("task:") else {
+                continue;
+            };
+            if let Some(task) = tasks.iter().find(|task| task.id == task_id) {
+                let diagnostic = crate::sessions::diagnose_task(&self.state_root, task);
+                if let Some(cause) = diagnostic.cause() {
+                    row.detail = format!(
+                        "unopenable · {} · Enter to repair (fresh session from handoff map; draft kept)",
+                        cause.label()
+                    );
+                }
+            }
+        }
         rows.extend(native_session_picker_rows(&native));
         let here = count_sessions_here(&sessions, Some(&self.cwd));
         let folder = self
@@ -63,6 +77,58 @@ impl App {
             Ok(None) => self.push_system("resume failed: exact native session was not found in the selected account; use /use to select its account"),
             Err(error) => self.push_system(format!("resume unavailable: {error}")),
         }
+    }
+
+    pub(in crate::tui) fn open_chat_repair(
+        &mut self,
+        task: crate::store::TaskRecord,
+        diagnostic: crate::sessions::ChatDiagnostic,
+    ) {
+        let Some(cause) = diagnostic.cause() else {
+            self.request_resume_session(&diagnostic.account, &diagnostic.native_session_id);
+            return;
+        };
+        self.repair_task = Some(task.id);
+        self.show_picker(
+            PickerKind::ChatRepair,
+            format!("repair chat · {}", diagnostic.title),
+            vec![PickerRow {
+                id: "chat-repair:start".into(),
+                label: "Start fresh session from handoff map".into(),
+                detail: format!("cause: {} · the current draft is kept", cause.label()),
+            }],
+            false,
+        );
+    }
+
+    pub(in crate::tui) fn start_chat_repair(&mut self) {
+        let Some(task_id) = self.repair_task.take() else {
+            self.push_system("chat repair unavailable: task record is missing; draft kept");
+            return;
+        };
+        let Some(task) = crate::store::task(&self.state_root, &task_id) else {
+            self.push_system("chat repair unavailable: task record is missing; draft kept");
+            return;
+        };
+        let Some(map) = task.last_map else {
+            self.push_system("chat repair unavailable: handoff map is unreadable; draft kept");
+            return;
+        };
+        let Some(map_text) = crate::threads::ThreadLog::open(&self.state_root, &map.thread_id)
+            .read_map(crate::config::for_root(&self.state_root).threads.map_chars)
+            .ok()
+        else {
+            self.push_system("chat repair unavailable: handoff map is unreadable; draft kept");
+            return;
+        };
+        let draft = self.editor.text().to_owned();
+        self.handle_slash("/new");
+        self.editor.set_text(&draft);
+        self.task_id = Some(task_id);
+        self.pending_repair_map = Some(map_text);
+        self.need_context_pack = true;
+        self.landing = None;
+        self.push_system("Started a fresh session from the handoff map. Your draft is kept.");
     }
     pub(in crate::tui) fn prepare_resume_delete(&mut self) {
         let Some(picker) = self.picker.as_ref() else {
@@ -144,7 +210,9 @@ impl App {
                     mode_label(self.trust),
                     mode_blurb(self.trust)
                 ));
-                self.push_system("set with /mode plan | ask | edit | full  (Shift+Tab cycles plan/ask/edit)");
+                self.push_system(
+                    "set with /mode plan | ask | edit | full  (Shift+Tab cycles plan/ask/edit)",
+                );
             }
             Some(a) => match parse_mode(a) {
                 Some(mode) => {
@@ -603,7 +671,7 @@ impl App {
         self.show_picker_at(kind, title, rows, filterable, 0);
     }
     pub(in crate::tui) fn open_doctor(&mut self) {
-        let checks = crate::doctor::run_fast_checks();
+        let checks = crate::doctor::run_fast_checks_at(&self.state_root);
         let fixes = crate::doctor::proposed_fixes(&self.state_root, &checks);
         self.doctor = Some(DoctorUi {
             checks,
@@ -694,7 +762,7 @@ impl App {
                     .nth(1)
                     .unwrap_or("unknown backup")
                     .to_string();
-                let checks = crate::doctor::run_fast_checks();
+                let checks = crate::doctor::run_fast_checks_at(&self.state_root);
                 if let Some(doctor) = self.doctor.as_mut() {
                     doctor.checks = checks;
                     doctor.fixes = crate::doctor::proposed_fixes(&self.state_root, &doctor.checks);
@@ -969,7 +1037,12 @@ impl App {
                         match item.kind {
                             crate::needs_you::ItemKind::Question
                             | crate::needs_you::ItemKind::Approval => {
-                                if let Some(job) = item.id.strip_prefix("worker-native:").and_then(|value| value.split(':').next()).and_then(|value| value.parse().ok()) {
+                                if let Some(job) = item
+                                    .id
+                                    .strip_prefix("worker-native:")
+                                    .and_then(|value| value.split(':').next())
+                                    .and_then(|value| value.parse().ok())
+                                {
                                     self.inspect_worker(job);
                                 } else {
                                     self.queue.focused = false;
@@ -1015,6 +1088,11 @@ impl App {
                         self.push_system("resume failed: task is no longer present");
                         return;
                     };
+                    let diagnostic = crate::sessions::diagnose_task(&self.state_root, &task);
+                    if diagnostic.cause().is_some() {
+                        self.open_chat_repair(task, diagnostic);
+                        return;
+                    }
                     let Some(session) = task.sessions.last() else {
                         self.push_system("resume failed: task has no native sessions");
                         return;
@@ -1024,6 +1102,11 @@ impl App {
                             request.task = Some(task.id);
                         }
                     }
+                }
+            }
+            PickerKind::ChatRepair => {
+                if id == "chat-repair:start" {
+                    self.start_chat_repair();
                 }
             }
             PickerKind::Trust => {

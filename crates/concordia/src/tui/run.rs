@@ -740,8 +740,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     app.local_terminal.paste(&s);
                                 } else if app.rename_editor.is_some() {
                                     app.paste_text(&s);
-                                } else if !questions::paste(&mut *app, &s)
-                                {
+                                } else if !questions::paste(&mut *app, &s) {
                                     if s.is_empty() && clipboard::has_attachment() {
                                         app.paste_clipboard();
                                     } else {
@@ -1014,6 +1013,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         pack_msgs
                     };
                     let native_sources = app.native_sources.clone();
+                    let repair_map = app.pending_repair_map.take();
                     let preparing_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                     app.preparing_cancel = Some(preparing_cancel.clone());
                     let need_pack_hint = app.need_context_pack;
@@ -1089,7 +1089,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 return;
                             }
                         };
-                        if crate::config::for_root(&state_root).continuation.proactive_rollover
+                        if crate::config::for_root(&state_root)
+                            .continuation
+                            .proactive_rollover
                             && provider == crate::store::ProviderKind::Codex
                         {
                             policy.rollover_percent = Some(85);
@@ -1173,6 +1175,12 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         } else {
                             None
                         };
+                        if let Some(map) = repair_map {
+                            prefix = Some(match prefix {
+                                Some(prefix) => format!("{prefix}\n\n[repair handoff map]\n{map}"),
+                                None => format!("[repair handoff map]\n{map}"),
+                            });
+                        }
                         if need_pack_hint && !decision.native_resume && !native_sources.is_empty() {
                             let memory_root = state_root.clone();
                             let indexed = tokio::task::spawn_blocking(move || {

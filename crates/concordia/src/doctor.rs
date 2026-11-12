@@ -412,6 +412,7 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
     out.push(check_path_resolution(env));
     out.push(check_state_dir(&env.state_root));
     out.push(check_store(&env.state_root));
+    out.extend(check_unopenable_chats(&env.state_root));
     out.push(check_log(&env.state_root));
     out.push(check_config(&env.state_root));
     out.push(check_user_commands(&env.state_root));
@@ -462,6 +463,28 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
         },
     });
     out
+}
+
+fn check_unopenable_chats(root: &Path) -> Vec<Check> {
+    crate::sessions::unopenable_tasks(root)
+        .into_iter()
+        .map(|chat| {
+            let cause = chat
+                .cause()
+                .expect("unopenable_tasks only returns failed diagnostics");
+            check(
+                Level::Fail,
+                "chat",
+                format!(
+                    "{} ({}/{}) is unopenable: {}; repair: start a fresh session from its handoff map; draft kept",
+                    chat.title,
+                    chat.provider.as_str(),
+                    chat.account,
+                    cause.label()
+                ),
+            )
+        })
+        .collect()
 }
 
 fn check_binary(env: &Env<'_>) -> Check {
@@ -1094,9 +1117,15 @@ pub fn run_fast_report() -> String {
 }
 
 pub fn run_fast_checks() -> Vec<Check> {
+    run_fast_checks_at(&crate::store::default_store_root())
+}
+
+pub fn run_fast_checks_at(state_root: &Path) -> Vec<Check> {
     let provider_bin = resolve_provider_bin;
     let which = |n: &str| which::which(n).ok();
-    run(&real_env(&provider_bin, &which, None))
+    let mut env = real_env(&provider_bin, &which, None);
+    env.state_root = state_root.to_path_buf();
+    run(&env)
 }
 
 #[cfg(test)]

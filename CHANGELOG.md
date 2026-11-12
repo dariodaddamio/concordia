@@ -1,5 +1,11 @@
 # Changelog
 
+### Added (2026-11-12m)
+
+- Diagnosed task-backed chats that cannot be opened, showing the concrete native pointer cause in
+  `/resume` and `/doctor`. The repair action starts a fresh session from the stored handoff map
+  while preserving the unsent draft.
+
 ### Fixed (2026-11-12l)
 
 - Routed provider slash commands through the transports Concordia actually uses: Codex

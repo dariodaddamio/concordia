@@ -143,6 +143,7 @@ pub(in crate::tui) struct PendingLogin {
 pub(in crate::tui) enum PickerKind {
     Doctor,
     DoctorConfirm,
+    ChatRepair,
     Settings,
     FilePreferences,
     Customization,
@@ -328,11 +329,13 @@ pub(crate) struct App {
     pub(in crate::tui) trust: TrustMode,
     pub(in crate::tui) native_session_id: Option<String>,
     pub(in crate::tui) task_id: Option<String>,
+    pub(in crate::tui) pending_repair_map: Option<String>,
     pub(in crate::tui) session_chip: Option<String>,
     pub(in crate::tui) session_ui: session_ui::State,
     pub(in crate::tui) native_agents: native_agents::State,
     pub(in crate::tui) footer_left: String,
     pub(in crate::tui) picker: Option<Picker>,
+    pub(in crate::tui) repair_task: Option<String>,
     pub(in crate::tui) doctor: Option<DoctorUi>,
     pub(in crate::tui) doctor_applier: Box<dyn crate::doctor::FixApplier>,
     pub(in crate::tui) model_refresh: Option<ModelRefresh>,
@@ -866,8 +869,15 @@ impl App {
         use crate::needs_you::{Item, ItemKind};
         self.questions.refresh_native();
         let session = self.needs_you_session();
-        let project = self.cwd.file_name().map_or_else(|| "project".into(), |name| name.to_string_lossy().into_owned());
-        let chat = self.session_ui.title.clone().unwrap_or_else(|| "New chat".into());
+        let project = self.cwd.file_name().map_or_else(
+            || "project".into(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let chat = self
+            .session_ui
+            .title
+            .clone()
+            .unwrap_or_else(|| "New chat".into());
         let approval = self.questions.native_approval_waiting();
         let current = [
             (
@@ -911,10 +921,16 @@ impl App {
                     session_id: session.clone(),
                     title: title.into(),
                     kind,
-                    project: project.clone(), chat: chat.clone(),
-                    agent: self.provider.as_str().into(), request: suffix.into(),
-                    context: self.questions.native_session_id().unwrap_or_else(|| "Waiting for a response".into()),
-                    source: "conversation".into(), created: std::time::Instant::now(),
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: self.provider.as_str().into(),
+                    request: suffix.into(),
+                    context: self
+                        .questions
+                        .native_session_id()
+                        .unwrap_or_else(|| "Waiting for a response".into()),
+                    source: "conversation".into(),
+                    created: std::time::Instant::now(),
                 };
                 crate::needs_you::publish(item.clone());
                 self.needs_you.add(item);
@@ -942,15 +958,33 @@ impl App {
             }
             for request in job.native_inputs() {
                 let id = format!("worker-native:{}:{}", job.id, request.envelope().request_id);
-                let approval = matches!(request.kind(), crate::provider::interaction::NativeInteraction::Permission { .. } | crate::provider::interaction::NativeInteraction::CodexPermission { .. } | crate::provider::interaction::NativeInteraction::PlanApproval { .. });
+                let approval = matches!(
+                    request.kind(),
+                    crate::provider::interaction::NativeInteraction::Permission { .. }
+                        | crate::provider::interaction::NativeInteraction::CodexPermission { .. }
+                        | crate::provider::interaction::NativeInteraction::PlanApproval { .. }
+                );
                 let item = Item {
-                    id: id.clone(), session_id: request.envelope().native_session_id.clone(),
-                    title: if approval { "worker approval" } else { "worker question" }.into(),
-                    kind: if approval { ItemKind::Approval } else { ItemKind::Question },
-                    project: project.clone(), chat: chat.clone(), agent: format!("worker #{}", job.id),
+                    id: id.clone(),
+                    session_id: request.envelope().native_session_id.clone(),
+                    title: if approval {
+                        "worker approval"
+                    } else {
+                        "worker question"
+                    }
+                    .into(),
+                    kind: if approval {
+                        ItemKind::Approval
+                    } else {
+                        ItemKind::Question
+                    },
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: format!("worker #{}", job.id),
                     request: request.envelope().request_id.to_string(),
                     context: request.params.to_string().chars().take(512).collect(),
-                    source: "worker conversation".into(), created: std::time::Instant::now(),
+                    source: "worker conversation".into(),
+                    created: std::time::Instant::now(),
                 };
                 crate::needs_you::publish(item.clone());
                 self.needs_you.add(item);
@@ -969,7 +1003,14 @@ impl App {
             .map(|item| PickerRow {
                 id: format!("needs:{}", item.id),
                 label: format!("{} - {}", item.project, item.title),
-                detail: format!("{} · {} · {} · waiting {}s · {}", item.chat, item.agent, item.kind.label(), item.created.elapsed().as_secs(), item.source),
+                detail: format!(
+                    "{} · {} · {} · waiting {}s · {}",
+                    item.chat,
+                    item.agent,
+                    item.kind.label(),
+                    item.created.elapsed().as_secs(),
+                    item.source
+                ),
             })
             .collect();
         self.show_picker(PickerKind::NeedsYou, "needs you".into(), rows, false);
@@ -1589,11 +1630,13 @@ impl App {
             trust: TrustMode::Edit,
             native_session_id: None,
             task_id: None,
+            pending_repair_map: None,
             session_chip: None,
             session_ui: session_ui::State::default(),
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            repair_task: None,
             doctor: None,
             doctor_applier: Box::new(crate::doctor::DoctorAppliers),
             model_refresh: None,
