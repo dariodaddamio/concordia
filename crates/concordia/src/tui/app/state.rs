@@ -1252,7 +1252,6 @@ impl App {
         self.persist_draft_now();
         if !was_busy && self.busy && self.submitted_prompt.is_some() {
             self.submitted_prompt = Some(original_prompt);
-            let _ = self.feed().emit("turn_start", "");
         }
     }
 
@@ -1434,12 +1433,6 @@ impl App {
             self.push_user(incoming.display());
         }
         self.turn_started = Some(Instant::now());
-        let feed = crate::feed::FeedWriter::new(
-            &self.state_root,
-            self.thread_id().unwrap_or("main"),
-            crate::config::for_root(&self.state_root).feed.enabled,
-        );
-        let _ = feed.emit("turn_start", &request);
         self.phase = Phase::Waiting;
         self.live_thinking.clear();
         self.busy = true;

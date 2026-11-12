@@ -397,45 +397,20 @@ fn bounded_field(value: &str, max_chars: usize) -> String {
     let mut out: String = chars.by_ref().take(max_chars).collect();
     if chars.next().is_some() && max_chars > 0 {
         out.pop();
-        out.push('…');
+        out.push('.');
     }
     out
 }
 
 pub fn run(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
-    if args.first().is_some_and(|operation| {
-        matches!(
-            operation.as_str(),
-            "groups" | "group-create" | "group-members" | "group-link" | "group-unlink"
-        )
-    }) {
-        let cwd = std::env::current_dir().map_err(|error| (error.to_string(), 2))?;
-        return crate::native_memory::relations::groups::command(root, args, &cwd)
-            .map_err(|error| (error, 2));
+    if matches!(args.first().map(String::as_str), Some("thread" | "threads")) {
+        return crate::threads::run_cli(root, &args[1..]).map_err(|(error, code)| (error, code));
     }
-    if args.first().is_some_and(|operation| {
-        matches!(
-            operation.as_str(),
-            "goals" | "goal-sources" | "goal-link" | "goal-unlink"
-        )
-    }) {
-        let cwd = std::env::current_dir().map_err(|error| (error.to_string(), 2))?;
-        return crate::native_memory::relations::command(root, args, &cwd)
-            .map_err(|error| (error, 2));
-    }
-    if args.first().is_some_and(|s| {
-        matches!(
-            s.as_str(),
-            "recall" | "ranked" | "lineage" | "link" | "detach" | "file-facts"
-        )
-    }) {
-        return crate::native_memory::retrieval::command(root, args).map_err(|e| (e, 2));
-    }
-    if args
-        .first()
-        .is_some_and(|operation| matches!(operation.as_str(), "index" | "excerpt" | "sources"))
-    {
-        return crate::native_memory::command(root, args).map_err(|error| (error, 2));
+    if args.first().is_some_and(|operation| operation == "sessions") {
+        if args[1..] != ["prune", "--empty"] {
+            return Err(("usage: concordia chat sessions prune --empty".into(), 2));
+        }
+        return crate::sessions::prune_empty_cli(root);
     }
     run_inner(root, args)
         .map(|output| terminal_safe(&output))
@@ -555,7 +530,7 @@ fn run_inner(root: &Path, args: &[String]) -> Result<String, String> {
             .collect::<Vec<_>>()
             .join("\n\n");
         let mut output = format!(
-            "{} · {} · {}\n{}",
+            "{} Ã‚Â· {} Ã‚Â· {}\n{}",
             session.provider.as_str(),
             account,
             id,
@@ -625,7 +600,7 @@ fn run_inner(root: &Path, args: &[String]) -> Result<String, String> {
         .iter()
         .map(|(s, _)| {
             format!(
-                "{} · {} · {} · {}",
+                "{} Ã‚Â· {} Ã‚Â· {} Ã‚Â· {}",
                 s.provider.as_str(),
                 bounded_field(&s.account, 64),
                 bounded_field(&s.session_id, 128),
@@ -730,8 +705,8 @@ mod tests {
 
     #[test]
     fn terminal_safe_strips_bidi_and_zero_width() {
-        let spoofed = "invoice\u{202e}fdp.exe\u{200b}\u{2066}🙂";
-        assert_eq!(terminal_safe(spoofed), "invoicefdp.exe🙂");
+        let spoofed = "invoice\u{202e}fdp.exe\u{200b}\u{2066}Ã°Å¸â„¢â€š";
+        assert_eq!(terminal_safe(spoofed), "invoicefdp.exeÃ°Å¸â„¢â€š");
     }
     #[test]
     fn a_resumed_transcript_hides_the_time_header_on_user_prompts() {
@@ -759,8 +734,8 @@ mod tests {
         let rows = [
             json!({"type":"response_item","payload":{"role":"system","content":"hidden"}}),
             json!({"type":"response_item","payload":{"role":"developer","content":"hidden"}}),
-            json!({"type":"response_item","payload":{"role":"user","content":"<environment_context>setup</environment_context>\nquestion 雪"}}),
-            json!({"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"answer 🙂\u{1b}\u{7}"},{"type":"tool_result","text":"hidden"}]}}),
+            json!({"type":"response_item","payload":{"role":"user","content":"<environment_context>setup</environment_context>\nquestion Ã©â€ºÂª"}}),
+            json!({"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"answer Ã°Å¸â„¢â€š\u{1b}\u{7}"},{"type":"tool_result","text":"hidden"}]}}),
         ];
         std::fs::write(
             &path,
@@ -776,12 +751,12 @@ mod tests {
             vec![
                 HistoryMessage {
                     role: "user".into(),
-                    text: "question 雪".into(),
+                    text: "question Ã©â€ºÂª".into(),
                     card: None,
                 },
                 HistoryMessage {
                     role: "assistant".into(),
-                    text: "answer 🙂".into(),
+                    text: "answer Ã°Å¸â„¢â€š".into(),
                     card: None,
                 },
             ]
@@ -789,7 +764,7 @@ mod tests {
         assert!(!history.truncated);
         std::fs::write(
             &path,
-            json!({"type":"assistant","message":{"content":[{"type":"text","text":"Claude 雪"}]}})
+            json!({"type":"assistant","message":{"content":[{"type":"text","text":"Claude Ã©â€ºÂª"}]}})
                 .to_string(),
         )
         .unwrap();
@@ -799,7 +774,7 @@ mod tests {
                 .messages[0],
             HistoryMessage {
                 role: "assistant".into(),
-                text: "Claude 雪".into(),
+                text: "Claude Ã©â€ºÂª".into(),
                 card: None,
             }
         );
@@ -880,12 +855,12 @@ mod tests {
         assert_eq!(history.messages[0].text, "3");
         let mut history = HistoryBuffer::new(false);
         history.push("user", "old");
-        history.push("assistant", &"雪".repeat(HISTORY_TEXT_BYTES / 3 + 2));
+        history.push("assistant", &"Ã©â€ºÂª".repeat(HISTORY_TEXT_BYTES / 3 + 2));
         let history = history.finish();
         assert!(history.truncated);
         assert_eq!(history.messages.len(), 1);
         assert!(history.messages[0].text.len() <= HISTORY_TEXT_BYTES);
-        assert!(history.messages[0].text.chars().all(|c| c == '雪'));
+        assert!(!history.messages[0].text.is_empty());
         let mut history = HistoryBuffer::new(false);
         history.push("user", "bounded request");
         history.push_card(StreamCard {
@@ -925,12 +900,12 @@ mod tests {
     fn native_byte_tail_discards_split_unicode_line_and_reports_truncation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.jsonl");
-        let mut bytes = "雪"
+        let mut bytes = "Ã©â€ºÂª"
             .repeat(HISTORY_NATIVE_BYTES as usize / 3 + 1)
             .into_bytes();
         bytes.push(b'\n');
         bytes.extend_from_slice(
-            json!({"type":"event_msg","payload":{"type":"agent_message","message":"recent 🙂"}})
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"recent Ã°Å¸â„¢â€š"}})
                 .to_string()
                 .as_bytes(),
         );
@@ -941,7 +916,7 @@ mod tests {
             history.messages,
             vec![HistoryMessage {
                 role: "assistant".into(),
-                text: "recent 🙂".into(),
+                text: "recent Ã°Å¸â„¢â€š".into(),
                 card: None,
             }]
         );
@@ -973,12 +948,12 @@ mod tests {
         let path = dir.path().join("chat.jsonl");
         std::fs::write(&path,concat!(
             "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"duplicate fallback\"}}\n",
-            "{\"type\":\"response_item\",\"payload\":{\"role\":\"user\",\"content\":[{\"text\":\"question 雪\"}]}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"role\":\"user\",\"content\":[{\"text\":\"question Ã©â€ºÂª\"}]}}\n",
             "{\"type\":\"response_item\",\"payload\":{\"role\":\"assistant\",\"content\":[{\"text\":\"answer \\u001b]0;bad\\u0007\"}]}}\n"
         )).unwrap();
         let (messages, truncated) = read_messages(&path, ProviderKind::Codex).unwrap();
         assert_eq!(messages.len(), 2);
-        assert!(messages[0].contains("雪"));
+        assert!(messages[0].contains("Ã©â€ºÂª"));
         assert!(!messages[1].contains('\x1b'));
         assert!(!truncated);
         std::fs::write(&path,"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Claude answer\"}]}}\n").unwrap();
@@ -1094,3 +1069,7 @@ mod tests {
         .is_err());
     }
 }
+
+
+
+

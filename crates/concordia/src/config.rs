@@ -26,16 +26,9 @@ pub struct Config {
     pub editor: EditorConfig,
     pub continuation: Continuation,
     pub turn: TurnConfig,
-    pub feed: FeedConfig,
     /// Named, local provider/account and model arrangements. The values are opaque model ids;
     /// availability is checked when a crew is selected, never while loading config.
     pub crews: BTreeMap<String, Crew>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FeedConfig {
-    pub enabled: bool,
-    pub screen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +125,8 @@ pub struct Ui {
     pub token_line: bool,
     pub tips: bool,
     pub persist_history: bool,
+    /// Include the local-time header in each provider turn.
+    pub time_header: bool,
     /// Footer memory and CPU figures (`mem 41 MB - cpu 1%`); off by default.
     pub stats: bool,
     pub theme: Theme,
@@ -177,8 +172,6 @@ pub struct Threads {
     /// Whether Concordia writes its local thread log.
     pub logging: bool,
     pub map_chars: usize,
-    /// Write the awareness block into homes Concordia created (default on).
-    pub awareness: bool,
     /// Register `concordia mcp` in homes Concordia created (default off: schemas cost tokens).
     pub mcp: bool,
 }
@@ -201,6 +194,7 @@ impl Default for Config {
                 token_line: true,
                 tips: true,
                 persist_history: true,
+                time_header: true,
                 stats: false,
                 file_action: crate::file_open::FileAction::Preview,
                 theme: Theme::Opifex,
@@ -214,7 +208,6 @@ impl Default for Config {
             threads: Threads {
                 logging: false,
                 map_chars: 1600,
-                awareness: true,
                 mcp: false,
             },
             mode: Mode {
@@ -228,10 +221,6 @@ impl Default for Config {
             continuation: Continuation::default(),
             turn: TurnConfig {
                 idle_timeout_minutes: 10,
-            },
-            feed: FeedConfig {
-                enabled: true,
-                screen: false,
             },
             crews: BTreeMap::new(),
         }
@@ -455,6 +444,7 @@ impl Config {
                     "ui.persist_history" => {
                         set_bool(v, &full, &mut cfg.ui.persist_history, &mut warnings)
                     }
+                    "ui.time_header" => set_bool(v, &full, &mut cfg.ui.time_header, &mut warnings),
                     "ui.stats" => set_bool(v, &full, &mut cfg.ui.stats, &mut warnings),
                     "ui.theme" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("default") => cfg.ui.theme = Theme::Default,
@@ -488,12 +478,7 @@ impl Config {
                         None => warnings
                             .push("threads.map_chars must be an integer; using 1600".to_string()),
                     },
-                    "threads.awareness" => {
-                        set_bool(v, &full, &mut cfg.threads.awareness, &mut warnings)
-                    }
                     "threads.mcp" => set_bool(v, &full, &mut cfg.threads.mcp, &mut warnings),
-                    "feed.enabled" => set_bool(v, &full, &mut cfg.feed.enabled, &mut warnings),
-                    "feed.screen" => set_bool(v, &full, &mut cfg.feed.screen, &mut warnings),
                     "mode.default" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("plan") => cfg.mode.default = TrustMode::Plan,
                         Some("ask") => cfg.mode.default = TrustMode::Ask,
@@ -754,12 +739,12 @@ mod tests {
     }
 
     #[test]
-    fn awareness_defaults_on_and_mcp_defaults_off() {
+    fn mcp_defaults_off() {
         let (c, warn) = w("");
-        assert!(warn.is_empty() && c.threads.awareness && !c.threads.mcp);
-        let (c, warn) = w("[threads]\nawareness = false\nmcp = true\n");
+        assert!(warn.is_empty() && !c.threads.mcp);
+        let (c, warn) = w("[threads]\nmcp = true\n");
         assert!(warn.is_empty(), "{warn:?}");
-        assert!(!c.threads.awareness && c.threads.mcp);
+        assert!(c.threads.mcp);
         let (c, warn) = w("[threads]\nmcp = \"yes\"\n");
         assert!(!c.threads.mcp && warn[0].contains("threads.mcp must be true or false"));
     }

@@ -6,8 +6,6 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-#[path = "workspace_replace.rs"]
-pub mod replacement;
 
 pub const MAX_QUERY_BYTES: usize = 1024;
 pub const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
