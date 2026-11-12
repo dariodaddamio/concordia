@@ -299,6 +299,17 @@ record answers and open proposals; they are not approved final product wording o
   paused; completed actions were not undone") must stand out from chat text through colour, icon
   and plain wording. Tabs show an I-beam cursor over the title so renaming is discoverable.
   Queued messages: a way to send one now, double-click to edit, and copy from the edit box.
+- Testing decision (2026-11-12): use deterministic tests wherever they can prove the behaviour,
+  including a regression test for each bug fix, and run live provider turns wherever a change
+  depends on real provider behaviour (questions, approvals, transports, usage, images, command
+  passthrough, new providers). Fake-provider runs never count as verification of provider
+  behaviour.
+- Roles and models (2026-11-12, owner direction): users choose which model fills each role, for
+  example orchestrator, implementer, reviewer, re-reviewer and general helper. The Agents view
+  shows each agent's role, model, effort, context use and turn count, as in the owner's
+  reference screenshot. How this relates to the earlier "routing lives in the user's skill"
+  decision, and BYOK support for API-key models such as DeepSeek and other open models, are
+  open questions.
 - Idea (2026-11-12, owner interest; not decided): token savings in the style of Spotify's Portal
   "shunt" plugin (engineering.atspotify.com, Sep 2026), which reports about 90% fewer tokens on
   bulk file reads. A Claude Code hook blocks large file reads, a cheaper model reads the files
