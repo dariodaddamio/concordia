@@ -111,6 +111,9 @@ impl Session {
             cmd.arg(arg);
         }
         cmd.current_dir(workspace);
+        if workspace.join("appserver-fixture.json").is_file() {
+            cmd.env("FAKE_PROVIDER_NATIVE_CODEX", "1");
+        }
         for key in [
             "NO_COLOR",
             "CONCORDIA_CONFIG",
@@ -396,6 +399,13 @@ impl Session {
             .collect()
     }
 
+    fn status_dot(&self) -> String {
+        self.clone_request(serde_json::json!({"op":"snapshot"}))["status_dot"]
+            .as_str()
+            .unwrap_or_default()
+            .into()
+    }
+
     fn clone_request(&self, mut value: Value) -> Value {
         let mut stream = self.control.try_clone().unwrap();
         value["token"] = Value::String(self.token.clone());
@@ -466,6 +476,59 @@ impl Drop for Session {
             let _ = self.child.wait();
         }
     }
+}
+
+#[test]
+fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    concordia::native_input::command(dir.path(), "codex", "on").unwrap();
+    std::fs::write(
+        dir.path().join("workspace/appserver-fixture.json"),
+        serde_json::json!({
+            "question": true,
+            "question_then_approval": true,
+            "finish_wait_for": "../gate"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut s = Session::launch(dir.path());
+    s.request(serde_json::json!({"op":"resize","columns":180,"rows":30}));
+    s.submit("Inspect the synthetic app-server request");
+    s.until("native question needs attention", |s| {
+        s.status_dot() == "needs_attention"
+    });
+
+    s.send("\x0e");
+    s.until("needs attention panel lists the question details", |s| {
+        let screen = s.screen();
+        screen.contains("needs you")
+            && screen.contains("workspace")
+            && screen.contains("Inspect the synthetic app-server request")
+            && screen.contains("codex")
+            && screen.contains("question")
+            && screen.contains("waiting")
+    });
+    s.enter();
+    s.request(serde_json::json!({"op":"key","code":"1"}));
+    s.request(serde_json::json!({"op":"key","code":"Enter"}));
+    std::thread::sleep(Duration::from_millis(120));
+    s.request(serde_json::json!({"op":"key","code":"Esc"}));
+    std::thread::sleep(Duration::from_millis(120));
+    s.request(serde_json::json!({"op":"key","code":"F8"}));
+    std::thread::sleep(Duration::from_millis(120));
+    s.request(serde_json::json!({"op":"key","code":"1"}));
+    s.request(serde_json::json!({"op":"key","code":"Enter"}));
+    s.until("question answer is working", |s| s.status_dot() == "working");
+    s.release();
+    s.until("question answer resolves in the chat", |s| {
+        s.screen().contains("Native approval handled")
+    });
+    s.until("app-server turn is idle", |s| s.status_dot() == "idle");
+    s.exit();
 }
 
 

@@ -579,6 +579,13 @@ Rewrite requirements:
 
 ## This slice
 
+### W9c Needs attention app-server journey - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/tests/support/fake_provider.rs` | ok: 1, 4, 7, 9, 10 | Extend the existing app-server fixture with one concrete question-then-approval sequence and a bounded filesystem completion gate; no production test branch or second provider simulator. |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 5, 6, 9, 10 | Reuse the native control channel, existing snapshot/status state and existing journey session; the new assertions exercise the user flow rather than duplicate UI state. |
+
 ### W14 Grok Bot two-way integration - anti-slop gate
 
 | path | tendency_check | justification |
