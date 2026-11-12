@@ -579,6 +579,15 @@ Rewrite requirements:
 
 ## This slice
 
+### W15 documentation site scaffold - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `site/**` | ok: 1, 4, 6, 7, 10 | Add one isolated Starlight publication layer, keep the Rust crate independent, and derive pages from current canonical docs. |
+| `site/src/styles/opifex/**`, `site/scripts/sync-opifex.mjs` | ok: 1, 5, 6, 10 | Vendor only the Opifex token and Studio CSS needed by Starlight, with one refresh owner and pinned provenance. |
+| `.github/workflows/docs.yml` | ok: 1, 4, 10 | Add one GitHub Pages build and deployment path without enabling Pages or changing release workflows. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs`, `PLAN.md` | ok: 5, 10 | Record the user-facing documentation scaffold and its build identity in the existing metadata owners. |
+
 ### W9c Needs attention app-server journey - anti-slop gate
 
 | path | tendency_check | justification |

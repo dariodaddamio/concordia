@@ -1,5 +1,10 @@
 # Changelog
 
+### Added (2026-11-12q)
+
+- Added an Astro Starlight documentation site scaffold for GitHub Pages with a vendored Opifex
+  Studio theme, source-derived install and usage pages, and a Windows security warnings guide.
+
 ### Added (2026-11-12p)
 
 - Added the two-way Grok Bot routine bridge: Credential Manager-backed routine keys and callback
