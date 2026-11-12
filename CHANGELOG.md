@@ -1,5 +1,8 @@
 # Changelog
 
+- W3b: removed the legacy MCP test surface; `agents` now stores delegated-agent lifecycle
+  records and bounded final results for status/result reads.
+
 ## Unreleased
 
 - W2d cleanup removes provider awareness injection, `/context`, `/search`, `/worktree`, the local

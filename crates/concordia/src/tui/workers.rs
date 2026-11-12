@@ -1046,6 +1046,13 @@ impl App {
             let Some(j) = self.deleg.d.get(id) else {
                 continue;
             };
+            crate::mcp::update_matching(
+                &self.state_root,
+                &j.account,
+                &j.task,
+                if j.state == WorkerState::Done { "finished" } else { "failed" },
+                Some(j.final_text()),
+            );
             crate::logging::info(&format!(
                 "delegate-finish id={} worker={} state={} ms={} cards={} origin={:?}",
                 j.id,
@@ -1170,10 +1177,11 @@ impl App {
         }
         let slots = MAX_PENDING_CONFIRMS.saturating_sub(self.deleg.confirms.len());
         let mut changed = false;
-        for proposal in crate::mcp::take_pending(&self.state_root, true, slots) {
+        for proposal in crate::mcp::take_pending(&self.state_root, slots) {
             changed = true;
             match proposal {
                 crate::mcp::PendingProposal::Delegate(proposal) => {
+                    crate::mcp::update_agent(&self.state_root, &proposal.agent_id, "running", None, "accepted by Concordia");
                     if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
                         match self.start_delegate(&block.to, &block.task, Origin::Protocol) {
                             Ok(message) => self.push_system(message),
