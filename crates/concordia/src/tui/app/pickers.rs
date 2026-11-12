@@ -341,6 +341,24 @@ impl App {
             label: "next provider for this session".into(),
             detail: self.handoff_description(),
         });
+        rows.extend(
+            crate::grok_bot::list(&self.state_root)
+                .into_iter()
+                .map(|routine| PickerRow {
+                    id: format!("use-grok-bot:{}", routine.routine_id),
+                    label: format!("Grok Bot · {}", routine.name),
+                    detail: format!(
+                        "account {} · routine {} · global",
+                        routine.account, routine.routine_id
+                    ),
+                }),
+        );
+        rows.push(PickerRow {
+            id: "use-grok-bot-setup".into(),
+            label: "+ configure Grok Bot routine".into(),
+            detail: "webhook key stays in Windows Credential Manager; see Grok Bot setup guide"
+                .into(),
+        });
         self.show_picker(PickerKind::Use, "accounts".into(), rows, true);
     }
     pub(in crate::tui) fn show_unfinished_request(&mut self) {
@@ -1166,6 +1184,10 @@ impl App {
             PickerKind::Use => {
                 if id == "use-handoff" {
                     self.open_handoff_settings();
+                    return;
+                }
+                if id == "use-grok-bot-setup" {
+                    self.push_system("Grok Bot setup: register the routine with concordia::grok_bot::register(account, routine ID, webhook URL, bearer key); then expose the shown localhost callback through your own tunnel. Keys never enter prompts or agent results. See docs/provider-grok-bot.md.");
                     return;
                 }
                 if id == "use-add" {

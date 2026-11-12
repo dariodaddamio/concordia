@@ -579,6 +579,14 @@ Rewrite requirements:
 
 ## This slice
 
+### W14 Grok Bot two-way integration - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/grok_bot.rs` | ok: 1, 2, 4, 5, 6, 8 | One concrete routine/callback owner validates both HTTP trust boundaries; secrets stay in Credential Manager and no polling or duplicate MCP surface is added. |
+| `crates/concordia/src/mcp.rs`, `tui/native_agents.rs`, `tui/app/pickers.rs` | ok: 4, 5, 6, 10 | Reuse the existing `agents` record and Agents-tree projection; Grok Bot is one provider branch and `/use` remains the account/integration picker owner. |
+| `README.md`, `docs/provider-grok-bot.md`, `docs/README.md`, `CHANGELOG.md`, `version.rs` | ok: 5, 10 | Correct the two stale safety promises and document the implemented callback boundary and limits. |
+
 ### W11 provider command passthrough - anti-slop gate
 
 | path | tendency_check | justification |

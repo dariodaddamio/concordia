@@ -1,5 +1,11 @@
 # Changelog
 
+### Added (2026-11-12p)
+
+- Added the two-way Grok Bot routine bridge: Credential Manager-backed routine keys and callback
+  tokens, localhost-only one-tool callbacks, explicit run identity checks, bounded untrusted
+  results, and Agents MCP start/status integration.
+
 ### Fixed (2026-11-12o)
 
 - Kept agent records and delegation proposals redacted on disk and updated the security check

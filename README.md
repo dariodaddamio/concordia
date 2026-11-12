@@ -3,6 +3,8 @@
 Concordia is a Windows-first native app that runs the official Codex, Claude Code, Cursor and Grok Build
 CLIs under your own accounts, with bounded handoff between them. It keeps one conversation
 navigable while each provider remains responsible for its own sessions, approvals and tools.
+It can also trigger configured cloud-hosted Grok Bot routines through their webhook and receive
+one result or question through a user-run tunnel; see [Grok Bot routines](docs/provider-grok-bot.md).
 
 For the short view of what works, what remains unproven and the intended direction, read the
 [project plan](PLAN.md). The [documentation index](docs/README.md) separates current references,
@@ -10,10 +12,11 @@ planned work and historical evidence. Concordia is currently private and pre-rel
 
 Concordia is independent and unofficial. It is not affiliated with or endorsed by OpenAI,
 Anthropic, Anysphere, Cursor or xAI. It runs their official, unmodified CLIs using your own accounts.
-Each CLI keeps its own login; Concordia only checks that a login exists. The one secret it
-handles itself is a Cursor API key, if you choose to use one: it is kept in that Cursor
-account's own folder, passed only to the Cursor CLI, and redacted from everything Concordia
-writes (logs, history, drafts).
+Each CLI keeps its own login; Concordia only checks that a login exists. For optional integrations,
+Concordia may handle the minimum secret needed to perform the explicitly requested integration:
+Grok Bot webhook keys and callback tokens are kept in Windows Credential Manager and are never
+passed to agents. This protects against other users and disk theft, not a same-user process with
+unrestricted access.
 
 ## Install
 
@@ -101,8 +104,9 @@ in the composer.
   `/mode full` confirmation.
 - Delegated agents never exceed the mode selected for their parent conversation.
 - Concordia itself makes no LLM calls; memory and handoff are deterministic local logic.
-- Nothing leaves your machine through Concordia. Network traffic comes from the provider CLIs'
-  own supported connections (and any explicitly requested update or integration).
+- Concordia does not make provider model calls. Besides provider CLI traffic, it makes only the
+  outbound requests you explicitly configure, such as a Grok Bot routine webhook or an update;
+  the optional callback listener is localhost-only and tunnelled by software you run.
 - Native provider authentication, approvals and session state remain authoritative. See
   [provider terms and boundaries](docs/provider-terms.md).
 

@@ -15,6 +15,7 @@ pub mod file_document;
 pub mod file_links;
 pub mod file_open;
 pub(crate) mod fs_safe;
+pub mod grok_bot;
 pub mod harness;
 pub mod identity;
 pub mod integration;
