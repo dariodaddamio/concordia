@@ -163,7 +163,16 @@ record answers and open proposals; they are not approved final product wording o
   docs vendor the Opifex Studio theme (tokens, CSS and any components used) at a pinned Opifex
   version with a sync script, keeping the look consistent with Opifex Studio and the portfolio.
   Switch to the published package once Opifex is public. It must also explain Windows Defender and SmartScreen warnings
-  for the unsigned executable (Hermes documents a similar case on GitHub; not yet reviewed).
+  for the unsigned executable. Research (2026-11-11; Microsoft SmartScreen and reputation docs,
+  NousResearch/hermes-agent README, Upscayl, yt-dlp, espanso): the docs page "Windows security
+  warnings" covers why SmartScreen warns on files without reputation (not a malware verdict);
+  "More info" then "Run anyway" for the official release file only; verification before running
+  (published SHA-256 checksums, `Get-FileHash`, `gh attestation verify`, building from source);
+  Smart App Control, which can block unsigned files with no override; Defender false positives,
+  folder exclusion as the user's own choice with its risk, and reporting through
+  microsoft.com/wdsi/filesubmission; and the signing plan through SignPath Foundation, noting
+  warnings can persist for weeks after signing and SignPath's required "Code signing policy"
+  wording. Releases must publish checksums and build attestations.
 - Tabs: each chat tab shows the same status icons as the Agents view (working, needs attention,
   finished, failed). Ctrl+T new-tab latency remains a reported problem.
 - Chat rendering: markdown tables are hard to read in the terminal because rows have no
@@ -274,6 +283,22 @@ record answers and open proposals; they are not approved final product wording o
   requests into the integration branch. Removing a feature removes its tests in the same change.
   Agents do not add new unit or integration tests unless the owner asks. A later pass measures
   the slowest suites (for example the TUI journey tests) and trims overlapping coverage.
+- UI test driver (2026-11-11): end-to-end UI tests drive the native window, not terminal mode.
+  The native window gains a test control channel (enabled only by an environment variable set
+  by the test harness) that accepts real key and mouse input and returns the rendered cell grid
+  and window state, so journeys stay deterministic without screen scraping. The journey tests
+  move to it before terminal mode is removed.
+- Reported (2026-11-11): a Claude Code turn that leaves background tasks running stays on
+  "putting the answer together" after its final reply, and the next message kills those tasks.
+  Concordia should mark the turn answered when the final reply arrives and show remaining
+  background tasks as subagents in the Agents tree rather than holding the turn open. Observed
+  the same day: processes an agent starts detached (`Start-Process`) are also killed when the
+  turn ends, which suggests Concordia terminates the whole process tree or job. Long-running
+  work an agent deliberately detaches should survive, or Concordia should show and own it.
+- Requested (2026-11-11): Concordia's own system messages (for example "cancelled - queued work
+  paused; completed actions were not undone") must stand out from chat text through colour, icon
+  and plain wording. Tabs show an I-beam cursor over the title so renaming is discoverable.
+  Queued messages: a way to send one now, double-click to edit, and copy from the edit box.
 - Tabs and panes (2026-11-11): manage them browser-style with both drag and keyboard: drag tabs
   to reorder, keyboard shortcuts for switching, moving and closing, built so the same
   interactions extend to Photoshop-style docking later.
