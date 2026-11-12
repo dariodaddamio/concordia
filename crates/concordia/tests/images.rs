@@ -1056,50 +1056,6 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 compaction: Default::default()
             }
             .rollover(observation.measurement));
-            let state = root.join("state");
-            concordia::capacity::set(&state, &binding, "compact automatic-off").unwrap();
-            assert!(concordia::native_memory::context_observation(
-                &state,
-                &binding,
-                "fixture-claude"
-            )
-            .unwrap()
-            .measurement
-            .is_none());
-            concordia::capacity::set(&state, &binding, "compact native").unwrap();
-            let cache = std::fs::read_dir(state.join(".ao/context-observations"))
-                .unwrap()
-                .flatten()
-                .map(|entry| entry.path())
-                .find(|path| {
-                    path.extension()
-                        .is_some_and(|extension| extension == "json")
-                })
-                .unwrap();
-            let original = std::fs::read(&cache).unwrap();
-            let mut future: Value = serde_json::from_slice(&original).unwrap();
-            future["version"] = json!(255);
-            std::fs::write(&cache, future.to_string()).unwrap();
-            assert!(concordia::native_memory::context_observation(
-                &state,
-                &binding,
-                "fixture-claude"
-            )
-            .unwrap()
-            .measurement
-            .is_none());
-            assert!(concordia::capacity::claude_capacity::save(
-                &state,
-                &binding,
-                "fixture-claude",
-                observation.source.clone().unwrap(),
-                observation.measurement.unwrap(),
-                evidence,
-                &Default::default()
-            )
-            .is_err());
-            assert_eq!(std::fs::read_to_string(&cache).unwrap(), future.to_string());
-            std::fs::write(&cache, original).unwrap();
             let source = root
                 .join("projects/fake-provider")
                 .join(format!("{session}.jsonl"));

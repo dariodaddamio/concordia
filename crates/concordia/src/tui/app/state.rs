@@ -1226,6 +1226,14 @@ impl App {
                 self.flash("Enter again to interrupt and send this message; Tab queues it.");
                 return;
             }
+            // A slash command typed while a turn is busy is only an interrupt
+            // confirmation, not a submitted prompt. Do not leave that command
+            // in the composer when Esc cancels the running turn.
+            if line.starts_with('/') {
+                self.editor.clear();
+                self.clear_selections();
+                self.persist_draft_now();
+            }
             if self.queue.dispatch.is_explicit() {
                 self.flash("Stopping the active turn before sending the pending message…");
                 return;
@@ -1441,6 +1449,12 @@ impl App {
     }
 
     pub(in crate::tui) fn request_cancel(&mut self) {
+        if self.editor.text().starts_with('/') {
+            self.busy_send_confirmation = None;
+            self.editor.clear();
+            self.clear_selections();
+            self.persist_draft_now();
+        }
         self.questions.cancel_native();
         self.native_owner = None;
         if self.cancel_requested {

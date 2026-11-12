@@ -57,7 +57,7 @@ fn help_lists_the_surface_users_need() {
         "/copy",
         "/doctor",
         "concordia doctor",
-        "concordia chat thread list",
+        "concordia chat list",
         "/threads",
         "Connect:",
         "Mouse:",

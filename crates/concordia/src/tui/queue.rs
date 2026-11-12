@@ -805,6 +805,11 @@ impl App {
     /// leaves the draft alone on cancellation. Only failure offers its prompt for retry.
     pub(super) fn turn_finished(&mut self, cancelled: bool, failed: bool) {
         let sent = self.last_sent.take();
+        if cancelled && self.editor.text().starts_with('/') {
+            self.editor.clear();
+            self.clear_selections();
+            self.persist_draft_now();
+        }
         if cancelled || failed {
             self.queue.dispatch.clear_automatic();
             self.pause_queue();

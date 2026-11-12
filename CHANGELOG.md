@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-12j)
+
+- Clear an unsubmitted provider slash command when cancelling its busy-turn confirmation;
+  retained queue, draft, chat-history and capacity journeys now match the current command surface.
+
 ### Fixed (2026-11-12i)
 
 - Restored automatic usage-limit continuation across configured accounts and native models,

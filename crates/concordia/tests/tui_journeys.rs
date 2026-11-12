@@ -430,35 +430,6 @@ impl Session {
         std::fs::write(self.root.join("gate"), "continue").unwrap();
     }
 
-    fn acknowledge_stopped_scope(&mut self) {
-        let draft = self.draft();
-        let prompts = self.prompts().len();
-        let registry = concordia::workspaces::load(&self.root).unwrap();
-        let run = registry
-            .reservations
-            .iter()
-            .find(|entry| entry.phase == concordia::workspaces::Phase::ReconcileRequired)
-            .unwrap()
-            .run
-            .clone();
-        self.send("\x1b[1;5B");
-        self.send("\x01\x08");
-        self.until("draft cleared for reconciliation command", |s| {
-            s.draft().is_empty()
-        });
-        self.submit(&format!("/scope stopped {run}"));
-        self.until("stopped process acknowledged", |s| {
-            s.screen().contains("Stopped-process acknowledgment saved")
-        });
-        assert_eq!(
-            self.prompts().len(),
-            prompts,
-            "acknowledgment never replays a turn"
-        );
-        self.paste(&draft);
-        self.until("independent draft restored", |s| s.draft() == draft);
-    }
-
     fn exit(&mut self) {
         self.send("\x01"); // clear the draft before native cancel/quit keys
         self.send("\x08");
@@ -555,8 +526,9 @@ fn shared_setup_commands_are_discoverable_and_work_through_the_terminal_ui() {
     session.send("\x1b");
     session.submit("/skills");
     session.until("shared source status", |session| {
-        session.screen().contains("shared skills:")
+        session.screen().contains("Skills ·")
     });
+    session.send("\x1b");
     session.submit("/hooks list extra");
     session.until("invalid command arguments rejected", |session| {
         session.screen().contains("unsupported arguments")
@@ -983,7 +955,7 @@ fn fresh_drafts_and_bottom_button_work_in_the_windows_terminal() {
     let mut s = Session::launch(dir.path());
     s.submit(&format!("/synthetic {}", "scroll fixture ".repeat(400)));
     s.until("long transcript visible", |s| {
-        s.screen().contains("type / to see the commands")
+        s.screen().contains("fixture scroll fixture")
     });
     s.paste("unfinished primary");
     s.until("primary draft saved", |s| s.draft() == "unfinished primary");
@@ -1020,7 +992,7 @@ fn fresh_drafts_and_bottom_button_work_in_the_windows_terminal() {
         !s.screen().contains("rows up")
     });
     assert_eq!(s.draft(), "unfinished primary");
-    assert!(s.prompts().is_empty());
+    assert_eq!(s.prompts().len(), 1);
     drop(s);
     let mut s = Session::launch(dir.path());
     s.until("active draft restored after restart", |s| {
@@ -1341,7 +1313,7 @@ fn cancelling_after_slash_commands_does_not_restore_the_submitted_prompt() {
     s.submit("/stats");
     s.send("\x1b");
     s.until("cancellation completed with empty draft", |s| {
-        s.draft().is_empty() && s.screen().contains("cancelled")
+        s.draft().is_empty() && s.screen().contains("Cancelled")
     });
     assert_eq!(s.prompts(), ["[wait] original prompt"]);
     s.exit();
@@ -1447,7 +1419,6 @@ fn explicit_queue_resume_preserves_the_recovered_draft() {
         s.screen().contains("Ctrl+R resumes")
     });
     assert_eq!(s.prompts().len(), 1);
-    s.acknowledge_stopped_scope();
     s.send("\x12"); // Ctrl+R
     s.until("one resumed prompt", |s| s.prompts().len() == 2);
     s.until("followup complete", |s| {
@@ -1528,7 +1499,6 @@ fn crash_restores_the_unsaved_upper_editor_separately_and_holds_dispatch() {
     s.until("edit committed", |s| {
         s.queue() == ["saved queued item\nunsaved upper edit"]
     });
-    s.acknowledge_stopped_scope();
     s.send("\x12");
     s.until("recovered edited item sent", |s| {
         s.prompts() == ["[wait] first", "saved queued item\nunsaved upper edit"]

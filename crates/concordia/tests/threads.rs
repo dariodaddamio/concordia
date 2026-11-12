@@ -103,7 +103,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     );
     let m = text(&map);
     assert!(m.starts_with("[concordia map] thread 3f9a0000"));
-    assert!(m.contains("asked: say hello"));
+    assert!(m.contains("goal: say hello"));
     assert!(m.contains(&format!("concordia chat thread read {id}")));
     assert!(m.chars().count() <= 1601, "{}", m.chars().count());
 

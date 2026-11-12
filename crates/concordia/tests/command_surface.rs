@@ -13,7 +13,6 @@ fn cli_commands_reject_extra_arguments_before_any_action() {
         "--help",
         "doctor",
         "install",
-        "mcp",
         "--window",
         "window",
     ] {
