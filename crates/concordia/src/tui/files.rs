@@ -71,7 +71,7 @@ impl App {
             }
         };
         let action = self.default_file_action();
-        self.perform_file_action(file, action, base, None);
+        self.perform_file_action(file, action, base);
         if action == crate::file_open::FileAction::Preview && preview {
             if let Some(id) = self.workspace.focused {
                 self.workspace.preview(id, true);
@@ -86,7 +86,6 @@ impl App {
                     file,
                     crate::file_open::FileAction::Editor,
                     self.cwd.clone(),
-                    None,
                 );
             }
             Err(error) => self.flash(error),
@@ -115,14 +114,12 @@ impl App {
                             file,
                             crate::file_open::FileAction::Editor,
                             self.cwd.clone(),
-                            None,
                         );
                     } else {
                         self.perform_file_action(
                             file,
                             crate::file_open::FileAction::Preview,
                             self.cwd.clone(),
-                            None,
                         );
                     }
                 }
@@ -146,7 +143,6 @@ impl App {
                             file,
                             crate::file_open::FileAction::Preview,
                             self.cwd.clone(),
-                            None,
                         );
                         if preview {
                             if let Some(id) = self.workspace.focused {
@@ -175,68 +171,5 @@ impl App {
             self.flash(message);
         }
         received
-    }
-}
-
-impl App {
-    pub(super) fn open_project_search(&mut self) {
-        match self
-            .project_search
-            .open(&self.cwd, self.deleg.d.conversation_id())
-        {
-            Ok(()) => {
-                self.picker = None;
-            }
-            Err(error) => self.flash(error),
-        }
-    }
-
-    pub(super) fn poll_project_search(&mut self) -> bool {
-        if let Some(action) = self
-            .project_search
-            .poll(&self.cwd, self.deleg.d.conversation_id())
-        {
-            self.apply_search_action(action);
-            return true;
-        }
-        false
-    }
-
-    pub(super) fn apply_search_action(&mut self, action: workspace_search::Action) {
-        match action {
-            workspace_search::Action::Close => self.project_search.close(),
-            workspace_search::Action::ApplyReplacement(plan) => {
-                let blocked = self.workspace.replacement_blockers();
-                self.project_search
-                    .apply_replacement(self.state_root.clone(), plan, blocked);
-            }
-            workspace_search::Action::ReconcileReplacement(id) => self
-                .project_search
-                .reconcile_replacement(self.state_root.clone(), id),
-            workspace_search::Action::ListReceipts => {
-                self.project_search.list_receipts(self.state_root.clone())
-            }
-            workspace_search::Action::ReplacementFinished(receipt) => {
-                self.workspace.replacement_finished(&receipt);
-            }
-            workspace_search::Action::Open(verified) => {
-                let file = file_links::ResolvedFile {
-                    path: verified.hit.path.clone(),
-                    line: Some(verified.hit.line),
-                    column: Some(verified.hit.column),
-                };
-                if self.perform_file_action(
-                    file,
-                    self.default_file_action(),
-                    self.cwd.clone(),
-                    Some(verified),
-                ) {
-                    self.project_search.close();
-                } else if let Some((message, _)) = &self.flash {
-                    self.project_search.notice(message);
-                }
-            }
-            _ => {}
-        }
     }
 }

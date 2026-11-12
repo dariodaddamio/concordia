@@ -106,10 +106,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     {
         draw_picker(f, screen, app);
     }
-    if app.project_search.active() {
-        app.areas = Areas::default();
-        app.project_search.draw(f, screen);
-    }
     // Cover every widget, including provider-controlled titles, menus and detail panes.
     if worker_input::active(app) {
         app.areas = Areas::default();
@@ -136,7 +132,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     if let Some(cursor) = rename_cursor.filter(|_| {
         !worker_input::active(app)
             && !app.raster.active()
-            && !app.project_search.active()
             && app.picker.is_none()
             && !app.key_sheet
     }) {

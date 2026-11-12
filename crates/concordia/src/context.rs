@@ -435,7 +435,7 @@ mod tests {
         assert!(p.pack_chars <= threads::MAP_CHARS, "{}", p.pack_chars);
         assert!(p
             .text
-            .contains("concordia thread read 3f9a1111-2222-3333-4444-555555555555"));
+            .contains("concordia chat thread read 3f9a1111-2222-3333-4444-555555555555"));
         assert!(p.labeled.contains("tools/approvals NOT transferred"));
         assert!(!p.text.contains("question 3 "), "no transcript dump");
     }

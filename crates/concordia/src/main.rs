@@ -266,7 +266,7 @@ mod tests {
         let commands: HashSet<_> = CLI_HELP.iter().map(|spec| spec.name).collect();
         assert_eq!(commands.len(), CLI_HELP.len());
         assert!(commands.contains("chat"));
-        assert!(commands.contains("thread"));
+        assert!(!commands.contains("thread"));
     }
 
     #[test]

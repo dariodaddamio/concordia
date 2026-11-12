@@ -11,14 +11,14 @@ Entries are emitted in source order:
 2. `asked:` for the first user message, then `user turn N:` entries. First/latest intent is
    collapsed for whitespace and bounded; intermediate user turns retain source pointers.
 3. `assistant pointer`, `tool pointer`, and structural-event pointers. Stored-thread ordinals
-   resolve through `concordia thread read THREAD --range N-N`.
+   resolve through `concordia chat thread read THREAD --range N-N`.
 4. The bounded `more:` instruction. With logging off, the map identifies in-memory turn numbers
    and directs retrieval to attached native-source indexes or explicit `concordia chat index`;
    it does not invent a stored thread or native message ordinal.
 
 The stable pointer format is:
 
-`<label>: turn <ordinal> -> concordia thread read <thread-id> --range <ordinal>-<ordinal>`
+`<label>: turn <ordinal> -> concordia chat thread read <thread-id> --range <ordinal>-<ordinal>`
 
 The ordering and truncation are deterministic for identical inputs. `threads::build_map` is the
 single current formatter for handoff, CLI/MCP maps and explicit chat references; its header carries

@@ -723,8 +723,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     app.local_terminal.paste(&s);
                                 } else if app.rename_editor.is_some() {
                                     app.paste_text(&s);
-                                } else if app.project_search.active()
-                                    || !questions::paste(&mut *app, &s)
+                                } else if !questions::paste(&mut *app, &s)
                                 {
                                     if s.is_empty() && clipboard::has_attachment() {
                                         app.paste_clipboard();

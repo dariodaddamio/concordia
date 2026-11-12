@@ -103,7 +103,7 @@ pub(super) fn dispatch_key_burst(
     }
     if burst.text {
         let text = burst.text_content.as_deref().unwrap_or_default();
-        if !app.project_search.active() && questions::paste(app, text) {
+        if questions::paste(app, text) {
             return false;
         }
         app.paste_text_chunk(
@@ -136,7 +136,6 @@ pub(super) fn dispatch_key_event(
     if input::BurstBuffer::is_candidate(&key)
         && !app.local_terminal.visible()
         && app.picker.is_none()
-        && !app.project_search.active()
         && !palette_action
     {
         if let Some(burst) = key_burst.push(key, now) {
@@ -178,7 +177,6 @@ pub(super) fn handle_key(
         && app.editor.chars().is_empty()
         && app.picker.is_none()
         && app.workspace.focused.is_none()
-        && !app.project_search.active()
         && !worker_input::active(app)
         && app.activity.detail.is_none()
         && !app.questions.focused
@@ -220,22 +218,6 @@ pub(super) fn handle_key(
     if worker_input::key(app, &key) {
         return false;
     }
-    if app.project_search.active() {
-        if (matches!(key.code, KeyCode::Char('v' | 'V'))
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT))
-            || (key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT))
-        {
-            match clipboard::get_text() {
-                Ok(text) => app.project_search.paste(&text),
-                Err(error) => app.project_search.notice(&format!("paste failed: {error}")),
-            }
-            return false;
-        }
-        let action = app.project_search.key(key);
-        app.apply_search_action(action);
-        return false;
-    }
     if key.code == KeyCode::F(9)
         && app.picker.is_none()
         && app.workspace.focused.is_none()
@@ -256,16 +238,6 @@ pub(super) fn handle_key(
     {
         landing::close(app);
         integrations::open(app);
-        return false;
-    }
-    if key.code == KeyCode::Char('f')
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-        && app
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Files)
-    {
-        app.open_project_search();
         return false;
     }
     if key.code == KeyCode::F(4)
@@ -897,9 +869,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         if !modal::mouse(app, &m) {
             worker_input::mouse(app, &m);
         }
-        return;
-    }
-    if app.project_search.active() {
         return;
     }
     let permissions_hit = contains(app.areas.permissions, m.column, m.row);

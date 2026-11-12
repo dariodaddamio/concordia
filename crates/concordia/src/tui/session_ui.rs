@@ -500,7 +500,6 @@ impl App {
             .canonicalize()
             .ok()
             .map(|home| home.to_string_lossy().into_owned());
-        self.project_search.close();
         self.native_owner = None;
         self.deleg.change_conversation();
         self.messages.clear();

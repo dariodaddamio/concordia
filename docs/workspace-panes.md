@@ -3,7 +3,7 @@
 Status: build `2026-11-04k` adds horizontal scrolling and shared-document native file windows.
 Build `2026-11-01d` adds bounded chat/recent/workspace file discovery and directory browsing.
 Build `2026-11-01c` adds internal editing and pane-owned file recovery to the existing
-preview/search/reload/current-chat suggestion surface. Markdown/JSON open formatted by default;
+preview/find/reload/current-chat suggestion surface. Markdown/JSON open formatted by default;
 Alt+V or the view bar switches modes. Formatted view is read-only. Source code opens raw,
 editable and syntax-colored. Ctrl+S saves; Ctrl+Z/Ctrl+Y undo/redo; Ctrl+F finds; F3/Shift+F3
 navigate matches. Raw letters such as `v`, `r`, `/` and `q` are file content.
@@ -114,7 +114,7 @@ window with shared undo/save state, rather than opening an independent editor fr
 
 ## Project content search
 
-Use `/search`, or Ctrl+F while the `/open` file browser is visible, to search UTF-8 project file
+Use the file pane's built-in find controls while a file is open to search its UTF-8 contents
 contents. The search surface owns its query separately from the chat draft. Enter scans or opens a
 selected result; Esc closes it. Case controls and completeness/limit reasons are shown on screen.
 File-pane Ctrl+F remains in-file search. Existing queues and running provider turns are preserved.

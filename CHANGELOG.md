@@ -1,5 +1,9 @@
 # Changelog
 
+- W2e: folded local thread history under `concordia chat thread`, removed project-wide search and
+  replacement, removed `/context` policy mutation and compaction overrides, and made native
+  pointer failures identify replacement, truncation, header changes, home changes and oversized records.
+
 - W3b: removed the legacy MCP test surface; `agents` now stores delegated-agent lifecycle
   records and bounded final results for status/result reads.
 

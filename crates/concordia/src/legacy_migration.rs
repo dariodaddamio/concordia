@@ -486,7 +486,7 @@ fn preview_from(root: &Path, requested: &str, source: &str, from_line: usize) ->
         "ambiguous_legacy_values":duplicates.len(),
         "scanned_through_line":scanned_through,"next_line":(scanned_through<plan.total_lines).then_some(scanned_through+1),
         "continuation":"Use --from-line NEXT_LINE for the next bounded batch, or preview again after applying converted rows",
-        "backup_policy":"Exact original bytes retained; no archive deletion", "next":format!("concordia thread migrate apply {id}")}).to_string())
+        "backup_policy":"Exact original bytes retained; no archive deletion", "next":format!("concordia chat thread migrate apply {id}")}).to_string())
 }
 
 fn load_plan(root: &Path, id: &str) -> Result<(Plan, PathBuf)> {
@@ -620,7 +620,7 @@ fn apply(root: &Path, id: &str) -> Result<String> {
 }
 
 pub fn run_cli(root: &Path, args: &[String]) -> std::result::Result<String, (String, i32)> {
-    let usage="usage: concordia thread migrate preview <thread-id|history> --source INDEX [--from-line N] | apply PLAN | status PLAN";
+    let usage="usage: concordia chat thread migrate preview <thread-id|history> --source INDEX [--from-line N] | apply PLAN | status PLAN";
     let result = match args {
         [action, target, flag, source] if action == "preview" && flag == "--source" => {
             preview(root, target, source)

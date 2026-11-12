@@ -65,7 +65,7 @@ With `[threads] awareness = true` (the default), Concordia maintains this marked
 
 ```markdown
 <!-- concordia:begin -->
-You are running inside Concordia, a terminal app that runs several accounts. A [concordia map] block is a pointer to an earlier conversation; run `concordia thread read <id>` (add --grep TEXT or --tail N) to read details. Do not paste whole threads.
+You are running inside Concordia, a terminal app that runs several accounts. A [concordia map] block is a pointer to an earlier conversation; run `concordia chat thread read <id>` (add --grep TEXT or --tail N) to read details. Do not paste whole threads.
 <!-- concordia:end -->
 ```
 
@@ -108,11 +108,11 @@ Representative example:
 ```text
 [concordia map] thread 3f9a… - v2 - tools/approvals NOT transferred
 asked: Fix the login redirect and add a regression test.
-assistant pointer: turn 2 -> concordia thread read 3f9a… --range 2-2
-files: src/auth.rs; tool pointer (Edit): turn 3 -> concordia thread read 3f9a… --range 3-3
+ assistant pointer: turn 2 -> concordia chat thread read 3f9a… --range 2-2
+files: src/auth.rs; tool pointer (Edit): turn 3 -> concordia chat thread read 3f9a… --range 3-3
 user turn 4: Keep the public callback compatible.
-switch pointer: turn 5 -> concordia thread read 3f9a… --range 5-5
-more: concordia thread read 3f9a… [--range A-B | --tail N | --grep TEXT]
+switch pointer: turn 5 -> concordia chat thread read 3f9a… --range 5-5
+more: concordia chat thread read 3f9a… [--range A-B | --tail N | --grep TEXT]
 ```
 
 The handoff caller permits 6,000 characters, but `build_context_pack_with_workspace` clamps again
@@ -161,7 +161,7 @@ Please compare this with @3f9a1111.
 @3f9a1111
 [concordia map] thread THREAD - v2 - tools/approvals NOT transferred
 asked: …
-more: concordia thread read THREAD [--range A-B | --tail N | --grep TEXT]
+more: concordia chat thread read THREAD [--range A-B | --tail N | --grep TEXT]
 ```
 
 The fixed reference header is 52 characters (about 13 tokens), plus `@id`, newlines and each map.

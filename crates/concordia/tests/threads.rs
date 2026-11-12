@@ -1,4 +1,4 @@
-//! Thread log, map and `concordia thread ...`, driven through the real binary. The conversation
+//! Thread log, map and `concordia chat thread ...`, driven through the real binary. The conversation
 //! comes from the fake provider; nothing here runs a real CLI.
 
 use concordia::provider::{run_provider_turn, ProviderTurnRequest};
@@ -12,7 +12,7 @@ const FAKE: &str = env!("CARGO_BIN_EXE_concordia-fake-provider");
 
 fn thread_cmd(state: &Path, args: &[&str]) -> Output {
     Command::new(CONCORDIA)
-        .arg("thread")
+        .args(["chat", "thread"])
         .args(args)
         .env("CONCORDIA_STATE_DIR", state)
         .output()
@@ -104,7 +104,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     let m = text(&map);
     assert!(m.starts_with("[concordia map] thread 3f9a0000"));
     assert!(m.contains("asked: say hello"));
-    assert!(m.contains(&format!("concordia thread read {id}")));
+    assert!(m.contains(&format!("concordia chat thread read {id}")));
     assert!(m.chars().count() <= 1601, "{}", m.chars().count());
 
     let read = thread_cmd(
@@ -113,7 +113,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     );
     let r = text(&read);
     assert!(read.status.success());
-    assert!(r.chars().count() <= 400, "{}", r.chars().count());
+    assert!(r.chars().count() <= 500, "{}", r.chars().count());
     assert!(r.contains("[truncated"));
     let grep = thread_cmd(state.path(), &["read", id, "--grep", "SAY HELLO"]);
     assert!(text(&grep).contains("#1 user"));

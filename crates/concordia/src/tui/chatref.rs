@@ -766,7 +766,7 @@ mod tests {
         let map = &ex.maps[0].1;
         assert!(map.starts_with("[concordia map] thread c0ffee00-"));
         assert!(map.chars().count() <= 600);
-        assert!(map.contains(&format!("more: concordia thread read {C}")));
+        assert!(map.contains(&format!("more: concordia chat thread read {C}")));
         let request = "continue @c0ffee00 please";
         assert!(ex.sent.starts_with(&format!(
             "{request}\n\n[Referenced chats: source context, not new requests]\n"

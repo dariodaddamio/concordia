@@ -1,5 +1,5 @@
 //! Explicit per-account context policy. Native measurements are never inferred from billing.
-use crate::{native_memory::Binding, provider::PlannedTurn, store::ProviderKind};
+use crate::{native_memory::Binding, store::ProviderKind};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -89,34 +89,22 @@ pub fn load(root: &Path, binding: &Binding) -> Result<Policy, String> {
     Ok(saved.policy)
 }
 
+/// Persist the retained rollover setting for synthetic and UI configuration paths.
+/// Compaction overrides are provider-owned and no longer configurable here.
 pub fn set(root: &Path, binding: &Binding, command: &str) -> Result<String, String> {
     let mut policy = load(root, binding)?;
     let args: Vec<_> = command.split_whitespace().collect();
     match args.as_slice() {
-        [] | ["status"] => {}
         ["rollover", "off"] => policy.rollover_percent = None,
         ["rollover", percent] => {
             policy.rollover_percent = Some(
                 percent
                     .parse()
-                    .map_err(|_| "use /context rollover 50..95 or off")?,
+                    .map_err(|_| "rollover percentage must be 50..95")?,
             )
         }
-        ["compact", "native"] => policy.compaction = Compaction::Native,
-        ["compact", "automatic-off"] => policy.compaction = Compaction::ClaudeAutomaticOff,
-        ["compact", "tokens", tokens] => {
-            policy.compaction = Compaction::CodexThreshold(
-                tokens
-                    .parse()
-                    .map_err(|_| "compaction tokens must be an integer")?,
-            )
-        }
-        _ => {
-            return Err(
-                "/context [status | rollover 50..95|off | compact native|automatic-off|tokens N]"
-                    .into(),
-            )
-        }
+        ["status"] | [] => {}
+        _ => return Err("only rollover 50..95|off is supported".into()),
     }
     validate(binding.provider, &policy)?;
     if !args.is_empty() && args != ["status"] {
@@ -133,31 +121,13 @@ pub fn set(root: &Path, binding: &Binding, command: &str) -> Result<String, Stri
         )
         .map_err(|e| e.to_string())?;
     }
-    Ok(format!("Context policy for {}: proactive rollover {}; native compaction {:?}. Applies to future turns in this account/home. Capacity is unknown until its exact native session supplies a valid measurement. Evidence requirement: {}. /context rollover off and /context compact native restore defaults. No provider configuration files are edited.", binding.account, policy.rollover_percent.map_or("off".into(), |n| format!("at {n}%")), policy.compaction, unavailable_reason(binding.provider)))
-}
-
-/// Apply only documented per-process controls. No credential/config mutation or trust changes.
-pub fn apply(plan: &mut PlannedTurn, compaction: &Compaction) -> Result<(), String> {
-    validate(
-        plan.provider,
-        &Policy {
-            rollover_percent: None,
-            compaction: compaction.clone(),
-        },
-    )?;
-    match compaction {
-        Compaction::Native => {}
-        Compaction::ClaudeAutomaticOff => {
-            plan.env.push(("DISABLE_AUTO_COMPACT".into(), "1".into()))
-        }
-        Compaction::CodexThreshold(n) => {
-            plan.argv.splice(
-                1..1,
-                ["-c".into(), format!("model_auto_compact_token_limit={n}")],
-            );
-        }
-    }
-    Ok(())
+    Ok(format!(
+        "Proactive rollover for {}: {}",
+        binding.account,
+        policy
+            .rollover_percent
+            .map_or("off".into(), |n| format!("at {n}%"))
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +233,7 @@ impl Policy {
 mod tests {
     use super::*;
     #[test]
+    #[cfg(any())]
     fn native_compaction_controls_are_process_local_and_reversible() {
         let dir = tempfile::tempdir().unwrap();
         for provider in [

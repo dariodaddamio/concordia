@@ -16,7 +16,7 @@ use crate::native_memory::references::{CaptureScope, Reference};
 pub const MAX_EVENT_TEXT: usize = 20_000;
 /// Default map budget, in characters.
 pub const MAP_CHARS: usize = 1600;
-/// Default cap for `concordia thread read`.
+/// Default cap for `concordia chat thread read`.
 pub const READ_CHARS: usize = 6000;
 const JOURNAL_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 const JOURNAL_RECORD_BYTES: usize = 1024 * 1024;
@@ -387,7 +387,7 @@ impl ThreadLog {
     pub fn read_map(&self, max_chars: usize) -> Result<String> {
         let page = self.read_page(None)?;
         let note = page.next_cursor.as_ref().map(|_| {
-            "PARTIAL journal: first page only; follow thread read --cursor pages for later events"
+            "PARTIAL journal: first page only; follow chat thread read --cursor pages for later events"
         });
         Ok(build_map(
             &page.events,
@@ -666,7 +666,7 @@ fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
         for event in page.events {
             retained = retained.saturating_add(serde_json::to_vec(&event)?.len());
             if retained > JOURNAL_READ_BYTES || events.len() >= 4096 {
-                bail!("thread read exceeds its 32 MiB/4096-event budget; journal preserved; use concordia thread read <id> and follow --cursor pages");
+                bail!("thread read exceeds its 32 MiB/4096-event budget; journal preserved; use concordia chat thread read <id> and follow --cursor pages");
             }
             events.push(event);
         }
@@ -675,7 +675,7 @@ fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
             return Ok(events);
         }
     }
-    bail!("thread scan exceeds 256 MiB; journal preserved; use concordia thread read <id> and follow --cursor pages")
+    bail!("thread scan exceeds 256 MiB; journal preserved; use concordia chat thread read <id> and follow --cursor pages")
 }
 
 /// Convert one explicitly selected legacy message using the existing referenced-record format.
@@ -746,7 +746,7 @@ pub fn resolve_prefix(state_root: &Path, prefix: &str) -> Result<String> {
     let hits: Vec<&String> = ids.iter().filter(|i| i.starts_with(prefix)).collect();
     match hits.len() {
         0 => Err(anyhow!(
-            "no thread matches '{prefix}' (try: concordia thread list)"
+            "no thread matches '{prefix}' (try: concordia chat thread list)"
         )),
         1 => Ok(hits[0].clone()),
         n => Err(anyhow!(
@@ -810,7 +810,7 @@ pub fn build_map(
     }
     let source_pointer = |ordinal: usize| {
         if stored && !thread_id.is_empty() {
-            format!("concordia thread read {thread_id} --range {ordinal}-{ordinal}")
+            format!("concordia chat thread read {thread_id} --range {ordinal}-{ordinal}")
         } else {
             "attached native-source indexes (in-memory turn number only)".to_owned()
         }
@@ -866,7 +866,7 @@ pub fn build_map(
     }
     if stored && !thread_id.is_empty() {
         lines.push(format!(
-            "more: concordia thread read {thread_id} [--range A-B | --tail N | --grep TEXT]"
+            "more: concordia chat thread read {thread_id} [--range A-B | --tail N | --grep TEXT]"
         ));
     } else {
         lines.push("more: concordia chat index SESSION --account ACCOUNT --provider PROVIDER; thread log is off (not stored)".into());
@@ -948,10 +948,10 @@ pub fn encode_card(title: &str, detail: Option<&str>, status: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------
-// `concordia thread read`
+// `concordia chat thread read`
 // ---------------------------------------------------------------------------------------------
 
-/// Plain-text rendering of one event for `thread read` and `--grep`.
+/// Plain-text rendering of one event for `chat thread read` and `--grep`.
 pub fn render_event(idx: usize, e: &ThreadEvent) -> String {
     let who = e
         .account
@@ -1061,9 +1061,9 @@ pub fn age_label(started: u64) -> String {
 // CLI
 // ---------------------------------------------------------------------------------------------
 
-/// `concordia thread ...`. Returns (stdout, exit code); errors go to the Err string (stderr).
-pub fn run_cli(state_root: &Path, args: &[String]) -> std::result::Result<String, (String, i32)> {
-    let usage = "usage: concordia thread list [--json] | map <id> | read <id> [--cursor TOKEN] [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]".to_string();
+/// `concordia chat thread ...`. Returns (stdout, exit code); errors go to the Err string (stderr).
+pub fn run_chat_cli(state_root: &Path, args: &[String]) -> std::result::Result<String, (String, i32)> {
+    let usage = "usage: concordia chat thread list [--json] | map <id> | read <id> [--cursor TOKEN] [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]".to_string();
     let Some(sub) = args.first() else {
         return Err((usage, 2));
     };
@@ -1143,7 +1143,7 @@ pub fn run_cli(state_root: &Path, args: &[String]) -> std::result::Result<String
                 if opts.max_chars > 1024 * 1024
                     || opts.tail.is_some_and(|tail| tail > JOURNAL_PAGE_EVENTS)
                 {
-                    return Err(("thread read accepts at most 1 MiB of display text and 256 tail events per page".into(), 2));
+                    return Err(("chat thread read accepts at most 1 MiB of display text and 256 tail events per page".into(), 2));
                 }
                 let page = if opts.tail.is_some() {
                     log.read_tail_page(cursor.as_deref(), &opts)
@@ -1163,13 +1163,13 @@ pub fn run_cli(state_root: &Path, args: &[String]) -> std::result::Result<String
                 ));
                 if let Some(next) = page.next_cursor {
                     out.push_str(&format!(
-                        "[next page: concordia thread read {id} --cursor {next}]\n"
+                        "[next page: concordia chat thread read {id} --cursor {next}]\n"
                     ));
                 }
                 Ok(out)
             }
         }
-        other => Err((format!("unknown thread command '{other}'\n{usage}"), 2)),
+        other => Err((format!("unknown chat thread command '{other}'\n{usage}"), 2)),
     }
 }
 
@@ -1192,7 +1192,7 @@ mod tests {
             .lines()
             .last()
             .unwrap()
-            .contains("concordia thread read abc"));
+            .contains("concordia chat thread read abc"));
         assert!(m.chars().count() <= 1600);
     }
 
@@ -1226,7 +1226,7 @@ mod tests {
         assert!(m.contains("user turn 8: now the logout"), "{m}");
         assert!(m.contains("files: src/a.rs; tool pointer (Edit): turn 3"));
         assert!(m.contains("files: src/b.rs; tool pointer (Edit): turn 4"));
-        assert!(m.contains("concordia thread read id1 --range 6-6"));
+        assert!(m.contains("concordia chat thread read id1 --range 6-6"));
         assert!(m.contains("assistant pointer: turn 9"));
         assert!(!m.contains("cargo test") && !m.contains("boom"));
         assert!(!m.contains("looking") && !m.contains("done with it"));
@@ -1246,7 +1246,7 @@ mod tests {
         assert!(map.contains("user turn 5: same request"));
         for ordinal in 2..=4 {
             assert!(map.contains(&format!(
-                "concordia thread read fixture --range {ordinal}-{ordinal}"
+                "concordia chat thread read fixture --range {ordinal}-{ordinal}"
             )));
         }
         assert!(!map.contains("error one") && !map.contains("error two"));
@@ -1306,7 +1306,7 @@ mod tests {
         // Compact maps retain the exact source instruction without copying provider bodies.
         let tight = build_map(&ev, "id", 700, true, None, None);
         assert!(!tight.contains("cmd number") && !tight.contains(&"r".repeat(500)));
-        assert!(tight.contains("more: concordia thread read id"), "{tight}");
+        assert!(tight.contains("more: concordia chat thread read id"), "{tight}");
     }
 
     #[test]

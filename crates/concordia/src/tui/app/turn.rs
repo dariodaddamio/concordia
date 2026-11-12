@@ -608,7 +608,6 @@ impl App {
         visible_change |= self.poll_file_jobs();
         visible_change |= self.poll_session_history();
         visible_change |= self.poll_memory();
-        visible_change |= self.poll_project_search();
         visible_change |= self.workspace.poll();
         if let Some(notice) = self.workspace.take_notice() {
             self.flash(notice);

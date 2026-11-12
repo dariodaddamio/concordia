@@ -85,7 +85,6 @@ impl App {
         if self.picker.is_some()
             || self.workspace.focused.is_some()
             || self.activity.detail.is_some()
-            || self.project_search.active()
             || worker_input::active(self)
         {
             return;
@@ -207,7 +206,6 @@ impl App {
                     },
                     crate::file_open::FileAction::Preview,
                     self.cwd.clone(),
-                    None,
                 )
             {
                 if let Some(id) = self.workspace.focused {
@@ -677,7 +675,6 @@ pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
 }
 pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
     if app.picker.is_some()
-        || app.project_search.active()
         || app.activity.detail.is_some()
         || worker_input::active(app)
     {
@@ -752,7 +749,6 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
                 },
                 crate::file_open::FileAction::Preview,
                 app.cwd.clone(),
-                None,
             );
             if document {
                 if let Some(id) = app.workspace.focused {

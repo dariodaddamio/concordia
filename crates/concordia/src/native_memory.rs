@@ -1453,7 +1453,10 @@ fn open_index_source(root: &Path, index: &SourceIndex) -> Result<Source, String>
         return Err("unsafe native source path in pointer".into());
     }
     let mut file = if index.binding.provider == ProviderKind::Cursor {
-        index.binding.account_home(root)?;
+        index
+            .binding
+            .account_home(root)
+            .map_err(|error| format!("account home changed or is unavailable: {error}"))?;
         if index.relative_file != Path::new("acp-history") {
             return Err("invalid Cursor protocol source".into());
         }
@@ -1462,15 +1465,39 @@ fn open_index_source(root: &Path, index: &SourceIndex) -> Result<Source, String>
         let allowed = index.binding.verify(root)?;
         Source::File(open_source(&allowed.join(&index.relative_file), &allowed)?)
     };
-    if file.identity()? != index.file_identity || file.len()? < index.source_len {
-        return Err(
-            "native source is stale: replaced or truncated; index this session again".into(),
-        );
+    let stamp = source_stamp(&file);
+    if file.identity()? != index.file_identity {
+        return Err(format!(
+            "native source is stale: file replaced{}; index this session again",
+            stamp
+        ));
+    }
+    if file.len()? < index.source_len {
+        return Err(format!(
+            "native source is stale: file truncated{}; index this session again",
+            stamp
+        ));
     }
     if digest(&read_at(&mut file, 0, index.anchor_len as usize)?) != index.anchor_sha256 {
-        return Err("native source is stale: its original header changed".into());
+        return Err(format!(
+            "native source is stale: original header changed{}",
+            stamp
+        ));
     }
     Ok(file)
+}
+
+fn source_stamp(source: &Source) -> String {
+    let Source::File(file) = source else {
+        return String::new();
+    };
+    let Some(modified) = file.metadata().ok().and_then(|m| m.modified().ok()) else {
+        return String::new();
+    };
+    match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => format!(" at unix {}", duration.as_secs()),
+        Err(_) => String::new(),
+    }
 }
 
 pub fn read(
@@ -1501,7 +1528,14 @@ pub fn read(
             .checked_add(span.len as u64)
             .is_none_or(|end| end > index.source_len)
     {
-        return Err("invalid native source range".into());
+        return Err(if span.len > record_limit {
+            format!(
+                "native source record too large ({} bytes; limit {}); index this session again",
+                span.len, record_limit
+            )
+        } else {
+            "invalid native source range".into()
+        });
     }
     let bytes = read_at(&mut file, span.start, span.len)?;
     if digest(&bytes) != span.sha256 {

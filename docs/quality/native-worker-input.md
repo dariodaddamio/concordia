@@ -93,7 +93,7 @@ the main agent. Native provider subagents retain their own result ownership. Nar
 the available width. No executor or result delivery is added by inspection.
 
 Down from the last queued item returns to the composer. Inline queue editing and Alt+Down reorder
-keep their existing meanings. Intricate memory/context/scope/worktree/Harness commands stay available
+keep their existing meanings. Provider-native commands stay available
 by explicit prefix but are absent from the bare slash menu. Agents use the read-only `memory` MCP
 tool; relationship confirmation and native grants remain explicit user decisions.
 

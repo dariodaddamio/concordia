@@ -264,7 +264,6 @@ pub(crate) struct App {
         Option<crate::provider::interaction::InteractionOwner>,
     pub(in crate::tui) scopes: workspace_scope::State,
     pub(in crate::tui) managed_workspaces: managed_workspaces::State,
-    pub(in crate::tui) project_search: workspace_search::State,
     pub(in crate::tui) file_action_target: Option<(crate::file_links::ResolvedFile, PathBuf)>,
     pub(in crate::tui) continuation_target: Option<String>,
     pub(in crate::tui) state_root: PathBuf,
@@ -729,7 +728,6 @@ impl App {
             && !self.questions.focused
             && self.activity.detail.is_none()
             && !worker_input::active(self)
-            && !self.project_search.active()
         {
             self.start_image_import(None, true);
             return;
@@ -1538,7 +1536,6 @@ impl App {
             native_accounting_owner: None,
             scopes: workspace_scope::State::default(),
             managed_workspaces: managed_workspaces::State::default(),
-            project_search: workspace_search::State::default(),
             file_action_target: None,
             images: images::State::default(),
             raster: raster::State::default(),

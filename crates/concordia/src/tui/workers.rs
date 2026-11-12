@@ -336,7 +336,6 @@ fn draw_confirm(f: &mut Frame, over: Rect, app: &App, c: &Confirm) {
             || app.workspace.focused.is_some()
             || app.activity.detail.is_some()
             || app.questions.focused
-            || app.project_search.active()
             || app.deleg.input.is_some()
         {
             c.goal_armed.set(false);
@@ -1147,7 +1146,6 @@ impl App {
             || self.workspace.focused.is_some()
             || self.activity.detail.is_some()
             || self.questions.focused
-            || self.project_search.active()
             || self.deleg.viewer.is_some()
             || self.deleg.input.is_some()
             || self.queue.focused

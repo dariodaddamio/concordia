@@ -60,7 +60,7 @@ Ctrl+P or a file-row click previews;
 Tab/Enter inserts a literal reference and leaves the draft unsent. Discovery uses bounded recent
 messages/tool cards, deduplicates canonical paths and excludes automatic credential suggestions.
 Reference completion does not silently attach file contents. Sending a selected chat reference
-supplies its bounded map. `/search` searches workspace contents with visible bounds and explicit
+supplies its bounded map. File-pane find searches the open file with visible bounds and explicit
 replacement previews. A side-by-side chat viewer remains planned. See
 [workspace controls](workspace-panes.md) and [memory design](plans/context-handoff-plan.md).
 

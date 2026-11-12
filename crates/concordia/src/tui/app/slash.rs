@@ -290,7 +290,6 @@ impl App {
         };
         let (outcome, lines) = dispatch_slash(cmd, &ctx);
         if is_new {
-            self.project_search.close();
             self.native_owner = None;
             self.deleg.change_conversation();
             self.keep.turn_recovery_notice = false;

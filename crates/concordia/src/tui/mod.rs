@@ -116,7 +116,6 @@ mod worker_panel;
 mod workers;
 mod workspace;
 mod workspace_scope;
-mod workspace_search;
 use editor::Editor;
 #[cfg(test)]
 use input_dispatch::should_accept_key;

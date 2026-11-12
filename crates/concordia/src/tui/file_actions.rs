@@ -15,11 +15,6 @@ impl App {
                 return;
             }
         };
-        let dirty = self
-            .workspace
-            .replacement_blockers()
-            .iter()
-            .any(|path| path == &file.path);
         let mut rows = Vec::new();
         for (index, action) in [FileAction::Preview, FileAction::Editor]
             .into_iter()
@@ -28,11 +23,7 @@ impl App {
             rows.push(PickerRow {
                 id: format!("action:{index}"),
                 label: action.label().into(),
-                detail: if dirty && action != FileAction::Preview {
-                    "Opens the disk version; your unsaved pane is retained".into()
-                } else {
-                    file.path.to_string_lossy().into_owned()
-                },
+                detail: file.path.to_string_lossy().into_owned(),
             });
         }
         for (index, action) in [FileAction::Preview, FileAction::Editor]
@@ -66,7 +57,7 @@ impl App {
                 return;
             }
         }
-        self.perform_file_action(file, action, base, None);
+        self.perform_file_action(file, action, base);
     }
     pub(in crate::tui) fn default_file_action(&self) -> FileAction {
         crate::store::get_settings(&self.state_root)
@@ -83,7 +74,6 @@ impl App {
         file: file_links::ResolvedFile,
         action: FileAction,
         base: PathBuf,
-        verified: Option<crate::workspace_search::VerifiedHit>,
     ) -> bool {
         let config = crate::config::Config::load(&self.state_root).config.editor;
         let editor = if action == FileAction::Editor {
@@ -153,11 +143,7 @@ impl App {
                     return true;
                 }
                 let path = file.path.clone();
-                let result = if let Some(verified) = verified {
-                    self.workspace.open_verified(verified)
-                } else {
-                    self.workspace.open(file)
-                };
+                let result = self.workspace.open(file);
                 match result {
                     Ok(()) => {
                         self.related_files.remember(&path);
