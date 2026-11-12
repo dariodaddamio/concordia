@@ -86,7 +86,7 @@ fn run(state_root: &Path, exe: &Path, write: bool) -> Vec<HomeReport> {
     created_homes(state_root)
         .into_iter()
         .map(|(account, provider, home)| HomeReport {
-            awareness: Outcome::Absent,
+            awareness: sync_awareness(&home, provider, cfg.awareness, write),
             mcp: sync_mcp_for_account(&home, provider, cfg.mcp, exe, state_root, &account, write),
             account,
             provider,

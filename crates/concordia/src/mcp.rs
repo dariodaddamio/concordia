@@ -234,6 +234,238 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
 }
 
+fn uint_arg(args: &Value, key: &str) -> Option<usize> {
+    args.get(key).and_then(Value::as_u64).map(|n| n as usize)
+}
+
+fn tool_goals(root: &Path, args: &Value) -> Result<String, String> {
+    if args.as_object().is_some_and(|args| {
+        args.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "action" | "goal" | "workspace" | "offset" | "revision" | "text" | "request_id"
+            )
+        })
+    }) || [
+        "action",
+        "goal",
+        "workspace",
+        "revision",
+        "text",
+        "request_id",
+    ]
+    .iter()
+    .any(|key| args.get(*key).is_some_and(|value| !value.is_string()))
+    {
+        return Err(
+            "invalid goal tool arguments; requester identity cannot be supplied by the client"
+                .into(),
+        );
+    }
+    let action = str_arg(args, "action").unwrap_or("read");
+    if action != "read" {
+        let request =
+            str_arg(args, "request_id").ok_or("goal proposals/status need request_id UUID")?;
+        if action == "status" {
+            if ["goal", "workspace", "offset", "revision", "text"]
+                .iter()
+                .any(|key| args.get(*key).is_some())
+            {
+                return Err("goal status takes only action and request_id".into());
+            }
+            return crate::goals::changes::status(root, request);
+        }
+        let revision = str_arg(args, "revision")
+            .ok_or("read current goals first and supply their revision")?;
+        if args.get("workspace").is_some() || args.get("offset").is_some() {
+            return Err("goal proposals do not take source/cursor arguments".into());
+        }
+        let proposal = match action {
+            "propose_add" if args.get("goal").is_none() => crate::goals::changes::propose_add(
+                root,
+                request,
+                revision,
+                str_arg(args, "text").ok_or("goal add proposal needs text")?,
+            )?,
+            "propose_close" if args.get("text").is_none() => crate::goals::changes::propose_close(
+                root,
+                request,
+                revision,
+                str_arg(args, "goal").ok_or("goal close proposal needs exact goal id")?,
+            )?,
+            _ => return Err("unsupported goal action or incompatible arguments".into()),
+        };
+        if let Some(status) = crate::goals::changes::existing_status(root, &proposal)? {
+            return Ok(status);
+        }
+        record_pending(
+            root,
+            request,
+            &serde_json::to_vec(&proposal).map_err(|_| "goal proposal serialization failed")?,
+        )?;
+        return Ok(json!({"status":"proposal_recorded","request_id":request,"goal":proposal.goal_id(),"revision":proposal.observed_revision,"approval":"local user must review and approve; no goal changed","requesting_actor":"unverified MCP client"}).to_string());
+    }
+    if args.get("text").is_some() || args.get("request_id").is_some() {
+        return Err("goal reads do not take proposal fields".into());
+    }
+    if args.get("offset").is_some_and(|offset| !offset.is_u64())
+        || args
+            .get("revision")
+            .is_some_and(|revision| !revision.is_string())
+    {
+        return Err("goal cursor needs a nonnegative offset and string revision".into());
+    }
+    let offset = uint_arg(args, "offset").unwrap_or(0);
+    let revision = str_arg(args, "revision");
+    let value = if let Some(goal) = str_arg(args, "goal") {
+        if goal.is_empty() || goal.len() > 128 {
+            return Err("invalid goal id".into());
+        }
+        let workspace =
+            str_arg(args, "workspace").ok_or("goal/source reads need the exact workspace")?;
+        crate::native_memory::relations::list(
+            root,
+            Some(Path::new(workspace)),
+            Some(goal),
+            offset,
+            revision,
+        )?
+    } else {
+        if args.get("goal").is_some() || args.get("workspace").is_some() {
+            return Err("workspace is used only with a goal id".into());
+        }
+        crate::native_memory::relations::goals(root, offset, revision)?
+    };
+    serde_json::to_string(&value).map_err(|e| e.to_string())
+}
+
+fn tool_memory(root: &Path, args: &Value, scope: &Scope) -> Result<String, String> {
+    let object = args.as_object().ok_or("memory needs an object")?;
+    let action = str_arg(args, "action").ok_or("memory needs an action")?;
+    let allowed: &[&str] = match action {
+        "recall" => &["action", "query", "workspace", "source", "account"],
+        "ranked" => &[
+            "action",
+            "query",
+            "workspace",
+            "source",
+            "account",
+            "goal",
+            "file",
+        ],
+        "files" => &["action", "source", "offset", "revision"],
+        "groups" => &["action", "workspace", "offset", "revision"],
+        "members" => &["action", "group", "offset", "revision"],
+        _ => return Err("unsupported read-only memory action".into()),
+    };
+    for (key, value) in object {
+        if !allowed.contains(&key.as_str())
+            || if key == "offset" {
+                !value.is_u64()
+            } else {
+                !value.is_string()
+            }
+        {
+            return Err("unsupported or mistyped memory argument".into());
+        }
+    }
+    let required = |key| {
+        str_arg(args, key)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("memory {action} needs {key}"))
+    };
+    let offset = uint_arg(args, "offset").unwrap_or(0);
+    let revision = str_arg(args, "revision");
+    if !scope.unrestricted && matches!(action, "files" | "groups" | "members") {
+        return Err("this memory read is unavailable through scoped MCP".into());
+    }
+    if !scope.unrestricted {
+        if let Some(account) = str_arg(args, "account") {
+            if account != scope.account {
+                return Err("MCP scope rejects account outside the registered scope".into());
+            }
+        }
+    }
+    if !scope.unrestricted {
+        if let Some(workspace) = str_arg(args, "workspace") {
+            let requested =
+                std::fs::canonicalize(workspace).map_err(|_| "workspace is unavailable")?;
+            if !requested.starts_with(&scope.workspace) {
+                return Err("MCP scope rejects workspace outside the registered scope".into());
+            }
+        }
+    }
+    let value = match action {
+        "recall" => serde_json::to_value(crate::native_memory::retrieval::recall(
+            root,
+            required("query")?,
+            str_arg(args, "source"),
+            if scope.unrestricted {
+                str_arg(args, "account")
+            } else {
+                Some(&scope.account)
+            },
+            if scope.unrestricted {
+                str_arg(args, "workspace").map(Path::new)
+            } else {
+                Some(&scope.workspace)
+            },
+        )?)
+        .map_err(|error| error.to_string())?,
+        "ranked" => serde_json::to_value(crate::native_memory::rank::recall(
+            root,
+            crate::native_memory::rank::Request {
+                text: required("query")?,
+                source: str_arg(args, "source"),
+                account: if scope.unrestricted {
+                    str_arg(args, "account")
+                } else {
+                    Some(&scope.account)
+                },
+                workspace: if scope.unrestricted {
+                    str_arg(args, "workspace").map(Path::new)
+                } else {
+                    Some(&scope.workspace)
+                },
+                goal: str_arg(args, "goal"),
+                file: str_arg(args, "file"),
+                from: None,
+                at: None,
+            },
+        )?)
+        .map_err(|error| error.to_string())?,
+        "groups" => crate::native_memory::relations::groups::list(
+            root,
+            Path::new(required("workspace")?),
+            offset,
+            revision,
+        )?,
+        "members" => crate::native_memory::relations::groups::members(
+            root,
+            required("group")?,
+            offset,
+            revision,
+        )?,
+        "files" => {
+            let mut argv = vec!["file-facts".into(), required("source")?.to_owned()];
+            if offset != 0 || revision.is_some() {
+                argv.extend([
+                    offset.to_string(),
+                    revision.ok_or("file cursor requires revision")?.to_owned(),
+                ]);
+            }
+            crate::native_memory::files::command(root, &argv)?
+        }
+        _ => unreachable!(),
+    };
+    let text = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+    if text.chars().count() > MAX_RESULT_CHARS {
+        return Err("memory result exceeds response budget; narrow the query with source, account or workspace".into());
+    }
+    Ok(text)
+}
+
+/// Err is a protocol error (unknown tool, bad params shape); tool failures are `isError` results.
 fn call_tool(state_root: &Path, params: &Value, scope: Option<&Scope>) -> Result<Value, String> {
     let name = params
         .get("name")
@@ -329,6 +561,257 @@ fn tool_agents(state_root: &Path, args: &Value, scope: Option<&Scope>) -> Result
     }
 }
 
+fn tool_feed(root: &Path, args: &Value, scope: &Scope) -> Result<String, String> {
+    let cursor = uint_arg(args, "cursor").unwrap_or(0);
+    let limit = uint_arg(args, "limit").unwrap_or(50).min(200);
+    let pane = str_arg(args, "pane");
+    let mut events = crate::feed::read(root, 0, pane).map_err(|e| e.to_string())?;
+    if !scope.unrestricted {
+        events.retain(|e| e.account.as_deref() == Some(scope.account.as_str()));
+    }
+    let page: Vec<_> = events.iter().skip(cursor).take(limit).collect();
+    let next = if cursor + page.len() < events.len() {
+        Some(cursor + page.len())
+    } else {
+        None
+    };
+    let value = json!({"events": page, "next_cursor": next, "account": scope.account});
+    serde_json::to_string(&value).map_err(|e| e.to_string())
+}
+
+fn tool_native_read(root: &Path, args: &Value) -> Result<String, String> {
+    let object = args
+        .as_object()
+        .ok_or("native_read arguments must be an object")?;
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "id" | "message" | "offset" | "max_bytes" | "from_message" | "limit" | "history"
+        )
+    }) {
+        return Err("unsupported native_read argument".into());
+    }
+    let id = str_arg(args, "id").ok_or("native_read requires id")?;
+    if let Some(history) = args.get("history") {
+        if history.as_bool() != Some(true) || object.len() != 2 {
+            return Err("history must be true without excerpt/range options".into());
+        }
+        return serde_json::to_string(&crate::native_memory::history_from_pointer(root, id)?)
+            .map_err(|e| e.to_string());
+    }
+    let mut command = vec![
+        if object.contains_key("message") {
+            "excerpt"
+        } else {
+            "sources"
+        }
+        .to_string(),
+        id.to_string(),
+    ];
+    for (key, option) in [
+        ("message", "--message"),
+        ("offset", "--offset"),
+        ("max_bytes", "--max-bytes"),
+        ("from_message", "--from-message"),
+        ("limit", "--limit"),
+    ] {
+        if let Some(value) = args.get(key) {
+            let number = value
+                .as_u64()
+                .ok_or_else(|| format!("{key} must be a nonnegative integer"))?;
+            command.extend([option.to_string(), number.to_string()]);
+        }
+    }
+    crate::native_memory::command(root, &command)
+}
+
+fn normalized_scope_path(path: &Path) -> Option<String> {
+    let path = std::fs::canonicalize(path).ok()?;
+    let mut value = path.to_string_lossy().replace('/', "\\");
+    while value.len() > 3 && value.ends_with('\\') {
+        value.pop();
+    }
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = value.strip_prefix(r"\\?\") {
+            value = stripped.to_owned();
+        }
+        value.make_ascii_lowercase();
+    }
+    Some(value)
+}
+
+fn in_workspace(root: &Path, path: &str, scope: &Scope) -> bool {
+    let Some(candidate) = normalized_scope_path(Path::new(path)) else {
+        return false;
+    };
+    if normalized_scope_path(&scope.workspace).is_some_and(|workspace| {
+        candidate == workspace
+            || candidate
+                .strip_prefix(&workspace)
+                .is_some_and(|rest| rest.starts_with('\\'))
+    }) {
+        return true;
+    }
+    let Ok(registry) = crate::managed_workspaces::load(root) else {
+        return false;
+    };
+    registry.records.iter().any(|record| {
+        normalized_scope_path(&record.owner)
+            .zip(normalized_scope_path(&scope.workspace))
+            .is_some_and(|(owner, workspace)| owner == workspace)
+            && normalized_scope_path(&record.execution).is_some_and(|worktree| {
+                candidate == worktree
+                    || candidate
+                        .strip_prefix(&worktree)
+                        .is_some_and(|rest| rest.starts_with('\\'))
+            })
+    })
+}
+
+fn ensure_thread_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), String> {
+    if scope.unrestricted {
+        return Ok(());
+    }
+    let prefix = str_arg(args, "id").ok_or("missing id")?;
+    let id = threads::resolve_prefix(root, prefix).map_err(|e| e.to_string())?;
+    let meta = threads::list(root)
+        .into_iter()
+        .find(|m| m.id == id)
+        .ok_or("thread is outside the registered MCP scope")?;
+    if meta.account.as_deref() != Some(scope.account.as_str())
+        || !in_workspace(root, &meta.cwd, scope)
+    {
+        return Err("MCP scope rejects this thread".into());
+    }
+    Ok(())
+}
+
+fn ensure_native_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), String> {
+    if scope.unrestricted {
+        return Ok(());
+    }
+    let id = str_arg(args, "id").ok_or("native_read requires id")?;
+    let summary = crate::native_memory::verify_source(root, id)?;
+    if summary.account != scope.account {
+        return Err("MCP scope rejects this native session account".into());
+    }
+    let record = crate::sessions::find_native_record(
+        root,
+        &summary.account,
+        Some(summary.provider),
+        &summary.session_id,
+    )?
+    .ok_or("native session is outside the registered MCP scope")?;
+    if record.0.account != scope.account
+        || !record
+            .0
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| in_workspace(root, cwd, scope))
+    {
+        return Err("MCP scope rejects this native session workspace".into());
+    }
+    Ok(())
+}
+
+fn tool_threads(state_root: &Path, limit: Option<usize>, scope: &Scope) -> String {
+    let limit = limit.unwrap_or(10).clamp(1, 30);
+    let metas: Vec<_> = threads::list(state_root)
+        .into_iter()
+        .filter(|m| {
+            scope.unrestricted
+                || (m.account.as_deref() == Some(scope.account.as_str())
+                    && in_workspace(state_root, &m.cwd, scope))
+        })
+        .collect();
+    if metas.is_empty() {
+        return "no recorded threads (the user enables recording with [threads] enabled = true)"
+            .into();
+    }
+    metas
+        .iter()
+        .take(limit)
+        .map(|m| {
+            let title = if m.title.is_empty() {
+                "(untitled)"
+            } else {
+                &m.title
+            };
+            format!("{}  {}  {}", m.id, threads::age_label(m.started), title)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn tool_thread_map(state_root: &Path, args: &Value) -> Result<String, String> {
+    let prefix = str_arg(args, "id").ok_or("missing id")?;
+    let id = threads::resolve_prefix(state_root, prefix).map_err(|e| e.to_string())?;
+    let cap = crate::config::for_root(state_root).threads.map_chars;
+    threads::ThreadLog::open(state_root, &id)
+        .read_map(cap)
+        .map_err(|error| format!("{error:#}"))
+}
+
+fn tool_thread_read(state_root: &Path, args: &Value) -> Result<String, String> {
+    let id = str_arg(args, "id").ok_or("missing id")?;
+    let mut command = vec!["read".into(), id.into()];
+    for key in ["cursor", "grep", "range"] {
+        if let Some(value) = str_arg(args, key) {
+            command.extend([format!("--{key}"), value.into()]);
+        }
+    }
+    if let Some(tail) = uint_arg(args, "tail") {
+        command.extend(["--tail".into(), tail.to_string()]);
+    }
+    command.extend([
+        "--max-chars".into(),
+        uint_arg(args, "max_chars")
+            .unwrap_or(DEFAULT_READ_CHARS)
+            .clamp(200, MAX_RESULT_CHARS)
+            .to_string(),
+    ]);
+    threads::run_cli(state_root, &command).map_err(|(error, _)| error)
+}
+
+/// Cached readings only. Never starts a refresh or infers an account from an unbound legacy file.
+fn tool_usage(state_root: &Path, scope: &Scope) -> String {
+    let rows: Vec<String> = crate::accounts::list_all_accounts(state_root)
+        .into_iter()
+        .filter(|account| scope.unrestricted || account.account == scope.account)
+        .filter_map(|account| {
+            let home = account.home_path?;
+            let cached = crate::usage::cached_usage_view(
+                state_root,
+                account.provider,
+                &account.account,
+                &home,
+            )?;
+            let freshness = if cached.fresh {
+                "recent cache"
+            } else {
+                "stale cache"
+            };
+            let age = threads::age_label(cached.observed_at);
+            let windows = if cached.windows.is_empty() {
+                "no limits reported".into()
+            } else {
+                cached.windows.join("; ")
+            };
+            Some(format!(
+                "{} account {} [{freshness}, read {age}]: {windows}",
+                account.provider.as_str(),
+                account.account
+            ))
+        })
+        .collect();
+    if rows.is_empty() {
+        "no cached usage readings (cache only; Concordia does not refresh from MCP)".into()
+    } else {
+        rows.join("\n")
+    }
+}
+
 /// A proposal as written by `delegate` and read by the TUI.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -342,6 +825,7 @@ pub struct Proposal {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(untagged)]
 pub enum PendingProposal {
+    Goal(crate::goals::changes::Proposal),
     Delegate(Proposal),
 }
 
@@ -456,8 +940,10 @@ pub fn take_proposals(state_root: &Path) -> Vec<Proposal> {
     .collect()
 }
 
-pub fn take_pending(state_root: &Path, _delegates: bool, limit: usize) -> Vec<PendingProposal> {
-    take_selected(state_root, limit.min(MAX_PENDING_PROPOSALS), |_| true)
+pub fn take_pending(state_root: &Path, delegates: bool, limit: usize) -> Vec<PendingProposal> {
+    take_selected(state_root, limit.min(MAX_PENDING_PROPOSALS), |proposal| {
+        delegates || matches!(proposal, PendingProposal::Goal(_))
+    })
 }
 
 fn take_selected(
@@ -501,6 +987,9 @@ fn take_selected(
                     return None;
                 }
                 let proposal: PendingProposal = serde_json::from_slice(&bytes).ok()?;
+                if matches!(&proposal, PendingProposal::Goal(goal) if goal.validate().is_err()) {
+                    return None;
+                }
                 Some(proposal)
             })
             .flatten();
@@ -1290,5 +1779,3 @@ mod tests {
         }));
     }
 }
-
-

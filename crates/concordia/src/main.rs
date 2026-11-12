@@ -12,7 +12,10 @@ enum Command {
     Doctor,
     Chat,
     FileEdit,
+    Sessions,
+    Thread,
     Mcp,
+    Feed,
     AskMcp,
     Help,
     Version,
@@ -78,6 +81,41 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::FileEdit,
     },
     CommandSpec {
+        name: "sessions",
+        aliases: &[],
+        args: "prune --empty",
+        help: "report empty native sessions without deleting provider files",
+        command: Command::Sessions,
+    },
+    CommandSpec {
+        name: "thread",
+        aliases: &[],
+        args: "list|map|read|migrate",
+        help: "read and migrate recorded threads",
+        command: Command::Thread,
+    },
+    CommandSpec {
+        name: "mcp",
+        aliases: &[],
+        args: "",
+        help: "stdio MCP server",
+        command: Command::Mcp,
+    },
+    CommandSpec {
+        name: "feed",
+        aliases: &[],
+        args: "[--follow] [--since N] [--pane ID] [--json] [--screen]",
+        help: "follow the local event feed",
+        command: Command::Feed,
+    },
+    CommandSpec {
+        name: "ask-mcp",
+        aliases: &[],
+        args: "",
+        help: "stdio question MCP server",
+        command: Command::AskMcp,
+    },
+    CommandSpec {
         name: "--help",
         aliases: &["-h", "help"],
         args: "",
@@ -97,11 +135,6 @@ fn parse_command(args: &[String]) -> Result<(Command, &[String]), String> {
     let Some(name) = args.first() else {
         return Err("missing command".into());
     };
-    let hidden = match name.as_str() {
-        "mcp" => Some(Command::Mcp),
-        "ask-mcp" => Some(Command::AskMcp),
-        _ => None,
-    };
     let Some(spec) = CLI_HELP
         .iter()
         .find(|s| s.name == name || s.aliases.contains(&name.as_str()))
@@ -109,12 +142,6 @@ fn parse_command(args: &[String]) -> Result<(Command, &[String]), String> {
         return Err(format!("unknown argument: {name} (try --help)"));
     };
     let rest = &args[1..];
-    if let Some(command) = hidden {
-        if !rest.is_empty() {
-            return Err(format!("{name} takes no arguments (try --help)"));
-        }
-        return Ok((command, rest));
-    }
     if spec.args.is_empty() && !rest.is_empty() {
         return Err(format!("{name} takes no arguments (try --help)"));
     }
@@ -194,6 +221,13 @@ async fn main() -> Result<()> {
                 std::process::exit(code);
             }
         },
+        Command::Feed => match concordia::feed::cli(&default_store_root(), rest) {
+            Ok(output) => print!("{output}"),
+            Err((message, code)) => {
+                eprintln!("{message}");
+                std::process::exit(code);
+            }
+        },
         Command::FileEdit => tui::run_file_editor(rest)?,
         Command::Window => {
             #[cfg(windows)]
@@ -243,6 +277,25 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Thread => match concordia::threads::run_cli(&default_store_root(), rest) {
+            Ok(out) => print!("{out}"),
+            Err((msg, code)) => {
+                eprintln!("{msg}");
+                std::process::exit(code);
+            }
+        },
+        Command::Sessions => {
+            if rest != ["prune", "--empty"] {
+                anyhow::bail!("usage: concordia sessions prune --empty");
+            }
+            match concordia::sessions::prune_empty_cli(&default_store_root()) {
+                Ok(output) => print!("{output}"),
+                Err((message, code)) => {
+                    eprintln!("{message}");
+                    std::process::exit(code);
+                }
+            }
+        }
         Command::Mcp => {
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();
@@ -277,7 +330,7 @@ mod tests {
         let commands: HashSet<_> = CLI_HELP.iter().map(|spec| spec.name).collect();
         assert_eq!(commands.len(), CLI_HELP.len());
         assert!(commands.contains("chat"));
-        assert!(commands.contains("chat"));
+        assert!(commands.contains("thread"));
     }
 
     #[test]

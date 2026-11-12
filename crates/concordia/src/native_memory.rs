@@ -19,19 +19,24 @@ const MAX_MESSAGES: usize = 128;
 const INDEX_BYTES: u64 = 256 * 1024;
 const EXCERPT_BYTES: usize = 8192;
 
-fn timestamp_ms(_text: &str) -> Option<i64> {
-    None
-}
-
 #[path = "cursor_history.rs"]
 mod cursor_history;
 #[path = "memory_files.rs"]
 pub mod files;
+#[path = "memory_rank.rs"]
+pub mod rank;
 #[path = "native_references.rs"]
 pub mod references;
+#[path = "memory_relations.rs"]
+pub mod relations;
+#[path = "memory_retrieval.rs"]
+pub mod retrieval;
 #[path = "native_usage.rs"]
 pub mod usage;
 
+#[cfg(test)]
+#[path = "memory_evaluation.rs"]
+mod evaluation;
 
 enum Source {
     File(File),
@@ -659,7 +664,7 @@ pub(crate) fn live_codex_patches(
                 event["payload"]["turn_id"]
                     .as_str()
                     .filter(|id| id.len() <= 256),
-                event["timestamp"].as_str().and_then(timestamp_ms),
+                event["timestamp"].as_str().and_then(rank::timestamp_ms),
             ) {
                 if at >= not_before {
                     turns.insert(turn.to_owned(), at);
@@ -718,7 +723,7 @@ fn codex_patch_inputs_between(
         {
             fresh_turn = event["timestamp"]
                 .as_str()
-                .and_then(timestamp_ms)
+                .and_then(rank::timestamp_ms)
                 .is_some_and(|timestamp| timestamp >= not_before && timestamp <= not_after)
                 && turn.is_none_or(|turn| event["payload"]["turn_id"] == turn);
             pending.clear();
@@ -863,7 +868,7 @@ pub(crate) fn historical_codex_patches(
         }
         let (Some(id), Some(timestamp)) = (
             event["payload"]["turn_id"].as_str(),
-            event["timestamp"].as_str().and_then(timestamp_ms),
+            event["timestamp"].as_str().and_then(rank::timestamp_ms),
         ) else {
             continue;
         };
