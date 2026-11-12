@@ -602,17 +602,6 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         None
     ),
     command!(
-        "/memory",
-        [],
-        "...",
-        "search original chats and source links",
-        "Retrieve bounded original conversation sources.",
-        false,
-        CommandCategory::Chat,
-        None,
-        None
-    ),
-    command!(
         "/context",
         [],
         "",
@@ -724,7 +713,6 @@ mod registry_tests {
     #[test]
     fn palette_help_and_readme_come_from_one_registry() {
         assert!(format_slash_help(false).contains("/use"));
-        assert!(format_slash_help(true).contains("/memory"));
     }
 
     #[test]

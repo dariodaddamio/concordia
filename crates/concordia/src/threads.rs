@@ -18,10 +18,6 @@ pub const MAX_EVENT_TEXT: usize = 20_000;
 pub const MAP_CHARS: usize = 1600;
 /// Default cap for `concordia thread read`.
 pub const READ_CHARS: usize = 6000;
-/// Maximum number of locally pinned native spans retained for one thread.
-pub const MAX_PINNED_SPANS: usize = 128;
-/// Maximum UTF-8 bytes retained by one thread's pin journal.
-pub const MAX_PINNED_BYTES: usize = 256 * 1024;
 const JOURNAL_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 const JOURNAL_RECORD_BYTES: usize = 1024 * 1024;
 const JOURNAL_PAGE_EVENTS: usize = 256;
@@ -227,20 +223,6 @@ pub struct ThreadLog {
     dir: PathBuf,
 }
 
-/// A redacted copy of an exact native span. Pins are deliberately independent of provider
-/// transcript files, so a map remains readable after native pruning or compaction.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PinnedSpan {
-    pub version: u32,
-    pub ordinal: usize,
-    pub label: String,
-    pub role: String,
-    pub provider: Option<String>,
-    pub account: Option<String>,
-    pub native_session_id: Option<String>,
-    pub text: String,
-}
-
 impl ThreadLog {
     /// No I/O until the first write.
     pub fn open(state_root: &Path, thread_id: &str) -> ThreadLog {
@@ -262,10 +244,6 @@ impl ThreadLog {
         self.dir.join(format!("{}.meta.json", self.id))
     }
 
-    fn pins_path(&self) -> PathBuf {
-        self.dir.join(format!("{}.pins.jsonl", self.id))
-    }
-
     /// Append structural metadata only. Conversation bodies require an exact native reference.
     pub fn append(&self, ev: &ThreadEvent) -> Result<()> {
         self.append_record(&references::Record::metadata(ev)?)
@@ -281,122 +259,8 @@ impl ThreadLog {
         } else {
             ev.k.as_str()
         };
-        let text = crate::native_memory::references::hydrate_text(self.root(), &reference)
-            .map_err(|error| anyhow!("native span pin failed: {error}"))?;
-        self.pin_span_with_reference(
-            ordinal,
-            role,
-            &format!("{} turn {}", role, ordinal),
-            &text,
-            &reference,
-        )
-    }
-
-    /// Pin a span after applying the same deterministic redaction used by the journal.
-    pub fn pin_span(&self, ordinal: usize, label: &str, text: &str) -> Result<()> {
-        self.pin_span_inner(PinnedSpan {
-            version: 1,
-            ordinal,
-            label: cap_chars(label, 160).to_owned(),
-            role: "native".into(),
-            provider: None,
-            account: None,
-            native_session_id: None,
-            text: cap_chars(&crate::redact::redact(text), MAX_PINNED_BYTES).to_owned(),
-        })
-    }
-
-    fn pin_span_with_reference(
-        &self,
-        ordinal: usize,
-        role: &str,
-        label: &str,
-        text: &str,
-        reference: &Reference,
-    ) -> Result<()> {
-        let binding = reference.binding();
-        self.pin_span_inner(PinnedSpan {
-            version: 1,
-            ordinal,
-            label: cap_chars(label, 160).to_owned(),
-            role: role.to_owned(),
-            provider: Some(binding.provider.as_str().to_owned()),
-            account: Some(binding.account.clone()),
-            native_session_id: Some(binding.session_id.clone()),
-            text: cap_chars(&crate::redact::redact(text), MAX_PINNED_BYTES).to_owned(),
-        })
-    }
-
-    fn pin_span_inner(&self, span: PinnedSpan) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
-        let lock = self.dir.join(format!("{}.pins.lock", self.id));
-        let root = crate::update::resolved_directory(&self.dir)
-            .ok_or_else(|| anyhow!("pin directory is not regular"))?;
-        let path = self.pins_path();
-        if [lock.as_path(), path.as_path()]
-            .into_iter()
-            .any(|path| path.exists() && !crate::update::regular_owned_file(path, &root))
-        {
-            bail!("pin journal or lock is not a regular owned file");
-        }
-        crate::state_io::with_lock(&lock, || {
-            let mut spans = self.read_pins_unchecked()?;
-            spans.retain(|old| old.ordinal != span.ordinal);
-            spans.push(span.clone());
-            spans.sort_by_key(|old| old.ordinal);
-            while spans.len() > MAX_PINNED_SPANS
-                || serde_json::to_vec(&spans).map_or(true, |v| v.len() > MAX_PINNED_BYTES)
-            {
-                if spans.is_empty() {
-                    break;
-                }
-                spans.remove(0);
-            }
-            let mut body = Vec::new();
-            for span in spans {
-                let json = serde_json::to_vec(&span)?;
-                body.extend(crate::redact::redact_bytes(&json));
-                body.push(b'\n');
-            }
-            if body.len() > MAX_PINNED_BYTES {
-                return Err(std::io::Error::other(
-                    "redacted pin journal exceeds its byte budget; original preserved",
-                ));
-            }
-            crate::state_io::write_atomic(&self.pins_path(), &body)?;
-            Ok(())
-        })?;
+        let _ = (ordinal, role, reference);
         Ok(())
-    }
-
-    fn read_pins_unchecked(&self) -> std::io::Result<Vec<PinnedSpan>> {
-        let file = match std::fs::File::open(self.pins_path()) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
-        let mut bytes = Vec::new();
-        file.take(MAX_PINNED_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > MAX_PINNED_BYTES {
-            return Err(std::io::Error::other(
-                "pin journal exceeds its byte budget; original preserved",
-            ));
-        }
-        let mut spans = Vec::new();
-        for line in bytes
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-        {
-            let span = serde_json::from_slice(line).map_err(std::io::Error::other)?;
-            spans.push(span);
-            if spans.len() > MAX_PINNED_SPANS {
-                return Err(std::io::Error::other(
-                    "pin journal exceeds its record budget; original preserved",
-                ));
-            }
-        }
-        Ok(spans)
     }
 
     /// Record a source gap without persisting the original text or an arbitrary error body.
@@ -433,7 +297,6 @@ impl ThreadLog {
             path.as_path(),
             lock.as_path(),
             count_path.as_path(),
-            self.pins_path().as_path(),
         ]
         .into_iter()
         .any(|path| path.exists() && !crate::update::regular_owned_file(path, &root))
@@ -628,15 +491,13 @@ impl ThreadLog {
         let root = crate::update::resolved_directory(&self.dir)
             .ok_or_else(|| anyhow!("thread directory is not regular"))?;
         let journal_lock = self.dir.join(format!("{}.lock", self.id));
-        let pins_lock = self.dir.join(format!("{}.pins.lock", self.id));
         let paths = [
             self.log_path(),
             self.meta_path(),
-            self.pins_path(),
             self.dir.join(format!("{}.ordinal.json", self.id)),
         ];
         let verify = || -> std::io::Result<()> {
-            for path in paths.iter().chain([&journal_lock, &pins_lock]) {
+            for path in paths.iter().chain([&journal_lock]) {
                 match std::fs::symlink_metadata(path) {
                     Ok(_) if !crate::update::regular_owned_file(path, &root) => {
                         return Err(std::io::Error::other(
@@ -652,19 +513,15 @@ impl ThreadLog {
         };
         verify()?;
         crate::state_io::with_lock(&journal_lock, || {
-            crate::state_io::with_lock(&pins_lock, || {
-                // Validate every exact app-owned target before removing the first one.
-                // Stable lock pathnames remain; provider-owned sources are never targets.
-                verify()?;
-                for path in &paths {
-                    match std::fs::remove_file(path) {
-                        Ok(()) => {}
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(error),
-                    }
+            verify()?;
+            for path in &paths {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
                 }
-                Ok(())
-            })
+            }
+            Ok(())
         })?;
         Ok(())
     }
@@ -841,7 +698,6 @@ fn thread_ids(state_root: &Path) -> Vec<String> {
         let name = e.file_name().to_string_lossy().into_owned();
         if let Some(id) = name
             .strip_suffix(".jsonl")
-            .filter(|id| !id.ends_with(".pins"))
         {
             ids.push(id.to_string());
         }
@@ -1542,31 +1398,6 @@ mod tests {
                     <= cap
             );
         }
-    }
-
-    #[test]
-    fn pins_are_redacted() {
-        let state = tempfile::tempdir().unwrap();
-        let log = ThreadLog::open(state.path(), "pin-redaction");
-        log.pin_span(1, "tool", "Authorization: Bearer sk-abcdefghijklmnop")
-            .unwrap();
-        let raw = std::fs::read_to_string(log.pins_path()).unwrap();
-        assert!(!raw.contains("sk-abcdefghijklmnop"));
-        assert!(raw.contains("[REDACTED:authorization:"));
-    }
-
-    #[test]
-    fn pins_are_pruned_oldest_first() {
-        let state = tempfile::tempdir().unwrap();
-        let log = ThreadLog::open(state.path(), "pin-pruning");
-        for ordinal in 1..=MAX_PINNED_SPANS + 2 {
-            log.pin_span(ordinal, "assistant", &format!("body {ordinal}"))
-                .unwrap();
-        }
-        let pins = log.read_pins_unchecked().unwrap();
-        assert_eq!(pins.len(), MAX_PINNED_SPANS);
-        assert_eq!(pins.first().unwrap().ordinal, 3);
-        assert_eq!(pins.last().unwrap().ordinal, MAX_PINNED_SPANS + 2);
     }
 
     #[test]

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Removed goals, goal/source relations, memory groups, ranking/evaluation extras, manual memory
+  links, and thread pin journals. Native source indexing, exact readback and plain chat search
+  remain available; stale pointers report their concrete cause.
+
 - Fix gradual transcript scrolling after folded-history rehydration, speed up Ctrl+T by removing
   an unnecessary synchronous recovery write, preserve reasoning separators, add tab status marks,
   copy support in queued-message editing, a visible chat scrollbar, and theme-coloured Windows

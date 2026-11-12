@@ -1,7 +1,6 @@
 //! `concordia mcp`: a minimal stdio MCP server over Concordia's own data (docs/mcp.md).
 //!
-//! JSON-RPC 2.0, one message per line. Data reads and bounded task/goal proposals; goal mutation
-//! happens only after explicit local UI review. No network, no process
+//! JSON-RPC 2.0, one message per line. Delegation requests remain bounded and reviewable. No network, no process
 //! spawning. The handler is a pure function of (state folder, request line).
 
 use crate::threads;
@@ -238,107 +237,6 @@ fn uint_arg(args: &Value, key: &str) -> Option<usize> {
     args.get(key).and_then(Value::as_u64).map(|n| n as usize)
 }
 
-fn tool_goals(root: &Path, args: &Value) -> Result<String, String> {
-    if args.as_object().is_some_and(|args| {
-        args.keys().any(|key| {
-            !matches!(
-                key.as_str(),
-                "action" | "goal" | "workspace" | "offset" | "revision" | "text" | "request_id"
-            )
-        })
-    }) || [
-        "action",
-        "goal",
-        "workspace",
-        "revision",
-        "text",
-        "request_id",
-    ]
-    .iter()
-    .any(|key| args.get(*key).is_some_and(|value| !value.is_string()))
-    {
-        return Err(
-            "invalid goal tool arguments; requester identity cannot be supplied by the client"
-                .into(),
-        );
-    }
-    let action = str_arg(args, "action").unwrap_or("read");
-    if action != "read" {
-        let request =
-            str_arg(args, "request_id").ok_or("goal proposals/status need request_id UUID")?;
-        if action == "status" {
-            if ["goal", "workspace", "offset", "revision", "text"]
-                .iter()
-                .any(|key| args.get(*key).is_some())
-            {
-                return Err("goal status takes only action and request_id".into());
-            }
-            return crate::goals::changes::status(root, request);
-        }
-        let revision = str_arg(args, "revision")
-            .ok_or("read current goals first and supply their revision")?;
-        if args.get("workspace").is_some() || args.get("offset").is_some() {
-            return Err("goal proposals do not take source/cursor arguments".into());
-        }
-        let proposal = match action {
-            "propose_add" if args.get("goal").is_none() => crate::goals::changes::propose_add(
-                root,
-                request,
-                revision,
-                str_arg(args, "text").ok_or("goal add proposal needs text")?,
-            )?,
-            "propose_close" if args.get("text").is_none() => crate::goals::changes::propose_close(
-                root,
-                request,
-                revision,
-                str_arg(args, "goal").ok_or("goal close proposal needs exact goal id")?,
-            )?,
-            _ => return Err("unsupported goal action or incompatible arguments".into()),
-        };
-        if let Some(status) = crate::goals::changes::existing_status(root, &proposal)? {
-            return Ok(status);
-        }
-        record_pending(
-            root,
-            request,
-            &serde_json::to_vec(&proposal).map_err(|_| "goal proposal serialization failed")?,
-        )?;
-        return Ok(json!({"status":"proposal_recorded","request_id":request,"goal":proposal.goal_id(),"revision":proposal.observed_revision,"approval":"local user must review and approve; no goal changed","requesting_actor":"unverified MCP client"}).to_string());
-    }
-    if args.get("text").is_some() || args.get("request_id").is_some() {
-        return Err("goal reads do not take proposal fields".into());
-    }
-    if args.get("offset").is_some_and(|offset| !offset.is_u64())
-        || args
-            .get("revision")
-            .is_some_and(|revision| !revision.is_string())
-    {
-        return Err("goal cursor needs a nonnegative offset and string revision".into());
-    }
-    let offset = uint_arg(args, "offset").unwrap_or(0);
-    let revision = str_arg(args, "revision");
-    let value = if let Some(goal) = str_arg(args, "goal") {
-        if goal.is_empty() || goal.len() > 128 {
-            return Err("invalid goal id".into());
-        }
-        let workspace =
-            str_arg(args, "workspace").ok_or("goal/source reads need the exact workspace")?;
-        crate::native_memory::relations::list(
-            root,
-            Some(Path::new(workspace)),
-            Some(goal),
-            offset,
-            revision,
-        )?
-    } else {
-        if args.get("goal").is_some() || args.get("workspace").is_some() {
-            return Err("workspace is used only with a goal id".into());
-        }
-        crate::native_memory::relations::goals(root, offset, revision)?
-    };
-    serde_json::to_string(&value).map_err(|e| e.to_string())
-}
-
 fn tool_memory(root: &Path, args: &Value, scope: &Scope) -> Result<String, String> {
     let object = args.as_object().ok_or("memory needs an object")?;
     let action = str_arg(args, "action").ok_or("memory needs an action")?;
@@ -354,8 +252,6 @@ fn tool_memory(root: &Path, args: &Value, scope: &Scope) -> Result<String, Strin
             "file",
         ],
         "files" => &["action", "source", "offset", "revision"],
-        "groups" => &["action", "workspace", "offset", "revision"],
-        "members" => &["action", "group", "offset", "revision"],
         _ => return Err("unsupported read-only memory action".into()),
     };
     for (key, value) in object {
@@ -376,7 +272,7 @@ fn tool_memory(root: &Path, args: &Value, scope: &Scope) -> Result<String, Strin
     };
     let offset = uint_arg(args, "offset").unwrap_or(0);
     let revision = str_arg(args, "revision");
-    if !scope.unrestricted && matches!(action, "files" | "groups" | "members") {
+    if !scope.unrestricted && matches!(action, "files") {
         return Err("this memory read is unavailable through scoped MCP".into());
     }
     if !scope.unrestricted {
@@ -412,40 +308,6 @@ fn tool_memory(root: &Path, args: &Value, scope: &Scope) -> Result<String, Strin
             },
         )?)
         .map_err(|error| error.to_string())?,
-        "ranked" => serde_json::to_value(crate::native_memory::rank::recall(
-            root,
-            crate::native_memory::rank::Request {
-                text: required("query")?,
-                source: str_arg(args, "source"),
-                account: if scope.unrestricted {
-                    str_arg(args, "account")
-                } else {
-                    Some(&scope.account)
-                },
-                workspace: if scope.unrestricted {
-                    str_arg(args, "workspace").map(Path::new)
-                } else {
-                    Some(&scope.workspace)
-                },
-                goal: str_arg(args, "goal"),
-                file: str_arg(args, "file"),
-                from: None,
-                at: None,
-            },
-        )?)
-        .map_err(|error| error.to_string())?,
-        "groups" => crate::native_memory::relations::groups::list(
-            root,
-            Path::new(required("workspace")?),
-            offset,
-            revision,
-        )?,
-        "members" => crate::native_memory::relations::groups::members(
-            root,
-            required("group")?,
-            offset,
-            revision,
-        )?,
         "files" => {
             let mut argv = vec!["file-facts".into(), required("source")?.to_owned()];
             if offset != 0 || revision.is_some() {
@@ -825,7 +687,6 @@ pub struct Proposal {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(untagged)]
 pub enum PendingProposal {
-    Goal(crate::goals::changes::Proposal),
     Delegate(Proposal),
 }
 
@@ -935,15 +796,12 @@ pub fn take_proposals(state_root: &Path) -> Vec<Proposal> {
     .into_iter()
     .filter_map(|proposal| match proposal {
         PendingProposal::Delegate(proposal) => Some(proposal),
-        _ => None,
     })
     .collect()
 }
 
-pub fn take_pending(state_root: &Path, delegates: bool, limit: usize) -> Vec<PendingProposal> {
-    take_selected(state_root, limit.min(MAX_PENDING_PROPOSALS), |proposal| {
-        delegates || matches!(proposal, PendingProposal::Goal(_))
-    })
+pub fn take_pending(state_root: &Path, _delegates: bool, limit: usize) -> Vec<PendingProposal> {
+    take_selected(state_root, limit.min(MAX_PENDING_PROPOSALS), |_| true)
 }
 
 fn take_selected(
@@ -987,9 +845,6 @@ fn take_selected(
                     return None;
                 }
                 let proposal: PendingProposal = serde_json::from_slice(&bytes).ok()?;
-                if matches!(&proposal, PendingProposal::Goal(goal) if goal.validate().is_err()) {
-                    return None;
-                }
                 Some(proposal)
             })
             .flatten();
@@ -1574,108 +1429,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn delegate_and_goal_tools_only_write_reviewable_proposals() {
-        let d = tempfile::tempdir().unwrap();
-        let (m, err) = tool(d.path(), "delegate", json!({"to":"codex-2","task":"t"}));
-        assert!(err && m.contains("delegation is off"));
-        assert!(
-            !proposals_dir(d.path()).exists(),
-            "nothing is written while delegation is off"
-        );
-        crate::store::set_delegation_protocol(d.path(), true).unwrap();
-        let (m, err) = tool(
-            d.path(),
-            "delegate",
-            json!({"to":"codex-2","task":"run the tests","from_thread":"3f9a"}),
-        );
-        assert!(!err && m.contains("the user must approve"));
-        let files: Vec<_> = std::fs::read_dir(proposals_dir(d.path()))
-            .unwrap()
-            .flatten()
-            .filter(|file| {
-                file.path()
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-            })
-            .collect();
-        assert_eq!(files.len(), 1);
-        let p: Proposal =
-            serde_json::from_str(&std::fs::read_to_string(files[0].path()).unwrap()).unwrap();
-        assert_eq!(
-            p,
-            Proposal {
-                to: "codex-2".into(),
-                task: "run the tests".into(),
-                from_thread: "3f9a".into()
-            }
-        );
-        assert!(has_proposals(d.path()));
-        assert_eq!(take_proposals(d.path()), vec![p]);
-        assert!(!has_proposals(d.path()), "taken proposals are consumed");
-        let (_, err) = tool(d.path(), "delegate", json!({"to":"x"}));
-        assert!(err);
-        let (m, err) = tool(
-            d.path(),
-            "delegate",
-            json!({"to":"x","task":"y".repeat(5000)}),
-        );
-        assert!(err && m.contains("longer"));
-        crate::store::set_delegation_protocol(d.path(), false).unwrap();
-        let request = uuid::Uuid::new_v4().to_string();
-        let revision = crate::goals::revision(&[]).unwrap();
-        let arguments = json!({"action":"propose_add","request_id":request,"revision":revision,"text":"Goal proposed through MCP"});
-        let (proposed, error) = tool(d.path(), "goals", arguments.clone());
-        assert!(!error, "{proposed}");
-        assert!(proposed.contains("proposal_recorded"));
-        assert!(
-            !d.path().join("goals.json").exists(),
-            "MCP cannot mutate goals directly"
-        );
-        assert_eq!(pending_proposal_files(d.path()).len(), 1);
-        assert!(!tool(d.path(), "goals", arguments.clone()).1);
-        assert_eq!(
-            pending_proposal_files(d.path()).len(),
-            1,
-            "same request does not duplicate pending work"
-        );
-        assert!(
-            take_proposals(d.path()).is_empty(),
-            "legacy delegate-only consumers leave goal proposals untouched"
-        );
-        let pending = take_pending(d.path(), false, 1);
-        let [PendingProposal::Goal(goal)] = pending.as_slice() else {
-            panic!("typed goal proposal expected");
-        };
-        assert!(crate::goals::read_goals(d.path()).unwrap().is_empty());
-        let mut forged = arguments.clone();
-        forged["actor"] = json!("verified native agent");
-        assert!(tool(d.path(), "goals", forged).1);
-        assert!(
-            tool(
-                d.path(),
-                "goals",
-                json!({"action":"apply","request_id":request,"revision":revision})
-            )
-            .1
-        );
-        crate::goals::changes::apply(d.path(), goal).unwrap();
-        assert_eq!(crate::goals::read_goals(d.path()).unwrap().len(), 1);
-        let (repeated, error) = tool(d.path(), "goals", arguments);
-        assert!(!error && repeated.contains("applied"));
-        assert!(
-            pending_proposal_files(d.path()).is_empty(),
-            "resolved request never requeues itself"
-        );
-        let (status, error) = tool(
-            d.path(),
-            "goals",
-            json!({"action":"status","request_id":request}),
-        );
-        assert!(!error && status.contains("unverified MCP client"));
-        let current = crate::goals::revision(&crate::goals::read_goals(d.path()).unwrap()).unwrap();
-        assert!(tool(d.path(), "goals", json!({"action":"propose_add","request_id":uuid::Uuid::new_v4().to_string(),"revision":current,"text":"x".repeat(513)})).1);
-    }
+    
 
     #[test]
     fn too_many_pending_proposals_are_refused() {
@@ -1779,3 +1533,5 @@ mod tests {
         }));
     }
 }
+
+

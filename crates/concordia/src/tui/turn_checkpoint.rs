@@ -39,7 +39,7 @@ impl App {
                     &binding,
                     &self.cwd,
                 ) {
-                    self.flash(format!("source relationship could not be saved: {error}"));
+                    self.flash(format!("source handoff could not be saved: {error}"));
                 }
             }
             self.native_sources.push(binding);

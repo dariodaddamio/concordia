@@ -241,15 +241,11 @@ fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
         !screen.contains("chat third"),
         "collapsed groups hide their chats"
     );
-    assert!(screen.contains(" goals "));
     assert!(
         screen.contains("Enter open chat · F6 related work · Tab goals · Esc chat"),
         "{screen}"
     );
     h.app.editor.set_text("keep the landing draft");
-    h.key(KeyCode::F(6), KeyModifiers::NONE);
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Related);
-    h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(landing::visible(&h.app));
     assert_eq!(h.app.editor.text(), "keep the landing draft");
     assert!(h.screen().contains(&format!("▾ {folder} (2)")));
@@ -319,24 +315,7 @@ fn a_double_click_opens_a_chat_and_a_single_click_selects_it() {
     assert!(h.screen().contains("resume failed"));
 }
 
-#[test]
-fn goals_are_added_kept_and_marked_done() {
-    let mut h = landing_harness();
-    h.key(KeyCode::Tab, KeyModifiers::NONE);
-    assert!(h.screen().contains("a add goal"));
-    h.type_str("aship it");
-    h.enter();
-    assert!(h.screen().contains("○ ship it"), "{}", h.screen());
-    let saved = landing::load_goals(&h.app.state_root);
-    assert_eq!(saved.len(), 1);
-    assert!(!saved[0].done);
 
-    h.enter();
-    assert!(h.screen().contains("Mark done? Enter yes · Esc no"));
-    h.enter();
-    assert!(!h.screen().contains("ship it"));
-    assert!(landing::load_goals(&h.app.state_root)[0].done);
-}
 
 #[test]
 fn open_work_comes_from_the_connected_harness() {
@@ -798,3 +777,9 @@ fn message_wheel_scrolls_the_draft_without_moving_caret_or_transcript() {
         "editing restores caret following"
     );
 }
+
+
+
+
+
+

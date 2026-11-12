@@ -69,7 +69,7 @@ const CLI_HELP: &[CommandSpec] = &[
     CommandSpec {
         name: "chat",
         aliases: &[],
-        args: "list|read|search|index|sources|excerpt|recall|lineage|link|detach",
+        args: "list|read|search|index|sources|excerpt|recall",
         help: "bounded native CLI chats and history pointers",
         command: Command::Chat,
     },

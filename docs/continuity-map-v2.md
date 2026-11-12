@@ -28,7 +28,7 @@ instruction before shortening user intent when that budget can fit both lines.
 ## Pinned spans
 
 When a verified native reference is appended to a thread, its exact plaintext projection is
-written, after `crate::redact`, to the thread's `.pins.jsonl` journal. Pins contain provider,
+written to the thread journal. References contain provider,
 account, native session id, role, and ordinal metadata, plus a bounded local redacted excerpt.
 The journal retains at most 128 spans and 256 KiB, removing
 the oldest ordinal first. Current journal reads verify the native-backed record; unavailable or
@@ -36,4 +36,4 @@ stale sources produce an explicit gap. Pins are retained independently, not used
 replacement for failed native verification. No session is guessed or resumed with `--last`.
 
 Pinning is local and bounded. Provider transcript files remain authoritative for native history,
-and redaction happens before either the journal record or pin is written.
+and redaction happens before the journal record is written.

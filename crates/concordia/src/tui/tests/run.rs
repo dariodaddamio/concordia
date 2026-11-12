@@ -801,34 +801,10 @@ fn landing_chats_wrap_up_and_down() {
     );
 }
 
-#[test]
-fn landing_goals_wrap_in_both_directions() {
-    let mut h = landing_harness();
-    let goals: Vec<_> = ["first goal", "last goal"]
-        .iter()
-        .enumerate()
-        .map(|(i, text)| landing::Goal {
-            id: format!("goal-{i}"),
-            text: text.to_string(),
-            done: false,
-            added_at: "fixture".into(),
-            closed_at: None,
-            ..Default::default()
-        })
-        .collect();
-    landing::save_goals(&h.app.state_root, &goals).unwrap();
-    let here = h.app.cwd.clone();
-    landing::open_with(
-        &mut h.app,
-        vec![landing_session("acct-x", &here, "first", 1)],
-        None,
-    );
-    h.key(KeyCode::Tab, KeyModifiers::NONE);
-    h.key(KeyCode::Up, KeyModifiers::NONE);
-    h.key(KeyCode::Down, KeyModifiers::NONE);
-    h.enter();
-    h.enter();
-    let saved = landing::load_goals(&h.app.state_root);
-    assert!(saved[0].done);
-    assert!(!saved[1].done);
-}
+
+
+
+
+
+
+

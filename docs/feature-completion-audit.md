@@ -44,7 +44,7 @@ See [E2E status](e2e-status.md) for the exact checks and retained limitations.
    request 18 used the wrong source ordinal and remains invalid; corrected request 19 passed.
    The owner doubled the subscription-only cap to 36. After the broker/PDF checks, 34 requests
    are consumed and two remain, with no automatic retries or account switches.
-   [Evidence](quality/memory-evaluation.md).
+   [Evidence](native-memory.md).
 6. **Native filesystem confinement — deferred by owner:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer
    [mechanism prototype](quality/windows-write-guard-research.md) passes file/crypto/network/cancel
@@ -118,7 +118,7 @@ creation does not change the implementation status recorded here.
 
 - Agent-facing goal add/close proposals share the existing local review queue and goal store.
   Full-text F7/Y/N review, revision-bound receipts and source attribution preserve drafts,
-  monotonic completion and no-replay recovery. [Scope](quality/goal-proposals.md).
+  monotonic completion and no-replay recovery. Goals are no longer a Concordia feature.
 
 - Managed cross-worktree dependencies wait for explicit result-only or already-integrated
   receipts, with source/repository revalidation and retirement references. [Scope](quality/dependency-delivery.md).
@@ -158,17 +158,17 @@ creation does not change the implementation status recorded here.
 
 - A versioned synthetic retrieval corpus and provider-free collector measure scoped relevance,
   exact excerpt resolution, visible gaps, read cost and resource observations through existing
-  checks. [Evidence and live smoke](quality/memory-evaluation.md) now include a bounded three-arm
+  checks. The removed evaluation corpus is no longer part of the shipped memory surface.
   native comparison; blocked pointer fetches leave effectiveness unqualified. Ranking stays opt-in.
 
 - Explicit related-chat groups retain overlapping membership and provenance. A separate discovery
   screen preserves drafts and landing selection, with cross-project context suggestions labelled.
-  [Behavior and evidence](quality/related-chat-groups.md). Synthetic corpus evidence is recorded;
+  Related-chat groups are no longer part of the shipped memory surface.
   live model-retention experiments remain separately budgeted.
 
 - Opt-in ranking explains verified goal/handoff/file/text/time signals with exact native
   pointers. Historical file facts never read the referenced files or claim an edit completed.
-  [Behavior and evidence](quality/memory-ranking.md). Synthetic corpus evidence is recorded;
+  Ranking and evaluation extras are no longer part of the shipped memory surface.
   lexical recall remains the default.
 
 - Explicit managed Git worktrees bind a clean committed base, repository, owner/execution
@@ -196,7 +196,7 @@ creation does not change the implementation status recorded here.
 - Explicit goal/source associations reuse the existing goal store, verified native pointers and
   one bounded relationship service. CLI/TUI link mutation is explicit; MCP source links remain
   read-only while goal add/close changes use locally approved proposals.
-  See [association evidence and limits](quality/goal-source-associations.md).
+  See [native source bounds and evidence](native-memory.md).
 
 - Approved shared-workspace dependencies now dispatch through the existing durable worker queue.
   `/delegate after ID[,ID] ACCOUNT TASK` binds exact runs; `/delegate graph` explains readiness.

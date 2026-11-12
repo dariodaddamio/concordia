@@ -109,8 +109,6 @@ mod tests {
 
     #[test]
     fn typing_narrows_by_prefix_case_insensitively() {
-        assert_eq!(cmds("/mem"), ["/memory"]);
-        assert!(cmds("/").iter().any(|cmd| cmd == "/memory"));
         assert_eq!(cmds("/up"), ["/update"]);
         assert_eq!(cmds("/UP"), ["/update"]);
         assert_eq!(cmds("/use a"), Vec::<&str>::new());

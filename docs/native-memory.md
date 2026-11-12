@@ -1,286 +1,30 @@
-# Native source pointers and continuity limits
+# Native source memory
 
-## Reference-backed recording and recall (2026-11-04r)
+Concordia keeps a bounded, local index of provider-owned session sources. It stores source identity,
+byte ranges, hashes and metadata, not copied conversation bodies. Providers retain authentication,
+sessions, tools and approvals.
 
-New optional thread records store metadata and verified native references instead of message/tool
-bodies. Persistent composer recall writes `history.refs.jsonl`; legacy `history.jsonl` and old
-thread logs remain readable without rewriting or migrating them. Drafts, queues and unfinished
-recovery still preserve the input needed to avoid losing work.
+## CLI
 
-Capture binds provider, registered account home, exact native session, source identity, byte ranges
-and hashes. A pre-dispatch watermark excludes older matching messages. Completed ranges seal before
-the following turn, so later identical prompts cannot make an earlier reference ambiguous. Original
-composer text is projected from its verified full native input, preserving whitespace and Unicode;
-time, continuity and referenced-chat context are not inserted into recalled prompts.
+Use the explicit native source commands through `concordia chat`:
 
-One ordered background writer commits recording and recall. The unfinished-turn checkpoint is
-cleared only after successful durable persistence and confirmed process/scope closure. Unavailable
-or ambiguous bindings produce fixed unavailable metadata, without a transcript-copy fallback.
-Hydration never guesses another session or reads encrypted reasoning as text.
+- `concordia chat index SESSION --account ID --provider codex|claude|cursor`
+- `concordia chat sources INDEX [--from-message N --limit N]`
+- `concordia chat excerpt INDEX --message N [--offset N --max-bytes N]`
+- `concordia chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR]`
 
-Completed, collected worker tasks use references only when the exact original task and prompt can
-be verified. Ordered image/PDF snapshot descriptors reconstruct envelopes, with byte validation
-before retry. Changed or missing snapshots disable retry. Legacy, pending, uncertain and unbindable
-worker recovery is preserved. This is a conditional storage boundary, not a claim that every owned
-state file contains no bodies.
+Search is bounded lexical retrieval. Exact source readback reopens and verifies the native source
+before returning the requested UTF-8 range. Handoff maps retain explicit provider/account/session
+identity and observed transitions; they do not infer provider ancestry.
 
-Build `2026-11-05b` separates completed capture from the small interactive index. Its versioned,
-body-free manifests stream up to 256 MiB per turn, 64 MiB per record and 8,192 recognized records;
-metadata is capped at 2 MiB and plaintext/raw-tool projections at 1 MiB. Attachment/base64 payloads
-and irrelevant fields are skipped without materializing them as transcript bodies. Capture seals
-before another turn, preserves old reference compatibility and validates selected source hashes
-on hydration. The ordinary recent index keeps its 8 MiB/128-record/256 KiB limits.
+## Pointer failures
 
-These are finite bounds, not an unbounded archive: exceeding them retains protected recovery and
-explicit availability gaps. Legacy originals and pending/uncertain recovery remain intentional
-retention exceptions, not silently discarded input.
+A pointer is unavailable when the source was deleted or moved, replaced or truncated, its indexed
+range was rewritten, its original header changed, the account home changed, or a record is too
+large. The error reports the specific cause and includes the observed time when the native source
+metadata provides one. Concordia does not substitute another chat or invent missing content.
 
-## Journal and projection budgets (2026-11-08f)
+Goals, goal/source relations, groups, ranking, evaluation corpora, manual links and `/memory` have
+been removed. Objectives belong in chats, repository files or the user's own tracker. Plain search
+remains reachable through `concordia chat`.
 
-Native originals remain authoritative. Optional journal reads use at most 8 MiB/256 records per
-page, with exact next-page cursors and original event ordinals. `thread read ID --cursor TOKEN`
-and MCP `thread_read` share that reader. Tail selection streams with a finite scan budget and
-reports partial coverage; maps label an incomplete first page instead of claiming a whole log.
-Explicit read-all has a 32 MiB/4,096-event budget and errors rather than silently truncating.
-
-Pending reference projections retain the first user event and recent events under 256 records/
-4 MiB, recording `projection_omitted` plus a UI notice when older display projections do not fit.
-The source capture remains separate. Protected unfinished recovery is retained if exact source
-verification fails. Recovery records have a 32 MiB read/write budget; oversized originals stay
-visible and untouched. Store mutations use an OS-held lock and show checked read failures.
-The account/settings store also has a 32 MiB complete-read/write bound: oversized or unsupported
-originals remain intact and mutations fail visibly. The bound never removes records to make them fit.
-
-`sessions prune --empty` is a non-destructive report. Concordia cannot prove a native writer is
-quiescent, so it never deletes provider-owned chat files through this command.
-
-## Explicit legacy migration
-
-Old thread logs and `history.jsonl` lack reliable native session identities. Migration therefore
-requires a chosen verified native source; titles, timestamps and the newest chat cannot supply one.
-For example:
-
-```text
-concordia thread migrate preview THREAD_ID --source NATIVE_INDEX_ID
-concordia thread migrate preview history --source NATIVE_INDEX_ID --from-line 1
-concordia thread migrate apply PLAN_ID
-concordia thread migrate status PLAN_ID
-```
-
-Each preview attempts at most 64 eligible rows and returns a continuation line when needed.
-The target is capped at 16 MiB and plan metadata at 4 MiB. Existing converted rows are skipped;
-unmatched batches can continue with the returned `--from-line` value.
-The agent-facing `concordia thread migrate` interface previews a body-free, revision-bound plan,
-applies only unique exact user/assistant matches, and reports transaction status. Unsupported,
-ambiguous, malformed and tool-detail rows remain untouched; native tool IDs are never guessed.
-
-Applying preserves the original bytes in an immutable backup outside the active thread catalog.
-It rechecks target/native references under the existing writer lock, records preparation and
-atomically replaces the active file. Repeated status/reconciliation distinguishes applied,
-unapplied and conflicting changes without replaying uncertain work. Migrated prompt rows replace
-their corresponding original rows, retaining order and attachment envelopes rather than appending
-duplicate recall. Backups still contain legacy bodies; this is not a global no-bodies-on-disk claim.
-
-Startup recall reads/hydrates legacy and migrated rows on a background worker. It retains at most
-500 valid entries from a bounded 16 MiB tail, with a 2 MiB per-line and 16 MiB hydrated-text limit, and reports unavailable
-or omitted data. Existing bytes stay untouched, while prompts sent during loading stay newest.
-
-## Goals and source relationships
-
-`/memory goals` lists existing goals and stable IDs. `/memory goal-link GOAL SOURCE` confirms an
-association with a verified native source pointer in the current workspace. `/memory goal-sources
-GOAL` lists its associations; `/memory goal-unlink GOAL SOURCE` detaches one without deleting the
-goal, source or earlier provenance. Closing a goal keeps its associations.
-
-The same commands are available through `concordia chat` using its current directory as workspace.
-Later pages use `OFFSET REVISION` from the preceding response. A changed revision requires a new
-listing. Goal text previews indicate truncation. Source metadata is not a current availability
-claim: use exact native source readback to verify the original. MCP exposes reads only.
-See [bounds and evidence](quality/goal-source-associations.md).
-
-`/context` shows the policy for the selected account/home. `/context rollover 80` enables
-between-turn proactive rollover at 80% of Codex's reported context window (allowed range 50–95).
-`/context rollover off` disables it. The reader accepts native `event_msg/token_count` records only
-when `last_token_usage.total_tokens`, `model_context_window` and the selected native `turn_context`
-model and exact turn id are present. Cumulative billed usage is ignored. Every new turn, including
-the same model, and compaction/model changes invalidate prior measurements. Missing, malformed,
-changing or unsupported signals stay unknown with a reason. Notices expose account/session/turn,
-model and source revision; [capacity evidence](quality/capacity-provenance.md) records the contract.
-This is a tested native-log
-adapter, not a guarantee that every CLI version writes these records. Claude/Cursor proactive
-capacity is unavailable until a supported, verified signal exists.
-
-An enabled rollover starts a fresh native session before the next submitted turn, carries the
-bounded continuity pack, verifies original source pointers, preserves native pinned-decision
-delivery, and checks cancellation before provider launch. No in-flight task is interrupted or
-replayed. Failed source verification stops the launch. The usual explicit capacity-error recovery
-remains separate. The threshold is a policy against the last native measurement; it cannot predict
-the token size of the next prompt, tools or native compaction performed by another process.
-
-`/context compact tokens N` sets Codex's documented `model_auto_compact_token_limit` for future
-Concordia turns through `-c`; `/context compact automatic-off` sets Claude's documented
-`DISABLE_AUTO_COMPACT=1` in that child process only. Unsupported provider/control combinations are
-rejected. `/context compact native` restores inherited native behavior. Defaults remain native.
-No provider config or authentication files are edited. Policy lives under Concordia state and is
-bound to the canonical account home. These controls have fixture validation; no real model turns
-were run. Sources: [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
-[Claude environment variables](https://code.claude.com/docs/en/env-vars).
-
-`/memory` opens its command guide. `/memory recall TEXT` searches this workspace across at most
-eight recent native source windows; `/memory recall-account ACCOUNT TEXT` restricts discovery.
-Search never spends inference tokens. Results carry exact index/message references and are
-labelled lexical suggestions. Twelve hits, eight source windows (8 MiB each), and the existing
-native discovery budgets bound one request. Incomplete scans are explicit; no claim of exhaustive
-recall is made. Broad discovery skips Cursor replay; explicitly indexed Cursor pages are searchable.
-
-CLI `chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR]` returns JSON. `--source`
-searches any verified recent or whole-history page. `/memory recall-source INDEX TEXT` exposes the
-same page search in the TUI. Advance a whole-history page with `/memory next INDEX`, then search
-the returned page. `/memory index SESSION --account ID --scope whole` starts the scan. Exact excerpts use `/memory excerpt INDEX
---message N`; continue UTF-8 chunks using `next_offset`. Source changes withhold results.
-
-`/memory link PARENT CHILD` confirms a relationship between two verified index pointers;
-`/memory detach PARENT CHILD` removes it. `/memory lineage INDEX` shows confirmed links separately
-from observed Concordia context handoffs. Observed handoffs store explicit account/home/session and
-workspace identities only, verify both sources on readback, and never claim provider-native ancestry.
-No transcript bodies or search queries are stored by retrieval or lineage. New conversations discard
-late display results; background reads remain bounded. Cross-workspace discovery is available through
-the CLI without `--workspace`.
-
-Build `2026-10-31s` adds a bounded pointer index for Codex and Claude JSONL sessions. It works
-with Concordia transcript recording off. Build `2026-11-02f` also reads Cursor histories through
-the provider's supported ACP history replay; unsupported capabilities report unavailable rather
-than guessing a source or database format.
-
-## Identity and exact readback
-
-Build `2026-11-02e` adds forward whole-history scans. Existing recent-window indexes and pointers
-remain compatible. Each operation reads a bounded page and persists ranges/hashes, not text:
-
-```text
-concordia chat index SESSION --account ACCOUNT --provider codex --scope whole
-concordia chat index SESSION --account ACCOUNT --provider codex --scope whole --cursor PREVIOUS_INDEX
-concordia chat sources INDEX --from-message NEXT_ORDINAL --limit 20
-```
-
-Follow `history.next_cursor` until it is null. Each scan page contains at most 128 records and
-8 MiB of source bytes; continuation also verifies the preceding page. The initial source length
-stays fixed during pagination, so appends cannot shift ordinals or silently extend the scan.
-`history.complete` is true only at the snapshot end with no skipped records. Oversized records
-that exceed a scan page and malformed JSON are explicitly counted in `skipped_records`;
-these scans do not claim complete readback. Cursors still advance across oversized records.
-Whole-history records up to 8 MiB can be read through the same bounded UTF-8 excerpt API.
-
-`native_read` accepts `from_message` and `limit` for range listings. `{ "id": INDEX, "history": true }`
-starts whole-history indexing from a recent pointer, or follows the next page from a history pointer.
-Message ordinals are global within that history snapshot; each returned page names its first ordinal.
-No provider process or inference call is used for these Codex/Claude file operations.
-
-Every saved index binds the provider, registered account, canonical home, explicit native session,
-relative session-file path, OS file identity, captured file length, SHA-256 of a bounded header,
-and the byte range/hash of each indexed event. The index ID is a SHA-256 of this metadata.
-It stores roles and pointers, not conversation bodies, under `<state>/.ao/native-memory/`.
-
-Discovery uses the existing bounded native-session resolver and verifies the exact session in its
-header. Identity verification reads at most the first 1 MiB; the compatible freshness anchor
-remains 64 KiB. Indexing reads at most the last 8 MiB, retaining up to 128 recent message
-or tool events, with at most 256 KiB per event. Truncated/malformed/skipped data is reported.
-This first slice is a recent-window index, not a claim to index every event in an unlimited log.
-
-```
-concordia chat index SESSION --account ACCOUNT --provider codex
-concordia chat sources INDEX_ID
-concordia chat excerpt INDEX_ID --message 1 --max-bytes 4096
-concordia chat excerpt INDEX_ID --message 1 --offset NEXT_OFFSET --max-bytes 4096
-```
-
-Use `claude` for a Claude source. IDs are exact; there is no newest-chat or same-name fallback.
-`sources` lists up to 20 range descriptors and the total indexed count; any indexed ordinal can
-be read directly. Excerpts return exact UTF-8 native JSONL bytes in a JSON `raw` string, with a
-half-open byte range and `next_offset` when another chunk is needed. Chunk boundaries never split
-UTF-8. Defaults are 4096 bytes per excerpt, maximum 8192; serialized responses are capped at 16000
-characters. The optional MCP tool `native_read` uses the same implementation: omit `message` to
-list ranges, or supply `id`, `message`, `offset` and `max_bytes` for a chunk.
-
-An append preserves existing pointers. Changed account/home bindings, moved/deleted files,
-replacement (even identical bytes), truncation, changed header or changed indexed range fail
-visibly. Compaction that leaves the original bytes in place does not invalidate exact originals;
-a rewrite that changes them does. No credentials or unrelated project files are indexed, and
-provider-owned logs are never edited. Exact source readback can contain material the user or
-provider previously wrote into that session; it is not a redacted summary.
-
-## Handoff and restart
-
-### Cursor protocol sources
-
-Cursor pointers use `native_protocol: "acp/session.load"` and `file: "acp-history"`. Their bytes
-are the provider's original replay notifications, not a claim to read an undocumented local
-JSONL file. The selected account's canonical config home is passed through documented
-`CURSOR_CONFIG_DIR`; inherited API-key/token variables are removed. Concordia neither copies
-credentials nor starts login. The provider remains responsible for its own authentication.
-
-The reader requires native `loadSession` capability and existing exact session/workspace metadata.
-It sends only `initialize` and `session/load`, with no new session, model prompt, mode change or
-MCP server supplied by Concordia. Tool/client requests are rejected. A tracked process guard,
-25-second replay timeout, 1 MiB frame bound and 16 MiB wire budget bound the read; larger replays
-report unavailable instead of returning an incomplete history as complete. No replay body is
-persisted. Fresh replay revalidates pointer prefixes/ranges; changed content fails stale.
-
-`chat index|sources|excerpt`, MCP native reads, `chat read`, and resume scrollback share this
-transport. UI display keeps its existing 200-message/1 MiB text budget and sanitizes terminal
-controls. Unsupported native versions, missing workspace metadata and authentication errors
-remain explicit. Fixture validation does not establish live-provider compatibility for every version.
-
-Sources: [Cursor ACP](https://cursor.com/docs/cli/acp),
-[Cursor config homes](https://cursor.com/docs/cli/reference/configuration),
-[ACP load/replay contract](https://agentclientprotocol.com/protocol/v1/session-setup).
-
-After a switch/continuation, a cancellable preparation step indexes up to three distinct recent
-native sources. The next provider receives a bounded directory of pointer IDs and readback
-instructions alongside the existing map and original request. Native session/tool/approval state
-stays with its account. Pointer preparation adds no model call. Source failures are shown; they
-do not select another chat silently. Native resume omits this extra directory.
-
-A pane-owned `turn.json` saves the unfinished request, run ID, workspace, title, source bindings,
-tried targets and rollover count. This is request recovery, not a copied conversation transcript.
-It shares the pane's existing OS ownership lock but is separate from the draft and queue. It is
-written before dispatch and cleared after success or acknowledged cancellation. A failed initial
-save prevents dispatch and preserves the draft. Later save failures remain visible.
-
-After restart, the request and its exact source identities are restored paused. A newer draft and
-queued work remain separate. No provider turn, account switch or uncertain tool replay occurs
-on restore. `/continue` reviews the original request and opens target choices; `/use` also has a
-continue row. `/continue ACCOUNT [MODEL]` explicitly starts a fresh native session, even on the
-same account after restart. Save/clear a different newer draft before continuing. `/new` explicitly
-starts over. Existing logs and recovery records are preserved.
-
-## Context capacity
-
-Quota failures may use the configured account/model order. An explicit terminal provider capacity
-failure (`context_length_exceeded`, `context_window_exceeded`, or the recognized maximum-context
-error text) can instead start one fresh native session on the same account. It retains the original
-request and source directory. A second capacity failure pauses for explicit choice. Drafts, active
-edits/modals/jobs and unfinished/error tool states still block automatic continuation. A pending
-cancel wins even if the provider's failure arrived first.
-
-This reactive capacity-error recovery is separate from the opt-in between-turn `/context` policy
-described above. Cumulative billed tokens are never treated as context size; unknown capacity stays
-unknown. Native compaction defaults are preserved unless explicitly overridden per process.
-
-## Pinned decisions
-
-An explicitly connected **file-backed** Harness manifest may declare `pinned_decisions`, an array
-of up to 16 exact strings totaling at most 4096 UTF-8 bytes. All provider launch paths, including
-workers, deliver matching rules verbatim once when starting a new native session. The binding is
-provider/home/project specific. Duplicate identical rules from connected harnesses are delivered
-once. A changed/unavailable pinned manifest blocks the new-session launch until reconnected;
-its recorded SHA-256 must match. Command-backed manifest pins are not supported in this slice.
-No Harness command is run automatically to fetch rules, and no provider-home instructions are
-rewritten for this feature. Existing connections without pins keep their behavior.
-
-## File previews
-
-In a focused file pane, `/` starts case-insensitive search, Enter leaves the query active, and
-`n`/`N` move between matching rows. `r` reloads that pane asynchronously, preserving its identity,
-view mode and chat draft. Background metadata checks show `changed on disk`; content is not
-silently reloaded. Metadata checks are an indicator, not a full content integrity guarantee.

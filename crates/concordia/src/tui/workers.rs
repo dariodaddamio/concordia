@@ -117,7 +117,7 @@ struct Confirm {
     /// When it became the front prompt. A bare y/n only answers after `ARM_AFTER`, so type-ahead
     /// that happens to start with y or n can never approve or decline by accident.
     since: Instant,
-    goal: Option<crate::goals::changes::Proposal>,
+    goal: Option<()>,
     goal_armed: std::cell::Cell<bool>,
     goal_visible: std::cell::Cell<bool>,
     goal_draft_revision: std::cell::Cell<u64>,
@@ -352,7 +352,7 @@ fn draw_confirm(f: &mut Frame, over: Rect, app: &App, c: &Confirm) {
             "F7 focuses goal review; your message draft is preserved."
         };
         let rows = wrap_plain(
-            &format!("{}\n{prompt}", goal.description()),
+            &format!("{prompt}"),
             over.width.saturating_sub(4) as usize,
         );
         let full = rows.len().saturating_add(2) <= over.height as usize;
@@ -1181,37 +1181,6 @@ impl App {
                         }
                     }
                 }
-                crate::mcp::PendingProposal::Goal(proposal) => {
-                    if self.deleg.confirms.iter().any(|confirm| {
-                        confirm
-                            .goal
-                            .as_ref()
-                            .is_some_and(|goal| goal.request_id == proposal.request_id)
-                    }) {
-                        continue;
-                    }
-                    match crate::goals::changes::existing_status(&self.state_root, &proposal) {
-                        Ok(Some(status)) => {
-                            self.push_system(status);
-                            continue;
-                        }
-                        Err(error) => {
-                            self.push_system(format!("Goal proposal unavailable: {error}"));
-                            continue;
-                        }
-                        Ok(None) => {}
-                    }
-                    super::landing::close(self);
-                    self.deleg.confirms.push_back(Confirm {
-                        to: "goals".into(),
-                        task: proposal.description(),
-                        since: Instant::now(),
-                        goal: Some(proposal),
-                        goal_armed: std::cell::Cell::new(false),
-                        goal_visible: std::cell::Cell::new(false),
-                        goal_draft_revision: std::cell::Cell::new(0),
-                    });
-                }
             }
         }
         changed
@@ -1257,17 +1226,6 @@ impl App {
             next.since = Instant::now();
             next.goal_armed.set(false);
             next.goal_visible.set(false);
-        }
-        if let Some(goal) = c.goal {
-            let result = if yes {
-                crate::goals::changes::apply(&self.state_root, &goal)
-            } else {
-                crate::goals::changes::decline(&self.state_root, &goal)
-            };
-            self.push_system(
-                result.unwrap_or_else(|error| format!("Goal proposal not applied: {error}")),
-            );
-            return;
         }
         crate::logging::info(&format!("delegate-answer to={} approved={yes}", c.to));
         if !yes {

@@ -98,12 +98,6 @@ impl App {
             self.push_system(result.unwrap_or_else(|e| format!("context policy: {e}")));
             return true;
         }
-        if trimmed == "/memory" || trimmed.starts_with("/memory ") {
-            landing::close(self);
-            self.push_command(line);
-            self.memory_command(trimmed.strip_prefix("/memory").unwrap_or_default().trim());
-            return true;
-        }
         if trimmed == "/threads" || trimmed.starts_with("/threads ") {
             self.push_command(line);
             self.push_system("/threads is now /resume");

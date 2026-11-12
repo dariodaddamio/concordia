@@ -17,7 +17,7 @@ configured map budget. It contains typed intent and source pointers; it does not
 native tool state, approvals or a complete transcript. [Map format](continuity-map-v2.md).
 
 Concordia records exact source bindings and checks revisions for readback. Optional thread logs,
-pins and native-source fallback have different retention/availability limits; a missing source
+Native-source pointers have bounded availability; a missing source
 must be reported rather than replaced with another chat. [Native memory](native-memory.md).
 
 `context.rs` owns pack planning and the binding decision, and `tui/run.rs` prepares
