@@ -1,5 +1,15 @@
 # Changelog
 
+### Fixed (2026-11-12w)
+
+- Corrected Agents row status glyphs and selected-agent numbering. The existing picker regression
+  now checks the compact row contract.
+
+### Added (2026-11-12v)
+
+- Updated the Ctrl+G Agents view with compact numbered rows, status and context indicators, and
+  a selected-agent detail card. Provider metadata remains `unknown` when no event reports it.
+
 ### Added (2026-11-12u)
 
 - Added persisted delegation roles with provider, account, model and effort defaults. The agents

@@ -352,7 +352,8 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
         detail: Some("reported result: changed while picker open".into()),
         status: CardStatus::Error,
     });
-    assert!(app.picker.as_ref().unwrap().rows[0]
+    assert!(app.picker.as_ref().unwrap().rows[0].label.contains("✗"));
+    assert!(!app.picker.as_ref().unwrap().rows[0]
         .label
         .contains("failed/interrupted"));
     app.apply_picker_selection(None);
@@ -388,7 +389,7 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
         .unwrap()
         .rows
         .iter()
-        .any(|row| { row.label.contains("child-background") && row.label.contains("running") }));
+        .any(|row| { row.label.contains("◐") && row.detail.contains("child-background") && row.detail.contains("running") }));
     app.push_card(StreamCard {
         id: child_id,
         title: "agent child-background".into(),
@@ -401,7 +402,7 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
         .unwrap()
         .rows
         .iter()
-        .any(|row| { row.label.contains("child-background") && row.label.contains("finished") }));
+        .any(|row| { row.label.contains("✓") && row.detail.contains("child-background") && row.detail.contains("finished") }));
     assert!(app.handle_slash("/new"));
     assert_eq!(app.native_agents.count(), 0);
 }

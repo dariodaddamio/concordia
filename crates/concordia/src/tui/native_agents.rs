@@ -8,11 +8,7 @@ pub(super) fn panel_area(area: Rect) -> Rect {
         return area;
     }
     let width = (area.width / 2).clamp(48, 86);
-    Rect {
-        x: area.x + area.width - width,
-        width,
-        ..area
-    }
+    Rect { x: area.x + area.width - width, width, ..area }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -56,9 +52,9 @@ impl Status {
     }
     fn icon(self) -> &'static str {
         match self {
-            Self::Running => "●",
+            Self::Running => "◐",
             Self::Done => "✓",
-            Self::Error => "×",
+            Self::Error => "✗",
         }
     }
     fn word(self) -> &'static str {
@@ -68,6 +64,59 @@ impl Status {
             Self::Error => "failed/interrupted",
         }
     }
+}
+
+#[derive(Clone, Default)]
+struct Facts {
+    role: String,
+    model: String,
+    effort: String,
+    used: Option<u64>,
+    limit: Option<u64>,
+    compaction: Option<f64>,
+    turns: Option<u64>,
+}
+
+fn fact_value(detail: Option<&str>, key: &str) -> Option<String> {
+    detail?.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim().eq_ignore_ascii_case(key).then(|| value.trim().to_owned())
+    })
+}
+
+fn fact_number(detail: Option<&str>, key: &str) -> Option<u64> {
+    fact_value(detail, key)?.replace(',', "").parse().ok()
+}
+
+fn facts(detail: Option<&str>) -> Facts {
+    Facts {
+        role: fact_value(detail, "Role").unwrap_or_else(|| "unknown".into()),
+        model: fact_value(detail, "Model").unwrap_or_else(|| "unknown".into()),
+        effort: fact_value(detail, "Effort").unwrap_or_else(|| "unknown".into()),
+        used: fact_number(detail, "Tokens used").or_else(|| fact_number(detail, "Used")),
+        limit: fact_number(detail, "Context window").or_else(|| fact_number(detail, "Limit")),
+        compaction: fact_value(detail, "Compaction reference").and_then(|value| {
+            value.trim_end_matches('%').parse::<f64>().ok()
+        }),
+        turns: fact_number(detail, "Turns").or_else(|| fact_number(detail, "Tasks")),
+    }
+}
+
+fn context_bar(used: Option<u64>, limit: Option<u64>, width: usize) -> String {
+    let filled = match (used, limit) {
+        (Some(used), Some(limit)) if limit > 0 => {
+            ((used as f64 / limit as f64) * width as f64).round() as usize
+        }
+        _ => 0,
+    }
+    .min(width);
+    (0..width)
+        .map(|index| if index < filled { '\u{25ae}' } else { '\u{25af}' })
+        .collect()
+}
+
+fn formatted_number(value: Option<u64>) -> String {
+    value.map_or_else(|| "unknown".into(), |value| value.to_string())
 }
 
 fn task_title(detail: Option<&str>, fallback: &str) -> String {
@@ -303,24 +352,25 @@ impl State {
                 } else {
                     String::new()
                 };
+                let metadata = facts(card.detail.as_deref());
                 let label = format!(
-                    "{}{} {} {} · {}{}",
+                    "{}{} {} {}  {}  {}  {}  {}  {}",
                     "  ".repeat(depth),
                     disclosure,
                     status.icon(),
-                    status.word(),
-                    title,
-                    if elapsed.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · {elapsed}")
-                    }
+                    metadata.role,
+                    metadata.model,
+                    metadata.effort,
+                    context_bar(metadata.used, metadata.limit, 7),
+                    metadata.turns.map_or_else(|| "unknown".into(), |value| value.to_string()),
+                    if elapsed.is_empty() { "".into() } else { elapsed },
                 );
                 let detail = if entry.kind == Kind::Untracked {
                     "Untracked provider run · cannot receive messages or questions".into()
                 } else {
                     format!(
-                        "{} · {}",
+                        "{} · {} · {}",
+                        title,
                         status.word(),
                         card.detail
                             .as_deref()
@@ -381,6 +431,91 @@ impl State {
         }
         out
     }
+}
+
+pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let Some(picker) = app.picker.as_ref().filter(|picker| picker.kind == PickerKind::Agents)
+    else {
+        return;
+    };
+    let rows: Vec<PickerRow> = picker.filtered().into_iter().cloned().collect();
+    let selected = picker.state.selected().unwrap_or(0).min(rows.len().saturating_sub(1));
+    let selected_row = rows.get(selected).cloned();
+    let columns = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(area);
+    f.render_widget(Clear, area);
+
+    let mut detail_lines = Vec::new();
+    let mut add_detail = |id: &str, row_number: usize| {
+        if let Some(index) = id.strip_prefix("native-agent:").and_then(|value| value.parse::<usize>().ok()) {
+            if let Some(card) = app.messages.get(index).and_then(|line| line.card.as_ref()) {
+                let status = Status::from(card.status);
+                let metadata = facts(card.detail.as_deref());
+                let title = task_title(card.detail.as_deref(), &card.title);
+                let elapsed = app.native_agents.entries.get(&card.id)
+                    .map(|entry| format_elapsed(entry.started.elapsed()))
+                    .unwrap_or_else(|| "unknown".into());
+                let used = formatted_number(metadata.used);
+                let limit = formatted_number(metadata.limit);
+                let percentage = metadata.compaction.map_or_else(|| "unknown".into(), |value| format!("{value:.1}%"));
+                detail_lines.extend([
+                    Line::from(vec![Span::styled(format!("#{} {}", row_number, metadata.role), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(" "), Span::styled(format!("{} {}", status.icon(), status.word()), Style::default().fg(Color::Green))]),
+                    Line::styled(format!("{} · {}", metadata.model, metadata.effort), Style::default().fg(Color::Gray)),
+                    Line::from(format!("{used} / {limit} tokens")),
+                    Line::from(context_bar(metadata.used, metadata.limit, 28)),
+                    Line::styled(format!("{percentage} of compaction reference"), Style::default().fg(Color::Gray)),
+                    Line::styled(format!("{} tokens remaining · last snapshot", metadata.limit.zip(metadata.used).map(|(limit, used)| limit.saturating_sub(used)).map_or_else(|| "unknown".into(), |value| value.to_string())), Style::default().fg(Color::Gray)),
+                    Line::from(""),
+                    Line::styled("Tasks", Style::default().add_modifier(Modifier::BOLD)),
+                    Line::from(format!("{} {}    {}", status.icon(), title, elapsed)),
+                    Line::styled("#1 · From Orchestrator", Style::default().fg(Color::Gray)),
+                    Line::styled(status.word().to_owned(), Style::default().fg(Color::Gray)),
+                ]);
+            }
+        }
+    };
+    if let Some(row) = selected_row.as_ref() {
+        add_detail(&row.id, selected);
+    }
+    if detail_lines.is_empty() {
+        detail_lines.push(Line::from("No agent selected"));
+    }
+    f.render_widget(
+        Paragraph::new(detail_lines)
+            .block(Block::default().borders(Borders::ALL).title(" Agent details "))
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        columns[0],
+    );
+
+    let items = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let selected = index == selected;
+            let style = if selected {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{index:>2} "), style),
+                Span::styled(row.label.clone(), style),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let mut state = picker.state;
+    f.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Agents · ←/→ collapse · Enter inspect · Esc close "),
+            )
+            .highlight_style(Style::default().bg(Color::Indexed(235)).fg(Color::Cyan))
+            .highlight_symbol("\u{279c} "),
+        columns[1],
+        &mut state,
+    );
 }
 
 fn format_elapsed(duration: Duration) -> String {
@@ -457,5 +592,28 @@ impl App {
             picker.state.select(Some(index));
             picker.select_clamp();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_facts_keep_reported_values_and_unknowns() {
+        let known = facts(Some(
+            "Role: Impl\nModel: Claude Sonnet 5.5\nEffort: high\nTokens used: 633883\nContext window: 1000000\nCompaction reference: 65.5%\nTasks: 2",
+        ));
+        assert_eq!(known.role, "Impl");
+        assert_eq!(known.model, "Claude Sonnet 5.5");
+        assert_eq!(known.used, Some(633_883));
+        assert_eq!(known.limit, Some(1_000_000));
+        assert_eq!(known.compaction, Some(65.5));
+        assert_eq!(known.turns, Some(2));
+
+        let unknown = facts(None);
+        assert_eq!(unknown.role, "unknown");
+        assert_eq!(unknown.model, "unknown");
+        assert_eq!(context_bar(unknown.used, unknown.limit, 7), "▯▯▯▯▯▯▯");
     }
 }

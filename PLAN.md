@@ -651,6 +651,14 @@ Going public:
 
 ## This slice
 
+### N4 Agents view follow-up - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/native_agents.rs` | ok: 1, 4, 5, 6, 10 | Keep provider-event projection and rendering in the existing Agents owner; correct compact status glyphs and visible row numbering without adding state. |
+| `crates/concordia/src/tui/session_ui_tests.rs` | ok: 5, 9, 10 | Update the existing regression to assert the shipped compact-row contract and retain coverage for live picker refresh. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 10 | Record the user-facing correction and advance the build stamp. |
+
 ### N2 test hygiene and regression tests - anti-slop gate
 
 | path | tendency_check | justification |

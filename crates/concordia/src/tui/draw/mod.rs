@@ -1350,11 +1350,10 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .picker
         .as_ref()
         .is_some_and(|p| p.kind == PickerKind::Agents);
-    let area = if agents_panel {
-        native_agents::panel_area(area)
-    } else {
-        area
-    };
+    if agents_panel {
+        native_agents::draw(f, area, app);
+        return;
+    }
     let update_blocked = app.update_blocked_by_work();
     let update_lines = app.update_preview.as_ref().map(|p| p.visible_lines());
     let Some(picker) = app.picker.as_mut() else {
