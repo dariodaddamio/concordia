@@ -1,6 +1,6 @@
 ---
 title: Concordia
-description: A local augmenter for provider CLIs, projects and memory.
+description: Run Claude Code, Codex, Cursor and Grok Build chats in one Windows app.
 ---
 
 <!-- OWNER PLACEHOLDER: approve the opening product paragraph before publication. -->
