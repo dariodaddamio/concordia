@@ -1,6 +1,6 @@
 # Installing Concordia on Windows
 
-Concordia is a native Rust Windows app with an optional terminal mode. Every route below ends with a `concordia` command on your
+Concordia is a native Rust Windows app. Every route below ends with a `concordia` command on your
 PATH. None of them needs administrator rights. Routes are listed from simplest to most manual.
 
 Concordia finds provider CLIs at their standard install locations even when they are not on PATH.

@@ -718,8 +718,7 @@ async fn run_provider_turn_inner(
             && owner.is_some()
             // Test/diagnostic launchers speak the exec stream contract, not Codex app-server.
             // Keep them on the stream path; real Codex uses the native popup transport.
-            && std::env::var_os("CONCORDIA_CODEX_BIN").is_none()
-            && crate::config::ui_question_popups())
+            && std::env::var_os("CONCORDIA_CODEX_BIN").is_none())
     {
         return appserver::run(req, &plan, owner, on_started, on_progress, handle).await;
     }

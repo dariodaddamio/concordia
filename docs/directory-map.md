@@ -22,7 +22,6 @@ provider account data and runtime records live outside it. There is no JavaScrip
 | `docs/agent` | Harness process metadata | Retired task journals are preserved in Git checkpoint `6fea4a9` |
 | `packaging` | Windows distribution metadata/templates | Publication remains owner-controlled |
 | `skills` | Concordia-owned integration instructions | Separate from provider-native skill stores |
-| `experiments/terminal` | Retained WezTerm configuration from the host experiment | Lua is embedded by the production host adapter; the obsolete pane-guessing launcher is retired |
 | `vendor/crossterm` | Patched terminal dependency | Not unused just because it is vendored |
 | `.github` | Repository workflows | Local checks and remote qualification are distinct |
 | `.cursor` | Project rules and host workflow support | Does not add a runtime/package-manager dependency |

@@ -158,7 +158,7 @@ impl App {
                 }
             }
         } else {
-            self.push_system("file not found; use /open path/to/file or /preview path/to/file.md");
+            self.push_system("file not found; use /open path/to/file");
         }
     }
 

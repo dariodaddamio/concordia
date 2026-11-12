@@ -70,7 +70,7 @@ measurements, OS confinement or live model-effectiveness evidence.
 
 Builds 04g through 04i added default application-owned Windows input and original-pixel image previews.
 The earlier terminal cell-preview and pointer limitations do not describe that native window;
-explicit terminal mode retains its host-dependent limits.
+the native window owns rendering and input, so host-dependent terminal limits do not apply.
 
 The installed 04j delivery fixes the reported native edit extraction, glyph/window identity,
 Esc emphasis, subagent rows in Home and mixed-attachment presentation. Exact historical file-output
@@ -310,8 +310,8 @@ for the implemented campaign. The remaining boundaries below are explicit capabi
    reconciliation; no process, tool or result is automatically replayed at restart.
 6. Live provider/auth/approval parity and public-release gates. Real provider model turns remain
    prohibited without an explicit scope and budget. Synthetic fixtures do not clear these gates.
-7. Visible custom pointer shapes in the installed WezTerm 2024 host. Its parser does not support
-   the requested control; app-side shape-selection tests do not close that host limitation.
+7. Native pointer-shape support remains renderer-dependent; unsupported shapes are reported as
+   an implementation limit rather than delegated to an external terminal host.
 
 Managed worktrees and cwd search/replacement are implemented within their documented guards.
 Image/document input, explicit pasted-path attachment and inline cell rasters are implemented;
@@ -332,8 +332,8 @@ included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.
 - Unsupported proactive capacity requires verified native signals for installed versions.
   Unknown signals must remain unknown; documentation/read-only inspection
   can continue without asking the owner to research them.
-- Visible pointer shapes require a terminal host that supports the requested control. The
-  installed WezTerm 2024 build does not; demo cursor overlays do not change this.
+- Visible pointer shapes require support from the native renderer; demo cursor overlays do not
+  change that limit.
 - Publishing and distribution choices are release decisions, not reasons to
   stop implementing local features.
 

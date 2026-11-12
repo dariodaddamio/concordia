@@ -6,15 +6,11 @@ use concordia::version::version_line;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
-    Terminal,
-    Host,
     Window,
     Install,
     Shortcut,
-    Wezterm,
     Doctor,
     Chat,
-    Preview,
     FileEdit,
     Sessions,
     Thread,
@@ -39,22 +35,8 @@ const CLI_HELP: &[CommandSpec] = &[
         name: "concordia",
         aliases: &[],
         args: "",
-        help: "native app window (image paste and file drop, or terminal chat)",
+        help: "native app window (image paste and file drop)",
         command: Command::Window,
-    },
-    CommandSpec {
-        name: "--terminal",
-        aliases: &["terminal"],
-        args: "",
-        help: "chat TUI in this terminal",
-        command: Command::Terminal,
-    },
-    CommandSpec {
-        name: "--host",
-        aliases: &["host"],
-        args: "",
-        help: "launch the default app interface",
-        command: Command::Host,
     },
     CommandSpec {
         name: "--window",
@@ -78,13 +60,6 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::Shortcut,
     },
     CommandSpec {
-        name: "wezterm",
-        aliases: &[],
-        args: "",
-        help: "launch WezTerm running Concordia",
-        command: Command::Wezterm,
-    },
-    CommandSpec {
         name: "doctor",
         aliases: &["--doctor"],
         args: "",
@@ -97,13 +72,6 @@ const CLI_HELP: &[CommandSpec] = &[
         args: "list|read|search|index|sources|excerpt|recall|lineage|link|detach",
         help: "bounded native CLI chats and history pointers",
         command: Command::Chat,
-    },
-    CommandSpec {
-        name: "preview",
-        aliases: &[],
-        args: "FILE",
-        help: "read-only Markdown preview",
-        command: Command::Preview,
     },
     CommandSpec {
         name: "file-edit",
@@ -196,8 +164,8 @@ fn print_help() {
         .collect::<Vec<_>>()
         .join("\n");
     println!("{}\n\n{commands}\n\n         \n\
-         Slash: /use [add] /model /usage /resume /agents /trust /config /new /threads /split /update /version /copy /doctor /exit\n\
-         Files: /open PATH[:LINE[:COLUMN]] · /preview PATH (internal read-only panes) · /close ID · /edit PATH (external editor)\n\
+         Slash: /use [add] /model /usage /resume /agents /config /new /threads /update /version /copy /doctor /exit\n\
+         Files: /open PATH[:LINE[:COLUMN]] · /close ID\n\
          Delegate: /workers [add|remove] /delegate <account|auto> <task> /delegate stop|use|help (docs/delegation.md)\n\
          Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
          Connect: /use add [codex|claude|cursor] makes an isolated home and opens its login.\n\
@@ -261,23 +229,11 @@ async fn main() -> Result<()> {
             }
         },
         Command::FileEdit => tui::run_file_editor(rest)?,
-        Command::Preview => {
-            if rest.len() != 1 {
-                anyhow::bail!("usage: concordia preview FILE");
-            }
-            tui::run_file_preview(std::path::Path::new(&rest[0]))?;
-        }
-        Command::Host => {
-            run_default_chat().await?;
-        }
-        Command::Terminal => {
-            tui::run_chat_tui().await?;
-        }
         Command::Window => {
             #[cfg(windows)]
             tui::run_chat_window().await?;
             #[cfg(not(windows))]
-            anyhow::bail!("Native app windows require Windows; use concordia --terminal");
+            anyhow::bail!("Native app windows require Windows");
         }
         Command::Help => print_help(),
         Command::Install => match concordia::update::install_self() {
@@ -313,12 +269,6 @@ async fn main() -> Result<()> {
                 concordia::update::remove_shortcut(desktop)?
             };
             println!("{} {}", rest[0], path.display());
-        }
-        Command::Wezterm => {
-            if let Err(e) = concordia::host::wezterm::launch_window() {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
         }
         Command::Doctor => {
             let (report, healthy) = concordia::doctor::run_cli_report();

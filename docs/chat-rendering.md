@@ -7,7 +7,7 @@ limits are in [verification](e2e-status.md), which also records cleanup closeout
 ## Conversation and input ownership
 
 Windows uses an app-owned GDI window around the shared Ratatui layout and event loop.
-`--terminal` uses the same conversation/provider logic with a terminal backend. Native
+The native window uses the same conversation/provider logic with the application renderer. Native
 windows own clipboard, drop, mouse, focus and resize events. They are not a complete
 native widget or accessibility toolkit. Pixel images use smooth scaling in the native
 window; terminal previews use cells. Rendering does not alter provider attachments.

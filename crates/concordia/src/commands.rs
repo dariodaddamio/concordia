@@ -22,10 +22,8 @@ pub enum SlashCommand {
     Resume,
     New,
     Config,
-    Trust,
     /// `/mode [plan|ask|auto|full]`: show or set the permission mode.
     Mode(Option<String>),
-    Split,
     Update,
     Version,
     Copy,
@@ -232,12 +230,11 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     let mut parts = body.split_whitespace();
     let cmd = parts.next().unwrap_or("").to_lowercase();
     let rest = parts.next().unwrap_or("");
-    let vertical = rest.eq_ignore_ascii_case("v") || rest.eq_ignore_ascii_case("vertical");
     let words = body.split_whitespace().count();
     let max_words = match cmd.as_str() {
         "chats" | "resume" | "new" | "config" | "version" | "ver" | "about" | "copy" | "cp"
         | "doctor" | "diag" | "exit" | "quit" | "q" | "agents" | "stats" | "close" => Some(1),
-        "model" | "mode" | "trust" | "split" | "login" | "connect" => Some(2),
+        "model" | "mode" => Some(2),
         "use" => Some(3),
         _ => None,
     };
@@ -287,10 +284,6 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
             _ if words == 2 => Some((SlashCommand::UseAccount(rest.to_lowercase()), false)),
             _ => Some((SlashCommand::Invalid("use".into()), false)),
         },
-        "login" | "connect" => Some((
-            SlashCommand::UseAdd(Some(rest.to_lowercase()).filter(|r| !r.is_empty())),
-            false,
-        )),
         "model" if rest.is_empty() => Some((SlashCommand::Model, false)),
         "model" => Some((SlashCommand::ModelSet(rest.to_string()), false)),
         "usage"
@@ -308,20 +301,10 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         "chats" | "resume" => Some((SlashCommand::Resume, false)),
         "new" => Some((SlashCommand::New, false)),
         "config" => Some((SlashCommand::Config, false)),
-        "trust" => Some((SlashCommand::Trust, false)),
         "mode" => Some((
             SlashCommand::Mode(Some(rest.to_lowercase()).filter(|r| !r.is_empty())),
             false,
         )),
-        "split"
-            if rest.is_empty()
-                || vertical
-                || rest.eq_ignore_ascii_case("h")
-                || rest.eq_ignore_ascii_case("horizontal") =>
-        {
-            Some((SlashCommand::Split, vertical))
-        }
-        "split" => Some((SlashCommand::Invalid("split".into()), false)),
         "update" | "upgrade" | "rebuild" if rest.is_empty() => Some((SlashCommand::Update, false)),
         "update" | "upgrade" | "rebuild" => Some((SlashCommand::Invalid("update".into()), false)),
         "version" | "ver" | "about" => Some((SlashCommand::Version, false)),
@@ -415,7 +398,7 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
     ),
     command!(
         "/use",
-        ["/login", "/connect"],
+        [],
         "ACCOUNT|add PROVIDER|remove ACCOUNT",
         "switch, add or remove accounts",
         "Choose an account or connect through the provider's own login.",
@@ -432,6 +415,17 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         "Choose a model from the active provider's local catalog.",
         true,
         CommandCategory::Settings,
+        None,
+        None
+    ),
+    command!(
+        "/rename",
+        [],
+        "[TITLE]",
+        "rename the current chat",
+        "Set a title for the current chat or clear it to restore automatic naming.",
+        false,
+        CommandCategory::Chat,
         None,
         None
     ),
@@ -569,17 +563,6 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         None
     ),
     command!(
-        "/preview",
-        [],
-        "PATH",
-        "preview a file read-only",
-        "Open a read-only Markdown or JSON preview.",
-        false,
-        CommandCategory::Workspace,
-        None,
-        None
-    ),
-    command!(
         "/search",
         [],
         "TEXT",
@@ -642,17 +625,6 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         "Preview or restore saved work for this workspace without automatically sending it.",
         true,
         CommandCategory::Chat,
-        None,
-        None
-    ),
-    command!(
-        "/integrations",
-        [],
-        "",
-        "inspect connected integrations",
-        "Inspect connected integrations and agent tools.",
-        false,
-        CommandCategory::Diagnostics,
         None,
         None
     ),
@@ -800,7 +772,6 @@ pub enum CommandOutcome {
     Exit,
     Update,
     OpenResume,
-    OpenTrust,
     OpenUse,
     OpenAddProvider,
     OpenRemovePicker,
@@ -824,7 +795,6 @@ pub struct CommandContext<'a> {
     pub provider: ProviderKind,
     pub account: &'a str,
     pub trust: TrustMode,
-    pub split_vertical: bool,
 }
 
 pub fn dispatch_slash(
@@ -856,7 +826,6 @@ pub fn dispatch_slash(
             )],
         ),
         SlashCommand::Resume => (CommandOutcome::OpenResume, Vec::new()),
-        SlashCommand::Trust => (CommandOutcome::OpenTrust, Vec::new()),
         // Handled by the TUI (it owns the live mode); nothing to do headless.
         SlashCommand::Mode(_) | SlashCommand::UseAccount(_) | SlashCommand::ModelSet(_) => {
             (CommandOutcome::Ok, Vec::new())
@@ -893,22 +862,6 @@ pub fn dispatch_slash(
                     format!("active     {}", active.display()),
                 ],
             )
-        }
-        SlashCommand::Split => {
-            match crate::host::wezterm::split_concordia_pane(ctx.split_vertical) {
-                Ok(()) => (
-                    CommandOutcome::Ok,
-                    vec![format!(
-                        "split → {} concordia pane",
-                        if ctx.split_vertical {
-                            "vertical"
-                        } else {
-                            "horizontal"
-                        }
-                    )],
-                ),
-                Err(e) => (CommandOutcome::Ok, vec![format!("split failed — {e}")]),
-            }
         }
         // Delegation needs the running TUI (workers, strip); `tui/workers.rs` handles these
         // before dispatch. Reaching here means a caller without a UI.
@@ -991,15 +944,6 @@ mod tests {
             cmd("/use add Codex"),
             SlashCommand::UseAdd(Some("codex".into()))
         );
-        assert_eq!(
-            cmd("/use connect claude"),
-            SlashCommand::UseAdd(Some("claude".into()))
-        );
-        assert_eq!(cmd("/login"), SlashCommand::UseAdd(None));
-        assert_eq!(
-            cmd("/login cursor"),
-            SlashCommand::UseAdd(Some("cursor".into()))
-        );
         // /use with some other word is still the plain picker.
         assert_eq!(cmd("/use list"), SlashCommand::Use);
     }
@@ -1013,7 +957,6 @@ mod tests {
             provider: ProviderKind::Codex,
             account: "codex",
             trust: TrustMode::Workspace,
-            split_vertical: false,
         };
         assert_eq!(
             dispatch_slash(SlashCommand::UseAdd(None), &ctx).0,
@@ -1045,7 +988,6 @@ mod usage_tests {
             provider: ProviderKind::Codex,
             account: "codex",
             trust: TrustMode::Workspace,
-            split_vertical: false,
         };
         assert_eq!(
             dispatch_slash(SlashCommand::Usage, &ctx).0,

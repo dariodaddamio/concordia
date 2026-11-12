@@ -594,7 +594,7 @@ impl App {
 
     /// Suggestions for the prompt as typed (empty when closed, dismissed, or not a slash prompt).
     pub(in crate::tui) fn palette_entries(&self) -> Vec<palette::Entry> {
-        if self.editor.text().starts_with("/open ") || self.editor.text().starts_with("/preview ") {
+        if self.editor.text().starts_with("/open ") {
             return Vec::new();
         }
         // Not while a recalled prompt is on screen: up/down must keep walking history.

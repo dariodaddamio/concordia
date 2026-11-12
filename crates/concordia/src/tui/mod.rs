@@ -54,7 +54,7 @@ mod artifacts;
 mod run;
 #[cfg(windows)]
 pub use run::run_chat_window;
-pub use run::{run_chat_tui, run_file_editor, run_file_preview};
+pub use run::{run_chat_tui, run_file_editor};
 mod brand;
 mod chat_ownership;
 mod chatref;
@@ -85,7 +85,6 @@ mod native_window;
 mod palette;
 mod persist;
 mod pointer;
-mod preview;
 mod questions;
 mod queue;
 mod queue_controls;

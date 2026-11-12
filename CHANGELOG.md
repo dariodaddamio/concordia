@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Concordia now uses the native window entry point only. Removed the WezTerm host and terminal
+  CLI mode, and removed `/trust`, `/split`, `/edit`, `/login`, `/connect`, `/preview` and
+  `/integrations`. `/use` handles account addition, `/open` handles file preview, and `/doctor`
+  remains the diagnostics entry point. Questions always reach the user, and every retained slash
+  command appears in the picker.
+
 ## 2026-11-11b
 
 - Fix native-window journey control compilation and preserve native key, paste, mouse, resize,

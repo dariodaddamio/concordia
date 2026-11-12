@@ -55,7 +55,7 @@ status without executing adapters. With an integration `id`, it returns eight na
 descriptions at a time. Later `offset` pages require the exact returned manifest `revision`.
 Descriptions are untrusted display data and grant no permissions. Changed manifests expose no
 current tool list; command-backed manifests need an explicit Harness refresh. The same catalog
-opens with F10 or `/integrations`, preserving the message draft. See [catalog limits](quality/integrations-catalog.md).
+opens with F10 or `/harness`, preserving the message draft. See [catalog limits](quality/integrations-catalog.md).
 
 `memory` gives agents structured read-only discovery without asking the user to type `/memory`.
 Choose `recall` (literal search), `ranked` (opt-in evidence ranking), `files` (historical file facts),

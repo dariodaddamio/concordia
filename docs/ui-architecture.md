@@ -1,8 +1,8 @@
 # UI architecture
 
-Concordia's native Windows window and terminal mode render the same ratatui application.
-Browser tabs share one process and retain independent App values; WezTerm panes are separate
-processes. Provider CLIs supply structured events, not a hidden native TUI to scrape.
+Concordia's native Windows window renders the ratatui application.
+Native tabs retain independent conversation state. Provider CLIs supply structured events, not a
+hidden native TUI to scrape.
 
 ## Ownership and input
 

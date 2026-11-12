@@ -71,12 +71,6 @@ impl App {
             self.worker_recovery_command(trimmed.strip_prefix("/delegate ").unwrap_or_default());
             return true;
         }
-        if trimmed == "/integrations" {
-            landing::close(self);
-            self.push_command(line);
-            integrations::open(self);
-            return true;
-        }
         if trimmed == "/context" || trimmed.starts_with("/context ") {
             landing::close(self);
             self.push_command(line);
@@ -108,17 +102,6 @@ impl App {
             landing::close(self);
             self.push_command(line);
             self.memory_command(trimmed.strip_prefix("/memory").unwrap_or_default().trim());
-            return true;
-        }
-        if trimmed == "/trust" || trimmed.starts_with("/trust ") {
-            self.push_command(line);
-            self.push_system("/trust is now /mode");
-            self.run_mode_command(
-                trimmed
-                    .strip_prefix("/trust")
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty()),
-            );
             return true;
         }
         if trimmed == "/threads" || trimmed.starts_with("/threads ") {
@@ -172,23 +155,14 @@ impl App {
             }
             return true;
         }
-        if trimmed == "/preview" || trimmed.starts_with("/preview ") {
-            self.push_command(line);
-            if let Some(reference) = trimmed.strip_prefix("/preview ") {
-                self.file_command(reference, false, true);
-            } else {
-                self.push_system("usage: /preview FILE");
-            }
-            return true;
-        }
         if trimmed == "/usage all" || trimmed == "/usage refresh" {
             self.push_system(format!(
                 "{} is now /usage (use r inside the screen to refresh)",
                 trimmed
             ));
         }
-        // /workers, /queue, /edit, /close, /split, /stats and /recover keep working unlisted
-        // until the screens that replace them exist.
+        // /workers, /queue, /close, /stats and /recover remain available until their screens
+        // replace them.
         if line.trim() == "/search" {
             self.open_project_search();
             return true;
@@ -197,16 +171,8 @@ impl App {
             self.open_related_files();
             return true;
         }
-        if line.trim() == "/edit" {
-            self.push_system("usage: /open FILE");
-            return true;
-        }
         if let Some(reference) = line.trim().strip_prefix("/open ") {
             self.file_command(reference, false, false);
-            return true;
-        }
-        if let Some(reference) = line.trim().strip_prefix("/edit ") {
-            self.file_command(reference, true, false);
             return true;
         }
         if line.trim() == "/close" || line.trim().starts_with("/close ") {
@@ -261,7 +227,7 @@ impl App {
             }
             return true;
         }
-        let Some((cmd, split_vertical)) = parse_slash(line) else {
+        let Some((cmd, _)) = parse_slash(line) else {
             return false;
         };
         if self.busy
@@ -358,7 +324,6 @@ impl App {
             provider: self.provider,
             account: &self.account,
             trust: self.trust,
-            split_vertical,
         };
         let (outcome, lines) = dispatch_slash(cmd, &ctx);
         if is_new {
@@ -399,7 +364,6 @@ impl App {
         match outcome {
             CommandOutcome::Exit => self.should_quit = true,
             CommandOutcome::OpenResume => self.open_resume_picker(),
-            CommandOutcome::OpenTrust => self.open_trust_picker(),
             CommandOutcome::OpenUse => {
                 for l in crate::integration::refresh_summary(&self.state_root) {
                     self.push_system(l);

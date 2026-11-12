@@ -61,7 +61,6 @@ fn help_lists_the_surface_users_need() {
         "/threads",
         "Connect:",
         "Mouse:",
-        "concordia --terminal",
         "concordia window",
     ] {
         assert!(text.contains(needle), "help missing {needle}:\n{text}");

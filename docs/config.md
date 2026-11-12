@@ -11,14 +11,12 @@ enabled = true
 screen = false
 ```
 
-## Provider question popups
+## Provider questions
 
-Question popups are enabled by default for provider questions and the per-turn `ask_user` MCP
-bridge. Set `[ui] question_popups = false` to disable this UI path; native provider tools remain
-available according to each provider's own behavior.
+Provider questions always reach the user through the question broker and native provider paths.
 
 Cursor ACP receives a per-turn `concordia-ask` MCP server in both new and loaded sessions.
-Codex uses its app-server request channel when popups are enabled because `codex exec --json`
+Codex uses its app-server request channel because `codex exec --json`
 cannot answer a pending `request_user_input` event. Claude's native stdio transport normalizes
 `AskUserQuestion` directly into the same popup broker.
 
@@ -113,8 +111,8 @@ formatted mode consumes those events without editing. Small terminals hide panes
 content. Pane-owned recovery restores file buffers, cursor, mode and split layout; external
 changes are retained and block conflicting saves. Recovery does not restore the undo stack.
 
-`/edit PATH` (unlisted) opens a separate configured terminal editor. Missing paths, preview errors or
-launch failures are shown in Concordia. References never run as shell commands.
+The file action picker can open a configured GUI editor. Missing paths, preview errors or launch
+failures are shown in Concordia. References never run as shell commands.
 
 Concordia finds an installed `nvim`, `hx` or `vim`, or uses your explicit executable and argv:
 
@@ -126,10 +124,7 @@ args = ["+{line}", "--", "{file}"]
 
 `{file}`, `{line}` and `{column}` expand within individual arguments; the executable is one
 path, not a shell command string. If `{file}` is absent the file is appended as one argument.
-The standalone CLI `concordia preview FILE` remains a read-only Markdown/text viewer with scrolling,
-Home/End and q/Esc to close, requiring no extra preview package. Input is UTF-8 and capped at
-2 MiB. `/edit` and separate terminals require WezTerm; internal file panes do not.
-`CONCORDIA_WEZTERM_BIN` can name its executable. See [workspace requirements](workspace-panes.md)
+Input is UTF-8 and capped at 2 MiB. See [workspace requirements](workspace-panes.md)
 for the editing/recovery and search/replacement stages.
 
 ## Native chat access from the CLI
@@ -368,10 +363,9 @@ responses retain Worked for and a local stopped timestamp, including when token 
 ## Images, diagrams and update history (`2026-11-01e`)
 
 File actions now share a resolver. F4 on a file-browser row or focused pane, or Alt-click on a
-transcript file link, offers Preview here, Split off and Open in editor. Always choices persist
-in Concordia-owned settings. `[ui].file_action = "preview" | "split" | "editor"` supplies a default.
-`[editor].launch = "terminal"` preserves existing behavior; explicit `"gui"` opens a configured
-native executable directly. See [file actions and independent recovery](quality/file-actions.md).
+transcript file link, offers Preview here and Open in editor. Always choices persist in
+Concordia-owned settings. `[ui].file_action = "preview" | "editor"` supplies a default. The
+configured editor opens as a native GUI executable. See [file actions and independent recovery](quality/file-actions.md).
 
 `/attach` opens the image chooser; `/attach PATH` imports a snapshot; `/attach clear` removes draft
 images. Ctrl+V reads clipboard images in the ordinary composer, with text paste as fallback.

@@ -18,7 +18,6 @@ pub mod file_open;
 pub(crate) mod fs_safe;
 pub mod goals;
 pub mod harness;
-pub mod host;
 pub mod identity;
 pub mod integration;
 pub mod legacy_migration;

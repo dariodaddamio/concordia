@@ -722,7 +722,7 @@ fn formatted_markdown_and_json_toggle_without_changing_draft() {
     h.mouse(MouseEventKind::Down(MouseButton::Left), button.x, button.y);
     assert!(h.screen().contains("**bold text**"));
     h.open("data.json", r#"{"a":1,"b":2}"#);
-    assert!(h.app.handle_slash("/preview data.json"));
+    assert!(h.app.handle_slash("/open data.json"));
     h.draw();
     assert!(h.app.workspace.panes[1].formatted_mode);
     assert!(h.screen().contains("\"a\": 1,"));

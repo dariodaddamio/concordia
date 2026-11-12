@@ -9,7 +9,6 @@ pub const TIPS: &[&str] = &[
     "Esc interrupts the running turn without leaving Concordia.",
     "Drag with the mouse to select text; Ctrl+C copies it (or the last reply).",
     "/resume picks up an earlier conversation in this folder.",
-    "/split opens a second pane so two agents can work side by side.",
     "/doctor checks your setup: CLIs, logins and homes.",
     "Start a line with / to see the slash commands and their descriptions.",
 ];

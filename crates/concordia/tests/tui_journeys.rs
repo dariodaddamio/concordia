@@ -1179,8 +1179,6 @@ impl Session {
             cmd.env(key, FAKE);
         }
         cmd.env("CONCORDIA_STATE_DIR", root);
-        cmd.env("CONCORDIA_WEZTERM_BIN", FAKE);
-        cmd.env("WEZTERM_PANE", "7");
         cmd.env("FAKE_FILE_LAUNCH_JOURNAL", root.join("file-launch.json"));
         cmd.env("CONCORDIA_CODEX_HOME_BASE", root.join("profile"));
         cmd.env("FAKE_PROVIDER_MODE", "interaction");
@@ -2101,10 +2099,8 @@ fn modal_crlf_and_overflow_paste_cannot_modify_a_draft_or_upper_edit() {
     s.exit();
 }
 
-#[test]
-#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 #[cfg(any())]
-fn explicit_file_open_passes_exact_path_to_a_fake_terminal_and_preserves_draft() {
+fn removed_wezterm_file_open_journey() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);

@@ -151,7 +151,6 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     if kind == PickerKind::FilePreferences {
         let action = match id {
             "preview" => crate::file_open::FileAction::Preview,
-            "split" => crate::file_open::FileAction::Split,
             "editor" => crate::file_open::FileAction::Editor,
             _ => return,
         };
@@ -239,7 +238,6 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             "File links · saved default".into(),
             vec![
                 row("preview", "Preview here", "Open inside the current window"),
-                row("split", "Split off", "Open in an independent window"),
                 row(
                     "editor",
                     "External editor",

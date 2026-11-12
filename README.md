@@ -1,6 +1,6 @@
 # Concordia
 
-Concordia is a Windows-first terminal app that runs the official Codex, Claude Code and Cursor
+Concordia is a Windows-first native app that runs the official Codex, Claude Code and Cursor
 CLIs under your own accounts, with bounded handoff between them. It keeps one conversation
 navigable while each provider remains responsible for its own sessions, approvals and tools.
 
@@ -37,9 +37,8 @@ Ask your question and press Enter
 /model               # choose a model from the active provider
 ```
 
-`concordia` opens the native app window. `concordia --terminal` runs the same chat UI in your
-existing PowerShell or terminal, without requiring WezTerm. Inside either interface, `/terminal`
-or F11 opens a local shell in the workspace; F11 returns to chat with its draft intact.
+`concordia` opens the native app window. Inside it, `/terminal`
+or F11 opens a local shell in the project; F11 returns to chat with its draft intact.
 `/terminal hide` keeps that shell alive, and `/terminal close` stops it.
 
 <!-- COMMANDS:START -->
@@ -48,6 +47,7 @@ or F11 opens a local shell in the workspace; F11 returns to chat with its draft 
 | `/terminal` | `[open\|hide\|close]` | open the local PowerShell terminal | everyday |
 | `/use` | `ACCOUNT\|add PROVIDER\|remove ACCOUNT` | switch, add or remove accounts | everyday |
 | `/model` | `[MODEL]` | choose the model | everyday |
+| `/rename` | `[TITLE]` | rename the current chat | advanced |
 | `/config` | `[KEY VALUE]` | settings: display, permissions, accounts and behavior | everyday |
 | `/mode` | `[plan\|ask\|auto\|full]` | how much the agent may do without asking | everyday |
 | `/usage` | `[all\|refresh]` | limits for every account | everyday |
@@ -61,14 +61,12 @@ or F11 opens a local shell in the workspace; F11 returns to chat with its draft 
 | `/skills` | `[list\|install [PATH]\|remove PATH\|connect PATH\|status]` | inspect skills and connect shared setup | advanced |
 | `/hooks` | `[list\|connect PATH\|verify\|status]` | inspect hooks and verify shared setup | advanced |
 | `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
-| `/preview` | `PATH` | preview a file read-only | advanced |
 | `/search` | `TEXT` | search project file contents | advanced |
 | `/scope` | `...` | declare task paths and reservations | advanced |
 | `/worktree` | `...` | manage explicit Git workspaces | advanced |
 | `/memory` | `...` | search original chats and source links | advanced |
 | `/context` | `` | inspect context rollover policy | advanced |
 | `/recover` | `[retry\|legacy]` | inspect saved drafts and interrupted requests | everyday |
-| `/integrations` | `` | inspect connected integrations | advanced |
 | `/copy` | `` | copy the last reply | everyday |
 | `/doctor` | `` | check your setup | everyday |
 | `/update` | `` | update Concordia | everyday |

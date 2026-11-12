@@ -1,7 +1,4 @@
 use super::*;
-pub fn run_file_preview(path: &Path) -> Result<()> {
-    preview::run(path)
-}
 #[path = "file_editor.rs"]
 mod file_editor;
 #[path = "window_session.rs"]
@@ -1483,7 +1480,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     drop(saved_window);
     input_result?;
     if let Some(path) = reexec {
-        let code = crate::update::reexec_into_mode(&path, &cwd, !use_window)?;
+        let code = crate::update::reexec_into(&path, &cwd)?;
         std::process::exit(code);
     }
     Ok(())

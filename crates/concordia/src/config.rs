@@ -120,7 +120,7 @@ impl Default for Continuation {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EditorConfig {
-    /// One executable, never a shell command. Empty selects an installed terminal editor.
+    /// One executable, never a shell command.
     pub program: String,
     pub args: Vec<String>,
     pub launch: crate::file_open::EditorLaunch,
@@ -140,7 +140,6 @@ pub struct Ui {
     pub accent: Option<Rgb>,
     pub brand_color: Option<Rgb>,
     pub motion: bool,
-    pub question_popups: bool,
     pub library_theme: Option<crate::theme_library::ThemeFile>,
 }
 
@@ -210,7 +209,6 @@ impl Default for Config {
                 accent: None,
                 brand_color: None,
                 motion: true,
-                question_popups: true,
                 library_theme: None,
             },
             threads: Threads {
@@ -448,14 +446,9 @@ impl Config {
                         Some(args) if args.iter().all(|arg| arg.is_str()) => cfg.editor.args = args.iter().filter_map(|arg| arg.as_str().map(str::to_owned)).collect(),
                         _ => warnings.push("editor.args must be an array of argument strings".into()),
                     },
-                    "editor.launch"=>match v.as_str() {
-                        Some("terminal")=>cfg.editor.launch=crate::file_open::EditorLaunch::Terminal,
-                        Some("gui")=>cfg.editor.launch=crate::file_open::EditorLaunch::Gui,
-                        _=>warnings.push("editor.launch must be 'terminal' or 'gui'".into()),
-                    },
                     "ui.file_action"=>match v.as_str().and_then(crate::file_open::FileAction::parse) {
                         Some(action)=>cfg.ui.file_action=action,
-                        None=>warnings.push("ui.file_action must be 'preview', 'split' or 'editor'".into()),
+                        None=>warnings.push("ui.file_action must be 'preview' or 'editor'".into()),
                     },
                     "ui.token_line" => set_bool(v, &full, &mut cfg.ui.token_line, &mut warnings),
                     "ui.tips" => set_bool(v, &full, &mut cfg.ui.tips, &mut warnings),
@@ -476,7 +469,6 @@ impl Config {
                     "ui.accent" => set_color(v, &full, &mut cfg.ui.accent, &mut warnings),
                     "ui.brand_color" => set_color(v, &full, &mut cfg.ui.brand_color, &mut warnings),
                     "ui.motion" => set_bool(v, &full, &mut cfg.ui.motion, &mut warnings),
-                    "ui.question_popups" => set_bool(v, &full, &mut cfg.ui.question_popups, &mut warnings),
                     "threads.logging" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("on") => cfg.threads.logging = true,
                         Some("off") => cfg.threads.logging = false,
@@ -668,11 +660,6 @@ pub fn ui_token_line() -> bool {
     get().ui.token_line
 }
 
-/// Whether provider question requests should be routed to the foreground popup.
-pub fn ui_question_popups() -> bool {
-    get().ui.question_popups
-}
-
 /// Config default for the delegation protocol (a value saved in the store wins).
 pub fn delegation_protocol() -> bool {
     get().delegation.protocol
@@ -733,22 +720,18 @@ mod tests {
     }
 
     #[test]
-    fn terminal_editor_configuration_uses_one_program_and_argument_array() {
+    fn editor_configuration_uses_one_program_and_argument_array() {
         let (config, warnings) =
             Config::parse("[editor]\nprogram='nvim'\nargs=['+{line}','--','{file}']\n");
         assert!(warnings.is_empty());
         assert_eq!(config.editor.program, "nvim");
         assert_eq!(config.editor.args, ["+{line}", "--", "{file}"]);
-        assert_eq!(
-            config.editor.launch,
-            crate::file_open::EditorLaunch::Terminal
-        );
         let (gui, warnings) = Config::parse(
-            "[editor]\nlaunch='gui'\nprogram='native-editor'\n[ui]\nfile_action='split'\n",
+            "[editor]\nlaunch='gui'\nprogram='native-editor'\n[ui]\nfile_action='editor'\n",
         );
         assert!(warnings.is_empty());
         assert_eq!(gui.editor.launch, crate::file_open::EditorLaunch::Gui);
-        assert_eq!(gui.ui.file_action, crate::file_open::FileAction::Split);
+        assert_eq!(gui.ui.file_action, crate::file_open::FileAction::Editor);
         let (bad, warnings) = Config::parse("[editor]\nargs=['valid',12]\nprogram=3\n");
         assert_eq!(bad.editor, EditorConfig::default());
         assert_eq!(warnings.len(), 2);

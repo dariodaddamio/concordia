@@ -6,7 +6,6 @@
 //! child's environment (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) exactly as it does for chat turns.
 
 use crate::accounts::{is_logged_in, list_all_accounts, profile_home};
-use crate::host::wezterm::find_wezterm;
 use crate::store::{upsert_stored_account, ProviderKind, StoredAccount};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -133,28 +132,17 @@ pub fn plan_login(
 }
 
 /// The process to spawn for a plan: WezTerm window when available, else a new console.
-pub fn login_command(plan: &LoginPlan, wezterm: Option<&Path>) -> Command {
+pub fn login_command(plan: &LoginPlan) -> Command {
     let ps = ["-NoLogo", "-NoProfile", "-NoExit", "-Command", plan.script];
-    let mut cmd = match wezterm {
-        Some(w) => {
-            // Provider login must be visible so the user can complete native authentication.
-            let mut c = Command::new(w); // visible-spawn: provider login is an interactive window.
-            c.args(["start", "--", "powershell.exe"]).args(ps);
-            c
-        }
-        None => {
-            // Provider login must be visible so the user can complete native authentication.
-            let mut c = Command::new("powershell.exe"); // visible-spawn: provider login is interactive.
-            c.args(ps);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-                c.creation_flags(CREATE_NEW_CONSOLE);
-            }
-            c
-        }
-    };
+    // Provider login must be visible so the user can complete native authentication.
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(ps);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        cmd.creation_flags(CREATE_NEW_CONSOLE);
+    }
     for (k, v) in &plan.env {
         cmd.env(k, v);
     }
@@ -165,8 +153,7 @@ pub fn login_command(plan: &LoginPlan, wezterm: Option<&Path>) -> Command {
 }
 
 fn launch_login(plan: &LoginPlan) -> Result<(), String> {
-    let wez = find_wezterm();
-    login_command(plan, wez.as_deref())
+    login_command(plan)
         .spawn()
         .map(drop)
         .map_err(|e| format!("could not open a login window: {e}"))
@@ -741,9 +728,8 @@ mod tests {
         let home = PathBuf::from(r"C:\Users\o'brien\concordia\homes\codex-3");
         let plan = plan_login(ProviderKind::Codex, Some(&home), &all_bins).unwrap();
 
-        let wez = PathBuf::from(r"C:\WezTerm\wezterm.exe");
-        let cmd = login_command(&plan, Some(&wez));
-        assert_eq!(cmd.get_program(), wez.as_os_str());
+        let cmd = login_command(&plan);
+        assert_eq!(cmd.get_program(), "powershell.exe");
         let args: Vec<_> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -751,9 +737,6 @@ mod tests {
         assert_eq!(
             args,
             [
-                "start",
-                "--",
-                "powershell.exe",
                 "-NoLogo",
                 "-NoProfile",
                 "-NoExit",
@@ -769,10 +752,6 @@ mod tests {
         assert!(envs.iter().any(|(k, v)| {
             *k == "CODEX_HOME" && v.map(|v| v.to_string_lossy().contains("o'brien")) == Some(true)
         }));
-
-        // Without WezTerm we fall back to a plain PowerShell console.
-        let bare = login_command(&plan, None);
-        assert_eq!(bare.get_program(), "powershell.exe");
     }
 
     #[test]

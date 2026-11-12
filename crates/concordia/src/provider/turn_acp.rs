@@ -347,11 +347,8 @@ pub(super) async fn run(
     let token = uuid::Uuid::new_v4().to_string();
     let bridge_token = token.clone();
     let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (endpoint, bridge_task) = if crate::config::ui_question_popups() {
-        crate::ask_bridge::spawn_listener(token.clone(), bridge_tx).await?
-    } else {
-        (String::new(), tokio::spawn(async {}))
-    };
+    let (endpoint, bridge_task) =
+        crate::ask_bridge::spawn_listener(token.clone(), bridge_tx).await?;
     let _question_listener = QuestionListener(bridge_task);
     let mut env = plan.env.clone();
     if !endpoint.is_empty() {

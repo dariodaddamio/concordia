@@ -21,7 +21,7 @@ impl App {
             .iter()
             .any(|path| path == &file.path);
         let mut rows = Vec::new();
-        for (index, action) in [FileAction::Preview, FileAction::Split, FileAction::Editor]
+        for (index, action) in [FileAction::Preview, FileAction::Editor]
             .into_iter()
             .enumerate()
         {
@@ -35,7 +35,7 @@ impl App {
                 },
             });
         }
-        for (index, action) in [FileAction::Preview, FileAction::Split, FileAction::Editor]
+        for (index, action) in [FileAction::Preview, FileAction::Editor]
             .into_iter()
             .enumerate()
         {
@@ -57,8 +57,7 @@ impl App {
         };
         let action = match index {
             "0" => FileAction::Preview,
-            "1" => FileAction::Split,
-            "2" => FileAction::Editor,
+            "1" => FileAction::Editor,
             _ => return,
         };
         if kind == "default" {
@@ -86,14 +85,9 @@ impl App {
         base: PathBuf,
         verified: Option<crate::workspace_search::VerifiedHit>,
     ) -> bool {
-        let host = file_open::host_from_environment(
-            crate::host::wezterm::find_wezterm(),
-            std::env::var_os("WEZTERM_PANE"),
-        )
-        .ok();
         let config = crate::config::Config::load(&self.state_root).config.editor;
         let editor = if action == FileAction::Editor {
-            if config.program.is_empty() && config.launch == file_open::EditorLaunch::Gui {
+            if config.program.is_empty() {
                 None
             } else if config.program.is_empty() {
                 ["nvim", "hx", "vim"]
@@ -123,9 +117,7 @@ impl App {
             action,
             &file,
             &base,
-            host.as_ref(),
             editor.as_ref().map(|editor| (editor, config.launch)),
-            &exe,
         ) {
             Ok(action) => action,
             Err(error) => {
@@ -192,11 +184,7 @@ impl App {
                     }
                     let (tx, rx) = mpsc::unbounded_channel();
                     self.file_jobs.push(rx);
-                    self.flash(if action == FileAction::Split {
-                        "Opening independent file editor"
-                    } else {
-                        "Opening editor on disk version; internal edits retained"
-                    });
+                    self.flash("Opening editor on disk version; internal edits retained");
                     tokio::spawn(async move {
                         let message = launch(plan, detached).await.unwrap_or_else(|error| error);
                         let _ = tx.send(message);

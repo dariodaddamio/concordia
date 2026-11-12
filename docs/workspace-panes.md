@@ -7,11 +7,11 @@ preview/search/reload/current-chat suggestion surface. Markdown/JSON open format
 Alt+V or the view bar switches modes. Formatted view is read-only. Source code opens raw,
 editable and syntax-colored. Ctrl+S saves; Ctrl+Z/Ctrl+Y undo/redo; Ctrl+F finds; F3/Shift+F3
 navigate matches. Raw letters such as `v`, `r`, `/` and `q` are file content.
-Visible pointer shapes depend on the terminal host; the installed WezTerm 2024 build does not
+Visible pointer shapes depend on the native renderer; unsupported shapes do not
 implement the requested control. [Chat rendering](chat-rendering.md) records the evidence and
 the newer table/link rendering and input-scroll behavior.
 The initial preview slice shipped in local build `2026-10-21b`.
-`/open` uses internal panes; `/edit PATH` (unlisted) preserves the external-editor route. The
+`/open` uses internal panes and the file action picker can launch the configured GUI editor. The
 search/replacement stage below is implemented with explicit source-bound previews. Keep the stable
 installed binary usable while developing this feature. No live providers are required here.
 

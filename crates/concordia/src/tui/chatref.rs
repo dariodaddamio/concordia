@@ -58,7 +58,7 @@ pub fn active_query(text: &str) -> Option<(usize, String)> {
 }
 
 pub(super) fn reference_query(text: &str) -> Option<(usize, String)> {
-    for prefix in ["/open ", "/preview "] {
+    for prefix in ["/open "] {
         if let Some(query) = text.strip_prefix(prefix).filter(|q| !q.contains('\n')) {
             return Some((
                 prefix.len(),
@@ -339,7 +339,7 @@ impl App {
                 1
             }
         });
-        if !text.starts_with("/open ") && !text.starts_with("/preview ") {
+        if !text.starts_with("/open ") {
             rows.extend(
                 self.chatref
                     .list
@@ -387,7 +387,7 @@ impl App {
                     return;
                 };
                 if let Some(file) = self.related_files.entries.get(index) {
-                    if text.starts_with("/open ") || text.starts_with("/preview ") {
+                    if text.starts_with("/open ") {
                         let name = if file.label.contains(char::is_whitespace) {
                             format!("\"{}\"", file.label)
                         } else {
@@ -477,10 +477,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             app.chatref.selected = (app.chatref.selected + 1) % n;
             true
         }
-        KeyCode::Enter
-            if app.editor.text().starts_with("/open ")
-                || app.editor.text().starts_with("/preview ") =>
-        {
+        KeyCode::Enter if app.editor.text().starts_with("/open ") => {
             if let Reference::File(index) = rows[app.chatref.selected] {
                 app.editor.clear();
                 app.preview_related_file(index);
