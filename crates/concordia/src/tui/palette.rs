@@ -4,6 +4,7 @@
 //! should put in the prompt. Drawing and key handling live in `tui/mod.rs`.
 
 use crate::commands::command_registry;
+use crate::store::ProviderKind;
 use crate::user_commands::UserCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +13,9 @@ pub struct Entry {
     pub help: String,
     /// A user command from `<state>/commands` (drawn with a dim "custom" marker).
     pub custom: bool,
+    /// Provider-native commands are discoverable but unavailable in print/exec mode.
+    pub provider: bool,
+    pub disabled: bool,
 }
 
 /// Commands whose full text starts with what the user has typed. Only a single-line prompt that
@@ -23,6 +27,14 @@ pub fn matching(input: &str) -> Vec<Entry> {
 
 /// Like [`matching`], with the user's commands listed after the built-ins.
 pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
+    matching_for_provider(input, user, None)
+}
+
+pub fn matching_for_provider(
+    input: &str,
+    user: &[UserCommand],
+    provider: Option<ProviderKind>,
+) -> Vec<Entry> {
     if !input.starts_with('/') || input.contains('\n') {
         return Vec::new();
     }
@@ -35,6 +47,18 @@ pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
             command: c.name.to_string(),
             help: c.description.to_string(),
             custom: false,
+            provider: false,
+            disabled: false,
+        });
+    let provider_commands = provider
+        .into_iter()
+        .flat_map(crate::provider::command_specs)
+        .map(|c| Entry {
+            command: c.name.to_string(),
+            help: format!("{} (unavailable in Concordia's provider mode)", c.description),
+            custom: false,
+            provider: true,
+            disabled: true,
         });
     let custom = user
         .iter()
@@ -43,8 +67,10 @@ pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
             command: c.command.to_string(),
             help: c.description.to_string(),
             custom: true,
+            provider: false,
+            disabled: false,
         });
-    let mut entries: Vec<_> = builtin.chain(custom).collect();
+    let mut entries: Vec<_> = builtin.chain(provider_commands).chain(custom).collect();
     if let Some(index) = entries.iter().position(|entry| entry.command == input) {
         let exact = entries.remove(index);
         entries.insert(0, exact);
@@ -163,6 +189,15 @@ go",
     }
 
     #[test]
+    fn active_provider_commands_are_listed_and_disabled_with_transport_reason() {
+        let entries = matching_for_provider("/", &[], Some(ProviderKind::Cursor));
+        let entry = entries.iter().find(|entry| entry.command == "/auto-run").unwrap();
+        assert!(entry.provider);
+        assert!(entry.disabled);
+        assert!(entry.help.contains("unavailable"));
+    }
+
+    #[test]
     fn selection_wraps_and_clamps() {
         let mut p = Palette::default();
         p.up(3);
@@ -242,6 +277,8 @@ pub fn matching_arguments(
                 command,
                 help,
                 custom: false,
+                provider: false,
+                disabled: false,
             });
         }
     };

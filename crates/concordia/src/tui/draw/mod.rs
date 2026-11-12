@@ -298,7 +298,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
         + 2;
     let help_col = entries
         .iter()
-        .map(|e| e.help.chars().count() + if e.custom { 8 } else { 0 })
+        .map(|e| e.help.chars().count() + if e.custom || e.provider { 10 } else { 0 })
         .max()
         .unwrap_or(12);
     let max_width = f.area().width.saturating_sub(2);
@@ -330,7 +330,7 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                 ),
                 Span::styled(e.help.clone(), Style::default().fg(Color::Indexed(245))),
                 Span::styled(
-                    if e.custom { "  custom" } else { "" },
+                    if e.provider { "  provider" } else if e.custom { "  custom" } else { "" },
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))

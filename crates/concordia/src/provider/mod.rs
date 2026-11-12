@@ -16,6 +16,77 @@ pub mod turn;
 use crate::store::ProviderKind;
 use std::path::PathBuf;
 
+/// A provider's interactive slash surface. Concordia launches providers in their documented
+/// machine-readable mode, so these entries are discoverable but not executable as native
+/// commands until that mode exposes a command transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+const CODEX_COMMANDS: &[CommandSpec] = &[
+    CommandSpec { name: "/compact", description: "summarize the current conversation" },
+    CommandSpec { name: "/diff", description: "show the current diff" },
+    CommandSpec { name: "/fork", description: "fork the current thread" },
+    CommandSpec { name: "/init", description: "create an AGENTS.md file" },
+    CommandSpec { name: "/mcp", description: "list or manage MCP tools" },
+    CommandSpec { name: "/plan", description: "switch to Plan mode" },
+    CommandSpec { name: "/review", description: "review current changes" },
+    CommandSpec { name: "/status", description: "inspect session status" },
+    CommandSpec { name: "/theme", description: "choose a terminal theme" },
+    CommandSpec { name: "/vim", description: "toggle Vim composer keys" },
+    CommandSpec { name: "/clear", description: "clear the conversation" },
+    CommandSpec { name: "/export", description: "export the conversation" },
+];
+
+const CLAUDE_COMMANDS: &[CommandSpec] = &[
+    CommandSpec { name: "/compact", description: "compact the conversation" },
+    CommandSpec { name: "/clear", description: "clear conversation history" },
+    CommandSpec { name: "/init", description: "create a CLAUDE.md file" },
+    CommandSpec { name: "/mcp", description: "manage MCP servers" },
+    CommandSpec { name: "/memory", description: "view or edit memory files" },
+    CommandSpec { name: "/review", description: "review the current changes" },
+    CommandSpec { name: "/rewind", description: "rewind a conversation" },
+    CommandSpec { name: "/vim", description: "toggle Vim mode" },
+    CommandSpec { name: "/help", description: "show Claude Code help" },
+];
+
+const CURSOR_COMMANDS: &[CommandSpec] = &[
+    CommandSpec { name: "/auto-run", description: "toggle automatic command approval" },
+    CommandSpec { name: "/new-chat", description: "start a new chat" },
+    CommandSpec { name: "/vim", description: "toggle Vim keys" },
+    CommandSpec { name: "/feedback", description: "send feedback to Cursor" },
+    CommandSpec { name: "/copy-req-id", description: "copy the last request id" },
+    CommandSpec { name: "/logout", description: "sign out of Cursor" },
+    CommandSpec { name: "/quit", description: "exit Cursor Agent" },
+];
+
+pub fn command_specs(kind: ProviderKind) -> &'static [CommandSpec] {
+    match kind {
+        ProviderKind::Codex => CODEX_COMMANDS,
+        ProviderKind::Claude => CLAUDE_COMMANDS,
+        ProviderKind::Cursor => CURSOR_COMMANDS,
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    #[test]
+    fn each_provider_exposes_documented_native_commands() {
+        for (kind, expected) in [
+            (ProviderKind::Codex, "/compact"),
+            (ProviderKind::Claude, "/mcp"),
+            (ProviderKind::Cursor, "/auto-run"),
+        ] {
+            assert!(command_specs(kind).iter().any(|command| command.name == expected));
+            assert!(command_specs(kind).iter().all(|command| !command.description.is_empty()));
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocateSource {
     Override,

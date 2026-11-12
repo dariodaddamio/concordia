@@ -65,6 +65,11 @@ or F11 opens a local shell in the project; F11 returns to chat with its draft in
 
 `/skills` and `/hooks` show the selected account's local sources. Use `/harness connect PATH`
 to apply a declared setup across registered accounts;
+
+The slash picker also lists the active provider's native commands. Concordia owns cross-provider,
+account and session commands; native commands unavailable in the provider's programmatic mode are
+shown disabled, and any other slash name is passed to the active provider. See the [command
+ownership table](docs/command-audit.md#slash-command-ownership).
 later accounts inherit that connection in this project before their first turn. Use `--current`
 for an account-specific setup. `/skills install [PATH]` links a skill folder or collection into provider homes; the default
 source is `~/.agents/skills`. Later accounts inherit shared skill sources across projects.

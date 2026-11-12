@@ -256,6 +256,13 @@ impl App {
             self.toggle_stats();
             return true;
         }
+        // Unknown slash names are provider-owned. Returning false deliberately sends the
+        // original line through the active provider turn instead of manufacturing a Concordia
+        // "unknown command" dead end. Native execution is unavailable in print/exec mode; the
+        // picker explains that boundary while direct input remains provider-visible.
+        if matches!(&cmd, SlashCommand::Unknown(_)) {
+            return false;
+        }
         let is_new = matches!(cmd, SlashCommand::New);
         if is_new && !self.save_turn_checkpoint(true) {
             self.keep.turn_recovery_notice = true;

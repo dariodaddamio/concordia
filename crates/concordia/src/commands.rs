@@ -277,6 +277,10 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     }
 }
 
+pub fn is_provider_passthrough(line: &str) -> bool {
+    matches!(parse_slash(line), Some((SlashCommand::Unknown(_), _)))
+}
+
 pub fn parse_provider(s: &str) -> Option<ProviderKind> {
     match s.trim().to_lowercase().as_str() {
         "codex" => Some(ProviderKind::Codex),
@@ -684,12 +688,9 @@ pub fn dispatch_slash(
                 ],
             )
         }
-        SlashCommand::Unknown(name) => (
-            CommandOutcome::Ok,
-            vec![format!(
-                "unknown command: /{name}; type / to see the commands"
-            )],
-        ),
+        // The TUI routes unknown names to the active provider. Keep the headless dispatcher
+        // side-effect free because it has no provider transport to receive the line.
+        SlashCommand::Unknown(_) => (CommandOutcome::Ok, Vec::new()),
         SlashCommand::Harness(_) | SlashCommand::Customization(_) => (
             CommandOutcome::Ok,
             vec!["/harness runs inside the Concordia TUI".into()],
@@ -727,6 +728,18 @@ mod tests {
 
     fn cmd(line: &str) -> SlashCommand {
         parse_slash(line).unwrap().0
+    }
+
+    #[test]
+    fn unknown_commands_are_not_a_dispatch_error() {
+        let ctx = CommandContext {
+            state_root: Path::new("."),
+            cwd: Path::new("."),
+            provider: ProviderKind::Codex,
+            account: "test",
+            trust: TrustMode::Plan,
+        };
+        assert_eq!(dispatch_slash(cmd("/provider-native"), &ctx).1, Vec::<String>::new());
     }
 
     #[test]

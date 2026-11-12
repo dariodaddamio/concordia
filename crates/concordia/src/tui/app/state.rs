@@ -639,11 +639,15 @@ impl App {
             };
             return palette::matching_arguments(&input, &accounts, &models);
         }
-        palette::matching_with(&input, &self.user_cmds)
+        palette::matching_for_provider(&input, &self.user_cmds, Some(self.provider))
     }
 
     /// Put the chosen command in the prompt.
     pub(in crate::tui) fn complete_palette(&mut self, entry: palette::Entry) {
+        if entry.disabled {
+            self.flash("provider command unavailable: Concordia uses the provider's print/exec mode; type it to send it as a provider prompt");
+            return;
+        }
         let complete_branch = self.editor.text().eq_ignore_ascii_case(&entry.command)
             && palette::is_branch(&entry.command);
         self.editor.set_text(&if complete_branch {
@@ -1162,6 +1166,7 @@ impl App {
         if line.trim().is_empty() {
             return;
         }
+        let provider_passthrough = crate::commands::is_provider_passthrough(&line);
         let user_prompt = match crate::user_commands::expand(&self.user_cmds, &line) {
             Ok(prompt) => prompt,
             Err(error) => {
@@ -1173,7 +1178,7 @@ impl App {
             self.flash("recent messages are loading; your draft is kept");
             return;
         }
-        if self.busy && (!line.starts_with('/') || user_prompt.is_some()) {
+        if self.busy && (!line.starts_with('/') || user_prompt.is_some() || provider_passthrough) {
             let confirmed = self.busy_send_confirmation.take().is_some_and(|armed| {
                 armed.prompt == original_prompt
                     && armed.conversation == self.deleg.d.conversation_id()
@@ -1219,7 +1224,7 @@ impl App {
             return;
         }
         if !self.busy
-            && (!line.starts_with('/') || user_prompt.is_some())
+            && (!line.starts_with('/') || user_prompt.is_some() || provider_passthrough)
             && self.reference_journal.backlogged()
         {
             self.flash("Finishing history references; your draft is kept.");

@@ -1,5 +1,9 @@
 # Changelog
 
+- W8: provider-native slash commands are discoverable in the active-provider picker, while
+  Concordia-owned cross-provider commands keep their single owner. Unknown slash names now pass
+  through to the active provider instead of stopping at an unknown-command message.
+
 - W7: enriched the deterministic v2 handoff map with verbatim goal redirects, structured-tool
   file counts, the last recorded error, the previous agent's bounded final message, restorable
   pointers and current state, under one fixed character budget.
