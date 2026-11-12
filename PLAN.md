@@ -597,6 +597,58 @@ Rewrite requirements:
 - Keep the paused [backlog](docs/plans/README.md), including the accepted dockable-panel request.
 - Repair links and code/tooling documentation references when consolidating pages.
 
+## Next build plan (2026-11-12, awaiting owner go)
+
+Decisions recorded on 2026-11-12:
+- Roles: users set a default orchestrator and default models (with effort) per role, such as
+  implementer, reviewer, re-reviewer and general helper. The `agents` tool applies these defaults
+  when an agent asks for a role. A user's skill can describe what each role does and override a
+  default for a task.
+- BYOK: add opencode as an ACP provider (it covers DeepSeek, Qwen, Kimi, GLM, OpenRouter, Ollama
+  and LM Studio through its own configuration), and let the Claude Code provider run with the
+  user's own `ANTHROPIC_BASE_URL` environment profile. Concordia stores no keys. Codex custom
+  providers are left out because Codex now accepts only the Responses API. Pending owner
+  confirmation.
+- Docs: Starlight with the vendored Opifex theme, published on GitHub Pages. The repository goes
+  public after a history scan.
+- Keyboard: Ctrl+O expands the last collapsed item in the last message; Ctrl+Shift+O expands
+  every item in it.
+
+Lead tasks (not delegated):
+1. Apply the four Harness guard approvals once the owner has run them, add opening-paragraph
+   guidance to the writing skill, and commit `feat/writing-skill`.
+2. Make `harness map --install-task` create a hidden task.
+3. Register `~/.codex-2` and `~/.codex-3` as ordinary accounts before the legacy code goes.
+4. Run live verification with cheap models (Cursor `auto`, Claude `haiku`, Codex
+   `gpt-5.6-luna` on low effort; at most about 10 turns per item) for questions and Needs
+   attention, command passthrough, usage-limit continuation, Grok Build and, after it lands,
+   opencode.
+5. Run the full suite outside the sandbox after every worker and send failures straight back to
+   that worker.
+
+Worker steps, in order, each gated on a build and a passing full suite:
+1. Delete the legacy compatibility code.
+2. Test hygiene: stop tests rewriting `docs/img`, and add deterministic regression tests for
+   fixes from 2026-11-11 and 2026-11-12 that lack one.
+3. Roles and defaults: the settings, a roles picker, and role-aware `agents` requests.
+4. Agents view matching the owner's reference screenshot:
+   - A numbered list of agents, each row showing a status icon, role, model, effort, context
+     bar and turn count.
+   - A detail pane showing role, model and effort, tokens used against the limit with a bar,
+     the percentage of the compaction reference, and tokens remaining.
+   - The detail pane also lists each task with its duration, origin (for example "From
+     Orchestrator") and status.
+5. opencode provider over ACP, plus the Claude Code base-URL environment profile.
+6. Keyboard and tabs: Ctrl+O and Ctrl+Shift+O expansion, and drag and keyboard tab management.
+7. Docs and release:
+   - The README opening and a Starlight content pass, with the publishing workflow enabled.
+   - Checksums and build attestations on releases.
+
+Going public:
+- Scan the full Git history for secrets and personal data.
+- Check the license and notices.
+- After the owner's final go, make the repository public and enable Pages.
+
 ## This slice
 
 ### W15 documentation site scaffold - anti-slop gate
