@@ -227,7 +227,7 @@ fn startup_choices(root: &Path) -> io::Result<Vec<RecoveryChoice>> {
 }
 
 /// A dismissal suppresses startup offers for this exact saved version only.
-/// Explicit /recover still lists it, and no original recovery data is removed.
+/// Automatic restoration lists it without removing the original recovery data.
 pub fn dismiss(root: &Path, choices: &[RecoveryChoice]) -> io::Result<()> {
     for choice in choices {
         let lease = claim(root, &choice.id)?;

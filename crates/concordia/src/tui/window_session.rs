@@ -334,14 +334,14 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
             }
             if restored.is_empty() {
                 restored.push(fresh_home(root, cwd, native,
-                    "Saved chats are already open in another window or their ownership is unavailable. Their snapshots and recovery records were kept; use /recover."));
+                    "Saved chats are already open in another window or their ownership is unavailable. Their snapshots and recovery records were kept for the next available tab."));
             }
             let active = restored
                 .iter()
                 .position(|tab| tab.id.to_string() == selected_id)
                 .unwrap_or(0);
             if !duplicate_records.is_empty() {
-                restored[active].app.push_system(format!("Duplicate saved conversations were left in recovery: {}. Their complete distinct snapshots remain retained in the canonical window record; use /recover to inspect each draft and request.", duplicate_records.join(", ")));
+                restored[active].app.push_system(format!("Duplicate saved conversations were retained: {}. Their complete distinct snapshots remain in the canonical window record.", duplicate_records.join(", ")));
             }
             append_orphan_requests(
                 root,
@@ -390,13 +390,10 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
             } else if !app.continuation.waiting() {
                 landing::open(&mut app);
             }
-            if warning.is_none() && !app.recovery_choices().is_empty() {
-                app.offer_startup_recovery();
-            }
             if let Some(warning) = warning {
                 landing::close(&mut app);
                 app.push_system(format!(
-                    "Open-tab recovery unavailable: {warning}. Use /recover to inspect saved work."
+                    "Open-tab restoration unavailable: {warning}. Saved work remains retained."
                 ));
             }
             app.prior_provider = app.provider;
@@ -413,7 +410,7 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                     }
                 }
                 drop(tab);
-                tab = fresh_home(root, cwd, native, &format!("Recovered chat is already open or ownership is unavailable: {error}. Original recovery remains available through /recover; no request was replayed."));
+                tab = fresh_home(root, cwd, native, &format!("Recovered chat is already open or ownership is unavailable: {error}. No request was replayed; saved work remains retained."));
             }
             (owner, tabs::TabSet::new(tab))
         }
@@ -502,20 +499,6 @@ fn append_orphan_requests(
             continue;
         }
         inspected += 1;
-        // Only unfinished requests open automatically; ordinary abandoned drafts
-        // remain explicit /recover choices. Canonical restoration validates schema/workspace.
-        let unfinished = crate::fs_safe::read_text_bounded(
-            &recovery_root.join(&choice.id).join("turn.json"),
-            2 * 1024 * 1024,
-        )
-        .and_then(|text| {
-            serde_json::from_str::<Option<super::super::turn_checkpoint::Checkpoint>>(&text).ok()
-        })
-        .flatten();
-        if unfinished.is_none() {
-            remaining.push(choice);
-            continue;
-        }
         if appended >= MAX_STARTUP_RECOVERIES || tabs.len() >= tab_limit {
             remaining.push(choice);
             continue;
@@ -528,7 +511,6 @@ fn append_orphan_requests(
             .lease
             .as_ref()
             .is_none_or(|lease| lease.record_id() != choice.id)
-            || !app.continuation.waiting()
         {
             remaining.push(choice);
             continue;
@@ -552,11 +534,11 @@ fn append_orphan_requests(
                 app.reload_restored_history(&session);
             }
         }
-        app.push_system("Recovered an unfinished request omitted from the saved tab layout. It remains paused; inspect prior actions before continuing.");
+        app.push_system("Restored saved draft and queued work in a separate tab; it remains paused until you resume it.");
         let mut tab = RunTab::new(app);
         if let Err(error) = tab.acquire_chat_ownership() {
             tabs[active].app.push_system(format!(
-                "Unfinished request {} remains in /recover: {error}",
+                "Saved work {} remains retained because its tab could not be opened: {error}",
                 choice.id
             ));
             remaining.push(choice);
@@ -567,7 +549,7 @@ fn append_orphan_requests(
     }
     if appended > 0 {
         tabs[active].app.push_system(format!(
-            "Restored {appended} unfinished request tab(s), paused; the selected tab is unchanged."
+            "Restored {appended} saved work tab(s), paused; the selected tab is unchanged."
         ));
     }
     if !remaining.is_empty() {

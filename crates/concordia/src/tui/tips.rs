@@ -2,7 +2,7 @@
 //! the prompt has sat idle and empty for a while. A static list: no I/O, no threads.
 
 pub const TIPS: &[&str] = &[
-    "Shift+Tab cycles plan, ask and workspace; use /mode full with confirmation.",
+    "Shift+Tab cycles plan, ask and edit; use /mode full with confirmation.",
     "/usage all shows the limits of every account at a glance.",
     "/use switches account or provider; the conversation carries over.",
     "/delegate hands a task to a background worker; the main chat stays free.",

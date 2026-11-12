@@ -100,10 +100,9 @@ record answers and open proposals; they are not approved final product wording o
   - Command-surface audit (2026-11-11, README command table and `commands.rs`): overlapping
     entry points for multi-agent work (`/delegate`, `/workers`, `/crew`, `/worker-panel`, plus the
     planned Agents panel), account management (`/use add`, `/login`, `/connect`, `/workers add`),
-    file preview (`/open`, `/preview`), shared setup (`/skills connect`, `/hooks connect`,
-    `/harness connect`) and recovery (`/recover`, `/continue`, the `/use` continue row, the planned
-    "continue where you left off"). Remaining "workspace" terms: the Workspace permission mode
-    and `/worktree` "Git workspaces". Each consolidation awaits an owner decision.
+    file preview (`/open`, `/preview`), shared setup (`/skills`, `/hooks`, `/harness`) and recovery
+    (inline retry/account handoff, automatic draft/queue restoration). The permission mode is
+    named Edit; `/worktree` "Git workspaces" remains a separate filesystem concept.
   - Grok research (2026-11-11, official xAI docs, partly unverified): Grok Build is a beta `grok`
     CLI with headless streaming JSON, session resume and an ACP agent (`grok agent stdio`), so it
     can likely reuse the Cursor ACP path. Grok Bot is a cloud-hosted assistant used through chat,
@@ -643,3 +642,13 @@ approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout 
 | path | tendency_check | justification |
 | --- | --- | --- |
 | `crates/concordia/src/**`, `crates/concordia/src/tui/**`, `README.md` | ok: 1, 4, 9, 10 | Classify existing failures against PLAN decisions; remove tests for removed goals/delegation/recovery surfaces, update stale expectations, and fix only confirmed product regressions. No new tests or compatibility layers. |
+
+### W6a recovery, mode and connect consolidation - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/commands.rs`, `src/tui/app/{state,slash,pickers}.rs`, `src/tui/recovery_ui.rs` | ok: 1, 4, 10 | Remove public recovery commands and the `/use` continuation row; retain the existing continuation state only for inline retry/account handoff behavior. |
+| `crates/concordia/src/store.rs`, `src/config.rs`, provider planners, `src/tui/**`, tests | ok: 1, 4, 5, 10 | Rename the permission enum and serialized/UI vocabulary to `edit` at the existing trust owner; no compatibility alias. |
+| `crates/concordia/src/commands.rs`, `src/harness/**`, `src/tui/**` | ok: 1, 4, 10 | Make `/harness` the sole connect/status/verify/disconnect action owner; `/skills` and `/hooks` remain views and `/skills` keeps switches. |
+| `crates/concordia/src/user_commands.rs`, `src/doctor.rs`, `src/tui/**` | ok: 1, 4, 6, 10 | Keep one bounded shortcut scan and report provider-command shadows without adding a second command registry. |
+| `README.md`, `docs/**`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Synchronize catalogs and user-facing documentation with the code and record the shipped change. |

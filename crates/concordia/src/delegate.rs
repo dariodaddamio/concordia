@@ -88,7 +88,7 @@ pub fn worker_trust(user: TrustMode, child: ChildTrust) -> TrustMode {
     let want = match child {
         ChildTrust::Inherit => user,
         ChildTrust::Ask => TrustMode::Ask,
-        ChildTrust::Workspace => TrustMode::Workspace,
+        ChildTrust::Edit => TrustMode::Edit,
         ChildTrust::Full => TrustMode::Full,
     };
     if want.rank() <= user.rank() {
@@ -1365,7 +1365,7 @@ impl Delegates {
             session_id: None,
             exit_code: None,
             error: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             cancel: None,
             cancel_requested: false,
             announced: state.is_finished(),
@@ -1376,7 +1376,7 @@ impl Delegates {
                 cwd: PathBuf::from("."),
                 prompt: String::new(),
                 prefix: None,
-                trust: TrustMode::Workspace,
+                trust: TrustMode::Edit,
             },
         });
         id

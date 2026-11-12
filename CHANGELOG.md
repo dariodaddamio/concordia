@@ -1,5 +1,10 @@
 # Changelog
 
+- W6a: removed public recovery commands and the `/use` continuation row; interruptions,
+  usage-limit handoff and failed-request retry now stay inline. Renamed the Workspace permission
+  mode to Edit, made `/harness` the sole harness action path, and report provider-command
+  shadows for user shortcuts.
+
 - W3f: Ctrl+G now keeps provider-native subagents with unmatched provider thread senders as
   root agents, includes restored transcript cards in the same Agents projection, and keeps the
   footer count and tree aligned for native, agents-tool and untracked provider runs.

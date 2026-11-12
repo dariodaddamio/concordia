@@ -11,17 +11,10 @@ cannot answer a pending `request_user_input` event. Claude's native stdio transp
 
 ## Limit continuation and unfinished work
 
-In `/use`, **next provider for this session** opens choices to pause at a limit, choose
-automatically, or try a specific connected provider account first. `/continuation` opens the
-same screen. These choices apply to the current window without switching the active turn or
-changing the saved default. A selected account takes priority over configured model/account
-preferences; if it also reaches a limit, bounded automatic selection continues through the
-remaining targets. `/continuation manual|automatic` changes the session mode directly and clears
-the session's preferred account. Choosing a policy does not send an already paused request;
-use `/continue` to review and continue it.
-
-The limit handoff row in `/use` pauses or automatically continues when usage runs out. A paused
-request offers account and cached-model choices. The toggle is saved for future windows. Persistent defaults:
+Usage-limit handling stays inline in the affected chat. The failed or exhausted request remains
+paused in Needs attention, where Retry or continue-on-another-account actions offer the available
+account and cached-model choices. These actions do not switch an active turn or silently replay
+uncertain provider work. Persistent handoff defaults:
 
 ```toml
 [continuation]
@@ -56,11 +49,10 @@ queued edit defers handoff until it closes; still-running/uncertain tool complet
 Handoff keeps the conversation and title, starts a new native session in the selected account's
 home and sends the bounded map plus revision-checked native-source pointers where supported,
 with an instruction to reconcile completed actions. Unfinished requests survive restart separately
-from newer drafts and queues, paused for explicit continuation. `/continue` reviews the request;
-`/continue ACCOUNT [MODEL]` chooses a target. See [native memory](native-memory.md).
+from newer drafts and queues, paused in their restored tabs. See [native memory](native-memory.md).
 Native tool/approval state is not transferred. Queued prompts remain paused for explicit resume.
-There are no model calls for quota checks or summarization. Codex limits use the supported read-only `account/rateLimits/read` interface; no thread or turn is created. `/continue ACCOUNT MODEL` explicitly chooses a
-cached model after a usage failure. The `/use` handoff toggle is stored locally and overrides the
+There are no model calls for quota checks or summarization. Codex limits use the supported read-only `account/rateLimits/read` interface; no thread or turn is created. An inline account action explicitly chooses a
+cached model after a usage failure. The handoff preference is stored locally and overrides the
 config default for future launches.
 
 ## Titles, resume and agent reports

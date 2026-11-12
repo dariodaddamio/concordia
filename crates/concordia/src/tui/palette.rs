@@ -314,12 +314,12 @@ pub fn matching_arguments(
         "/mode" => {
             add(
                 "/mode".into(),
-                "plan | ask | auto | full - Enter shows the permission mode".into(),
+                "plan | ask | edit | full - Enter shows the permission mode".into(),
             );
             for (mode, help) in [
                 ("plan", "read-only analysis"),
                 ("ask", "use provider approvals"),
-                ("auto", "allow workspace edits"),
+                ("edit", "allow workspace edits"),
                 ("full", "full access using provider-supported controls"),
             ] {
                 add(format!("/mode {mode}"), help.into());

@@ -1263,7 +1263,7 @@ impl App {
         let requested_trust = match settings.child_trust {
             ChildTrust::Inherit => self.trust,
             ChildTrust::Ask => TrustMode::Ask,
-            ChildTrust::Workspace => TrustMode::Workspace,
+            ChildTrust::Edit => TrustMode::Edit,
             ChildTrust::Full => TrustMode::Full,
         };
         let trust = worker_trust(self.trust, settings.child_trust);

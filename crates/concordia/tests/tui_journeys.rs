@@ -553,7 +553,7 @@ fn shared_setup_commands_are_discoverable_and_work_through_the_terminal_ui() {
         session.screen().contains("Native hook trust")
     });
     session.send("\x1b");
-    session.submit("/hooks status");
+    session.submit("/skills");
     session.until("shared source status", |session| {
         session.screen().contains("shared skills:")
     });
@@ -1075,63 +1075,6 @@ fn terminal_word_deletion_usage_and_focus_repaint() {
         s.prompts().is_empty(),
         "UI commands must not spend provider turns"
     );
-    s.exit();
-}
-
-#[test]
-#[ignore = "isolated session-selected provider handoff journey; fake providers only"]
-fn a_session_selected_provider_continues_without_changing_the_saved_default() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    let mut s = Session::launch(dir.path());
-    let config_before = std::fs::read(dir.path().join("config.toml")).unwrap();
-    s.submit("/continuation policy set claude");
-    s.until("ordered local policy saved without a provider turn", |s| {
-        s.screen().contains("Routing policy saved")
-    });
-    s.submit("/continuation routes");
-    s.until("route eligibility visible", |s| {
-        s.screen()
-            .contains("Local routing snapshot MainContinuation")
-    });
-    assert!(s.prompts().is_empty());
-    assert_eq!(
-        std::fs::read(dir.path().join("config.toml")).unwrap(),
-        config_before
-    );
-    s.submit("/continuation");
-    s.until("session policy screen", |s| {
-        s.screen().contains("next provider at a usage limit")
-    });
-    s.paste("claude");
-    s.enter();
-    s.until("session account chosen", |s| {
-        s.screen().contains("try claude first")
-    });
-    assert!(s.prompts().is_empty());
-    assert!(concordia::store::get_settings(dir.path())
-        .continuation_automatic
-        .is_none());
-    s.submit("Fix graph [quota] [coded-limit]");
-    s.until("selected provider completes continuation", |s| {
-        s.journal()
-            .iter()
-            .any(|e| e["kind"] == "done" && e["provider"] == "claude")
-    });
-    let starts: Vec<_> = s
-        .journal()
-        .into_iter()
-        .filter(|e| e["kind"] == "start")
-        .collect();
-    assert_eq!(starts.len(), 2);
-    assert_eq!(starts[0]["provider"], "codex");
-    assert_eq!(starts[1]["provider"], "claude");
-    assert!(!starts[1]["args"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|arg| arg == "quota-source-session" || arg == "--resume"));
     s.exit();
 }
 

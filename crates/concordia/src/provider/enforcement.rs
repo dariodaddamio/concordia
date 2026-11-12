@@ -696,7 +696,7 @@ mod tests {
     fn write_capable_trust_drops_to_plan_with_a_notice() {
         let (store, dir) = dirs2();
         locked_project(dir.path());
-        for trust in [TrustMode::Ask, TrustMode::Workspace, TrustMode::Full] {
+        for trust in [TrustMode::Ask, TrustMode::Edit, TrustMode::Full] {
             let (effective, notice) =
                 effective_trust_in(store.path(), dir.path(), ProviderKind::Claude, None, trust);
             assert_eq!(effective, TrustMode::Plan, "{trust:?}");

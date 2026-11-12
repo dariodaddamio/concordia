@@ -643,7 +643,7 @@ fn check_config(root: &Path) -> Check {
     }
 }
 
-/// `<state>/commands/*.md`: count, plus a warning for skipped files and built-in name clashes.
+/// `<state>/commands/*.md`: count, plus warnings for skipped files and command shadows.
 fn check_user_commands(root: &Path) -> Check {
     let s = crate::user_commands::scan(root);
     let mut detail = format!("{} custom command(s)", s.commands.len());
@@ -654,6 +654,18 @@ fn check_user_commands(root: &Path) -> Check {
             "; {} clash(es) with built-in commands (built-in wins): {}",
             s.clashes.len(),
             s.clashes
+                .iter()
+                .map(|n| format!("/{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.provider_clashes.is_empty() {
+        level = Level::Warn;
+        detail.push_str(&format!(
+            "; {} shadow(s) provider commands (provider wins): {}",
+            s.provider_clashes.len(),
+            s.provider_clashes
                 .iter()
                 .map(|n| format!("/{n}"))
                 .collect::<Vec<_>>()

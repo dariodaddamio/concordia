@@ -438,7 +438,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             home_path: Some(root),
             model: Some("fixture-model"),
             native_session_id: Some("exact-native-thread"),
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             context_prefix: None,
             local_time: None,
             compaction: Default::default(),

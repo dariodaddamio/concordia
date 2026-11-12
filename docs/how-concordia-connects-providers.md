@@ -91,7 +91,7 @@ Trust modes have an ordered local meaning, but providers do not expose the same 
 | --- | --- | --- | --- |
 | Plan | `--skip-git-repo-check -s read-only` | `--permission-mode plan` | `--mode plan`; ACP sets session mode `plan` |
 | Ask | same read-only Codex sandbox (Codex exec has no separate plan/ask flag) | `--permission-mode manual` | no extra print flag; ACP uses agent mode and native permission requests |
-| Workspace | `--skip-git-repo-check --approve-for-me` | `--permission-mode acceptEdits` | default workspace sandbox; never `--sandbox disabled` |
+| Edit | `--skip-git-repo-check --approve-for-me` | `--permission-mode acceptEdits` | default workspace sandbox; never `--sandbox disabled` |
 | Full | `--skip-git-repo-check --dangerously-bypass-approvals-and-sandbox` | `--dangerously-skip-permissions` | `--force` |
 
 Native trust translation reads planner-owned options before stdin/image transport rewriting. It
@@ -104,7 +104,7 @@ The planners are
 [`cursor::plan_cursor_turn_with`](../crates/concordia/src/provider/cursor.rs).
 
 Codex app-server derives a native `sandboxPolicy` and `approvalPolicy` from the final enforced
-plan. Read-only uses `approvalPolicy: never`; Workspace uses workspace-write plus `on-request` and
+plan. Read-only uses `approvalPolicy: never`; Edit uses workspace-write plus `on-request` and
 keeps the user as reviewer; Full uses danger-full-access. Native requests are scoped to the exact
 connection/run/attempt before the UI can reply. Source:
 [`provider/turn_appserver.rs` (`run`)](../crates/concordia/src/provider/turn_appserver.rs) and

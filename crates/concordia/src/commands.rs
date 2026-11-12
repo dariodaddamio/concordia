@@ -22,7 +22,7 @@ pub enum SlashCommand {
     Resume,
     New,
     Config,
-    /// `/mode [plan|ask|auto|full]`: show or set the permission mode.
+    /// `/mode [plan|ask|edit|full]`: show or set the permission mode.
     Mode(Option<String>),
     Update,
     Version,
@@ -257,13 +257,11 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
                 ));
             }
             let routed = match (cmd.as_str(), action) {
-                (_, "" | "list" | "catalog") => {
+                (_, "" | "list" | "catalog" | "status") => {
                     return Some((SlashCommand::Customization(cmd == "hooks"), false))
                 }
-                (_, "connect" | "status") => format!("{action} {rest}"),
                 ("skills", "install") => format!("skills {rest}"),
                 ("skills", "remove") => format!("skills-remove {rest}"),
-                ("hooks", "verify") => format!("verify {rest}"),
                 _ => return Some((SlashCommand::Invalid(cmd), false)),
             };
             Some((SlashCommand::Harness(routed), false))
@@ -377,7 +375,7 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
     command!(
         "/mode",
         [],
-        "[plan|ask|auto|full]",
+        "[plan|ask|edit|full]",
         "how much the agent may do without asking",
         "Set the permission mode for the active conversation.",
         true,
@@ -419,50 +417,6 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         Some("Use @ to find an earlier chat while writing.")
     ),
     command!(
-        "/delegate",
-        ["/delegates"],
-        "ACCOUNT TASK",
-        "run tasks on worker accounts",
-        "Send a bounded task to a worker account and review its result.",
-        true,
-        CommandCategory::Workers,
-        None,
-        Some("Tab queues your message while a turn runs; Ctrl+R resumes a paused queue.")
-    ),
-    command!(
-        "/workers",
-        ["/worker"],
-        "[add|remove]",
-        "manage worker accounts",
-        "List or manage the accounts available to workers.",
-        true,
-        CommandCategory::Workers,
-        None,
-        Some("Tab queues your message while a turn runs; Ctrl+R resumes a paused queue.")
-    ),
-    command!(
-        "/crew",
-        [],
-        "[list|use NAME|clear]",
-        "choose a saved lead and worker preset",
-        "Apply a local crew from config.toml without making a provider call.",
-        true,
-        CommandCategory::Workers,
-        None,
-        None
-    ),
-    command!(
-        "/worker-panel",
-        [],
-        "",
-        "toggle the worker side panel",
-        "Show live worker state in a read-only right-hand panel on wide terminals.",
-        true,
-        CommandCategory::Workers,
-        Some("Ctrl+Shift+G"),
-        None
-    ),
-    command!(
         "/harness",
         [],
         "ACTION",
@@ -474,15 +428,15 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         None
     ),
     command!(
-        "/skills", [], "[list|install [PATH]|remove PATH|connect PATH|status]",
-        "inspect skills and connect shared setup",
+        "/skills", [], "[list|install [PATH]|remove PATH]",
+        "inspect skills and toggle their availability",
         "List selected account sources. Install a skill folder/collection across accounts; default source: ~/.agents/skills. Use --current to limit setup.",
         false, CommandCategory::Settings, None, None
     ),
     command!(
-        "/hooks", [], "[list|connect PATH|verify|status]",
-        "inspect hooks and verify shared setup",
-        "List native hook sources; connect shared setup or run its verification. Native trust remains separate.",
+        "/hooks", [], "[list]",
+        "inspect native hooks",
+        "List native hook sources. Connect and verify harness setup through /harness. Native trust remains separate.",
         false, CommandCategory::Settings, None, None
     ),
     command!(
@@ -493,17 +447,6 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         "Open a formatted internal file preview.",
         true,
         CommandCategory::Workspace,
-        None,
-        None
-    ),
-    command!(
-        "/recover",
-        [],
-        "[retry|legacy]",
-        "inspect saved drafts and interrupted requests",
-        "Preview or restore saved work for this workspace without automatically sending it.",
-        true,
-        CommandCategory::Chat,
         None,
         None
     ),
@@ -776,10 +719,10 @@ mod tests {
                 .0,
             SlashCommand::Harness("skills \"shared skills\" --current".into())
         );
-        assert_eq!(
+        assert!(matches!(
             parse_slash("/hooks verify").unwrap().0,
-            SlashCommand::Harness("verify ".into())
-        );
+            SlashCommand::Invalid(_)
+        ));
     }
 
     fn cmd(line: &str) -> SlashCommand {
@@ -806,7 +749,7 @@ mod tests {
             cwd: &dir,
             provider: ProviderKind::Codex,
             account: "codex",
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
         };
         assert_eq!(
             dispatch_slash(SlashCommand::UseAdd(None), &ctx).0,
@@ -837,7 +780,7 @@ mod usage_tests {
             cwd: &dir,
             provider: ProviderKind::Codex,
             account: "codex",
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
         };
         assert_eq!(
             dispatch_slash(SlashCommand::Usage, &ctx).0,

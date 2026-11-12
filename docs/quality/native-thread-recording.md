@@ -24,7 +24,7 @@ automatic continuation still stops while a tool result is uncertain. The stderr 
 reported only when the turn carries no such error.
 
 When it does appear on its own, Concordia classifies it separately from quota exhaustion. The unfinished
-request is kept, queued work pauses, and explicit `/continue ACCOUNT` starts a fresh session
+request is kept, queued work pauses, and the inline account action starts a fresh session
 with source pointers and reconciliation instructions. It never deletes native history or
 automatically replays uncertain edits because a persistence write failed.
 

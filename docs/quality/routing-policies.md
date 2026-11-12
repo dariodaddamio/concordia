@@ -17,7 +17,7 @@ targets and unavailable explicit models. A cached quota observation includes its
 it never establishes known available capacity or verifies the freshness of the native login.
 Inspection starts no provider, network request or model turn.
 
-`/delegate routes` inspects future worker candidates. `/continuation routes` inspects the current
+`/delegate routes` inspects future worker candidates. The inline handoff picker shows current
 approved main sequence, or the future sequence before a request starts. Each snapshot includes
 opaque home identity, observation time and policy revision. One background inspection runs per
 app; late results from an earlier conversation are discarded. Native metadata reads are bounded.
@@ -30,7 +30,7 @@ presence and explicit models. A changed captured account/home/login binding bloc
 ## Ordered overrides and approval ownership
 
 Use `/delegate policy set WORKER[:MODEL] ...` or
-`/continuation policy set ACCOUNT[:MODEL] ...` to save an ordered sequence for future requests.
+Handoff defaults are configured in `/config` and selected targets remain local to the affected chat.
 `policy` reads the saved override; `policy reset` clears it and uses configured ordering.
 Models are exact native IDs; an absent/unavailable explicit ID is skipped, never substituted.
 Policy editing does not enable automatic continuation or worker failover.

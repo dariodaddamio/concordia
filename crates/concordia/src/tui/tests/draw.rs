@@ -826,7 +826,7 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
 fn shift_tab_never_reaches_full() {
     use ratatui::style::Color;
     let mut h = Harness::new(100, 12);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
     let mut seen = Vec::new();
     for _ in 0..3 {
         h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
@@ -835,12 +835,12 @@ fn shift_tab_never_reaches_full() {
     }
     assert_eq!(
         seen,
-        [TrustMode::Plan, TrustMode::Ask, TrustMode::Workspace]
+        [TrustMode::Plan, TrustMode::Ask, TrustMode::Edit]
     );
     for (mode, want) in [
         (TrustMode::Plan, Color::Cyan),
         (TrustMode::Ask, Color::Yellow),
-        (TrustMode::Workspace, Color::Green),
+        (TrustMode::Edit, Color::Green),
         (TrustMode::Full, Color::Red),
     ] {
         h.app.trust = mode;
@@ -948,7 +948,7 @@ fn mode_command_shows_and_sets_the_mode() {
     h.type_str("/mode");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     let s = h.screen();
-    assert!(s.contains("mode: workspace"), "{s}");
+    assert!(s.contains("mode: edit"), "{s}");
     h.type_str("/mode plan");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.trust, TrustMode::Plan);
@@ -957,24 +957,24 @@ fn mode_command_shows_and_sets_the_mode() {
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.trust, TrustMode::Plan);
     assert!(h.screen().contains("unknown mode bogus"));
-    h.type_str("/mode auto");
+    h.type_str("/mode edit");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 }
 
 #[test]
 fn mode_full_requires_confirmation_once_per_session() {
     let mut h = Harness::new(100, 24);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 
     h.send("/mode full");
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
     assert_eq!(
         h.app.picker.as_ref().unwrap().kind,
         PickerKind::FullModeConfirm
     );
     h.key(KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 
     h.send("/mode full");
     assert_eq!(

@@ -29,7 +29,7 @@ fn codex_workspace_argv_is_stable() {
         codex_home: Some(&home),
         model: Some("gpt-5.6-sol"),
         native_session_id: Some("sess-1"),
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
     })
     .unwrap();
     assert_eq!(
@@ -165,7 +165,7 @@ fn claude_workspace_argv_and_resume() {
         config_dir: Some(&home),
         model: Some("sonnet"),
         native_session_id: Some("sess-claude"),
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
     })
     .unwrap();
     assert!(plan
@@ -192,7 +192,7 @@ fn cursor_print_argv_requires_explicit_resume() {
         home_path: None,
         model: None,
         native_session_id: Some("chat-1"),
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
     })
     .unwrap();
     assert!(plan.argv.contains(&"--print".into()));
@@ -238,7 +238,7 @@ fn cursor_trust_modes_have_explicit_safe_argv() {
         ask.iter().map(|s| s.to_string()).collect::<Vec<_>>()
     );
     assert_eq!(
-        plan(TrustMode::Workspace),
+        plan(TrustMode::Edit),
         ask.iter().map(|s| s.to_string()).collect::<Vec<_>>()
     );
     let mut full = common;
@@ -247,7 +247,7 @@ fn cursor_trust_modes_have_explicit_safe_argv() {
         plan(TrustMode::Full),
         full.iter().map(|s| s.to_string()).collect::<Vec<_>>()
     );
-    assert!(!plan(TrustMode::Workspace).contains(&"disabled".to_string()));
+    assert!(!plan(TrustMode::Edit).contains(&"disabled".to_string()));
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn unified_planner_never_emits_last() {
             home_path: None,
             model: None,
             native_session_id: Some("id-1"),
-            trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
             context_prefix: None,
             local_time: None,
             compaction: Default::default(),
@@ -312,7 +312,7 @@ fn claude_first_turn_names_a_session_and_later_turns_resume_it() {
             config_dir: None,
             model: None,
             native_session_id: sid,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
         })
         .unwrap()
     };

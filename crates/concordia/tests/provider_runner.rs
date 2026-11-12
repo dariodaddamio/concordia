@@ -125,7 +125,7 @@ async fn closed_started_receiver_cancels_the_provider() {
         home_path: None,
         model: None,
         native_session_id: None,
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
         context_prefix: None,
         local_time: None,
         compaction: Default::default(),

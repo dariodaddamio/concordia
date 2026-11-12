@@ -49,23 +49,22 @@ or F11 opens a local shell in the project; F11 returns to chat with its draft in
 | `/model` | `[MODEL]` | choose the model | everyday |
 | `/rename` | `[TITLE]` | rename the current chat | advanced |
 | `/config` | `[KEY VALUE]` | settings: display, permissions, accounts and behavior | everyday |
-| `/mode` | `[plan\|ask\|auto\|full]` | how much the agent may do without asking | everyday |
+| `/mode` | `[plan\|ask\|edit\|full]` | how much the agent may do without asking | everyday |
 | `/usage` | `[all\|refresh]` | limits for every account | everyday |
 | `/new` | `` | start a fresh chat | everyday |
 | `/resume` | `` | continue an earlier chat | everyday |
 | `/harness` | `ACTION` | connect and run harness tools | advanced |
-| `/skills` | `[list\|install [PATH]\|remove PATH\|connect PATH\|status]` | inspect skills and connect shared setup | advanced |
-| `/hooks` | `[list\|connect PATH\|verify\|status]` | inspect hooks and verify shared setup | advanced |
+| `/skills` | `[list\|install [PATH]\|remove PATH]` | inspect skills and toggle their availability | advanced |
+| `/hooks` | `[list]` | inspect native hooks | advanced |
 | `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
-| `/recover` | `[retry\|legacy]` | inspect saved drafts and interrupted requests | everyday |
 | `/copy` | `` | copy the last reply | everyday |
 | `/doctor` | `` | check your setup | everyday |
 | `/update` | `` | update Concordia | everyday |
 | `/exit` | `` | exit Concordia | everyday |
 <!-- COMMANDS:END -->
 
-`/skills` and `/hooks` show the selected account's local sources. Their `connect PATH`
-action uses `/harness connect PATH` to apply a declared setup across registered accounts;
+`/skills` and `/hooks` show the selected account's local sources. Use `/harness connect PATH`
+to apply a declared setup across registered accounts;
 later accounts inherit that connection in this project before their first turn. Use `--current`
 for an account-specific setup. `/skills install [PATH]` links a skill folder or collection into provider homes; the default
 source is `~/.agents/skills`. Later accounts inherit shared skill sources across projects.
@@ -73,8 +72,8 @@ Links keep one current source, and existing same-named skills are preserved.
 `/skills remove PATH` stops sharing and removes matching directory links across accounts;
 source files and other skill directories are preserved.
 `/harness skill` installs Concordia's connection instructions.
-`/hooks status` shows shared skill sources and per-account connection results;
-`/hooks verify` runs declared verification probes.
+`/harness status` shows shared sources and per-account connection results; `/harness verify`
+runs declared verification probes and `/harness tools` lists and test-runs connected tools.
 Native hook consent must be reviewed in each provider's own client. A connected configuration
 does not prove that hooks are trusted, active or able to protect every source language.
 
@@ -83,7 +82,7 @@ discovery needs diagnosis.
 
 ## Safety at a glance
 
-- Plan, Ask and Workspace modes limit what a provider may do. Full access requires explicit
+- Plan, Ask and Edit modes limit what a provider may do. Full access requires explicit
   `/mode full` confirmation.
 - Delegated agents never exceed the mode selected for their parent conversation.
 - Concordia itself makes no LLM calls; memory and handoff are deterministic local logic.

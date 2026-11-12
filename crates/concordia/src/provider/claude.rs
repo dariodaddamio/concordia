@@ -60,7 +60,7 @@ pub fn plan_claude_turn_with(
             argv.push("--permission-mode".into());
             argv.push("manual".into());
         }
-        TrustMode::Workspace => {
+        TrustMode::Edit => {
             argv.push("--permission-mode".into());
             argv.push("acceptEdits".into());
         }

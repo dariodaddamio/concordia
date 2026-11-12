@@ -91,7 +91,6 @@ mod queue_controls;
 mod queue_focus;
 mod raster;
 mod recovery;
-mod recovery_ui;
 mod reference_journal;
 mod related_files;
 mod session_ui;
@@ -192,12 +191,12 @@ fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
     }
 }
 
-/// Next permission mode for Shift+Tab: plan -> ask -> workspace -> plan.
+/// Next permission mode for Shift+Tab: plan -> ask -> edit -> plan.
 fn next_mode(m: TrustMode) -> TrustMode {
     match m {
         TrustMode::Plan => TrustMode::Ask,
-        TrustMode::Ask => TrustMode::Workspace,
-        TrustMode::Workspace | TrustMode::Full => TrustMode::Plan,
+        TrustMode::Ask => TrustMode::Edit,
+        TrustMode::Edit | TrustMode::Full => TrustMode::Plan,
     }
 }
 
@@ -205,7 +204,7 @@ fn mode_label(m: TrustMode) -> &'static str {
     match m {
         TrustMode::Plan => "plan",
         TrustMode::Ask => "ask",
-        TrustMode::Workspace => "workspace",
+        TrustMode::Edit => "edit",
         TrustMode::Full => "full",
     }
 }
@@ -214,7 +213,7 @@ fn mode_blurb(m: TrustMode) -> &'static str {
     match m {
         TrustMode::Plan => "read-only, analyse and propose (advisory where a CLI has no plan flag)",
         TrustMode::Ask => "native approvals (provider support varies)",
-        TrustMode::Workspace => "auto-edit inside the workspace",
+        TrustMode::Edit => "edit files with approval for other actions",
         TrustMode::Full => "skips all permissions - careful",
     }
 }
@@ -223,7 +222,7 @@ fn mode_color(m: TrustMode) -> Color {
     match m {
         TrustMode::Plan => Color::Cyan,
         TrustMode::Ask => Color::Yellow,
-        TrustMode::Workspace => Color::Green,
+        TrustMode::Edit => Color::Green,
         TrustMode::Full => Color::Red,
     }
 }
@@ -232,7 +231,7 @@ fn parse_mode(s: &str) -> Option<TrustMode> {
     match s.trim().to_lowercase().as_str() {
         "plan" => Some(TrustMode::Plan),
         "ask" => Some(TrustMode::Ask),
-        "auto" | "auto-edit" | "autoedit" | "edit" | "workspace" => Some(TrustMode::Workspace),
+        "edit" => Some(TrustMode::Edit),
         "full" => Some(TrustMode::Full),
         _ => None,
     }

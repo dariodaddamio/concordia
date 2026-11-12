@@ -22,7 +22,7 @@ cancel. Save errors retain the buffer. Editing is paused if recovery storage is 
 File drafts, baseline, cursor, mode and split layout are stored in the pane's recovery lease,
 debounced 250 ms and flushed at normal exit. Recovery checks canonical workspace/path bindings;
 changed or missing originals never silently replace recovered edits. Recovery retains the newest
-buffer, not the prior undo stack. The existing `/recover` flow claims interrupted pane records.
+buffer, not the prior undo stack. Interrupted pane records restore into tabs and remain paused.
 
 Concordia should provide a graphical workspace inside the terminal: chat and files share one
 screen, with mouse operations and slash commands controlling the same pane state. Harness owns

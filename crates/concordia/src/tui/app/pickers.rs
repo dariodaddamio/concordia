@@ -144,7 +144,7 @@ impl App {
                     mode_label(self.trust),
                     mode_blurb(self.trust)
                 ));
-                self.push_system("set with /mode plan | ask | auto | full  (Shift+Tab cycles plan/ask/workspace)");
+                self.push_system("set with /mode plan | ask | edit | full  (Shift+Tab cycles plan/ask/edit)");
             }
             Some(a) => match parse_mode(a) {
                 Some(mode) => {
@@ -165,7 +165,7 @@ impl App {
                         ));
                     }
                 }
-                None => self.push_system(format!("unknown mode {a} - use plan, ask, auto or full")),
+                None => self.push_system(format!("unknown mode {a} - use plan, ask, edit or full")),
             },
         }
     }
@@ -252,13 +252,6 @@ impl App {
                 detail,
             });
         }
-        if self.continuation.waiting() {
-            rows.push(PickerRow {
-                id: "use-continue".into(),
-                label: "continue unfinished request".into(),
-                detail: "review the request and choose a target".into(),
-            });
-        }
         rows.push(PickerRow {
             id: "use-add".into(),
             label: "+ add account".into(),
@@ -275,15 +268,6 @@ impl App {
                 detail: "take an account out of Concordia".into(),
             });
         }
-        rows.push(PickerRow {
-            id: "use-continuation".into(),
-            label: "limit handoff (save default)".into(),
-            detail: if self.continuation.automatic() {
-                "continue on another account automatically (Enter toggles to pause)".into()
-            } else {
-                "pause at a usage limit (Enter toggles to continue)".into()
-            },
-        });
         rows.push(PickerRow {
             id: "use-handoff".into(),
             label: "next provider for this session".into(),
@@ -807,19 +791,6 @@ impl App {
         }
     }
     pub(in crate::tui) fn dismiss_picker(&mut self) {
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Recovery)
-        {
-            if let Some(root) = &self.keep.recovery_root {
-                if let Err(error) =
-                    super::super::recovery::dismiss(root, &self.keep.recovery_choices)
-                {
-                    self.push_system(format!("could not remember saved-draft dismissal: {error}"));
-                }
-            }
-        }
         let restore_handoff = self
             .picker
             .as_ref()
@@ -1021,13 +992,6 @@ impl App {
                     }
                 }
             }
-            PickerKind::Recovery => {
-                if let Some(id) = id.strip_prefix("recover-preview:") {
-                    self.preview_recovery(id);
-                } else if let Some(id) = id.strip_prefix("recover:") {
-                    self.choose_recovery(id);
-                }
-            }
             PickerKind::Resume => {
                 if id == "none" {
                     return;
@@ -1064,7 +1028,7 @@ impl App {
                         "plan" => TrustMode::Plan,
                         "ask" => TrustMode::Ask,
                         "full" => TrustMode::Full,
-                        _ => TrustMode::Workspace,
+                        _ => TrustMode::Edit,
                     };
                     if let Err(e) = set_trust_mode(&self.state_root, trust) {
                         self.push_system(format!("trust save failed — {e}"));
@@ -1074,7 +1038,7 @@ impl App {
                     self.push_system(match trust {
                         TrustMode::Plan => "trust → plan (read-only: analyse and propose)",
                         TrustMode::Full => "trust → full (skip all permissions — careful)",
-                        TrustMode::Workspace => "trust → workspace (cwd write, no trust dialogs)",
+                        TrustMode::Edit => "trust → edit (cwd write, no trust dialogs)",
                         TrustMode::Ask => "trust → ask (may hang headless)",
                     });
                     if self.busy {
@@ -1117,34 +1081,12 @@ impl App {
                     self.open_handoff_settings();
                     return;
                 }
-                if id == "use-continue" {
-                    self.show_unfinished_request();
-                    return;
-                }
                 if id == "use-add" {
                     self.open_add_provider_picker();
                     return;
                 }
                 if id == "use-remove" {
                     self.open_remove_picker(None);
-                    return;
-                }
-                if id == "use-continuation" {
-                    let next = !self.continuation.automatic();
-                    if let Err(error) =
-                        crate::store::set_continuation_automatic(&self.state_root, next)
-                    {
-                        self.push_system(format!(
-                            "could not save usage handoff preference: {error}"
-                        ));
-                        return;
-                    }
-                    let automatic = self.continuation.toggle_automatic();
-                    self.push_system(if automatic {
-                        "usage handoff → automatic"
-                    } else {
-                        "usage handoff → pause"
-                    });
                     return;
                 }
                 if let Some(account) = id.strip_prefix("use:") {

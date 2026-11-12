@@ -1061,7 +1061,7 @@ pub fn trust_picker_rows(current: crate::store::TrustMode) -> Vec<PickerRow> {
         },
         PickerRow {
             id: "trust:workspace".into(),
-            label: format!("Workspace{}", cur(TrustMode::Workspace)),
+            label: format!("Edit{}", cur(TrustMode::Edit)),
             detail: "Allow workspace edits; provider rules apply.".into(),
         },
         PickerRow {

@@ -1895,12 +1895,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     let idle_footer_hint = format!("{FOOTER_HINT} \u{b7} Ctrl+K options");
     let scrolled = format!("\u{2191} {} rows up \u{b7} PgDn to follow", app.view.scroll);
     let recovery_hint = format!(
-        "{} saved drafts/requests · /recover",
+        "{} saved drafts/requests retained",
         app.keep.recovery_choices.len()
     );
     let (left, left_style) = if app.recovery_warning().is_some() {
         (
-            "draft not saved locally · /recover retry",
+            "draft not saved locally · retrying persistence",
             Style::default().fg(Color::Red),
         )
     } else if let Some(warning) = app.store_warning.as_deref() {

@@ -256,17 +256,6 @@ impl App {
         }
     }
 
-    pub(super) fn continuation_command(&mut self, arg: &str) {
-        match arg {
-            "automatic" | "manual" => self.set_session_handoff(arg),
-            "routes" => self.push_system("continuation routes are selected in the account picker"),
-            "" => self.open_handoff_settings(),
-            _ => {
-                self.push_system("usage: /continuation [manual|automatic|routes]; /continue ACCOUNT continues an interrupted request");
-            }
-        }
-    }
-
     /// Called before finalization while the completed turn's cards and draft still exist.
     pub(super) fn prepare_usage_continuation(&mut self, outcome: &TurnOutcome) -> Option<String> {
         if outcome.cancelled || self.cancel_requested {
@@ -306,7 +295,7 @@ impl App {
                 self.continuation.retry_draft = self.last_sent.clone();
                 self.continuation.retry = Retry::RequiresReview;
                 self.continuation.recovered = true; // Explicit continuation must start a fresh session.
-                self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Inspect partial edits, then /continue {} starts a fresh native session with source pointers. No automatic replay was attempted.", self.account));
+                self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Inspect partial edits, then use the inline continue action for {} to start a fresh native session with source pointers. No automatic replay was attempted.", self.account));
                 return None;
             }
             self.continuation.pending = None;
@@ -342,7 +331,7 @@ impl App {
         }
         if self.continuation.tried.len() >= 4 {
             self.continuation.clear_deferred();
-            self.push_system("automatic continuation stopped after four account/model pairs; choose /continue to review another target");
+            self.push_system("automatic continuation stopped after four account/model pairs; choose another target in the inline picker");
             self.open_continuation_picker();
             return None;
         }
@@ -404,7 +393,7 @@ impl App {
             return;
         }
         let Some(prompt) = self.continuation.pending.clone() else {
-            self.push_system("no usage-limited request to continue; /continuation [manual|automatic] controls handoff");
+            self.push_system("no usage-limited request to continue; choose a target from the inline picker");
             return;
         };
         if target.is_empty()
@@ -412,7 +401,7 @@ impl App {
                 && !self.continuation.same_account_allowed()
                 && model.is_none_or(|m| m == self.model))
         {
-            self.push_system("usage: /continue ACCOUNT [MODEL] (choose another account or model)");
+            self.push_system("choose another account or model in the inline picker");
             return;
         }
         if let Some(model) = model {
@@ -529,8 +518,8 @@ mod tests {
         )
         .unwrap();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        app.continuation_command("manual");
-        app.continuation_command("");
+        app.set_session_handoff("manual");
+        app.open_handoff_settings();
         let picker = app.picker.as_mut().unwrap();
         let index = picker
             .rows
@@ -559,7 +548,7 @@ mod tests {
         exhausted(&mut app, &tx);
         assert!(rx.try_recv().is_err());
         app.dismiss_picker();
-        app.continuation_command("automatic");
+        app.set_session_handoff("automatic");
         assert!(app.continuation.preferred_account.is_none());
         app.set_session_handoff("account:missing-account");
         assert!(app.continuation.preferred_account.is_none());
@@ -1001,7 +990,7 @@ mod tests {
                 assert_eq!(app.queue.items, ["later task"]);
             }
             if case == "manual" {
-                app.run_line("/continue backup".into(), &tx);
+                app.continue_usage("backup", &tx);
                 assert!(rx.try_recv().unwrap().contains("Fix the graph"));
             }
         }

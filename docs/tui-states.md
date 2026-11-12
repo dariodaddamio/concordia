@@ -151,7 +151,7 @@ the execution guard; view ownership does not authorize dispatch.
 Window restoration reads the saved layout and also inspects unclaimed unfinished request records.
 It appends at most eight eligible paused requests without changing the selected tab. Duplicate
 saved chat snapshots remain in the canonical window record, with their recovery records available
-through `/recover`. First-send checkpoints include conversation identity even without a context
+through automatic tab restoration. First-send checkpoints include conversation identity even without a context
 map; the original request is persisted before the cleared composer is saved. Restoring either
 record never replays uncertain actions.
 

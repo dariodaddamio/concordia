@@ -55,7 +55,7 @@ impl App {
             #[cfg(not(test))]
             {
                 self.keep.turn_recovery_notice = true;
-                self.push_system("unfinished-request recovery is unavailable; request was not dispatched. Fix local storage and use /recover retry.");
+                self.push_system("unfinished-request storage is unavailable; request was not dispatched. Fix local storage before retrying.");
                 return false;
             }
         };
@@ -154,7 +154,7 @@ impl App {
                 self.continuation.restore_checkpoint(checkpoint);
                 self.queue.paused = true;
                 self.queue.dispatch.clear_automatic();
-                self.push_system("Your unsent draft and queued messages were restored. The unfinished request was recovered and paused. /continue ACCOUNT [MODEL] starts a new native session with source pointers. Inspect uncertain actions first. Your newer draft is separate.");
+                self.push_system("Your unsent draft and queued messages were restored. The unfinished request was recovered and paused. Choose an account or model in the inline continue action to start a new native session with source pointers. Inspect uncertain actions first. Your newer draft is separate.");
             }
             Some(Err(error)) => self.push_system(format!(
                 "unfinished-request recovery unavailable: {error}; existing record kept"
@@ -323,13 +323,13 @@ mod tests {
             crate::workspaces::load(dir.path()).unwrap().reservations[0].phase,
             crate::workspaces::Phase::Released
         );
-        app.run_line("/continue fixture".into(), &tx);
+        app.continue_usage("fixture", &tx);
         assert!(
             rx.try_recv().is_err(),
             "newer draft must block continuation"
         );
         app.editor.clear();
-        app.run_line("/continue fixture".into(), &tx);
+        app.continue_usage("fixture", &tx);
         assert!(rx
             .try_recv()
             .unwrap()

@@ -69,7 +69,7 @@ fn invalid_arguments_do_not_fall_through_to_stateful_actions() {
         cwd: root.path(),
         provider: ProviderKind::Codex,
         account: "codex-test",
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
     };
     for (_, name) in cases {
         let (outcome, messages) = dispatch_slash(SlashCommand::Invalid(name.into()), &ctx);

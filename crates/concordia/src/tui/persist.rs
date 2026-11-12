@@ -463,7 +463,7 @@ impl super::App {
         }
         if super::recovery::legacy_available(&self.state_root) {
             self.push_system(
-                "legacy shared draft or queue found; use /recover to import it safely",
+                "legacy shared draft or queue found; it remains retained for inspection",
             );
         }
         self.restore_turn_checkpoint();
@@ -626,7 +626,7 @@ impl super::App {
         self.queue.dispatch.clear_automatic();
     }
 
-    /// Choices for the parent `/recover` picker. Selected records are claimed by explicit id.
+    /// Saved records available for automatic restoration into tabs.
     pub(super) fn recovery_choices(&self) -> &[super::recovery::RecoveryChoice] {
         &self.keep.recovery_choices
     }
@@ -1109,10 +1109,10 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(screen.contains("draft not saved locally"));
-        assert!(screen.contains("/recover retry"));
+        assert!(!screen.contains("/recover"));
         fs::remove_dir(&record).unwrap();
         fs::rename(&backup, &record).unwrap();
-        assert!(app.handle_slash("/recover retry"));
+        app.persist_draft_now();
         assert!(app.recovery_warning().is_none());
         assert_eq!(
             lease.data().unwrap().draft,

@@ -46,7 +46,7 @@ pub enum TrustMode {
     /// Read-only planning: the provider analyses and proposes, it does not edit.
     Plan,
     Ask,
-    Workspace,
+    Edit,
     Full,
 }
 
@@ -56,7 +56,7 @@ impl TrustMode {
         match self {
             Self::Plan => 0,
             Self::Ask => 1,
-            Self::Workspace => 2,
+            Self::Edit => 2,
             Self::Full => 3,
         }
     }
@@ -65,7 +65,7 @@ impl TrustMode {
         match self {
             Self::Plan => "plan",
             Self::Ask => "ask",
-            Self::Workspace => "workspace",
+            Self::Edit => "edit",
             Self::Full => "full",
         }
     }
@@ -199,7 +199,7 @@ pub struct OrchestratorSettings {
 }
 
 fn default_trust() -> TrustMode {
-    TrustMode::Workspace
+    TrustMode::Edit
 }
 
 fn default_handoff_cap() -> usize {
@@ -210,7 +210,7 @@ fn default_handoff_cap() -> usize {
 #[serde(rename_all = "lowercase")]
 pub enum ChildTrust {
     Ask,
-    Workspace,
+    Edit,
     Full,
     Inherit,
 }
@@ -224,7 +224,7 @@ impl Default for OrchestratorSettings {
         Self {
             worker_panel_open: None,
             file_action: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             child_trust: ChildTrust::Inherit,
             delegate_auto_return: false,
             delegate_quota_failover: false,
@@ -347,10 +347,10 @@ pub fn store_path(root: &Path) -> PathBuf {
 
 fn sanitize_settings(settings: OrchestratorSettings) -> OrchestratorSettings {
     match settings.trust {
-        TrustMode::Plan | TrustMode::Ask | TrustMode::Workspace | TrustMode::Full => {}
+        TrustMode::Plan | TrustMode::Ask | TrustMode::Edit | TrustMode::Full => {}
     }
     match settings.child_trust {
-        ChildTrust::Ask | ChildTrust::Workspace | ChildTrust::Full | ChildTrust::Inherit => {}
+        ChildTrust::Ask | ChildTrust::Edit | ChildTrust::Full | ChildTrust::Inherit => {}
     }
     settings
 }

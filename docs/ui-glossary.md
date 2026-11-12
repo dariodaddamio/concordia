@@ -67,7 +67,7 @@ replacement previews. A side-by-side chat viewer remains planned. See
 ## Unfinished requests and previews
 
 Restart restores unfinished work paused, with its original source identities and a separate newer
-draft. `/continue` reviews the request and target choices; `/use` also has a continue row. No turn
+draft. The inline continue action reviews the request and target choices; `/use` contains account actions only. No turn
 is sent merely by reopening the app. In a focused file pane, `/` searches, `n`/`N` navigate matches,
 and `r` reloads. A changed-on-disk indicator comes from background metadata checks. These controls
 never send a chat prompt. [Native memory](native-memory.md) defines the limits and recovery rules.

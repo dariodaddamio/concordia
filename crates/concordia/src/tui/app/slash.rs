@@ -128,7 +128,7 @@ impl App {
                 trimmed
             ));
         }
-        // /workers, /queue, /close, /stats and /recover remain available until their screens
+        // /workers, /queue, /close and /stats remain available until their screens
         // replace them.
         if line.trim() == "/open" {
             self.open_related_files();
@@ -159,23 +159,6 @@ impl App {
                 }
                 _ => self.flash("usage: /close PANE_ID (or /close with a file pane focused)"),
             }
-            return true;
-        }
-        if line.trim() == "/recover" {
-            self.open_recovery_picker();
-            return true;
-        }
-        if line.trim() == "/recover legacy" {
-            self.choose_recovery("legacy");
-            return true;
-        }
-        if line.trim() == "/recover retry" {
-            self.retry_recovery_now();
-            self.push_system(
-                self.recovery_warning()
-                    .unwrap_or("saved this pane locally")
-                    .to_owned(),
-            );
             return true;
         }
         if let Some(arg) = queue::slash_arg(line) {

@@ -29,6 +29,8 @@ pub struct Scan {
     pub warnings: Vec<String>,
     /// Names of files that were dropped because a built-in command has the same name.
     pub clashes: Vec<String>,
+    /// Names reserved by provider-native slash commands.
+    pub provider_clashes: Vec<String>,
 }
 
 pub fn commands_dir(state_root: &Path) -> PathBuf {
@@ -47,6 +49,15 @@ pub fn is_builtin(name: &str) -> bool {
     !matches!(
         parse_slash(&format!("/{name}")),
         Some((SlashCommand::Unknown(_), _)) | None
+    )
+}
+
+/// Provider-native commands remain available through the slash passthrough and cannot be
+/// replaced by a user shortcut. This is the shared command set exposed by the supported CLIs.
+pub fn is_provider_command(name: &str) -> bool {
+    matches!(
+        name,
+        "compact" | "diff" | "fork" | "init" | "mcp" | "rewind" | "export"
     )
 }
 
@@ -140,6 +151,10 @@ pub fn scan(state_root: &Path) -> Scan {
         };
         if is_builtin(&name) {
             out.clashes.push(name);
+            continue;
+        }
+        if is_provider_command(&name) {
+            out.provider_clashes.push(name);
             continue;
         }
         let (description, template) = parse_file(&text);
@@ -288,9 +303,11 @@ mod tests {
             ("doctor.md", "mine"),
             ("quit.md", "alias"),
             ("ship.md", "go"),
+            ("compact.md", "provider command"),
         ]);
         let s = scan(dir.path());
         assert_eq!(s.clashes, ["doctor", "quit"]);
+        assert_eq!(s.provider_clashes, ["compact"]);
         assert_eq!(s.commands.len(), 1);
         assert!(expand(&s.commands, "/doctor").unwrap().is_none());
         assert!(is_builtin("model") && !is_builtin("ship"));

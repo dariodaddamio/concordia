@@ -1026,7 +1026,7 @@ mod tests {
         assert_eq!(a, original);
         caps.stream_json = true;
         caps.permission_mode = false;
-        assert!(validate_argv(ProviderKind::Claude, &a, TrustMode::Workspace, &caps).is_err());
+        assert!(validate_argv(ProviderKind::Claude, &a, TrustMode::Edit, &caps).is_err());
         assert_eq!(a, original);
     }
 

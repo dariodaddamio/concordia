@@ -290,7 +290,7 @@ fn use_picker_always_offers_add_account() {
     let picker = h.app.picker.as_ref().expect("picker open");
     assert!(picker.kind == PickerKind::Use);
     assert!(picker.rows.iter().any(|row| row.id == "use-add"));
-    assert!(picker.rows.iter().any(|row| row.id == "use-continuation"));
+    assert!(!picker.rows.iter().any(|row| row.id == "use-continuation"));
 }
 
 #[test]

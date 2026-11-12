@@ -54,7 +54,7 @@ pub fn plan_cursor_turn_with(
         TrustMode::Full => {
             argv.push("--force".into());
         }
-        TrustMode::Workspace => {
+        TrustMode::Edit => {
             // Cursor agent 2026.10.22 trust table: Plan=`--mode plan`, Ask=default,
             // Workspace=default workspace sandbox, Full=`--force`. Its help only offers
             // `--sandbox enabled|disabled`; Workspace must never use `disabled`.

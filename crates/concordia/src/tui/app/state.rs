@@ -158,7 +158,6 @@ pub(in crate::tui) enum PickerKind {
     Integrations,
     Related,
     Agents,
-    Recovery,
     Files,
     FileActions,
     Artifacts,
@@ -1291,31 +1290,6 @@ impl App {
         if !line.starts_with('/') {
             self.questions.clear();
         }
-        if let Some(arg) = line
-            .strip_prefix("/continue")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            if arg.trim().is_empty() {
-                self.show_unfinished_request();
-                return;
-            }
-            if self
-                .picker
-                .as_ref()
-                .is_some_and(|picker| picker.kind == PickerKind::Continuation)
-            {
-                self.dismiss_picker();
-            }
-            self.continue_usage(arg.trim(), turn_tx);
-            return;
-        }
-        if let Some(arg) = line
-            .strip_prefix("/continuation")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            self.continuation_command(arg.trim());
-            return;
-        }
         if self.session_ui.loading() && !line.starts_with('/') {
             self.flash("recent messages are loading; wait before sending");
             if self.editor.text().is_empty() {
@@ -1562,7 +1536,7 @@ impl App {
             account: "codex".into(),
             home_path: None,
             model: "?".into(),
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             native_session_id: None,
             task_id: None,
             session_chip: None,

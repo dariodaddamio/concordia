@@ -33,8 +33,8 @@ unverified and do not write a receipt. Connecting never copies authentication fi
 `skill` is metadata and `/harness skill` installs Concordia's connection skill across registered
 provider homes. Use `--current` to restrict setup to the selected account.
 
-`/skills` and `/hooks` inspect the selected account's native sources. Their `connect PATH` action
-uses `/harness connect PATH`, which defaults to all registered accounts, including logged-out
+`/skills` and `/hooks` inspect the selected account's native sources. `/harness connect PATH`
+defaults to all registered accounts, including logged-out
 and hidden homes. Supported providers receive separate connection results. Shared project intent
 and receipts live in Concordia's existing connection store. Later accounts connect before their
 first turn in that project. Source revision changes require explicit reconnect; failed adapter
@@ -47,7 +47,7 @@ source is `~/.agents/skills`. Shared sources apply across projects and reach lat
 their first turn. Directory links retain one current source; same-named existing skills are kept.
 `/skills remove PATH` stops propagation and removes matching links across registered homes,
 preserving source files and unrelated skill directories. Missing sources can still be unshared.
-`/hooks status` reports shared sources and per-account setup; `/hooks verify` runs adapter probes.
+`/harness status` reports shared sources and per-account setup; `/harness verify` runs adapter probes.
 
 ## Exact pinned decisions (2026-10-31s)
 

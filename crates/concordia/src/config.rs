@@ -372,10 +372,10 @@ impl Config {
                     "mode.default" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("plan") => cfg.mode.default = TrustMode::Plan,
                         Some("ask") => cfg.mode.default = TrustMode::Ask,
-                        Some("workspace") => cfg.mode.default = TrustMode::Workspace,
+                        Some("edit") => cfg.mode.default = TrustMode::Edit,
                         Some("full") => cfg.mode.default = TrustMode::Full,
                         _ => warnings.push(format!(
-                            "mode.default = {} is not one of plan, ask, workspace, full; using \"ask\"",
+                            "mode.default = {} is not one of plan, ask, edit, full; using \"ask\"",
                             v.as_str().map_or_else(|| v.type_str().to_string(), |s| format!("{s:?}"))
                         )),
                     },
