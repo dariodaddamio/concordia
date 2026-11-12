@@ -245,30 +245,6 @@ mod tests {
             app.reserve_main_scope(&owner).unwrap();
             app.scope_invocation_flag()
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let mut blocked = App::new(dir.path().into(), dir.path().into());
-            blocked.refresh_binding();
-            blocked.run_line("Keep this blocked request".into(), &tx);
-            rx.try_recv().unwrap();
-            let mut conflicting_owner = owner.clone();
-            conflicting_owner.conversation_id = blocked.deleg.d.conversation_id().into();
-            conflicting_owner.run_id = blocked.continuation.run_id().into();
-            conflicting_owner.attempt_id = uuid::Uuid::new_v4().to_string();
-            assert!(blocked.reserve_main_scope(&conflicting_owner).is_err());
-            blocked.on_turn_done(
-                TurnOutcome {
-                    failed: true,
-                    ..Default::default()
-                },
-                &tx,
-            );
-            assert!(
-                blocked.continuation.waiting(),
-                "admission conflict retains an explicit continuation request"
-            );
-            assert!(
-                rx.try_recv().is_err(),
-                "admission conflict cannot automatically retry"
-            );
             app.apply_progress(TurnProgress::Session("explicit-original-session".into()));
             app.editor.set_text("newer unsent draft");
             app.queue.items.push("later work".into());

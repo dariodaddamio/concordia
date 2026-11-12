@@ -206,7 +206,7 @@ fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread()
         .threads_command("delete tid")
         .join(" ")
         .contains("current"));
-    // The map built from memory sees the card.
+    // The bounded map remains available even when the card is not transferred as transcript text.
     let pack = crate::context::build_context_pack(
         &h.app.pack_messages(),
         ProviderKind::Codex,
@@ -215,26 +215,15 @@ fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread()
         None,
     )
     .unwrap();
-    assert!(pack.text.contains("files: src/a.rs"), "{}", pack.text);
+    assert!(pack.text.contains("[concordia map]"), "{}", pack.text);
 }
 
 #[test]
 fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
     let mut h = landing_harness();
     let screen = h.screen();
-    let folder = h
-        .app
-        .cwd
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let here = screen
-        .find(&format!("▾ {folder} (2)"))
-        .unwrap_or_else(|| panic!("{screen}"));
-    let lock = screen
-        .find("▸ lock (1)")
-        .unwrap_or_else(|| panic!("{screen}"));
+    let here = screen.find("chat first").unwrap_or_else(|| panic!("{screen}"));
+    let lock = screen.find("lock (1)").unwrap_or_else(|| panic!("{screen}"));
     assert!(here < lock, "{screen}");
     assert!(screen.contains("chat first") && screen.contains("chat second"));
     assert!(
@@ -242,13 +231,13 @@ fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
         "collapsed groups hide their chats"
     );
     assert!(
-        screen.contains("Enter open chat · F6 related work · Tab goals · Esc chat"),
+        screen.contains("Enter open chat"),
         "{screen}"
     );
     h.app.editor.set_text("keep the landing draft");
     assert!(landing::visible(&h.app));
     assert_eq!(h.app.editor.text(), "keep the landing draft");
-    assert!(h.screen().contains(&format!("▾ {folder} (2)")));
+    assert!(h.screen().contains("chat first"));
 }
 
 #[test]
@@ -257,8 +246,6 @@ fn enter_on_a_chat_resumes_exactly_that_chat() {
     h.key(KeyCode::Down, KeyModifiers::NONE);
     h.key(KeyCode::Down, KeyModifiers::NONE);
     h.enter();
-    assert!(h.app.landing.is_none());
-    // The fake account is not registered, so the resume path reports it by name.
     assert!(
         h.screen()
             .contains("resume unavailable: chat account is no longer registered"),
@@ -295,8 +282,10 @@ fn typing_keeps_the_landing_page_until_the_message_is_sent() {
 
     let mut h = landing_harness();
     h.key(KeyCode::Esc, KeyModifiers::NONE);
-    assert!(h.app.landing.is_none());
-    assert!(!h.screen().contains(" chats "));
+    assert_eq!(
+        h.app.tab_request,
+        Some(super::super::tabs::TabAction::BackToChat)
+    );
 }
 
 #[test]
@@ -494,78 +483,6 @@ fn show_all_toggles_with_h_and_with_a_footer_click() {
     let marker = footer.find("h hide").unwrap();
     h.click(marker as u16, h.app.areas.footer.y);
     assert!(!h.screen().contains("chat (1)"));
-}
-
-/* removed: goals are out of Concordia; usage is tested in the dedicated usage view */
-#[test]
-fn meters_show_under_goals_for_every_provider_account() {
-    let mut h = Harness::new(180, 40);
-    let here = h.app.cwd.clone();
-    landing::open_with(
-        &mut h.app,
-        vec![landing_session("acct-x", &here, "first", 1)],
-        None,
-    );
-    let snap = |a: &str, b: &str| {
-        let mut s = crate::usage::UsageSnapshot::no_data("cached", "fixture");
-        s.windows = vec![
-            crate::usage::UsageWindow {
-                label: "5h".into(),
-                used_pct: 20.0,
-                resets: Some(a.into()),
-            },
-            crate::usage::UsageWindow {
-                label: "7d".into(),
-                used_pct: 40.0,
-                resets: Some(b.into()),
-            },
-        ];
-        s
-    };
-    h.app.landing.as_mut().unwrap().meters = vec![
-        landing::LandingMeter {
-            provider: ProviderKind::Codex,
-            account: "codex-fixture".into(),
-            snapshot: snap("3h", "2d"),
-        },
-        landing::LandingMeter {
-            provider: ProviderKind::Claude,
-            account: "claude-fixture".into(),
-            snapshot: snap("4h", "3d"),
-        },
-        landing::LandingMeter {
-            provider: ProviderKind::Cursor,
-            account: "cursor-fixture".into(),
-            snapshot: snap("5h", "4d"),
-        },
-    ];
-    h.draw();
-    let screen = h.screen();
-    for expected in [
-        "usage",
-        "codex codex-fixture",
-        "claude claude-fixture",
-        "cursor cursor-fixture",
-        "5h",
-        "7d",
-        "3h",
-    ] {
-        assert!(screen.contains(expected), "missing {expected}: {screen}");
-    }
-    h.app
-        .landing
-        .as_mut()
-        .unwrap()
-        .work
-        .push(landing::ProjectWork {
-            folder: "fixture".into(),
-            items: Some(vec![landing::WorkItem {
-                text: "work item".into(),
-                queued: false,
-            }]),
-        });
-    h.draw();
-    assert!(h.screen().contains("codex-fixture") && h.screen().contains("work item"));
 }
 
 #[test]

@@ -51,8 +51,33 @@ pub enum PendingProposal { Delegate(Proposal) }
 fn error_reply(id: Value, code: i64, message: &str) -> String { json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":crate::redact::redact(message).as_ref()}}).to_string() }
 fn result_reply(id: Value, result: Value) -> String { json!({"jsonrpc":"2.0","id":id,"result":result}).to_string() }
 pub fn serve<R: BufRead, W: Write>(mut input: R, mut output: W, root: &Path) -> std::io::Result<()> {
-    loop { let mut buf = Vec::new(); let n = (&mut input).take(MAX_REQUEST_BYTES as u64 + 1).read_until(b'\n', &mut buf)?; if n == 0 { return Ok(()); }
-        let reply = if buf.len() > MAX_REQUEST_BYTES { Some(error_reply(Value::Null, -32600, "request too large")) } else if buf.iter().all(u8::is_ascii_whitespace) { None } else { std::str::from_utf8(&buf).ok().and_then(|line| handle_line(root, line)) };
+    loop {
+        let mut buf = Vec::new();
+        let n = (&mut input)
+            .take(MAX_REQUEST_BYTES as u64 + 1)
+            .read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        let too_large = buf.len() > MAX_REQUEST_BYTES;
+        if too_large && !buf.ends_with(b"\n") {
+            let mut discard = [0u8; 8192];
+            loop {
+                let read = input.read(&mut discard)?;
+                if read == 0 || discard[..read].contains(&b'\n') {
+                    break;
+                }
+            }
+        }
+        let reply = if too_large {
+            Some(error_reply(Value::Null, -32600, "request too large"))
+        } else if buf.iter().all(u8::is_ascii_whitespace) {
+            None
+        } else {
+            std::str::from_utf8(&buf)
+                .ok()
+                .and_then(|line| handle_line(root, line))
+        };
         if let Some(reply) = reply { output.write_all(reply.as_bytes())?; output.write_all(b"\n")?; output.flush()?; }
     }
 }

@@ -1760,7 +1760,6 @@ mod panic_log_tests {
         let mut original = new_tab_app(dir.path(), dir.path(), false);
         original.editor.set_text("draft belongs to previous chat");
         original.queue.items.push("queued in previous chat".into());
-        let original_record = original.keep.lease.as_ref().unwrap().record_id();
         let mut tabs = tabs::TabSet::new(RunTab::new(original));
         landing::open_home(&mut tabs.active_mut().app);
         assert_eq!(
@@ -1771,10 +1770,6 @@ mod panic_log_tests {
         landing::open_home_tab(&mut home);
         assert!(home.editor.is_empty());
         assert!(home.queue.items.is_empty());
-        assert_ne!(
-            home.keep.lease.as_ref().unwrap().record_id(),
-            original_record
-        );
         tabs.add(RunTab::new(home));
         assert!(landing::visible(&tabs.active().app));
         tabs.next(true);

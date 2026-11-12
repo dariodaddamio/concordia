@@ -597,17 +597,12 @@ fn queue_command_lists_and_clears() {
     h.send("one");
     h.queue("two");
     h.queue("three\nlines");
-    h.send("/queue");
-    let t: Vec<String> = h.app.messages.iter().map(|m| m.text.clone()).collect();
-    assert!(t.iter().any(|l| l == "2 queued"), "{t:?}");
-    assert!(t.iter().any(|l| l == "queued 2: three lines"), "{t:?}");
-    h.send("/queue clear");
+    let listed = h.app.queue_command("");
+    assert!(listed.iter().any(|l| l == "2 queued"), "{listed:?}");
+    assert!(listed.iter().any(|l| l == "queued 2: three lines"), "{listed:?}");
+    let cleared = h.app.queue_command("clear");
     assert!(h.app.queue.items.is_empty());
-    assert!(h
-        .app
-        .messages
-        .iter()
-        .any(|m| m.text.contains("cleared 2 queued prompts")));
+    assert_eq!(cleared, ["cleared 2 queued prompts".to_string()]);
     assert!(queue_json(h.root()).is_none());
     assert!(
         h.sent() == vec!["one".to_string()],

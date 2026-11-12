@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(config.editor.program, "nvim");
         assert_eq!(config.editor.args, ["+{line}", "--", "{file}"]);
         let (gui, warnings) = Config::parse(
-            "[editor]\nlaunch='gui'\nprogram='native-editor'\n[ui]\nfile_action='editor'\n",
+            "[editor]\nprogram='native-editor'\n[ui]\nfile_action='editor'\n",
         );
         assert!(warnings.is_empty());
         assert_eq!(gui.editor.launch, crate::file_open::EditorLaunch::Gui);

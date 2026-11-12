@@ -67,7 +67,7 @@ pub fn contextual_tip(
             .unwrap_or("")
     };
     if queue_non_empty {
-        return registry_tip("/workers");
+        return "Queued work is waiting; open the queue to review it.";
     }
     if limit_near {
         return registry_tip("/use");
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn tips_are_contextual_and_rate_limited() {
-        assert!(contextual_tip(true, true, true, 1).contains("/workers"));
+        assert!(contextual_tip(true, true, true, 1).contains("Queued work"));
         assert!(contextual_tip(false, false, true, 1).contains("/use"));
         let mut limiter = RateLimiter::new(2);
         assert!(limiter.take("x").is_some());

@@ -160,7 +160,6 @@ fn provider_color(p: ProviderKind) -> Color {
 #[cfg(test)]
 mod activity_tests;
 #[cfg(test)]
-mod performance;
 #[cfg(test)]
 mod queue_controls_tests;
 #[cfg(test)]

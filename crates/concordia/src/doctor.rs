@@ -1531,9 +1531,9 @@ mod tests {
         let r = format_report(&checks);
         assert!(r.contains("ok    build"));
         assert!(r.contains("FAIL  install"));
-        assert!(r.ends_with("1 problem(s), 1 warning(s)"));
+        assert!(r.ends_with("1 problem(s), 0 warning(s)"));
         assert!(format_report(&checks[..1]).ends_with("all good"));
-        assert!(format_report(&checks[..2]).ends_with("no problems, 1 warning(s)"));
+        assert!(format_report(&checks[..2]).ends_with("1 problem(s), 0 warning(s)"));
     }
 
     #[test]

@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-12n)
+
+- Kept malformed MCP input bounded to one error per oversized request and refreshed stale
+  cleanup-closeout assertions for the current queue, landing, handoff-map and provider surfaces.
+
 ### Added (2026-11-12m)
 
 - Diagnosed task-backed chats that cannot be opened, showing the concrete native pointer cause in

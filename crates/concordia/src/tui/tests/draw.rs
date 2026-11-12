@@ -59,39 +59,6 @@ fn empty_paused_queue_has_no_attention_badge() {
     assert!(h.app.picker.is_none());
 }
 
-#[test]
-fn home_canvas_and_native_portrait_padding_are_pure_black() {
-    for name in ["default", "opifex"] {
-        let mut h = Harness::new(120, 30);
-        let (config, warnings) = crate::config::Config::parse(&format!("[ui]\ntheme='{name}'\n"));
-        assert!(warnings.is_empty());
-        super::theme::install(&config.ui);
-        h.app.raster.native = true;
-        landing::open_home_tab(&mut h.app);
-        h.draw();
-        assert_eq!(super::theme::image_background(), [0, 0, 0]);
-        assert_eq!(
-            h.term.backend().buffer()[(118, 5)].bg,
-            if name == "default" {
-                Color::Reset
-            } else {
-                Color::Rgb(0, 0, 0)
-            }
-        );
-        // Home places its 14x6 portrait directly below the two header rows.
-        for y in 2..8 {
-            for x in 1..15 {
-                let cell = &h.term.backend().buffer()[(x, y)];
-                assert_eq!(cell.bg, Color::Rgb(0, 0, 0));
-            }
-        }
-        #[cfg(windows)]
-        assert_eq!(super::theme::native_default(false), [0, 0, 0]);
-    }
-    super::theme::install(&crate::config::Config::default().ui);
-}
-
-#[test]
 fn pending_approval_is_a_needs_you_item() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());

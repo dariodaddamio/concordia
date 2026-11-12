@@ -1220,7 +1220,7 @@ mod tests {
             d.path(),
             &serde_json::json!({
                 "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{"name":"thread_read","arguments":{"id":"legacy"}}
+                "params":{"name":"thread_read","arguments":{"id":"legacy1111"}}
             })
             .to_string(),
         )
