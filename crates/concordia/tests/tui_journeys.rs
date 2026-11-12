@@ -2201,7 +2201,7 @@ fn usage_limited_request_survives_restart_separately_from_the_newer_draft() {
     drop(s);
     let mut s = Session::launch(dir.path());
     s.until("original request restored without sending", |s| {
-        s.screen().contains("unfinished request recovered")
+        s.screen().contains("unfinished request was recovered")
             && s.draft() == "newer draft after failure"
     });
     assert_eq!(s.prompts().len(), 1);

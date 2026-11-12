@@ -372,8 +372,66 @@ impl App {
         if self.continuation.context_limited && self.continuation.context_rollovers < 1 {
             return Some(self.account.clone());
         }
-        self.open_continuation_picker();
-        None
+        let mut candidates = Vec::new();
+        if let Some(account) = &self.continuation.preferred_account {
+            candidates.push((account.clone(), None));
+        }
+        candidates.extend(
+            self.continuation
+                .models
+                .iter()
+                .cloned()
+                .map(|model| (self.account.clone(), Some(model))),
+        );
+        let accounts = if self.continuation.accounts.is_empty() {
+            accounts_with_auth(&self.state_root)
+                .into_iter()
+                .map(|account| account.account)
+                .collect()
+        } else {
+            self.continuation.accounts.clone()
+        };
+        candidates.extend(accounts.into_iter().map(|account| (account, None)));
+        if self.continuation.accounts.is_empty() && self.continuation.models.is_empty() {
+            if let Some(home) = &self.home_path {
+                candidates.extend(
+                    crate::models::ids_at(&self.state_root, self.provider, &self.account, home)
+                        .into_iter()
+                        .map(|model| (self.account.clone(), Some(model))),
+                );
+            }
+        }
+
+        candidates.into_iter().find_map(|(account, model)| {
+            let Some(def) = get_account(&self.state_root, &account) else {
+                return None;
+            };
+            let Some(home) = def.home_path.as_ref() else {
+                return None;
+            };
+            if model.as_ref().is_some_and(|model| {
+                !crate::models::ids_at(&self.state_root, def.provider, &account, home)
+                    .iter()
+                    .any(|available| available == model)
+            }) {
+                return None;
+            }
+            let pair = format!("{} {}", account, model.as_deref().unwrap_or(&self.model));
+            if self.continuation.tried.contains(&pair)
+                || (account == self.account
+                    && model.as_deref().is_none_or(|model| model == self.model))
+            {
+                return None;
+            }
+            Some(match model {
+                Some(model) => format!("{account} {model}"),
+                None => account,
+            })
+        })
+        .or_else(|| {
+            self.open_continuation_picker();
+            None
+        })
     }
 
     pub(super) fn continue_usage(&mut self, target: &str, tx: &mpsc::UnboundedSender<String>) {
@@ -385,7 +443,10 @@ impl App {
             || self.session_ui.loading()
             || self.job.is_some()
             || self.queue.edit.is_some()
-            || self.picker.is_some()
+            || self
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.kind != PickerKind::Continuation)
         {
             self.push_system(
                 "finish the active turn, history load, update or queued edit before continuing",

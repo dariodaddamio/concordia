@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-12i)
+
+- Restored automatic usage-limit continuation across configured accounts and native models,
+  including bounded retry-pair tracking and manual continuation while its picker is open.
+
 ### Fixed (2026-11-12h)
 
 - Filtered provider-native slash commands by the typed prefix so ordinary prompts and
