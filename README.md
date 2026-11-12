@@ -41,6 +41,11 @@ Ask your question and press Enter
 or F11 opens a local shell in the project; F11 returns to chat with its draft intact.
 `/terminal hide` keeps that shell alive, and `/terminal close` stops it.
 
+The Windows taskbar shows a theme-coloured overlay dot while work runs or user input is waiting;
+the waiting state takes precedence and idle clears the dot. If background work needs input while
+the window is unfocused, Windows shows a notification. Selecting it focuses the existing window
+and opens Needs attention; the window does not reopen itself.
+
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |
 | --- | --- | --- | --- |

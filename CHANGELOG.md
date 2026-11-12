@@ -1,5 +1,11 @@
 # Changelog
 
+### Added (2026-11-12k)
+
+- Added theme-coloured Windows taskbar status overlays and unpackaged shell notifications for
+  background questions and approvals. Notification clicks focus the existing window and open
+  Needs attention without reopening it automatically.
+
 ### Fixed (2026-11-12j)
 
 - Clear an unsubmitted provider slash command when cancelling its busy-turn confirmation;

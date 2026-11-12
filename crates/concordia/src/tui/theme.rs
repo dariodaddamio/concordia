@@ -273,6 +273,16 @@ pub(super) fn brand_color() -> Rgb {
 }
 
 #[cfg(windows)]
+pub(super) fn status_color(status: super::native_window::StatusDot) -> Rgb {
+    let palette = current();
+    match status {
+        super::native_window::StatusDot::Idle => palette.foreground,
+        super::native_window::StatusDot::Working => palette.success,
+        super::native_window::StatusDot::NeedsAttention => palette.warning,
+    }
+}
+
+#[cfg(windows)]
 pub(super) fn motion_enabled() -> bool {
     current().motion
 }

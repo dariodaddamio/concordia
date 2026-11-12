@@ -24,6 +24,23 @@ returns the backend's ratatui cell grid, title, focused tab label and current pi
 overlays. The channel is absent, has no listener and adds no work when the environment variable
 is not present. It is a test driver, not a second renderer or a provider transport.
 
+### Windows status and background attention
+
+The native window applies the process-wide status projection to the Windows taskbar through
+[`ITaskbarList3::SetOverlayIcon`](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist3-setoverlayicon).
+Working uses the current theme success colour; Needs attention uses the current theme warning
+colour and wins over working; idle clears the overlay. Icons are generated in memory and owned by
+the native window thread.
+
+When Needs attention arrives while the window is unfocused, Concordia uses the unpackaged desktop
+shell notification API
+[`Shell_NotifyIconW`](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw)
+with an `NIF_INFO` balloon. This API does not require MSIX packaging or a package identity. A
+notification click foregrounds the existing window and opens the existing Needs attention picker;
+Concordia never reopens the window or foregrounds it without that click. The picker and the source
+conversation read the same request record, so answering in either path resolves the same native
+request.
+
 | Boundary and source | States / events | Guard and completion owner | Persistence |
 | --- | --- | --- | --- |
 | Tab double click: `tui/run.rs` | No prior click; first tab-label click; second click on the same tab/cell within the OS double-click interval; reset | Close targets take precedence. Keyboard input, non-tab clicks and structural tab actions reset the tracker. A double click selects the exact tab, hides its shell view and invokes the existing guarded F2 title editor. | Transient click tracking is not persisted; saved titles use the existing conversation/native binding. |

@@ -661,3 +661,11 @@ approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout 
 | `crates/concordia/src/{accounts,connect,identity,models,catalog,store}.rs` | ok: 1, 2, 4, 6 | Add only the Grok account/home and bounded metadata seams; login detection checks markers without reading token contents. |
 | `crates/concordia/tests/{images.rs,live_providers.rs,support/fake_provider.rs}` | ok: 5, 9, 10 | Exercise the existing ACP fixture path and retain real-provider tests ignored; never add a fake-only production branch. |
 | `README.md`, `docs/{README.md,how-concordia-connects-providers.md,provider-grok-build.md}`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Update the canonical provider catalog and record confirmed versus unverified behavior. |
+
+### W9b taskbar status and Windows notifications - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/native_window.rs`, `tui/display_backend.rs`, `tui/theme.rs` | ok: 1, 4, 5, 6, 9 | Keep status calculation in the existing runner and native HWND as the sole owner of taskbar, tray and icon handles; no second status store or test-only production branch. |
+| `crates/concordia/Cargo.toml` | ok: 1, 5 | Enable only the Windows COM surface needed by the existing native window. |
+| `README.md`, `docs/tui-states.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Document the shipped native APIs and user-visible boundary in canonical docs with the required build stamp. |
