@@ -167,6 +167,8 @@ pub(in crate::tui) enum PickerKind {
     Trust,
     FullModeConfirm,
     Use,
+    GrokBotForm,
+    GrokBotActions,
     AddProvider,
     Remove,
     RemoveConfirm,
@@ -177,6 +179,16 @@ pub(in crate::tui) enum PickerKind {
     ResumeDeleteConfirm,
     Update,
     NeedsYou,
+}
+
+#[derive(Default)]
+pub(in crate::tui) struct GrokBotForm {
+    pub(in crate::tui) account: String,
+    pub(in crate::tui) routine_id: String,
+    pub(in crate::tui) name: String,
+    pub(in crate::tui) webhook_url: String,
+    pub(in crate::tui) key: String,
+    pub(in crate::tui) active: usize,
 }
 
 pub(in crate::tui) struct Picker {
@@ -400,6 +412,7 @@ pub(crate) struct App {
     pub(in crate::tui) signed_out_confirmation: Option<(String, String)>,
     pub(in crate::tui) signed_out_overrides: HashSet<String>,
     pub(in crate::tui) needs_you: crate::needs_you::Queue,
+    pub(in crate::tui) grok_bot_form: Option<GrokBotForm>,
 }
 
 impl App {
@@ -1704,6 +1717,7 @@ impl App {
             signed_out_confirmation: None,
             signed_out_overrides: HashSet::new(),
             needs_you: crate::needs_you::Queue::default(),
+            grok_bot_form: None,
         }
     }
 }

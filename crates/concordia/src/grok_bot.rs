@@ -9,13 +9,14 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const MAX_CALLBACK_BYTES: usize = 64 * 1024;
 pub const MAX_CALLBACKS_PER_MINUTE: u64 = 30;
-static CALLBACKS: AtomicU64 = AtomicU64::new(0);
+static CALLBACK_TIMES: OnceLock<Mutex<Vec<SystemTime>>> = OnceLock::new();
+static LISTENERS: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +93,24 @@ pub fn rotate_callback_token(root: &Path) -> Result<String, String> {
     Ok(token)
 }
 
+pub fn remove(root: &Path, provider: &str, account: &str, routine_id: &str) -> Result<(), String> {
+    let mut entries = list(root);
+    let before = entries.len();
+    entries.retain(|r| !(r.provider == provider && r.account == account && r.routine_id == routine_id));
+    if entries.len() == before {
+        return Err("unknown Grok Bot routine".into());
+    }
+    crate::state_io::write_atomic(
+        &routines_path(root),
+        &serde_json::to_vec_pretty(&entries).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    if entries.is_empty() {
+        let _ = std::fs::remove_file(root.join("grok-bot-callback-address"));
+    }
+    Ok(())
+}
+
 fn ensure_callback_token(root: &Path) -> Result<(), String> {
     if get_secret(&callback_secret_name(root)).is_err() {
         put_secret(&callback_secret_name(root), &new_token())?;
@@ -142,16 +161,21 @@ pub fn start(root: &Path, routine_id: &str, task: &str, parent: &str) -> Result<
 
 pub fn start_listener(root: &Path) {
     if list(root).is_empty() {
+        let _ = std::fs::remove_file(root.join("grok-bot-callback-address"));
         return;
     }
     let root = root.to_path_buf();
+    let listeners = LISTENERS.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    if !listeners.lock().unwrap().insert(root.clone()) {
+        return;
+    }
     let _ = thread::Builder::new()
         .name("concordia-grok-callback".into())
         .spawn(move || {
             let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
                 return;
             };
-            let _ = listener.set_nonblocking(false);
+            let _ = listener.set_nonblocking(true);
             let _ = std::fs::write(
                 root.join("grok-bot-callback-address"),
                 format!(
@@ -162,12 +186,21 @@ pub fn start_listener(root: &Path) {
                         .unwrap_or_default()
                 ),
             );
-            for stream in listener.incoming().flatten() {
+            loop {
+                if list(&root).is_empty() {
+                    let _ = std::fs::remove_file(root.join("grok-bot-callback-address"));
+                    break;
+                }
+                let Ok((stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(25));
+                    continue;
+                };
                 let root = root.clone();
                 let _ = thread::spawn(move || {
                     let _ = serve_callback(stream, &root);
                 });
             }
+            LISTENERS.get().unwrap().lock().unwrap().remove(&root);
         });
 }
 
@@ -194,10 +227,15 @@ pub fn callback_http(request: &[u8], root: &Path) -> String {
     if request.len() > MAX_CALLBACK_BYTES {
         return http_error(413, "request too large");
     }
-    if CALLBACKS.fetch_add(1, Ordering::Relaxed) >= MAX_CALLBACKS_PER_MINUTE {
-        CALLBACKS.store(0, Ordering::Relaxed);
+    let now = SystemTime::now();
+    let callbacks = CALLBACK_TIMES.get_or_init(|| Mutex::new(Vec::new()));
+    let mut callbacks = callbacks.lock().unwrap();
+    callbacks.retain(|at| now.duration_since(*at).unwrap_or_default() < Duration::from_secs(60));
+    if callbacks.len() as u64 >= MAX_CALLBACKS_PER_MINUTE {
         return http_error(429, "rate limit exceeded");
     }
+    callbacks.push(now);
+    drop(callbacks);
     let text = String::from_utf8_lossy(request);
     let Some((head, body)) = text.split_once("\r\n\r\n") else {
         return http_error(400, "malformed request");
@@ -227,11 +265,11 @@ pub fn callback_http(request: &[u8], root: &Path) -> String {
     } else {
         Err("method not found".into())
     };
-    let body = match result {
-        Ok(v) => json!({"jsonrpc":"2.0","id":id,"result":v}),
-        Err(e) => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":e}}),
+    let (status, body) = match result {
+        Ok(v) => (200, json!({"jsonrpc":"2.0","id":id,"result":v})),
+        Err(e) => (400, json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":e}})),
     };
-    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.to_string().len(), body)
+    format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.to_string().len(), body)
 }
 
 fn callback_call(root: &Path, params: &Value) -> Result<Value, String> {
@@ -280,18 +318,25 @@ fn callback_call(root: &Path, params: &Value) -> Result<Value, String> {
 }
 
 fn validate_url(url: &str) -> Result<(), String> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        Err("webhook URL must use http or https".into())
+    if !url.starts_with("https://") || url.len() <= "https://".len() {
+        Err("webhook URL must use HTTPS".into())
     } else {
         Ok(())
     }
 }
 fn post_json(url: &str, key: &str, payload: &Value) -> Result<(), String> {
     validate_url(url)?;
-    if url.starts_with("https://") {
-        return post_json_https(url, key, payload);
-    }
-    let without = url.strip_prefix("http://").unwrap();
+    post_json_https(url, key, payload)
+}
+
+#[cfg(test)]
+fn post_json_http_for_test(url: &str, key: &str, payload: &Value) -> Result<(), String> {
+    post_json_http(url, key, payload)
+}
+
+#[cfg(test)]
+fn post_json_http(url: &str, key: &str, payload: &Value) -> Result<(), String> {
+    let without = url.strip_prefix("http://").ok_or("test endpoint must use HTTP")?;
     let (hostport, path) = without
         .split_once('/')
         .map_or((without, "/".to_owned()), |(h, p)| (h, format!("/{p}")));
@@ -442,6 +487,84 @@ fn get_secret(name: &str) -> Result<String, String> {
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = <sha2::Sha256 as sha2::Digest>::digest(bytes);
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+    use crate::mcp::{read_agent, write_agent};
+
+    fn request(token: &str, body: &str) -> Vec<u8> {
+        format!("POST /mcp HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
+    }
+
+    #[test]
+    fn webhook_urls_are_https_only() {
+        assert!(validate_url("https://example.test/hook").is_ok());
+        assert!(validate_url("http://127.0.0.1/hook").is_err());
+        assert!(validate_url("https://").is_err());
+    }
+
+    #[test]
+    fn oversized_callback_is_rejected_before_parsing() {
+        let root = tempfile::tempdir().unwrap();
+        let response = callback_http(&vec![b'x'; MAX_CALLBACK_BYTES + 1], root.path());
+        assert!(response.starts_with("HTTP/1.1 413"));
+    }
+
+    #[test]
+    fn fake_webhook_receives_bearer_key_and_run_id() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0u8; 4096];
+            let n = stream.read(&mut bytes).unwrap();
+            let request = String::from_utf8_lossy(&bytes[..n]);
+            assert!(request.contains("Authorization: Bearer fake-webhook-key"));
+            assert!(request.contains("run-123"));
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+        });
+        post_json_http_for_test(&format!("http://{address}/routine"), "fake-webhook-key", &json!({"concordia_run_id":"run-123"})).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn callback_auth_identity_rate_limit_and_disk_redaction() {
+        let root = tempfile::tempdir().unwrap();
+        let token = "callback-token-test";
+        put_secret(&callback_secret_name(root.path()), token).unwrap();
+        let run_id = "run-known";
+        write_agent(root.path(), &AgentRecord { agent_id: run_id.into(), account: "acct".into(), provider: "grok-bot".into(), model: None, task: "task".into(), parent: String::new(), status: "waiting".into(), result: None, activity: Vec::new() }).unwrap();
+        let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"grok_bot_callback","arguments":{"run_id":run_id,"kind":"result","content":"untrusted result"}}}).to_string();
+        assert!(callback_http(&request("wrong", &body), root.path()).starts_with("HTTP/1.1 401"));
+        let unknown = body.replace(run_id, "unknown");
+        assert!(callback_http(&request(token, &unknown), root.path()).starts_with("HTTP/1.1 400"));
+        assert_eq!(read_agent(root.path(), run_id).unwrap().status, "waiting");
+        assert!(callback_http(&request(token, &body), root.path()).starts_with("HTTP/1.1 200"));
+        assert_eq!(read_agent(root.path(), run_id).unwrap().status, "finished");
+        for _ in 0..MAX_CALLBACKS_PER_MINUTE { let _ = callback_http(&request(token, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string()), root.path()); }
+        assert!(callback_http(&request(token, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string()), root.path()).starts_with("HTTP/1.1 429"));
+        std::fs::write(root.path().join("grok-bot-routines.json"), b"secret-free-state").unwrap();
+        let key = "webhook-secret-must-not-be-written";
+        assert!(!std::fs::read_dir(root.path()).unwrap().flatten().filter_map(|e| std::fs::read(e.path()).ok()).any(|b| String::from_utf8_lossy(&b).contains(key)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn listener_is_loopback_only_and_absent_without_routines() {
+        let root = tempfile::tempdir().unwrap();
+        start_listener(root.path());
+        assert!(!root.path().join("grok-bot-callback-address").exists());
+        register(root.path(), Routine { provider: "grok-bot".into(), account: "acct".into(), routine_id: "routine".into(), name: "name".into(), description: String::new(), webhook_url: "https://example.test/hook".into() }, "key-not-on-disk").unwrap();
+        for _ in 0..40 { if root.path().join("grok-bot-callback-address").exists() { break; } std::thread::sleep(Duration::from_millis(10)); }
+        let address = std::fs::read_to_string(root.path().join("grok-bot-callback-address")).unwrap();
+        assert!(address.contains("127.0.0.1:"));
+        remove(root.path(), "grok-bot", "acct", "routine").unwrap();
+        assert!(!std::fs::read_to_string(routines_path(root.path())).unwrap().contains("key-not-on-disk"));
+    }
 }
 
 #[cfg(windows)]

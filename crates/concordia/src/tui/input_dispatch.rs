@@ -169,6 +169,10 @@ pub(super) fn handle_key(
         }
         return false;
     }
+    if app.picker.as_ref().is_some_and(|p| p.kind == PickerKind::GrokBotForm) {
+        app.grok_bot_form_key(key);
+        return false;
+    }
     let idle_help = key.code == KeyCode::Char('?')
         && !app.busy
         && app.rename_editor.is_none()

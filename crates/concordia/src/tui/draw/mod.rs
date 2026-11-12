@@ -1360,6 +1360,18 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(picker) = app.picker.as_mut() else {
         return;
     };
+    if picker.kind == PickerKind::GrokBotForm {
+        if let Some(form) = &app.grok_bot_form {
+            let values = [&form.account, &form.routine_id, &form.name, &form.webhook_url];
+            let labels = ["Account", "Routine ID", "Display name", "Webhook URL (HTTPS)"];
+            for ((row, label), value) in picker.rows.iter_mut().take(4).zip(labels).zip(values) {
+                row.label = format!("{label}: {}", if value.is_empty() { "<empty>" } else { value });
+            }
+            if let Some(row) = picker.rows.get_mut(4) {
+                row.label = format!("Webhook key: {}", if form.key.is_empty() { "<empty>" } else { "••••••••" });
+            }
+        }
+    }
     if matches!(
         picker.kind,
         PickerKind::Update

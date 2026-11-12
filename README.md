@@ -40,6 +40,9 @@ Ask your question and press Enter
 /model               # choose a model from the active provider
 ```
 
+The `/use` picker also configures Grok Bot routines. Their HTTPS webhook key is entered in a
+masked form and stored in Windows Credential Manager; routine metadata stays in Concordia state.
+
 `concordia` opens the native app window. Inside it, `/terminal`
 or F11 opens a local shell in the project; F11 returns to chat with its draft intact.
 `/terminal hide` keeps that shell alive, and `/terminal close` stops it.

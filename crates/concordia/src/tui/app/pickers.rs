@@ -361,6 +361,39 @@ impl App {
         });
         self.show_picker(PickerKind::Use, "accounts".into(), rows, true);
     }
+    fn open_grok_bot_form(&mut self, existing: Option<crate::grok_bot::Routine>) {
+        let form = existing.map_or_else(crate::tui::GrokBotForm::default, |r| crate::tui::GrokBotForm {
+            account: r.account, routine_id: r.routine_id, name: r.name, webhook_url: r.webhook_url, ..Default::default()
+        });
+        self.grok_bot_form = Some(form);
+        self.show_picker(PickerKind::GrokBotForm, "Grok Bot routine · Tab next · final Enter saves".into(), vec![
+            PickerRow { id: "account".into(), label: "Account".into(), detail: String::new() },
+            PickerRow { id: "routine".into(), label: "Routine ID".into(), detail: String::new() },
+            PickerRow { id: "name".into(), label: "Display name".into(), detail: String::new() },
+            PickerRow { id: "url".into(), label: "Webhook URL (HTTPS)".into(), detail: String::new() },
+            PickerRow { id: "key".into(), label: "Webhook key ·••••••••".into(), detail: "stored only in Windows Credential Manager".into() },
+        ], false);
+    }
+
+    pub(in crate::tui) fn grok_bot_form_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(form) = self.grok_bot_form.as_mut() else { return };
+        let active = form.active;
+        match key.code {
+            crossterm::event::KeyCode::Esc => { self.grok_bot_form = None; self.dismiss_picker(); }
+            crossterm::event::KeyCode::Tab => form.active = (active + 1) % 5,
+            crossterm::event::KeyCode::Enter if active < 4 => form.active += 1,
+            crossterm::event::KeyCode::Backspace => match active { 0 => { form.account.pop(); }, 1 => { form.routine_id.pop(); }, 2 => { form.name.pop(); }, 3 => { form.webhook_url.pop(); }, _ => { form.key.pop(); } },
+            crossterm::event::KeyCode::Char(c) if !c.is_control() => match active { 0 => form.account.push(c), 1 => form.routine_id.push(c), 2 => form.name.push(c), 3 => form.webhook_url.push(c), _ => form.key.push(c) },
+            crossterm::event::KeyCode::Enter => {
+                let routine = crate::grok_bot::Routine { provider: "grok-bot".into(), account: form.account.trim().into(), routine_id: form.routine_id.trim().into(), name: form.name.trim().into(), description: String::new(), webhook_url: form.webhook_url.trim().into() };
+                let result = crate::grok_bot::register(&self.state_root, routine, &form.key);
+                self.grok_bot_form = None; self.dismiss_picker();
+                match result { Ok(()) => self.push_system("Grok Bot routine saved; key is stored only in Credential Manager"), Err(e) => self.push_system(format!("Grok Bot setup failed · {e}")) }
+            }
+            _ => {}
+        }
+    }
+
     pub(in crate::tui) fn show_unfinished_request(&mut self) {
         if let Some(prompt) = self.continuation.pending_text() {
             let text = format!("Unfinished request (not sent):\n{prompt}");
@@ -1187,7 +1220,15 @@ impl App {
                     return;
                 }
                 if id == "use-grok-bot-setup" {
-                    self.push_system("Grok Bot setup: register the routine with concordia::grok_bot::register(account, routine ID, webhook URL, bearer key); then expose the shown localhost callback through your own tunnel. Keys never enter prompts or agent results. See docs/provider-grok-bot.md.");
+                    self.open_grok_bot_form(None);
+                    return;
+                }
+                if let Some(routine_id) = id.strip_prefix("use-grok-bot:") {
+                    self.show_picker(PickerKind::GrokBotActions, "Grok Bot routine".into(), vec![
+                        PickerRow { id: format!("edit:{routine_id}"), label: "edit routine".into(), detail: "replace URL or key".into() },
+                        PickerRow { id: format!("rotate:{routine_id}"), label: "rotate callback token".into(), detail: "invalidate the previous token".into() },
+                        PickerRow { id: format!("remove:{routine_id}"), label: "remove routine".into(), detail: "stop listening when this is the last routine".into() },
+                    ], false);
                     return;
                 }
                 if id == "use-add" {
@@ -1216,6 +1257,18 @@ impl App {
                     ));
                 }
             }
+            PickerKind::GrokBotActions => {
+                let (action, routine_id) = id.split_once(':').unwrap_or(("", ""));
+                if action == "edit" {
+                    self.open_grok_bot_form(crate::grok_bot::list(&self.state_root).into_iter().find(|r| r.routine_id == routine_id));
+                } else if action == "rotate" {
+                    match crate::grok_bot::rotate_callback_token(&self.state_root) { Ok(_) => self.push_system("Grok Bot callback token rotated"), Err(e) => self.push_system(format!("callback token rotation failed · {e}")) }
+                } else if action == "remove" {
+                    if let Some(r) = crate::grok_bot::list(&self.state_root).into_iter().find(|r| r.routine_id == routine_id) { let _ = crate::grok_bot::remove(&self.state_root, &r.provider, &r.account, &r.routine_id); }
+                    self.build_use_picker();
+                }
+            }
+            PickerKind::GrokBotForm => {}
             PickerKind::Model => {
                 if let Some(model) = id
                     .strip_prefix(TYPED_MODEL_PREFIX)

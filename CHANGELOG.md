@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (2026-11-12r)
+
+- Finished Grok Bot routine setup in `/use` with a masked Credential Manager-backed key field,
+  HTTPS-only webhook validation, edit/remove/token-rotation actions, loopback listener lifecycle,
+  and focused callback trust-boundary proofs.
+
 ### Added (2026-11-12q)
 
 - Added an Astro Starlight documentation site scaffold for GitHub Pages with a vendored Opifex

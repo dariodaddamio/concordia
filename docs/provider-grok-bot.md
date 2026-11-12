@@ -5,13 +5,16 @@ routine and wait for one callback containing either a result or a question.
 
 ## Setup
 
-Open `/use` and choose the Grok Bot routine setup row. Register the routine with its account ID,
-routine ID, display name, webhook URL and bearer key. Concordia stores only the non-secret routine
-metadata in its state directory. The webhook key is written to Windows Credential Manager under
+Open `/use`, choose `+ configure Grok Bot routine`, and complete the picker form. Enter the account
+ID, routine ID, display name, HTTPS webhook URL and bearer key. The key field is masked and is
+never added to the transcript, command history, logs, crash reports or state files. Concordia
+stores only the non-secret routine metadata in its state directory. The webhook key is written to Windows Credential Manager under
 an identity containing `grok-bot`, the account ID and the routine ID; it is never selected by
 display name and is never placed in a prompt, tool result or environment variable.
 
-When the first routine is registered, Concordia starts a localhost-only callback listener and
+Selecting a configured routine opens actions to edit it, remove it, or rotate the callback token.
+Editing replaces the stored webhook key only after the form is submitted. When the first routine
+is registered, Concordia starts a localhost-only callback listener and
 shows its address, a generated callback bearer token and setup instructions. Expose that address
 through a tunnel you run yourself (ngrok, Cloudflare Tunnel or Tailscale Funnel). Concordia does
 not ship or launch tunnel software. Rotate the callback token from the routine setup screen if it
@@ -37,4 +40,5 @@ unreachable, the row says so and the result remains in Grok Bot's own chat.
   against other users and disk theft, not a process already running as the same Windows user.
 - No chat history, Brain, provider credentials or general-purpose MCP tools are exposed.
 - Concordia runs no tunnel and makes no unattended approval decisions for Grok Bot.
-- The current fake-endpoint tests cover the local HTTP contract; they never contact xAI.
+- The focused fake-endpoint and callback tests cover the local HTTP contract, identity checks,
+  body/rate limits, listener binding and state-directory redaction; they never contact xAI.
