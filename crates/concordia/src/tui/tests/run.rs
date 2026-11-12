@@ -257,21 +257,12 @@ fn update_blocks_background_workers_and_never_queues_an_install() {
 }
 
 #[test]
-fn workers_cannot_start_during_an_update() {
+fn removed_delegation_commands_do_not_start_work_during_an_update() {
     let mut h = Harness::new(100, 24);
     h.app.job = Some(fake_update_job());
-    let (command, _) =
-        crate::commands::parse_slash("/delegate synthetic-worker check files").unwrap();
-    assert!(h.app.try_delegate_slash(&command));
-    assert!(h
-        .transcript_text()
-        .contains("Workers are paused while Concordia updates"));
+    let (command, _) = crate::commands::parse_slash("/delegate synthetic-worker check files").unwrap();
+    assert!(matches!(command, crate::commands::SlashCommand::Unknown(_)));
     assert!(!h.app.deleg.d.any_active());
-    let (command, _) = crate::commands::parse_slash("/delegate use").unwrap();
-    assert!(h.app.try_delegate_slash(&command));
-    assert!(h
-        .transcript_text()
-        .contains("Worker results cannot be sent"));
     assert!(!h.app.deleg.has_pending_prompt());
     h.app.job.as_ref().unwrap().cancel();
 }

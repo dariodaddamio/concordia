@@ -21,9 +21,6 @@ fn read_store_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
 }
 
 /// Routing overrides have a separately versioned bounded transaction, preserving config.toml.
-pub fn route_policy(root: &Path) -> Result<crate::routing::Policies, String> {
-    crate::routing::load_policies(root)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

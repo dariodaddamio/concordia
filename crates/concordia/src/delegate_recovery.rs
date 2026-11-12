@@ -716,10 +716,6 @@ struct SavedJob {
     origin: Origin,
     source: Option<String>,
     #[serde(default)]
-    routing: Option<crate::routing::Approved>,
-    #[serde(default)]
-    route_history: Vec<String>,
-    #[serde(default)]
     workspace: Option<crate::workspaces::Request>,
     #[serde(default)]
     workspace_notice: Option<String>,
@@ -961,7 +957,6 @@ impl Delegates {
                     || saved.attempts.len() > 4
                     || saved.attempt_records.len() > 4
                     || saved.attempt_records.iter().any(|attempt| !attempt.valid())
-                    || saved.route_history.len() > 4
                     || saved.workspace.as_ref().is_some_and(|request| {
                         !request.structurally_valid() || request.binding.owner != workspace
                     })
@@ -969,14 +964,6 @@ impl Delegates {
                         .workspace_notice
                         .as_ref()
                         .is_some_and(|notice| notice.len() > 4096)
-                    || saved
-                        .route_history
-                        .iter()
-                        .any(|report| report.len() > 32_000)
-                    || saved
-                        .routing
-                        .as_ref()
-                        .is_some_and(|routing| !routing.valid())
                     || std::fs::canonicalize(&saved.spec.cwd).ok().as_ref()
                         != Some(
                             saved
@@ -1019,7 +1006,7 @@ impl Delegates {
                 }
                 jobs.push(Job {
                     input:input::State::default(),
-                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable, routing:saved.routing, route_history:saved.route_history,
+                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable,
                     workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None, preparation_cancel:Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
                     task:saved.task, model:saved.spec.model.clone(), trust:saved.spec.trust, spec:saved.spec,
@@ -1109,8 +1096,6 @@ impl Delegates {
                     state: j.state,
                     origin: j.origin,
                     source: j.source_id.clone(),
-                    routing: j.routing.clone(),
-                    route_history: j.route_history.clone(),
                     workspace: j.workspace.clone(),
                     workspace_notice: j.workspace_notice.clone(),
                     native_session: j.session_id.clone(),
@@ -1267,6 +1252,7 @@ impl Delegates {
         Ok(())
     }
 
+    #[cfg(any())]
     pub(super) fn worker_failover(&mut self, id: u32, out: &TurnOutcome, now: Instant) -> bool {
         let Some(root) = self.recovery.as_ref().map(|r| r.state_root.clone()) else {
             return false;

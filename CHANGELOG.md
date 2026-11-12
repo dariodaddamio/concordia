@@ -1,5 +1,9 @@
 # Changelog
 
+- W3c: removed the legacy slash-command delegation, routing-policy and worker test surfaces;
+  agent-initiated delegation remains available through the single `agents` MCP tool, and
+  usage-limit continuation now uses the plain account picker.
+
 - W4b: separated Markdown table body rows with horizontal rules and gave Concordia system
   notices an icon and tinted transcript band; cancellation notices now use plain sentences.
 

@@ -14,8 +14,6 @@ pub(super) struct Checkpoint {
     pub tried: Vec<String>,
     pub reason: String,
     #[serde(default)]
-    pub routing: Option<crate::routing::Approved>,
-    #[serde(default)]
     pub scope: Option<crate::workspaces::Request>,
     #[serde(default)]
     pub conversation: Option<String>,
@@ -101,10 +99,6 @@ impl App {
                         && checkpoint.conversation.as_ref().is_none_or(|id| {
                             !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == *id)
                         })
-                    || checkpoint
-                        .routing
-                        .as_ref()
-                        .is_some_and(|routing| !routing.valid())
                     || uuid::Uuid::parse_str(&checkpoint.run_id).is_err()
                     || checkpoint.prompt.len() > 1024 * 1024
                     || checkpoint.sources.len() > 8
@@ -283,7 +277,6 @@ mod tests {
             app.persist_draft_now();
             let snapshot = app.keep.lease.as_ref().unwrap().turn().unwrap().unwrap();
             assert_eq!(snapshot.version, 3);
-            assert!(snapshot.routing.as_ref().unwrap().valid());
             assert_eq!(
                 app.keep
                     .lease

@@ -259,9 +259,6 @@ impl App {
             self.run_mode_command(arg.as_deref());
             return true;
         }
-        if self.try_delegate_slash(&cmd) {
-            return true;
-        }
         if let SlashCommand::Customization(hooks) = &cmd {
             settings::catalog(self, *hooks);
             return true;

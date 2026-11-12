@@ -511,7 +511,6 @@ impl App {
         self.streamed_text_committed = false;
         self.live_thinking.clear();
         self.turn_finished(outcome.cancelled, failed);
-        self.scan_delegation(&scan_text);
         // The turn used some of this account's limits: re-check them in the background.
         self.usage_fetcher.invalidate(&self.account);
         self.refresh_usage();

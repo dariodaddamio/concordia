@@ -82,6 +82,7 @@ pub fn fence_untrusted(content: &str) -> String {
 // ---------------------------------------------------------------------------------------------
 
 /// Why `account` cannot become a worker, or the account if it can.
+#[cfg(any())]
 pub fn check_add_worker(
     state_root: &Path,
     orchestrator: &str,
@@ -138,6 +139,7 @@ pub fn check_add_worker(
     Ok(acct)
 }
 
+#[cfg(any())]
 pub fn add_worker(state_root: &Path, orchestrator: &str, id: &str) -> Result<String, String> {
     let acct = check_add_worker(state_root, orchestrator, id)?;
     let cap = crate::config::for_root(state_root).delegation.max_workers;
@@ -159,6 +161,7 @@ pub fn add_worker(state_root: &Path, orchestrator: &str, id: &str) -> Result<Str
     ))
 }
 
+#[cfg(any())]
 pub fn remove_worker(state_root: &Path, id: &str) -> Result<String, String> {
     let want = normalize_account_id(id.trim());
     let removed = modify_store(state_root, |s| {
@@ -335,8 +338,6 @@ pub struct Job {
     reference_storage: bool,
     task_reference: Option<TaskReferences>,
     task_reference_unavailable: bool,
-    pub routing: Option<crate::routing::Approved>,
-    pub route_history: Vec<String>,
     pub workspace: Option<crate::workspaces::Request>,
     workspace_notice: Option<String>,
     workspace_next_check: Option<Instant>,
@@ -678,27 +679,6 @@ impl Delegates {
                 s.account
             ));
         }
-        let routing = self
-            .recovery
-            .as_ref()
-            .map(|recovery| {
-                let root = &recovery.state_root;
-                let owner = crate::store::get_use_selection(root)
-                    .map(|selection| selection.account)
-                    .unwrap_or_default();
-                let mut targets = crate::routing::worker_targets(root)?;
-                targets.push(crate::routing::Target {
-                    account: s.account.clone(),
-                    model: s.spec.model.clone(),
-                });
-                crate::routing::Approved::capture(
-                    root,
-                    targets,
-                    &owner,
-                    get_settings(root).delegate_quota_failover,
-                )
-            })
-            .transpose()?;
         let id = self.next_id;
         self.next_id += 1;
         let run_id = uuid::Uuid::new_v4().to_string();
@@ -719,8 +699,6 @@ impl Delegates {
             reference_storage: true,
             task_reference: None,
             task_reference_unavailable: false,
-            routing,
-            route_history: Vec::new(),
             workspace,
             workspace_notice: None,
             workspace_next_check: None,
@@ -871,36 +849,6 @@ impl Delegates {
             return;
         }
         // Recheck registrations/models after asynchronous source verification.
-        if let (Some(root), Some(job)) =
-            (self.recovery.as_ref().map(|r| &r.state_root), self.get(id))
-        {
-            if let Some(approved) = &job.routing {
-                if let Err(error) = approved.verify_binding(
-                    root,
-                    &crate::routing::Target {
-                        account: job.account.clone(),
-                        model: job.spec.model.clone(),
-                    },
-                ) {
-                    self.pause_dependency_job(id, error, now);
-                    return;
-                }
-            }
-        }
-        if let (Some(root), Some(job)) =
-            (self.recovery.as_ref().map(|r| &r.state_root), self.get(id))
-        {
-            if let Err(error) = crate::routing::validate_launch(
-                root,
-                &job.account,
-                job.provider,
-                job.spec.home.as_deref(),
-                job.spec.model.as_deref(),
-            ) {
-                self.pause_dependency_job(id, error, now);
-                return;
-            }
-        }
         if let Err(error) = self.dependency_sources(id) {
             self.pause_dependency_job(id, error, now);
             return;
@@ -1275,7 +1223,7 @@ impl Delegates {
                                         .any(|card| card.status == CardStatus::Running)
                                 })));
                     let released = self.finish_workspace(id, confirmed, false);
-                    let retry = released && self.worker_failover(id, &out, now);
+                    let retry = false;
                     if retry {
                         continue;
                     }
@@ -1491,8 +1439,6 @@ impl Delegates {
             reference_storage: true,
             task_reference: None,
             task_reference_unavailable: false,
-            routing: None,
-            route_history: Vec::new(),
             workspace: None,
             workspace_notice: None,
             workspace_next_check: None,
@@ -1750,13 +1696,6 @@ pub fn result_block(j: &Job, orchestrator_label: &str) -> String {
     if let Some(notice) = j.workspace_delivery_notice() {
         out.push(notice);
     }
-    if !j.route_history.is_empty() {
-        out.push(format!(
-            "{} launch attempts; /delegate routes {} shows captured routing and skipped targets",
-            j.attempt_records.len(),
-            j.id
-        ));
-    }
     let text = j.final_text();
     match j.state {
         WorkerState::Done if !text.is_empty() => {
@@ -1819,6 +1758,7 @@ pub fn use_prompt_capped(j: &Job, max: usize) -> String {
 }
 
 /// One status line per worker for `/workers`.
+#[cfg(any())]
 pub fn workers_report(
     state_root: &Path,
     orchestrator: &str,
@@ -2001,5 +1941,3 @@ pub fn help_lines(protocol_on: bool) -> Vec<String> {
     v
 }
 
-#[cfg(test)]
-mod tests;

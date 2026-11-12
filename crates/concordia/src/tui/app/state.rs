@@ -1400,7 +1400,6 @@ impl App {
         self.submitted_prompt = Some(request.clone());
         self.continuation
             .begin(&self.account, &self.model, &original_line);
-        self.freeze_continuation_routes();
         if let Err(error) = self.bind_main_scope() {
             self.push_system(format!(
                 "workspace scope not approved: {error}; request kept"

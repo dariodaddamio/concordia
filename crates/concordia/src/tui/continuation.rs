@@ -26,8 +26,6 @@ pub(super) struct State {
     run_id: String,
     context_limited: bool,
     context_rollovers: u8,
-    routing: Option<crate::routing::Approved>,
-    routing_error: Option<String>,
 }
 
 impl State {
@@ -64,15 +62,11 @@ impl State {
             run_id: uuid::Uuid::new_v4().to_string(),
             context_limited: false,
             context_rollovers: 0,
-            routing: None,
-            routing_error: None,
         }
     }
 
     pub fn begin(&mut self, account: &str, model: &str, prompt: &str) {
         if !self.dispatching {
-            self.routing = None;
-            self.routing_error = None;
             self.tried.clear();
             self.run_id = uuid::Uuid::new_v4().to_string();
             self.recovered = false;
@@ -97,7 +91,6 @@ impl State {
             .as_ref()
             .map(|prompt| turn_checkpoint::Checkpoint {
                 version: 2,
-                routing: self.routing.clone(),
                 scope: None,
                 conversation: None,
                 run_id: self.run_id.clone(),
@@ -117,8 +110,6 @@ impl State {
     }
 
     pub(super) fn restore_checkpoint(&mut self, checkpoint: turn_checkpoint::Checkpoint) {
-        self.routing = checkpoint.routing;
-        self.routing_error = None;
         self.prompt = Some(checkpoint.prompt.clone());
         self.pending = Some(checkpoint.prompt);
         self.retry_draft = None;
@@ -141,8 +132,6 @@ impl State {
     }
 
     pub fn invalidate(&mut self) {
-        self.routing = None;
-        self.routing_error = None;
         self.retry = Retry::Ready;
         self.pending = None;
         self.prompt = None;
@@ -250,9 +239,6 @@ impl App {
         };
         self.continuation.automatic = value != "manual";
         self.continuation.preferred_account = preferred;
-        self.continuation.routing = None;
-        self.continuation.routing_error = None;
-        self.freeze_continuation_routes();
         self.continuation.clear_deferred();
         self.push_system(format!(
             "usage handoff for this session: {}. Future windows keep their saved default.",
@@ -273,30 +259,8 @@ impl App {
     pub(super) fn continuation_command(&mut self, arg: &str) {
         match arg {
             "automatic" | "manual" => self.set_session_handoff(arg),
-            "routes" => {
-                if self.continuation.routing.is_none() {
-                    if let Err(error) = crate::store::route_policy(&self.state_root) {
-                        self.push_system(error);
-                        return;
-                    }
-                }
-                let (targets, context) = self.continuation_route_inputs();
-                if let Some(error) = &self.continuation.routing_error {
-                    self.push_system(error.clone());
-                } else {
-                    self.inspect_routes(targets, context, self.continuation.routing.clone());
-                }
-            }
+            "routes" => self.push_system("continuation routes are selected in the account picker"),
             "" => self.open_handoff_settings(),
-            command if command == "policy" || command.starts_with("policy ") => {
-                let result = crate::routing::policy_command(
-                    &self.state_root,
-                    false,
-                    command.strip_prefix("policy").unwrap_or("").trim(),
-                )
-                .unwrap_or_else(|error| error);
-                self.push_system(result);
-            }
             _ => {
                 self.push_system("usage: /continuation [manual|automatic|routes]; /continue ACCOUNT continues an interrupted request");
             }
@@ -415,6 +379,7 @@ impl App {
         self.next_usage_target()
     }
 
+    #[cfg(any())]
     fn next_usage_target(&mut self) -> Option<String> {
         if self.continuation.context_limited {
             if self.continuation.context_rollovers < 1 {
@@ -472,6 +437,15 @@ impl App {
         None
     }
 
+    fn next_usage_target(&mut self) -> Option<String> {
+        if self.continuation.context_limited && self.continuation.context_rollovers < 1 {
+            return Some(self.account.clone());
+        }
+        self.open_continuation_picker();
+        None
+    }
+
+    #[cfg(any())]
     pub(super) fn continuation_route_inputs(
         &self,
     ) -> (Vec<crate::routing::Target>, crate::routing::Context) {
@@ -551,6 +525,7 @@ impl App {
         (targets, context)
     }
 
+    #[cfg(any())]
     pub(super) fn freeze_continuation_routes(&mut self) {
         if self.continuation.routing.is_some() || self.continuation.routing_error.is_some() {
             return;
@@ -626,25 +601,6 @@ impl App {
             self.push_system(
                 "choose a different account with an explicit home from /use before continuing",
             );
-            return;
-        }
-        let (_, mut context) = self.continuation_route_inputs();
-        context.attempted_accounts.clear();
-        context.attempted_pairs.clear();
-        context.allow_same_target = self.continuation.same_account_allowed();
-        let decision = crate::routing::capture(
-            &self.state_root,
-            &[crate::routing::Target {
-                account: target.into(),
-                model: model.map(str::to_owned),
-            }],
-            &context,
-        );
-        if decision.selected().is_none() {
-            self.push_system(format!(
-                "continuation paused: {}",
-                decision.report().join("\n")
-            ));
             return;
         }
         let original = crate::attachments::Message::decode(&prompt);
@@ -771,6 +727,7 @@ mod tests {
         assert!(app.continuation.preferred_account.is_none());
     }
 
+    #[cfg(any())]
     #[test]
     fn session_handoff_screen_changes_policy_without_sending_paused_work() {
         let (mut app, dir) = setup();

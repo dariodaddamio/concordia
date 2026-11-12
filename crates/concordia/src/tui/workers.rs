@@ -8,14 +8,13 @@
 use super::text::char_width;
 use super::{contains, provider_color, App, Phase};
 use crate::accounts::{get_account, is_logged_in, normalize_account_id};
-use crate::commands::SlashCommand;
 use crate::delegate::{
-    add_worker, build_worker_context, extract_delegate_blocks, fmt_elapsed, help_lines,
-    remove_worker, result_block, use_prompt, worker_trust, Delegates, Job, JobSpec, Origin, Submit,
+    build_worker_context, extract_delegate_blocks, fmt_elapsed, result_block, use_prompt,
+    worker_trust, Delegates, Job, JobSpec, Origin, Submit,
     WorkerState, MAX_PENDING_CONFIRMS,
 };
 use crate::provider::stream_cards::format_card_line;
-use crate::store::{get_settings, set_delegation_protocol, ChildTrust, TrustMode};
+use crate::store::{get_settings, ChildTrust, TrustMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -48,6 +47,7 @@ pub(super) struct Panel {
     auto_return_paused: bool,
     recovery_notice: bool,
     recoveries: Vec<RecoveryRead>,
+    #[cfg(any())]
     route_read: Option<(
         u64,
         std::sync::mpsc::Receiver<Result<crate::routing::Decision, String>>,
@@ -811,6 +811,7 @@ impl App {
         true
     }
 
+    #[cfg(any())]
     pub(super) fn worker_route_inputs(
         &self,
     ) -> Result<(Vec<crate::routing::Target>, crate::routing::Context), String> {
@@ -841,6 +842,7 @@ impl App {
         Ok((targets, context))
     }
 
+    #[cfg(any())]
     pub(super) fn inspect_routes(
         &mut self,
         targets: Vec<crate::routing::Target>,
@@ -964,6 +966,7 @@ impl App {
         changed |= self.poll_dependency_delivery();
         changed |= self.poll_managed_workspaces();
         changed |= self.poll_scope_inspection();
+        #[cfg(any())]
         if let Some((generation, rx)) = &self.deleg.route_read {
             match rx.try_recv() {
                 Ok(decision) => {
@@ -1415,6 +1418,7 @@ impl App {
     }
 
     /// Handle `/workers` and `/delegate`. Returns false for every other command.
+    #[cfg(any())]
     pub(super) fn try_delegate_slash(&mut self, cmd: &SlashCommand) -> bool {
         let root = self.state_root.clone();
         match cmd {
@@ -1775,6 +1779,7 @@ impl App {
 
 /// Parse the compact local crew spelling `ACCOUNT:MODEL`. Account-only entries use the provider
 /// default model. The account id is deliberately opaque; only the final separator is meaningful.
+#[cfg(any())]
 fn crew_target(value: &str) -> Result<(String, Option<String>), String> {
     let value = value.trim();
     if value.is_empty() {
@@ -1800,6 +1805,7 @@ fn crew_target(value: &str) -> Result<(String, Option<String>), String> {
     Ok((account, model))
 }
 
+#[cfg(any())]
 fn apply_crew(
     root: &std::path::Path,
     orchestrator: &str,
@@ -1852,6 +1858,7 @@ fn apply_crew(
     Ok((lead, workers.len()))
 }
 
+#[cfg(any())]
 fn clear_crew(root: &std::path::Path) -> Result<(), String> {
     crate::store::modify_store(root, |store| {
         store.settings.workers.clear();
@@ -1861,8 +1868,6 @@ fn clear_crew(root: &std::path::Path) -> Result<(), String> {
     .map_err(|error| format!("could not save crew - {error}"))
 }
 
-#[cfg(test)]
-mod tests;
 
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     app.deleg.viewer.is_none() && app.deleg.rects.iter().any(|(r, _)| contains(*r, x, y))

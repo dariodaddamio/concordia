@@ -11,10 +11,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Safety ceiling on delegated workers (the store and `/workers add` enforce it too).
-/// The previous three-worker limit was an arbitrary product restriction; resource admission
-/// still controls how many jobs can run concurrently.
-pub const MAX_WORKERS_CAP: usize = 12;
 pub const MAP_CHARS_RANGE: std::ops::RangeInclusive<i64> = 200..=8000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,24 +22,6 @@ pub struct Config {
     pub editor: EditorConfig,
     pub continuation: Continuation,
     pub turn: TurnConfig,
-    /// Named, local provider/account and model arrangements. The values are opaque model ids;
-    /// availability is checked when a crew is selected, never while loading config.
-    pub crews: BTreeMap<String, Crew>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Crew {
-    pub lead: String,
-    pub workers: Vec<String>,
-}
-
-impl Crew {
-    pub fn new(lead: impl Into<String>, workers: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            lead: lead.into(),
-            workers: workers.into_iter().collect(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,7 +131,6 @@ pub struct Mode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delegation {
     pub protocol: bool,
-    pub max_workers: usize,
 }
 
 impl Default for Config {
@@ -184,14 +161,12 @@ impl Default for Config {
             },
             delegation: Delegation {
                 protocol: true,
-                max_workers: MAX_WORKERS_CAP,
             },
             editor: EditorConfig::default(),
             continuation: Continuation::default(),
             turn: TurnConfig {
                 idle_timeout_minutes: 10,
             },
-            crews: BTreeMap::new(),
         }
     }
 }
@@ -311,34 +286,6 @@ impl Config {
                 continue;
             };
             if section == "crews" {
-                for (name, crew_value) in sub {
-                    let Some(crew) = crew_value.as_table() else {
-                        warnings.push(format!("crews.{name} must be a table; ignored"));
-                        continue;
-                    };
-                    let lead = crew
-                        .get("lead")
-                        .and_then(toml::Value::as_str)
-                        .map(str::to_owned);
-                    let workers = crew
-                        .get("workers")
-                        .and_then(toml::Value::as_array)
-                        .and_then(|a| {
-                            a.iter()
-                                .map(|v| v.as_str().map(str::to_owned))
-                                .collect::<Option<Vec<_>>>()
-                        });
-                    match (lead, workers) {
-                        (Some(lead), Some(workers))
-                            if !name.trim().is_empty() && !lead.trim().is_empty() =>
-                        {
-                            cfg.crews.insert(name.clone(), Crew { lead, workers });
-                        }
-                        _ => warnings.push(format!(
-                            "crews.{name} requires string lead and array workers; ignored"
-                        )),
-                    }
-                }
                 continue;
             }
             for (key, v) in sub {
@@ -436,21 +383,6 @@ impl Config {
                     "delegation.protocol" => {
                         set_bool(v, &full, &mut cfg.delegation.protocol, &mut warnings)
                     }
-                    "delegation.max_workers" => match v.as_integer() {
-                        Some(n) if (1..=MAX_WORKERS_CAP as i64).contains(&n) => {
-                            cfg.delegation.max_workers = n as usize
-                        }
-                        Some(n) => {
-                            let c = n.clamp(1, MAX_WORKERS_CAP as i64);
-                            cfg.delegation.max_workers = c as usize;
-                            warnings.push(format!(
-                                "delegation.max_workers = {n} is outside 1..={MAX_WORKERS_CAP}; using {c}"
-                            ));
-                        }
-                        None => warnings.push(format!(
-                            "delegation.max_workers must be an integer; using {MAX_WORKERS_CAP}"
-                        )),
-                    },
                     _ => unknown.push(full),
                 }
             }
@@ -485,6 +417,7 @@ impl Config {
     }
 
     /// Stable TOML for the crew portion of config, useful for editors and round-trip tests.
+    #[cfg(any())]
     pub fn crews_toml(&self) -> String {
         let quote = |text: &str| {
             serde_json::to_string(text)
@@ -581,6 +514,7 @@ pub fn delegation_protocol() -> bool {
 }
 
 /// Config cap on delegated workers (never above [`MAX_WORKERS_CAP`]).
+#[cfg(any())]
 pub fn max_workers() -> usize {
     get().delegation.max_workers
 }
@@ -645,7 +579,6 @@ mod tests {
         assert_eq!(c.threads.map_chars, 1600);
         assert_eq!(c.mode.default, TrustMode::Ask);
         assert!(!c.delegation.protocol);
-        assert_eq!(c.delegation.max_workers, 12);
     }
 
     #[test]
@@ -729,7 +662,6 @@ max_workers = 2
         assert_eq!(c.threads.map_chars, 800);
         assert_eq!(c.mode.default, TrustMode::Full);
         assert!(c.delegation.protocol);
-        assert_eq!(c.delegation.max_workers, 2);
     }
 
     #[test]
@@ -778,10 +710,8 @@ max_workers = 2
         let (c, _) = w("[threads]\nmap_chars = 99999\n");
         assert_eq!(c.threads.map_chars, 8000);
         let (c, warn) = w("[delegation]\nmax_workers = 0\n");
-        assert_eq!(c.delegation.max_workers, 1);
         assert_eq!(warn.len(), 1);
         let (c, warn) = w("[delegation]\nmax_workers = 99\n");
-        assert_eq!(c.delegation.max_workers, 12);
         assert_eq!(warn.len(), 1);
         let (c, warn) = w("[ui]\ntips = \"yes\"\n[threads]\nmap_chars = \"big\"\n");
         assert!(c.ui.tips);
@@ -801,13 +731,8 @@ max_workers = 2
     }
 
     #[test]
-    fn crew_config_round_trips() {
-        let text = "[crews.default]\nlead = \"claude:opus\"\nworkers = [\"codex:fast\", \"cursor:small\"]\n";
-        let (config, warnings) = Config::parse(text);
-        assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(config.crews["default"].lead, "claude:opus");
-        let (again, warnings) = Config::parse(&config.crews_toml());
-        assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(again.crews, config.crews);
+    fn crew_configuration_is_ignored_after_removal() {
+        let (_, warnings) = Config::parse("[crews.default]\nlead = \"claude:opus\"\nworkers = []\n");
+        assert!(warnings.is_empty());
     }
 }

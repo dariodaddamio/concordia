@@ -32,7 +32,6 @@ pub mod provider;
 pub mod redact;
 pub mod release;
 pub mod resource_governor;
-pub mod routing;
 pub mod session_titles;
 pub mod sessions;
 pub mod state_security;

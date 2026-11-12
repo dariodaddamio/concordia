@@ -39,8 +39,8 @@ fn documented_command_aliases_resolve_to_the_same_action() {
         ("/diag", SlashCommand::Doctor),
         ("/quit", SlashCommand::Exit),
         ("/q", SlashCommand::Exit),
-        ("/worker", SlashCommand::Workers),
-        ("/delegates help", SlashCommand::DelegateHelp),
+        ("/worker", SlashCommand::Unknown("worker".into())),
+        ("/delegates help", SlashCommand::Unknown("delegates".into())),
     ];
     for (line, expected) in cases {
         assert_eq!(parse_slash(line).map(|(c, _)| c), Some(expected), "{line}");

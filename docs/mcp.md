@@ -6,7 +6,7 @@ always-on tool, `agents`, with four actions:
 | Action | Result |
 | --- | --- |
 | `list` | Connected accounts, providers, discovered models and cached usage. |
-| `start` | An explicit delegated agent id and its queued status. |
+| `start` | Starts a delegated provider run and returns its lifecycle id. |
 | `status` | Current lifecycle status (`queued`, `running`, `finished` or `failed`) for an explicit id. |
 | `result` | The bounded final result and recent activity for an explicit id. |
 

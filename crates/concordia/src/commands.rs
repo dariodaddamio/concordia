@@ -29,50 +29,6 @@ pub enum SlashCommand {
     Copy,
     Doctor,
     Exit,
-    /// `/workers`: list. Delegation commands run inside the TUI (`tui/workers.rs`).
-    Workers,
-    WorkersAdd(Option<String>),
-    WorkersRemove(Option<String>),
-    /// `/delegate <account|auto> <task...>` (the task may be empty: a usage error).
-    Delegate {
-        target: String,
-        task: String,
-    },
-    DelegateAfter {
-        after: Vec<u32>,
-        target: String,
-        task: String,
-    },
-    DelegateGraph,
-    DelegateDelivery(String),
-    DelegateRoutes(Option<u32>),
-    DelegatePolicy(String),
-    DelegateScope(String),
-    DelegateWorktree {
-        workspace: String,
-        account: String,
-        task: String,
-    },
-    DelegateScoped {
-        account: String,
-        declarations: Vec<crate::workspaces::Declaration>,
-        task: String,
-    },
-    DelegateStop(Option<String>),
-    DelegateUse(Option<String>),
-    DelegateCollect,
-    DelegateReturns(Option<bool>),
-    DelegateModel {
-        account: String,
-        model: Option<String>,
-    },
-    DelegateHelp,
-    /// `/delegate protocol [on|off]`.
-    DelegateProtocol(Option<bool>),
-    /// `/crew list|use NAME|clear` selects a saved local model arrangement.
-    CrewList,
-    CrewUse(String),
-    CrewClear,
     /// `/harness ...` is executed by the TUI because it needs the live account home.
     Harness(String),
     Customization(bool),
@@ -82,7 +38,7 @@ pub enum SlashCommand {
     Unknown(String),
 }
 
-/// Parse `/workers ...` and `/delegate ...` from the raw line, keeping the task text verbatim.
+/*
 fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
     let rest = body.trim_start()[cmd.len()..].trim();
     let mut it = rest.splitn(2, char::is_whitespace);
@@ -220,6 +176,7 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
         _ => None,
     }
 }
+*/
 
 pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     let trimmed = line.trim();
@@ -249,34 +206,6 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     }
     match cmd.as_str() {
         "" => None,
-        "crew" => {
-            let mut crew_words = body[cmd.len()..].split_whitespace();
-            let action = crew_words.next().unwrap_or("").to_ascii_lowercase();
-            if matches!(action.as_str(), "list" | "clear") && crew_words.clone().next().is_some() {
-                return Some((
-                    SlashCommand::Invalid("crew use NAME|list|clear".into()),
-                    false,
-                ));
-            }
-            if action == "list" || action.is_empty() {
-                Some((SlashCommand::CrewList, false))
-            } else if action == "clear" {
-                Some((SlashCommand::CrewClear, false))
-            } else if action == "use" {
-                match (crew_words.next(), crew_words.next()) {
-                    (Some(name), None) => Some((SlashCommand::CrewUse(name.to_owned()), false)),
-                    _ => Some((
-                        SlashCommand::Invalid("crew use NAME|list|clear".into()),
-                        false,
-                    )),
-                }
-            } else {
-                Some((
-                    SlashCommand::Invalid("crew use NAME|list|clear".into()),
-                    false,
-                ))
-            }
-        }
         "use" => match rest.to_lowercase().as_str() {
             "remove" | "rm" | "delete" | "forget" => Some((
                 SlashCommand::UseRemove(parts.next().map(str::to_lowercase)),
@@ -344,9 +273,8 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
             false,
         )),
         "exit" | "quit" | "q" => Some((SlashCommand::Exit, false)),
-        "workers" | "worker" | "delegate" | "delegates" => {
-            parse_delegation(&cmd, body).map(|c| (c, false))
-        }
+        "workers" | "worker" | "delegate" | "delegates" | "crew" | "worker-panel" | "scope" =>
+            Some((SlashCommand::Unknown(cmd), false)),
         other => Some((SlashCommand::Unknown(other.to_string()), false)),
     }
 }
@@ -824,34 +752,6 @@ pub fn dispatch_slash(
                 ],
             )
         }
-        // Delegation needs the running TUI (workers, strip); `tui/workers.rs` handles these
-        // before dispatch. Reaching here means a caller without a UI.
-        SlashCommand::Workers
-        | SlashCommand::WorkersAdd(_)
-        | SlashCommand::WorkersRemove(_)
-        | SlashCommand::Delegate { .. }
-        | SlashCommand::DelegateAfter { .. }
-        | SlashCommand::DelegateGraph
-        | SlashCommand::DelegateDelivery(_)
-        | SlashCommand::DelegateRoutes(_)
-        | SlashCommand::DelegatePolicy(_)
-        | SlashCommand::DelegateScope(_)
-        | SlashCommand::DelegateScoped { .. }
-        | SlashCommand::DelegateWorktree { .. }
-        | SlashCommand::DelegateStop(_)
-        | SlashCommand::DelegateUse(_)
-        | SlashCommand::DelegateCollect
-        | SlashCommand::DelegateReturns(_)
-        | SlashCommand::DelegateModel { .. }
-        | SlashCommand::DelegateHelp
-        | SlashCommand::DelegateProtocol(_) => (
-            CommandOutcome::Ok,
-            vec!["delegation commands run inside the Concordia TUI".into()],
-        ),
-        SlashCommand::CrewList | SlashCommand::CrewUse(_) | SlashCommand::CrewClear => (
-            CommandOutcome::Ok,
-            vec!["crew commands run inside the Concordia TUI".into()],
-        ),
         SlashCommand::Unknown(name) => (
             CommandOutcome::Ok,
             vec![format!(
@@ -984,9 +884,13 @@ mod update_tests {
     }
 
     #[test]
-    fn workers_and_delegate_commands_parse() {
+    fn removed_delegation_commands_are_unknown() {
         let c = |l: &str| parse_slash(l).unwrap().0;
-        assert_eq!(c("/workers"), SlashCommand::Workers);
+        assert_eq!(c("/workers"), SlashCommand::Unknown("workers".into()));
+        assert_eq!(c("/delegate"), SlashCommand::Unknown("delegate".into()));
+        assert_eq!(c("/crew list"), SlashCommand::Unknown("crew".into()));
+        assert_eq!(c("/scope"), SlashCommand::Unknown("scope".into()));
+    /*
         assert_eq!(
             c("/workers add Codex-2"),
             SlashCommand::WorkersAdd(Some("codex-2".into()))
@@ -1061,6 +965,7 @@ mod update_tests {
                 task: String::new()
             }
         );
+    */
     }
 
     #[test]
