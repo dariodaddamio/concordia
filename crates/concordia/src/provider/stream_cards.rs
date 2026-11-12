@@ -1478,7 +1478,10 @@ mod tests {
             "git status · 1 output line"
         );
         let patch = "*** Begin Patch\n*** Update File: C:/fixture/src/display_backend.rs\n@@\n-before\n+after\n*** End Patch";
-        let script = format!("text(await tools.apply_patch({}));\ntext(await tools.exec_command({{cmd:\"cargo build -p fixture\",workdir:\"C:/fixture\"}}));", serde_json::to_string(patch).unwrap());
+        let script = format!(
+            "text(await tools.apply_patch({}));\ntext(await tools.exec_command({{cmd:\"cargo build -p fixture\",workdir:\"C:/fixture\"}}));",
+            serde_json::to_string(patch).unwrap()
+        );
         let output = (0..22)
             .map(|line| format!("line-{line}"))
             .collect::<Vec<_>>()
@@ -1554,9 +1557,11 @@ mod tests {
             "result replay must not duplicate the preview"
         );
         composite.status = CardStatus::Running;
-        assert!(compact_card_summary(&composite)
-            .text
-            .contains("+ Run build"));
+        assert!(
+            compact_card_summary(&composite)
+                .text
+                .contains("+ Run build")
+        );
         composite.detail = Some(format!("if (dynamic) {{ {script} }}"));
         let fallback = compact_card_summary(&composite);
         assert_eq!(fallback.text, "│ ◉ Run tools");
@@ -1631,13 +1636,15 @@ mod tests {
         for (index, (range, target)) in summary.files.iter().enumerate() {
             assert_eq!(target, &names[index]);
             assert!(range.len() <= 64);
-            assert!(summary
-                .text
-                .chars()
-                .skip(range.start)
-                .take(range.len())
-                .collect::<String>()
-                .contains("..."));
+            assert!(
+                summary
+                    .text
+                    .chars()
+                    .skip(range.start)
+                    .take(range.len())
+                    .collect::<String>()
+                    .contains("...")
+            );
         }
         assert_eq!(edit.detail.as_deref(), Some(patch.as_str()));
         let unknown = StreamCard {
@@ -1716,23 +1723,27 @@ mod tests {
             assert_eq!(status(id), CardStatus::Error);
         }
         assert_eq!(status("g"), CardStatus::Done);
-        assert!(cards
-            .iter()
-            .find(|c| c.id == "native-agent:c")
-            .unwrap()
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("Worker failed"));
+        assert!(
+            cards
+                .iter()
+                .find(|c| c.id == "native-agent:c")
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("Worker failed")
+        );
     }
 
     #[test]
     fn native_agent_without_child_identity_does_not_fabricate_an_agent() {
-        assert!(collab_cards(serde_json::json!({
-            "type":"collab_tool_call", "tool":"spawn_agent", "status":"failed",
-            "receiver_thread_ids":[], "agents_states":{}
-        }))
-        .is_empty());
+        assert!(
+            collab_cards(serde_json::json!({
+                "type":"collab_tool_call", "tool":"spawn_agent", "status":"failed",
+                "receiver_thread_ids":[], "agents_states":{}
+            }))
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1746,19 +1757,25 @@ mod tests {
         ]
         .join("\n");
         let parts = parse_codex_stream_chunk(&chunk);
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::Session(id) if id == "thr-1")));
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::Session(id) if id == "thr-1"))
+        );
         assert!(parts.iter().any(|p| matches!(
             p,
             StreamPart::Card(c) if c.title == "shell" || c.detail.as_deref().unwrap_or("").contains("npm")
         )));
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::Text(t) if t == "all green")));
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::Error(t) if t.contains("spend"))));
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::Text(t) if t == "all green"))
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::Error(t) if t.contains("spend")))
+        );
         // Codex exec and Responses/native history use distinct web-search envelopes.
         let web_events = [
             r#"{"type":"item.started","item":{"type":"web_search","id":"web-1","query":"Rust clipboard","action":{"type":"search","query":"Rust clipboard"}}}"#,
@@ -1783,23 +1800,29 @@ mod tests {
         assert!(detail.contains("Source: Rust docs\nhttps://doc.rust-lang.org/"));
         assert!(format_card_line(&cards[0]).contains("Rust clipboard"));
         assert_eq!(cards[1].title, "Read web page");
-        assert!(cards[1]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("https://doc.rust-lang.org/"));
+        assert!(
+            cards[1]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("https://doc.rust-lang.org/")
+        );
         assert_eq!(cards[2].status, CardStatus::Done);
-        assert!(cards[2]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("native search"));
+        assert!(
+            cards[2]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("native search")
+        );
         assert_eq!(cards[3].status, CardStatus::Error);
-        assert!(cards[3]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("search unavailable"));
+        assert!(
+            cards[3]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("search unavailable")
+        );
         // Observed native account codex-2 uses a custom exec wrapper containing mixed calls.
         let mixed = classify_payload(
             &serde_json::json!({"type":"custom_tool_call", "call_id":"mixed-web", "name":"exec", "input":"text(await tools.web__run({search_query:[{q:\"Rust clipboard\"}]})); text(await tools.exec_command({cmd:\"git status\"}));"}),
@@ -1934,11 +1957,13 @@ mod tests {
             panic!("{parts:?}")
         };
         assert_eq!(command.status, CardStatus::Running);
-        assert!(command
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("git status --short\nOutput: working…"));
+        assert!(
+            command
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("git status --short\nOutput: working…")
+        );
         let StreamPart::Card(mcp) = &parts[1] else {
             panic!("{parts:?}")
         };
@@ -2037,24 +2062,30 @@ mod tests {
             std::path::Path::new("."),
         );
         assert_eq!(changed.len(), 2);
-        assert!(repeated[0]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("-one\n+two"));
+        assert!(
+            repeated[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("-one\n+two")
+        );
         assert!(!repeated[0].detail.as_deref().unwrap().contains("+three"));
-        assert!(repeated[1]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("-two\n+three"));
+        assert!(
+            repeated[1]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("-two\n+three")
+        );
         let mut ambiguous = [unresolved("only-one-of-two")];
-        assert!(super::super::edit_display::enrich_codex(
-            &mut ambiguous,
-            &[first.into(), second.into()],
-            std::path::Path::new(".")
-        )
-        .is_empty());
+        assert!(
+            super::super::edit_display::enrich_codex(
+                &mut ambiguous,
+                &[first.into(), second.into()],
+                std::path::Path::new(".")
+            )
+            .is_empty()
+        );
     }
 
     #[test]

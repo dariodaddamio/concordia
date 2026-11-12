@@ -1,5 +1,5 @@
 use crate::store::TrustMode;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 #[derive(Debug, Clone)]
 pub struct ClaudeTurnRequest<'a> {

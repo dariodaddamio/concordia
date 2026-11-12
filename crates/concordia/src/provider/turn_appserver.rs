@@ -1,7 +1,7 @@
 //! Opt-in native Codex stdio transport, matched to the 0.166.0 generated protocol.
 use super::*;
-use crate::provider::{interaction::InteractionConnection, CardStatus};
-use serde_json::{json, Value};
+use crate::provider::{CardStatus, interaction::InteractionConnection};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 const TOOL_MAP_MAX: usize = 4096;
@@ -432,7 +432,10 @@ pub(super) async fn run(
     })
     .await?
     .map_err(anyhow::Error::msg)?;
-    anyhow::ensure!(version.trim()=="codex-cli 0.166.0","Native Codex input supports CLI 0.166.0; installed version is unverified. No fallback was started");
+    anyhow::ensure!(
+        version.trim() == "codex-cli 0.166.0",
+        "Native Codex input supports CLI 0.166.0; installed version is unverified. No fallback was started"
+    );
     let read_only = planned_options(&plan.argv)
         .any(|(flag, value)| matches!(flag, "-s" | "--sandbox") && value == Some("read-only"));
     let full = planned_options(&plan.argv)
@@ -575,6 +578,17 @@ pub(super) async fn run(
         anyhow::ensure!(thread["cwd"].as_str().and_then(|path|Path::new(path).canonicalize().ok())==Some(Path::new(&plan.cwd).canonicalize()?),"Codex thread workspace mismatch; prompt withheld");
         anyhow::ensure!(thread["approvalPolicy"]==approval && thread["approvalsReviewer"]=="user","Codex did not honor the requested approval policy; prompt withheld");
         conn.thread=Some(id.into());conn.out.session_id=Some(id.into());conn.emit(TurnProgress::Session(id.into())).await;
+        let command = req.prompt.split_whitespace().next().unwrap_or("");
+        if command == "/compact" && req.prompt.split_whitespace().count() == 1 {
+            tokio::time::timeout(Duration::from_secs(12), conn.rpc(4, "thread/compact/start", json!({"threadId": id}))).await??;
+            conn.emit(TurnProgress::Notice("Codex compaction requested".into())).await;
+            return Ok::<(), anyhow::Error>(());
+        }
+        if command == "/review" && req.prompt.split_whitespace().count() == 1 {
+            let review = tokio::time::timeout(Duration::from_secs(12), conn.rpc(4, "review/start", json!({"threadId": id, "delivery": "inline", "target": {"type": "uncommittedChanges"}}))).await??;
+            conn.turn = Some(review["turn"]["id"].as_str().filter(|turn| !turn.is_empty() && turn.len() <= 4096).context("Codex review returned no turn ID")?.into());
+            return conn.listen().await;
+        }
         let mut params=json!({"threadId":id,"input":content,"cwd":plan.cwd,"approvalPolicy":approval,"approvalsReviewer":"user","sandboxPolicy":policy});
         if let Some(model)=req.model {params["model"]=json!(model);}
         let turn=tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"turn/start",params)).await??;

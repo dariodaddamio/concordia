@@ -1,8 +1,8 @@
 //! Native Cursor image inputs over ACP with explicit sessions and real permission responses.
 use super::*;
-use crate::provider::interaction::InteractionConnection;
 use crate::provider::CardStatus;
-use serde_json::{json, Value};
+use crate::provider::interaction::InteractionConnection;
+use serde_json::{Value, json};
 
 struct QuestionListener(tokio::task::JoinHandle<()>);
 
@@ -22,6 +22,7 @@ struct Connection {
     interactions: InteractionConnection,
     prompting: bool,
     bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ask_bridge::BridgeRequest>,
+    available_commands: std::collections::HashSet<String>,
 }
 impl Connection {
     async fn emit(&self, event: TurnProgress) {
@@ -211,6 +212,15 @@ impl Connection {
         let Some(update) = value.pointer("/params/update") else {
             return;
         };
+        if update["sessionUpdate"] == "available_commands_update" {
+            self.available_commands = update["availableCommands"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|command| command["name"].as_str().map(str::to_owned))
+                .collect();
+            return;
+        }
         match update["sessionUpdate"].as_str().unwrap_or("") {
             "agent_message_chunk" => {
                 if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
@@ -418,6 +428,7 @@ pub(super) async fn run(
         interactions: InteractionConnection::new(owner, handle.cancel_flag.clone()),
         prompting: false,
         bridge_rx,
+        available_commands: std::collections::HashSet::new(),
     };
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
@@ -505,15 +516,17 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
-    use crate::store::ProviderKind;
     use super::{acp_argv, acp_model_id, ask_server_config};
+    use crate::store::ProviderKind;
 
     #[test]
     fn question_server_is_registered_only_when_enabled() {
-        assert!(ask_server_config("", "token", false)
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(
+            ask_server_config("", "token", false)
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         let enabled = ask_server_config("127.0.0.1:1234", "token", true);
         assert_eq!(enabled[0]["name"], "concordia-ask");
         assert_eq!(enabled[0]["env"][1]["value"], "token");
@@ -574,7 +587,10 @@ mod tests {
             ["--force", "acp"]
         );
         assert_eq!(
-            acp_argv(ProviderKind::Cursor, &print(&["--print", "--mode", "plan", "hi"])),
+            acp_argv(
+                ProviderKind::Cursor,
+                &print(&["--print", "--mode", "plan", "hi"])
+            ),
             ["acp"]
         );
     }

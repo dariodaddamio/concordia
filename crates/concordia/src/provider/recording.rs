@@ -1,7 +1,7 @@
 use crate::{redact, store::ProviderKind};
 use serde::Serialize;
 use std::{
-    fs::{create_dir_all, OpenOptions},
+    fs::{OpenOptions, create_dir_all},
     io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},

@@ -13,7 +13,7 @@ pub struct Entry {
     pub help: String,
     /// A user command from `<state>/commands` (drawn with a dim "custom" marker).
     pub custom: bool,
-    /// Provider-native commands are discoverable but unavailable in print/exec mode.
+    /// Provider-native commands are discoverable; unsupported transport operations stay disabled.
     pub provider: bool,
     pub disabled: bool,
 }
@@ -56,10 +56,18 @@ pub fn matching_for_provider(
         .filter(|c| c.name.starts_with(&typed))
         .map(|c| Entry {
             command: c.name.to_string(),
-            help: format!("{} (unavailable in Concordia's provider mode)", c.description),
+            help: if crate::provider::command_supported(provider.unwrap(), c.name) {
+                format!("{} (provider transport)", c.description)
+            } else {
+                format!(
+                    "{} (disabled: {})",
+                    c.description,
+                    crate::provider::command_unavailable_reason(provider.unwrap(), c.name)
+                )
+            },
             custom: false,
             provider: true,
-            disabled: true,
+            disabled: !crate::provider::command_supported(provider.unwrap(), c.name),
         });
     let custom = user
         .iter()
@@ -190,12 +198,22 @@ go",
     }
 
     #[test]
-    fn active_provider_commands_are_listed_and_disabled_with_transport_reason() {
+    fn provider_commands_reflect_transport_support() {
         let entries = matching_for_provider("/", &[], Some(ProviderKind::Cursor));
-        let entry = entries.iter().find(|entry| entry.command == "/auto-run").unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.command == "/auto-run")
+            .unwrap();
         assert!(entry.provider);
+        assert!(!entry.disabled);
+        assert!(entry.help.contains("provider transport"));
+        let entries = matching_for_provider("/", &[], Some(ProviderKind::Codex));
+        let entry = entries
+            .iter()
+            .find(|entry| entry.command == "/diff")
+            .unwrap();
         assert!(entry.disabled);
-        assert!(entry.help.contains("unavailable"));
+        assert!(entry.help.contains("no matching RPC"));
     }
 
     #[test]
@@ -437,15 +455,11 @@ pub fn matching_arguments(
         cmd @ ("/skills" | "/hooks") => {
             add(
                 cmd.into(),
-                "Enter inspects this account's sources; connect applies shared setup".into(),
+                "Enter inspects this account's sources; shared setup runs through /harness".into(),
             );
             add(
                 format!("{cmd} list"),
                 "inspect this account's local sources".into(),
-            );
-            add(
-                format!("{cmd} connect"),
-                "PATH [--current] - connect setup across accounts".into(),
             );
             add(
                 format!("{cmd} status"),
@@ -459,11 +473,6 @@ pub fn matching_arguments(
                 add(
                     format!("{cmd} install"),
                     "[PATH] [--current] - share skill folders across accounts".into(),
-                );
-            } else {
-                add(
-                    format!("{cmd} verify"),
-                    "[NAME] [--current] - run verification across accounts".into(),
                 );
             }
         }
@@ -560,14 +569,7 @@ mod discovery_tests {
     #[test]
     fn advertised_children_use_supported_command_syntax() {
         for root in [
-            "/use",
-            "/model",
-            "/mode",
-            "/update",
-            "/harness",
-            "/skills",
-            "/hooks",
-            "/usage",
+            "/use", "/model", "/mode", "/update", "/harness", "/skills", "/hooks", "/usage",
         ] {
             let entries = matching_arguments(root, &[], &[]);
             assert_eq!(entries[0].command, root);

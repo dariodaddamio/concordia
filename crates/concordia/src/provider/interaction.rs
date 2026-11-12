@@ -1,7 +1,7 @@
 //! Native requests stay bound to the owning run, launch and live protocol connection.
 use crate::store::ProviderKind;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1200,32 +1200,40 @@ mod tests {
             .request("thread", json!(1), method.into(), params.clone())
             .unwrap()
             .unwrap();
-        assert!(connection
-            .request("thread", json!(1), method.into(), params.clone())
-            .unwrap()
-            .is_none());
+        assert!(
+            connection
+                .request("thread", json!(1), method.into(), params.clone())
+                .unwrap()
+                .is_none()
+        );
         for field in ["turnId", "itemId", "command"] {
             let mut changed = params.clone();
             changed[field] = json!("changed");
-            assert!(connection
-                .request("thread", json!(1), method.into(), changed)
-                .is_err());
+            assert!(
+                connection
+                    .request("thread", json!(1), method.into(), changed)
+                    .is_err()
+            );
         }
         request.respond(json!({"decision":"decline"}));
         assert_eq!(rx.try_recv().unwrap(), json!({"decision":"decline"}));
-        assert!(connection
-            .request("thread", json!(1), method.into(), params.clone())
-            .unwrap()
-            .is_none());
+        assert!(
+            connection
+                .request("thread", json!(1), method.into(), params.clone())
+                .unwrap()
+                .is_none()
+        );
         let (resolved, mut rx) = connection
             .request("thread", json!(2), method.into(), params.clone())
             .unwrap()
             .unwrap();
         resolved.resolve_native();
-        assert!(connection
-            .request("thread", json!(2), method.into(), params)
-            .unwrap()
-            .is_none());
+        assert!(
+            connection
+                .request("thread", json!(2), method.into(), params)
+                .unwrap()
+                .is_none()
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -1286,9 +1294,11 @@ mod tests {
         ] {
             assert!(request.respond_owned(&wrong, selected("once")).is_err());
         }
-        assert!(request
-            .respond_owned(&owner, selected("invented-grant"))
-            .is_err());
+        assert!(
+            request
+                .respond_owned(&owner, selected("invented-grant"))
+                .is_err()
+        );
         request.respond(selected("always"));
         assert!(rx.try_recv().is_err());
         let NativeInteraction::Permission { options, .. } = request.kind() else {
@@ -1303,14 +1313,16 @@ mod tests {
             InteractionConnection::new(Some(owner.clone()), Arc::new(AtomicBool::new(false)));
         codex.initialized_codex("0.166.0");
         let params = json!({"threadId":"native-thread","turnId":"native-turn","itemId":"native-item","availableDecisions":["accept","acceptForSession",{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git","status"]}},"decline","cancel"]});
-        assert!(codex
-            .request(
-                "foreign-thread",
-                json!(80),
-                "item/commandExecution/requestApproval".into(),
-                params.clone()
-            )
-            .is_err());
+        assert!(
+            codex
+                .request(
+                    "foreign-thread",
+                    json!(80),
+                    "item/commandExecution/requestApproval".into(),
+                    params.clone()
+                )
+                .is_err()
+        );
         let (request, mut response) = codex
             .request(
                 "native-thread",
@@ -1325,12 +1337,16 @@ mod tests {
         };
         assert_eq!(options[1].scope, DecisionScope::Session);
         assert_eq!(options[2].scope, DecisionScope::Always);
-        assert!(request
-            .respond_owned(&owner, json!({"decision":"invented"}))
-            .is_err());
-        assert!(request
-            .respond_owned(&owner, json!({"decision":"accept","scope":"always"}))
-            .is_err());
+        assert!(
+            request
+                .respond_owned(&owner, json!({"decision":"invented"}))
+                .is_err()
+        );
+        assert!(
+            request
+                .respond_owned(&owner, json!({"decision":"accept","scope":"always"}))
+                .is_err()
+        );
         request
             .respond_owned(&owner, request.single_choices(&[1]).unwrap())
             .unwrap();
@@ -1349,9 +1365,11 @@ mod tests {
             .unwrap();
         resolved.resolve_native();
         assert!(resolved.was_resolved() && !resolved.was_answered() && !resolved.is_active());
-        assert!(resolved
-            .respond_owned(&owner, json!({"decision":"accept"}))
-            .is_err());
+        assert!(
+            resolved
+                .respond_owned(&owner, json!({"decision":"accept"}))
+                .is_err()
+        );
         assert!(response.try_recv().is_err());
         let claude_owner = InteractionOwner {
             provider: ProviderKind::Claude,
@@ -1361,14 +1379,16 @@ mod tests {
             Some(claude_owner.clone()),
             Arc::new(AtomicBool::new(false)),
         );
-        assert!(claude
-            .request(
-                "native-session",
-                json!("native-1"),
-                "claude/can_use_tool".into(),
-                permission()
-            )
-            .is_err());
+        assert!(
+            claude
+                .request(
+                    "native-session",
+                    json!("native-1"),
+                    "claude/can_use_tool".into(),
+                    permission()
+                )
+                .is_err()
+        );
         assert!(claude.initialized_claude("unknown").is_err());
         assert!(claude.initialized_claude("2.1.318").is_err());
         claude
@@ -1391,15 +1411,17 @@ mod tests {
             .respond_owned(&claude_owner, selected("once"))
             .unwrap();
         assert_eq!(response.try_recv().unwrap(), selected("once"));
-        assert!(claude
-            .request(
-                "native-session",
-                json!("native-1"),
-                "claude/can_use_tool".into(),
-                params
-            )
-            .unwrap()
-            .is_none());
+        assert!(
+            claude
+                .request(
+                    "native-session",
+                    json!("native-1"),
+                    "claude/can_use_tool".into(),
+                    params
+                )
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1415,23 +1437,27 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert!(scope
-            .request(
-                "different-session",
-                json!(2),
-                "session/request_permission".into(),
-                permission()
-            )
-            .is_err());
-        assert!(scope
-            .request(
-                "native-session",
-                json!(1),
-                "session/request_permission".into(),
-                permission()
-            )
-            .unwrap()
-            .is_none());
+        assert!(
+            scope
+                .request(
+                    "different-session",
+                    json!(2),
+                    "session/request_permission".into(),
+                    permission()
+                )
+                .is_err()
+        );
+        assert!(
+            scope
+                .request(
+                    "native-session",
+                    json!(1),
+                    "session/request_permission".into(),
+                    permission()
+                )
+                .unwrap()
+                .is_none()
+        );
         cancelled.store(true, Ordering::SeqCst);
         request.respond(selected("once"));
         assert!(!request.is_active());
@@ -1485,24 +1511,28 @@ mod tests {
     #[test]
     fn malformed_unknown_and_extra_scope_responses_fail_closed() {
         let mut scope = InteractionConnection::new(None, Arc::new(AtomicBool::new(false)));
-        assert!(scope
-            .request(
-                "native-session",
-                json!(1),
-                "invented/approve".into(),
-                permission()
-            )
-            .is_err());
+        assert!(
+            scope
+                .request(
+                    "native-session",
+                    json!(1),
+                    "invented/approve".into(),
+                    permission()
+                )
+                .is_err()
+        );
         let mut duplicate = permission();
         duplicate["options"][1]["optionId"] = json!("once");
-        assert!(scope
-            .request(
-                "native-session",
-                json!(2),
-                "session/request_permission".into(),
-                duplicate
-            )
-            .is_err());
+        assert!(
+            scope
+                .request(
+                    "native-session",
+                    json!(2),
+                    "session/request_permission".into(),
+                    duplicate
+                )
+                .is_err()
+        );
         let (request, mut rx) = scope
             .request(
                 "native-session",
@@ -1566,14 +1596,16 @@ mod tests {
         );
         let mut wrong = params;
         wrong["sessionId"] = json!("other-session");
-        assert!(scope
-            .request(
-                "native-session",
-                json!(3),
-                "cursor/create_plan".into(),
-                wrong
-            )
-            .is_err());
+        assert!(
+            scope
+                .request(
+                    "native-session",
+                    json!(3),
+                    "cursor/create_plan".into(),
+                    wrong
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -1614,14 +1646,16 @@ mod tests {
                     .unwrap(),
             );
         }
-        assert!(scope
-            .request(
-                "native-session",
-                json!(99),
-                "session/request_permission".into(),
-                permission()
-            )
-            .is_err());
+        assert!(
+            scope
+                .request(
+                    "native-session",
+                    json!(99),
+                    "session/request_permission".into(),
+                    permission()
+                )
+                .is_err()
+        );
         pending[0].0.respond(selected("once"));
         let replacement = scope
             .request(
@@ -1645,23 +1679,27 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert!(scope
-            .request(
-                "native-session",
-                json!(101),
-                "session/request_permission".into(),
-                large
-            )
-            .is_err());
+        assert!(
+            scope
+                .request(
+                    "native-session",
+                    json!(101),
+                    "session/request_permission".into(),
+                    large
+                )
+                .is_err()
+        );
         retained.0.invalidate();
-        assert!(scope
-            .request(
-                "native-session",
-                json!(101),
-                "session/request_permission".into(),
-                permission()
-            )
-            .is_ok());
+        assert!(
+            scope
+                .request(
+                    "native-session",
+                    json!(101),
+                    "session/request_permission".into(),
+                    permission()
+                )
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1680,17 +1718,25 @@ mod tests {
             valid.home,
             Some(std::fs::canonicalize(home.path()).unwrap())
         );
-        assert!(owner
-            .validate_for(ProviderKind::Cursor, other.path(), Some(home.path()))
-            .is_err());
-        assert!(owner
-            .validate_for(ProviderKind::Cursor, workspace.path(), Some(other.path()))
-            .is_err());
-        assert!(owner
-            .validate_for(ProviderKind::Codex, workspace.path(), Some(home.path()))
-            .is_err());
-        assert!(owner
-            .validate_for(ProviderKind::Cursor, workspace.path(), None)
-            .is_err());
+        assert!(
+            owner
+                .validate_for(ProviderKind::Cursor, other.path(), Some(home.path()))
+                .is_err()
+        );
+        assert!(
+            owner
+                .validate_for(ProviderKind::Cursor, workspace.path(), Some(other.path()))
+                .is_err()
+        );
+        assert!(
+            owner
+                .validate_for(ProviderKind::Codex, workspace.path(), Some(home.path()))
+                .is_err()
+        );
+        assert!(
+            owner
+                .validate_for(ProviderKind::Cursor, workspace.path(), None)
+                .is_err()
+        );
     }
 }

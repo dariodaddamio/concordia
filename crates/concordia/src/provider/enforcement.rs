@@ -15,7 +15,7 @@
 //! harness manifest identity, including a current hash for file manifests.
 
 use crate::store::{ProviderKind, TrustMode};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -278,7 +278,9 @@ pub fn gate_in(store: &Path, cwd: &Path, provider: ProviderKind, home: Option<&P
                 ));
             }
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Gate::ReadOnly(format!("{name}: locked-code policy inspection failed; enforcement is unverified: {error}"));
+                return Gate::ReadOnly(format!(
+                    "{name}: locked-code policy inspection failed; enforcement is unverified: {error}"
+                ));
             }
             _ => {}
         }

@@ -5,7 +5,7 @@
 //! process lifetime and routes parsed permission requests through `InteractionConnection`.
 use super::*;
 use crate::provider::interaction::InteractionConnection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 /// Current installed Claude control schema matched to the official SDK protocol.

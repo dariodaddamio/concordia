@@ -554,6 +554,14 @@ Rewrite requirements:
 
 ## This slice
 
+### W11 provider command passthrough - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | -------------- | ------------- |
+| `crates/concordia/src/provider/mod.rs`, `tui/palette.rs` | ok: 1, 4, 5, 6, 10 | Keep provider command metadata and transport support at the existing provider/palette owners; no second command registry or generic adapter. |
+| `crates/concordia/src/provider/turn_appserver.rs`, `turn_acp.rs` | ok: 1, 2, 4, 5, 7 | Invoke only documented RPC/prompt methods over the existing verified session connection; retain explicit thread/session identity and bounded reads. |
+| `docs/command-audit.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Replace the stale transport premise and record confirmed versus unverified behavior in the canonical ownership table. |
+
 ### W3e final delegation cleanup - anti-slop gate
 
 | path | tendency_check | justification |

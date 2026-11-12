@@ -1,5 +1,5 @@
 use crate::provider::stream_cards::{
-    parse_codex_stream_chunk, upsert_card, StreamCard, StreamPart,
+    StreamCard, StreamPart, parse_codex_stream_chunk, upsert_card,
 };
 use crate::store::TrustMode;
 use anyhow::Result;

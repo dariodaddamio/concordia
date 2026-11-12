@@ -9,7 +9,7 @@
 
 use crate::provider::turn::PlannedTurn;
 use crate::store::ProviderKind;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
 /// Longest prompt passed in argv behind a batch shim (cmd.exe's limit is 8191 for the whole line).
@@ -79,7 +79,9 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
             .take(launch.args.len().saturating_sub(1))
             .any(|argument| !batch_safe(argument))
     {
-        bail!("provider options cannot pass safely through this batch launcher; select the native CLI executable or a supported npm bridge");
+        bail!(
+            "provider options cannot pass safely through this batch launcher; select the native CLI executable or a supported npm bridge"
+        );
     }
     if !prompt_needs_stdin(&plan.prompt, batch) {
         return Ok(launch);
@@ -101,7 +103,9 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
         }
         ProviderKind::Cursor => {
             if plan.prompt.starts_with('-') {
-                bail!("this prompt starts with '-', which the Cursor CLI would read as an option; reword it");
+                bail!(
+                    "this prompt starts with '-', which the Cursor CLI would read as an option; reword it"
+                );
             }
             // No documented stdin prompt for `agent`; skip the cmd.exe layer instead by running
             // the PowerShell script the shim would have run.
@@ -133,7 +137,11 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
             }
         }
         ProviderKind::Grok => {
-            if plan.prompt.starts_with('-') { bail!("this prompt starts with '-', which Grok Build would read as an option; reword it"); }
+            if plan.prompt.starts_with('-') {
+                bail!(
+                    "this prompt starts with '-', which Grok Build would read as an option; reword it"
+                );
+            }
             launch.stdin = Some(plan.prompt.clone());
             launch.args.pop();
         }

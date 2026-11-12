@@ -1,14 +1,14 @@
 //! Unified provider turns with tracked cancel (Ctrl+C).
 
-use crate::provider::claude::{plan_claude_turn, ClaudeTurnRequest};
-use crate::provider::codex::{self, apply_stream_parts, plan_turn_argv, TurnRequest as CodexReq};
-use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
-use crate::provider::grok::{plan_grok_turn, GrokTurnRequest};
+use crate::provider::claude::{ClaudeTurnRequest, plan_claude_turn};
+use crate::provider::codex::{self, TurnRequest as CodexReq, apply_stream_parts, plan_turn_argv};
+use crate::provider::cursor::{CursorTurnRequest, plan_cursor_turn};
 use crate::provider::enforcement;
+use crate::provider::grok::{GrokTurnRequest, plan_grok_turn};
 use crate::provider::interaction::InteractionOwner;
 pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
-use crate::provider::stream_cards::{classify_codex_event, StreamCard, StreamPart, TurnUsage};
+use crate::provider::stream_cards::{StreamCard, StreamPart, TurnUsage, classify_codex_event};
 use crate::provider::stream_json::{Flavor, StreamParser};
 #[path = "turn_acp.rs"]
 mod acp;
@@ -21,12 +21,12 @@ use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc};
 
 /// Lines of provider stderr kept for error reporting.
 const STDERR_KEEP_LINES: usize = 12;
@@ -706,8 +706,12 @@ async fn run_provider_turn_inner(
         })
         .await?
         .map_err(anyhow::Error::msg)?;
-        anyhow::ensure!(super::compat::version_token(&version).as_deref() == Some(claude_native::SUPPORTED_VERSION),
-            "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained", claude_native::SUPPORTED_VERSION);
+        anyhow::ensure!(
+            super::compat::version_token(&version).as_deref()
+                == Some(claude_native::SUPPORTED_VERSION),
+            "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained",
+            claude_native::SUPPORTED_VERSION
+        );
     }
     if let (Some(tx), Some(notice)) = (&on_progress, enforcement_notice(req)) {
         tx.send(TurnProgress::Notice(notice))
@@ -732,7 +736,7 @@ async fn run_provider_turn_inner(
             && req.images.is_empty()
             && out.stderr_tail.starts_with(acp::SESSION_NOT_IN_ACP))
         {
-        return Ok(out);
+            return Ok(out);
         }
     }
     // codex exec has no response channel for request_user_input; the app-server transport does.
@@ -1127,8 +1131,12 @@ async fn run_provider_turn_inner(
     }
     crate::logging::info(&format!(
         "provider-timing provider={} setup_ms={setup_ms} spawn_ms={spawn_ms} first_event_ms={} parse_us={} events={events} total_ms={}",
-        plan.provider.as_str(), first_event_ms.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into()),
-        parse_time.as_micros(), timing.elapsed().as_millis()
+        plan.provider.as_str(),
+        first_event_ms
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        parse_time.as_micros(),
+        timing.elapsed().as_millis()
     ));
     Ok(out)
 }
@@ -1240,8 +1248,10 @@ mod replay_tests {
             assert!(!events.repeated(snapshot));
             assert!(!events.repeated(snapshot));
         }
-        assert!(!CompletedEvents::default()
-            .repeated(r#"{"type":"item.completed","item":{"id":"one","text":"done"}}"#));
+        assert!(
+            !CompletedEvents::default()
+                .repeated(r#"{"type":"item.completed","item":{"id":"one","text":"done"}}"#)
+        );
     }
 }
 
@@ -1557,7 +1567,7 @@ mod gate_tests {
 
     #[test]
     fn a_locked_project_refuses_a_turn_whose_cli_cannot_run_read_only() {
-        use crate::provider::compat::{caps_for, set_caps, Caps};
+        use crate::provider::compat::{Caps, caps_for, set_caps};
         let dir = tempfile::tempdir().unwrap();
         locked(dir.path());
         let before = caps_for(ProviderKind::Cursor);

@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (2026-11-12l)
+
+- Routed provider slash commands through the transports Concordia actually uses: Codex
+  app-server compaction/review RPCs, Claude Agent SDK stream-json commands, and ACP advertised
+  commands through `session/prompt`. Unsupported commands now show their transport-specific reason.
+
 ### Added (2026-11-12k)
 
 - Added theme-coloured Windows taskbar status overlays and unpackaged shell notifications for

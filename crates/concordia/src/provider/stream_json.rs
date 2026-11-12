@@ -724,16 +724,20 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(cards.len(), 3);
-        assert!(cards
-            .iter()
-            .all(|c| c.id == "call-雪" && c.status == CardStatus::Running));
-        assert!(cards
-            .last()
-            .unwrap()
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("echo 雪"));
+        assert!(
+            cards
+                .iter()
+                .all(|c| c.id == "call-雪" && c.status == CardStatus::Running)
+        );
+        assert!(
+            cards
+                .last()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("echo 雪")
+        );
     }
 
     #[test]
@@ -942,10 +946,12 @@ mod usage_tests {
         assert_eq!(titles, ["glob", "getmcptools", "read"]);
         assert!(cards.iter().all(|c| c.status == CardStatus::Done));
         assert_eq!(cards[2].detail.as_deref(), Some("calc.py · 7 lines"));
-        assert!(cards[0]
-            .detail
-            .as_deref()
-            .is_some_and(|d| d.starts_with("**/calc.py\n")));
+        assert!(
+            cards[0]
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("**/calc.py\n"))
+        );
 
         let first_card = parts
             .iter()
@@ -1018,9 +1024,11 @@ mod usage_tests {
             "{:?}",
             outcome.text
         );
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::TextDelta(t) if t == "divide")));
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::TextDelta(t) if t == "divide"))
+        );
 
         let cards = final_cards(&parts);
         let edit = cards.iter().find(|c| c.title == "edit").unwrap();
