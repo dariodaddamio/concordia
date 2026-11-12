@@ -8,117 +8,173 @@
 <circle cx="40" cy="18" r="6" fill="#febc2e"/>
 <circle cx="60" cy="18" r="6" fill="#28c840"/>
 <text x="509" y="22" font-family="Cascadia Mono, Consolas, monospace" font-size="12" fill="#8b909c" text-anchor="middle">concordia · attachment preview</text>
-<rect x="14" y="36" width="225" height="19" fill="#303030"/>
-<rect x="239" y="36" width="81" height="19" fill="#87d787"/>
-<rect x="320" y="36" width="684" height="19" fill="#303030"/>
+<rect x="14" y="36" width="297" height="19" fill="#303030"/>
+<rect x="311" y="36" width="81" height="19" fill="#87d787"/>
+<rect x="392" y="36" width="612" height="19" fill="#303030"/>
 <rect x="14" y="55" width="990" height="19" fill="#303030"/>
-<rect x="302" y="74" width="54" height="19" fill="#303030"/>
-<rect x="59" y="131" width="234" height="19" fill="#303030"/>
-<rect x="59" y="150" width="54" height="19" fill="#303030"/>
-<rect x="95" y="169" width="36" height="19" fill="#303030"/>
-<rect x="23" y="226" width="369" height="19" fill="#303030"/>
-<rect x="23" y="245" width="189" height="19" fill="#303030"/>
-<rect x="23" y="264" width="45" height="19" fill="#303030"/>
-<rect x="104" y="302" width="63" height="19" fill="#303030"/>
-<rect x="104" y="321" width="99" height="19" fill="#303030"/>
-<rect x="23" y="378" width="972" height="19" fill="#262626"/>
-<rect x="14" y="416" width="234" height="19" fill="#191d27"/>
-<rect x="14" y="435" width="27" height="19" fill="#191d27"/>
-<rect x="41" y="435" width="63" height="19" fill="#2fafca"/>
-<rect x="104" y="435" width="9" height="19" fill="#215364"/>
-<rect x="113" y="435" width="45" height="19" fill="#191d27"/>
-<rect x="158" y="435" width="72" height="19" fill="#a774e9"/>
-<rect x="230" y="435" width="18" height="19" fill="#191d27"/>
-<rect x="14" y="454" width="27" height="19" fill="#191d27"/>
-<rect x="41" y="454" width="63" height="19" fill="#2fafca"/>
-<rect x="104" y="454" width="9" height="19" fill="#215364"/>
-<rect x="113" y="454" width="45" height="19" fill="#191d27"/>
-<rect x="158" y="454" width="72" height="19" fill="#a774e9"/>
-<rect x="230" y="454" width="18" height="19" fill="#191d27"/>
-<rect x="14" y="473" width="27" height="19" fill="#191d27"/>
-<rect x="41" y="473" width="63" height="19" fill="#2fafca"/>
-<rect x="104" y="473" width="9" height="19" fill="#215364"/>
-<rect x="113" y="473" width="45" height="19" fill="#191d27"/>
-<rect x="158" y="473" width="72" height="19" fill="#a774e9"/>
-<rect x="230" y="473" width="18" height="19" fill="#191d27"/>
-<rect x="14" y="492" width="234" height="19" fill="#191d27"/>
-<rect x="14" y="511" width="234" height="19" fill="#191d27"/>
+<rect x="14" y="74" width="990" height="19" fill="#000000"/>
+<rect x="14" y="93" width="990" height="19" fill="#000000"/>
+<rect x="14" y="112" width="990" height="19" fill="#000000"/>
+<rect x="14" y="131" width="288" height="19" fill="#000000"/>
+<rect x="302" y="131" width="54" height="19" fill="#303030"/>
+<rect x="356" y="131" width="648" height="19" fill="#000000"/>
+<rect x="14" y="150" width="990" height="19" fill="#000000"/>
+<rect x="14" y="169" width="990" height="19" fill="#000000"/>
+<rect x="14" y="188" width="45" height="19" fill="#000000"/>
+<rect x="59" y="188" width="234" height="19" fill="#303030"/>
+<rect x="293" y="188" width="711" height="19" fill="#000000"/>
+<rect x="14" y="207" width="45" height="19" fill="#000000"/>
+<rect x="59" y="207" width="54" height="19" fill="#303030"/>
+<rect x="113" y="207" width="891" height="19" fill="#000000"/>
+<rect x="14" y="226" width="81" height="19" fill="#000000"/>
+<rect x="95" y="226" width="36" height="19" fill="#303030"/>
+<rect x="131" y="226" width="873" height="19" fill="#000000"/>
+<rect x="14" y="245" width="990" height="19" fill="#000000"/>
+<rect x="14" y="264" width="990" height="19" fill="#000000"/>
+<rect x="14" y="283" width="9" height="19" fill="#000000"/>
+<rect x="23" y="283" width="972" height="19" fill="#303030"/>
+<rect x="995" y="283" width="9" height="19" fill="#000000"/>
+<rect x="14" y="302" width="9" height="19" fill="#000000"/>
+<rect x="23" y="302" width="972" height="19" fill="#303030"/>
+<rect x="995" y="302" width="9" height="19" fill="#000000"/>
+<rect x="14" y="321" width="9" height="19" fill="#000000"/>
+<rect x="23" y="321" width="972" height="19" fill="#303030"/>
+<rect x="995" y="321" width="9" height="19" fill="#000000"/>
+<rect x="14" y="340" width="990" height="19" fill="#000000"/>
+<rect x="14" y="359" width="90" height="19" fill="#000000"/>
+<rect x="104" y="359" width="63" height="19" fill="#303030"/>
+<rect x="167" y="359" width="837" height="19" fill="#000000"/>
+<rect x="14" y="378" width="90" height="19" fill="#000000"/>
+<rect x="104" y="378" width="99" height="19" fill="#303030"/>
+<rect x="203" y="378" width="801" height="19" fill="#000000"/>
+<rect x="14" y="397" width="990" height="19" fill="#000000"/>
+<rect x="14" y="416" width="990" height="19" fill="#000000"/>
+<rect x="14" y="435" width="9" height="19" fill="#000000"/>
+<rect x="23" y="435" width="972" height="19" fill="#262626"/>
+<rect x="995" y="435" width="9" height="19" fill="#000000"/>
+<rect x="14" y="454" width="990" height="19" fill="#000000"/>
+<rect x="14" y="473" width="441" height="19" fill="#000000"/>
+<rect x="455" y="473" width="108" height="19" fill="#191d27"/>
+<rect x="563" y="473" width="441" height="19" fill="#000000"/>
+<rect x="14" y="492" width="441" height="19" fill="#000000"/>
+<rect x="455" y="492" width="9" height="19" fill="#191d27"/>
+<rect x="464" y="492" width="9" height="19" fill="#215364"/>
+<rect x="473" y="492" width="27" height="19" fill="#2fafca"/>
+<rect x="500" y="492" width="27" height="19" fill="#dce0eb"/>
+<rect x="527" y="492" width="27" height="19" fill="#a774e9"/>
+<rect x="554" y="492" width="9" height="19" fill="#191d27"/>
+<rect x="563" y="492" width="441" height="19" fill="#000000"/>
+<rect x="14" y="511" width="441" height="19" fill="#000000"/>
+<rect x="455" y="511" width="108" height="19" fill="#191d27"/>
+<rect x="563" y="511" width="441" height="19" fill="#000000"/>
+<rect x="14" y="530" width="990" height="19" fill="#000000"/>
+<rect x="14" y="549" width="990" height="19" fill="#000000"/>
+<rect x="14" y="568" width="990" height="19" fill="#000000"/>
+<rect x="14" y="587" width="990" height="19" fill="#000000"/>
+<rect x="14" y="606" width="990" height="19" fill="#000000"/>
+<rect x="14" y="625" width="990" height="19" fill="#000000"/>
 <g font-family="Cascadia Mono, Consolas, monospace" font-size="15" xml:space="preserve">
-<text x="23" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-03u</text>
-<text x="248" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#000000" font-weight="700">Codex 3</text>
-<text x="338" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
-<text x="545" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5">gpt-5.1-codex</text>
-<text x="23" y="69" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Credits: 12.5 balance  │</text>
-<text x="257" y="69" textLength="351" lengthAdjust="spacingAndGlyphs" fill="#666666">Subscription: 5h 59% left · 7d 41% left</text>
-<text x="41" y="88" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">I added a</text>
-<text x="131" y="88" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-weight="700">duplicate check</text>
-<text x="275" y="88" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to</text>
-<text x="302" y="88" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
-<text x="356" y="88" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">. It groups accounts by provider and email, so two slots signed in to</text>
-<text x="41" y="107" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the same login are reported once.</text>
-<text x="41" y="145" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="145" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">accounts::duplicate_groups</text>
-<text x="302" y="145" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">finds the groups</text>
-<text x="41" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="164" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
-<text x="122" y="164" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">prints a warning per group, naming both accounts and the fix</text>
-<text x="41" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">•</text>
-<text x="59" y="183" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">the</text>
-<text x="95" y="183" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use</text>
-<text x="140" y="183" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">picker marks each side with</text>
-<text x="392" y="183" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4" font-style="italic">same login as ...</text>
-<text x="59" y="221" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#666666" font-style="italic">rust</text>
-<text x="59" y="240" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">for group in duplicate_groups(root) {</text>
-<text x="95" y="259" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">warn(&amp;group);</text>
-<text x="59" y="278" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">}</text>
-<text x="41" y="316" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">1.</text>
-<text x="68" y="316" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Run</text>
-<text x="104" y="316" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/doctor</text>
-<text x="176" y="316" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to see it</text>
-<text x="41" y="335" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">2.</text>
-<text x="68" y="335" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Use</text>
-<text x="104" y="335" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use remove</text>
-<text x="212" y="335" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">to drop one</text>
-<text x="23" y="392" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#87d7ff" font-weight="700">You ›</text>
-<text x="77" y="392" textLength="162" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">looks good, thanks</text>
-<text x="23" y="411" textLength="360" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">Preview · diagram.png · click to enlarge</text>
-<text x="14" y="430" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀</text>
-<text x="266" y="430" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">64 × 32</text>
-<text x="14" y="449" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀</text>
-<text x="266" y="449" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">image/png</text>
-<text x="14" y="468" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀</text>
-<text x="41" y="468" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#2fafca">▀▀▀▀▀▀▀</text>
-<text x="104" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#215364">▀</text>
-<text x="113" y="468" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀▀▀</text>
-<text x="158" y="468" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#a774e9">▀▀▀▀▀▀▀▀</text>
-<text x="230" y="468" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀</text>
-<text x="266" y="468" textLength="252" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Verified attachment snapshot</text>
-<text x="14" y="487" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀</text>
-<text x="41" y="487" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#2fafca">▀▀▀▀▀▀▀</text>
-<text x="104" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#9bcdde">▀</text>
-<text x="113" y="487" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#dce0eb">▀▀▀▀▀</text>
-<text x="158" y="487" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#a774e9">▀▀▀▀▀▀▀▀</text>
-<text x="230" y="487" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀</text>
-<text x="266" y="487" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">The message stays editable</text>
-<text x="14" y="506" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀</text>
-<text x="41" y="506" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#2fafca">▀▀▀▀▀▀▀</text>
-<text x="104" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#215364">▀</text>
-<text x="113" y="506" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀▀▀</text>
-<text x="158" y="506" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#a774e9">▀▀▀▀▀▀▀▀</text>
-<text x="230" y="506" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀</text>
-<text x="14" y="525" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀</text>
-<text x="23" y="563" textLength="261" lengthAdjust="spacingAndGlyphs" fill="#11a8cd">[Image 1: diagram.png · 1 KB]</text>
-<text x="968" y="563" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#666666">[X]</text>
-<text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">╭</text>
-<text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#666666">message</text>
-<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#585858">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
-<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
-<text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#11a8cd" font-weight="700">&gt;</text>
-<text x="41" y="601" textLength="180" lengthAdjust="spacingAndGlyphs" fill="#d4d4d4">Explain this diagram</text>
-<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#585858">│</text>
-<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#585858">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="23" y="639" textLength="630" lengthAdjust="spacingAndGlyphs" fill="#666666">Enter send · / cmds · Shift+Tab perms · drag select · Ctrl+C copy/stop</text>
-<text x="797" y="639" textLength="198" lengthAdjust="spacingAndGlyphs" fill="#0dbc79" font-weight="700">permissions: workspace</text>
+<text x="23" y="50" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffb000">← Home</text>
+<text x="95" y="50" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#5fafff">concordia 2026-11-12b</text>
+<text x="320" y="50" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#0c0c0c" font-weight="700">Codex 3</text>
+<text x="410" y="50" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0">view email</text>
+<text x="518" y="50" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">gpt-5.1-codex</text>
+<text x="23" y="69" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#ffb000">Credits: 12.5 balance</text>
+<text x="230" y="69" textLength="378" lengthAdjust="spacingAndGlyphs" fill="#9e9a92">│  Subscription: 5h 59% left · 7d 41% left</text>
+<text x="23" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#808080">▸</text>
+<text x="41" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a">│</text>
+<text x="59" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">◉</text>
+<text x="77" y="88" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" font-weight="700">Run tests</text>
+<text x="167" y="88" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#808080">- Expand</text>
+<text x="986" y="88" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="23" y="107" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d7af5f" font-weight="700">●</text>
+<text x="41" y="107" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">What I changed</text>
+<text x="986" y="107" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="126" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="145" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">I added a</text>
+<text x="131" y="145" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0" font-weight="700">duplicate check</text>
+<text x="275" y="145" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">to</text>
+<text x="302" y="145" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
+<text x="356" y="145" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">. It groups accounts by provider and email, so two slots signed in to</text>
+<text x="986" y="145" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="164" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">the same login are reported once.</text>
+<text x="986" y="164" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="183" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">•</text>
+<text x="59" y="202" textLength="234" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">accounts::duplicate_groups</text>
+<text x="302" y="202" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">finds the groups</text>
+<text x="986" y="202" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">•</text>
+<text x="59" y="221" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">doctor</text>
+<text x="122" y="221" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">prints a warning per group, naming both accounts and the fix</text>
+<text x="986" y="221" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="41" y="240" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">•</text>
+<text x="59" y="240" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">the</text>
+<text x="95" y="240" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use</text>
+<text x="140" y="240" textLength="243" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">picker marks each side with</text>
+<text x="392" y="240" textLength="153" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0" font-style="italic">same login as ...</text>
+<text x="986" y="240" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="259" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="59" y="278" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#868177" font-style="italic">rust</text>
+<text x="986" y="278" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="59" y="297" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">for group in duplicate_groups(root) {</text>
+<text x="986" y="297" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="95" y="316" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">warn(&amp;group);</text>
+<text x="986" y="316" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="59" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">}</text>
+<text x="986" y="335" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">┃</text>
+<text x="986" y="354" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#7c7c7c">│</text>
+<text x="41" y="373" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#ffb000">1.</text>
+<text x="68" y="373" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">Run</text>
+<text x="104" y="373" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/doctor</text>
+<text x="176" y="373" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">to see it</text>
+<text x="986" y="373" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#7c7c7c">│</text>
+<text x="41" y="392" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#ffb000">2.</text>
+<text x="68" y="392" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">Use</text>
+<text x="104" y="392" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#ffd7af">/use remove</text>
+<text x="212" y="392" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">to drop one</text>
+<text x="986" y="392" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#7c7c7c">│</text>
+<text x="986" y="411" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#7c7c7c">│</text>
+<text x="986" y="430" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#7c7c7c">│</text>
+<text x="23" y="449" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#87d7ff" font-weight="700">You ›</text>
+<text x="77" y="449" textLength="162" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">looks good, thanks</text>
+<text x="986" y="449" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#8f8f8f">│</text>
+<text x="14" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">┌</text>
+<text x="32" y="468" textLength="180" lengthAdjust="spacingAndGlyphs" fill="#ffb000">Image 1: diagram.png</text>
+<text x="221" y="468" textLength="747" lengthAdjust="spacingAndGlyphs" fill="#868177">───────────────────────────────────────────────────────────────────────────────────</text>
+<text x="977" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000">X</text>
+<text x="995" y="468" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">┐</text>
+<text x="14" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="455" y="487" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀▀▀▀▀▀▀▀▀▀</text>
+<text x="995" y="487" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="14" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="455" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀</text>
+<text x="464" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#215364">▀</text>
+<text x="473" y="506" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#2fafca">▀▀▀</text>
+<text x="500" y="506" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀</text>
+<text x="527" y="506" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#a774e9">▀▀▀</text>
+<text x="554" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀</text>
+<text x="995" y="506" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="14" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="455" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀</text>
+<text x="464" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#215364">▀</text>
+<text x="473" y="525" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#2fafca">▀▀▀</text>
+<text x="500" y="525" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀▀▀</text>
+<text x="527" y="525" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#a774e9">▀▀▀</text>
+<text x="554" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#191d27">▀</text>
+<text x="995" y="525" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#868177">│</text>
+<text x="14" y="544" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#868177">│1 KB                                                                                                        │</text>
+<text x="14" y="563" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#868177">└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘</text>
+<text x="14" y="582" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#797979">╭</text>
+<text x="32" y="582" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#868177">message</text>
+<text x="104" y="582" textLength="900" lengthAdjust="spacingAndGlyphs" fill="#797979">───────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="14" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#797979">│</text>
+<text x="23" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#ffb000" font-weight="700">&gt;</text>
+<text x="41" y="601" textLength="180" lengthAdjust="spacingAndGlyphs" fill="#d8d0c0">Explain this diagram</text>
+<text x="995" y="601" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#797979">│</text>
+<text x="14" y="620" textLength="990" lengthAdjust="spacingAndGlyphs" fill="#797979">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="23" y="639" textLength="738" lengthAdjust="spacingAndGlyphs" fill="#868177">Enter send · F9 attach · / cmds · Shift+Tab perms · drag select · Ctrl+C copy/stop</text>
+<text x="779" y="639" textLength="216" lengthAdjust="spacingAndGlyphs" fill="#68c58b" font-weight="700">permissions: workspace ▾</text>
 </g>
 </g>
 <rect x="0.5" y="0.5" width="1017" height="657" rx="12" fill="none" stroke="#3a3f4b"/>

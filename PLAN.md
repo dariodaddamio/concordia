@@ -637,3 +637,9 @@ approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout 
 | path | tendency_check | justification |
 | --- | --- | --- |
 | `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 5, 9, 10 | Delete journeys for removed `/delegate`, `/workers`, `/recover`, `/context`, `/memory`, standalone preview and ConPTY-only behavior; retain the sandbox-only file replacement journey and adjust the native driver assertions in place. |
+
+### W5k full test-suite closeout - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/**`, `crates/concordia/src/tui/**`, `README.md` | ok: 1, 4, 9, 10 | Classify existing failures against PLAN decisions; remove tests for removed goals/delegation/recovery surfaces, update stale expectations, and fix only confirmed product regressions. No new tests or compatibility layers. |

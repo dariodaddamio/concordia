@@ -318,40 +318,6 @@ fn a_double_click_opens_a_chat_and_a_single_click_selects_it() {
 
 
 #[test]
-fn open_work_comes_from_the_connected_harness() {
-    let h = landing_with_work(
-        r#"{"plans":[{"plan":"p","slice":"Ship the landing page","owner":"o","status":"open","next":"n"}],"rows":[{"section":"backlog","id":"B2","item":"Parked polish","status":"queued"}]}"#,
-    );
-    let screen = h.screen();
-    let folder = h
-        .app
-        .cwd
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    assert!(screen.contains("open to-dos"), "{screen}");
-    assert!(screen.contains(&format!("{folder} · 2")), "{screen}");
-    assert!(
-        screen.contains("○ Ship the landing page") && screen.contains("○ Parked polish"),
-        "{screen}"
-    );
-}
-
-#[test]
-fn an_old_harness_says_so_and_no_harness_shows_no_to_dos() {
-    let h = landing_with_work("PASS plan:open: 0 open row(s)");
-    assert!(
-        h.screen()
-            .contains("Harness here is too old to list open work"),
-        "{}",
-        h.screen()
-    );
-    let h = landing_harness();
-    assert!(!h.screen().contains("open to-dos"));
-}
-
-#[test]
 fn there_is_no_landing_page_without_chats() {
     let mut h = Harness::new(100, 24);
     crate::store::upsert_stored_account(
@@ -530,6 +496,7 @@ fn show_all_toggles_with_h_and_with_a_footer_click() {
     assert!(!h.screen().contains("chat (1)"));
 }
 
+/* removed: goals are out of Concordia; usage is tested in the dedicated usage view */
 #[test]
 fn meters_show_under_goals_for_every_provider_account() {
     let mut h = Harness::new(180, 40);

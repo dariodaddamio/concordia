@@ -1200,7 +1200,6 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         PickerKind::Usage,
         PickerKind::Use,
         PickerKind::Model,
-        PickerKind::Resume,
         PickerKind::Files,
         PickerKind::Tokens,
         PickerKind::Related,

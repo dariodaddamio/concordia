@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(s.clashes, ["doctor", "quit"]);
         assert_eq!(s.commands.len(), 1);
         assert!(expand(&s.commands, "/doctor").unwrap().is_none());
-        assert!(is_builtin("workers") && !is_builtin("ship"));
+        assert!(is_builtin("model") && !is_builtin("ship"));
     }
 
     #[test]

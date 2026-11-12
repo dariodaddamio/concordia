@@ -41,33 +41,6 @@ fn finish(app: &mut App) {
 }
 
 #[test]
-fn memory_search_preserves_draft_and_discards_results_after_conversation_change() {
-    let (mut app, _dir, _) = setup();
-    app.editor.set_text("2 finish the requested features");
-    assert!(app.handle_slash("/memory recall-account synthetic synthetic history"));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while app.session_ui.memory_reading() {
-        app.poll_memory();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
-    assert!(app
-        .messages
-        .iter()
-        .any(|m| m.text.contains("Lexical suggestion")));
-    assert_eq!(app.editor.text(), "2 finish the requested features");
-    app.handle_slash("/memory recall-account synthetic synthetic history");
-    app.session_ui.invalidate();
-    app.messages.clear();
-    while app.session_ui.memory_reading() {
-        app.poll_memory();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
-    assert!(app.messages.is_empty());
-}
-
-#[test]
 fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_draft() {
     let (mut app, _dir, home) = setup();
     app.provider = ProviderKind::Claude;

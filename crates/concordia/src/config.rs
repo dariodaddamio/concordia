@@ -546,7 +546,6 @@ mod tests {
         assert!(c.ui.token_line && c.ui.tips && !c.threads.logging);
         assert_eq!(c.threads.map_chars, 1600);
         assert_eq!(c.mode.default, TrustMode::Ask);
-        assert!(!c.delegation.protocol);
     }
 
     #[test]
