@@ -5,9 +5,11 @@ connected account, provider and model. Each child inherits the parent's permissi
 an explicit parent identity. Concordia does not choose a model through a routing table.
 
 The Agents view (Ctrl+G) groups children beneath the chat or agent that started them. Compact rows
-show a status icon, task title and elapsed time. Opening a row shows provider, model, account and
-recent activity. Provider runs started by an agent's shell are displayed as untracked subagents;
-their rows say that they cannot receive messages or questions.
+show a themed status icon, task title and elapsed time; parent rows include child status counts.
+Use left/right on a selected parent to collapse or expand its children. Enter opens the existing
+activity detail, where provider, model, account and recent activity remain available. Provider
+runs started by an agent's structured shell call are displayed as untracked subagents; their rows
+say that they cannot receive messages or questions and do not offer messaging controls.
 
 The old `/delegate`, `/workers`, `/crew`, `/worker-panel` and `/scope` entry points are removed.
 When a provider reports a usage limit, the chat offers an inline account picker. It does not apply

@@ -1,5 +1,10 @@
 # Changelog
 
+- W3d: Ctrl+G now presents provider-native, delegated and untracked provider runs as a grouped
+  Agents tree with status icons, task titles, elapsed time and parent counts. Provider CLI runs
+  started from an agent are marked as unable to receive messages or questions; left/right
+  collapses a parent without changing provider ownership.
+
 - W3c: removed the legacy slash-command delegation, routing-policy and worker test surfaces;
   agent-initiated delegation remains available through the single `agents` MCP tool, and
   usage-limit continuation now uses the plain account picker.

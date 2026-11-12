@@ -297,6 +297,15 @@ pub(super) fn handle_key(
         return false;
     }
     if let Some(picker) = app.picker.as_mut() {
+        if picker.kind == PickerKind::Agents && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            if let Some(index) = picker.state.selected() {
+                if let Some(row) = picker.filtered().get(index) {
+                    let id = row.id.clone();
+                    app.toggle_agents_row(&id);
+                }
+            }
+            return false;
+        }
         // Keep the long-standing command-history affordance when `/doctor` was just submitted.
         // Once the user has typed or selected a row, the doctor picker owns navigation normally.
         if picker.kind == PickerKind::Doctor

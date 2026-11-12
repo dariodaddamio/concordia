@@ -1469,7 +1469,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     Style::default()
                 };
-                let mut head = vec![Span::styled(label.to_owned(), label_style)];
+                let mut head = if picker.kind == PickerKind::Agents {
+                    let status_color = if label.contains("●") { Color::Yellow } else if label.contains("×") { Color::Red } else { Color::Green };
+                    if let Some((prefix, rest)) = label.split_once(' ') {
+                        vec![Span::styled(prefix.to_owned(), label_style), Span::styled(" ", label_style), Span::styled(rest.to_owned(), label_style.fg(status_color))]
+                    } else { vec![Span::styled(label.to_owned(), label_style)] }
+                } else { vec![Span::styled(label.to_owned(), label_style)] };
                 if current {
                     head.push(Span::styled(
                         " \u{b7} current",
