@@ -71,33 +71,6 @@ impl App {
             self.worker_recovery_command(trimmed.strip_prefix("/delegate ").unwrap_or_default());
             return true;
         }
-        if trimmed == "/context" || trimmed.starts_with("/context ") {
-            landing::close(self);
-            self.push_command(line);
-            let result = self
-                .home_path
-                .as_ref()
-                .ok_or_else(|| "account home is unavailable".to_string())
-                .and_then(|h| {
-                    crate::native_memory::Binding::new(
-                        self.provider,
-                        &self.account,
-                        h,
-                        self.native_session_id
-                            .as_deref()
-                            .unwrap_or("context-policy"),
-                    )
-                })
-                .and_then(|b| {
-                    crate::capacity::set(
-                        &self.state_root,
-                        &b,
-                        trimmed.strip_prefix("/context").unwrap_or_default().trim(),
-                    )
-                });
-            self.push_system(result.unwrap_or_else(|e| format!("context policy: {e}")));
-            return true;
-        }
         if trimmed == "/threads" || trimmed.starts_with("/threads ") {
             self.push_command(line);
             self.push_system("/threads is now /resume");
@@ -157,10 +130,6 @@ impl App {
         }
         // /workers, /queue, /close, /stats and /recover remain available until their screens
         // replace them.
-        if line.trim() == "/search" {
-            self.open_project_search();
-            return true;
-        }
         if line.trim() == "/open" {
             self.open_related_files();
             return true;

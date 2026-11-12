@@ -764,51 +764,6 @@ mod tests {
         );
     }
 
-    // ---- awareness block and MCP registration ----------------------------------------------
-
-    #[test]
-    fn add_writes_the_awareness_block_only_into_the_new_concordia_home() {
-        let sb = Sandbox::new();
-        let own = sb.base().join(".codex");
-        codex_login(&own, "me@example.com");
-        let r = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
-        let agents = r.home.join("AGENTS.md");
-        let text = fs::read_to_string(&agents).unwrap();
-        assert!(text.contains("concordia:begin") && text.contains("concordia thread read"));
-        assert!(
-            !own.join("AGENTS.md").exists(),
-            "a user's own home is never written"
-        );
-        assert!(!r.home.join("config.toml").exists(), "mcp is opt-in");
-        // The user adds text, switches awareness off in config, and the next refresh removes
-        // only the block.
-        fs::write(&agents, format!("mine\n\n{text}")).unwrap();
-        fs::write(
-            sb.state().join("config.toml"),
-            "[threads]\nawareness = false\n",
-        )
-        .unwrap();
-        let _cfg = crate::config::env_guard();
-        let reports = crate::integration::refresh(sb.state(), Path::new("c.exe"));
-        assert_eq!(reports.len(), 1);
-        assert_eq!(fs::read_to_string(&agents).unwrap(), "mine\n");
-    }
-
-    #[test]
-    fn foreign_and_hidden_homes_never_get_a_block() {
-        let sb = Sandbox::new();
-        let elsewhere = sb.base().join("precious");
-        codex_login(&elsewhere, "x@example.com");
-        register(&sb, "codex-9", &elsewhere);
-        let own = sb.base().join(".codex");
-        codex_login(&own, "me@example.com");
-        remove_account(sb.state(), "codex", RemoveMode::Hide).unwrap();
-        assert!(crate::integration::created_homes(sb.state()).is_empty());
-        let _cfg = crate::config::env_guard();
-        assert!(crate::integration::refresh(sb.state(), Path::new("c.exe")).is_empty());
-        assert!(!elsewhere.join("AGENTS.md").exists() && !own.join("AGENTS.md").exists());
-    }
-
     #[test]
     fn mcp_registration_is_opt_in_and_writes_the_codex_table() {
         let sb = Sandbox::new();
@@ -828,9 +783,6 @@ mod tests {
         let _cfg = crate::config::env_guard();
         let exe = Path::new("c.exe");
         let rows = crate::integration::doctor_rows(sb.state(), exe);
-        assert!(rows
-            .iter()
-            .any(|(warn, n, d)| !warn && *n == "awareness" && d.ends_with("set up")));
         assert!(rows
             .iter()
             .any(|(warn, n, d)| !warn && *n == "mcp" && d.ends_with("off")));

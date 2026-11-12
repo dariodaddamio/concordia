@@ -117,6 +117,7 @@ pub struct ProviderTurnRequest<'a> {
     /// When set, the prompt opens with this time and the relative times it mentions resolved
     /// (`prompt_time::header`). Every user and worker turn sets it; `None` sends the text as is.
     pub local_time: Option<crate::prompt_time::LocalTime>,
+    /// Native compaction is provider-owned; retained only in fixtures and observation records.
     pub compaction: crate::capacity::Compaction,
 }
 
@@ -276,7 +277,6 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         ..req.clone()
     };
     let mut plan = plan_provider_turn_raw(req)?;
-    crate::capacity::apply(&mut plan, &req.compaction).map_err(anyhow::Error::msg)?;
     // Current structured/native controls stay explicit; unsupported observed interfaces fail.
     crate::provider::compat::validate_planned(&plan, req.trust)?;
     // A turn the gate made read-only must still be read-only, or it does not start.

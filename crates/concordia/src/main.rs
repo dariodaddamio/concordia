@@ -12,10 +12,7 @@ enum Command {
     Doctor,
     Chat,
     FileEdit,
-    Sessions,
-    Thread,
     Mcp,
-    Feed,
     AskMcp,
     Help,
     Version,
@@ -79,41 +76,6 @@ const CLI_HELP: &[CommandSpec] = &[
         args: "FILE",
         help: "independent file editor",
         command: Command::FileEdit,
-    },
-    CommandSpec {
-        name: "sessions",
-        aliases: &[],
-        args: "prune --empty",
-        help: "report empty native sessions without deleting provider files",
-        command: Command::Sessions,
-    },
-    CommandSpec {
-        name: "thread",
-        aliases: &[],
-        args: "list|map|read|migrate",
-        help: "read and migrate recorded threads",
-        command: Command::Thread,
-    },
-    CommandSpec {
-        name: "mcp",
-        aliases: &[],
-        args: "",
-        help: "stdio MCP server",
-        command: Command::Mcp,
-    },
-    CommandSpec {
-        name: "feed",
-        aliases: &[],
-        args: "[--follow] [--since N] [--pane ID] [--json] [--screen]",
-        help: "follow the local event feed",
-        command: Command::Feed,
-    },
-    CommandSpec {
-        name: "ask-mcp",
-        aliases: &[],
-        args: "",
-        help: "stdio question MCP server",
-        command: Command::AskMcp,
     },
     CommandSpec {
         name: "--help",
@@ -221,13 +183,6 @@ async fn main() -> Result<()> {
                 std::process::exit(code);
             }
         },
-        Command::Feed => match concordia::feed::cli(&default_store_root(), rest) {
-            Ok(output) => print!("{output}"),
-            Err((message, code)) => {
-                eprintln!("{message}");
-                std::process::exit(code);
-            }
-        },
         Command::FileEdit => tui::run_file_editor(rest)?,
         Command::Window => {
             #[cfg(windows)]
@@ -275,25 +230,6 @@ async fn main() -> Result<()> {
             println!("{report}");
             if !healthy {
                 std::process::exit(1);
-            }
-        }
-        Command::Thread => match concordia::threads::run_cli(&default_store_root(), rest) {
-            Ok(out) => print!("{out}"),
-            Err((msg, code)) => {
-                eprintln!("{msg}");
-                std::process::exit(code);
-            }
-        },
-        Command::Sessions => {
-            if rest != ["prune", "--empty"] {
-                anyhow::bail!("usage: concordia sessions prune --empty");
-            }
-            match concordia::sessions::prune_empty_cli(&default_store_root()) {
-                Ok(output) => print!("{output}"),
-                Err((message, code)) => {
-                    eprintln!("{message}");
-                    std::process::exit(code);
-                }
             }
         }
         Command::Mcp => {

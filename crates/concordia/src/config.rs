@@ -26,16 +26,9 @@ pub struct Config {
     pub editor: EditorConfig,
     pub continuation: Continuation,
     pub turn: TurnConfig,
-    pub feed: FeedConfig,
     /// Named, local provider/account and model arrangements. The values are opaque model ids;
     /// availability is checked when a crew is selected, never while loading config.
     pub crews: BTreeMap<String, Crew>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FeedConfig {
-    pub enabled: bool,
-    pub screen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +55,8 @@ pub struct TurnConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Continuation {
     pub automatic: bool,
+    /// Codex-only proactive context rollover; off unless explicitly enabled.
+    pub proactive_rollover: bool,
     /// Same-provider automatic exhaustion handoff is deliberately opt-in.
     pub same_provider_automatic: bool,
     /// Maximum automatic handoffs into one account per local day.
@@ -70,50 +65,17 @@ pub struct Continuation {
     pub accounts: Vec<String>,
     /// Ordered models on the current account, validated against its native catalog.
     pub models: Vec<String>,
-    /// Context-limit behavior by provider. `provider` preserves native compaction;
-    /// `fresh` starts a new native session at the configured percentage.
-    pub context: ContextContinuation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContextContinuation {
-    pub codex: String,
-    pub claude: String,
-    pub cursor: String,
-    pub threshold: u8,
-}
-
-impl ContextContinuation {
-    pub fn for_provider(&self, provider: crate::store::ProviderKind) -> (&str, u8) {
-        let mode = match provider {
-            crate::store::ProviderKind::Codex => &self.codex,
-            crate::store::ProviderKind::Claude => &self.claude,
-            crate::store::ProviderKind::Cursor => &self.cursor,
-        };
-        (mode, self.threshold)
-    }
-}
-
-impl Default for ContextContinuation {
-    fn default() -> Self {
-        Self {
-            codex: "provider".into(),
-            claude: "provider".into(),
-            cursor: "provider".into(),
-            threshold: 85,
-        }
-    }
 }
 
 impl Default for Continuation {
     fn default() -> Self {
         Self {
             automatic: false,
+            proactive_rollover: false,
             same_provider_automatic: false,
             automatic_handoff_cap: 3,
             accounts: Vec::new(),
             models: Vec::new(),
-            context: ContextContinuation::default(),
         }
     }
 }
@@ -130,6 +92,8 @@ pub struct EditorConfig {
 pub struct Ui {
     pub file_action: crate::file_open::FileAction,
     pub token_line: bool,
+    /// Add the local-time header to provider turns.
+    pub time_header: bool,
     pub tips: bool,
     pub persist_history: bool,
     /// Footer memory and CPU figures (`mem 41 MB - cpu 1%`); off by default.
@@ -177,8 +141,6 @@ pub struct Threads {
     /// Whether Concordia writes its local thread log.
     pub logging: bool,
     pub map_chars: usize,
-    /// Write the awareness block into homes Concordia created (default on).
-    pub awareness: bool,
     /// Register `concordia mcp` in homes Concordia created (default off: schemas cost tokens).
     pub mcp: bool,
 }
@@ -199,6 +161,7 @@ impl Default for Config {
         Self {
             ui: Ui {
                 token_line: true,
+                time_header: true,
                 tips: true,
                 persist_history: true,
                 stats: false,
@@ -214,7 +177,6 @@ impl Default for Config {
             threads: Threads {
                 logging: false,
                 map_chars: 1600,
-                awareness: true,
                 mcp: false,
             },
             mode: Mode {
@@ -228,10 +190,6 @@ impl Default for Config {
             continuation: Continuation::default(),
             turn: TurnConfig {
                 idle_timeout_minutes: 10,
-            },
-            feed: FeedConfig {
-                enabled: true,
-                screen: false,
             },
             crews: BTreeMap::new(),
         }
@@ -334,10 +292,6 @@ impl Config {
         };
         let mut cfg = Config::default();
         let mut unknown = Vec::new();
-        let mut context_override = None;
-        let mut codex_context_override = None;
-        let mut claude_context_override = None;
-        let mut cursor_context_override = None;
         for (section, value) in &table {
             let Some(sub) = value.as_table() else {
                 if matches!(
@@ -395,28 +349,7 @@ impl Config {
                         Some("manual") => cfg.continuation.automatic = false,
                         _ => warnings.push("continuation.mode must be manual or automatic; using manual".into()),
                     },
-                    "continuation.context" => match v.as_str() {
-                        Some("provider") | Some("fresh") => {
-                            context_override = Some(v.as_str().unwrap().to_owned());
-                        }
-                        _ => warnings.push("continuation.context must be provider or fresh; using provider".into()),
-                    },
-                    "continuation.codex_context" => match v.as_str() {
-                        Some("provider") | Some("fresh") => codex_context_override = Some(v.as_str().unwrap().to_owned()),
-                        _ => warnings.push("continuation.codex_context must be provider or fresh; using provider".into()),
-                    },
-                    "continuation.claude_context" => match v.as_str() {
-                        Some("provider") | Some("fresh") => claude_context_override = Some(v.as_str().unwrap().to_owned()),
-                        _ => warnings.push("continuation.claude_context must be provider or fresh; using provider".into()),
-                    },
-                    "continuation.cursor_context" => match v.as_str() {
-                        Some("provider") | Some("fresh") => cursor_context_override = Some(v.as_str().unwrap().to_owned()),
-                        _ => warnings.push("continuation.cursor_context must be provider or fresh; using provider".into()),
-                    },
-                    "continuation.context_threshold" => match v.as_integer() {
-                        Some(n) if (50..=95).contains(&n) => cfg.continuation.context.threshold = n as u8,
-                        _ => warnings.push("continuation.context_threshold must be 50..=95; using 85".into()),
-                    },
+                    "continuation.proactive_rollover" => set_bool(v, &full, &mut cfg.continuation.proactive_rollover, &mut warnings),
                     "continuation.same_provider_automatic" => set_bool(v, &full, &mut cfg.continuation.same_provider_automatic, &mut warnings),
                     "continuation.automatic_handoff_cap" => match v.as_integer() {
                         Some(n) if (1..=32).contains(&n) => cfg.continuation.automatic_handoff_cap = n as usize,
@@ -451,6 +384,7 @@ impl Config {
                         None=>warnings.push("ui.file_action must be 'preview' or 'editor'".into()),
                     },
                     "ui.token_line" => set_bool(v, &full, &mut cfg.ui.token_line, &mut warnings),
+                    "ui.time_header" => set_bool(v, &full, &mut cfg.ui.time_header, &mut warnings),
                     "ui.tips" => set_bool(v, &full, &mut cfg.ui.tips, &mut warnings),
                     "ui.persist_history" => {
                         set_bool(v, &full, &mut cfg.ui.persist_history, &mut warnings)
@@ -488,12 +422,7 @@ impl Config {
                         None => warnings
                             .push("threads.map_chars must be an integer; using 1600".to_string()),
                     },
-                    "threads.awareness" => {
-                        set_bool(v, &full, &mut cfg.threads.awareness, &mut warnings)
-                    }
                     "threads.mcp" => set_bool(v, &full, &mut cfg.threads.mcp, &mut warnings),
-                    "feed.enabled" => set_bool(v, &full, &mut cfg.feed.enabled, &mut warnings),
-                    "feed.screen" => set_bool(v, &full, &mut cfg.feed.screen, &mut warnings),
                     "mode.default" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("plan") => cfg.mode.default = TrustMode::Plan,
                         Some("ask") => cfg.mode.default = TrustMode::Ask,
@@ -525,20 +454,6 @@ impl Config {
                     _ => unknown.push(full),
                 }
             }
-        }
-        if let Some(mode) = context_override {
-            cfg.continuation.context.codex.clone_from(&mode);
-            cfg.continuation.context.claude.clone_from(&mode);
-            cfg.continuation.context.cursor = mode;
-        }
-        if let Some(mode) = codex_context_override {
-            cfg.continuation.context.codex = mode;
-        }
-        if let Some(mode) = claude_context_override {
-            cfg.continuation.context.claude = mode;
-        }
-        if let Some(mode) = cursor_context_override {
-            cfg.continuation.context.cursor = mode;
         }
         if !unknown.is_empty() {
             warnings.push(format!(
@@ -700,26 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn default_is_provider_compaction() {
-        let c = Config::default().continuation.context;
-        assert_eq!(c.codex, "provider");
-        assert_eq!(c.claude, "provider");
-        assert_eq!(c.cursor, "provider");
-        assert_eq!(c.threshold, 85);
-    }
-
-    #[test]
-    fn setting_round_trips_through_config() {
-        let (cfg, warnings) = Config::parse(
-            "[continuation]\ncontext='fresh'\nclaude_context='provider'\ncontext_threshold=72\n",
-        );
-        assert!(warnings.is_empty());
-        assert_eq!(cfg.continuation.context.codex, "fresh");
-        assert_eq!(cfg.continuation.context.claude, "provider");
-        assert_eq!(cfg.continuation.context.threshold, 72);
-    }
-
-    #[test]
     fn editor_configuration_uses_one_program_and_argument_array() {
         let (config, warnings) =
             Config::parse("[editor]\nprogram='nvim'\nargs=['+{line}','--','{file}']\n");
@@ -754,12 +649,12 @@ mod tests {
     }
 
     #[test]
-    fn awareness_defaults_on_and_mcp_defaults_off() {
+    fn mcp_defaults_off() {
         let (c, warn) = w("");
-        assert!(warn.is_empty() && c.threads.awareness && !c.threads.mcp);
-        let (c, warn) = w("[threads]\nawareness = false\nmcp = true\n");
+        assert!(warn.is_empty() && !c.threads.mcp);
+        let (c, warn) = w("[threads]\nmcp = true\n");
         assert!(warn.is_empty(), "{warn:?}");
-        assert!(!c.threads.awareness && c.threads.mcp);
+        assert!(c.threads.mcp);
         let (c, warn) = w("[threads]\nmcp = \"yes\"\n");
         assert!(!c.threads.mcp && warn[0].contains("threads.mcp must be true or false"));
     }

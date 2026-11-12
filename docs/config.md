@@ -1,16 +1,5 @@
 # Configuration and custom commands
 
-## Feed
-
-The local output feed is enabled by default and is bounded and redacted. Screen snapshots remain
-off unless requested.
-
-```toml
-[feed]
-enabled = true
-screen = false
-```
-
 ## Provider questions
 
 Provider questions always reach the user through the question broker and native provider paths.
@@ -197,7 +186,6 @@ idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables 
 | `ui.stats` | `false` | Footer memory and CPU for Concordia and the agents it started (`/stats` toggles it) |
 | `threads.logging` | `"off"` | Explicit `"on"` enables metadata/native-reference recording; existing logs are preserved |
 | `threads.map_chars` | `1600` | Out of range is clamped to 200..8000 |
-| `threads.awareness` | `true` | One short block in `CLAUDE.md` / `AGENTS.md` of homes Concordia created; `false` removes it |
 | `threads.mcp` | `false` | Registers the `concordia mcp` server in those homes; `false` removes the entry (see [mcp.md](mcp.md)) |
 | `mode.default` | `"ask"` | Anything else falls back to `ask` |
 | `delegation.protocol` | `false` | Same switch as `/delegate protocol on|off` |

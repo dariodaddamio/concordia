@@ -103,17 +103,14 @@ async fn turn(
     trust: TrustMode,
 ) -> (TurnOutcome, Seen) {
     let (tx, mut rx) = mpsc::channel(64);
-    let feed_root = cwd.to_path_buf();
     let seen = tokio::spawn(async move {
-        let feed = concordia::feed::FeedWriter::new(&feed_root, "live-stream", true);
         let mut seen = Seen {
             questions: 0,
             diffs: Vec::new(),
         };
         while let Some(event) = rx.recv().await {
             match event {
-                TurnProgress::TextDelta(text) => feed.emit_text_delta(&text).unwrap(),
-                TurnProgress::Text(text) => feed.emit("text", &text).unwrap(),
+                TurnProgress::TextDelta(_) | TurnProgress::Text(_) => {}
                 TurnProgress::Card(card) => {
                     if let Some(detail) = card.detail.filter(|d| d.contains("\n@@")) {
                         seen.diffs.push(detail);
@@ -136,7 +133,6 @@ async fn turn(
                 _ => {}
             }
         }
-        feed.flush_text_delta().unwrap();
         seen
     });
     let model = cheap_model(provider);
@@ -167,7 +163,7 @@ async fn turn(
 
 #[tokio::test]
 #[ignore = "spends real provider usage"]
-async fn every_provider_streams_with_feed_and_finishes() {
+async fn every_provider_streams_and_finishes() {
     for (provider, home) in selected() {
         let dir = tempfile::tempdir().unwrap();
         let (out, _) = turn(
@@ -190,9 +186,6 @@ async fn every_provider_streams_with_feed_and_finishes() {
             out.stderr_tail
         );
         assert!(out.text.contains("OK"), "{provider:?}: {:?}", out.text);
-        assert!(!concordia::feed::read(dir.path(), 0, None)
-            .unwrap()
-            .is_empty());
     }
 }
 

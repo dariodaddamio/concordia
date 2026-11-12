@@ -555,6 +555,17 @@ Rewrite requirements:
 
 ## This slice
 
+### W2d small removals and settings - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/integration.rs`, `config.rs`, `connect.rs` | ok: 1, 4, 6, 10 | Delete provider-home awareness ownership and its setting; MCP registration remains the sole integration owner. |
+| `crates/concordia/src/capacity.rs`, `ui/app/slash.rs`, `config.rs` | ok: 1, 4, 10 | Remove the `/context` command and compaction overrides while retaining only the requested Codex proactive-rollover setting. |
+| `crates/concordia/src/feed.rs`, `workspace_replace.rs`, command and MCP callers | ok: 1, 5, 9, 10 | Remove obsolete surfaces and their tests rather than replacing them with compatibility wrappers. |
+| `crates/concordia/src/main.rs`, `chat_cli.rs`, `threads.rs`, `sessions.rs` | ok: 1, 4, 7 | Make `chat` the single public history entry point and keep the existing bounded readers as implementation owners. |
+| `crates/concordia/src/config.rs`, `ui` time-header callers | ok: 1, 6 | Add one persisted setting at the existing config owner, defaulting on, with no duplicate UI state. |
+| `README.md`, `docs/`, `CHANGELOG.md`, catalogs, `version.rs` | ok: 5, 10 | Update canonical catalogs and shipped-behavior docs with each deletion/settings change. |
+
 ### Documentation and direction - anti-slop gate
 
 | Paths | Checks | Ownership |

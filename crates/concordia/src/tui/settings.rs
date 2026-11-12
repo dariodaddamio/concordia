@@ -64,7 +64,7 @@ pub(super) fn open(app: &mut App) {
                     "Pause"
                 }
             ),
-            format!("Saved for future sessions; context: {} at {}% (Cursor disables fresh when usage is unreported)", context_label(app), crate::config::for_root(&app.state_root).continuation.context.threshold),
+            "Saved for future sessions; proactive rollover is Codex-only and off by default",
         ),
         row(
             "same-provider",
@@ -131,14 +131,6 @@ pub(super) fn open(app: &mut App) {
         rows,
         true,
     );
-}
-
-fn context_label(app: &App) -> String {
-    let c = crate::config::for_root(&app.state_root)
-        .continuation
-        .context;
-    let (mode, _) = c.for_provider(app.provider);
-    mode.to_owned()
 }
 
 pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {

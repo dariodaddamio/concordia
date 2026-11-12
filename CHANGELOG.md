@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- W2d cleanup removes provider awareness injection, `/context`, `/search`, `/worktree`, the local
+  output feed, and their public catalogs; local-time headers are configurable and enabled by default.
+
 - Removed goals, goal/source relations, memory groups, ranking/evaluation extras, manual memory
   links, and thread pin journals. Native source indexing, exact readback and plain chat search
   remain available; stale pointers report their concrete cause.

@@ -1029,29 +1029,6 @@ impl Delegates {
                     return;
                 }
             }
-            let compaction = match (&state_root, &spec.home) {
-                (Some(root), Some(home)) => {
-                    crate::native_memory::Binding::new(provider, &account, home, "worker-policy")
-                        .and_then(|b| crate::capacity::load(root, &b))
-                        .map(|p| p.compaction)
-                }
-                _ => Ok(Default::default()),
-            };
-            let compaction = match compaction {
-                Ok(p) => p,
-                Err(error) => {
-                    let _ = tx
-                        .send(Event::Finished(
-                            id,
-                            Box::new(TurnOutcome {
-                                stderr_tail: error,
-                                ..Default::default()
-                            }),
-                        ))
-                        .await;
-                    return;
-                }
-            };
             let message = crate::attachments::Message::decode(&spec.prompt);
             let prompt = match if message.has_pdfs() {
                 message.validate().map(|()| message.encode())
@@ -1085,8 +1062,11 @@ impl Delegates {
                 native_session_id: None,
                 trust: spec.trust,
                 context_prefix: spec.prefix.as_deref(),
-                local_time: Some(crate::prompt_time::now()),
-                compaction,
+                local_time: state_root
+                    .as_deref()
+                    .is_some_and(|root| crate::config::for_root(root).ui.time_header)
+                    .then(crate::prompt_time::now),
+                compaction: Default::default(),
             };
             let planned_prompt = match crate::provider::turn::plan_provider_turn(&req) {
                 Ok(plan) => plan.prompt,

@@ -569,17 +569,6 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         None
     ),
     command!(
-        "/search",
-        [],
-        "TEXT",
-        "search project file contents",
-        "Search the current project without leaving the conversation.",
-        false,
-        CommandCategory::Workspace,
-        Some("Ctrl+K"),
-        None
-    ),
-    command!(
         "/scope",
         [],
         "...",
@@ -587,28 +576,6 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         "Declare workspace paths for a task and inspect reservations.",
         false,
         CommandCategory::Workspace,
-        None,
-        None
-    ),
-    command!(
-        "/worktree",
-        [],
-        "...",
-        "manage explicit Git workspaces",
-        "Create or inspect an explicitly managed worktree.",
-        false,
-        CommandCategory::Workspace,
-        None,
-        None
-    ),
-    command!(
-        "/context",
-        [],
-        "",
-        "inspect context rollover policy",
-        "Inspect context capacity and native compaction policy.",
-        false,
-        CommandCategory::Chat,
         None,
         None
     ),

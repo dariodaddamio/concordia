@@ -996,7 +996,7 @@ async fn capture_context(
                 request_id,
                 response_sha256: format!("{:x}", Sha256::digest(&response)),
             },
-            &req.compaction,
+            &crate::capacity::Compaction::Native,
         );
     }
 }

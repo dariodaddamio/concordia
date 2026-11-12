@@ -57,9 +57,6 @@ or F11 opens a local shell in the project; F11 returns to chat with its draft in
 | `/skills` | `[list\|install [PATH]\|remove PATH\|connect PATH\|status]` | inspect skills and connect shared setup | advanced |
 | `/hooks` | `[list\|connect PATH\|verify\|status]` | inspect hooks and verify shared setup | advanced |
 | `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
-| `/search` | `TEXT` | search project file contents | advanced |
-| `/worktree` | `...` | manage explicit Git workspaces | advanced |
-| `/context` | `` | inspect context rollover policy | advanced |
 | `/recover` | `[retry\|legacy]` | inspect saved drafts and interrupted requests | everyday |
 | `/copy` | `` | copy the last reply | everyday |
 | `/doctor` | `` | check your setup | everyday |

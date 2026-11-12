@@ -465,7 +465,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         ($app:ident, $force:expr) => {
             if $force || (dirty && (!key_burst.active() || !terminal_input.poll(Duration::ZERO)?)) {
                 let app = &mut *$app;
-                let mut screen_text = String::new();
                 if !use_window {
                     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 }
@@ -476,17 +475,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     .draw(|f| {
                         raster::begin_frame(&app);
                         draw_ui(f, &mut *app);
-                        if crate::config::get().feed.screen {
-                            let area = f.area();
-                            for y in area.top()..area.bottom() {
-                                for x in area.left()..area.right() {
-                                    if let Some(cell) = f.buffer_mut().cell((x, y)) {
-                                        screen_text.push_str(cell.symbol());
-                                    }
-                                }
-                                screen_text.push('\n');
-                            }
-                        }
                         #[cfg(windows)]
                         {
                             image = raster::native_images(f, &app);
@@ -504,14 +492,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 };
                 drawn?;
                 ended?;
-                if !screen_text.is_empty() && crate::config::get().feed.screen {
-                    let writer = crate::feed::FeedWriter::new(
-                        &app.state_root,
-                        app.thread_id().unwrap_or("main"),
-                        true,
-                    );
-                    let _ = writer.screen(&screen_text);
-                }
                 dirty = false;
                 if use_window {
                     if let Some((x, y)) = window_mouse {
@@ -1079,7 +1059,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             )
                             .ok()
                         });
-                        let policy = match binding
+                        let mut policy = match binding
                             .as_ref()
                             .map(|b| crate::capacity::load(&state_root, b))
                             .transpose()
@@ -1093,6 +1073,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 return;
                             }
                         };
+                        if crate::config::for_root(&state_root).continuation.proactive_rollover
+                            && provider == crate::store::ProviderKind::Codex
+                        {
+                            policy.rollover_percent = Some(85);
+                        }
                         let native_input = match crate::native_input::for_home(
                             &state_root,
                             provider,
@@ -1242,8 +1227,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             native_session_id: session_out.as_deref(),
                             trust,
                             context_prefix: prefix.as_deref(),
-                            local_time: Some(crate::prompt_time::now()),
-                            compaction: policy.compaction,
+                            local_time: crate::config::for_root(&state_root)
+                                .ui
+                                .time_header
+                                .then(crate::prompt_time::now),
+                            compaction: Default::default(),
                         };
                         // Validate plan even if spawn fails (argv safety).
                         let checked_plan = match plan_provider_turn(&req) {
