@@ -299,6 +299,15 @@ record answers and open proposals; they are not approved final product wording o
   paused; completed actions were not undone") must stand out from chat text through colour, icon
   and plain wording. Tabs show an I-beam cursor over the title so renaming is discoverable.
   Queued messages: a way to send one now, double-click to edit, and copy from the edit box.
+- Idea (2026-11-12, owner interest; not decided): token savings in the style of Spotify's Portal
+  "shunt" plugin (engineering.atspotify.com, Sep 2026), which reports about 90% fewer tokens on
+  bulk file reads. A Claude Code hook blocks large file reads, a cheaper model reads the files
+  and returns a structured answer, and generated code is written straight to disk. The article
+  states the limits: editing and reasoning cannot be delegated, and each delegation adds
+  10 to 30 seconds. A Concordia version would route bulk reading through the `agents` tool to a
+  cheaper model on the user's own account (Concordia makes no model call itself) and return
+  exact line ranges as pointers so the main agent reads only those lines. The read-size hook
+  is policy, so it belongs to the user's harness.
 - Tabs and panes (2026-11-11): manage them browser-style with both drag and keyboard: drag tabs
   to reorder, keyboard shortcuts for switching, moving and closing, built so the same
   interactions extend to Photoshop-style docking later.
