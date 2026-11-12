@@ -53,7 +53,7 @@ fn fake_acp() {
         std::fs::write(
             root.join("acp-environment.json"),
             serde_json::json!({
-                "config_dir":std::env::var("CURSOR_CONFIG_DIR").ok(),
+                "config_dir":std::env::var("CURSOR_CONFIG_DIR").ok().or_else(|| std::env::var("GROK_HOME").ok()),
                 "api_key_present":std::env::var_os("CURSOR_API_KEY").is_some(),
                 "auth_token_present":std::env::var_os("CURSOR_AUTH_TOKEN").is_some(),
             })
@@ -126,7 +126,7 @@ fn fake_acp() {
                 }
                 serde_json::json!({})
             }
-            "session/set_mode" | "session/set_model" => serde_json::json!({}),
+            "authenticate" | "session/set_mode" | "session/set_model" | "session/set_config_option" => serde_json::json!({}),
             "session/prompt" => {
                 if fixture["quota"] == true {
                     emit(
@@ -538,7 +538,9 @@ fn main() {
         println!("codex-cli 0.166.0");
         return;
     }
-    if args.first().is_some_and(|a| a == "acp") {
+    if args.first().is_some_and(|a| a == "acp")
+        || args.windows(2).any(|pair| pair == ["agent", "stdio"])
+    {
         fake_acp();
         return;
     }

@@ -652,3 +652,12 @@ approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout 
 | `crates/concordia/src/commands.rs`, `src/harness/**`, `src/tui/**` | ok: 1, 4, 10 | Make `/harness` the sole connect/status/verify/disconnect action owner; `/skills` and `/hooks` remain views and `/skills` keeps switches. |
 | `crates/concordia/src/user_commands.rs`, `src/doctor.rs`, `src/tui/**` | ok: 1, 4, 6, 10 | Keep one bounded shortcut scan and report provider-command shadows without adding a second command registry. |
 | `README.md`, `docs/**`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Synchronize catalogs and user-facing documentation with the code and record the shipped change. |
+
+### W10 Grok Build provider - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/provider/{grok,turn_acp,turn}.rs` | ok: 1, 4, 6, 10 | Reuse one ACP runner for Cursor and Grok; keep exact session identity and native interaction ownership in the provider transport. |
+| `crates/concordia/src/{accounts,connect,identity,models,catalog,store}.rs` | ok: 1, 2, 4, 6 | Add only the Grok account/home and bounded metadata seams; login detection checks markers without reading token contents. |
+| `crates/concordia/tests/{images.rs,live_providers.rs,support/fake_provider.rs}` | ok: 5, 9, 10 | Exercise the existing ACP fixture path and retain real-provider tests ignored; never add a fake-only production branch. |
+| `README.md`, `docs/{README.md,how-concordia-connects-providers.md,provider-grok-build.md}`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Update the canonical provider catalog and record confirmed versus unverified behavior. |

@@ -185,6 +185,14 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
             sandbox: has("--sandbox"),
             known: true,
         },
+        ProviderKind::Grok => Caps {
+            stream_json: false,
+            permission_mode: false,
+            plan_mode: false,
+            partial_messages: false,
+            sandbox: false,
+            known: true,
+        },
     };
     Some(caps)
 }
@@ -298,6 +306,7 @@ fn shim_target(provider: ProviderKind, bin: &Path) -> Option<String> {
                 modified.subsec_nanos()
             ))
         }
+        ProviderKind::Grok => Some("grok".into()),
     }
 }
 
@@ -554,6 +563,7 @@ fn plan_enforcement_error(provider: ProviderKind) -> String {
         ProviderKind::Claude => ("Claude Code", "--permission-mode plan"),
         ProviderKind::Cursor => ("Cursor", "--mode plan"),
         ProviderKind::Codex => ("Codex", "--sandbox read-only"),
+        ProviderKind::Grok => ("Grok Build", "ACP permission mode"),
     };
     format!("{cli} {} can't enforce Plan mode (its help has no {flag}). Use a CLI that provides the current required interface.", version_for(provider))
 }

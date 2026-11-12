@@ -3,6 +3,7 @@
 use crate::provider::claude::{plan_claude_turn, ClaudeTurnRequest};
 use crate::provider::codex::{self, apply_stream_parts, plan_turn_argv, TurnRequest as CodexReq};
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
+use crate::provider::grok::{plan_grok_turn, GrokTurnRequest};
 use crate::provider::enforcement;
 use crate::provider::interaction::InteractionOwner;
 pub use crate::provider::interaction::NativeRequest;
@@ -228,6 +229,7 @@ pub fn attach_images(
             ));
         }
         ProviderKind::Cursor => anyhow::bail!("Cursor image input requires ACP"),
+        ProviderKind::Grok => anyhow::bail!("Grok Build image input requires ACP"),
     }
     Ok(())
 }
@@ -378,6 +380,26 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 prompt: prompt.clone(),
                 new_session_id: None,
                 provider: ProviderKind::Cursor,
+            })
+        }
+        ProviderKind::Grok => {
+            let plan = plan_grok_turn(&GrokTurnRequest {
+                prompt: &prompt,
+                cwd: req.cwd,
+                home_path: req.home_path,
+                model: req.model,
+                native_session_id: req.native_session_id,
+                trust: req.trust,
+            })?;
+            Ok(PlannedTurn {
+                command: plan.command,
+                argv: plan.argv,
+                env: plan.env,
+                env_remove: plan.env_remove,
+                cwd: plan.cwd,
+                prompt: prompt.clone(),
+                new_session_id: None,
+                provider: ProviderKind::Grok,
             })
         }
     }
@@ -531,6 +553,7 @@ pub async fn run_provider_turn_with_transport(
         .map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
         (mode != crate::native_input::Mode::CursorAcp || req.provider == ProviderKind::Cursor)
+            && (mode != crate::native_input::Mode::GrokAcp || req.provider == ProviderKind::Grok)
             && (mode != crate::native_input::Mode::CodexAppServer
                 || req.provider == ProviderKind::Codex)
             && (mode != crate::native_input::Mode::ClaudeStdio
@@ -691,8 +714,10 @@ async fn run_provider_turn_inner(
             .await
             .map_err(|_| anyhow::anyhow!("progress receiver closed before provider startup"))?;
     }
-    if req.provider == ProviderKind::Cursor
-        && (!req.images.is_empty() || mode == crate::native_input::Mode::CursorAcp)
+    if matches!(req.provider, ProviderKind::Cursor | ProviderKind::Grok)
+        && (!req.images.is_empty()
+            || mode == crate::native_input::Mode::CursorAcp
+            || mode == crate::native_input::Mode::GrokAcp)
     {
         let out = acp::run(
             req,
@@ -707,7 +732,7 @@ async fn run_provider_turn_inner(
             && req.images.is_empty()
             && out.stderr_tail.starts_with(acp::SESSION_NOT_IN_ACP))
         {
-            return Ok(out);
+        return Ok(out);
         }
     }
     // codex exec has no response channel for request_user_input; the app-server transport does.
@@ -865,7 +890,7 @@ async fn run_provider_turn_inner(
     let mut out = TurnOutcome::default();
     let flavor = match plan.provider {
         ProviderKind::Claude => Some(Flavor::Claude),
-        ProviderKind::Cursor => Some(Flavor::Cursor),
+        ProviderKind::Cursor | ProviderKind::Grok => Some(Flavor::Cursor),
         ProviderKind::Codex => None,
     };
     let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));

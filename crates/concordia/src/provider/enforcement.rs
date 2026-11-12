@@ -346,6 +346,7 @@ pub fn is_read_only_argv(provider: ProviderKind, argv: &[String]) -> bool {
         ProviderKind::Claude => pair(&["--permission-mode"], "plan"),
         ProviderKind::Cursor => pair(&["--mode"], "plan"),
         ProviderKind::Codex => pair(&["-s", "--sandbox"], "read-only"),
+        ProviderKind::Grok => pair(&["--always-approve"], "ACP permission mode"),
     }
 }
 

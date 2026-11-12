@@ -130,7 +130,7 @@ fn print_help() {
          Files: /open PATH[:LINE[:COLUMN]] · /close ID\n\
          Delegate: /workers [add|remove] /delegate <account|auto> <task> /delegate stop|use|help (docs/delegation.md)\n\
          Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
-         Connect: /use add [codex|claude|cursor] makes an isolated home and opens its login.\n\
+         Connect: /use add [codex|claude|cursor|grok] makes an isolated home and opens its login.\n\
          Mouse: click places the caret, drag selects, double/triple-click picks word/line,\n\
          wheel scrolls, right-click copies the selection or pastes.\n\
          Keys: Ctrl+A/X/V select-all/cut/paste · Shift+Enter or Ctrl+J newline · PgUp/PgDn scroll.\n\

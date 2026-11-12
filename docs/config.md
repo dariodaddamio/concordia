@@ -112,7 +112,7 @@ for the editing/recovery and search/replacement stages.
 
 `concordia chat list --json` lists recent native chats across the user's discovered/registered
 accounts, labeled with provider, account and session ID. Filter with `--account ID` or
-`--provider codex|claude|cursor`; `--limit N` is capped at 1000. `chat search TEXT` searches
+`--provider codex|claude|cursor|grok`; `--limit N` is capped at 1000. `chat search TEXT` searches
 preview/ID metadata only. `chat read SESSION --account ID` reads Codex/Claude user/assistant
 text with optional `--tail N`, `--grep TEXT`, and `--max-chars N`. It does not select an account,
 resume a session, copy credentials, or transfer context to a provider. Explicit reads resolve in

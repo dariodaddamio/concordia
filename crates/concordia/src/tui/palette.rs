@@ -306,7 +306,7 @@ pub fn matching_arguments(
                 "/use rename".into(),
                 "ACCOUNT NICKNAME - rename for display; omit nickname to reset".into(),
             );
-            for provider in ["codex", "claude", "cursor"]
+            for provider in ["codex", "claude", "cursor", "grok"]
                 .into_iter()
                 .filter(|_| typed.starts_with("/use add"))
             {

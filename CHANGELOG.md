@@ -1,5 +1,11 @@
 # Changelog
 
+### Added (2026-11-12g)
+
+- Added the fake-fixture-backed Grok Build provider over ACP, with explicit session resume,
+  native authentication/permission handling, account homes and bounded model metadata.
+- Documented the confirmed Grok Build interface and its unverified usage/history boundaries.
+
 - W9: the Needs attention picker now uses enriched shared request records for foreground chats
   and worker conversations, preserving provider-owned answer paths and showing project, chat,
   agent, source and waiting context. Native requests are retained by their explicit interaction

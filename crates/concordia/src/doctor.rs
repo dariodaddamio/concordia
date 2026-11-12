@@ -714,6 +714,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
         ("codex", ProviderKind::Codex),
         ("claude", ProviderKind::Claude),
         ("cursor", ProviderKind::Cursor),
+        ("grok", ProviderKind::Grok),
     ] {
         match (env.provider_bin)(kind) {
             Err(missing) => rows.push(check(
@@ -788,6 +789,7 @@ fn provider_variable(kind: ProviderKind) -> &'static str {
         ProviderKind::Codex => "CONCORDIA_CODEX_BIN",
         ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
         ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
+        ProviderKind::Grok => "CONCORDIA_GROK_BIN",
     }
 }
 
@@ -989,6 +991,7 @@ pub fn format_not_found_turn_error(
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude Code",
         ProviderKind::Cursor => "Cursor agent",
+        ProviderKind::Grok => "Grok Build",
     };
     format!(
         "{name} CLI was not found. Concordia looked in: {}. Run `concordia doctor`.",

@@ -9,7 +9,7 @@ use std::{
     path::Path,
 };
 
-const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|claude|cursor] [--json] [--limit N]\n       concordia chat read SESSION --account ID [--provider codex|claude|cursor] [--tail N] [--grep TEXT] [--max-chars N]\n       concordia chat search TEXT [--account ID] [--provider codex|claude|cursor] [--json] [--limit N] (session IDs and previews/titles only)\n       concordia chat thread list [--json] | map ID | read ID [--cursor TOKEN] [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]";
+const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|claude|cursor|grok] [--json] [--limit N]\n       concordia chat read SESSION --account ID [--provider codex|claude|cursor|grok] [--tail N] [--grep TEXT] [--max-chars N]\n       concordia chat search TEXT [--account ID] [--provider codex|claude|cursor|grok] [--json] [--limit N] (session IDs and previews/titles only)\n       concordia chat thread list [--json] | map ID | read ID [--cursor TOKEN] [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]";
 const MAX_CHAT_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
 /// Read-only restoration data. Loading it never dispatches a provider turn.

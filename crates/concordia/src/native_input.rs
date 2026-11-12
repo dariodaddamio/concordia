@@ -12,6 +12,7 @@ pub enum Mode {
     #[default]
     Standard,
     CursorAcp,
+    GrokAcp,
     CodexAppServer,
     ClaudeStdio,
 }
@@ -54,6 +55,7 @@ fn regular(path: &Path) -> Result<bool, String> {
 fn default_for(provider: ProviderKind) -> Mode {
     match provider {
         ProviderKind::Cursor => Mode::CursorAcp,
+        ProviderKind::Grok => Mode::GrokAcp,
         ProviderKind::Codex | ProviderKind::Claude => Mode::Standard,
     }
 }
@@ -79,6 +81,7 @@ pub fn load(root: &Path, binding: &Binding) -> Result<Mode, String> {
         || saved.binding.account != binding.account
         || saved.binding.home != binding.home
         || saved.mode == Mode::CursorAcp && binding.provider != ProviderKind::Cursor
+        || saved.mode == Mode::GrokAcp && binding.provider != ProviderKind::Grok
         || saved.mode == Mode::CodexAppServer && binding.provider != ProviderKind::Codex
         || saved.mode == Mode::ClaudeStdio && binding.provider != ProviderKind::Claude
     {
@@ -114,6 +117,7 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
     let mode = match command {
         "status" => current,
         "on" if registered.provider == ProviderKind::Cursor => Mode::CursorAcp,
+        "on" if registered.provider == ProviderKind::Grok => Mode::GrokAcp,
         "on" if registered.provider == ProviderKind::Codex => Mode::CodexAppServer,
         "on" if registered.provider == ProviderKind::Claude => Mode::ClaudeStdio,
         "off" => Mode::Standard,
@@ -152,6 +156,7 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
     }
     let description: String = match mode {
         Mode::CursorAcp => "on (Cursor ACP)".into(),
+        Mode::GrokAcp => "on (Grok Build ACP)".into(),
         Mode::CodexAppServer => "on (Codex app-server)".into(),
         Mode::ClaudeStdio => format!(
             "on (Claude native stdio; CLI {} control interface required)",

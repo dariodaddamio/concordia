@@ -433,6 +433,7 @@ pub(super) fn provider_color(p: ProviderKind) -> Color {
         ProviderKind::Codex => Color::Indexed(114),
         ProviderKind::Claude => Color::Indexed(215),
         ProviderKind::Cursor => Color::Indexed(111),
+        ProviderKind::Grok => Color::Indexed(208),
     }
 }
 

@@ -1,6 +1,6 @@
 # Concordia
 
-Concordia is a Windows-first native app that runs the official Codex, Claude Code and Cursor
+Concordia is a Windows-first native app that runs the official Codex, Claude Code, Cursor and Grok Build
 CLIs under your own accounts, with bounded handoff between them. It keeps one conversation
 navigable while each provider remains responsible for its own sessions, approvals and tools.
 
@@ -9,7 +9,7 @@ For the short view of what works, what remains unproven and the intended directi
 planned work and historical evidence. Concordia is currently private and pre-release.
 
 Concordia is independent and unofficial. It is not affiliated with or endorsed by OpenAI,
-Anthropic, Anysphere or Cursor. It runs their official, unmodified CLIs using your own accounts.
+Anthropic, Anysphere, Cursor or xAI. It runs their official, unmodified CLIs using your own accounts.
 Each CLI keeps its own login; Concordia only checks that a login exists. The one secret it
 handles itself is a Cursor API key, if you choose to use one: it is kept in that Cursor
 account's own folder, passed only to the Cursor CLI, and redacted from everything Concordia
@@ -30,7 +30,7 @@ will be available after the first release; see [the full installation guide](doc
 
 ```text
 concordia
-/use                 # choose or connect Codex, Claude Code or Cursor
+/use                 # choose or connect Codex, Claude Code, Cursor or Grok Build
 Ask your question and press Enter
 /usage               # inspect provider-reported usage
 /resume              # continue a recorded conversation

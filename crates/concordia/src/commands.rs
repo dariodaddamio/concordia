@@ -286,6 +286,7 @@ pub fn parse_provider(s: &str) -> Option<ProviderKind> {
         "codex" => Some(ProviderKind::Codex),
         "claude" => Some(ProviderKind::Claude),
         "cursor" | "agent" => Some(ProviderKind::Cursor),
+        "grok" | "grok-build" => Some(ProviderKind::Grok),
         _ => None,
     }
 }
@@ -579,12 +580,13 @@ pub fn format_config_help() -> String {
     [
         "config  local CLIs — no concordia cloud".to_string(),
         "connect /use add            pick a provider; concordia makes an isolated home and opens its login".into(),
-        "        /use add codex      (or claude, cursor)".into(),
+        "        /use add codex      (or claude, cursor, grok)".into(),
         String::new(),
         "by hand, if the login window cannot open:".into(),
         format!("Codex   $env:CODEX_HOME='{home}\\.codex'; codex login"),
         "Claude  claude login   (optional CLAUDE_CONFIG_DIR)".into(),
         "Cursor  agent login   (extra accounts: an concordia-api-key file in the account home)".into(),
+        "Grok    grok login    (uses the selected GROK_HOME)".into(),
         String::new(),
         "in concordia  /use · /model · /config · /mode · /usage · /new · /resume · /delegate · /harness · /open · /copy · /doctor · /update".into(),
     ]
@@ -663,7 +665,7 @@ pub fn dispatch_slash(
             None => (
                 CommandOutcome::Ok,
                 vec![format!(
-                    "unknown provider '{p}' - use codex, claude or cursor"
+                    "unknown provider '{p}' - use codex, claude, cursor or grok"
                 )],
             ),
         },

@@ -1023,7 +1023,7 @@ pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
         let payload = match index.binding.provider {
             ProviderKind::Codex => &value["payload"],
             ProviderKind::Claude => &value["message"],
-            ProviderKind::Cursor => &value["params"]["update"],
+            ProviderKind::Cursor | ProviderKind::Grok => &value["params"]["update"],
         };
         let content = &payload["content"];
         let rendered = if let Some(blocks) = content.as_array() {

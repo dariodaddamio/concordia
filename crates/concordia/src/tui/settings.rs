@@ -390,6 +390,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
         ProviderKind::Codex => ".agents",
         ProviderKind::Claude => ".claude",
         ProviderKind::Cursor => ".cursor",
+        ProviderKind::Grok => ".grok",
     };
     for root in roots {
         if hooks {
@@ -412,6 +413,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                 ProviderKind::Codex => {
                     hook_rows(&root.join(".codex/hooks.json"), "Project", &mut rows)
                 }
+                ProviderKind::Grok => {}
             }
         } else {
             skill_rows(
@@ -443,6 +445,11 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                     );
                     rows.push(row("notice", "Native hook trust", "This inventory shows configured sources. Review native /hooks in this provider home; only native consent can enable untrusted hooks."));
                 }
+                ProviderKind::Grok => hook_rows(
+                    &home.join("hooks.json"),
+                    "User Â· selected account",
+                    &mut rows,
+                ),
             }
         } else {
             skill_rows(

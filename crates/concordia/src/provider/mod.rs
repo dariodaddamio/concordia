@@ -2,6 +2,7 @@ pub mod claude;
 pub mod codex;
 pub mod compat;
 pub mod cursor;
+pub mod grok;
 pub mod enforcement;
 pub mod failure;
 pub mod interaction;
@@ -61,12 +62,18 @@ const CURSOR_COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "/logout", description: "sign out of Cursor" },
     CommandSpec { name: "/quit", description: "exit Cursor Agent" },
 ];
+const GROK_COMMANDS: &[CommandSpec] = &[
+    CommandSpec { name: "/model", description: "choose a Grok model" },
+    CommandSpec { name: "/settings", description: "change Grok Build settings" },
+    CommandSpec { name: "/mcp", description: "manage MCP servers" },
+];
 
 pub fn command_specs(kind: ProviderKind) -> &'static [CommandSpec] {
     match kind {
         ProviderKind::Codex => CODEX_COMMANDS,
         ProviderKind::Claude => CLAUDE_COMMANDS,
         ProviderKind::Cursor => CURSOR_COMMANDS,
+        ProviderKind::Grok => GROK_COMMANDS,
     }
 }
 
@@ -121,6 +128,7 @@ impl LocateEnv {
             ProviderKind::Codex => "CONCORDIA_CODEX_BIN",
             ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
             ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
+            ProviderKind::Grok => "CONCORDIA_GROK_BIN",
         };
         Self {
             override_path: std::env::var(override_var).ok(),
@@ -201,6 +209,7 @@ pub fn locate(kind: ProviderKind, env: &LocateEnv) -> Result<Located, NotFound> 
             .flatten()
             .collect(),
         ),
+        ProviderKind::Grok => ("grok", vec![env.userprofile.as_ref().map(|p| p.join(".grok/bin/grok.exe"))].into_iter().flatten().collect()),
     };
     let mut searched = Vec::new();
     if let Some(p) = env
@@ -343,6 +352,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .join("cursor-agent/agent.cmd"),
+                ProviderKind::Grok => e.userprofile.as_ref().unwrap().join(".grok/bin/grok.exe"),
             };
             let second = match kind {
                 ProviderKind::Codex => e.appdata.as_ref().unwrap().join("npm/codex.cmd"),
@@ -352,6 +362,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .join("cursor-agent/cursor-agent.cmd"),
+                ProviderKind::Grok => e.userprofile.as_ref().unwrap().join(".grok/bin/grok.cmd"),
             };
             fs::create_dir_all(first.parent().unwrap()).unwrap();
             fs::write(&first, "").unwrap();

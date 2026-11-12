@@ -314,7 +314,7 @@ fn acp_model_id(id: &str, available: &[String]) -> Option<String> {
 
 /// Trust flags are global options and must precede the `acp` subcommand. Plan mode is set per
 /// session over the protocol instead.
-fn acp_argv(print_argv: &[String]) -> Vec<String> {
+fn acp_argv(provider: ProviderKind, print_argv: &[String]) -> Vec<String> {
     let mut argv = Vec::new();
     if planned_options(print_argv).any(|(flag, _)| flag == "--force") {
         argv.push("--force".into());
@@ -324,7 +324,11 @@ fn acp_argv(print_argv: &[String]) -> Vec<String> {
     {
         argv.extend([flag.into(), value.into()]);
     }
-    argv.push("acp".into());
+    if provider == ProviderKind::Grok {
+        argv.extend(["agent".into(), "stdio".into()]);
+    } else {
+        argv.push("acp".into());
+    }
     argv
 }
 
@@ -356,7 +360,7 @@ pub(super) async fn run(
         env.push(("CONCORDIA_ASK_TOKEN".into(), token));
     }
     let launch = crate::provider::launch::prepare(&PlannedTurn {
-        argv: acp_argv(&plan.argv),
+        argv: acp_argv(plan.provider, &plan.argv),
         prompt: "acp".into(),
         ..plan.clone()
     })?;
@@ -382,7 +386,7 @@ pub(super) async fn run(
             ..Default::default()
         });
     }
-    let mut child = command.spawn().context("could not start Cursor ACP")?;
+    let mut child = command.spawn().context("could not start ACP provider")?;
     let _process_tree =
         crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
@@ -418,13 +422,25 @@ pub(super) async fn run(
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
         conn.interactions.initialized_cursor(&init);
-        anyhow::ensure!(init["protocolVersion"] == 1, "Installed Cursor ACP did not negotiate protocol version 1");
+        anyhow::ensure!(init["protocolVersion"] == 1, "Installed ACP provider did not negotiate protocol version 1");
+        if req.provider == ProviderKind::Grok {
+            if let Some(method_id) = init.pointer("/authMethods")
+                .and_then(Value::as_array)
+                .and_then(|methods| methods.iter().find(|method| method["id"] == "cached_token"))
+                .and_then(|method| method["id"].as_str())
+            {
+                tokio::time::timeout(Duration::from_secs(12), conn.rpc(101, "authenticate", json!({"methodId": method_id, "_meta": {"headless": true}}))).await??;
+            }
+        }
         anyhow::ensure!(req.images.is_empty() || init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
         let mcp_servers = ask_server_config(&endpoint, &bridge_token, !endpoint.is_empty());
-        let (method,params)=if let Some(id)=req.native_session_id{
+        let (method,mut params)=if let Some(id)=req.native_session_id{
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
             ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":mcp_servers}))
         }else{("session/new",json!({"cwd":plan.cwd,"mcpServers":mcp_servers}))};
+        if req.provider == ProviderKind::Grok && req.trust == TrustMode::Full {
+            params["_meta"] = json!({"yoloMode": true});
+        }
         let session=match tokio::time::timeout(Duration::from_secs(12),conn.rpc(2,method,params)).await?{
             Err(error) if req.native_session_id.is_some() && format!("{error:#}").contains("not found") => anyhow::bail!(SESSION_NOT_IN_ACP),
             other => other?,
@@ -433,13 +449,20 @@ pub(super) async fn run(
         let sid=req.native_session_id.map(str::to_owned).or_else(||session["sessionId"].as_str().map(str::to_owned)).context("Cursor ACP returned no session id")?;
         conn.out.session_id=Some(sid.clone());conn.session_id=Some(sid.clone());conn.emit(TurnProgress::Session(sid.clone())).await;
         // Honor the final plan after locked-code enforcement, rather than the requested trust.
-        let mode=if planned_options(&plan.argv).any(|(flag,value)|flag=="--mode"&&value==Some("plan")){"plan"}else{"agent"};
-        tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"session/set_mode",json!({"sessionId":sid,"modeId":mode}))).await??;
+        if req.provider == ProviderKind::Cursor {
+            let mode=if planned_options(&plan.argv).any(|(flag,value)|flag=="--mode"&&value==Some("plan")){"plan"}else{"agent"};
+            tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"session/set_mode",json!({"sessionId":sid,"modeId":mode}))).await??;
+        }
         if let Some(model)=req.model.filter(|m|!m.is_empty()&&*m!="auto"){
             let available:Vec<String>=session.pointer("/models/availableModels").and_then(Value::as_array).into_iter().flatten()
                 .filter_map(|m|m["modelId"].as_str().map(str::to_owned)).collect();
             let model=acp_model_id(model,&available).unwrap_or_else(||model.to_owned());
-            tokio::time::timeout(Duration::from_secs(12),conn.rpc(4,"session/set_model",json!({"sessionId":sid,"modelId":model}))).await??;
+            let (method, params) = if req.provider == ProviderKind::Grok {
+                ("session/set_config_option", json!({"sessionId":sid,"configId":"model","value":{"value":model}}))
+            } else {
+                ("session/set_model", json!({"sessionId":sid,"modelId":model}))
+            };
+            tokio::time::timeout(Duration::from_secs(12),conn.rpc(4,method,params)).await??;
         }
         conn.prompting = true;
         let result=conn.rpc(5,"session/prompt",json!({"sessionId":sid,"prompt":content})).await?;
@@ -482,6 +505,7 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
+    use crate::store::ProviderKind;
     use super::{acp_argv, acp_model_id, ask_server_config};
 
     #[test]
@@ -546,11 +570,11 @@ mod tests {
     fn trust_flags_precede_the_acp_subcommand() {
         let print = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            acp_argv(&print(&["--print", "--force", "hi"])),
+            acp_argv(ProviderKind::Cursor, &print(&["--print", "--force", "hi"])),
             ["--force", "acp"]
         );
         assert_eq!(
-            acp_argv(&print(&["--print", "--mode", "plan", "hi"])),
+            acp_argv(ProviderKind::Cursor, &print(&["--print", "--mode", "plan", "hi"])),
             ["acp"]
         );
     }

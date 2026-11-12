@@ -8,7 +8,7 @@ sessions, tools and approvals.
 
 Use the explicit native source commands through `concordia chat`:
 
-- `concordia chat index SESSION --account ID --provider codex|claude|cursor`
+- `concordia chat index SESSION --account ID --provider codex|claude|cursor|grok`
 - `concordia chat sources INDEX [--from-message N --limit N]`
 - `concordia chat excerpt INDEX --message N [--offset N --max-bytes N]`
 - `concordia chat recall TEXT [--source INDEX] [--account ID] [--workspace DIR]`

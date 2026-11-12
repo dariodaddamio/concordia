@@ -122,6 +122,16 @@ pub fn refresh(provider: ProviderKind, account: &str) -> Result<RefreshedModels,
                 models,
             });
         }
+        ProviderKind::Grok => {
+            let models = catalog::list_model_details(provider, &identity.home)
+                .into_iter()
+                .map(|(id, name)| entry_named(id, name, ModelSource::Cached))
+                .collect::<Vec<_>>();
+            if models.is_empty() {
+                return Err("Grok Build model metadata is unavailable; no listing was invented".into());
+            }
+            models
+        }
     };
     write_refresh_cache(&root, &identity, &models)
         .map_err(|error| format!("model metadata cache was not saved: {error}"))?;

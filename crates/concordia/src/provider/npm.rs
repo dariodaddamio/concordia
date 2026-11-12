@@ -21,7 +21,7 @@ pub(crate) fn package_for_shim(
     let (name, package_name, entrypoint) = match provider {
         crate::store::ProviderKind::Codex => ("codex", "@openai/codex", "bin/codex.js"),
         crate::store::ProviderKind::Claude => ("claude", "@anthropic-ai/claude-code", "cli.js"),
-        crate::store::ProviderKind::Cursor => return None,
+        crate::store::ProviderKind::Cursor | crate::store::ProviderKind::Grok => return None,
     };
     if !shim
         .file_name()?
@@ -63,7 +63,7 @@ pub(crate) fn node_bridge(
     let (name, package_name, entrypoint) = match provider {
         crate::store::ProviderKind::Codex => ("codex", "@openai/codex", "bin/codex.js"),
         crate::store::ProviderKind::Claude => ("claude", "@anthropic-ai/claude-code", "cli.js"),
-        crate::store::ProviderKind::Cursor => return None,
+        crate::store::ProviderKind::Cursor | crate::store::ProviderKind::Grok => return None,
     };
     if !shim
         .file_name()?

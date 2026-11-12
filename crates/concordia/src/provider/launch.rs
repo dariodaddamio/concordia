@@ -132,6 +132,11 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
                 None => {}
             }
         }
+        ProviderKind::Grok => {
+            if plan.prompt.starts_with('-') { bail!("this prompt starts with '-', which Grok Build would read as an option; reword it"); }
+            launch.stdin = Some(plan.prompt.clone());
+            launch.args.pop();
+        }
     }
     Ok(launch)
 }

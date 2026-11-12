@@ -42,7 +42,15 @@ pub fn list_model_details(provider: ProviderKind, home: &Path) -> Vec<(String, S
         ProviderKind::Codex => list_codex_models(home),
         ProviderKind::Claude => Vec::new(),
         ProviderKind::Cursor => list_cursor_models(home),
+        ProviderKind::Grok => list_grok_models(home),
     }
+}
+
+fn list_grok_models(home: &Path) -> Vec<(String, String)> {
+    read_local_cache(home, "config.toml")
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .and_then(|value| value.get("models").and_then(|v| v.get("default")).and_then(|v| v.as_str()).map(|id| vec![(id.to_owned(), id.to_owned())]))
+        .unwrap_or_default()
 }
 
 fn list_codex_models(home: &Path) -> Vec<(String, String)> {
@@ -122,5 +130,12 @@ mod tests {
             fs::write(d.path().join("models_cache.json"), unsupported).unwrap();
             assert!(list_codex_models(d.path()).is_empty());
         }
+    }
+
+    #[test]
+    fn grok_catalog_reads_only_the_configured_default_model() {
+        let d = tempdir().unwrap();
+        fs::write(d.path().join("config.toml"), "[models]\ndefault = \"grok-build\"\n").unwrap();
+        assert_eq!(list_models(ProviderKind::Grok, d.path()), vec!["grok-build"]);
     }
 }

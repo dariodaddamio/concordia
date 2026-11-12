@@ -28,6 +28,7 @@ pub enum ProviderKind {
     Codex,
     Claude,
     Cursor,
+    Grok,
 }
 
 impl ProviderKind {
@@ -36,6 +37,7 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Cursor => "cursor",
+            Self::Grok => "grok",
         }
     }
 }

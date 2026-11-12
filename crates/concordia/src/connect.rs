@@ -32,6 +32,7 @@ fn capitalized(p: ProviderKind) -> &'static str {
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude",
         ProviderKind::Cursor => "Cursor",
+        ProviderKind::Grok => "Grok Build",
     }
 }
 
@@ -112,6 +113,7 @@ pub fn plan_login(
                 ("cursor-agent", "cursor-agent login", None)
             }
         }
+        ProviderKind::Grok => ("grok", "grok login", Some("GROK_HOME")),
     };
     if !has_bin(bin) {
         return Err(format!(
@@ -564,6 +566,10 @@ mod tests {
                 r#"{"claudeAiOauth":{"accessToken":"x"}}"#,
             )
             .unwrap(),
+            ProviderKind::Grok => {
+                fs::write(home.join("config.toml"), "[models]\ndefault = \"grok-build\"\n").unwrap();
+                fs::write(home.join("auth.json"), "{}").unwrap();
+            }
         }
     }
 

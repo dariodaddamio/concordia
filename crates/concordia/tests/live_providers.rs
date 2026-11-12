@@ -13,10 +13,11 @@ use concordia::{
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
-const PROVIDERS: [ProviderKind; 3] = [
+const PROVIDERS: [ProviderKind; 4] = [
     ProviderKind::Cursor,
     ProviderKind::Codex,
     ProviderKind::Claude,
+    ProviderKind::Grok,
 ];
 
 fn cheap_model(provider: ProviderKind) -> String {
@@ -30,6 +31,7 @@ fn cheap_model(provider: ProviderKind) -> String {
         ProviderKind::Cursor => "auto",
         ProviderKind::Codex => "gpt-5.6-luna",
         ProviderKind::Claude => "haiku",
+        ProviderKind::Grok => "grok-build",
     }
     .to_string()
 }
@@ -42,11 +44,13 @@ fn mode(provider: ProviderKind) -> Mode {
             (ProviderKind::Codex, "appserver") => Mode::CodexAppServer,
             (ProviderKind::Claude, "stdio") => Mode::ClaudeStdio,
             (ProviderKind::Cursor, "acp") => Mode::CursorAcp,
+            (ProviderKind::Grok, "acp") => Mode::GrokAcp,
             _ => panic!("invalid explicitly selected live transport"),
         };
     }
     match provider {
         ProviderKind::Cursor => Mode::CursorAcp,
+        ProviderKind::Grok => Mode::GrokAcp,
         ProviderKind::Codex | ProviderKind::Claude => Mode::Standard,
     }
 }
