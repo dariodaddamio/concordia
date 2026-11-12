@@ -555,6 +555,15 @@ Rewrite requirements:
 
 ## This slice
 
+### W4b table rows and system messages - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/tui/markdown_tables.rs` | ok: 1, 4, 5, 10 | Add the missing row rule in the existing Markdown table renderer; no new layout owner. |
+| `crates/concordia/src/tui/draw/mod.rs`, `app/turn.rs` | ok: 1, 4, 5, 10 | Style existing system blocks and revise their cancellation wording at the current message owner. |
+| `crates/concordia/src/tui/queue_tests.rs` | ok: 9, 10 | Align the stale assertion with the existing recovery message; do not disable the failing test. |
+| `crates/concordia/src/version.rs`, `CHANGELOG.md` | ok: 10 | Record the user-facing rendering and wording change under the required release metadata. |
+
 ### W2d small removals and settings - anti-slop gate
 
 | path | tendency_check | justification |

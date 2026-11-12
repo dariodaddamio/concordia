@@ -788,7 +788,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     Color::Indexed(245)
                 };
-                (g, Style::default().fg(col), Style::default().fg(text_col))
+                let band = Color::Indexed(237);
+                (
+                    g,
+                    Style::default().fg(col).bg(band),
+                    Style::default().fg(text_col).bg(band),
+                )
             }
             MsgRole::Thinking => (
                 "▸ ",
@@ -945,15 +950,19 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     // Paint the complete user block, including blank and trailing cells. Line styling alone
     // leaves empty paragraph rows at the terminal's default background.
     for (row, index) in app.view.visible().enumerate() {
-        if app.view.rows[index]
+        let role = app.view.rows[index]
             .identity
             .and_then(|i| app.messages.get(i))
-            .is_some_and(|m| m.role == MsgRole::User)
-            && !app.no_color
-        {
+            .map(|m| m.role);
+        if !app.no_color && matches!(role, Some(MsgRole::User | MsgRole::System)) {
+            let bg = if role == Some(MsgRole::System) {
+                Color::Indexed(237)
+            } else {
+                Color::Indexed(235)
+            };
             f.buffer_mut().set_style(
                 Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
-                Style::default().bg(Color::Indexed(235)),
+                Style::default().bg(bg),
             );
         }
     }

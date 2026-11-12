@@ -651,7 +651,7 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     assert!(h.app.queue.paused);
     assert!(h.app.messages.iter().any(|m| m
         .text
-        .contains("restored your unsent draft and queued prompts")));
+        .contains("Your unsent draft and queued messages were restored.")));
     assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
     h.key(KeyCode::Char('r'), KeyModifiers::CONTROL);
     h.app.queue_advance(&h.tx);
@@ -757,7 +757,7 @@ fn the_draft_is_restored_with_a_notice_and_ctrl_z_clears_it() {
         .app
         .messages
         .iter()
-        .any(|m| m.text.contains("restored your unsent draft")));
+        .any(|m| m.text.contains("Your unsent draft and queued messages were restored.")));
     h.key(KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "");
     // restoring did not make it look edited: no rewrite until the user changes something

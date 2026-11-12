@@ -453,6 +453,7 @@ impl super::App {
                         self.queue.items = data.queue;
                         self.restore_pending_edit(data.pending_edit);
                         self.queue.paused = true;
+                        self.push_system("Your unsent draft and queued messages were restored.");
                     }
                 }
                 Err(error) => {

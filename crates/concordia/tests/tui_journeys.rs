@@ -1280,7 +1280,15 @@ fn cancellation_pauses_queued_work_and_restart_restores_both_queue_and_draft() {
         s.queue_current_draft("queued followup");
         s.paste("preserve this draft");
         s.send("\x1b");
-        s.until("cancel and pause", |s| s.screen().contains("queue paused"));
+        s.until("cancel and pause", |s| {
+            s.screen().contains("queue paused") && s.screen().contains("Cancelled.")
+        });
+        let cancelled = s.screen();
+        assert!(
+            cancelled.contains("| !") && cancelled.contains("Cancelled."),
+            "native cancellation snapshot:\n{cancelled}"
+        );
+        assert!(!cancelled.contains("cancelled - queued work paused"));
         s.until("draft preserved", |s| s.draft() == "preserve this draft");
         assert_eq!(s.prompts().len(), 1);
         drop(s); // abrupt exit, not /exit
@@ -2096,7 +2104,7 @@ fn current_chat_file_suggestions_preview_and_toggle_without_sending_the_draft() 
     setup(dir.path(), ProviderKind::Codex);
     std::fs::write(
         dir.path().join("workspace/current-note.md"),
-        "# RELATED_PREVIEW\n**FORMATTED_TEXT**\n\n| Area | Proof |\n| --- | --- |\n| Memory | TABLE_PREVIEW |\n",
+        "# RELATED_PREVIEW\n**FORMATTED_TEXT**\n\n| Area | Proof |\n| --- | --- |\n| Memory | TABLE_PREVIEW |\n| Queue | TABLE_SECOND_ROW |\n",
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
@@ -2114,6 +2122,8 @@ fn current_chat_file_suggestions_preview_and_toggle_without_sending_the_draft() 
             && s.screen().contains("FORMATTED_TEXT")
             && !s.screen().contains("**FORMATTED_TEXT**")
             && s.screen().contains("TABLE_PREVIEW")
+            && s.screen().contains("TABLE_SECOND_ROW")
+            && s.screen().contains("├")
             && !s.screen().contains("| --- |")
     });
     assert_eq!(s.draft(), "review @current-");

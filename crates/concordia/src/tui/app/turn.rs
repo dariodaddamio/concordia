@@ -463,7 +463,7 @@ impl App {
             }
         }
         if outcome.cancelled {
-            self.push_system("cancelled - queued work paused; completed actions were not undone");
+            self.push_system("Cancelled. Queued messages are paused. Finished actions were kept.");
         }
         if failed && outcome.stderr_tail.contains("already has an active writer") {
             self.push_system("this Codex session is open in another client or pane. Close its active turn, then retry the restored prompt; /new starts a separate conversation. Concordia will not replay it automatically.");

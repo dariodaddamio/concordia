@@ -1,5 +1,8 @@
 # Changelog
 
+- W4b: separated Markdown table body rows with horizontal rules and gave Concordia system
+  notices an icon and tinted transcript band; cancellation notices now use plain sentences.
+
 - W2e: folded local thread history under `concordia chat thread`, removed project-wide search and
   replacement, removed `/context` policy mutation and compaction overrides, and made native
   pointer failures identify replacement, truncation, header changes, home changes and oversized records.

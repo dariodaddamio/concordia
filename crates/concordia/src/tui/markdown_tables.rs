@@ -210,9 +210,9 @@ pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
                 break 'rows;
             }
         }
-        if r == 0 {
-            out.push(rule(&widths, '├', '┼', '┤'));
-        }
+        // Keep wrapped body rows distinct. Without a rule here, a tall cell in one
+        // row runs directly into the next row and the table loses its row structure.
+        out.push(rule(&widths, '├', '┼', '┤'));
     }
     out.push(rule(&widths, '└', '┴', '┘'));
     out

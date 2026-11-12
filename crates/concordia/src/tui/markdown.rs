@@ -575,6 +575,12 @@ mod tests {
                 .join("\n");
             assert!(!combined.contains("| :---"), "{combined}");
             assert!(combined.contains("Memory"), "{combined}");
+            if width >= 15 {
+                assert!(
+                    rows.iter().filter(|row| row.text.starts_with('├')).count() >= 2,
+                    "body rows need separators: {combined}"
+                );
+            }
             assert!(rows
                 .iter()
                 .flat_map(|r| &r.links)
