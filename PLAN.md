@@ -564,6 +564,14 @@ Rewrite requirements:
 | `crates/concordia/src/tui/workspace_scope.rs`, `tui/app/state.rs`, `commands.rs` | ok: 1, 4, 10 | Remove the public scope surface while retaining internal main-turn admission used by run/checkpoint owners. |
 | `README.md`, `docs/`, `CHANGELOG.md`, `version.rs` | ok: 5, 10 | Update canonical behavior docs and release metadata; preserve historical plans as plans. |
 
+### W3f Ctrl+G Agents projection - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/native_agents.rs` | ok: 1, 4, 6, 10 | Keep the existing Agents projection as the owner; treat unmatched provider sender IDs as root rows and rebuild it from the restored transcript. |
+| `crates/concordia/src/tui/window_session.rs` | ok: 4, 6 | Rehydrate the existing projection immediately after the existing saved-message owner restores a tab; no second store is added. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Record the user-facing Ctrl+G correction and bump the build stamp. |
+
 ### W4b table rows and system messages - anti-slop gate
 
 | path | tendency_check | justification |

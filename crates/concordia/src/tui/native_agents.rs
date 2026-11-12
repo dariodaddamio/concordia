@@ -60,6 +60,18 @@ fn is_native_agent(id: &str, title: &str, detail: &str) -> bool {
 }
 
 impl State {
+    pub fn rebuild(&mut self, messages: &[ChatLine]) {
+        self.cards.clear();
+        self.entries.clear();
+        self.launch_tools.clear();
+        self.last_native_parent = None;
+        for (index, message) in messages.iter().enumerate() {
+            if let Some(card) = &message.card {
+                self.record(card, index);
+            }
+        }
+    }
+
     pub fn record(&mut self, card: &StreamCard, index: usize) {
         let id = &card.id;
         if let Some(identity) = id.strip_prefix("native-agent:claude:") {
@@ -103,7 +115,14 @@ impl State {
         }
         for entry in &all_entries {
             if let Some(card) = messages.get(entry.index).and_then(|line| line.card.as_ref()) {
-                children.entry(entry.parent.as_deref()).or_default().push((entry, card));
+                // Provider sender/thread IDs are not necessarily Agents-row IDs. Keep a
+                // reported parent only when it is represented by another visible entry;
+                // otherwise the agent is a root in this conversation's tree.
+                let parent = entry
+                    .parent
+                    .as_deref()
+                    .filter(|parent| all_entries.iter().any(|candidate| candidate.id == *parent));
+                children.entry(parent).or_default().push((entry, card));
             }
         }
         for rows in children.values_mut() { rows.sort_by_key(|(entry, _)| entry.index); }

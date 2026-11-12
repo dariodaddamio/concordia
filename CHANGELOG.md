@@ -1,5 +1,9 @@
 # Changelog
 
+- W3f: Ctrl+G now keeps provider-native subagents with unmatched provider thread senders as
+  root agents, includes restored transcript cards in the same Agents projection, and keeps the
+  footer count and tree aligned for native, agents-tool and untracked provider runs.
+
 - W3e: removed compiled-out delegation routing/crew code, worker registration fields and the
   user-facing scope command; main-turn and managed-Git safety admission remain internal.
 

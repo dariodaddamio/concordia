@@ -237,6 +237,7 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                 } else {
                     Vec::new()
                 };
+                app.native_agents.rebuild(&app.messages);
                 if saved.omitted && same_conversation {
                     app.push_system(OMITTED_NOTICE);
                 }
