@@ -605,3 +605,9 @@ approval and privacy rules in [AGENTS.md](AGENTS.md) remain in force throughout 
 | `crates/concordia/src/tui/app/state.rs`, `crates/concordia/src/tui/pointer.rs` | ok: 1, 4, 6, 10 | Derives tab status from existing chat state and uses the existing pointer owner; no duplicate status store or interaction layer. |
 | `crates/concordia/src/tui/queue.rs` | ok: 1, 2, 9, 10 | Reuses the existing queue editor and clipboard writer; Ctrl+C copies its text instead of changing queue state. |
 | `crates/concordia/src/tui/native_window.rs`, `crates/concordia/Cargo.toml` | ok: 1, 5, 10 | Applies the active theme's existing RGB value through the Windows caption API; no custom window host or theme source is added. |
+
+### W5j remaining UI journeys - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 5, 9, 10 | Delete journeys for removed `/delegate`, `/workers`, `/recover`, `/context`, `/memory`, standalone preview and ConPTY-only behavior; retain the sandbox-only file replacement journey and adjust the native driver assertions in place. |

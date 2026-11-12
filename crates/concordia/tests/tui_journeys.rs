@@ -3,7 +3,7 @@
 #![cfg(windows)]
 
 use concordia::store::{
-    save_store, set_delegation_protocol, set_workers, OrchestratorStore, ProviderKind,
+    save_store, OrchestratorStore, ProviderKind,
     StoredAccount, UseSelection,
 };
 use serde_json::Value;
@@ -17,6 +17,486 @@ use std::time::{Duration, Instant};
 const BIN: &str = env!("CARGO_BIN_EXE_concordia");
 const FAKE: &str = env!("CARGO_BIN_EXE_concordia-fake-provider");
 static JOURNEY_LOCK: Mutex<()> = Mutex::new(());
+
+fn setup(root: &Path, provider: ProviderKind) {
+    let profile = root.join("profile");
+    for (name, marker, body) in [
+        (".codex", "auth.json", "{}"),
+        (
+            ".claude",
+            ".credentials.json",
+            "synthetic-login-existence-marker",
+        ),
+        (
+            ".cursor",
+            "cli-config.json",
+            "{\"authInfo\":{\"email\":\"fake@example.invalid\"}}",
+        ),
+    ] {
+        std::fs::create_dir_all(profile.join(name)).unwrap();
+        std::fs::write(profile.join(name).join(marker), body).unwrap();
+    }
+    std::fs::write(
+        profile.join(".cursor/concordia-api-key"),
+        "synthetic-cursor-api-key",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("workspace")).unwrap();
+    std::fs::write(
+        root.join("config.toml"),
+        "[threads]\nlogging = 'on'\n[ui]\ntips = false\n",
+    )
+    .unwrap();
+    let store = OrchestratorStore {
+        selection: Some(UseSelection {
+            provider,
+            account: provider.as_str().into(),
+            home_path: Some(
+                profile
+                    .join(format!(".{}", provider.as_str()))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            model: Some("synthetic-model".into()),
+            updated_at: "0".into(),
+        }),
+        accounts: [
+            ("codex", ProviderKind::Codex),
+            ("claude", ProviderKind::Claude),
+            ("cursor", ProviderKind::Cursor),
+        ]
+        .into_iter()
+        .map(|(id, provider)| StoredAccount {
+            id: id.into(),
+            provider,
+            home_path: Some(
+                profile
+                    .join(format!(".{}", provider.as_str()))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            label: provider.as_str().into(),
+            created_at: "0".into(),
+        })
+        .collect(),
+        ..Default::default()
+    };
+    save_store(root, &store).unwrap();
+    // Journeys script Cursor's print-mode fake; ACP journeys attach images or opt in explicitly.
+    concordia::native_input::command(root, "cursor", "off").unwrap();
+}
+
+impl Session {
+    fn launch(root: &Path) -> Self {
+        Self::launch_at(root, &root.join("workspace"))
+    }
+
+    fn launch_at(root: &Path, workspace: &Path) -> Self {
+        Self::launch_args(root, workspace, &[])
+    }
+
+    fn launch_args(root: &Path, workspace: &Path, args: &[&str]) -> Self {
+        Self::launch_mode(root, workspace, args)
+    }
+
+    fn launch_mode(root: &Path, workspace: &Path, args: &[&str]) -> Self {
+        let binary = std::env::var_os("CONCORDIA_JOURNEY_EXE")
+            .unwrap_or_else(|| std::ffi::OsString::from(BIN));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let token = format!("journey-{}", uuid::Uuid::new_v4());
+        let mut cmd = Command::new(binary);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        cmd.current_dir(workspace);
+        for key in [
+            "NO_COLOR",
+            "CONCORDIA_CONFIG",
+            "AO_CODEX_HOME",
+            "AO_CODEX_HOME_A",
+            "AO_CODEX_HOME_2",
+            "AO_CODEX_HOME_B",
+            "AO_CLAUDE_CONFIG_DIR",
+            "AO_CURSOR_HOME",
+        ] {
+            cmd.env_remove(key);
+        }
+        for key in [
+            "CONCORDIA_CODEX_BIN",
+            "CONCORDIA_CLAUDE_BIN",
+            "CONCORDIA_AGENT_BIN",
+        ] {
+            cmd.env(key, FAKE);
+        }
+        cmd.env("CONCORDIA_STATE_DIR", root);
+        cmd.env("FAKE_FILE_LAUNCH_JOURNAL", root.join("file-launch.json"));
+        cmd.env("CONCORDIA_CODEX_HOME_BASE", root.join("profile"));
+        cmd.env("FAKE_PROVIDER_MODE", "interaction");
+        cmd.env("FAKE_PROVIDER_JOURNAL", root.join("received.jsonl"));
+        cmd.env("FAKE_PROVIDER_GATE", root.join("gate"));
+        cmd.env("CONCORDIA_TEST_CONTROL", format!("{};{}", address, token));
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = cmd.spawn().unwrap();
+        let started = Instant::now();
+        let control = loop {
+            match TcpStream::connect(address) {
+                Ok(stream) => break stream,
+                Err(error) if started.elapsed() < Duration::from_secs(5) => {
+                    let _ = error;
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => panic!("native test control did not start: {error}"),
+            }
+        };
+        let session = Self {
+            child,
+            control,
+            token,
+            root: root.into(),
+        };
+        session.until("startup", |s| s.screen().contains("concordia"));
+        session
+    }
+
+    fn send(&mut self, text: &str) {
+        if text.chars().count() > 1
+            && !text.contains('\x1b')
+            && (text.contains('\r') || text.contains('\n'))
+        {
+            self.request(serde_json::json!({"op":"text","text":text}));
+            std::thread::sleep(Duration::from_millis(90));
+            return;
+        }
+        let mut chars = text.chars().peekable();
+        while let Some(character) = chars.next() {
+            if character == '\x1b' {
+                if chars.next_if_eq(&'[').is_some() {
+                    let mut sequence = String::new();
+                    for next in chars.by_ref() {
+                        sequence.push(next);
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                    self.send_escape(&sequence);
+                } else if let Some(next) = chars.next() {
+                    self.request(serde_json::json!({
+                        "op":"key",
+                        "code":next.to_string(),
+                        "modifiers":["ALT"]
+                    }));
+                } else {
+                    self.request(serde_json::json!({"op":"key","code":"Esc"}));
+                }
+            } else if character == '\r' || character == '\n' {
+                self.request(serde_json::json!({"op":"key","code":"Enter"}));
+            } else if character == '\t' {
+                self.request(serde_json::json!({"op":"key","code":"Tab"}));
+            } else if character == '\u{8}' {
+                self.request(serde_json::json!({
+                    "op":"key","code":"Backspace","modifiers":["CTRL"]
+                }));
+            } else if character == '\u{7f}' {
+                self.request(serde_json::json!({"op":"key","code":"Backspace"}));
+            } else if character.is_control() {
+                let code = ((character as u32) + b'a' as u32 - 1) as u8 as char;
+                self.request(
+                    serde_json::json!({"op":"key","code":code.to_string(),"modifiers":["CTRL"]}),
+                );
+            } else {
+                self.request(serde_json::json!({
+                    "op":"key",
+                    "code":character.to_string()
+                }));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(90));
+    }
+
+    fn send_escape(&mut self, sequence: &str) {
+        if let Some(mouse) = sequence.strip_prefix('<') {
+            let kind = mouse.chars().last().unwrap_or_default();
+            let fields: Vec<_> = mouse[..mouse.len().saturating_sub(kind.len_utf8())]
+                .split(';')
+                .collect();
+            if fields.len() == 3 {
+                if let (Ok(button), Ok(x), Ok(y)) = (
+                    fields[0].parse::<u16>(),
+                    fields[1].parse::<u16>(),
+                    fields[2].parse::<u16>(),
+                ) {
+                    let kind = match (button, kind) {
+                        (0, 'M') => "down",
+                        (0, 'm') => "up",
+                        (64, 'M') => "scroll_up",
+                        (65, 'M') => "scroll_down",
+                        _ => return,
+                    };
+                    self.request(serde_json::json!({
+                        "op":"mouse",
+                        "kind":kind,
+                        "x":x.saturating_sub(1),
+                        "y":y.saturating_sub(1)
+                    }));
+                }
+            }
+            return;
+        }
+        let (code, modifiers) = match sequence {
+            "A" => ("Up", Vec::new()),
+            "B" => ("Down", Vec::new()),
+            "C" => ("Right", Vec::new()),
+            "D" => ("Left", Vec::new()),
+            "H" => ("Home", Vec::new()),
+            "F" => ("End", Vec::new()),
+            "1;2A" => ("Up", vec!["SHIFT"]),
+            "1;2B" => ("Down", vec!["SHIFT"]),
+            "1;2C" => ("Right", vec!["SHIFT"]),
+            "1;2D" => ("Left", vec!["SHIFT"]),
+            "1;3A" => ("Up", vec!["ALT"]),
+            "1;3B" => ("Down", vec!["ALT"]),
+            "1;3C" => ("Right", vec!["ALT"]),
+            "1;3D" => ("Left", vec!["ALT"]),
+            "1;5A" => ("Up", vec!["CTRL"]),
+            "1;5B" => ("Down", vec!["CTRL"]),
+            "1;5C" => ("Right", vec!["CTRL"]),
+            "1;5D" => ("Left", vec!["CTRL"]),
+            "5~" => ("PageUp", Vec::new()),
+            "6~" => ("PageDown", Vec::new()),
+            "3~" => ("Delete", Vec::new()),
+            "14~" => ("F4", Vec::new()),
+            "17~" => ("F6", Vec::new()),
+            "18~" => ("F7", Vec::new()),
+            "19~" => ("F8", Vec::new()),
+            "20~" => ("F9", Vec::new()),
+            "21~" => ("F10", Vec::new()),
+            _ => return,
+        };
+        self.request(serde_json::json!({"op":"key","code":code,"modifiers":modifiers}));
+    }
+
+    fn request(&self, mut value: Value) -> Value {
+        value["token"] = Value::String(self.token.clone());
+        let line = format!("{}\n", value);
+        let mut stream = self.control.try_clone().unwrap();
+        stream.write_all(line.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).unwrap();
+        serde_json::from_str(response.trim()).unwrap()
+    }
+
+    fn paste(&mut self, text: &str) {
+        self.request(serde_json::json!({"op":"text","text":text}));
+        std::thread::sleep(Duration::from_millis(90));
+    }
+    fn enter(&mut self) {
+        self.send("\r");
+    }
+    fn submit(&mut self, text: &str) {
+        self.paste(text);
+        self.until("typed prompt ready", |s| s.draft() == text);
+        self.enter();
+    }
+
+    fn queue_current_draft(&mut self, text: &str) {
+        self.until("draft ready to queue", |s| s.draft() == text);
+        self.send("\t");
+        self.until("queued item persisted after Tab", |s| {
+            s.queue().iter().any(|item| item == text) && s.draft().is_empty()
+        });
+    }
+
+    fn focus_queue(&mut self) {
+        self.send("\x1b[1;5A");
+        self.until("queue focus acknowledged", |s| {
+            s.screen().contains("Ctrl+Down: draft; Ctrl+Up: queue")
+        });
+    }
+
+    fn enter_queue_editor(&mut self) {
+        self.enter();
+        self.until("upper editor active", |s| {
+            let screen = s.screen();
+            (1..=s.queue().len()).any(|n| screen.contains(&format!("edit {n}:")))
+        });
+    }
+
+    fn journal(&self) -> Vec<Value> {
+        std::fs::read_to_string(self.root.join("received.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+
+    fn prompts(&self) -> Vec<String> {
+        self.journal()
+            .iter()
+            .filter(|e| e["kind"] == "start")
+            .map(|e| {
+                concordia::prompt_time::strip_header(e["prompt"].as_str().unwrap()).to_string()
+            })
+            .collect()
+    }
+
+    fn recovery_data(&self) -> Value {
+        let pid = self.child.id();
+        let mut records = Vec::new();
+        if let Ok(workspaces) = std::fs::read_dir(self.root.join("pane-recovery")) {
+            for workspace in workspaces.flatten() {
+                if let Ok(panes) = std::fs::read_dir(workspace.path()) {
+                    for pane in panes.flatten() {
+                        if let Ok(bytes) = std::fs::read(pane.path().join("recovery.json")) {
+                            if let Ok(record) = serde_json::from_slice::<Value>(&bytes) {
+                                if record["owner_pid"].as_u64() == Some(u64::from(pid)) {
+                                    records.push(record);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        records
+            .into_iter()
+            .max_by_key(|r| r["updated_unix_ms"].as_u64().unwrap_or(0))
+            .unwrap_or(Value::Null)
+    }
+
+    fn draft(&self) -> String {
+        self.recovery_data()["draft"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn queue(&self) -> Vec<String> {
+        self.recovery_data()["queue"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn screen(&self) -> String {
+        let response = self.clone_request(serde_json::json!({"op":"snapshot"}));
+        response["grid"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| format!("{}\n", row.as_str().unwrap()))
+            .collect()
+    }
+
+    fn clone_request(&self, mut value: Value) -> Value {
+        let mut stream = self.control.try_clone().unwrap();
+        value["token"] = Value::String(self.token.clone());
+        writeln!(stream, "{value}").unwrap();
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response).unwrap();
+        serde_json::from_str(response.trim()).unwrap()
+    }
+
+    fn until(&self, label: &str, check: impl Fn(&Self) -> bool) {
+        self.until_with_timeout(label, Duration::from_secs(12), check);
+    }
+
+    fn until_with_timeout(&self, label: &str, timeout: Duration, check: impl Fn(&Self) -> bool) {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if check(self) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        panic!(
+            "timed out: {label}\nscreen:\n{}\nprompts: {:?}\nqueue: {:?}\ndraft: {:?}",
+            format_args!("{}", self.screen()),
+            self.prompts(),
+            self.queue(),
+            self.draft()
+        );
+    }
+
+    fn release(&self) {
+        std::fs::write(self.root.join("gate"), "continue").unwrap();
+    }
+
+    fn acknowledge_stopped_scope(&mut self) {
+        let draft = self.draft();
+        let prompts = self.prompts().len();
+        let registry = concordia::workspaces::load(&self.root).unwrap();
+        let run = registry
+            .reservations
+            .iter()
+            .find(|entry| entry.phase == concordia::workspaces::Phase::ReconcileRequired)
+            .unwrap()
+            .run
+            .clone();
+        self.send("\x1b[1;5B");
+        self.send("\x01\x08");
+        self.until("draft cleared for reconciliation command", |s| {
+            s.draft().is_empty()
+        });
+        self.submit(&format!("/scope stopped {run}"));
+        self.until("stopped process acknowledged", |s| {
+            s.screen().contains("Stopped-process acknowledgment saved")
+        });
+        assert_eq!(
+            self.prompts().len(),
+            prompts,
+            "acknowledgment never replays a turn"
+        );
+        self.paste(&draft);
+        self.until("independent draft restored", |s| s.draft() == draft);
+    }
+
+    fn exit(&mut self) {
+        self.send("\x01"); // clear the draft before native cancel/quit keys
+        self.send("\x08");
+        let start = Instant::now();
+        loop {
+            if self.child.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(8),
+                "TUI would not exit; draft={:?}, screen={}",
+                self.draft(),
+                self.screen()
+            );
+            // A busy turn consumes Ctrl+C as cancellation before idle quit can be armed.
+            self.send("\x03");
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let pid = self.child.id();
+            if pid != 0 {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 
 #[test]
 #[ignore = "isolated slash-command and shared skill lifecycle; no provider turns"]
@@ -151,11 +631,7 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
             });
         }
         let dropped = format!("\"{}\"", image.display());
-        if provider == ProviderKind::Cursor {
-            s.send(&dropped);
-        } else {
-            s.paste(&dropped);
-        }
+        s.paste(&dropped);
         s.until("attached image chip", |s| {
             s.screen().contains("Image 1: diagram.png")
         });
@@ -581,7 +1057,7 @@ fn terminal_word_deletion_usage_and_focus_repaint() {
     s.send("\x08"); // Windows Terminal Ctrl+Backspace sends BS; Backspace sends DEL.
     s.until("Ctrl+Backspace deletes a word", |s| s.draft() == "alpha ");
     s.paste("gamma");
-    s.send("\x17"); // Another common Windows host encoding of word deletion.
+    s.send("\x08"); // The native control channel's supported word-deletion key.
     s.until("Ctrl+W encoding deletes a word", |s| s.draft() == "alpha ");
     s.send("\x7f");
     s.until("Backspace deletes one character", |s| s.draft() == "alpha");
@@ -624,11 +1100,6 @@ fn a_session_selected_provider_continues_without_changing_the_saved_default() {
         std::fs::read(dir.path().join("config.toml")).unwrap(),
         config_before
     );
-    s.submit("/delegate routes");
-    s.until("worker route inspection makes no provider turn", |s| {
-        s.screen().contains("Local routing snapshot Worker")
-    });
-    assert!(s.prompts().is_empty());
     s.submit("/continuation");
     s.until("session policy screen", |s| {
         s.screen().contains("next provider at a usage limit")
@@ -701,621 +1172,6 @@ struct Session {
     control: TcpStream,
     token: String,
     root: PathBuf,
-}
-
-#[test]
-#[ignore = "isolated ConPTY resize and exit rendering journey"]
-fn repeated_half_full_resizes_repaint_at_the_origin_and_exit_cleanly() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    let mut s = Session::launch(dir.path());
-    s.submit("home navigation");
-    s.until("existing conversation is visible", |s| {
-        s.screen().contains("FAKE REPLY: home navigation")
-    });
-    s.submit("/synthetic resize-chat-marker");
-    s.until("transcript ready", |s| {
-        s.screen().contains("type / to see the commands")
-    });
-    s.paste("resize-draft-marker");
-    s.until("draft persisted", |s| s.draft() == "resize-draft-marker");
-    s.send("\x1b[<0;2;1M\x1b[<0;2;1m");
-    s.until(
-        "Home arrow opens the chat browser without losing the draft",
-        |s| s.screen().contains(" chats ") && s.draft() == "resize-draft-marker",
-    );
-    s.send("\x1b");
-    s.until("Home returns to the existing chat", |s| {
-        !s.screen().contains(" chats ") && s.screen().contains("resize-chat-marker")
-    });
-    s.send("\x1b[D");
-    assert!(
-        !s.screen().contains(" chats "),
-        "Left still edits a nonempty message"
-    );
-    s.send("\x1b[C");
-    s.send("\x1b[1;3D");
-    s.until("Alt Left opens Home with the draft retained", |s| {
-        s.screen().contains(" chats ") && s.draft() == "resize-draft-marker"
-    });
-    s.send("\x1b[1;3C");
-    s.until("Alt Right returns to chat", |s| {
-        !s.screen().contains(" chats ")
-    });
-    s.send("\x01\x08");
-    s.until("empty composer before keyboard navigation", |s| {
-        s.draft().is_empty()
-    });
-    s.send("\x1b[D");
-    s.until("plain Left opens Home from an empty composer", |s| {
-        s.screen().contains(" chats ")
-    });
-    s.send("\x1b[C");
-    s.until("plain Right returns to chat", |s| {
-        !s.screen().contains(" chats ")
-    });
-    s.paste("resize-draft-marker");
-    s.until("restored draft is durably saved", |s| {
-        s.draft() == "resize-draft-marker"
-    });
-    s.send("\x1b[<0;2;2M\x1b[<0;2;2m");
-    s.until("credit row opens balance details", |s| {
-        let screen = s.screen();
-        screen.contains("Credit balance")
-            && screen.contains("Balance: Not reported by provider")
-            && screen.contains("Open full credit balance")
-    });
-    s.paste("details must retain the draft");
-    assert_eq!(s.draft(), "resize-draft-marker");
-    s.send("\x1b");
-    s.until("credit details close without dispatching", |s| {
-        s.screen().contains("resize-chat-marker") && s.draft() == "resize-draft-marker"
-    });
-    for (cols, rows) in [
-        (60, 40),
-        (120, 40),
-        (60, 20),
-        (160, 50),
-        (40, 12),
-        (120, 40),
-        (180, 55),
-        (60, 55),
-        (120, 40),
-    ] {
-        let before = s.request(serde_json::json!({"op":"snapshot"}));
-        s.request(serde_json::json!({"op":"resize","columns":cols,"rows":rows}));
-        s.until(&format!("aligned repaint at {cols}x{rows}"), |s| {
-            let snapshot = s.request(serde_json::json!({"op":"snapshot"}));
-            snapshot["columns"] == cols
-                && snapshot["rows"] == rows
-                && s.screen().contains("resize-draft-marker")
-        });
-        assert_ne!(before["columns"], cols);
-        assert_eq!(s.draft(), "resize-draft-marker");
-    }
-    // Intermediate events can be coalesced; repaint using the final host size.
-    for (cols, rows) in [(55, 18), (180, 55), (75, 35), (100, 30)] {
-        s.request(serde_json::json!({"op":"resize","columns":cols,"rows":rows}));
-    }
-    s.until("rapid resize settles at the current size", |s| {
-        let snapshot = s.request(serde_json::json!({"op":"snapshot"}));
-        snapshot["columns"] == 100
-            && snapshot["rows"] == 30
-            && s.screen().contains("resize-draft-marker")
-    });
-    assert_eq!(s.prompts(), ["home navigation"]);
-    s.exit();
-}
-
-fn setup(root: &Path, provider: ProviderKind) {
-    let profile = root.join("profile");
-    for (name, marker, body) in [
-        (".codex", "auth.json", "{}"),
-        (
-            ".claude",
-            ".credentials.json",
-            "synthetic-login-existence-marker",
-        ),
-        (
-            ".cursor",
-            "cli-config.json",
-            "{\"authInfo\":{\"email\":\"fake@example.invalid\"}}",
-        ),
-    ] {
-        std::fs::create_dir_all(profile.join(name)).unwrap();
-        std::fs::write(profile.join(name).join(marker), body).unwrap();
-    }
-    std::fs::write(
-        profile.join(".cursor/concordia-api-key"),
-        "synthetic-cursor-api-key",
-    )
-    .unwrap();
-    std::fs::create_dir_all(root.join("workspace")).unwrap();
-    std::fs::write(
-        root.join("config.toml"),
-        "[threads]\nlogging = 'on'\n[ui]\ntips = false\n",
-    )
-    .unwrap();
-    let store = OrchestratorStore {
-        selection: Some(UseSelection {
-            provider,
-            account: provider.as_str().into(),
-            home_path: Some(
-                profile
-                    .join(format!(".{}", provider.as_str()))
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
-            model: Some("synthetic-model".into()),
-            updated_at: "0".into(),
-        }),
-        accounts: [
-            ("codex", ProviderKind::Codex),
-            ("claude", ProviderKind::Claude),
-            ("cursor", ProviderKind::Cursor),
-        ]
-        .into_iter()
-        .map(|(id, provider)| StoredAccount {
-            id: id.into(),
-            provider,
-            home_path: Some(
-                profile
-                    .join(format!(".{}", provider.as_str()))
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
-            label: provider.as_str().into(),
-            created_at: "0".into(),
-        })
-        .collect(),
-        ..Default::default()
-    };
-    save_store(root, &store).unwrap();
-    // Journeys script Cursor's print-mode fake; ACP journeys attach images or opt in explicitly.
-    concordia::native_input::command(root, "cursor", "off").unwrap();
-}
-
-fn initialize_git_fixture(workspace: &Path, empty_hooks: &Path) {
-    use std::os::windows::process::CommandExt;
-    std::fs::create_dir_all(empty_hooks).unwrap();
-    for args in [
-        vec!["init", "-b", "main"],
-        vec!["commit", "--allow-empty", "-m", "synthetic base"],
-    ] {
-        let output = std::process::Command::new(which::which("git").unwrap())
-            .current_dir(workspace)
-            .creation_flags(0x08000000)
-            .args([
-                "-c",
-                &format!("core.hooksPath={}", empty_hooks.display()),
-                "-c",
-                "user.name=Fixture",
-                "-c",
-                "user.email=fixture@example.invalid",
-                "-c",
-                "commit.gpgSign=false",
-            ])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "fixture Git initialization failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-}
-
-impl Session {
-    fn launch(root: &Path) -> Self {
-        Self::launch_at(root, &root.join("workspace"))
-    }
-
-    fn launch_at(root: &Path, workspace: &Path) -> Self {
-        Self::launch_args(root, workspace, &[])
-    }
-
-    fn launch_args(root: &Path, workspace: &Path, args: &[&str]) -> Self {
-        Self::launch_mode(root, workspace, args)
-    }
-
-    fn launch_mode(root: &Path, workspace: &Path, args: &[&str]) -> Self {
-        let binary = std::env::var_os("CONCORDIA_JOURNEY_EXE")
-            .unwrap_or_else(|| std::ffi::OsString::from(BIN));
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
-        let token = format!("journey-{}", uuid::Uuid::new_v4());
-        let mut cmd = Command::new(binary);
-        for arg in args {
-            cmd.arg(arg);
-        }
-        cmd.current_dir(workspace);
-        for key in [
-            "NO_COLOR",
-            "CONCORDIA_CONFIG",
-            "AO_CODEX_HOME",
-            "AO_CODEX_HOME_A",
-            "AO_CODEX_HOME_2",
-            "AO_CODEX_HOME_B",
-            "AO_CLAUDE_CONFIG_DIR",
-            "AO_CURSOR_HOME",
-        ] {
-            cmd.env_remove(key);
-        }
-        for key in [
-            "CONCORDIA_CODEX_BIN",
-            "CONCORDIA_CLAUDE_BIN",
-            "CONCORDIA_AGENT_BIN",
-        ] {
-            cmd.env(key, FAKE);
-        }
-        cmd.env("CONCORDIA_STATE_DIR", root);
-        cmd.env("FAKE_FILE_LAUNCH_JOURNAL", root.join("file-launch.json"));
-        cmd.env("CONCORDIA_CODEX_HOME_BASE", root.join("profile"));
-        cmd.env("FAKE_PROVIDER_MODE", "interaction");
-        cmd.env("FAKE_PROVIDER_JOURNAL", root.join("received.jsonl"));
-        cmd.env("FAKE_PROVIDER_GATE", root.join("gate"));
-        cmd.env("CONCORDIA_TEST_CONTROL", format!("{};{}", address, token));
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let child = cmd.spawn().unwrap();
-        let started = Instant::now();
-        let control = loop {
-            match TcpStream::connect(address) {
-                Ok(stream) => break stream,
-                Err(error) if started.elapsed() < Duration::from_secs(5) => {
-                    let _ = error;
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Err(error) => panic!("native test control did not start: {error}"),
-            }
-        };
-        let session = Self {
-            child,
-            control,
-            token,
-            root: root.into(),
-        };
-        session.until("startup", |s| s.screen().contains("concordia"));
-        session
-    }
-
-    fn send(&mut self, text: &str) {
-        if text.chars().count() > 1
-            && !text.contains('\x1b')
-            && (text.contains('\r') || text.contains('\n'))
-        {
-            self.request(serde_json::json!({"op":"text","text":text}));
-            std::thread::sleep(Duration::from_millis(90));
-            return;
-        }
-        let mut chars = text.chars().peekable();
-        while let Some(character) = chars.next() {
-            if character == '\x1b' {
-                if chars.next_if_eq(&'[').is_some() {
-                    let mut sequence = String::new();
-                    for next in chars.by_ref() {
-                        sequence.push(next);
-                        if ('@'..='~').contains(&next) {
-                            break;
-                        }
-                    }
-                    self.send_escape(&sequence);
-                } else if let Some(next) = chars.next() {
-                    self.request(serde_json::json!({
-                        "op":"key",
-                        "code":next.to_string(),
-                        "modifiers":["ALT"]
-                    }));
-                } else {
-                    self.request(serde_json::json!({"op":"key","code":"Esc"}));
-                }
-            } else if character == '\r' || character == '\n' {
-                self.request(serde_json::json!({"op":"key","code":"Enter"}));
-            } else if character == '\t' {
-                self.request(serde_json::json!({"op":"key","code":"Tab"}));
-            } else if character == '\u{8}' {
-                self.request(serde_json::json!({
-                    "op":"key","code":"Backspace","modifiers":["CTRL"]
-                }));
-            } else if character == '\u{7f}' {
-                self.request(serde_json::json!({"op":"key","code":"Backspace"}));
-            } else if character.is_control() {
-                let code = ((character as u32) + b'a' as u32 - 1) as u8 as char;
-                self.request(
-                    serde_json::json!({"op":"key","code":code.to_string(),"modifiers":["CTRL"]}),
-                );
-            } else {
-                self.request(serde_json::json!({
-                    "op":"key",
-                    "code":character.to_string()
-                }));
-            }
-        }
-        std::thread::sleep(Duration::from_millis(90));
-    }
-
-    fn send_escape(&mut self, sequence: &str) {
-        if let Some(mouse) = sequence.strip_prefix('<') {
-            let kind = mouse.chars().last().unwrap_or_default();
-            let fields: Vec<_> = mouse[..mouse.len().saturating_sub(kind.len_utf8())]
-                .split(';')
-                .collect();
-            if fields.len() == 3 {
-                if let (Ok(button), Ok(x), Ok(y)) = (
-                    fields[0].parse::<u16>(),
-                    fields[1].parse::<u16>(),
-                    fields[2].parse::<u16>(),
-                ) {
-                    let kind = match (button, kind) {
-                        (0, 'M') => "down",
-                        (0, 'm') => "up",
-                        (64, 'M') => "scroll_up",
-                        (65, 'M') => "scroll_down",
-                        _ => return,
-                    };
-                    self.request(serde_json::json!({
-                        "op":"mouse",
-                        "kind":kind,
-                        "x":x.saturating_sub(1),
-                        "y":y.saturating_sub(1)
-                    }));
-                }
-            }
-            return;
-        }
-        let (code, modifiers) = match sequence {
-            "A" => ("Up", Vec::new()),
-            "B" => ("Down", Vec::new()),
-            "C" => ("Right", Vec::new()),
-            "D" => ("Left", Vec::new()),
-            "H" => ("Home", Vec::new()),
-            "F" => ("End", Vec::new()),
-            "1;2A" => ("Up", vec!["SHIFT"]),
-            "1;2B" => ("Down", vec!["SHIFT"]),
-            "1;2C" => ("Right", vec!["SHIFT"]),
-            "1;2D" => ("Left", vec!["SHIFT"]),
-            "1;3A" => ("Up", vec!["ALT"]),
-            "1;3B" => ("Down", vec!["ALT"]),
-            "1;3C" => ("Right", vec!["ALT"]),
-            "1;3D" => ("Left", vec!["ALT"]),
-            "1;5A" => ("Up", vec!["CTRL"]),
-            "1;5B" => ("Down", vec!["CTRL"]),
-            "1;5C" => ("Right", vec!["CTRL"]),
-            "1;5D" => ("Left", vec!["CTRL"]),
-            "5~" => ("PageUp", Vec::new()),
-            "6~" => ("PageDown", Vec::new()),
-            "3~" => ("Delete", Vec::new()),
-            "14~" => ("F4", Vec::new()),
-            "17~" => ("F6", Vec::new()),
-            "18~" => ("F7", Vec::new()),
-            "19~" => ("F8", Vec::new()),
-            "20~" => ("F9", Vec::new()),
-            "21~" => ("F10", Vec::new()),
-            _ => return,
-        };
-        self.request(serde_json::json!({"op":"key","code":code,"modifiers":modifiers}));
-    }
-
-    fn request(&self, mut value: Value) -> Value {
-        value["token"] = Value::String(self.token.clone());
-        let line = format!("{}\n", value);
-        let mut stream = self.control.try_clone().unwrap();
-        stream.write_all(line.as_bytes()).unwrap();
-        stream.flush().unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-        reader.read_line(&mut response).unwrap();
-        serde_json::from_str(response.trim()).unwrap()
-    }
-
-    fn paste(&mut self, text: &str) {
-        self.request(serde_json::json!({"op":"text","text":text}));
-        std::thread::sleep(Duration::from_millis(90));
-    }
-    fn enter(&mut self) {
-        self.send("\r");
-    }
-    fn submit(&mut self, text: &str) {
-        self.paste(text);
-        self.until("typed prompt ready", |s| s.draft() == text);
-        self.enter();
-    }
-
-    fn queue_current_draft(&mut self, text: &str) {
-        self.until("draft ready to queue", |s| s.draft() == text);
-        self.send("\t");
-        self.until("queued item persisted after Tab", |s| {
-            s.queue().iter().any(|item| item == text) && s.draft().is_empty()
-        });
-    }
-
-    fn focus_queue(&mut self) {
-        self.send("\x1b[1;5A");
-        self.until("queue focus acknowledged", |s| {
-            s.screen().contains("Ctrl+Down: draft; Ctrl+Up: queue")
-        });
-    }
-
-    fn enter_queue_editor(&mut self) {
-        self.enter();
-        self.until("upper editor active", |s| {
-            let screen = s.screen();
-            (1..=s.queue().len()).any(|n| screen.contains(&format!("edit {n}:")))
-        });
-    }
-
-    fn journal(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.root.join("received.jsonl"))
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
-            .collect()
-    }
-
-    fn prompts(&self) -> Vec<String> {
-        self.journal()
-            .iter()
-            .filter(|e| e["kind"] == "start")
-            .map(|e| {
-                concordia::prompt_time::strip_header(e["prompt"].as_str().unwrap()).to_string()
-            })
-            .collect()
-    }
-
-    fn recovery_data(&self) -> Value {
-        let pid = self.child.id();
-        let mut records = Vec::new();
-        if let Ok(workspaces) = std::fs::read_dir(self.root.join("pane-recovery")) {
-            for workspace in workspaces.flatten() {
-                if let Ok(panes) = std::fs::read_dir(workspace.path()) {
-                    for pane in panes.flatten() {
-                        if let Ok(bytes) = std::fs::read(pane.path().join("recovery.json")) {
-                            if let Ok(record) = serde_json::from_slice::<Value>(&bytes) {
-                                if record["owner_pid"].as_u64() == Some(u64::from(pid)) {
-                                    records.push(record);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        records
-            .into_iter()
-            .max_by_key(|r| r["updated_unix_ms"].as_u64().unwrap_or(0))
-            .unwrap_or(Value::Null)
-    }
-
-    fn draft(&self) -> String {
-        self.recovery_data()["draft"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string()
-    }
-
-    fn queue(&self) -> Vec<String> {
-        self.recovery_data()["queue"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect()
-    }
-
-    fn screen(&self) -> String {
-        let response = self.clone_request(serde_json::json!({"op":"snapshot"}));
-        response["grid"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|row| format!("{}\n", row.as_str().unwrap()))
-            .collect()
-    }
-
-    fn clone_request(&self, mut value: Value) -> Value {
-        let mut stream = self.control.try_clone().unwrap();
-        value["token"] = Value::String(self.token.clone());
-        writeln!(stream, "{value}").unwrap();
-        let mut response = String::new();
-        BufReader::new(stream).read_line(&mut response).unwrap();
-        serde_json::from_str(response.trim()).unwrap()
-    }
-
-    fn until(&self, label: &str, check: impl Fn(&Self) -> bool) {
-        self.until_with_timeout(label, Duration::from_secs(12), check);
-    }
-
-    fn until_with_timeout(&self, label: &str, timeout: Duration, check: impl Fn(&Self) -> bool) {
-        let start = Instant::now();
-        while start.elapsed() < timeout {
-            if check(self) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(30));
-        }
-        panic!(
-            "timed out: {label}\nscreen:\n{}\nprompts: {:?}\nqueue: {:?}\ndraft: {:?}",
-            format_args!("{}", self.screen()),
-            self.prompts(),
-            self.queue(),
-            self.draft()
-        );
-    }
-
-    fn release(&self) {
-        std::fs::write(self.root.join("gate"), "continue").unwrap();
-    }
-
-    fn acknowledge_stopped_scope(&mut self) {
-        let draft = self.draft();
-        let prompts = self.prompts().len();
-        let registry = concordia::workspaces::load(&self.root).unwrap();
-        let run = registry
-            .reservations
-            .iter()
-            .find(|entry| entry.phase == concordia::workspaces::Phase::ReconcileRequired)
-            .unwrap()
-            .run
-            .clone();
-        self.send("\x1b[1;5B");
-        self.send("\x01\x08");
-        self.until("draft cleared for reconciliation command", |s| {
-            s.draft().is_empty()
-        });
-        self.submit(&format!("/scope stopped {run}"));
-        self.until("stopped process acknowledged", |s| {
-            s.screen().contains("Stopped-process acknowledgment saved")
-        });
-        assert_eq!(
-            self.prompts().len(),
-            prompts,
-            "acknowledgment never replays a turn"
-        );
-        self.paste(&draft);
-        self.until("independent draft restored", |s| s.draft() == draft);
-    }
-
-    fn exit(&mut self) {
-        self.send("\x01"); // clear the draft before native cancel/quit keys
-        self.send("\x08");
-        let start = Instant::now();
-        loop {
-            if self.child.try_wait().unwrap().is_some() {
-                break;
-            }
-            assert!(
-                start.elapsed() < Duration::from_secs(8),
-                "TUI would not exit; draft={:?}, screen={}",
-                self.draft(),
-                self.screen()
-            );
-            // A busy turn consumes Ctrl+C as cancellation before idle quit can be armed.
-            self.send("\x03");
-            std::thread::sleep(Duration::from_millis(150));
-        }
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let pid = self.child.id();
-            if pid != 0 {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-            }
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
 }
 
 #[test]
@@ -1564,63 +1420,6 @@ fn provider_failure_pauses_queue_and_preserves_a_newer_draft() {
 
 #[test]
 #[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
-fn two_panes_keep_live_drafts_and_recovery_files_separate() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    for (first_provider, second_provider) in [
-        (ProviderKind::Codex, ProviderKind::Codex),
-        (ProviderKind::Claude, ProviderKind::Claude),
-        (ProviderKind::Cursor, ProviderKind::Cursor),
-        (ProviderKind::Codex, ProviderKind::Claude),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        setup(dir.path(), first_provider);
-        let mut first = Session::launch(dir.path());
-        first.paste("draft from first pane");
-        first.until("first draft saved", |s| {
-            s.draft() == "draft from first pane"
-        });
-        if second_provider != first_provider {
-            setup(dir.path(), second_provider);
-        }
-        let mut second = Session::launch(dir.path());
-        assert!(!second.screen().contains("draft from first pane"));
-        assert_eq!(second.draft(), "");
-        second.send("\x01");
-        second.send("\x08");
-        second.paste("draft from second pane");
-        second.until("second draft saved", |s| {
-            s.draft() == "draft from second pane"
-        });
-        assert!(first.screen().contains("draft from first pane"));
-        assert!(!first.screen().contains("draft from second pane"));
-        assert_eq!(first.draft(), "draft from first pane");
-        assert_eq!(second.draft(), "draft from second pane");
-        assert!(first.prompts().is_empty());
-        assert!(second.prompts().is_empty());
-        first.send("\x01\x08");
-        first.submit("[wait] concurrent first pane");
-        first.until("first provider is running", |s| s.prompts().len() == 1);
-        second.send("\x01\x08");
-        second.submit("[wait] concurrent second pane");
-        second.until("both panes dispatched to the same provider", |s| {
-            s.prompts().len() == 2
-        });
-        assert!(!second.screen().contains("Workspace admission:"));
-        first.release();
-        first.until("first concurrent reply", |s| {
-            s.screen()
-                .contains("FAKE REPLY: [wait] concurrent first pane")
-        });
-        second.until("second concurrent reply", |s| {
-            s.screen()
-                .contains("FAKE REPLY: [wait] concurrent second pane")
-        });
-        eprintln!("PASS: active panes have separate draft recovery");
-    }
-}
-
-#[test]
-#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn ctrl_up_edits_multiline_queue_without_replacing_a_nonempty_draft() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -1705,46 +1504,6 @@ fn explicit_queue_resume_preserves_the_recovered_draft() {
     });
     assert_eq!(s.prompts(), ["[wait] first", "queued followup"]);
     assert_eq!(s.draft(), "separate draft");
-    s.exit();
-}
-
-#[test]
-#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
-fn abandoned_drafts_offer_a_choice_and_other_workspaces_are_isolated() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    let mut first = Session::launch(dir.path());
-    first.paste("first abandoned draft");
-    first.until("first saved", |s| s.draft() == "first abandoned draft");
-    let mut second = Session::launch(dir.path());
-    second.paste("second abandoned draft");
-    second.until("second saved", |s| s.draft() == "second abandoned draft");
-    drop(first);
-    drop(second);
-    let other = dir.path().join("other-workspace");
-    std::fs::create_dir(&other).unwrap();
-    let mut separate = Session::launch_at(dir.path(), &other);
-    separate.until("fresh workspace", |s| s.recovery_data().is_object());
-    assert!(separate.draft().is_empty());
-    assert!(!separate.screen().contains("abandoned draft"));
-    separate.exit();
-    let mut s = Session::launch(dir.path());
-    s.send("\x01\x08");
-    s.submit("/recover");
-    s.until("recovery chooser", |s| {
-        s.screen().contains("first abandoned draft")
-            && s.screen().contains("second abandoned draft")
-    });
-    assert!(
-        s.draft().is_empty(),
-        "must not guess between abandoned panes"
-    );
-    s.enter();
-    s.until("chosen draft restored", |s| {
-        s.draft().ends_with("abandoned draft")
-    });
-    assert!(s.prompts().is_empty());
     s.exit();
 }
 
@@ -1869,72 +1628,6 @@ fn modal_crlf_and_overflow_paste_cannot_modify_a_draft_or_upper_edit() {
         s.recovery_data()["pending_edit"].is_null()
     });
     s.send("\x1b[1;5B"); // return focus to the draft
-    s.exit();
-}
-
-#[cfg(any())]
-fn removed_wezterm_file_open_journey() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    std::fs::write(
-        dir.path().join("workspace/hello world.rs"),
-        "fn main() {}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        dir.path().join("config.toml"),
-        format!(
-            "[ui]\ntips=false\n[editor]\nprogram='{FAKE}'\nargs=['+{{line}}','--','{{file}}']\n"
-        ),
-    )
-    .unwrap();
-    let mut s = Session::launch(dir.path());
-    s.submit("/edit hello world.rs:7");
-    s.until("file launcher called", |s| {
-        s.root.join("file-launch.json").is_file()
-    });
-    let args: Vec<String> =
-        serde_json::from_slice(&std::fs::read(s.root.join("file-launch.json")).unwrap()).unwrap();
-    assert!(args
-        .iter()
-        .any(|arg| arg.ends_with("concordia-fake-provider.exe")));
-    assert!(args.contains(&"+7".into()));
-    assert!(
-        args.iter().any(|arg| arg.ends_with("hello world.rs")),
-        "{args:?}"
-    );
-    assert!(s.prompts().is_empty());
-    s.submit("/open hello world.rs");
-    s.until("file action source pane", |s| {
-        s.screen().contains("Raw · edit")
-    });
-    s.send("\x1b[14~");
-    s.until("shared file actions", |s| {
-        s.screen().contains("File actions")
-            && s.screen().contains("Split off")
-            && s.screen().contains("Open in editor")
-    });
-    s.send("\x1b");
-    s.send("\x1b");
-    s.paste("draft after file launch");
-    s.until("chat remains usable", |s| {
-        s.draft() == "draft after file launch"
-    });
-    s.send("\x1b[17~");
-    s.send("\x1b[14~");
-    s.until("file choices with main draft", |s| {
-        s.screen().contains("File actions")
-    });
-    s.send("\x1b[B");
-    s.enter();
-    s.until("independent editor launch arguments", |s| {
-        std::fs::read_to_string(s.root.join("file-launch.json"))
-            .is_ok_and(|body| body.contains("file-edit"))
-    });
-    assert_eq!(s.draft(), "draft after file launch");
-    assert!(s.prompts().is_empty());
-    s.send("\x1b");
     s.exit();
 }
 
@@ -2192,74 +1885,6 @@ fn formatted_defaults_raw_edits_save_and_dirty_close_work_in_real_terminal() {
 
 #[test]
 #[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
-fn picker_cancel_does_not_answer_armed_approval_during_gated_stream() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    set_workers(dir.path(), vec!["claude".into()]).unwrap();
-    set_delegation_protocol(dir.path(), true).unwrap();
-
-    let mut s = Session::launch(dir.path());
-    s.submit("[wait] keep approval and picker separate");
-    s.until("provider stream is gated", |s| {
-        s.screen()
-            .lines()
-            .any(|row| row.contains("Run command") && row.contains("Expand"))
-            && !s.journal().iter().any(|e| e["kind"] == "done")
-    });
-
-    // The MCP proposal file is the same state boundary used by the real MCP tool.  Creating it
-    // here keeps the journey provider-free while exercising the TUI's polling and confirmation
-    // path during the active provider turn.
-    std::fs::create_dir_all(dir.path().join("proposals")).unwrap();
-    std::fs::write(
-        dir.path().join("proposals/approval.json"),
-        r#"{"to":"claude","task":"review the gated synthetic change"}"#,
-    )
-    .unwrap();
-    s.until("delegation approval is visible", |s| {
-        s.screen().contains("delegation requested")
-    });
-    // workers::ARM_AFTER is 1500 ms; cross that boundary before opening the picker.
-    std::thread::sleep(Duration::from_millis(1800));
-
-    s.submit("/usage");
-    s.until("usage picker is open during the gated turn", |s| {
-        s.screen().contains("┌usage")
-    });
-    let prompts_before_picker = s.prompts();
-
-    // y is a valid armed approval key, but the picker owns it as a filter character.  Esc then
-    // closes only the picker; the armed confirmation remains pending for chat focus.
-    s.send("y");
-    std::thread::sleep(Duration::from_millis(150));
-    assert!(s.screen().contains("filter: y"));
-    s.send("\x1b");
-    s.until("usage picker is dismissed", |s| {
-        !s.screen().contains("filter: y")
-    });
-    s.paste("draft survives picker cancellation");
-    s.until("chat draft returns after picker cancellation", |s| {
-        s.draft() == "draft survives picker cancellation"
-    });
-    assert_eq!(s.prompts(), prompts_before_picker);
-    assert!(s.screen().contains("delegation requested"));
-
-    s.release();
-    s.until("gated turn completes", |s| {
-        s.screen()
-            .contains("FAKE REPLY: [wait] keep approval and picker separate")
-    });
-    assert_eq!(s.draft(), "draft survives picker cancellation");
-    assert_eq!(
-        s.prompts(),
-        vec!["[wait] keep approval and picker separate"]
-    );
-    s.exit();
-}
-
-#[test]
-#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
 fn native_subagents_can_be_inspected_live_and_after_completion() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -2315,42 +1940,6 @@ fn resuming_a_native_session_restores_recent_messages_without_dispatching_a_prov
     });
     assert!(s.prompts().is_empty());
     s.exit();
-}
-
-#[test]
-#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
-fn markdown_preview_opens_at_start_scrolls_and_exits_without_provider_work() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    let path = dir.path().join("workspace/preview document.md");
-    std::fs::write(
-        &path,
-        format!(
-            "# PREVIEW START\n\n{}\nPREVIEW END",
-            (0..90).map(|i| format!("- row {i}\n")).collect::<String>()
-        ),
-    )
-    .unwrap();
-    let path_text = path.to_string_lossy();
-    let mut s = Session::launch_args(
-        dir.path(),
-        &dir.path().join("workspace"),
-        &["preview", &path_text],
-    );
-    s.until("preview starts at first line", |s| {
-        s.screen().contains("PREVIEW START")
-    });
-    assert!(!s.screen().contains("PREVIEW END"));
-    s.send("\x1b[F");
-    s.until("preview end", |s| s.screen().contains("PREVIEW END"));
-    s.send("q");
-    let start = Instant::now();
-    while s.child.try_wait().unwrap().is_none() {
-        assert!(start.elapsed() < Duration::from_secs(6));
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(s.prompts().is_empty());
 }
 
 #[test]
@@ -2720,332 +2309,6 @@ fn reported_context_capacity_starts_one_new_native_session_with_original_source_
 }
 
 #[test]
-#[ignore = "isolated proactive context policy journey; fake providers only"]
-fn proactive_context_policy_rolls_before_dispatch_and_keeps_original_pointers() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    std::fs::write(
-        dir.path().join("profile/.codex/models_cache.json"),
-        r#"{"models":[{"slug":"synthetic-model","display_name":"synthetic-model","visibility":"list"}]}"#,
-    )
-    .unwrap();
-    let folder = dir.path().join("profile/.codex/sessions");
-    std::fs::create_dir_all(&folder).unwrap();
-    let lines = [
-        serde_json::json!({"type":"session_meta","payload":{"id":"proactive-session","cwd":dir.path().join("workspace")}}),
-        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"ORIGINAL_CONTEXT_SOURCE"}]}}),
-        serde_json::json!({"type":"turn_context","payload":{"model":"synthetic-model","turn_id":"proactive-turn-1"}}),
-        serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":800,"input_tokens":600,"cached_input_tokens":100,"output_tokens":200},"total_token_usage":{"total_tokens":9999999},"model_context_window":1000}}}),
-    ];
-    std::fs::write(
-        folder.join("proactive.jsonl"),
-        lines.iter().map(|v| format!("{v}\n")).collect::<String>(),
-    )
-    .unwrap();
-    let mut s = Session::launch(dir.path());
-    s.submit("/resume");
-    s.enter();
-    s.until("native history loaded", |s| {
-        s.screen().contains("ORIGINAL_CONTEXT_SOURCE")
-    });
-    s.submit("/model synthetic-model");
-    s.until("explicit model selected", |_s| {
-        concordia::store::get_use_selection(dir.path())
-            .is_some_and(|selected| selected.model.as_deref() == Some("synthetic-model"))
-    });
-    s.submit("/usage");
-    s.send("t");
-    s.until("Concordia usage view", |s| {
-        s.screen().contains("No turns recorded yet.")
-    });
-    s.send("e");
-    s.until("separate native usage source coverage", |s| {
-        let screen = s.screen();
-        screen.contains("Native source observations")
-            && screen.contains("proactive-session")
-            && screen.contains("1 snapshots this page")
-    });
-    assert!(s.prompts().is_empty());
-    s.send("c");
-    s.until("native snapshots do not change Concordia totals", |s| {
-        s.screen().contains("No turns recorded yet.")
-    });
-    s.send("\x1b");
-    s.submit("/context rollover 80");
-    s.until("policy enabled", |s| s.screen().contains("at 80%"));
-    s.submit("A new task after the threshold");
-    s.until("new task completed", |s| {
-        s.journal().iter().any(|e| e["kind"] == "done")
-    });
-    let journal = s.journal();
-    let starts: Vec<_> = journal.iter().filter(|e| e["kind"] == "start").collect();
-    assert_eq!(starts.len(), 1);
-    let args = starts[0]["args"].as_array().unwrap();
-    assert!(!args.iter().any(|a| a == "resume"));
-    assert!(starts[0]["prompt"]
-        .as_str()
-        .unwrap()
-        .contains("[native source pointers]"));
-    assert!(starts[0]["prompt"]
-        .as_str()
-        .unwrap()
-        .contains("proactive-session"));
-    s.submit("/context rollover off");
-    s.until("policy disabled", |s| {
-        s.screen().contains("proactive rollover off")
-    });
-    s.exit();
-}
-
-#[test]
-#[ignore = "isolated memory retrieval terminal journey; no provider turns"]
-fn memory_search_reads_original_sources_without_consuming_a_numbered_draft() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Codex);
-    let folder = dir.path().join("profile/.codex/sessions");
-    std::fs::create_dir_all(&folder).unwrap();
-    let source = format!(
-        "{}\n{}\n{}\n",
-        serde_json::json!({"type":"session_meta","payload":{"id":"memory-fixture","cwd":dir.path().join("workspace")}}),
-        serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"MEMORY_NEEDLE exact original"}]}}),
-        serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/preview space.rs\n@@\n-before\n+synthetic replacement\n*** End Patch"}})
-    );
-    std::fs::write(folder.join("memory.jsonl"), source).unwrap();
-    let manifest = dir.path().join("workspace/harness.json");
-    let manifest_text = serde_json::json!({"name":"ui-catalog","providers":{"codex":{"connect":["must-never-run"]}},"tools":[{"name":"ui-search","description":"Discover fixture tools without running them","argv":["must-never-run"]}]}).to_string();
-    std::fs::write(&manifest, &manifest_text).unwrap();
-    let manifest_path = manifest.display().to_string();
-    let manifest_sha = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(manifest_text.as_bytes()))
-    };
-    concordia::harness::connections::record(
-        dir.path(),
-        &concordia::harness::connections::Identity {
-            name: "ui-catalog",
-            version: None,
-            manifest_path: &manifest_path,
-            manifest_sha256: &manifest_sha,
-            skill: None,
-        },
-        concordia::harness::connections::Entry {
-            provider: "codex".into(),
-            home: None,
-            project: dir.path().join("workspace").display().to_string(),
-            connect_ok: true,
-            connect_note: String::new(),
-            verify: "not-run".into(),
-            verify_note: String::new(),
-            at: 0,
-        },
-    )
-    .unwrap();
-    let mut s = Session::launch(dir.path());
-    s.paste("UNSENT_INTEGRATION_DRAFT");
-    s.until(
-        "integration draft is persisted before opening the catalog",
-        |s| s.draft() == "UNSENT_INTEGRATION_DRAFT",
-    );
-    s.send("\x1b[21~");
-    s.until("integration catalog shows verified namespaced tools", |s| {
-        let screen = s.screen();
-        screen.contains("Integrations and agent tools")
-            && screen.contains("ui-search")
-            && screen.contains("revision verified")
-    });
-    assert_eq!(s.draft(), "UNSENT_INTEGRATION_DRAFT");
-    assert!(s.prompts().is_empty());
-    let managed_manifest = dir.path().join("workspace/new-harness.json");
-    let managed_text = serde_json::json!({"name":"ui-managed","providers":{"codex":{
-        "connect":[std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into()),"/c","exit","0"]}}}).to_string();
-    std::fs::write(&managed_manifest, &managed_text).unwrap();
-    s.send("n");
-    s.until("new integration has its own path field", |s| {
-        s.screen().contains("New local integration")
-    });
-    s.paste(&format!("{}x", managed_manifest.display()));
-    s.until("manifest path paste is visible", |s| {
-        s.screen().contains("new-harness.jsonx")
-    });
-    s.send("\x08");
-    s.until("manifest field Backspace updates the path", |s| {
-        !s.screen().contains("new-harness.jsonx") && s.screen().contains("new-harness.json")
-    });
-    s.send("\r");
-    s.until("local manifest review shows command and revision", |s| {
-        let screen = s.screen();
-        screen.contains("Review integration action")
-            && screen.contains("ui-managed")
-            && screen.contains("Manifest revision")
-            && screen.contains("exit")
-    });
-    assert_eq!(
-        concordia::harness::connections::load(dir.path())
-            .unwrap()
-            .len(),
-        1
-    );
-    // A changed source between review and confirmation cannot execute or create a receipt.
-    std::fs::write(&managed_manifest, format!("{managed_text}\n")).unwrap();
-    s.send("\r");
-    s.until("stale integration review is rejected", |s| {
-        s.screen().contains("revision changed")
-    });
-    assert_eq!(
-        concordia::harness::connections::load(dir.path())
-            .unwrap()
-            .len(),
-        1
-    );
-    s.send("r");
-    s.until("catalog refreshed after stale review", |s| {
-        s.screen().contains("Integrations and agent tools")
-    });
-    s.send("n");
-    s.paste(&managed_manifest.display().to_string());
-    s.send("\r");
-    s.until("fresh integration review", |s| {
-        s.screen().contains("Review integration action")
-    });
-    s.send("\r");
-    s.until("reviewed integration connects from F10", |s| {
-        s.screen().contains("Integration action finished")
-    });
-    assert_eq!(
-        concordia::harness::connections::load(dir.path())
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(s.draft(), "UNSENT_INTEGRATION_DRAFT");
-    s.send("r");
-    s.until("connected integration catalog refresh", |s| {
-        s.screen().contains("Integrations and agent tools")
-    });
-    s.send("\x1b[B");
-    s.send("d");
-    s.until("selected binding disconnect review", |s| {
-        s.screen().contains("Review integration action") && s.screen().contains("ui-managed")
-    });
-    s.send("\r");
-    s.until("selected integration disconnects", |s| {
-        s.screen().contains("Integration action finished")
-    });
-    let remaining = concordia::harness::connections::load(dir.path()).unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].name, "ui-catalog");
-    assert!(s.prompts().is_empty());
-    s.send("\x1b");
-    s.until(
-        "integration catalog closes without consuming the draft",
-        |s| {
-            s.draft() == "UNSENT_INTEGRATION_DRAFT"
-                && !s.screen().contains("Integrations and agent tools")
-        },
-    );
-    s.send("\x01\x08");
-    s.until("clear synthetic draft before source lookup", |s| {
-        s.draft().is_empty()
-    });
-    s.submit("/memory recall-account codex MEMORY_NEEDLE");
-    s.until("verified lexical result", |s| {
-        s.screen().contains("MEMORY_NEEDLE exact original")
-            && s.screen().contains("Lexical suggestion")
-    });
-    let source_id = std::fs::read_dir(dir.path().join(".ao/native-memory"))
-        .unwrap()
-        .flatten()
-        .find_map(|entry| {
-            let path = entry.path();
-            (path
-                .extension()
-                .is_some_and(|extension| extension == "json"))
-            .then(|| {
-                path.file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .map(str::to_owned)
-            })
-            .flatten()
-            .filter(|id| id.len() == 64)
-        })
-        .unwrap();
-    s.submit(&format!("/memory file-facts {source_id}"));
-    s.until("historical file fact shown", |s| {
-        s.screen().contains("Historical file facts") && s.screen().contains("preview space.rs")
-    });
-    assert!(!dir.path().join("workspace/src/preview space.rs").exists());
-    s.send("\x1b");
-    s.paste("2 finish all requested features");
-    s.until("number remains ordinary draft text", |s| {
-        s.draft() == "2 finish all requested features"
-    });
-    assert!(s.prompts().is_empty());
-    s.exit();
-}
-
-#[test]
-#[ignore = "isolated worker crash recovery terminal journey; fake providers only"]
-fn worker_crash_recovery_preserves_request_and_pauses_without_reexecution() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Claude);
-    let mut s = Session::launch(dir.path());
-    s.submit("/workers add codex");
-    s.until("worker enrolled", |s| s.screen().contains("worker added"));
-    s.submit("/delegate codex RECOVERY_TASK [wait]");
-    s.until("worker request started", |s| {
-        s.journal().iter().any(|e| e["kind"] == "start")
-    });
-    let ledgers = || {
-        std::fs::read_dir(dir.path().join("pane-recovery"))
-            .unwrap()
-            .flatten()
-            .flat_map(|w| std::fs::read_dir(w.path()).unwrap().flatten())
-            .filter_map(|p| std::fs::read_to_string(p.path().join("worker-runs/workers.json")).ok())
-            .collect::<Vec<_>>()
-    };
-    s.until("native worker session checkpointed", |_| {
-        ledgers()
-            .iter()
-            .any(|l| l.contains("99999999-2222-3333-4444-555555555555") && l.contains("Tool"))
-    });
-    drop(s); // Kill only the owned synthetic TUI/process tree, simulating an interrupted host.
-    let mut s = Session::launch(dir.path());
-    s.until("worker metadata restored", |s| {
-        s.screen().contains("Recovered 1 worker run records")
-    });
-    assert_eq!(
-        s.journal().iter().filter(|e| e["kind"] == "start").count(),
-        1
-    );
-    s.submit("/delegate recover 1");
-    s.until("uncertain run inspection requires reconciliation", |s| {
-        s.screen().contains("No verified result pointer") && s.screen().contains("RECOVERY_TASK")
-    });
-    assert_eq!(
-        s.journal().iter().filter(|e| e["kind"] == "start").count(),
-        1
-    );
-    assert!(ledgers().iter().any(|l| l.contains("Paused")));
-    let registry = || concordia::workspaces::load(dir.path()).unwrap();
-    assert_eq!(
-        registry().reservations[0].phase,
-        concordia::workspaces::Phase::ReconcileRequired
-    );
-    s.submit("/delegate scope stopped 1");
-    s.until("stopped worker acknowledged without replay", |_| {
-        registry().reservations[0].phase == concordia::workspaces::Phase::Released
-    });
-    assert_eq!(
-        s.journal().iter().filter(|e| e["kind"] == "start").count(),
-        1
-    );
-    s.exit();
-}
-
-#[test]
 #[ignore = "isolated exact Harness pin delivery; fake provider only"]
 fn connected_harness_pins_are_sent_once_per_new_native_session_and_not_on_resume() {
     use sha2::{Digest, Sha256};
@@ -3116,319 +2379,6 @@ fn connected_harness_pins_are_sent_once_per_new_native_session_and_not_on_resume
         .as_str()
         .unwrap()
         .contains("[pinned decisions from connected harness]"));
-    s.exit();
-}
-
-#[test]
-#[ignore = "isolated cross-provider worker/model/automatic return journey; fake providers only"]
-fn cross_provider_worker_model_returns_once_to_main_agent_and_keeps_draft() {
-    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    setup(dir.path(), ProviderKind::Claude);
-    initialize_git_fixture(
-        &dir.path().join("workspace"),
-        &dir.path().join("empty-hooks"),
-    );
-    std::fs::write(
-        dir.path().join("profile/.codex/models_cache.json"),
-        r#"{"models":[{"slug":"fixture-fast","display_name":"fixture-fast","visibility":"list"}]}"#,
-    )
-    .unwrap();
-    let mut s = Session::launch(dir.path());
-    s.submit("/workers add codex");
-    s.until("worker enrollment", |s| s.screen().contains("worker added"));
-    s.submit("/delegate model codex fixture-fast");
-    s.until("model configured", |s| {
-        s.screen().contains("model: fixture-fast")
-    });
-    s.submit("/delegate returns auto");
-    s.until("automatic returns enabled", |s| {
-        s.screen().contains("Worker returns: auto")
-    });
-    s.submit("/scope set write:main.txt");
-    s.until("main scope configured", |s| {
-        s.screen().contains("Future main scope")
-    });
-    s.submit("/delegate scoped codex write:worker.txt -- Implement scoped parser [wait]");
-    s.until("native worker running", |s| {
-        s.journal()
-            .iter()
-            .any(|e| e["kind"] == "start" && e["provider"] == "codex")
-    });
-    s.paste("keep this unsent draft");
-    std::fs::write(dir.path().join("gate"), "release fixture").unwrap();
-    s.until("main agent receives result", |s| {
-        s.journal()
-            .iter()
-            .any(|e| e["kind"] == "done" && e["provider"] == "claude")
-    });
-    s.until("draft preserved on return", |s| {
-        s.draft() == "keep this unsent draft" && s.screen().contains("Worked for")
-    });
-    let journal = s.journal();
-    let starts: Vec<_> = journal.iter().filter(|e| e["kind"] == "start").collect();
-    assert_eq!(starts.len(), 2);
-    assert_eq!(starts[0]["provider"], "codex");
-    assert!(starts[0]["prompt"]
-        .as_str()
-        .unwrap()
-        .contains("Write:worker.txt"));
-    assert!(starts[1]["prompt"]
-        .as_str()
-        .unwrap()
-        .contains("Write:main.txt"));
-    let args = starts[0]["args"].as_array().unwrap();
-    assert!(args
-        .windows(2)
-        .any(|w| w[0] == "-m" && w[1] == "fixture-fast"));
-    assert!(!args.iter().any(|v| v == "resume" || v == "--last"));
-    assert!(starts[1]["prompt"].as_str().unwrap().contains("UNTRUSTED"));
-    assert!(!starts[1]["prompt"]
-        .as_str()
-        .unwrap()
-        .contains("keep this unsent draft"));
-    s.send("\x01\x08");
-    s.until("draft cleared for explicit worktree command", |s| {
-        s.draft().is_empty()
-    });
-    s.submit("/worktree create HEAD");
-    s.until_with_timeout(
-        "managed worktree creation verified",
-        Duration::from_secs(90),
-        |_| {
-            concordia::managed_workspaces::load(dir.path()).is_ok_and(|registry| {
-                registry.records.len() == 1
-                    && registry.records[0].phase == concordia::managed_workspaces::Phase::Ready
-            })
-        },
-    );
-    let managed = concordia::managed_workspaces::load(dir.path())
-        .unwrap()
-        .records
-        .remove(0);
-    let native_sources = dir.path().join("profile/.codex/sessions");
-    std::fs::create_dir_all(&native_sources).unwrap();
-    std::fs::write(native_sources.join("99999999-2222-3333-4444-555555555555.jsonl"), format!("{}\n{}\n",
-        serde_json::json!({"type":"session_meta","payload":{"id":"99999999-2222-3333-4444-555555555555"}}),
-        serde_json::json!({"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"Verified managed prerequisite source"}]}}))).unwrap();
-    std::fs::remove_file(dir.path().join("gate")).unwrap();
-    s.submit(&format!(
-        "/delegate worktree {} codex Inspect managed workspace [wait]",
-        managed.id
-    ));
-    s.until("managed native worker started", |s| {
-        s.journal()
-            .iter()
-            .filter(|entry| entry["kind"] == "start")
-            .count()
-            == 3
-    });
-    let journal = s.journal();
-    let started = journal
-        .iter()
-        .filter(|entry| entry["kind"] == "start")
-        .nth(2)
-        .unwrap();
-    assert_eq!(
-        Path::new(started["cwd"].as_str().unwrap())
-            .canonicalize()
-            .unwrap(),
-        managed.execution
-    );
-    s.paste("keep this unsent draft");
-    s.release();
-    s.until("managed result returned to owner", |s| {
-        s.journal()
-            .iter()
-            .filter(|entry| entry["kind"] == "done")
-            .count()
-            == 4
-    });
-    s.until("managed return preserves draft", |s| {
-        s.draft() == "keep this unsent draft" && s.screen().contains("Worked for")
-    });
-    let journal = s.journal();
-    let returned = journal
-        .iter()
-        .filter(|entry| entry["kind"] == "start")
-        .nth(3)
-        .unwrap();
-    assert!(returned["prompt"]
-        .as_str()
-        .unwrap()
-        .contains("delivery does not integrate"));
-    assert_eq!(
-        Path::new(returned["cwd"].as_str().unwrap())
-            .canonicalize()
-            .unwrap(),
-        dir.path().join("workspace").canonicalize().unwrap()
-    );
-    s.send("\x01\x08");
-    s.until("draft cleared for native input configuration", |s| {
-        s.draft().is_empty()
-    });
-    s.submit("/delegate after 2 codex Wait for reviewed managed results");
-    s.until(
-        "cross-worktree dependency waits for explicit delivery",
-        |s| s.screen().contains("integration_required"),
-    );
-    assert_eq!(
-        s.journal()
-            .iter()
-            .filter(|entry| entry["kind"] == "start")
-            .count(),
-        4
-    );
-    s.submit("/delegate delivery 3");
-    s.until("exact managed dependency review displayed", |s| {
-        s.screen().contains("Accept results only") && s.screen().contains("result-only")
-    });
-    s.submit(&format!(
-        "/delegate delivery 3 result-only {}",
-        "0".repeat(64)
-    ));
-    s.until("stale or wrong delivery receipt rejected", |s| {
-        s.screen().contains("obtain a fresh receipt")
-    });
-    assert_eq!(
-        s.journal()
-            .iter()
-            .filter(|entry| entry["kind"] == "start")
-            .count(),
-        4
-    );
-    s.submit("/delegate stop codex");
-    s.until("waiting dependency cancelled without execution", |s| {
-        s.screen().contains("stopped") || s.screen().contains("cancelled")
-    });
-    use concordia::managed_workspaces::lifecycle::{self, Action};
-    let flag = std::sync::atomic::AtomicBool::new(false);
-    for (action, label) in [
-        (Action::Integrate, "integrate"),
-        (Action::Retire, "retire"),
-        (Action::DeleteBranch, "delete-branch"),
-    ] {
-        s.submit(&format!("/worktree review {} {label}", managed.id));
-        s.until("explicit lifecycle review visible", |s| {
-            s.screen().contains("Explicit action:")
-        });
-        let reviewed = lifecycle::preview(
-            dir.path(),
-            &dir.path().join("workspace"),
-            &managed.id,
-            action,
-            &flag,
-        )
-        .unwrap();
-        assert!(reviewed.blockers.is_empty(), "{reviewed:?}");
-        s.submit(&format!(
-            "/worktree {label} {} {}",
-            managed.id, reviewed.receipt
-        ));
-        s.until_with_timeout(
-            "reviewed lifecycle action completed",
-            Duration::from_secs(90),
-            |s| s.screen().contains(&format!("Managed {label} finished")),
-        );
-    }
-    assert!(!managed.execution.exists());
-    assert_eq!(
-        s.journal()
-            .iter()
-            .filter(|entry| entry["kind"] == "start")
-            .count(),
-        4,
-        "lifecycle operations must not dispatch providers"
-    );
-    s.submit("/delegate returns manual");
-    s.until("manual native result return", |s| {
-        s.screen().contains("Worker returns: manual")
-    });
-    s.submit("/workers add cursor");
-    s.until("Cursor worker enrolled", |s| {
-        s.screen().contains("worker added") && s.screen().contains("cursor")
-    });
-    std::fs::write(dir.path().join("workspace/acp-fixture.json"),
-          serde_json::json!({"image":false,"permission":true,"permission_title":"Read worker text","reply":"Native worker text received"}).to_string()).unwrap();
-    s.submit("/native cursor on");
-    s.until("native text preference saved", |s| {
-        s.screen().contains("native text input on")
-    });
-    s.submit("/delegate cursor Review native text");
-    s.until("worker waits for exact native input", |s| {
-        s.screen().contains("waiting for native input")
-    });
-    s.paste("keep this native draft");
-    s.send("\x1b[1;3B\x1b[19~"); // Select the active worker, then review without replacing the draft.
-    s.until("owner-bound native worker review", |s| {
-        s.screen().contains("native worker input") && s.screen().contains("Read worker text")
-    });
-    s.send("1");
-    s.send("\x1b");
-    s.until("closing review preserves draft and pending request", |s| {
-        s.draft() == "keep this native draft" && s.screen().contains("waiting for native input")
-    });
-    s.send("\x1b[19~");
-    s.until("worker review reopened", |s| {
-        s.screen().contains("native worker input")
-    });
-    s.send("\x1b[19~1");
-    s.until("worker receives its native decision", |s| {
-        s.screen().contains("Native worker text received")
-    });
-    assert_eq!(s.draft(), "keep this native draft");
-    assert_eq!(
-        s.journal()
-            .iter()
-            .filter(|entry| entry["kind"] == "start")
-            .count(),
-        4,
-        "native worker review must not launch a main turn or fall back to print mode"
-    );
-    let calls: Vec<Value> = std::fs::read_to_string(dir.path().join("workspace/acp-calls.jsonl"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(
-        calls
-            .iter()
-            .filter(|call| call["method"] == "session/prompt")
-            .count(),
-        1
-    );
-    assert!(calls
-        .iter()
-        .any(|call| call["id"] == 100 && call["result"]["outcome"]["optionId"] == "yes"));
-    s.send("\x01\x08");
-    s.until("draft cleared for plan request", |s| s.draft().is_empty());
-    std::fs::write(
-        dir.path().join("workspace/acp-fixture.json"),
-        serde_json::json!({"image":false,"plan":true,"reply":"Worker plan rejected"}).to_string(),
-    )
-    .unwrap();
-    s.submit("/delegate cursor Propose a scoped plan");
-    s.until("worker plan pending", |s| {
-        s.screen().contains("waiting for native input")
-    });
-    s.paste("preserve plan draft");
-    s.until("plan draft persisted before opening review", |s| {
-        s.draft() == "preserve plan draft"
-    });
-    s.send("\x1b[1;3A\x1b[19~"); // Move from the previous completed worker to the new active worker.
-    s.until("full plan visible", |s| {
-        s.screen().contains("Edit only the requested function")
-    });
-    s.send("\x1b[19~2");
-    s.until("native plan rejection returned", |s| {
-        s.screen().contains("Worker plan rejected")
-    });
-    assert_eq!(s.draft(), "preserve plan draft");
-    let calls = std::fs::read_to_string(dir.path().join("workspace/acp-calls.jsonl")).unwrap();
-    assert!(calls
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .any(|call| call["id"] == 100 && call["result"]["outcome"]["outcome"] == "rejected"));
     s.exit();
 }
 
