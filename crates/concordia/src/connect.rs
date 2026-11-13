@@ -123,7 +123,7 @@ pub fn plan_login(
     })
 }
 
-/// The process to spawn for a plan: WezTerm window when available, else a new console.
+/// The process to spawn for a plan: a new visible PowerShell console.
 pub fn login_command(plan: &LoginPlan) -> Command {
     let ps = ["-NoLogo", "-NoProfile", "-NoExit", "-Command", plan.script];
     // Provider login must be visible so the user can complete native authentication.

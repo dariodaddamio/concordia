@@ -1215,6 +1215,16 @@ impl App {
                 self.push_system(format!("update failed - {e:#}"));
             }
             JobResult::Check(Ok(preview)) => {
+                if preview.install_available
+                    && !self
+                        .picker
+                        .as_ref()
+                        .is_some_and(|picker| picker.kind == PickerKind::Update)
+                {
+                    self.push_system(
+                        "A Concordia update is ready. Type /update to review and press Enter to install it, or continue later.",
+                    );
+                }
                 self.footer_left = if preview.install_available {
                     "Enter installs \u{b7} \u{2191}\u{2193} scroll \u{b7} Esc close"
                 } else {

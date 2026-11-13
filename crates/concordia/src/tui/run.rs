@@ -366,6 +366,13 @@ fn confirm_and_close_tab(
 
 async fn run_chat_ui(use_window: bool) -> Result<()> {
     let state_root = default_store_root();
+    let _ = std::thread::Builder::new()
+        .name("concordia-shortcut-check".into())
+        .spawn(|| {
+            if let Err(error) = crate::update::sync_owned_shortcuts() {
+                crate::logging::warn(&format!("shortcut check failed: {error:#}"));
+            }
+        });
     crate::logging::init(&state_root);
     crate::logging::info(&format!(
         "start {} exe={}",
@@ -382,6 +389,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     tabs.active_mut().app.compat_rx = Some(crate::provider::compat::start_real_detection(
         state_root.clone(),
     ));
+    tabs.active_mut().app.start_job(if crate::config::get().updates.install_on_launch {
+        JobKind::Update
+    } else {
+        JobKind::Check
+    });
 
     let terminal_restore = (!use_window).then(TerminalRestoreGuard::new);
     let (backend, mut terminal_input) = if use_window {
@@ -450,6 +462,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
 
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = Instant::now();
+    let mut last_background_update_check = Instant::now();
     let mut key_burst = input::BurstBuffer::default();
     let mut mouse_pointer = pointer::Pointer::default();
     let mut window_mouse = None;
@@ -1496,6 +1509,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             }
             if tick_due {
                 last_tick = Instant::now();
+            }
+            if last_background_update_check.elapsed() >= Duration::from_secs(4 * 60 * 60) {
+                let app = &mut tabs.active_mut().app;
+                if app.job.is_none() {
+                    app.start_job(JobKind::Check);
+                }
+                last_background_update_check = Instant::now();
             }
 
             if let Some(saved) = &mut saved_window {

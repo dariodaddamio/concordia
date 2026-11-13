@@ -409,6 +409,8 @@ pub enum UpdateOutcome {
 
 const SOURCE_HINT_FILE: &str = "source";
 const CHANNEL_FILE: &str = "channel";
+const START_SHORTCUT_REMOVED: &str = "shortcut-start-removed";
+const DESKTOP_SHORTCUT_REMOVED: &str = "shortcut-desktop-removed";
 
 fn install_channel() -> Result<Option<String>> {
     let path = install_bin_dir().join(CHANNEL_FILE);
@@ -526,8 +528,15 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
         ))),
         crate::release::Check::Available(rel) => {
             ctl.say(&format!("Preparing {} update", rel.tag));
-            crate::release::install_release_controlled(&cfg, &rel, current, &fetch, Some(ctl))
-                .map(UpdateOutcome::Installed)
+            let result = crate::release::install_release_controlled(
+                &cfg,
+                &rel,
+                current,
+                &fetch,
+                Some(ctl),
+            )?;
+            sync_owned_shortcuts()?;
+            Ok(UpdateOutcome::Installed(result))
         }
     }
 }
@@ -881,6 +890,7 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
 
     anyhow::ensure!(!ctl.cancelled(), "cancelled");
     let install_path = install_binary(&built)?;
+    sync_owned_shortcuts()?;
     record_source_root(&root);
     Ok(UpdateResult {
         install_path,
@@ -1095,6 +1105,7 @@ pub fn install_self() -> Result<InstallReport> {
     }
     let explicit_dir = env::var("CONCORDIA_INSTALL_DIR").is_ok_and(|d| !d.trim().is_empty());
     let path_added = !explicit_dir && ensure_on_user_path(&install_bin_dir())?;
+    sync_owned_shortcuts()?;
     Ok(InstallReport {
         installed,
         path_added,
@@ -1105,7 +1116,13 @@ pub fn install_self() -> Result<InstallReport> {
 pub fn shortcut_path(desktop: bool) -> Result<PathBuf> {
     #[cfg(windows)]
     {
-        let root = if desktop {
+        let root = if crate::test_guard::is_enabled() {
+            shortcut_home().join(if desktop {
+                "Desktop"
+            } else {
+                "AppData/Roaming/Microsoft/Windows/Start Menu/Programs"
+            })
+        } else if desktop {
             dirs::desktop_dir().context("cannot locate the Desktop")?
         } else {
             dirs::data_dir()
@@ -1121,6 +1138,17 @@ pub fn shortcut_path(desktop: bool) -> Result<PathBuf> {
     {
         let _ = desktop;
         bail!("shortcuts are supported on Windows only")
+    }
+}
+
+#[cfg(windows)]
+fn shortcut_home() -> PathBuf {
+    if crate::test_guard::is_enabled() {
+        env::var_os("CONCORDIA_TEST_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(crate::test_guard::test_home)
+    } else {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
     }
 }
 
@@ -1152,14 +1180,23 @@ pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
         } else {
             env::current_exe().context("cannot locate the running executable")?
         };
-        let home = if crate::test_guard::is_enabled() {
-            crate::test_guard::test_home()
-        } else {
-            dirs::home_dir().context("cannot locate the home directory")?
-        };
+        let home = shortcut_home();
         let spec = shortcut_spec(&target, &home);
-        let parent = path.parent().context("shortcut has no parent")?;
-        fs::create_dir_all(parent)?;
+        write_shortcut(&path, &spec)?;
+        fs::remove_file(shortcut_removed_marker(desktop)).ok();
+        Ok(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = desktop;
+        bail!("shortcuts are supported on Windows only")
+    }
+}
+
+#[cfg(windows)]
+fn write_shortcut(path: &Path, spec: &ShortcutSpec) -> Result<()> {
+    let parent = path.parent().context("shortcut has no parent")?;
+    fs::create_dir_all(parent)?;
         let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT);$s.TargetPath=$env:CONCORDIA_TARGET;$s.Arguments=$env:CONCORDIA_ARGS;$s.WorkingDirectory=$env:CONCORDIA_WORKDIR;$s.IconLocation=$env:CONCORDIA_ICON;$s.Save()";
         let mut command = crate::process_ui::command("powershell.exe");
         command
@@ -1170,7 +1207,7 @@ pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
                 "-Command",
                 script,
             ])
-            .env("CONCORDIA_SHORTCUT", &path)
+            .env("CONCORDIA_SHORTCUT", path)
             .env("CONCORDIA_TARGET", &spec.target)
             .env("CONCORDIA_ARGS", &spec.args)
             .env("CONCORDIA_WORKDIR", &spec.workdir)
@@ -1186,12 +1223,114 @@ pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
             "PowerShell could not create the Concordia shortcut: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
-        Ok(path)
+        Ok(())
+}
+
+fn shortcut_removed_marker(desktop: bool) -> PathBuf {
+    install_bin_dir().join(if desktop {
+        DESKTOP_SHORTCUT_REMOVED
+    } else {
+        START_SHORTCUT_REMOVED
+    })
+}
+
+#[cfg(windows)]
+fn read_shortcut(path: &Path) -> Result<Option<ShortcutSpec>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT); [Console]::Out.WriteLine((ConvertTo-Json -Compress @{target=$s.TargetPath;args=$s.Arguments;workdir=$s.WorkingDirectory;icon=$s.IconLocation}))";
+    let mut command = crate::process_ui::command("powershell.exe");
+    command
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+        .env("CONCORDIA_SHORTCUT", path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = crate::process_lifetime::capture(command, Duration::from_secs(15), 64 * 1024)
+        .map_err(anyhow::Error::msg)
+        .context("read Concordia shortcut")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "PowerShell could not read the Concordia shortcut: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("invalid Concordia shortcut data")?;
+    Ok(Some(ShortcutSpec {
+        target: PathBuf::from(value["target"].as_str().unwrap_or_default()),
+        args: value["args"].as_str().unwrap_or_default().to_owned(),
+        workdir: PathBuf::from(value["workdir"].as_str().unwrap_or_default()),
+        icon: PathBuf::from(
+            value["icon"]
+                .as_str()
+                .unwrap_or_default()
+                .split_once(',')
+                .map_or(value["icon"].as_str().unwrap_or_default(), |(path, _)| path),
+        ),
+    }))
+}
+
+/// Read an owned shortcut for diagnostics without changing it.
+pub fn owned_shortcut(desktop: bool) -> Result<Option<ShortcutSpec>> {
+    #[cfg(windows)]
+    {
+        read_shortcut(&shortcut_path(desktop)?)
     }
     #[cfg(not(windows))]
     {
         let _ = desktop;
-        bail!("shortcuts are supported on Windows only")
+        Ok(None)
+    }
+}
+
+#[cfg(windows)]
+fn shortcut_matches(actual: &ShortcutSpec, expected: &ShortcutSpec) -> bool {
+    let same_path = |left: &Path, right: &Path| {
+        left.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .eq_ignore_ascii_case(right.to_string_lossy().trim_end_matches(['\\', '/']))
+    };
+    same_path(&actual.target, &expected.target)
+        && actual.args == expected.args
+        && same_path(&actual.workdir, &expected.workdir)
+        && same_path(&actual.icon, &expected.icon)
+}
+
+/// Repair the Start menu shortcut and an existing Desktop shortcut without recreating either
+/// after the user explicitly removed it.
+pub fn sync_owned_shortcuts() -> Result<()> {
+    #[cfg(windows)]
+    {
+        let active = resolve_active_exe();
+        let target = if active.is_file() {
+            active
+        } else {
+            env::current_exe().context("cannot locate the running executable")?
+        };
+        let home = shortcut_home();
+        let expected = shortcut_spec(&target, &home);
+        for desktop in [false, true] {
+            if shortcut_removed_marker(desktop).is_file() {
+                continue;
+            }
+            let path = shortcut_path(desktop)?;
+            let Some(actual) = read_shortcut(&path)? else {
+                if desktop {
+                    continue;
+                }
+                write_shortcut(&path, &expected)?;
+                continue;
+            };
+            if !shortcut_matches(&actual, &expected) {
+                write_shortcut(&path, &expected)?;
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(())
     }
 }
 
@@ -1201,6 +1340,8 @@ pub fn remove_shortcut(desktop: bool) -> Result<PathBuf> {
     if path.is_file() {
         fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
     }
+    fs::create_dir_all(install_bin_dir())?;
+    crate::state_io::write_atomic(&shortcut_removed_marker(desktop), b"removed\n")?;
     Ok(path)
 }
 
@@ -1356,7 +1497,7 @@ fn persist_concordia_exe_env(path: &Path) {
     if env::var("CONCORDIA_INSTALL_DIR").is_ok_and(|d| !d.trim().is_empty()) {
         return;
     }
-    // Best-effort User env so new WezTerm panes / shells pick it up.
+    // Best-effort User env so new shells pick it up.
     let _ = crate::process_ui::command("setx")
         .args(["CONCORDIA_EXE", &s])
         .stdin(Stdio::null())

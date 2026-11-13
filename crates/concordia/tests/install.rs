@@ -249,6 +249,24 @@ fn update_rebuilds_and_installs_from_any_directory_once_the_checkout_is_recorded
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     record_source_root(&repo.canonicalize().unwrap());
 
+    #[cfg(windows)]
+    {
+        use concordia::update::{install_shortcut, owned_shortcut, shortcut_path};
+        let path = install_shortcut(false).unwrap();
+        let stale = sb.dir.path().join("update-stale.exe");
+        std::fs::write(&stale, b"stale").unwrap();
+        let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:L);$s.TargetPath=$env:T;$s.Arguments='--terminal';$s.Save()";
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("L", &path)
+            .env("T", &stale)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(owned_shortcut(false).unwrap().unwrap().target, stale);
+        let _ = shortcut_path(false);
+    }
+
     // A pane opened somewhere unrelated, as happens with a normal WezTerm tab.
     let elsewhere = tempfile::tempdir().unwrap();
     match update_auto(elsewhere.path()).expect("source update must work from any directory") {
@@ -263,8 +281,74 @@ fn update_rebuilds_and_installs_from_any_directory_once_the_checkout_is_recorded
                 concordia::version::VERSION,
                 concordia::version::BUILD_STAMP
             )));
+            #[cfg(windows)]
+            assert_eq!(
+                concordia::update::owned_shortcut(false)
+                    .unwrap()
+                    .unwrap()
+                    .target,
+                sb.concordia_exe()
+            );
         }
         UpdateOutcome::UpToDate(m) => panic!("a source update always installs: {m}"),
     }
     assert!(sb.concordia_exe().is_file());
+}
+
+#[cfg(windows)]
+#[test]
+fn install_repairs_a_stale_start_shortcut_and_leaves_a_current_one_untouched() {
+    use concordia::update::{owned_shortcut, shortcut_path, sync_owned_shortcuts};
+
+    let sb = Sandbox::new();
+    let installed = Command::new(CONCORDIA)
+        .arg("install")
+        .env("CONCORDIA_INSTALL_DIR", sb.dir.path())
+        .env("CONCORDIA_TEST_GUARD", "1")
+        .env("CONCORDIA_TEST_HOME", sb.dir.path().join("home"))
+        .env("CONCORDIA_STATE_DIR", sb.dir.path().join("state"))
+        .output()
+        .unwrap();
+    assert!(installed.status.success(), "{}", String::from_utf8_lossy(&installed.stderr));
+    let path = shortcut_path(false).unwrap();
+    let stale = sb.dir.path().join("stale.exe");
+    std::fs::write(&stale, b"stale").unwrap();
+    let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:L);$s.TargetPath=$env:T;$s.Arguments='--terminal';$s.WorkingDirectory='C:\\stale';$s.IconLocation=$env:T;$s.Save()";
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("L", &path)
+        .env("T", &stale)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    sync_owned_shortcuts().unwrap();
+    let repaired = owned_shortcut(false).unwrap().unwrap();
+    assert_eq!(repaired.target, sb.concordia_exe());
+    assert!(repaired.args.is_empty());
+
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    sync_owned_shortcuts().unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
+}
+
+#[cfg(windows)]
+#[test]
+fn removed_start_shortcut_is_not_recreated_by_an_update_sync() {
+    use concordia::update::{remove_shortcut, shortcut_path, sync_owned_shortcuts};
+
+    let sb = Sandbox::new();
+    Command::new(CONCORDIA)
+        .arg("install")
+        .env("CONCORDIA_INSTALL_DIR", sb.dir.path())
+        .env("CONCORDIA_TEST_GUARD", "1")
+        .env("CONCORDIA_TEST_HOME", sb.dir.path().join("home"))
+        .env("CONCORDIA_STATE_DIR", sb.dir.path().join("state"))
+        .output()
+        .unwrap();
+    let path = shortcut_path(false).unwrap();
+    assert!(path.is_file());
+    remove_shortcut(false).unwrap();
+    sync_owned_shortcuts().unwrap();
+    assert!(!path.exists());
 }

@@ -195,6 +195,9 @@ async fn main() -> Result<()> {
         Command::Install => match concordia::update::install_self() {
             Ok(r) => {
                 println!("installed {}", r.installed.display());
+                if let Ok(path) = concordia::update::shortcut_path(false) {
+                    println!("shortcut {}", path.display());
+                }
                 if r.path_added {
                     println!(
                         "added {} to your PATH",

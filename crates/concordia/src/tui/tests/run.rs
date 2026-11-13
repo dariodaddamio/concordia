@@ -125,6 +125,21 @@ fn update_check_failure_is_visible_on_the_page() {
 }
 
 #[test]
+fn background_update_notice_is_visible_without_opening_the_update_panel() {
+    let mut h = Harness::new(90, 28);
+    h.app.job = Some(spawn_job(JobKind::Check, |_| {
+        JR::Check(Ok(update_preview(true, 0)))
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.app.job.is_some() && Instant::now() < deadline {
+        h.app.poll_job();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(h.transcript_text().contains("A Concordia update is ready"));
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
 fn the_update_screen_wraps_bullets_under_their_text() {
     let mut h = Harness::new(70, 30);
     update_screen(&mut h, update_preview(true, 0));

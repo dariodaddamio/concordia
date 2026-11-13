@@ -410,6 +410,12 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
     out.push(check_binary(env));
     out.push(check_pointer(env));
     out.push(check_path_resolution(env));
+    if let Some(row) = check_shortcut(false) {
+        out.push(row);
+    }
+    if let Some(row) = check_shortcut(true) {
+        out.push(row);
+    }
     out.push(check_state_dir(&env.state_root));
     out.push(check_store(&env.state_root));
     out.extend(check_unopenable_chats(&env.state_root));
@@ -569,6 +575,31 @@ fn check_pointer(env: &Env<'_>) -> Check {
                 )
             }
         }
+    }
+}
+
+fn check_shortcut(desktop: bool) -> Option<Check> {
+    let path = crate::update::shortcut_path(desktop).ok()?;
+    let actual = crate::update::owned_shortcut(desktop).ok()??;
+    let active = crate::update::resolve_active_exe();
+    let name = if desktop { "shortcut-desktop" } else { "shortcut" };
+    if same_file(&actual.target, &active) {
+        Some(check(
+            Level::Ok,
+            name,
+            format!("{} -> {}", path.display(), actual.target.display()),
+        ))
+    } else {
+        Some(check(
+            Level::Fail,
+            name,
+            format!(
+                "{} points to {}, not the active build {}; run `concordia install`",
+                path.display(),
+                actual.target.display(),
+                active.display()
+            ),
+        ))
     }
 }
 

@@ -1,5 +1,14 @@
 ## This slice
 
+### Q4 updates, shortcuts and guided commands - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/update.rs, crates/concordia/src/main.rs, crates/concordia/src/doctor.rs | ok: 1, 4, 5, 6, 10 | Keep shortcut comparison, removal state and repair in the existing update owner; callers only trigger the bounded check, and delete the obsolete WezTerm path. |
+| crates/concordia/src/tui/{run.rs,app/state.rs,window_session.rs}, crates/concordia/src/config.rs | ok: 1, 4, 6, 9 | Reuse the existing job, tab snapshot and recovery owners for launch checks and restart choice; add one persisted update preference rather than a second state store. |
+| crates/concordia/src/harness/command.rs, crates/concordia/src/tui/{app/slash.rs,integrations.rs}, crates/concordia/tests | ok: 1, 4, 5, 9, 10 | Extend the existing guided-command and review surfaces only where argument-taking commands currently bypass them; tests exercise user-visible panels and keep mutation confirmation in the existing picker. |
+| crates/concordia/src/version.rs, CHANGELOG.md, docs | ok: 5, 10 | Record shipped behavior in the existing release metadata and canonical documentation. |
+
 ### Q2 topbar lane - anti-slop gate
 
 | path | tendency_check | justification |

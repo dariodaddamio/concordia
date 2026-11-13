@@ -1,5 +1,14 @@
 # Changelog
 
+### Fixed (2026-11-13f)
+
+- `concordia install` creates and repairs the owned Start menu shortcut. Updates and launch repair
+  stale shortcut targets, arguments, working directories and icons without recreating an explicit
+  removal.
+- Launch checks for updates in the background and reports a ready build without interrupting the
+  current chat.
+- Added `[updates].install_on_launch` for users who want a prepared update installed at startup.
+
 ### Fixed (2026-11-13e)
 
 - Added the tab and activity shortcuts and the complete tab and tool icon legend to F1.

@@ -21,6 +21,12 @@ pub struct Config {
     pub editor: EditorConfig,
     pub continuation: Continuation,
     pub turn: TurnConfig,
+    pub updates: UpdateConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateConfig {
+    pub install_on_launch: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +172,9 @@ impl Default for Config {
             turn: TurnConfig {
                 idle_timeout_minutes: 10,
             },
+            updates: UpdateConfig {
+                install_on_launch: false,
+            },
         }
     }
 }
@@ -276,6 +285,7 @@ impl Config {
                         | "editor"
                         | "continuation"
                         | "turn"
+                        | "updates"
                         | "crews"
                 ) {
                     warnings.push(format!("[{section}] must be a table; ignored"));
@@ -317,6 +327,9 @@ impl Config {
                         Some(n) if n >= 0 => cfg.turn.idle_timeout_minutes = n as u64,
                         _ => warnings.push("turn.idle_timeout_minutes must be a nonnegative integer; using 10".into()),
                     },
+                    "updates.install_on_launch" => {
+                        set_bool(v, &full, &mut cfg.updates.install_on_launch, &mut warnings)
+                    }
                     "editor.program" => match v.as_str() {
                         Some(program) if !program.trim().is_empty() => cfg.editor.program = program.into(),
                         _ => warnings.push("editor.program must be a nonempty executable path".into()),
@@ -514,6 +527,14 @@ mod tests {
         assert!(!cfg.continuation.automatic);
         assert!(cfg.continuation.accounts.is_empty());
         assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn update_install_mode_is_off_by_default_and_parses() {
+        assert!(!Config::default().updates.install_on_launch);
+        let (cfg, warnings) = Config::parse("[updates]\ninstall_on_launch = true\n");
+        assert!(warnings.is_empty());
+        assert!(cfg.updates.install_on_launch);
     }
 
     #[test]
