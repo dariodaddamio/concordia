@@ -2261,3 +2261,282 @@ fn pasted_spacing_blank_lines_and_line_endings_reach_the_provider_unchanged() {
 
 
 
+
+/// Frame timing through the native test-control channel. Each measured input starts a
+/// window-side clock; the result is the first paint of a frame committed after that input.
+struct Timing {
+    ms: f64,
+    blank_paints: usize,
+    draws: Vec<f64>,
+}
+
+impl Session {
+    fn measured(&self, label: &str, mut request: Value) -> Timing {
+        self.request(serde_json::json!({"op":"timing"})); // discard earlier draw costs
+        request["measure"] = Value::String(label.into());
+        self.request(request);
+        let started = Instant::now();
+        let mut draws = Vec::new();
+        loop {
+            let timing = self.request(serde_json::json!({"op":"timing"}));
+            draws.extend(
+                timing["draws"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(Value::as_f64),
+            );
+            let start_seq = timing["start_seq"].as_u64().unwrap();
+            let paints = timing["paints"].as_array().unwrap();
+            let blank_paints = paints
+                .iter()
+                .filter(|paint| paint["filled"].as_u64() == Some(0))
+                .count();
+            if let Some(paint) = paints.iter().find(|paint| {
+                paint["seq"].as_u64().unwrap() > start_seq && paint["filled"].as_u64() != Some(0)
+            }) {
+                return Timing {
+                    ms: paint["ms"].as_f64().unwrap(),
+                    blank_paints,
+                    draws,
+                };
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "no frame painted after {label}: {timing}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Activation repaints the last frame; it must not wait for a new one or show a blank one.
+    fn measured_activation(&self) -> Timing {
+        self.request(serde_json::json!({"op":"deactivate"}));
+        std::thread::sleep(Duration::from_millis(150));
+        self.request(serde_json::json!({"op":"timing"}));
+        self.request(serde_json::json!({"op":"activate","measure":"activate"}));
+        let started = Instant::now();
+        let mut first = None;
+        // Watch long enough to see any later blank or replacement frame.
+        while started.elapsed() < Duration::from_millis(600) || first.is_none() {
+            let timing = self.request(serde_json::json!({"op":"timing"}));
+            let paints = timing["paints"].as_array().unwrap().clone();
+            if first.is_none() {
+                first = paints.first().map(|paint| paint["ms"].as_f64().unwrap());
+            }
+            if started.elapsed() >= Duration::from_millis(600) && first.is_some() {
+                return Timing {
+                    ms: first.unwrap(),
+                    blank_paints: paints
+                        .iter()
+                        .filter(|paint| paint["filled"].as_u64() == Some(0))
+                        .count(),
+                    draws: Vec::new(),
+                };
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "no paint after activation"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        unreachable!()
+    }
+}
+
+fn timing_summary(samples: &[Timing]) -> Value {
+    let mut ms: Vec<f64> = samples.iter().map(|t| t.ms).collect();
+    ms.sort_by(f64::total_cmp);
+    let mut draws: Vec<f64> = samples.iter().flat_map(|t| t.draws.clone()).collect();
+    draws.sort_by(f64::total_cmp);
+    serde_json::json!({
+        "samples": ms.len(),
+        "median_ms": ms[ms.len() / 2],
+        "worst_ms": ms[ms.len() - 1],
+        "draw_median_ms": draws.get(draws.len() / 2),
+        "draw_worst_ms": draws.last(),
+        "blank_paints": samples.iter().map(|t| t.blank_paints).sum::<usize>(),
+    })
+}
+
+#[test]
+#[ignore = "native-window render timing journey with a fake provider"]
+fn render_timing_with_a_long_transcript_in_two_tabs() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.request(serde_json::json!({"op":"resize","columns":120,"rows":40}));
+    s.submit("[bulk 500]");
+    s.until_with_timeout("first long transcript", Duration::from_secs(90), |s| {
+        s.screen().contains("BULK_DONE_500")
+    });
+    s.send("\x14"); // Ctrl+T: a second tab
+    std::thread::sleep(Duration::from_millis(300));
+    s.submit("[bulk 500]");
+    s.until_with_timeout("second long transcript", Duration::from_secs(90), |s| {
+        s.screen().contains("BULK_DONE_500")
+    });
+    std::thread::sleep(Duration::from_millis(500));
+
+    let mut report = serde_json::Map::new();
+    let typing: Vec<_> = "the quick brown fox jumps over"
+        .chars()
+        .map(|c| {
+            let t = s.measured("type", serde_json::json!({"op":"key","code":c.to_string()}));
+            std::thread::sleep(Duration::from_millis(30));
+            t
+        })
+        .collect();
+    report.insert("typing".into(), timing_summary(&typing));
+    let mut scroll = Vec::new();
+    for kind in ["scroll_up", "scroll_down"] {
+        for _ in 0..15 {
+            scroll.push(s.measured(
+                "scroll",
+                serde_json::json!({"op":"mouse","kind":kind,"x":60,"y":15}),
+            ));
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+    report.insert("scroll".into(), timing_summary(&scroll));
+    let tabs: Vec<_> = (0..12)
+        .map(|_| {
+            let t = s.measured(
+                "tab",
+                serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL"]}),
+            );
+            std::thread::sleep(Duration::from_millis(60));
+            t
+        })
+        .collect();
+    report.insert("tab_switch".into(), timing_summary(&tabs));
+    let resize: Vec<_> = (0..6)
+        .map(|i| {
+            let (columns, rows) = if i % 2 == 0 { (100, 34) } else { (120, 40) };
+            let t = s.measured(
+                "resize",
+                serde_json::json!({"op":"resize","columns":columns,"rows":rows}),
+            );
+            std::thread::sleep(Duration::from_millis(120));
+            t
+        })
+        .collect();
+    report.insert("resize".into(), timing_summary(&resize));
+    let activation: Vec<_> = (0..5).map(|_| s.measured_activation()).collect();
+    report.insert("activation".into(), timing_summary(&activation));
+
+    let report = Value::Object(report);
+    let artifact = std::env::temp_dir().join("concordia-render-timing.json");
+    std::fs::write(&artifact, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    eprintln!("render timing ({}):\n{:#}", artifact.display(), report);
+    s.exit();
+}
+
+impl Session {
+    /// Pixel snapshot of the window as Windows composited it, compared with a fresh paint.
+    fn pixels(&self, label: &str, color: &str) -> Value {
+        std::thread::sleep(Duration::from_millis(400));
+        let check = self.request(serde_json::json!({"op":"pixels","color":color}));
+        eprintln!("pixels after {label}: {check}");
+        assert_eq!(check["ok"], true, "{label}: window capture failed: {check}");
+        check
+    }
+
+    fn click_text(&mut self, needle: &str, offset: usize) {
+        let screen = self.screen();
+        let (y, row) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, row)| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} not on screen:\n{screen}"));
+        let x = row[..row.find(needle).unwrap()].chars().count() + offset;
+        self.send(&format!(
+            "\x1b[<0;{};{}M\x1b[<0;{};{}m",
+            x + 1,
+            y + 1,
+            x + 1,
+            y + 1
+        ));
+    }
+}
+
+fn assert_clean(check: &Value, label: &str) {
+    assert_eq!(check["differ"], 0, "{label}: window differs from a fresh paint: {check}");
+    for image in check["images"].as_array().unwrap() {
+        assert_eq!(image["stale"], 0, "{label}: stale pixels in an image area: {check}");
+    }
+}
+
+#[test]
+#[ignore = "native-window image pixel journey with a fake provider"]
+fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let image = dir.path().join("workspace").join("wide.png");
+    // A wide, solid magenta image: its exact colour never occurs in the interface.
+    image::RgbaImage::from_pixel(320, 120, image::Rgba([255, 0, 255, 255]))
+        .save(&image)
+        .unwrap();
+    let magenta = "ff00ff";
+    let mut s = Session::launch(dir.path());
+    s.request(serde_json::json!({"op":"resize","columns":120,"rows":40}));
+    s.paste(&format!("\"{}\"", image.display()));
+    s.until("attached image banner", |s| {
+        s.screen().contains("Image 1: wide.png") && s.screen().contains('▀')
+    });
+    let banner = s.pixels("banner", magenta);
+    assert_clean(&banner, "banner");
+    assert!(banner["color_count"].as_u64().unwrap() > 0, "image not painted: {banner}");
+
+    s.request(serde_json::json!({"op":"resize","columns":96,"rows":32}));
+    assert_clean(&s.pixels("banner resize", magenta), "banner resize");
+
+    // Growing the composer moves the banner.
+    s.paste("first line\nsecond line\nthird line\nfourth line");
+    assert_clean(&s.pixels("banner move", magenta), "banner move");
+
+    s.click_text("Image 1: wide.png", 0);
+    s.until("image modal", |s| s.screen().contains("cell preview"));
+    assert_clean(&s.pixels("modal", magenta), "modal");
+    s.request(serde_json::json!({"op":"resize","columns":120,"rows":40}));
+    assert_clean(&s.pixels("modal resize", magenta), "modal resize");
+    s.send("\x1b");
+    s.until("modal closed", |s| !s.screen().contains("cell preview"));
+    assert_clean(&s.pixels("modal close", magenta), "modal close");
+
+    let screen = s.screen();
+    let row = screen
+        .lines()
+        .find(|row| row.contains("Image 1: wide.png"))
+        .unwrap()
+        .to_owned();
+    let label = row.find("Image 1: wide.png").unwrap();
+    let close = label + row[label..].find(" X ").unwrap();
+    let prefix = row[..close].chars().count() - row[..label].chars().count();
+    s.click_text("Image 1: wide.png", prefix + 1);
+    s.until("image removed", |s| !s.screen().contains("Image 1: wide.png"));
+    let removed = s.pixels("image removed", magenta);
+    assert_clean(&removed, "image removed");
+    assert_eq!(removed["color_count"], 0, "image pixels left after removal: {removed}");
+    s.exit();
+}
+
+#[test]
+#[ignore = "native-window activation journey with a fake provider"]
+fn activation_repaints_the_last_frame_without_a_blank_one() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.submit("activation probe");
+    s.until("reply", |s| s.screen().contains("FAKE REPLY: activation probe"));
+    for _ in 0..3 {
+        let timing = s.measured_activation();
+        assert_eq!(timing.blank_paints, 0, "a blank frame was painted on activation");
+        assert!(timing.ms < 16.0, "activation took {} ms to repaint", timing.ms);
+        assert!(s.screen().contains("FAKE REPLY: activation probe"));
+    }
+    s.exit();
+}

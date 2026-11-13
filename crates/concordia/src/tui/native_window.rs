@@ -64,6 +64,8 @@ struct Screen {
     cursor_visible: bool,
     title: String,
     images: Vec<RasterImage>,
+    /// Frames committed by `Backend::flush`; test timing ties paints to the frame they show.
+    seq: u64,
 }
 impl Screen {
     fn resize(&mut self, cols: u16, rows: u16, pixels: Size) {
@@ -95,6 +97,12 @@ struct TestState {
     focused_tab: String,
     overlays: Vec<String>,
     status_dot: String,
+    /// Test-only frame timing: the label, start and committed frame of the measured input.
+    measure: Option<(String, std::time::Instant, u64)>,
+    /// Every paint since `measure` started: milliseconds, frame shown and non-blank cells.
+    paints: Vec<(f64, u64, usize)>,
+    /// Application draw durations in milliseconds, newest last.
+    draws: Vec<f64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -161,6 +169,7 @@ fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend
             cursor_visible: false,
             title: "Concordia".into(),
             images: Vec::new(),
+            seq: 0,
         }),
         requested_status: Mutex::new(StatusDot::Idle),
         test_control: std::env::var_os("CONCORDIA_TEST_CONTROL").map(|_| TestControl::default()),
@@ -204,6 +213,17 @@ impl WindowBackend {
         let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
         state.focused_tab = focused_tab;
         state.overlays = overlays;
+    }
+    /// Test-only: record how long the application spent producing one frame.
+    pub(super) fn note_draw(&mut self, elapsed: Duration) {
+        let Some(test) = self.shared.test_control.as_ref() else {
+            return;
+        };
+        let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.draws.len() >= 4096 {
+            state.draws.clear();
+        }
+        state.draws.push(elapsed.as_secs_f64() * 1000.0);
     }
     pub(super) fn set_status_dot(&mut self, status: StatusDot) {
         *self.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
@@ -408,6 +428,7 @@ impl Backend for WindowBackend {
     }
     fn flush(&mut self) -> io::Result<()> {
         if self.shared.dirty.swap(false, Ordering::AcqRel) {
+            self.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).seq += 1;
             self.post(UPDATE)?;
         }
         Ok(())
@@ -843,6 +864,16 @@ impl Window {
                 }
             }
         }
+        if let Some(test) = self.shared.test_control.as_ref() {
+            let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, started, _)) = &state.measure {
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                let filled = screen.cells.iter().filter(|cell| cell.symbol() != " ").count();
+                if state.paints.len() < 1024 {
+                    state.paints.push((elapsed, screen.seq, filled));
+                }
+            }
+        }
         surface.columns = screen.size.width;
         surface.rows = screen.size.height;
         surface.cells = screen.cells;
@@ -1053,6 +1084,30 @@ fn test_key(value: &str) -> Option<KeyCode> {
 }
 
 fn test_response(shared: &Shared, request: &serde_json::Value) -> serde_json::Value {
+    if request.get("op").and_then(|v| v.as_str()) == Some("timing") {
+        let Some(test) = shared.test_control.as_ref() else {
+            return serde_json::json!({"ok": false, "error": "test control disabled"});
+        };
+        let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (label, start_seq) = state
+            .measure
+            .as_ref()
+            .map(|(label, _, seq)| (label.clone(), *seq))
+            .unwrap_or_default();
+        let paints = state
+            .paints
+            .iter()
+            .map(|(ms, seq, filled)| serde_json::json!({"ms": ms, "seq": seq, "filled": filled}))
+            .collect::<Vec<_>>();
+        let draws = std::mem::take(&mut state.draws);
+        return serde_json::json!({
+            "ok": true,
+            "label": label,
+            "start_seq": start_seq,
+            "paints": paints,
+            "draws": draws,
+        });
+    }
     if request.get("op").and_then(|v| v.as_str()) != Some("snapshot") {
         return serde_json::json!({"ok": true});
     }
@@ -1094,7 +1149,29 @@ unsafe fn handle_test_control(window: &mut Window) {
         queue.drain(..).collect::<Vec<_>>()
     };
     for request in requests {
+        if let Some(label) = request.request.get("measure").and_then(|v| v.as_str()) {
+            let seq = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).seq;
+            let shared = window.shared.clone();
+            let test = shared.test_control.as_ref().expect("test control is enabled");
+            let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.measure = Some((label.to_owned(), std::time::Instant::now(), seq));
+            state.paints.clear();
+        }
         match request.request.get("op").and_then(|v| v.as_str()) {
+            // Simulated Alt+Tab: the same focus messages Windows sends, without changing
+            // the foreground window of the user's desktop.
+            Some("deactivate") => {
+                let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
+                SendMessageW(hwnd, WM_ACTIVATE, WA_INACTIVE as WPARAM, 0);
+                SendMessageW(hwnd, WM_KILLFOCUS, 0, 0);
+            }
+            Some("activate") => {
+                let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
+                SendMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE as WPARAM, 0);
+                SendMessageW(hwnd, WM_SETFOCUS, 0, 0);
+                // Returning to a window also exposes it; Windows asks for a paint.
+                InvalidateRect(hwnd, null(), 0);
+            }
             Some("key") => {
                 if let Some(code) = request
                     .request
@@ -1162,9 +1239,167 @@ unsafe fn handle_test_control(window: &mut Window) {
             }
             _ => {}
         }
-        let response = test_response(&window.shared, &request.request);
+        let response = if request.request.get("op").and_then(|v| v.as_str()) == Some("pixels") {
+            pixel_check(window, &request.request)
+        } else {
+            test_response(&window.shared, &request.request)
+        };
         let _ = request.reply.send(response.to_string());
     }
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn PrintWindow(hwnd: HWND, dc: HDC, flags: u32) -> i32;
+}
+
+/// A top-down 32-bit DIB selected into its own memory DC; test-only pixel access.
+struct PixelBuffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    bits: *mut u32,
+    width: i32,
+    height: i32,
+}
+impl PixelBuffer {
+    unsafe fn new(width: i32, height: i32) -> Option<Self> {
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                ..mem::zeroed()
+            },
+            ..mem::zeroed()
+        };
+        let dc = CreateCompatibleDC(null_mut());
+        let mut bits = null_mut();
+        let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if dc.is_null() || bitmap.is_null() || bits.is_null() {
+            if !bitmap.is_null() {
+                DeleteObject(bitmap);
+            }
+            if !dc.is_null() {
+                DeleteDC(dc);
+            }
+            return None;
+        }
+        let previous = SelectObject(dc, bitmap);
+        Some(Self { dc, bitmap, previous, bits: bits.cast(), width, height })
+    }
+    fn pixel(&self, x: i32, y: i32) -> u32 {
+        // SAFETY: callers stay inside the DIB, which lives as long as `self`.
+        unsafe { *self.bits.add((y * self.width + x) as usize) & 0x00ff_ffff }
+    }
+}
+impl Drop for PixelBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.previous);
+            DeleteObject(self.bitmap);
+            DeleteDC(self.dc);
+        }
+    }
+}
+
+/// Test-only proof that the window shows no stale pixels: compare the composited window
+/// with a from-scratch paint of the current frame, and require every image area to hold
+/// only the image itself and the image background.
+unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde_json::Value {
+    let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
+    let mut client: RECT = mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    let (Some(actual), Some(fresh)) = (
+        PixelBuffer::new(client.right.max(1), client.bottom.max(1)),
+        PixelBuffer::new(client.right.max(1), client.bottom.max(1)),
+    ) else {
+        return serde_json::json!({"ok": false, "error": "no pixel buffer"});
+    };
+    // Finish only the paints Windows already has pending; never invalidate more here, or
+    // a missing invalidation would be hidden by the check itself.
+    UpdateWindow(hwnd);
+    let captured = PrintWindow(hwnd, actual.dc, 1 | 2) != 0; // client only, full content
+    let blink = window.blink;
+    window.blink = false;
+    let cached = window.surface.take();
+    window.paint(hwnd, Some(fresh.dc));
+    window.surface = cached;
+    window.blink = blink;
+    // The caret blinks independently of frames; leave its cell out of the comparison.
+    let caret = {
+        let screen = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+        screen.cursor_visible.then(|| {
+            let left = i32::from(screen.cursor.x) * window.cell_width;
+            let top = i32::from(screen.cursor.y) * window.cell_height;
+            (left, top, left + window.cell_width, top + window.cell_height)
+        })
+    };
+    let mut differ = 0usize;
+    let mut first_difference = None;
+    for y in 0..actual.height {
+        for x in 0..actual.width {
+            if caret.is_some_and(|(l, t, r, b)| x >= l && x < r && y >= t && y < b) {
+                continue;
+            }
+            if actual.pixel(x, y) != fresh.pixel(x, y) {
+                differ += 1;
+                first_difference.get_or_insert((x, y));
+            }
+        }
+    }
+    let screen = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let [red, green, blue] = super::theme::image_background();
+    let background = u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
+    let mut images = Vec::new();
+    for image in &screen.images {
+        let area = RECT {
+            left: i32::from(image.area.x) * window.cell_width,
+            top: i32::from(image.area.y) * window.cell_height,
+            right: (i32::from(image.area.right()) * window.cell_width).min(client.right),
+            bottom: (i32::from(image.area.bottom()) * window.cell_height).min(client.bottom),
+        };
+        let drawn = window.image_rect(image, &client);
+        let mut stale = 0usize;
+        for y in area.top..area.bottom {
+            for x in area.left..area.right {
+                let inside = drawn.is_some_and(|d| x >= d.left && x < d.right && y >= d.top && y < d.bottom);
+                if !inside && fresh.pixel(x, y) != background {
+                    stale += 1;
+                }
+            }
+        }
+        images.push(serde_json::json!({
+            "area": [area.left, area.top, area.right, area.bottom],
+            "drawn": drawn.map(|d| vec![d.left, d.top, d.right, d.bottom]),
+            "stale": stale,
+        }));
+    }
+    // Callers name the exact colour of a synthetic image to prove a closed image left no pixels.
+    let probe = request
+        .get("color")
+        .and_then(|v| v.as_str())
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+    let mut probe_count = 0usize;
+    if let Some(color) = probe {
+        for y in 0..actual.height {
+            for x in 0..actual.width {
+                probe_count += usize::from(actual.pixel(x, y) == color);
+            }
+        }
+    }
+    serde_json::json!({
+        "ok": captured,
+        "width": actual.width,
+        "height": actual.height,
+        "differ": differ,
+        "first_difference": first_difference,
+        "images": images,
+        "color_count": probe_count,
+    })
 }
 
 /// Tiny application status marks must never depend on a fallback font or script substitution.

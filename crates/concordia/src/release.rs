@@ -414,11 +414,6 @@ fn run_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     for (k, v) in env {
         cmd.env(k, v);
     }

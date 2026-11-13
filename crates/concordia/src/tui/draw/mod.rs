@@ -612,6 +612,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         linkify: true,
         runs: &[],
         header_files: &[],
+        decor_prefix: 0,
     };
     let live_thought = if app.expanded_activity {
         app.live_thinking.clone()
@@ -856,6 +857,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: m.role != MsgRole::Meta,
             runs: &msg_runs[i],
             header_files: msg_files[i],
+            // The card border is decoration: selection skips it and copied text starts at the status mark.
+            decor_prefix: if m.role == MsgRole::Card && displayed[i].as_deref().unwrap_or(&m.text).starts_with("│ ") {
+                2
+            } else {
+                0
+            },
         });
         let next_is_card = app
             .messages
@@ -890,6 +897,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: true,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         });
     }
     // Live assistant text while the turn is still running.
@@ -904,6 +912,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: true,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         });
     }
     if let Some(tip) = &tip_text {
@@ -919,6 +928,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: false,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         });
     }
     if app.view.link_root.as_deref() != Some(app.cwd.as_path()) {

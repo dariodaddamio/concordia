@@ -125,7 +125,7 @@ pub fn plan_login(
 pub fn login_command(plan: &LoginPlan) -> Command {
     let ps = ["-NoLogo", "-NoProfile", "-NoExit", "-Command", plan.script];
     // Provider login must be visible so the user can complete native authentication.
-    let mut cmd = Command::new("powershell.exe");
+    let mut cmd = crate::process_ui::visible_command("powershell.exe");
     cmd.args(ps);
     #[cfg(windows)]
     {

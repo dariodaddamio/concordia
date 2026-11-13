@@ -63,20 +63,9 @@ mod system {
     /// How long the UI will wait for the clipboard helper.
     const CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(8);
 
-    #[cfg(windows)]
-    fn hide_window(cmd: &mut Command) {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    #[cfg(not(windows))]
-    fn hide_window(_cmd: &mut Command) {}
-
     fn powershell(script: &str) -> Command {
         let mut cmd = crate::process_ui::command("powershell.exe");
         cmd.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script]);
-        hide_window(&mut cmd);
         cmd
     }
 
