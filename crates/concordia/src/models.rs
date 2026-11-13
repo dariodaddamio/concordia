@@ -21,7 +21,43 @@ pub struct ModelEntry {
     #[serde(default)]
     pub tier: ModelTier,
     pub source: ModelSource,
+    /// Reasoning efforts the provider lists for this model, in effort order.
+    #[serde(default)]
+    pub efforts: Vec<ModelEffort>,
+    /// The effort the provider applies when none is chosen, when it reports one.
+    #[serde(default)]
+    pub default_effort: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelEffort {
+    pub name: String,
+    /// The provider's own model id for this effort, when it encodes effort in the model id
+    /// (Cursor's `agent models` lists `model-high`, `model-low`, ...). `None` means the effort is
+    /// passed separately from the model.
+    #[serde(default)]
+    pub model_id: Option<String>,
+}
+
+impl ModelEntry {
+    pub fn effort_names(&self) -> Vec<&str> {
+        self.efforts.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    /// The model id a turn runs with for `effort`: the provider's own variant id when it has one.
+    pub fn id_for_effort(&self, effort: Option<&str>) -> &str {
+        effort
+            .and_then(|effort| self.efforts.iter().find(|e| e.name == effort))
+            .and_then(|e| e.model_id.as_deref())
+            .unwrap_or(&self.id)
+    }
+}
+
+/// Effort words the providers use, lowest first. Used only to order efforts and to recognise an
+/// effort word in a Cursor model id; which efforts a model supports always comes from the provider.
+const EFFORT_ORDER: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -78,19 +114,30 @@ fn available_at(root: &Path, provider: ProviderKind, account: &str) -> Vec<Model
     let Some(identity) = selected_identity(root, provider, account) else {
         return Vec::new();
     };
+    // The provider's own list for this account wins; without one, the provider's local metadata.
+    if let Some(cache) = read_refresh_cache(root, &identity) {
+        return cache.models;
+    }
     let mut out = Vec::new();
     let mut ids = HashSet::new();
-    if let Some(cache) = read_refresh_cache(root, &identity) {
-        merge(&mut out, &mut ids, cache.models);
-    }
-    for (id, display_name) in catalog::list_model_details(provider, &identity.home) {
-        add(
-            &mut out,
-            &mut ids,
-            entry_named(id, display_name, ModelSource::Cached),
-        );
+    for model in catalog::list_model_details(provider, &identity.home) {
+        add(&mut out, &mut ids, native_entry(model));
     }
     out
+}
+
+fn native_entry(model: catalog::NativeModel) -> ModelEntry {
+    let mut entry = entry_named(model.id, model.display_name, ModelSource::Cached);
+    entry.efforts = model
+        .efforts
+        .into_iter()
+        .map(|name| ModelEffort {
+            name,
+            model_id: None,
+        })
+        .collect();
+    entry.default_effort = model.default_effort;
+    entry
 }
 
 /// Current native metadata captured for one physical account home.
@@ -110,7 +157,7 @@ pub fn refresh(provider: ProviderKind, account: &str) -> Result<RefreshedModels,
         ProviderKind::Codex => {
             let models = catalog::list_model_details(provider, &identity.home)
                 .into_iter()
-                .map(|(id, name)| entry_named(id, name, ModelSource::Cached))
+                .map(native_entry)
                 .collect::<Vec<_>>();
             if models.is_empty() {
                 return Err(
@@ -125,7 +172,7 @@ pub fn refresh(provider: ProviderKind, account: &str) -> Result<RefreshedModels,
         ProviderKind::Grok => {
             let models = catalog::list_model_details(provider, &identity.home)
                 .into_iter()
-                .map(|(id, name)| entry_named(id, name, ModelSource::Cached))
+                .map(native_entry)
                 .collect::<Vec<_>>();
             if models.is_empty() {
                 return Err("Grok Build model metadata is unavailable; no listing was invented".into());
@@ -312,11 +359,24 @@ fn parse_claude_models(bytes: &[u8], request: &str) -> Result<Vec<ModelEntry>, S
                     !name.is_empty() && name.len() <= 512 && !name.chars().any(char::is_control)
                 })
                 .ok_or("Claude returned an invalid model display name")?;
-            add(
-                &mut entries,
-                &mut ids,
-                entry_named(id.into(), name.into(), ModelSource::ListedByCli),
-            );
+            let mut entry = entry_named(id.into(), name.into(), ModelSource::ListedByCli);
+            // `supportedEffortLevels` lists the efforts this model accepts; `supportsEffort:
+            // false` means it takes none.
+            if model["supportsEffort"].as_bool() != Some(false) {
+                entry.efforts = model["supportedEffortLevels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|effort| catalog::valid_effort(effort))
+                    .take(16)
+                    .map(|name| ModelEffort {
+                        name: name.to_owned(),
+                        model_id: None,
+                    })
+                    .collect();
+            }
+            add(&mut entries, &mut ids, entry);
         }
         observed = Some(entries);
     }
@@ -324,8 +384,13 @@ fn parse_claude_models(bytes: &[u8], request: &str) -> Result<Vec<ModelEntry>, S
 }
 
 /// Lines look like `claude-opus-5-5-high - Claude Opus 5.5 1M High`; headers and notes have no
-/// ` - ` separator or contain spaces in the id part.
+/// ` - ` separator or contain spaces in the id part. Variants that differ only by an effort word
+/// in the id become one model whose efforts point at those variant ids.
 fn parse_list_output(raw: &str) -> Vec<ModelEntry> {
+    group_effort_variants(parse_list_lines(raw))
+}
+
+fn parse_list_lines(raw: &str) -> Vec<ModelEntry> {
     raw.lines()
         .filter_map(|line| {
             let (id, name) = line.trim().split_once(" - ")?;
@@ -343,6 +408,85 @@ fn parse_list_output(raw: &str) -> Vec<ModelEntry> {
         .collect()
 }
 
+/// `(id without its effort word, effort)` when exactly one `-`-separated id token is an effort.
+fn split_effort(id: &str) -> Option<(String, &'static str)> {
+    let tokens: Vec<&str> = id.split('-').collect();
+    let mut found = tokens
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(i, t)| EFFORT_ORDER.iter().find(|e| **e == *t).map(|e| (i, *e)));
+    let (index, effort) = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    let base = tokens
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != index)
+        .map(|(_, t)| *t)
+        .collect::<Vec<_>>()
+        .join("-");
+    Some((base, effort))
+}
+
+/// The display name without the effort word the provider appended (`... 1M High`).
+fn name_without_effort(name: &str, effort: &str) -> String {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    match words.iter().rposition(|w| w.eq_ignore_ascii_case(effort)) {
+        Some(at) if words.len() > 1 => words
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != at)
+            .map(|(_, w)| *w)
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => name.to_owned(),
+    }
+}
+
+fn effort_rank(effort: &str) -> usize {
+    EFFORT_ORDER
+        .iter()
+        .position(|e| *e == effort)
+        .unwrap_or(EFFORT_ORDER.len())
+}
+
+fn group_effort_variants(entries: Vec<ModelEntry>) -> Vec<ModelEntry> {
+    let mut out: Vec<ModelEntry> = Vec::new();
+    for entry in entries {
+        let Some((base, effort)) = split_effort(&entry.id) else {
+            match out.iter_mut().find(|m| m.id == entry.id) {
+                // The plain id arrived after its variants: keep its own name.
+                Some(existing) => existing.display_name = entry.display_name,
+                None => out.push(entry),
+            }
+            continue;
+        };
+        let variant = ModelEffort {
+            name: effort.to_owned(),
+            model_id: Some(entry.id.clone()),
+        };
+        match out.iter_mut().find(|m| m.id == base) {
+            Some(group) => {
+                if !group.efforts.iter().any(|e| e.name == effort) {
+                    group.efforts.push(variant);
+                }
+            }
+            None => {
+                let name = name_without_effort(&entry.display_name, effort);
+                let mut group = entry_named(base, name, entry.source);
+                group.efforts.push(variant);
+                out.push(group);
+            }
+        }
+    }
+    for group in &mut out {
+        group.efforts.sort_by_key(|e| effort_rank(&e.name));
+    }
+    out
+}
+
 fn entry_named(id: String, display_name: String, source: ModelSource) -> ModelEntry {
     ModelEntry {
         display_name,
@@ -350,6 +494,8 @@ fn entry_named(id: String, display_name: String, source: ModelSource) -> ModelEn
         tier: catalog_tier(&id),
         id,
         source,
+        efforts: Vec::new(),
+        default_effort: None,
     }
 }
 
@@ -455,11 +601,6 @@ fn write_refresh_cache(
     crate::state_io::write_atomic(&path, &bytes)
 }
 
-fn merge(out: &mut Vec<ModelEntry>, ids: &mut HashSet<String>, items: Vec<ModelEntry>) {
-    for item in items {
-        add(out, ids, item);
-    }
-}
 fn add(out: &mut Vec<ModelEntry>, ids: &mut HashSet<String>, item: ModelEntry) {
     if ids.insert(item.id.clone()) {
         out.push(item);
@@ -526,7 +667,7 @@ mod tests {
         }
         let response = serde_json::json!({"type":"control_response","response":{"subtype":"success","request_id":"fixture-models","response":{
             "claude_code_version":crate::capacity::claude_capacity::CLI_VERSION,
-            "models":[{"value":"opus","displayName":"Native Opus","resolvedModel":"not-a-selectable-alias"},{"value":"haiku","displayName":"Native Haiku"}]
+            "models":[{"value":"opus","displayName":"Native Opus","resolvedModel":"not-a-selectable-alias","supportsEffort":true,"supportedEffortLevels":["low","high"]},{"value":"haiku","displayName":"Native Haiku","supportsEffort":false,"supportedEffortLevels":["low"]}]
         }}});
         let listed =
             parse_claude_models(response.to_string().as_bytes(), "fixture-models").unwrap();
@@ -539,6 +680,8 @@ mod tests {
         assert!(!listed
             .iter()
             .any(|model| model.id == "not-a-selectable-alias"));
+        assert_eq!(listed[0].effort_names(), ["low", "high"]);
+        assert!(listed[1].efforts.is_empty());
         let other = selected_identity(root.path(), ProviderKind::Claude, "other-fixture").unwrap();
         write_refresh_cache(
             root.path(),
@@ -598,20 +741,21 @@ mod tests {
 
     #[test]
     fn cursor_models_output_lists_every_plan_model_with_names() {
-        let raw = "Available models\n\nauto - Auto (default)\nclaude-opus-5-5-high - Claude Opus 5.5 1M High\ngrok-4.7-low-fast - Grok 4.7  Low Fast\u{200b}\u{200b}\ncursor-grok-4.6-high - Grok 4.6\n\nTip: use --model <id>\n";
+        let raw = "Available models\n\nauto - Auto (default)\nclaude-opus-5-5-high - Claude Opus 5.5 1M High\nclaude-opus-5-5-low - Claude Opus 5.5 1M Low\ngrok-4.7-low-fast - Grok 4.7  Low Fast\u{200b}\u{200b}\ncursor-grok-4.6-high - Grok 4.6\n\nTip: use --model <id>\n";
         let models = parse_list_output(raw);
         let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(
             ids,
-            [
-                "auto",
-                "claude-opus-5-5-high",
-                "grok-4.7-low-fast",
-                "cursor-grok-4.6-high"
-            ]
+            ["auto", "claude-opus-5-5", "grok-4.7-fast", "cursor-grok-4.6"]
         );
         assert_eq!(models[0].display_name, "Auto");
-        assert_eq!(models[2].display_name, "Grok 4.7 Low Fast");
+        assert!(models[0].efforts.is_empty());
+        assert_eq!(models[1].display_name, "Claude Opus 5.5 1M");
+        assert_eq!(models[1].effort_names(), ["low", "high"]);
+        assert_eq!(models[1].id_for_effort(Some("low")), "claude-opus-5-5-low");
+        assert_eq!(models[1].id_for_effort(None), "claude-opus-5-5");
+        assert_eq!(models[2].display_name, "Grok 4.7 Fast");
+        assert_eq!(models[2].id_for_effort(Some("low")), "grok-4.7-low-fast");
         assert!(models.iter().all(|m| m.source == ModelSource::ListedByCli));
     }
 
