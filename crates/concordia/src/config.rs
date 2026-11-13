@@ -169,9 +169,7 @@ impl Default for Config {
             mode: Mode {
                 default: TrustMode::Ask,
             },
-            delegation: Delegation {
-                protocol: true,
-            },
+            delegation: Delegation { protocol: true },
             editor: EditorConfig::default(),
             continuation: Continuation::default(),
             turn: TurnConfig {
@@ -439,7 +437,6 @@ impl Config {
         }
         (cfg, warnings)
     }
-
 }
 
 fn set_bool(v: &toml::Value, key: &str, slot: &mut bool, warnings: &mut Vec<String>) {
@@ -565,9 +562,8 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(config.editor.program, "nvim");
         assert_eq!(config.editor.args, ["+{line}", "--", "{file}"]);
-        let (gui, warnings) = Config::parse(
-            "[editor]\nprogram='native-editor'\n[ui]\nfile_action='editor'\n",
-        );
+        let (gui, warnings) =
+            Config::parse("[editor]\nprogram='native-editor'\n[ui]\nfile_action='editor'\n");
         assert!(warnings.is_empty());
         assert_eq!(gui.editor.launch, crate::file_open::EditorLaunch::Gui);
         assert_eq!(gui.ui.file_action, crate::file_open::FileAction::Editor);
@@ -738,7 +734,8 @@ protocol = true
 
     #[test]
     fn crew_configuration_is_ignored_after_removal() {
-        let (_, warnings) = Config::parse("[crews.default]\nlead = \"claude:opus\"\nworkers = []\n");
+        let (_, warnings) =
+            Config::parse("[crews.default]\nlead = \"claude:opus\"\nworkers = []\n");
         assert!(warnings.is_empty());
     }
 }

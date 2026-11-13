@@ -120,10 +120,12 @@ pub fn guided_lines(session: &Session<'_>, subcommand: &str) -> Vec<String> {
         "verify" | "disconnect" | "tools" => match connections::load(session.store) {
             Ok(entries) if !entries.is_empty() => {
                 for entry in entries.into_iter().take(32) {
-                        let target = entry.entries.first().map(|target| {
-                            format!("{} · {}", target.provider, target.project)
-                        }).unwrap_or_else(|| "no provider target recorded".into());
-                        lines.push(format!("  {} · {target}", entry.name));
+                    let target = entry
+                        .entries
+                        .first()
+                        .map(|target| format!("{} · {}", target.provider, target.project))
+                        .unwrap_or_else(|| "no provider target recorded".into());
+                    lines.push(format!("  {} · {target}", entry.name));
                 }
             }
             _ => lines.push("  none connected yet; use /harness connect to add one".into()),

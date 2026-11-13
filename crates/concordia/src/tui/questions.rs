@@ -850,7 +850,12 @@ impl State {
     fn doc(&self, inner: usize) -> Option<Doc> {
         let q = self.questions.get(self.current)?;
         let title = if self.questions.len() > 1 {
-            format!("{} of {} · {}", self.current + 1, self.questions.len(), q.prompt)
+            format!(
+                "{} of {} · {}",
+                self.current + 1,
+                self.questions.len(),
+                q.prompt
+            )
         } else {
             q.prompt.clone()
         };
@@ -2087,7 +2092,8 @@ mod tests {
         assert!(handle_key(app, &KeyEvent::new(code, KeyModifiers::NONE)));
     }
     fn column_of(row: &str, needle: &str) -> usize {
-        row.find(needle).unwrap_or_else(|| panic!("{needle} missing in {row:?}"))
+        row.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing in {row:?}"))
     }
 
     #[test]
@@ -2107,7 +2113,11 @@ mod tests {
         for prefix in ["p", "a", "b"] {
             for n in 0..70 {
                 let token = format!("{prefix}{n:03}");
-                assert_eq!(screen.matches(&token).count(), 1, "{token} was cut or doubled");
+                assert_eq!(
+                    screen.matches(&token).count(),
+                    1,
+                    "{token} was cut or doubled"
+                );
             }
         }
         assert!(!screen.contains('…'));
@@ -2155,7 +2165,10 @@ mod tests {
         };
         let rows = popup_rows(&mut app, width, height);
         let popup_height = rows.iter().rposition(|r| r.contains("F8")).unwrap()
-            - rows.iter().position(|r| r.contains("Which route?")).unwrap()
+            - rows
+                .iter()
+                .position(|r| r.contains("Which route?"))
+                .unwrap()
             + 1;
         assert!(popup_height <= 12, "popup is capped at 60% of the area");
         assert!(shown(&rows, 1, 19));
@@ -2194,7 +2207,11 @@ mod tests {
         for step in 1..=8 {
             press(&mut app, KeyCode::Down);
             let rows = popup_rows(&mut app, width, height);
-            assert!(shown(&rows, step + 1, 19), "option {} not fully visible", step + 1);
+            assert!(
+                shown(&rows, step + 1, 19),
+                "option {} not fully visible",
+                step + 1
+            );
         }
         press(&mut app, KeyCode::Esc);
         assert!(!app.questions.focused);

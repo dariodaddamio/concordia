@@ -406,12 +406,10 @@ pub fn run(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
     if args.first().is_some_and(|operation| operation == "thread") {
         return crate::threads::run_chat_cli(root, &args[1..]);
     }
-    if args.first().is_some_and(|s| {
-        matches!(
-            s.as_str(),
-            "recall" | "file-facts"
-        )
-    }) {
+    if args
+        .first()
+        .is_some_and(|s| matches!(s.as_str(), "recall" | "file-facts"))
+    {
         return crate::native_memory::retrieval::command(root, args).map_err(|e| (e, 2));
     }
     if args
@@ -628,7 +626,11 @@ fn run_inner(root: &Path, args: &[String]) -> Result<String, String> {
 }
 
 fn short_title(title: &str) -> String {
-    title.split_whitespace().take(5).collect::<Vec<_>>().join(" ")
+    title
+        .split_whitespace()
+        .take(5)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn repair_chats(root: &Path, args: &[String]) -> Result<String, String> {
@@ -672,17 +674,26 @@ fn repair_chats(root: &Path, args: &[String]) -> Result<String, String> {
         let backup = crate::store::store_dir(root).join(format!("chat-repair-{stamp}"));
         std::fs::create_dir_all(backup.join("tasks")).map_err(|e| e.to_string())?;
         for (diagnostic, _) in &changes {
-            let task = tasks.iter().find(|task| task.id == diagnostic.task_id).unwrap();
+            let task = tasks
+                .iter()
+                .find(|task| task.id == diagnostic.task_id)
+                .unwrap();
             let bytes = serde_json::to_vec_pretty(task).map_err(|e| e.to_string())?;
-            std::fs::write(backup.join("tasks").join(format!("{}.json", task.id)), bytes)
-                .map_err(|e| e.to_string())?;
+            std::fs::write(
+                backup.join("tasks").join(format!("{}.json", task.id)),
+                bytes,
+            )
+            .map_err(|e| e.to_string())?;
         }
         output.push_str(&format!("backup: {}\n", backup.display()));
         for (diagnostic, action) in &changes {
             if *action != "repaired" {
                 continue;
             }
-            let task = tasks.iter().find(|task| task.id == diagnostic.task_id).unwrap();
+            let task = tasks
+                .iter()
+                .find(|task| task.id == diagnostic.task_id)
+                .unwrap();
             let map_id = task.last_map.as_ref().unwrap().thread_id.clone();
             let thread_dir = root.join("threads");
             std::fs::create_dir_all(&thread_dir).map_err(|e| e.to_string())?;
@@ -699,7 +710,7 @@ fn repair_chats(root: &Path, args: &[String]) -> Result<String, String> {
                 cwd: task.workspace.clone(),
                 account: Some(diagnostic.account.clone()),
             })
-                .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
         }
         crate::store::modify_store(root, |store| {
             for (diagnostic, action) in &changes {
@@ -708,7 +719,8 @@ fn repair_chats(root: &Path, args: &[String]) -> Result<String, String> {
                 }
             }
             Ok(())
-        }).map_err(|e| e.to_string())?;
+        })
+        .map_err(|e| e.to_string())?;
     }
     for (diagnostic, action) in actions {
         let result = if dry_run && action != "still unreadable" {
@@ -718,7 +730,13 @@ fn repair_chats(root: &Path, args: &[String]) -> Result<String, String> {
         } else {
             action.to_owned()
         };
-        output.push_str(&format!("{} ({}/{}): {}\n", short_title(&diagnostic.title), diagnostic.provider.as_str(), diagnostic.account, result));
+        output.push_str(&format!(
+            "{} ({}/{}): {}\n",
+            short_title(&diagnostic.title),
+            diagnostic.provider.as_str(),
+            diagnostic.account,
+            result
+        ));
     }
     if output.is_empty() {
         output.push_str("no damaged chats found\n");
@@ -875,21 +893,25 @@ mod tests {
             .unwrap();
         }
         let before = fs::read(crate::store::store_path(dir.path())).unwrap();
-        let dry = run(
-            dir.path(),
-            &["repair".into(), "--dry-run".into()],
-        )
-        .unwrap();
+        let dry = run(dir.path(), &["repair".into(), "--dry-run".into()]).unwrap();
         assert!(dry.contains("would be repaired"));
         assert!(dry.contains("would be removed"));
-        assert_eq!(fs::read(crate::store::store_path(dir.path())).unwrap(), before);
+        assert_eq!(
+            fs::read(crate::store::store_path(dir.path())).unwrap(),
+            before
+        );
 
         let repaired = run(dir.path(), &["repair".into()]).unwrap();
         assert!(repaired.contains("backup:"));
         let backup = fs::read_dir(crate::store::store_dir(dir.path()))
             .unwrap()
             .flatten()
-            .find(|entry| entry.file_name().to_string_lossy().starts_with("chat-repair-"))
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("chat-repair-")
+            })
             .unwrap();
         assert!(backup.path().join("tasks/keep-task.json").is_file());
         assert!(backup.path().join("tasks/empty-task.json").is_file());

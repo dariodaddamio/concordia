@@ -579,7 +579,11 @@ fn check_shortcut(desktop: bool) -> Option<Check> {
     let path = crate::update::shortcut_path(desktop).ok()?;
     let actual = crate::update::owned_shortcut(desktop).ok()??;
     let active = crate::update::resolve_active_exe();
-    let name = if desktop { "shortcut-desktop" } else { "shortcut" };
+    let name = if desktop {
+        "shortcut-desktop"
+    } else {
+        "shortcut"
+    };
     if same_file(&actual.target, &active) {
         Some(check(
             Level::Ok,

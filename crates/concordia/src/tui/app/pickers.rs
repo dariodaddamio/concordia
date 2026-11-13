@@ -362,33 +362,104 @@ impl App {
         self.show_picker(PickerKind::Use, "accounts".into(), rows, true);
     }
     fn open_grok_bot_form(&mut self, existing: Option<crate::grok_bot::Routine>) {
-        let form = existing.map_or_else(crate::tui::GrokBotForm::default, |r| crate::tui::GrokBotForm {
-            account: r.account, routine_id: r.routine_id, name: r.name, webhook_url: r.webhook_url, ..Default::default()
+        let form = existing.map_or_else(crate::tui::GrokBotForm::default, |r| {
+            crate::tui::GrokBotForm {
+                account: r.account,
+                routine_id: r.routine_id,
+                name: r.name,
+                webhook_url: r.webhook_url,
+                ..Default::default()
+            }
         });
         self.grok_bot_form = Some(form);
-        self.show_picker(PickerKind::GrokBotForm, "Grok Bot routine · Tab next · final Enter saves".into(), vec![
-            PickerRow { id: "account".into(), label: "Account".into(), detail: String::new() },
-            PickerRow { id: "routine".into(), label: "Routine ID".into(), detail: String::new() },
-            PickerRow { id: "name".into(), label: "Display name".into(), detail: String::new() },
-            PickerRow { id: "url".into(), label: "Webhook URL (HTTPS)".into(), detail: String::new() },
-            PickerRow { id: "key".into(), label: "Webhook key ·••••••••".into(), detail: "stored only in Windows Credential Manager".into() },
-        ], false);
+        self.show_picker(
+            PickerKind::GrokBotForm,
+            "Grok Bot routine · Tab next · final Enter saves".into(),
+            vec![
+                PickerRow {
+                    id: "account".into(),
+                    label: "Account".into(),
+                    detail: String::new(),
+                },
+                PickerRow {
+                    id: "routine".into(),
+                    label: "Routine ID".into(),
+                    detail: String::new(),
+                },
+                PickerRow {
+                    id: "name".into(),
+                    label: "Display name".into(),
+                    detail: String::new(),
+                },
+                PickerRow {
+                    id: "url".into(),
+                    label: "Webhook URL (HTTPS)".into(),
+                    detail: String::new(),
+                },
+                PickerRow {
+                    id: "key".into(),
+                    label: "Webhook key ·••••••••".into(),
+                    detail: "stored only in Windows Credential Manager".into(),
+                },
+            ],
+            false,
+        );
     }
 
     pub(in crate::tui) fn grok_bot_form_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(form) = self.grok_bot_form.as_mut() else { return };
+        let Some(form) = self.grok_bot_form.as_mut() else {
+            return;
+        };
         let active = form.active;
         match key.code {
-            crossterm::event::KeyCode::Esc => { self.grok_bot_form = None; self.dismiss_picker(); }
+            crossterm::event::KeyCode::Esc => {
+                self.grok_bot_form = None;
+                self.dismiss_picker();
+            }
             crossterm::event::KeyCode::Tab => form.active = (active + 1) % 5,
             crossterm::event::KeyCode::Enter if active < 4 => form.active += 1,
-            crossterm::event::KeyCode::Backspace => match active { 0 => { form.account.pop(); }, 1 => { form.routine_id.pop(); }, 2 => { form.name.pop(); }, 3 => { form.webhook_url.pop(); }, _ => { form.key.pop(); } },
-            crossterm::event::KeyCode::Char(c) if !c.is_control() => match active { 0 => form.account.push(c), 1 => form.routine_id.push(c), 2 => form.name.push(c), 3 => form.webhook_url.push(c), _ => form.key.push(c) },
+            crossterm::event::KeyCode::Backspace => match active {
+                0 => {
+                    form.account.pop();
+                }
+                1 => {
+                    form.routine_id.pop();
+                }
+                2 => {
+                    form.name.pop();
+                }
+                3 => {
+                    form.webhook_url.pop();
+                }
+                _ => {
+                    form.key.pop();
+                }
+            },
+            crossterm::event::KeyCode::Char(c) if !c.is_control() => match active {
+                0 => form.account.push(c),
+                1 => form.routine_id.push(c),
+                2 => form.name.push(c),
+                3 => form.webhook_url.push(c),
+                _ => form.key.push(c),
+            },
             crossterm::event::KeyCode::Enter => {
-                let routine = crate::grok_bot::Routine { provider: "grok-bot".into(), account: form.account.trim().into(), routine_id: form.routine_id.trim().into(), name: form.name.trim().into(), description: String::new(), webhook_url: form.webhook_url.trim().into() };
+                let routine = crate::grok_bot::Routine {
+                    provider: "grok-bot".into(),
+                    account: form.account.trim().into(),
+                    routine_id: form.routine_id.trim().into(),
+                    name: form.name.trim().into(),
+                    description: String::new(),
+                    webhook_url: form.webhook_url.trim().into(),
+                };
                 let result = crate::grok_bot::register(&self.state_root, routine, &form.key);
-                self.grok_bot_form = None; self.dismiss_picker();
-                match result { Ok(()) => self.push_system("Grok Bot routine saved; key is stored only in Credential Manager"), Err(e) => self.push_system(format!("Grok Bot setup failed · {e}")) }
+                self.grok_bot_form = None;
+                self.dismiss_picker();
+                match result {
+                    Ok(()) => self.push_system(
+                        "Grok Bot routine saved; key is stored only in Credential Manager",
+                    ),
+                    Err(e) => self.push_system(format!("Grok Bot setup failed · {e}")),
+                }
             }
             _ => {}
         }
@@ -476,11 +547,15 @@ impl App {
                     .any(|available| available == model)
             })
         }) {
-            rows.insert(0, PickerRow {
-                id: format!("continue:{} {model}", self.account),
-                label: format!("Fallback model: {model}"),
-                detail: "configured for the general role; current account usage is shown above".into(),
-            });
+            rows.insert(
+                0,
+                PickerRow {
+                    id: format!("continue:{} {model}", self.account),
+                    label: format!("Fallback model: {model}"),
+                    detail: "configured for the general role; current account usage is shown above"
+                        .into(),
+                },
+            );
         }
         if let Some(home) = &self.home_path {
             rows.extend(
@@ -715,33 +790,58 @@ impl App {
             .into_iter()
             .filter_map(|account| {
                 let home = account.home_path?;
-                let snap = self.usage_fetcher.snapshot(account.provider, &account.account, &home);
+                let snap = self
+                    .usage_fetcher
+                    .snapshot(account.provider, &account.account, &home);
                 Some(PickerRow {
                     id: format!("provider:{}", account.account),
-                    label: format!("{} · {}", account.provider.as_str(), self.named_account(account.provider, &account.account)),
+                    label: format!(
+                        "{} · {}",
+                        account.provider.as_str(),
+                        self.named_account(account.provider, &account.account)
+                    ),
                     detail: snap.used_left_text(),
                 })
             })
             .collect();
-        self.show_picker(PickerKind::Provider, "providers and accounts".into(), rows, false);
+        self.show_picker(
+            PickerKind::Provider,
+            "providers and accounts".into(),
+            rows,
+            false,
+        );
     }
 
     pub(in crate::tui) fn open_effort_picker(&mut self) {
-        let Some(model) = crate::models::find_at(
-            &self.state_root,
-            self.provider,
-            &self.account,
-            &self.model,
-        ) else {
+        let Some(model) =
+            crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
+        else {
             self.push_system("effort - provider did not report options for this model");
             return;
         };
-        let rows = model.efforts.into_iter().map(|effort| PickerRow {
-            id: format!("effort:{}", effort.name),
-            label: format!("{}{}", effort.name, if self.effort.as_deref() == Some(effort.name.as_str()) { " · current" } else { "" }),
-            detail: "provider-reported model effort".into(),
-        }).collect();
-        self.show_picker(PickerKind::Effort, format!("effort · {}", model.display_name), rows, false);
+        let rows = model
+            .efforts
+            .into_iter()
+            .map(|effort| PickerRow {
+                id: format!("effort:{}", effort.name),
+                label: format!(
+                    "{}{}",
+                    effort.name,
+                    if self.effort.as_deref() == Some(effort.name.as_str()) {
+                        " · current"
+                    } else {
+                        ""
+                    }
+                ),
+                detail: "provider-reported model effort".into(),
+            })
+            .collect();
+        self.show_picker(
+            PickerKind::Effort,
+            format!("effort · {}", model.display_name),
+            rows,
+            false,
+        );
     }
     pub(in crate::tui) fn refresh_model_picker(&mut self) {
         if self.model_refresh.is_some() {
@@ -1243,11 +1343,28 @@ impl App {
                     return;
                 }
                 if let Some(routine_id) = id.strip_prefix("use-grok-bot:") {
-                    self.show_picker(PickerKind::GrokBotActions, "Grok Bot routine".into(), vec![
-                        PickerRow { id: format!("edit:{routine_id}"), label: "edit routine".into(), detail: "replace URL or key".into() },
-                        PickerRow { id: format!("rotate:{routine_id}"), label: "rotate callback token".into(), detail: "invalidate the previous token".into() },
-                        PickerRow { id: format!("remove:{routine_id}"), label: "remove routine".into(), detail: "stop listening when this is the last routine".into() },
-                    ], false);
+                    self.show_picker(
+                        PickerKind::GrokBotActions,
+                        "Grok Bot routine".into(),
+                        vec![
+                            PickerRow {
+                                id: format!("edit:{routine_id}"),
+                                label: "edit routine".into(),
+                                detail: "replace URL or key".into(),
+                            },
+                            PickerRow {
+                                id: format!("rotate:{routine_id}"),
+                                label: "rotate callback token".into(),
+                                detail: "invalidate the previous token".into(),
+                            },
+                            PickerRow {
+                                id: format!("remove:{routine_id}"),
+                                label: "remove routine".into(),
+                                detail: "stop listening when this is the last routine".into(),
+                            },
+                        ],
+                        false,
+                    );
                     return;
                 }
                 if id == "use-add" {
@@ -1279,11 +1396,28 @@ impl App {
             PickerKind::GrokBotActions => {
                 let (action, routine_id) = id.split_once(':').unwrap_or(("", ""));
                 if action == "edit" {
-                    self.open_grok_bot_form(crate::grok_bot::list(&self.state_root).into_iter().find(|r| r.routine_id == routine_id));
+                    self.open_grok_bot_form(
+                        crate::grok_bot::list(&self.state_root)
+                            .into_iter()
+                            .find(|r| r.routine_id == routine_id),
+                    );
                 } else if action == "rotate" {
-                    match crate::grok_bot::rotate_callback_token(&self.state_root) { Ok(_) => self.push_system("Grok Bot callback token rotated"), Err(e) => self.push_system(format!("callback token rotation failed · {e}")) }
+                    match crate::grok_bot::rotate_callback_token(&self.state_root) {
+                        Ok(_) => self.push_system("Grok Bot callback token rotated"),
+                        Err(e) => self.push_system(format!("callback token rotation failed · {e}")),
+                    }
                 } else if action == "remove" {
-                    if let Some(r) = crate::grok_bot::list(&self.state_root).into_iter().find(|r| r.routine_id == routine_id) { let _ = crate::grok_bot::remove(&self.state_root, &r.provider, &r.account, &r.routine_id); }
+                    if let Some(r) = crate::grok_bot::list(&self.state_root)
+                        .into_iter()
+                        .find(|r| r.routine_id == routine_id)
+                    {
+                        let _ = crate::grok_bot::remove(
+                            &self.state_root,
+                            &r.provider,
+                            &r.account,
+                            &r.routine_id,
+                        );
+                    }
                     self.build_use_picker();
                 }
             }
@@ -1332,8 +1466,7 @@ impl App {
                         self.provider,
                         &self.account,
                         &self.model,
-                    )
-                    {
+                    ) {
                         let selected_id = entry.id_for_effort(Some(effort)).to_owned();
                         if selected_id != self.model && !selected_id.is_empty() {
                             let _ = set_model(&self.state_root, &selected_id);

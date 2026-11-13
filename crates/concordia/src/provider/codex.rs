@@ -1,5 +1,5 @@
 use crate::provider::stream_cards::{
-    StreamCard, StreamPart, parse_codex_stream_chunk, upsert_card,
+    parse_codex_stream_chunk, upsert_card, StreamCard, StreamPart,
 };
 use crate::store::TrustMode;
 use anyhow::Result;
@@ -68,7 +68,10 @@ pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Res
     }
     if let Some(context) = req.standing_context.filter(|text| !text.is_empty()) {
         argv.push("-c".into());
-        argv.push(format!("developer_instructions={}", serde_json::to_string(context)?));
+        argv.push(format!(
+            "developer_instructions={}",
+            serde_json::to_string(context)?
+        ));
     }
     if let Some(sid) = req
         .native_session_id

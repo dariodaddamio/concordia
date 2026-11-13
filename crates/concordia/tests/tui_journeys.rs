@@ -2,10 +2,7 @@
 //! Every provider path, account home, workspace and state folder is isolated.
 #![cfg(windows)]
 
-use concordia::store::{
-    save_store, OrchestratorStore, ProviderKind,
-    StoredAccount, UseSelection,
-};
+use concordia::store::{save_store, OrchestratorStore, ProviderKind, StoredAccount, UseSelection};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -530,7 +527,9 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     std::thread::sleep(Duration::from_millis(120));
     s.request(serde_json::json!({"op":"key","code":"1"}));
     s.request(serde_json::json!({"op":"key","code":"Enter"}));
-    s.until("question answer is working", |s| s.status_dot() == "working");
+    s.until("question answer is working", |s| {
+        s.status_dot() == "working"
+    });
     s.release();
     s.until("question answer resolves in the chat", |s| {
         s.screen().contains("Native approval handled")
@@ -538,7 +537,6 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     s.until("app-server turn is idle", |s| s.status_dot() == "idle");
     s.exit();
 }
-
 
 #[test]
 #[ignore = "isolated slash-command and shared skill lifecycle; no provider turns"]
@@ -968,8 +966,6 @@ fn workspace_files_complete_without_mentions_and_send_now_interrupts_then_sends_
     s.exit();
 }
 
-
-
 #[test]
 #[ignore = "30-second isolated idle/input soak; no provider turns"]
 fn idle_focus_and_caret_soak_preserves_draft_and_has_bounded_memory_growth() {
@@ -1118,6 +1114,72 @@ fn terminal_word_deletion_usage_and_focus_repaint() {
         s.prompts().is_empty(),
         "UI commands must not spend provider turns"
     );
+    s.exit();
+}
+
+#[test]
+#[ignore = "Home screen journey through the native control channel"]
+fn home_intro_and_connected_usage_keep_the_requested_details_visible() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let usage = dir.path().join("profile/.codex/tmp");
+    std::fs::create_dir_all(&usage).unwrap();
+    std::fs::write(
+        usage.join("rate_limits.json"),
+        serde_json::json!({
+            "primary": {"used_percent": 23, "window_minutes": 300},
+            "secondary": {"used_percent": 61, "window_minutes": 10080}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut s = Session::launch(dir.path());
+    s.request(serde_json::json!({"op":"resize","columns":113,"rows":26}));
+    s.send("\x1b[D");
+    s.until("Home usage rows", |s| {
+        let screen = s.screen();
+        screen.contains("Documentation")
+            && screen.contains("F1  Shortcuts")
+            && screen.contains("Fixed (2026-11-13q)")
+            && screen.contains("Fixed (2026-11-13p)")
+            && screen.contains("Fixed (2026-11-13o)")
+            && screen.contains("5h")
+            && screen.contains("reset unavailable")
+            && screen.contains("codex codex")
+            && screen.contains("claude claude")
+            && screen.contains("cursor cursor")
+    });
+    let screen = s.screen();
+    assert!(!screen.contains("Continue a chat or start a new one."));
+    assert!(!screen.contains("+"));
+    let (documentation_y, documentation_line) = screen
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("Documentation"))
+        .expect("Documentation link is visible");
+    let documentation_x = documentation_line
+        .chars()
+        .position(|character| character == 'D')
+        .expect("Documentation link has a start")
+        + 1;
+    s.send(&format!(
+        "\x1b[<0;{};{}M\x1b[<0;{};{}m",
+        documentation_x,
+        documentation_y + 1,
+        documentation_x,
+        documentation_y + 1
+    ));
+    std::thread::sleep(Duration::from_millis(250));
+    let after_documentation = s.screen();
+    assert!(!after_documentation.contains("opener exited"));
+    let artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/preview/X1")
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/preview/X1"));
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    std::fs::write(artifact_dir.join("check-1.txt"), &after_documentation).unwrap();
+    std::fs::write(artifact_dir.join("check-2.txt"), &screen).unwrap();
     s.exit();
 }
 
@@ -1747,6 +1809,11 @@ fn native_subagents_can_be_inspected_live_and_after_completion() {
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
     let mut s = Session::launch(dir.path());
+    s.send("\x07");
+    s.until("empty Agents view from Home", |s| {
+        s.screen().contains("Agents ·") && s.screen().contains("No agents reported")
+    });
+    s.send("\x1b");
     s.submit("[wait] [agents] inspect children");
     s.until("agent badge visible while provider waits", |s| {
         s.screen().contains("Ctrl+G agents 1")
@@ -2278,10 +2345,6 @@ fn pasted_spacing_blank_lines_and_line_endings_reach_the_provider_unchanged() {
     s.exit();
 }
 
-
-
-
-
 /// Frame timing through the native test-control channel. Each measured input starts a
 /// window-side clock; the result is the first paint of a frame committed after that input.
 struct Timing {
@@ -2354,7 +2417,10 @@ impl Session {
                     draws: Vec::new(),
                 };
             }
-            assert!(started.elapsed() < Duration::from_secs(10), "no paint after activation");
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "no paint after activation"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -2478,9 +2544,15 @@ impl Session {
 }
 
 fn assert_clean(check: &Value, label: &str) {
-    assert_eq!(check["differ"], 0, "{label}: window differs from a fresh paint: {check}");
+    assert_eq!(
+        check["differ"], 0,
+        "{label}: window differs from a fresh paint: {check}"
+    );
     for image in check["images"].as_array().unwrap() {
-        assert_eq!(image["stale"], 0, "{label}: stale pixels in an image area: {check}");
+        assert_eq!(
+            image["stale"], 0,
+            "{label}: stale pixels in an image area: {check}"
+        );
     }
 }
 
@@ -2504,7 +2576,10 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
     });
     let banner = s.pixels("banner", magenta);
     assert_clean(&banner, "banner");
-    assert!(banner["color_count"].as_u64().unwrap() > 0, "image not painted: {banner}");
+    assert!(
+        banner["color_count"].as_u64().unwrap() > 0,
+        "image not painted: {banner}"
+    );
 
     s.request(serde_json::json!({"op":"resize","columns":96,"rows":32}));
     assert_clean(&s.pixels("banner resize", magenta), "banner resize");
@@ -2532,10 +2607,15 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
     let close = label + row[label..].find(" X ").unwrap();
     let prefix = row[..close].chars().count() - row[..label].chars().count();
     s.click_text("Image 1: wide.png", prefix + 1);
-    s.until("image removed", |s| !s.screen().contains("Image 1: wide.png"));
+    s.until("image removed", |s| {
+        !s.screen().contains("Image 1: wide.png")
+    });
     let removed = s.pixels("image removed", magenta);
     assert_clean(&removed, "image removed");
-    assert_eq!(removed["color_count"], 0, "image pixels left after removal: {removed}");
+    assert_eq!(
+        removed["color_count"], 0,
+        "image pixels left after removal: {removed}"
+    );
     s.exit();
 }
 
@@ -2547,11 +2627,20 @@ fn activation_repaints_the_last_frame_without_a_blank_one() {
     setup(dir.path(), ProviderKind::Codex);
     let mut s = Session::launch(dir.path());
     s.submit("activation probe");
-    s.until("reply", |s| s.screen().contains("FAKE REPLY: activation probe"));
+    s.until("reply", |s| {
+        s.screen().contains("FAKE REPLY: activation probe")
+    });
     for _ in 0..3 {
         let timing = s.measured_activation();
-        assert_eq!(timing.blank_paints, 0, "a blank frame was painted on activation");
-        assert!(timing.ms < 16.0, "activation took {} ms to repaint", timing.ms);
+        assert_eq!(
+            timing.blank_paints, 0,
+            "a blank frame was painted on activation"
+        );
+        assert!(
+            timing.ms < 16.0,
+            "activation took {} ms to repaint",
+            timing.ms
+        );
         assert!(s.screen().contains("FAKE REPLY: activation probe"));
     }
     s.exit();

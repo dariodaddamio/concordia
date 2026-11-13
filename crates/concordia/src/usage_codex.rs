@@ -99,7 +99,11 @@ pub(crate) fn limits_with_buckets(result: &Value) -> Result<Value, String> {
         .or_else(|| result.get("rateLimits").filter(|v| v.is_object()))
         .cloned()
         .ok_or("Codex returned no quota windows")?;
-    let main_id = limits.get("limitId").and_then(Value::as_str).unwrap_or("codex").to_owned();
+    let main_id = limits
+        .get("limitId")
+        .and_then(Value::as_str)
+        .unwrap_or("codex")
+        .to_owned();
     let mut extra: Vec<(&String, &Value)> = by_id
         .into_iter()
         .flatten()
@@ -107,6 +111,11 @@ pub(crate) fn limits_with_buckets(result: &Value) -> Result<Value, String> {
         .take(32)
         .collect();
     extra.sort_by(|a, b| a.0.cmp(b.0));
-    limits["extra"] = Value::Array(extra.into_iter().map(|(_, bucket)| bucket.clone()).collect());
+    limits["extra"] = Value::Array(
+        extra
+            .into_iter()
+            .map(|(_, bucket)| bucket.clone())
+            .collect(),
+    );
     Ok(limits)
 }

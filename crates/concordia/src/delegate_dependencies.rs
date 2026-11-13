@@ -158,7 +158,9 @@ impl Delegates {
                 .as_ref()
                 .is_some_and(|h| is_logged_in(account.provider, h))
         {
-            return Err("worker account or login changed while waiting; reconcile explicitly".into());
+            return Err(
+                "worker account or login changed while waiting; reconcile explicitly".into(),
+            );
         }
         if let (Some(model), Some(home)) = (&job.model, &job.spec.home) {
             if !crate::models::ids_at(&recovery.state_root, job.provider, &job.account, home)

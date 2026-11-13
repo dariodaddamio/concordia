@@ -86,9 +86,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     )
     .unwrap();
     let session = "00000000-0000-4000-8000-00000000007b";
-    let long = (0..5000)
-        .map(|n| format!("long-{n} "))
-        .collect::<String>();
+    let long = (0..5000).map(|n| format!("long-{n} ")).collect::<String>();
     let native = [
         serde_json::json!({"type":"session_meta","payload":{"id":session}}),
         serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"say hello"}]}}),
@@ -111,24 +109,19 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     )
     .unwrap();
     let source = concordia::native_memory::index_bound(state.path(), &binding).unwrap();
-    let scope = concordia::native_memory::references::historical_scope(state.path(), &source.id)
-        .unwrap();
+    let scope =
+        concordia::native_memory::references::historical_scope(state.path(), &source.id).unwrap();
     let events = [
         ThreadEvent::with_text("user", "say hello").who("codex", "synthetic-codex", "m"),
-        ThreadEvent::with_text("assistant", &outcome.text)
-            .who("codex", "synthetic-codex", "m"),
+        ThreadEvent::with_text("assistant", &outcome.text).who("codex", "synthetic-codex", "m"),
         ThreadEvent::with_text("user", &long).who("codex", "synthetic-codex", "m"),
     ];
     for event in &events {
         let role = event.k.as_str();
         let body = event.text.as_deref().unwrap();
-        let reference = concordia::native_memory::references::capture_text(
-            state.path(),
-            &scope,
-            role,
-            body,
-        )
-        .unwrap();
+        let reference =
+            concordia::native_memory::references::capture_text(state.path(), &scope, role, body)
+                .unwrap();
         log.append_referenced(event, reference).unwrap();
     }
 
@@ -163,7 +156,6 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     assert!(text(&grep).contains("#1 user"));
     let range = thread_cmd(state.path(), &["read", id, "--range", "1-1"]);
     assert_eq!(text(&range).lines().count(), 1);
-
 }
 
 #[test]

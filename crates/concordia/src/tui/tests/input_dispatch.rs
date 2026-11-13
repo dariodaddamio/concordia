@@ -838,20 +838,14 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         assert!(s.contains(needle), "palette missing {needle:?}:\n{s}");
     }
     assert!(
-        s.contains(&format!(
-            "commands · {}",
-            h.app.palette_entries().len()
-        )),
+        s.contains(&format!("commands · {}", h.app.palette_entries().len())),
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);
     // The rest are one wrap away: Up jumps to the last command and scrolls it into view.
     h.key_up();
     let s = h.screen();
-    assert!(
-        s.contains("/export"),
-        "{s}"
-    );
+    assert!(s.contains("/export"), "{s}");
 }
 
 #[test]
@@ -895,10 +889,7 @@ fn arrows_move_the_selection_and_tab_completes_it() {
     h.type_str("/");
     h.key_up(); // wraps to the last command
     assert_eq!(h.app.editor.text(), "/");
-    assert_eq!(
-        h.app.palette.selected,
-        h.app.palette_entries().len() - 1
-    );
+    assert_eq!(h.app.palette.selected, h.app.palette_entries().len() - 1);
 }
 
 #[test]
@@ -1693,7 +1684,10 @@ fn model_picker_lists_provider_efforts_in_the_row() {
             family: "GPT".into(),
             tier: crate::models::ModelTier::Frontier,
             source: crate::models::ModelSource::ListedByCli,
-            efforts: vec![crate::models::ModelEffort { name: "low".into(), model_id: None }],
+            efforts: vec![crate::models::ModelEffort {
+                name: "low".into(),
+                model_id: None,
+            }],
             default_effort: Some("low".into()),
         }],
         None,
@@ -1836,7 +1830,10 @@ fn f1_snapshot_lists_tab_activity_shortcuts_and_the_icon_legend() {
         "MCP tool",
         "agent or subagent",
     ] {
-        assert!(screen.contains(text), "F1 snapshot is missing {text}:\n{screen}");
+        assert!(
+            screen.contains(text),
+            "F1 snapshot is missing {text}:\n{screen}"
+        );
     }
 }
 

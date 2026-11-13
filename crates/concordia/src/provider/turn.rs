@@ -8,9 +8,9 @@ use crate::provider::grok::{plan_grok_turn, GrokTurnRequest};
 use crate::provider::interaction::InteractionOwner;
 pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
+use crate::provider::standing_context;
 use crate::provider::stream_cards::{classify_codex_event, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
-use crate::provider::standing_context;
 #[path = "turn_acp.rs"]
 mod acp;
 #[path = "turn_appserver.rs"]
@@ -330,13 +330,11 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 model: req.model,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
-            standing_context,
+                standing_context,
             })?;
             let mut argv = plan.argv;
-            let overrides = crate::mcp_registry::codex_overrides(
-                &crate::store::default_store_root(),
-                req.cwd,
-            );
+            let overrides =
+                crate::mcp_registry::codex_overrides(&crate::store::default_store_root(), req.cwd);
             if !overrides.is_empty() {
                 let prompt = argv.pop().expect("provider prompt is always present");
                 for override_value in overrides {

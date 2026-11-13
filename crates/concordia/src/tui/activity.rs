@@ -478,12 +478,7 @@ impl Activity {
     /// Ctrl+O: expand the last collapsed item of the last message; when none is collapsed,
     /// collapse its last item. Ctrl+Shift+O (`every`): expand all of them, or collapse all
     /// when they are already open. Returns the number of items changed.
-    pub fn expand_last_message(
-        &mut self,
-        messages: &[ChatLine],
-        all: bool,
-        every: bool,
-    ) -> usize {
+    pub fn expand_last_message(&mut self, messages: &[ChatLine], all: bool, every: bool) -> usize {
         let hidden = grouped_cards(messages, self, all).hidden;
         let start = messages
             .iter()

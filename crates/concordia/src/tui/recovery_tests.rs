@@ -140,4 +140,3 @@ fn failed_atomic_save_keeps_previous_record_and_can_be_repaired() {
     lease.save("dirty revision", &["kept".into()]).unwrap();
     assert_eq!(lease.data().unwrap().draft, "dirty revision");
 }
-

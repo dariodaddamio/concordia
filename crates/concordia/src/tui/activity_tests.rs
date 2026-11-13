@@ -19,12 +19,8 @@ fn running_tool_timer_snapshot_shows_elapsed_and_reported_time_remaining() {
         status: CardStatus::Running,
     };
     let now = Instant::now();
-    let timer = super::activity::card_timer(
-        &card,
-        Some(now - Duration::from_secs(125)),
-        now,
-    )
-    .unwrap();
+    let timer =
+        super::activity::card_timer(&card, Some(now - Duration::from_secs(125)), now).unwrap();
     assert_eq!(timer, " · 2:05 · 7:55 left of 10:00");
 }
 

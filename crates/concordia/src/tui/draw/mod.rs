@@ -324,8 +324,14 @@ fn draw_key_sheet(f: &mut Frame, app: &App) {
     }
     lines.push(Line::from("  Activity"));
     for (key, description) in [
-        ("Ctrl+O", "expand or collapse the last item in the last message"),
-        ("Ctrl+Shift+O", "expand or collapse every item in the last message"),
+        (
+            "Ctrl+O",
+            "expand or collapse the last item in the last message",
+        ),
+        (
+            "Ctrl+Shift+O",
+            "expand or collapse every item in the last message",
+        ),
         ("Ctrl+E", "open full activity detail"),
         ("F5", "toggle full activity"),
         ("F1 / ?", "open this shortcut sheet"),
@@ -531,6 +537,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.areas.header_effort = None;
     app.areas.header_credits = None;
     app.areas.header_attention = None;
+    app.areas.home_documentation = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
     let model = if app.model == "?" {
         "model ?".to_string()
@@ -538,13 +545,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         crate::models::find_at(&app.state_root, app.provider, &app.account, &app.model)
             .map(|entry| entry.display_name)
             .unwrap_or_else(|| app.model.clone())
-    };
-    let email = if app.header_email_revealed {
-        app.account_email.as_deref().unwrap_or_default()
-    } else if app.account_email.is_some() {
-        "view email"
-    } else {
-        ""
     };
     let account = app.account_label();
     let right = String::new();
@@ -583,27 +583,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from(provider_text.clone()).width() as u16,
         1,
     ));
-    let email_x = left.iter().map(Span::width).sum::<usize>();
-    let email_text = format!("  {email}");
-    let email_text = if app.header_email_revealed
-        || email_x + Line::from(email_text.clone()).width() <= available
-    {
-        email_text
-    } else {
-        "  email".into()
-    };
-    let email_width = Line::from(email_text.clone()).width();
-    if app.account_email.is_some() && email_x + email_width <= available {
-        if app.account_email.is_some() {
-            app.areas.header_email = Some(Rect::new(
-                area.x + email_x as u16,
-                area.y,
-                email_width as u16,
-                1,
-            ));
-        }
-        left.push(Span::styled(email_text, bar));
-    }
     if left.iter().map(Span::width).sum::<usize>() + model.len() <= available {
         let model_x = left.iter().map(Span::width).sum::<usize>();
         let model_width = model.len() as u16;
@@ -614,7 +593,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
             let x = left.iter().map(Span::width).sum::<usize>();
             if x + text.len() <= available {
                 left.push(Span::styled(text.clone(), bar.fg(Color::Magenta)));
-                app.areas.header_effort = Some(Rect::new(area.x + x as u16, area.y, text.len() as u16, 1));
+                app.areas.header_effort =
+                    Some(Rect::new(area.x + x as u16, area.y, text.len() as u16, 1));
             }
         }
     }
@@ -655,7 +635,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         },
     );
     if area.height > 1 {
-        let credits_known = app.usage_credits != "Credits: not reported";
+        let credits_known = app.usage_credits.starts_with("Credits: ")
+            && !app.usage_credits.ends_with("not reported")
+            && !app.usage_credits.ends_with("none available")
+            && !app.usage_credits.ends_with("balance not reported");
         if app.picker.is_none() && credits_known {
             let width = Line::from(format!(" {} ", app.usage_credits))
                 .width()
@@ -989,7 +972,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             runs: &msg_runs[i],
             header_files: msg_files[i],
             // The card border is decoration: selection skips it and copied text starts at the status mark.
-            decor_prefix: if m.role == MsgRole::Card && displayed[i].as_deref().unwrap_or(&m.text).starts_with("│ ") {
+            decor_prefix: if m.role == MsgRole::Card
+                && displayed[i].as_deref().unwrap_or(&m.text).starts_with("│ ")
+            {
                 2
             } else {
                 0
@@ -1603,7 +1588,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     if picker.kind == PickerKind::Usage {
-        let popup = Rect { x: area.x + 1, y: area.y, width: area.width.saturating_sub(2), height: area.height };
+        let popup = Rect {
+            x: area.x + 1,
+            y: area.y,
+            width: area.width.saturating_sub(2),
+            height: area.height,
+        };
         f.render_widget(Clear, popup);
         let cols = (popup.width / 54).max(1) as usize;
         let rows = picker
@@ -1616,8 +1606,23 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         for (index, (label, detail)) in rows.into_iter().enumerate() {
             let col = index % cols;
             let row = index / cols;
-            let cell = Rect { x: popup.x + col as u16 * cell_width, y: popup.y + row as u16 * 5, width: cell_width.min(popup.right().saturating_sub(popup.x + col as u16 * cell_width)), height: 5 };
-            let block = Block::default().borders(Borders::ALL).border_style(if index == selected { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::DarkGray) });
+            let cell = Rect {
+                x: popup.x + col as u16 * cell_width,
+                y: popup.y + row as u16 * 5,
+                width: cell_width.min(
+                    popup
+                        .right()
+                        .saturating_sub(popup.x + col as u16 * cell_width),
+                ),
+                height: 5,
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(if index == selected {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                });
             let mut lines = label.lines().map(Line::from).collect::<Vec<_>>();
             if !detail.is_empty() {
                 lines.push(Line::styled(detail, Style::default().fg(Color::Gray)));

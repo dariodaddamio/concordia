@@ -137,7 +137,10 @@ fn fake_acp() {
                 }
                 serde_json::json!({})
             }
-            "authenticate" | "session/set_mode" | "session/set_model" | "session/set_config_option" => serde_json::json!({}),
+            "authenticate"
+            | "session/set_mode"
+            | "session/set_model"
+            | "session/set_config_option" => serde_json::json!({}),
             "session/prompt" => {
                 if fixture["quota"] == true {
                     emit(
@@ -902,9 +905,13 @@ fn interaction(args: &[String]) {
             for index in batch_start..(batch_start + 25).min(count) {
                 text.push_str(&format!("## Step {index}\n\n- cached row {index}\n\n"));
             }
-            emit(json!({"type":"item.completed","item":{"type":"agent_message","id":format!("bulk-reply-{batch_start}"),"text":text}}));
+            emit(
+                json!({"type":"item.completed","item":{"type":"agent_message","id":format!("bulk-reply-{batch_start}"),"text":text}}),
+            );
         }
-        emit(json!({"type":"item.completed","item":{"type":"agent_message","id":"bulk-end","text":format!("BULK_DONE_{count}")}}));
+        emit(
+            json!({"type":"item.completed","item":{"type":"agent_message","id":"bulk-end","text":format!("BULK_DONE_{count}")}}),
+        );
         emit(json!({"type":"turn.completed","usage":{"input_tokens":123,"output_tokens":45}}));
         journal("done");
         return;
@@ -927,7 +934,9 @@ fn interaction(args: &[String]) {
                 json!({"type":"turn.failed","error":{"code":-32000,"codexErrorInfo":"usageLimitExceeded","message":"Request cannot be completed"}}),
             );
         } else {
-            emit(json!({"type":"turn.failed","error":{"code":"usage_limit_reached","message":"You've hit your usage limit"}}));
+            emit(
+                json!({"type":"turn.failed","error":{"code":"usage_limit_reached","message":"You've hit your usage limit"}}),
+            );
         }
         journal("limited");
         std::process::exit(1);

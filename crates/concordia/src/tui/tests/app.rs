@@ -222,18 +222,19 @@ fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread()
 fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
     let mut h = landing_harness();
     let screen = h.screen();
-    let here = screen.find("chat first").unwrap_or_else(|| panic!("{screen}"));
-    let lock = screen.find("lock (1)").unwrap_or_else(|| panic!("{screen}"));
+    let here = screen
+        .find("chat first")
+        .unwrap_or_else(|| panic!("{screen}"));
+    let lock = screen
+        .find("lock (1)")
+        .unwrap_or_else(|| panic!("{screen}"));
     assert!(here < lock, "{screen}");
     assert!(screen.contains("chat first") && screen.contains("chat second"));
     assert!(
         !screen.contains("chat third"),
         "collapsed groups hide their chats"
     );
-    assert!(
-        screen.contains("Enter open chat"),
-        "{screen}"
-    );
+    assert!(screen.contains("Enter open chat"), "{screen}");
     h.app.editor.set_text("keep the landing draft");
     assert!(landing::visible(&h.app));
     assert_eq!(h.app.editor.text(), "keep the landing draft");
@@ -303,8 +304,6 @@ fn a_double_click_opens_a_chat_and_a_single_click_selects_it() {
     assert!(h.app.landing.is_none(), "second click opens it");
     assert!(h.screen().contains("resume unavailable"));
 }
-
-
 
 #[test]
 fn there_is_no_landing_page_without_chats() {
@@ -663,9 +662,3 @@ fn message_wheel_scrolls_the_draft_without_moving_caret_or_transcript() {
         "editing restores caret following"
     );
 }
-
-
-
-
-
-

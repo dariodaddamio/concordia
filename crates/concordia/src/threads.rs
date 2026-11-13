@@ -1524,9 +1524,9 @@ mod tests {
         }
     }
 
-/*
-        let body = "immutable native-only 日本語 sentinel";
-*/
+    /*
+            let body = "immutable native-only 日本語 sentinel";
+    */
     #[test]
     fn read_filters_and_caps() {
         let ev = vec![user("alpha"), asst("beta"), user("gamma"), asst("delta")];

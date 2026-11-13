@@ -309,7 +309,11 @@ fn install_repairs_a_stale_start_shortcut_and_leaves_a_current_one_untouched() {
         .env("CONCORDIA_STATE_DIR", sb.dir.path().join("state"))
         .output()
         .unwrap();
-    assert!(installed.status.success(), "{}", String::from_utf8_lossy(&installed.stderr));
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
     let path = shortcut_path(false).unwrap();
     let stale = sb.dir.path().join("stale.exe");
     std::fs::write(&stale, b"stale").unwrap();
@@ -320,7 +324,11 @@ fn install_repairs_a_stale_start_shortcut_and_leaves_a_current_one_untouched() {
         .env("T", &stale)
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     sync_owned_shortcuts().unwrap();
     let repaired = owned_shortcut(false).unwrap().unwrap();
     assert_eq!(repaired.target, sb.concordia_exe());
@@ -329,7 +337,10 @@ fn install_repairs_a_stale_start_shortcut_and_leaves_a_current_one_untouched() {
     let before = std::fs::metadata(&path).unwrap().modified().unwrap();
     std::thread::sleep(Duration::from_millis(1100));
     sync_owned_shortcuts().unwrap();
-    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        before
+    );
 }
 
 #[cfg(windows)]

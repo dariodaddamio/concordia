@@ -11,9 +11,9 @@ pub(crate) mod npm;
 pub mod opencode;
 pub mod recording;
 pub(crate) mod session_guard;
+pub mod standing_context;
 pub mod stream_cards;
 pub mod stream_json;
-pub mod standing_context;
 pub mod turn;
 
 use crate::store::ProviderKind;

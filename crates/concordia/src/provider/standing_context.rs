@@ -47,7 +47,9 @@ pub fn tag(text: &str) -> String {
 }
 
 pub fn extract(prefix: Option<&str>) -> (Option<&str>, String) {
-    let Some(prefix) = prefix else { return (None, String::new()) };
+    let Some(prefix) = prefix else {
+        return (None, String::new());
+    };
     let Some(start) = prefix.find("<concordia_standing_context>") else {
         return (None, prefix.to_owned());
     };
@@ -56,7 +58,11 @@ pub fn extract(prefix: Option<&str>) -> (Option<&str>, String) {
         return (None, prefix.to_owned());
     };
     let end = content_start + end_rel;
-    let rest = format!("{}{}", &prefix[..start], &prefix[end + "</concordia_standing_context>".len()..]);
+    let rest = format!(
+        "{}{}",
+        &prefix[..start],
+        &prefix[end + "</concordia_standing_context>".len()..]
+    );
     (Some(&prefix[content_start..end]), rest)
 }
 

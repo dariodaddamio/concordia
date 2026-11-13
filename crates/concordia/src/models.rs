@@ -789,7 +789,12 @@ mod tests {
         let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["auto", "claude-opus-5-5", "grok-4.7-fast", "cursor-grok-4.6"]
+            [
+                "auto",
+                "claude-opus-5-5",
+                "grok-4.7-fast",
+                "cursor-grok-4.6"
+            ]
         );
         assert_eq!(models[0].display_name, "Auto");
         assert!(models[0].efforts.is_empty());

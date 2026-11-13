@@ -809,4 +809,3 @@ fn file_search_reload_and_changed_indicator_preserve_chat_draft_and_pane_identit
     assert!(!h.app.workspace.panes[0].changed);
     assert_eq!(h.app.editor.text(), "unsent draft stays here");
 }
-

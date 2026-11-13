@@ -8,9 +8,7 @@
 //!
 //! This module has no UI: `tui/workers.rs` renders it and wires the commands.
 
-use crate::accounts::{
-    display_account_name, get_account, normalize_account_id, AccountDef,
-};
+use crate::accounts::{display_account_name, get_account, normalize_account_id, AccountDef};
 use crate::context::{plan_continuity_capped, ContinuityRequest, PackMessage};
 use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
 use crate::provider::turn::{
@@ -1783,4 +1781,3 @@ pub fn help_lines(protocol_on: bool) -> Vec<String> {
     v.extend(protocol_snippet().lines().map(|l| format!("  {l}")));
     v
 }
-

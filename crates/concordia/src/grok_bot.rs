@@ -96,7 +96,9 @@ pub fn rotate_callback_token(root: &Path) -> Result<String, String> {
 pub fn remove(root: &Path, provider: &str, account: &str, routine_id: &str) -> Result<(), String> {
     let mut entries = list(root);
     let before = entries.len();
-    entries.retain(|r| !(r.provider == provider && r.account == account && r.routine_id == routine_id));
+    entries.retain(|r| {
+        !(r.provider == provider && r.account == account && r.routine_id == routine_id)
+    });
     if entries.len() == before {
         return Err("unknown Grok Bot routine".into());
     }
@@ -269,7 +271,10 @@ pub fn callback_http(request: &[u8], root: &Path) -> String {
     };
     let (status, body) = match result {
         Ok(v) => (200, json!({"jsonrpc":"2.0","id":id,"result":v})),
-        Err(e) => (400, json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":e}})),
+        Err(e) => (
+            400,
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":e}}),
+        ),
     };
     format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.to_string().len(), body)
 }
@@ -338,7 +343,9 @@ fn post_json_http_for_test(url: &str, key: &str, payload: &Value) -> Result<(), 
 
 #[cfg(test)]
 fn post_json_http(url: &str, key: &str, payload: &Value) -> Result<(), String> {
-    let without = url.strip_prefix("http://").ok_or("test endpoint must use HTTP")?;
+    let without = url
+        .strip_prefix("http://")
+        .ok_or("test endpoint must use HTTP")?;
     let (hostport, path) = without
         .split_once('/')
         .map_or((without, "/".to_owned()), |(h, p)| (h, format!("/{p}")));
@@ -526,9 +533,16 @@ mod tests {
             let request = String::from_utf8_lossy(&bytes[..n]);
             assert!(request.contains("Authorization: Bearer fake-webhook-key"));
             assert!(request.contains("run-123"));
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
         });
-        post_json_http_for_test(&format!("http://{address}/routine"), "fake-webhook-key", &json!({"concordia_run_id":"run-123"})).unwrap();
+        post_json_http_for_test(
+            &format!("http://{address}/routine"),
+            "fake-webhook-key",
+            &json!({"concordia_run_id":"run-123"}),
+        )
+        .unwrap();
         handle.join().unwrap();
     }
 
@@ -539,7 +553,23 @@ mod tests {
         let token = "callback-token-test";
         put_secret(&callback_secret_name(root.path()), token).unwrap();
         let run_id = "run-known";
-        write_agent(root.path(), &AgentRecord { agent_id: run_id.into(), account: "acct".into(), provider: "grok-bot".into(), role: "general".into(), model: None, effort: None, task: "task".into(), parent: String::new(), status: "waiting".into(), result: None, activity: Vec::new() }).unwrap();
+        write_agent(
+            root.path(),
+            &AgentRecord {
+                agent_id: run_id.into(),
+                account: "acct".into(),
+                provider: "grok-bot".into(),
+                role: "general".into(),
+                model: None,
+                effort: None,
+                task: "task".into(),
+                parent: String::new(),
+                status: "waiting".into(),
+                result: None,
+                activity: Vec::new(),
+            },
+        )
+        .unwrap();
         let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"grok_bot_callback","arguments":{"run_id":run_id,"kind":"result","content":"untrusted result"}}}).to_string();
         assert!(callback_http(&request("wrong", &body), root.path()).starts_with("HTTP/1.1 401"));
         let unknown = body.replace(run_id, "unknown");
@@ -547,11 +577,34 @@ mod tests {
         assert_eq!(read_agent(root.path(), run_id).unwrap().status, "waiting");
         assert!(callback_http(&request(token, &body), root.path()).starts_with("HTTP/1.1 200"));
         assert_eq!(read_agent(root.path(), run_id).unwrap().status, "finished");
-        for _ in 0..MAX_CALLBACKS_PER_MINUTE { let _ = callback_http(&request(token, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string()), root.path()); }
-        assert!(callback_http(&request(token, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string()), root.path()).starts_with("HTTP/1.1 429"));
-        std::fs::write(root.path().join("grok-bot-routines.json"), b"secret-free-state").unwrap();
+        for _ in 0..MAX_CALLBACKS_PER_MINUTE {
+            let _ = callback_http(
+                &request(
+                    token,
+                    &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string(),
+                ),
+                root.path(),
+            );
+        }
+        assert!(callback_http(
+            &request(
+                token,
+                &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string()
+            ),
+            root.path()
+        )
+        .starts_with("HTTP/1.1 429"));
+        std::fs::write(
+            root.path().join("grok-bot-routines.json"),
+            b"secret-free-state",
+        )
+        .unwrap();
         let key = "webhook-secret-must-not-be-written";
-        assert!(!std::fs::read_dir(root.path()).unwrap().flatten().filter_map(|e| std::fs::read(e.path()).ok()).any(|b| String::from_utf8_lossy(&b).contains(key)));
+        assert!(!std::fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .filter_map(|e| std::fs::read(e.path()).ok())
+            .any(|b| String::from_utf8_lossy(&b).contains(key)));
     }
 
     #[cfg(windows)]
@@ -560,12 +613,32 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         start_listener(root.path());
         assert!(!root.path().join("grok-bot-callback-address").exists());
-        register(root.path(), Routine { provider: "grok-bot".into(), account: "acct".into(), routine_id: "routine".into(), name: "name".into(), description: String::new(), webhook_url: "https://example.test/hook".into() }, "key-not-on-disk").unwrap();
-        for _ in 0..40 { if root.path().join("grok-bot-callback-address").exists() { break; } std::thread::sleep(Duration::from_millis(10)); }
-        let address = std::fs::read_to_string(root.path().join("grok-bot-callback-address")).unwrap();
+        register(
+            root.path(),
+            Routine {
+                provider: "grok-bot".into(),
+                account: "acct".into(),
+                routine_id: "routine".into(),
+                name: "name".into(),
+                description: String::new(),
+                webhook_url: "https://example.test/hook".into(),
+            },
+            "key-not-on-disk",
+        )
+        .unwrap();
+        for _ in 0..40 {
+            if root.path().join("grok-bot-callback-address").exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let address =
+            std::fs::read_to_string(root.path().join("grok-bot-callback-address")).unwrap();
         assert!(address.contains("127.0.0.1:"));
         remove(root.path(), "grok-bot", "acct", "routine").unwrap();
-        assert!(!std::fs::read_to_string(routines_path(root.path())).unwrap().contains("key-not-on-disk"));
+        assert!(!std::fs::read_to_string(routines_path(root.path()))
+            .unwrap()
+            .contains("key-not-on-disk"));
     }
 }
 

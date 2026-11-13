@@ -328,13 +328,11 @@ fn should_reinject_context(system_prompt_supported: bool, last: Option<&str>, id
 }
 
 fn ask_server_config(endpoint: &str, token: &str, enabled: bool, cwd: &std::path::Path) -> Value {
-    let mut servers = match crate::mcp_registry::acp_servers(
-        &crate::store::default_store_root(),
-        cwd,
-    ) {
-        Value::Array(values) => values,
-        _ => Vec::new(),
-    };
+    let mut servers =
+        match crate::mcp_registry::acp_servers(&crate::store::default_store_root(), cwd) {
+            Value::Array(values) => values,
+            _ => Vec::new(),
+        };
     if enabled && !endpoint.is_empty() {
         servers.push(json!({"name":"concordia-ask","command":std::env::current_exe().unwrap_or_default().to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":token}]}));
     }
@@ -601,17 +599,18 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        acp_argv, acp_model_id, ask_server_config, model_config_value,
-        should_reinject_context,
+        acp_argv, acp_model_id, ask_server_config, model_config_value, should_reinject_context,
     };
     use crate::store::ProviderKind;
 
     #[test]
     fn question_server_is_registered_only_when_enabled() {
-        assert!(ask_server_config("", "token", false, std::path::Path::new("."))
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(
+            ask_server_config("", "token", false, std::path::Path::new("."))
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         let enabled = ask_server_config("127.0.0.1:1234", "token", true, std::path::Path::new("."));
         assert_eq!(enabled[0]["name"], "concordia-ask");
         assert_eq!(enabled[0]["env"][1]["value"], "token");
@@ -620,7 +619,11 @@ mod tests {
     #[test]
     fn compaction_reinjects_once_only_when_no_system_channel_exists() {
         assert!(should_reinject_context(false, None, "compact-1"));
-        assert!(!should_reinject_context(false, Some("compact-1"), "compact-1"));
+        assert!(!should_reinject_context(
+            false,
+            Some("compact-1"),
+            "compact-1"
+        ));
         assert!(!should_reinject_context(true, None, "compact-2"));
         assert!(!should_reinject_context(false, None, ""));
     }

@@ -26,12 +26,18 @@ use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Dwm::DwmSetWindowAttribute,
     Graphics::Gdi::*,
+    System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    },
     System::LibraryLoader::GetModuleHandleW,
-    System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED},
     UI::{
         HiDpi::*,
         Input::KeyboardAndMouse::*,
-        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW},
+        Shell::{
+            DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO,
+            NIF_MESSAGE, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+        },
         WindowsAndMessaging::*,
     },
 };
@@ -74,10 +80,8 @@ impl Screen {
         let old_cells = std::mem::take(&mut self.cells);
         self.size = Size::new(cols.clamp(1, MAX_COLS), rows.clamp(1, MAX_ROWS));
         self.pixels = pixels;
-        self.cells = vec![
-            Cell::default();
-            usize::from(self.size.width) * usize::from(self.size.height)
-        ];
+        self.cells =
+            vec![Cell::default(); usize::from(self.size.width) * usize::from(self.size.height)];
         for y in 0..usize::from(old_rows.min(self.size.height)) {
             let width = usize::from(old_cols.min(self.size.width));
             let old_start = y * usize::from(old_cols);
@@ -243,9 +247,16 @@ impl WindowBackend {
         state.draws.push(elapsed.as_secs_f64() * 1000.0);
     }
     pub(super) fn set_status_dot(&mut self, status: StatusDot) {
-        *self.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        *self
+            .shared
+            .requested_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = status;
         if let Some(test) = self.shared.test_control.as_ref() {
-            test.state.lock().unwrap_or_else(|e| e.into_inner()).status_dot = status.as_str().into();
+            test.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .status_dot = status.as_str().into();
         }
         let _ = self.post(UPDATE);
     }
@@ -453,7 +464,11 @@ impl Backend for WindowBackend {
     }
     fn flush(&mut self) -> io::Result<()> {
         if self.shared.dirty.swap(false, Ordering::AcqRel) {
-            self.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).seq += 1;
+            self.shared
+                .screen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .seq += 1;
             self.post(UPDATE)?;
         }
         Ok(())
@@ -492,11 +507,15 @@ struct TaskbarList3 {
 }
 
 const CLSID_TASKBAR_LIST: windows_sys::core::GUID = windows_sys::core::GUID {
-    data1: 0x56fdf344, data2: 0xfd6d, data3: 0x11d0,
+    data1: 0x56fdf344,
+    data2: 0xfd6d,
+    data3: 0x11d0,
     data4: [0x95, 0x8a, 0x00, 0x60, 0x97, 0xc9, 0xa0, 0x90],
 };
 const IID_ITASKBAR_LIST3: windows_sys::core::GUID = windows_sys::core::GUID {
-    data1: 0xea1afb91, data2: 0x9e28, data3: 0x4b86,
+    data1: 0xea1afb91,
+    data2: 0x9e28,
+    data3: 0x4b86,
     data4: [0x90, 0xe9, 0x9e, 0x9f, 0x8a, 0x5e, 0xea, 0x84],
 };
 
@@ -531,19 +550,32 @@ impl Drop for Window {
     fn drop(&mut self) {
         for icon in self.overlay_icons {
             if !icon.is_null() {
-                unsafe { DestroyIcon(icon); }
+                unsafe {
+                    DestroyIcon(icon);
+                }
             }
         }
         if self.tray_added {
-            unsafe { notify_tray(self.shared.hwnd.load(Ordering::Acquire) as HWND, NIM_DELETE, None); }
+            unsafe {
+                notify_tray(
+                    self.shared.hwnd.load(Ordering::Acquire) as HWND,
+                    NIM_DELETE,
+                    None,
+                );
+            }
         }
         if !self.taskbar.is_null() {
             unsafe {
-                let release: unsafe extern "system" fn(*mut TaskbarList3) -> u32 = mem::transmute(*(*self.taskbar).vtable.add(2));
+                let release: unsafe extern "system" fn(*mut TaskbarList3) -> u32 =
+                    mem::transmute(*(*self.taskbar).vtable.add(2));
                 release(self.taskbar);
             }
         }
-        if self.com_initialized { unsafe { CoUninitialize(); } }
+        if self.com_initialized {
+            unsafe {
+                CoUninitialize();
+            }
+        }
         for font in self.fonts {
             if !font.is_null() {
                 unsafe {
@@ -566,7 +598,6 @@ impl Drop for Window {
             }
         }
     }
-
 }
 impl Window {
     unsafe fn set_status(&mut self, hwnd: HWND, status: StatusDot) {
@@ -579,15 +610,21 @@ impl Window {
         if self.status_dot == status {
             if status == StatusDot::NeedsAttention && !self.focused {
                 if let Some((id, text)) = pending.as_ref() {
-                    *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(id.clone());
+                    *self
+                        .shared
+                        .attention_target
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
                     notify_tray(
                         hwnd,
                         if self.tray_added { NIM_MODIFY } else { NIM_ADD },
                         Some(text),
                     );
-                    *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) =
-                        None;
+                    *self
+                        .shared
+                        .pending_attention
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = None;
                     self.tray_added = true;
                 }
             } else if self.focused && self.tray_added {
@@ -599,13 +636,18 @@ impl Window {
         self.status_dot = status;
         let icon = match status {
             StatusDot::Idle => null_mut(),
-            StatusDot::Working | StatusDot::NeedsAttention => status_icon(16, super::theme::status_color(status)),
+            StatusDot::Working | StatusDot::NeedsAttention => {
+                status_icon(16, super::theme::status_color(status))
+            }
         };
         if status != StatusDot::Idle && !icon.is_null() {
             let index = if status == StatusDot::Working { 0 } else { 1 };
-            if !self.overlay_icons[index].is_null() { DestroyIcon(self.overlay_icons[index]); }
+            if !self.overlay_icons[index].is_null() {
+                DestroyIcon(self.overlay_icons[index]);
+            }
             self.overlay_icons[index] = icon;
-            if !self.taskbar.is_null() && native_signal_allowed(self.shared.test_control.is_none()) {
+            if !self.taskbar.is_null() && native_signal_allowed(self.shared.test_control.is_none())
+            {
                 taskbar_overlay(self.taskbar, hwnd, icon);
             }
         } else if !self.taskbar.is_null()
@@ -617,9 +659,21 @@ impl Window {
             let Some((id, text)) = pending.as_ref() else {
                 return;
             };
-            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
-            notify_tray(hwnd, if self.tray_added { NIM_MODIFY } else { NIM_ADD }, Some(text));
-            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self
+                .shared
+                .attention_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+            notify_tray(
+                hwnd,
+                if self.tray_added { NIM_MODIFY } else { NIM_ADD },
+                Some(text),
+            );
+            *self
+                .shared
+                .pending_attention
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             self.tray_added = true;
         } else if status != StatusDot::NeedsAttention && self.tray_added {
             notify_tray(hwnd, NIM_DELETE, None);
@@ -919,7 +973,11 @@ impl Window {
             let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
             if let Some((_, started, _)) = &state.measure {
                 let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-                let filled = screen.cells.iter().filter(|cell| cell.symbol() != " ").count();
+                let filled = screen
+                    .cells
+                    .iter()
+                    .filter(|cell| cell.symbol() != " ")
+                    .count();
                 if state.paints.len() < 1024 {
                     state.paints.push((elapsed, screen.seq, filled));
                 }
@@ -944,8 +1002,7 @@ impl Window {
             RestoreDC(dc, saved);
         }
         let [red, green, blue] = super::theme::image_background();
-        let image_background =
-            u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
+        let image_background = u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
         SetDCBrushColor(dc, image_background);
         for image in &screen.images {
             let area = RECT {
@@ -1216,9 +1273,17 @@ unsafe fn handle_test_control(window: &mut Window) {
     };
     for request in requests {
         if let Some(label) = request.request.get("measure").and_then(|v| v.as_str()) {
-            let seq = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).seq;
+            let seq = window
+                .shared
+                .screen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .seq;
             let shared = window.shared.clone();
-            let test = shared.test_control.as_ref().expect("test control is enabled");
+            let test = shared
+                .test_control
+                .as_ref()
+                .expect("test control is enabled");
             let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
             state.measure = Some((label.to_owned(), std::time::Instant::now(), seq));
             state.paints.clear();
@@ -1367,7 +1432,14 @@ impl PixelBuffer {
             return None;
         }
         let previous = SelectObject(dc, bitmap);
-        Some(Self { dc, bitmap, previous, bits: bits.cast(), width, height })
+        Some(Self {
+            dc,
+            bitmap,
+            previous,
+            bits: bits.cast(),
+            width,
+            height,
+        })
     }
     fn pixel(&self, x: i32, y: i32) -> u32 {
         // SAFETY: callers stay inside the DIB, which lives as long as `self`.
@@ -1409,11 +1481,20 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
     window.blink = blink;
     // The caret blinks independently of frames; leave its cell out of the comparison.
     let caret = {
-        let screen = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+        let screen = window
+            .shared
+            .screen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         screen.cursor_visible.then(|| {
             let left = i32::from(screen.cursor.x) * window.cell_width;
             let top = i32::from(screen.cursor.y) * window.cell_height;
-            (left, top, left + window.cell_width, top + window.cell_height)
+            (
+                left,
+                top,
+                left + window.cell_width,
+                top + window.cell_height,
+            )
         })
     };
     let mut differ = 0usize;
@@ -1429,7 +1510,12 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
             }
         }
     }
-    let screen = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let screen = window
+        .shared
+        .screen
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let [red, green, blue] = super::theme::image_background();
     let background = u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
     let mut images = Vec::new();
@@ -1444,7 +1530,8 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
         let mut stale = 0usize;
         for y in area.top..area.bottom {
             for x in area.left..area.right {
-                let inside = drawn.is_some_and(|d| x >= d.left && x < d.right && y >= d.top && y < d.bottom);
+                let inside =
+                    drawn.is_some_and(|d| x >= d.left && x < d.right && y >= d.top && y < d.bottom);
                 if !inside && fresh.pixel(x, y) != background {
                     stale += 1;
                 }
@@ -1856,10 +1943,7 @@ unsafe fn app_icon(size: i32) -> HICON {
 }
 
 unsafe fn refresh_icon(hwnd: HWND, window: &mut Window) {
-    let next = [
-        app_icon(32),
-        app_icon(16),
-    ];
+    let next = [app_icon(32), app_icon(16)];
     for (index, icon) in next.into_iter().enumerate() {
         if !icon.is_null() {
             SendMessageW(
@@ -1878,12 +1962,14 @@ unsafe fn refresh_icon(hwnd: HWND, window: &mut Window) {
 }
 
 unsafe fn taskbar_hr_init(taskbar: *mut TaskbarList3) {
-    let method: unsafe extern "system" fn(*mut TaskbarList3) -> i32 = mem::transmute(*(*taskbar).vtable.add(3));
+    let method: unsafe extern "system" fn(*mut TaskbarList3) -> i32 =
+        mem::transmute(*(*taskbar).vtable.add(3));
     let _ = method(taskbar);
 }
 
 unsafe fn taskbar_overlay(taskbar: *mut TaskbarList3, hwnd: HWND, icon: HICON) {
-    let method: unsafe extern "system" fn(*mut TaskbarList3, HWND, HICON, *const u16) -> i32 = mem::transmute(*(*taskbar).vtable.add(17));
+    let method: unsafe extern "system" fn(*mut TaskbarList3, HWND, HICON, *const u16) -> i32 =
+        mem::transmute(*(*taskbar).vtable.add(17));
     let _ = method(taskbar, hwnd, icon, null());
 }
 
@@ -1894,17 +1980,37 @@ unsafe fn status_icon(size: i32, [red, green, blue]: crate::config::Rgb) -> HICO
     for y in 0..size as u32 {
         for x in 0..size as u32 {
             let distance = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
-            if distance <= radius { pixels.put_pixel(x, y, image::Rgba([blue, green, red, 255])); }
+            if distance <= radius {
+                pixels.put_pixel(x, y, image::Rgba([blue, green, red, 255]));
+            }
         }
     }
     let mut data = vec![0u8; 40];
-    let mut header = |offset: usize, value: u32| data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    header(0, 40); header(4, size as u32); header(8, (size * 2) as u32);
+    let mut header =
+        |offset: usize, value: u32| data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    header(0, 40);
+    header(4, size as u32);
+    header(8, (size * 2) as u32);
     data[12..14].copy_from_slice(&1u16.to_le_bytes());
     data[14..16].copy_from_slice(&32u16.to_le_bytes());
-    for y in (0..size as u32).rev() { for x in 0..size as u32 { data.extend_from_slice(&pixels.get_pixel(x, y).0); } }
-    data.resize(data.len() + ((size as usize).div_ceil(32) * 4) * size as usize, 0);
-    CreateIconFromResourceEx(data.as_mut_ptr(), data.len() as u32, 1, 0x00030000, size, size, 0)
+    for y in (0..size as u32).rev() {
+        for x in 0..size as u32 {
+            data.extend_from_slice(&pixels.get_pixel(x, y).0);
+        }
+    }
+    data.resize(
+        data.len() + ((size as usize).div_ceil(32) * 4) * size as usize,
+        0,
+    );
+    CreateIconFromResourceEx(
+        data.as_mut_ptr(),
+        data.len() as u32,
+        1,
+        0x00030000,
+        size,
+        size,
+        0,
+    )
 }
 
 unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
@@ -1929,7 +2035,9 @@ unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
         data.dwInfoFlags = 1;
     }
     let _ = Shell_NotifyIconW(operation, &data);
-    if !data.hIcon.is_null() { DestroyIcon(data.hIcon); }
+    if !data.hIcon.is_null() {
+        DestroyIcon(data.hIcon);
+    }
 }
 
 fn native_signal_allowed(test_control: bool) -> bool {
@@ -1999,7 +2107,12 @@ unsafe fn window_thread(
     let initial_height = (860 * dpi / 96).min((GetSystemMetrics(SM_CYSCREEN) * 9 / 10).max(280));
     let test_window = shared.test_control.is_some();
     let hwnd = CreateWindowExW(
-        WS_EX_ACCEPTFILES | if test_window { WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE } else { 0 },
+        WS_EX_ACCEPTFILES
+            | if test_window {
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+            } else {
+                0
+            },
         class.as_ptr(),
         wide("Concordia").as_ptr(),
         WS_OVERLAPPEDWINDOW,
@@ -2025,7 +2138,8 @@ unsafe fn window_thread(
             CLSCTX_INPROC_SERVER,
             &IID_ITASKBAR_LIST3,
             (&mut taskbar as *mut *mut TaskbarList3).cast(),
-        ) >= 0 {
+        ) >= 0
+        {
             window.taskbar = taskbar;
             taskbar_hr_init(taskbar);
         }
@@ -2056,7 +2170,14 @@ unsafe fn window_thread(
     // Keep journey windows rendered at their off-screen position.  SW_HIDE prevents normal
     // paint delivery on some Windows versions, while NOACTIVATE and TOOLWINDOW keep this
     // test-only window out of focus and the taskbar.
-    ShowWindow(hwnd, if test_window { SW_SHOWNOACTIVATE } else { SW_SHOW });
+    ShowWindow(
+        hwnd,
+        if test_window {
+            SW_SHOWNOACTIVATE
+        } else {
+            SW_SHOW
+        },
+    );
     UpdateWindow(hwnd);
     let _ = ready.send(Ok(()));
     let mut message: MSG = mem::zeroed();
@@ -2271,7 +2392,11 @@ unsafe extern "system" fn window_proc(
             0
         }
         UPDATE => {
-            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            let status = *window
+                .shared
+                .requested_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             window.set_status(hwnd, status);
             set_caption_color(hwnd);
             if super::theme::brand_color() != window.icon_color {
@@ -2355,7 +2480,11 @@ unsafe extern "system" fn window_proc(
         WM_SETFOCUS => {
             window.focused = true;
             window.blink = true;
-            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            let status = *window
+                .shared
+                .requested_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             window.set_status(hwnd, status);
             window.emit(Event::FocusGained);
             InvalidateRect(hwnd, null(), 0);
@@ -2363,7 +2492,11 @@ unsafe extern "system" fn window_proc(
         }
         WM_KILLFOCUS => {
             window.focused = false;
-            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            let status = *window
+                .shared
+                .requested_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             window.set_status(hwnd, status);
             let pressed = window.pressed.take();
             if let Some(button) = pressed {
@@ -2732,10 +2865,9 @@ mod image_rect_tests {
             right: 400,
             bottom: 400,
         };
-        let rect = Window::image_rect_for(Rect::new(0, 0, 20, 20), 400, 200, &client, 9, 20)
-            .unwrap();
+        let rect =
+            Window::image_rect_for(Rect::new(0, 0, 20, 20), 400, 200, &client, 9, 20).unwrap();
         assert_eq!(rect.right - rect.left, 180);
         assert_eq!(rect.bottom - rect.top, 90);
     }
 }
-

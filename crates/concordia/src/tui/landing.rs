@@ -20,6 +20,7 @@ const RECENT_CHATS: usize = 40;
 const WORK_PROJECTS: usize = 6;
 /// Below this width the work pane is left out and the chats use the whole row.
 const TWO_PANES_MIN: u16 = 70;
+const DOCUMENTATION_URL: &str = "https://dariodaddamio.github.io/concordia/";
 
 #[derive(Debug, Clone)]
 pub struct ChatGroup {
@@ -201,7 +202,11 @@ fn project_root(folder: &Path) -> PathBuf {
                 return None;
             }
             let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
-            let gitdir = if gitdir.is_absolute() { gitdir } else { folder.join(gitdir) };
+            let gitdir = if gitdir.is_absolute() {
+                gitdir
+            } else {
+                folder.join(gitdir)
+            };
             let dot_git = gitdir.parent()?.parent()?;
             (dot_git.file_name()? == ".git").then(|| dot_git.parent().map(Path::to_path_buf))?
         });
@@ -563,9 +568,10 @@ pub(super) fn editing_goal(_app: &App) -> bool {
 /// The landing usage pane owns subscription facts whenever it is actually drawn.
 pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
     visible(app)
-        && app.landing.as_ref().is_some_and(|landing| {
-            !landing.meters.is_empty() && width >= TWO_PANES_MIN
-        })
+        && app
+            .landing
+            .as_ref()
+            .is_some_and(|landing| !landing.meters.is_empty() && width >= TWO_PANES_MIN)
 }
 
 /// Collect open work that arrived from the background reader.
@@ -789,6 +795,24 @@ pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
 
 /// Wheel and clicks while the page shows; `true` when the page used the event.
 pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
+    let documentation_hit = app
+        .areas
+        .home_documentation
+        .is_some_and(|rect| super::contains(rect, m.column, m.row));
+    if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.home_documentation_pressed = documentation_hit;
+        if documentation_hit {
+            return true;
+        }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.home_documentation_pressed)
+    {
+        if documentation_hit {
+            app.open_web_link(DOCUMENTATION_URL.into());
+        }
+        return true;
+    }
     let Some(landing) = app.landing.as_mut() else {
         return false;
     };
@@ -903,7 +927,7 @@ fn meter_window(window: &crate::usage::UsageWindow, cells: usize, include_reset:
         "{} [{bar}] {}%{}",
         window.label,
         left,
-        if !include_reset || reset == "reset unavailable" {
+        if !include_reset {
             String::new()
         } else {
             format!("  {reset}")
@@ -929,25 +953,52 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
     if let Some(plan) = snapshot.plan.as_deref().filter(|p| !p.trim().is_empty()) {
         heading.push_str(&format!(" · {plan}"));
     }
-    let credits = snapshot.credits_text();
-    if credits != "Credits: not reported" {
-        heading.push_str(&format!(" · {credits}"));
-    }
     if snapshot.limit_hit {
         heading.push_str(" · limit reached");
     }
+    let cells = if width < 32 {
+        3
+    } else if width < 48 {
+        6
+    } else {
+        10
+    };
     let mut lines = vec![clipped(heading, width)];
-    let cells = if width < 40 { 6 } else { 10 };
     for window in &snapshot.windows {
+        if window.expired_for_ui() {
+            let reset = window
+                .resets
+                .as_deref()
+                .map(|raw| meter_reset_label(raw, true))
+                .unwrap_or_else(|| "reset unavailable".into());
+            lines.push(clipped(
+                format!(
+                    "  {} [{}] usage unknown  {reset}",
+                    window.label,
+                    "░".repeat(cells)
+                ),
+                width,
+            ));
+            continue;
+        }
         let full = format!("  {}", meter_window(window, cells, true));
-        lines.push(if full.chars().count() <= width {
-            full
-        } else {
-            clipped(format!("  {}", meter_window(window, cells, false)), width)
-        });
+        if full.chars().count() <= width {
+            lines.push(full);
+            continue;
+        }
+        lines.push(clipped(
+            format!("  {}", meter_window(window, cells, false)),
+            width,
+        ));
+        if let Some(reset) = window.resets.as_deref() {
+            let reset = meter_reset_label(reset, window.expired_for_ui());
+            if reset != "reset unavailable" {
+                lines.push(clipped(format!("    {reset}"), width));
+            }
+        }
     }
     if snapshot.windows.is_empty() {
-        lines.push(clipped(format!("  {}", snapshot.summary), width));
+        lines.push(clipped("  usage unknown".into(), width));
     }
     lines
 }
@@ -1024,6 +1075,7 @@ pub(super) fn apply_usage(
 }
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
+    let compact_intro = area.width >= 76 && area.height < 24;
     let area = super::brand::draw(f, area, app);
     if let Some(landing) = app.landing.as_ref() {
         app.footer_left = if landing.mode == Mode::Browse
@@ -1074,13 +1126,24 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     };
     // As tall as the longer pane's content, within the space there is.
     let welcome_visible = landing.welcome
+        && !compact_intro
         && crate::store::load_store(&app.state_root)
             .accounts
             .is_empty();
+    let usage_content = if landing.meters.is_empty() {
+        0
+    } else {
+        meter_rows(
+            &landing.meters,
+            (area.width as usize * 45 / 100).saturating_sub(2),
+        ) + 7
+    };
     let content = landing
         .rows()
         .len()
         .max(if welcome_visible { 7 } else { 0 })
+        .max(if compact_intro { 7 } else { 0 })
+        .max(usage_content)
         .min(u16::MAX as usize - 2) as u16;
     let area = Rect {
         height: (content + 2).clamp(3, area.height.max(3)).min(area.height),
@@ -1173,14 +1236,64 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 lines.push(Line::from(heading.trim_start_matches("### ")));
             }
             lines.push(Line::default());
-            lines.push(Line::from("Documentation  https://concordia.dev/docs"));
+            let documentation_row = lines.len();
+            lines.push(Line::from(Span::styled(
+                "Documentation",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            )));
             lines.push(Line::from("F1  Shortcuts"));
             f.render_widget(Paragraph::new(lines), inner);
+            app.areas.home_documentation = Some(Rect::new(
+                inner.x,
+                inner.y + documentation_row as u16,
+                "Documentation".len() as u16,
+                1,
+            ));
             landing.goals_area = Rect::default();
             return;
         }
+        if compact_intro {
+            let mut lines = vec![Line::styled("What's new", selected)];
+            lines.extend(
+                include_str!("../../../../CHANGELOG.md")
+                    .lines()
+                    .filter(|line| line.starts_with("### "))
+                    .take(3)
+                    .map(|heading| Line::from(heading.trim_start_matches("### "))),
+            );
+            lines.push(Line::default());
+            let documentation_row = lines.len();
+            lines.push(Line::from(Span::styled(
+                "Documentation",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            )));
+            lines.push(Line::from("F1  Shortcuts"));
+            f.render_widget(Paragraph::new(lines), inner);
+            app.areas.home_documentation = Some(Rect::new(
+                inner.x,
+                inner.y + documentation_row as u16,
+                "Documentation".len() as u16,
+                1,
+            ));
+            landing.goals_area = Rect::default();
+            // The usage pane on the right remains independently visible at compact heights.
+        }
+        let list_area = if compact_intro {
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(7),
+                inner.height.saturating_sub(7),
+                inner.width,
+            )
+        } else {
+            inner
+        };
         let rows = landing.rows();
-        let height = inner.height as usize;
+        let height = list_area.height as usize;
         if landing.chat_sel < landing.chat_top {
             landing.chat_top = landing.chat_sel;
         } else if height > 0 && landing.chat_sel >= landing.chat_top + height {
@@ -1264,7 +1377,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 ])
             })
             .collect();
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(Paragraph::new(lines), list_area);
     } else {
         landing.chats_area = Rect::default();
     }
@@ -1282,15 +1395,19 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let (usage_area, right) = if landing.meters.is_empty() {
         (None, right)
     } else {
-        let max_usage_rows = right.height.saturating_sub(7) as usize;
-        let usage_rows = meter_rows(&landing.meters, right.width.saturating_sub(2) as usize)
-            .min(max_usage_rows.max(1));
+        let usage_rows = meter_rows(&landing.meters, right.width.saturating_sub(2) as usize);
         let usage_height = usage_rows as u16 + 2;
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(usage_height), Constraint::Min(5)])
-            .split(right);
-        (Some(chunks[0]), chunks[1])
+        if right.height <= usage_height.saturating_add(7) {
+            // At compact heights every connected account is more useful than the optional
+            // open-work pane. Keep the complete provider snapshot on screen.
+            (Some(right), Rect::default())
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(usage_height), Constraint::Min(5)])
+                .split(right);
+            (Some(chunks[0]), chunks[1])
+        }
     };
     if let Some(usage_area) = usage_area {
         let block = Block::default()
@@ -1300,24 +1417,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         let inner = block.inner(usage_area);
         f.render_widget(block, usage_area);
         let width = inner.width as usize;
-        let capacity = inner.height as usize;
         let all: Vec<Vec<String>> = landing
             .meters
             .iter()
             .map(|meter| meter_lines(meter, width))
             .collect();
-        let total: usize = all.iter().map(Vec::len).sum();
-        let budget = if total > capacity {
-            capacity.saturating_sub(1)
-        } else {
-            capacity
-        };
         let mut lines: Vec<Line> = Vec::new();
-        let mut shown = 0;
         for meter in &all {
-            if lines.len() + meter.len() > budget {
-                break;
-            }
             for (row, text) in meter.iter().enumerate() {
                 lines.push(if row == 0 {
                     Line::styled(text.clone(), Style::default().add_modifier(Modifier::BOLD))
@@ -1325,8 +1431,9 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                     Line::styled(text.clone(), dim)
                 });
             }
-            shown += 1;
+            
         }
+        let shown = all.len();
         if shown < all.len() {
             lines.push(Line::styled(
                 format!("+{} more accounts · /usage", all.len() - shown),
@@ -1334,6 +1441,11 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             ));
         }
         f.render_widget(Paragraph::new(lines), inner);
+    }
+    if right.width == 0 || right.height == 0 {
+        landing.goals_area = Rect::default();
+        landing.goal_hits.clear();
+        return;
     }
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1353,10 +1465,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             ("", dim),
-            (
-                "Open work from the connected Harness appears here.",
-                dim,
-            ),
+            ("Open work from the connected Harness appears here.", dim),
             (
                 "Use the chat and repository files for task objectives.",
                 dim,
@@ -1494,9 +1603,3 @@ fn chat_title(app: &App, session: &SessionSummary) -> String {
         })
         .unwrap_or_else(|| crate::sessions::clean_preview(session.preview.as_deref(), 80))
 }
-
-
-
-
-
-

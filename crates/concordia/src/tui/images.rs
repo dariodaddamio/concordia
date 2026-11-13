@@ -674,10 +674,7 @@ pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
     area
 }
 pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
-    if app.picker.is_some()
-        || app.activity.detail.is_some()
-        || worker_input::active(app)
-    {
+    if app.picker.is_some() || app.activity.detail.is_some() || worker_input::active(app) {
         return false;
     }
     let hit = app

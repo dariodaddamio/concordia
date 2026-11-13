@@ -74,7 +74,10 @@ pub fn publish(item: Item) {
 }
 
 pub fn withdraw(id: &str) {
-    global().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    global()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(id);
 }
 
 pub fn snapshot() -> Queue {

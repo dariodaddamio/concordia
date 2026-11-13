@@ -528,13 +528,8 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
         ))),
         crate::release::Check::Available(rel) => {
             ctl.say(&format!("Preparing {} update", rel.tag));
-            let result = crate::release::install_release_controlled(
-                &cfg,
-                &rel,
-                current,
-                &fetch,
-                Some(ctl),
-            )?;
+            let result =
+                crate::release::install_release_controlled(&cfg, &rel, current, &fetch, Some(ctl))?;
             sync_owned_shortcuts()?;
             Ok(UpdateOutcome::Installed(result))
         }
@@ -1197,33 +1192,33 @@ pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
 fn write_shortcut(path: &Path, spec: &ShortcutSpec) -> Result<()> {
     let parent = path.parent().context("shortcut has no parent")?;
     fs::create_dir_all(parent)?;
-        let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT);$s.TargetPath=$env:CONCORDIA_TARGET;$s.Arguments=$env:CONCORDIA_ARGS;$s.WorkingDirectory=$env:CONCORDIA_WORKDIR;$s.IconLocation=$env:CONCORDIA_ICON;$s.Save()";
-        let mut command = crate::process_ui::command("powershell.exe");
-        command
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-            ])
-            .env("CONCORDIA_SHORTCUT", path)
-            .env("CONCORDIA_TARGET", &spec.target)
-            .env("CONCORDIA_ARGS", &spec.args)
-            .env("CONCORDIA_WORKDIR", &spec.workdir)
-            .env("CONCORDIA_ICON", &spec.icon)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        let output = crate::process_lifetime::capture(command, Duration::from_secs(15), 64 * 1024)
-            .map_err(anyhow::Error::msg)
-            .context("create Concordia shortcut")?;
-        anyhow::ensure!(
-            output.status.success(),
-            "PowerShell could not create the Concordia shortcut: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        Ok(())
+    let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT);$s.TargetPath=$env:CONCORDIA_TARGET;$s.Arguments=$env:CONCORDIA_ARGS;$s.WorkingDirectory=$env:CONCORDIA_WORKDIR;$s.IconLocation=$env:CONCORDIA_ICON;$s.Save()";
+    let mut command = crate::process_ui::command("powershell.exe");
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
+        .env("CONCORDIA_SHORTCUT", path)
+        .env("CONCORDIA_TARGET", &spec.target)
+        .env("CONCORDIA_ARGS", &spec.args)
+        .env("CONCORDIA_WORKDIR", &spec.workdir)
+        .env("CONCORDIA_ICON", &spec.icon)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let output = crate::process_lifetime::capture(command, Duration::from_secs(15), 64 * 1024)
+        .map_err(anyhow::Error::msg)
+        .context("create Concordia shortcut")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "PowerShell could not create the Concordia shortcut: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
 }
 
 fn shortcut_removed_marker(desktop: bool) -> PathBuf {
@@ -1242,7 +1237,13 @@ fn read_shortcut(path: &Path) -> Result<Option<ShortcutSpec>> {
     let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:CONCORDIA_SHORTCUT); [Console]::Out.WriteLine((ConvertTo-Json -Compress @{target=$s.TargetPath;args=$s.Arguments;workdir=$s.WorkingDirectory;icon=$s.IconLocation}))";
     let mut command = crate::process_ui::command("powershell.exe");
     command
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
         .env("CONCORDIA_SHORTCUT", path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1255,8 +1256,8 @@ fn read_shortcut(path: &Path) -> Result<Option<ShortcutSpec>> {
         "PowerShell could not read the Concordia shortcut: {}",
         String::from_utf8_lossy(&output.stderr).trim()
     );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .context("invalid Concordia shortcut data")?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("invalid Concordia shortcut data")?;
     Ok(Some(ShortcutSpec {
         target: PathBuf::from(value["target"].as_str().unwrap_or_default()),
         args: value["args"].as_str().unwrap_or_default().to_owned(),

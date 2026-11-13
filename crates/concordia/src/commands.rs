@@ -246,7 +246,10 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         "version" | "ver" | "about" => Some((SlashCommand::Version, false)),
         "copy" | "cp" => Some((SlashCommand::Copy, false)),
         "doctor" | "diag" => Some((SlashCommand::Doctor, false)),
-        "mcp" => Some((SlashCommand::Mcp(body[cmd.len()..].trim().to_string()), false)),
+        "mcp" => Some((
+            SlashCommand::Mcp(body[cmd.len()..].trim().to_string()),
+            false,
+        )),
         "skills" | "hooks" => {
             let args = body[cmd.len()..].trim();
             let (action, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
@@ -707,7 +710,10 @@ pub fn dispatch_slash(
             CommandOutcome::Ok,
             vec!["/harness runs inside the Concordia TUI".into()],
         ),
-        SlashCommand::Mcp(_) => (CommandOutcome::Ok, vec!["/mcp runs inside the Concordia TUI".into()]),
+        SlashCommand::Mcp(_) => (
+            CommandOutcome::Ok,
+            vec!["/mcp runs inside the Concordia TUI".into()],
+        ),
     }
 }
 

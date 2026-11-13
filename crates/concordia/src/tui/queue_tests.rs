@@ -599,7 +599,10 @@ fn queue_command_lists_and_clears() {
     h.queue("three\nlines");
     let listed = h.app.queue_command("");
     assert!(listed.iter().any(|l| l == "2 queued"), "{listed:?}");
-    assert!(listed.iter().any(|l| l == "queued 2: three lines"), "{listed:?}");
+    assert!(
+        listed.iter().any(|l| l == "queued 2: three lines"),
+        "{listed:?}"
+    );
     let cleared = h.app.queue_command("clear");
     assert!(h.app.queue.items.is_empty());
     assert_eq!(cleared, ["cleared 2 queued prompts".to_string()]);
@@ -737,11 +740,9 @@ fn the_draft_is_restored_with_a_notice_and_ctrl_z_clears_it() {
     h.app.persist_draft_now();
     h.relaunch();
     assert_eq!(h.app.editor.text(), "left over\nsecond line");
-    assert!(h
-        .app
-        .messages
-        .iter()
-        .any(|m| m.text.contains("Your unsent draft and queued messages were restored.")));
+    assert!(h.app.messages.iter().any(|m| m
+        .text
+        .contains("Your unsent draft and queued messages were restored.")));
     h.key(KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "");
     // restoring did not make it look edited: no rewrite until the user changes something

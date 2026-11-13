@@ -47,3 +47,11 @@
 | README.md, site/src/content/docs/{features,index,install,providers,configuration}.md, site/astro.config.mjs | ok: 1, 4, 5, 6, 10 | Keep the README and site as canonical documentation surfaces, add one grouped feature page, and record shipped behavior without adding a duplicate catalog. |
 | .github/workflows/release.yml | ok: 1, 4, 5, 10 | Extend existing staging and attestation steps to cover each release asset; do not add a new release subsystem. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing documentation and release-integrity changes in existing metadata. |
+
+### X1 review corrections - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/brand.rs, crates/concordia/src/tui/landing.rs | ok: 1, 4, 5, 10 | Fix the existing Home render owner with the configured docs URL and enough rows; keep bundled changelog headings and do not add a link or content subsystem. |
+| crates/concordia/src/tui/landing.rs | ok: 1, 4, 6 | Compact the existing account usage rows from the canonical UsageSnapshot so every account remains visible at the requested terminal size. |
+| crates/concordia/src/tui/native_agents.rs | ok: 1, 4, 6, 10 | Keep the existing Agents picker owner and show an explicit empty-state row instead of refusing to open the view. |

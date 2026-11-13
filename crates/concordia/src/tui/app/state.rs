@@ -18,6 +18,7 @@ pub(in crate::tui) struct Areas {
     pub(in crate::tui) header_credits: Option<Rect>,
     pub(in crate::tui) header_email: Option<Rect>,
     pub(in crate::tui) header_attention: Option<Rect>,
+    pub(in crate::tui) home_documentation: Option<Rect>,
     pub(in crate::tui) transcript: Rect,
     pub(in crate::tui) transcript_rail: Rect,
     pub(in crate::tui) input: Rect,
@@ -293,6 +294,7 @@ pub(crate) struct App {
     pub(in crate::tui) header_model_pressed: bool,
     pub(in crate::tui) header_effort_pressed: bool,
     pub(in crate::tui) header_attention_pressed: bool,
+    pub(in crate::tui) home_documentation_pressed: bool,
     pub(in crate::tui) permissions_pressed: bool,
     pub(in crate::tui) permission_rows: Vec<(Rect, usize)>,
     pub(in crate::tui) permission_row_pressed: Option<usize>,
@@ -1047,7 +1049,12 @@ impl App {
 
     pub(in crate::tui) fn focus_needs_you_item(&mut self, item_id: &str) {
         self.sync_needs_you();
-        let Some(item) = self.needs_you.items().find(|item| item.id == item_id).cloned() else {
+        let Some(item) = self
+            .needs_you
+            .items()
+            .find(|item| item.id == item_id)
+            .cloned()
+        else {
             return;
         };
         landing::close(self);
@@ -1071,7 +1078,11 @@ impl App {
                 self.questions.focused = false;
             }
             crate::needs_you::ItemKind::WorkerResult => {
-                if let Some(id) = item.id.strip_prefix("worker:").and_then(|id| id.parse().ok()) {
+                if let Some(id) = item
+                    .id
+                    .strip_prefix("worker:")
+                    .and_then(|id| id.parse().ok())
+                {
                     self.inspect_worker(id);
                 }
             }
@@ -1643,6 +1654,7 @@ impl App {
             header_model_pressed: false,
             header_effort_pressed: false,
             header_attention_pressed: false,
+            home_documentation_pressed: false,
             permissions_pressed: false,
             permission_rows: Vec::new(),
             permission_row_pressed: None,
@@ -1858,7 +1870,11 @@ pub(in crate::tui) fn model_picker_rows(
                 detail: if model.efforts.is_empty() {
                     model.id
                 } else {
-                    format!("{} · efforts: {}", model.id, model.effort_names().join(", "))
+                    format!(
+                        "{} · efforts: {}",
+                        model.id,
+                        model.effort_names().join(", ")
+                    )
                 },
             });
         }

@@ -190,7 +190,11 @@ fn chat_header_keeps_credits_text() {
     let mut h = Harness::new(120, 30);
     h.app.landing = None;
     h.draw();
-    assert!(!h.screen().contains("Credits: not reported"), "{}", h.screen());
+    assert!(
+        !h.screen().contains("Credits: not reported"),
+        "{}",
+        h.screen()
+    );
 }
 
 #[test]
@@ -202,8 +206,8 @@ fn use_picker_shows_every_limit_reset_at_narrow_widths_and_clears_on_close() {
             snap.windows.push(crate::usage::UsageWindow {
                 label: label.into(),
                 used_pct,
-        resets: Some(reset.into()),
-        bucket: None,
+                resets: Some(reset.into()),
+                bucket: None,
             });
         }
         let row = picker_row("codex", ProviderKind::Codex, &snap);
@@ -804,10 +808,7 @@ fn shift_tab_never_reaches_full() {
         seen.push(h.app.trust);
         assert_eq!(get_settings(&h.app.state_root).trust, h.app.trust);
     }
-    assert_eq!(
-        seen,
-        [TrustMode::Plan, TrustMode::Ask, TrustMode::Edit]
-    );
+    assert_eq!(seen, [TrustMode::Plan, TrustMode::Ask, TrustMode::Edit]);
     for (mode, want) in [
         (TrustMode::Plan, Color::Cyan),
         (TrustMode::Ask, Color::Yellow),
@@ -1406,7 +1407,11 @@ fn two_tabs_draw_a_clickable_strip_on_the_top_row_above_the_header() {
     };
     h.app.tab_strip = vec![
         chip("Home", ProviderKind::Codex, icons::TabStatus::Idle),
-        chip("Fix the images …", ProviderKind::Claude, icons::TabStatus::Failed),
+        chip(
+            "Fix the images …",
+            ProviderKind::Claude,
+            icons::TabStatus::Failed,
+        ),
         chip("Docs", ProviderKind::Cursor, icons::TabStatus::Waiting),
     ];
     h.app.tab_index = 1;
@@ -1414,7 +1419,9 @@ fn two_tabs_draw_a_clickable_strip_on_the_top_row_above_the_header() {
     let screen = h.screen();
     let top = screen.lines().next().unwrap();
     assert!(
-        top.contains("1 ⬡   Home") && top.contains("2 ✻ ✗ Fix the images") && top.contains("3 ➤ ● Docs"),
+        top.contains("1 ⬡   Home")
+            && top.contains("2 ✻ ✗ Fix the images")
+            && top.contains("3 ➤ ● Docs"),
         "{top}"
     );
     assert_eq!(h.app.tab_hits.len(), 3);

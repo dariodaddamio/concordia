@@ -27,9 +27,19 @@ impl App {
             let (tx, rx) = mpsc::unbounded_channel();
             self.file_jobs.push(rx);
             tokio::spawn(async move {
-                // Explorer is intentionally visible: this is the requested URL/file window.
-                let result = crate::process_ui::visible_tokio_command("explorer.exe")
-                    .arg(target)
+                // Explorer can return a failure status after handing a URL to the registered
+                // browser. Use the Windows URL handler for links so its status represents the
+                // handoff itself; local files still open through Explorer.
+                let mut command = if label == "link" {
+                    let mut command = crate::process_ui::visible_tokio_command("cmd.exe");
+                    command.args(["/C", "start", "", &target]);
+                    command
+                } else {
+                    let mut command = crate::process_ui::visible_tokio_command("explorer.exe");
+                    command.arg(&target);
+                    command
+                };
+                let result = command
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())

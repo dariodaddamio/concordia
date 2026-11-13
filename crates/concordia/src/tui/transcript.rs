@@ -1667,7 +1667,13 @@ mod diagram_cache_tests {
         let mut v = view(blocks, 60, 40);
         let last = v.rows.len() - 1;
         let end = v.rows[last].text.len();
-        v.sel = Some((Pos { row: 0, col: 0 }, Pos { row: last, col: end }));
+        v.sel = Some((
+            Pos { row: 0, col: 0 },
+            Pos {
+                row: last,
+                col: end,
+            },
+        ));
         let text = v.selected_text().unwrap_or_default();
         (v, text)
     }
@@ -1681,10 +1687,8 @@ mod diagram_cache_tests {
         );
         // The highlight skips the bar too.
         let first = &v.lines()[0];
-        assert!(first
-            .spans
-            .iter()
-            .all(|s| !s.content.contains('\u{2502}') || !s.style.add_modifier.contains(Modifier::REVERSED)));
+        assert!(first.spans.iter().all(|s| !s.content.contains('\u{2502}')
+            || !s.style.add_modifier.contains(Modifier::REVERSED)));
 
         let card = Block {
             decor_prefix: 2,

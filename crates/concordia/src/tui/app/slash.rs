@@ -19,24 +19,52 @@ impl App {
         };
         let mut registry = match crate::mcp_registry::load(&self.state_root) {
             Ok(registry) => registry,
-            Err(error) => { self.push_system(error); return; }
+            Err(error) => {
+                self.push_system(error);
+                return;
+            }
         };
         match action.as_str() {
             "on" | "off" => match registry.servers.get_mut(&name) {
-                Some(server) => { server.enabled = action == "on"; }
-                None => { self.push_system(format!("MCP server not found: {name}")); return; }
+                Some(server) => {
+                    server.enabled = action == "on";
+                }
+                None => {
+                    self.push_system(format!("MCP server not found: {name}"));
+                    return;
+                }
             },
-            "remove" => { registry.servers.remove(&name); }
+            "remove" => {
+                registry.servers.remove(&name);
+            }
             "add" => {
                 if words.get(2).map(|s| *s == "stdio").unwrap_or(false) && words.len() >= 4 {
-                    registry.servers.insert(name.into(), crate::mcp_registry::Server { enabled: true, transport: crate::mcp_registry::Transport::Stdio { command: words[3].into(), args: words[4..].iter().map(|s| (*s).into()).collect(), env: Default::default() } });
+                    registry.servers.insert(
+                        name.into(),
+                        crate::mcp_registry::Server {
+                            enabled: true,
+                            transport: crate::mcp_registry::Transport::Stdio {
+                                command: words[3].into(),
+                                args: words[4..].iter().map(|s| (*s).into()).collect(),
+                                env: Default::default(),
+                            },
+                        },
+                    );
                 } else {
                     self.push_system("/mcp add NAME stdio COMMAND [ARGS...] · use the guided panel for remote servers and secret references");
                     return;
                 }
             }
-            "import" => { self.push_system("/mcp import is read-only discovery and needs a provider file target"); return; }
-            _ => { self.push_system("/mcp add|remove|on|off|import"); return; }
+            "import" => {
+                self.push_system(
+                    "/mcp import is read-only discovery and needs a provider file target",
+                );
+                return;
+            }
+            _ => {
+                self.push_system("/mcp add|remove|on|off|import");
+                return;
+            }
         }
         match crate::mcp_registry::save(&self.state_root, &registry) {
             Ok(()) => self.push_system("MCP registry saved. Provider homes were not changed."),
@@ -268,15 +296,16 @@ impl App {
                 self.push_system("model id contains unsupported characters");
                 return true;
             }
-            let offered = crate::models::available_at(&self.state_root, self.provider, &self.account)
-                .into_iter()
-                .any(|entry| {
-                    entry.id == *model
-                        || entry
-                            .efforts
-                            .iter()
-                            .any(|effort| effort.model_id.as_deref() == Some(model.as_str()))
-                });
+            let offered =
+                crate::models::available_at(&self.state_root, self.provider, &self.account)
+                    .into_iter()
+                    .any(|entry| {
+                        entry.id == *model
+                            || entry
+                                .efforts
+                                .iter()
+                                .any(|effort| effort.model_id.as_deref() == Some(model.as_str()))
+                    });
             if !offered {
                 self.push_system("model is not offered by the selected provider account; use /model to list available models");
                 return true;

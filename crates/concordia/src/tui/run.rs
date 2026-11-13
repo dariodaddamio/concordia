@@ -389,11 +389,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     tabs.active_mut().app.compat_rx = Some(crate::provider::compat::start_real_detection(
         state_root.clone(),
     ));
-    tabs.active_mut().app.start_job(if crate::config::get().updates.install_on_launch {
-        JobKind::Update
-    } else {
-        JobKind::Check
-    });
+    tabs.active_mut()
+        .app
+        .start_job(if crate::config::get().updates.install_on_launch {
+            JobKind::Update
+        } else {
+            JobKind::Check
+        });
 
     let terminal_restore = (!use_window).then(TerminalRestoreGuard::new);
     let (backend, mut terminal_input) = if use_window {
@@ -593,10 +595,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             .needs_you
                             .items()
                             .find(|item| {
-                                !crate::store::attention_notification_seen(
-                                    &state_root,
-                                    &item.id,
-                                )
+                                !crate::store::attention_notification_seen(&state_root, &item.id)
                             })
                             .map(|item| (item.id.clone(), item.notification_text()));
                     }
@@ -610,9 +609,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 });
                 if let Some((item_id, text)) = notification {
                     if crate::store::mark_attention_notification(&state_root, &item_id).is_ok() {
-                        terminal
-                            .backend_mut()
-                            .attention_notification(item_id, text);
+                        terminal.backend_mut().attention_notification(item_id, text);
                     }
                 }
             }
@@ -631,11 +628,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             let mut rename_tab = None;
             let mut notification_item = None;
             {
-                let RunTab {
-                    app,
-                    turn_tx,
-                    ..
-                } = &mut tabs.tabs[active];
+                let RunTab { app, turn_tx, .. } = &mut tabs.tabs[active];
                 app.tab_strip = labels;
                 app.tab_index = active;
                 app.tab_drag = strip_drag
@@ -966,9 +959,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
             }
             if let Some(item_id) = notification_item {
-                if let Some(index) = tabs.tabs.iter().position(|tab| {
-                    tab.app.needs_you.items().any(|item| item.id == item_id)
-                }) {
+                if let Some(index) = tabs
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.app.needs_you.items().any(|item| item.id == item_id))
+                {
                     tabs.active = index;
                     tabs.active_mut().app.focus_needs_you_item(&item_id);
                     dirty = true;
@@ -1346,13 +1341,17 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         if let Some(scope) = scope_intent {
                             prefix.get_or_insert_with(String::new).push_str(&format!("\n[User-declared cooperative workspace scope]\n{scope}\nFollow these declared paths. Scheduler reservations grant no additional native permissions."));
                         }
-                        let mut standing_tools = if matches!(provider, ProviderKind::Claude | ProviderKind::Codex) {
-                            crate::mcp::registered_tool_names()
-                        } else {
-                            Vec::new()
-                        };
+                        let mut standing_tools =
+                            if matches!(provider, ProviderKind::Claude | ProviderKind::Codex) {
+                                crate::mcp::registered_tool_names()
+                            } else {
+                                Vec::new()
+                            };
                         if native_input != crate::native_input::Mode::Standard
-                            && matches!(provider, ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode)
+                            && matches!(
+                                provider,
+                                ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode
+                            )
                         {
                             standing_tools.push("question".into());
                         }
@@ -1365,7 +1364,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 handoff_map: prefix.as_deref(),
                             },
                         );
-                        prefix.get_or_insert_with(String::new).insert_str(0, &crate::provider::standing_context::tag(&standing));
+                        prefix
+                            .get_or_insert_with(String::new)
+                            .insert_str(0, &crate::provider::standing_context::tag(&standing));
                         if let Some(context) = prefix.as_ref().filter(|text| !text.is_empty()) {
                             let _ = progress_tx.send(TurnProgress::Notice(format!(
                                 "Context for this message · {}\nConversation references are included for the selected provider. Native tool and approval state stays with its original session.\n\n{context}",

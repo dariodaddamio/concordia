@@ -104,7 +104,10 @@ fn standing_context_uses_native_claude_and_codex_channels_once() {
     })
     .unwrap();
     assert_eq!(claude.argv.iter().filter(|arg| *arg == context).count(), 1);
-    assert!(claude.argv.windows(2).any(|w| w == ["--append-system-prompt", context]));
+    assert!(claude
+        .argv
+        .windows(2)
+        .any(|w| w == ["--append-system-prompt", context]));
 
     let codex = plan_turn_argv(&TurnRequest {
         prompt: "hello",
@@ -120,7 +123,8 @@ fn standing_context_uses_native_claude_and_codex_channels_once() {
     assert!(codex
         .argv
         .iter()
-        .any(|arg| arg == r#"developer_instructions="You are running inside Concordia. Use agents.""#));
+        .any(|arg| arg
+            == r#"developer_instructions="You are running inside Concordia. Use agents.""#));
 }
 
 #[test]
@@ -304,7 +308,7 @@ fn unified_planner_never_emits_last() {
             home_path: None,
             model: None,
             native_session_id: Some("id-1"),
-        trust: TrustMode::Edit,
+            trust: TrustMode::Edit,
             context_prefix: None,
             local_time: None,
             compaction: Default::default(),
@@ -351,7 +355,7 @@ fn claude_first_turn_names_a_session_and_later_turns_resume_it() {
             model: None,
             native_session_id: sid,
             trust: TrustMode::Edit,
-        standing_context: None,
+            standing_context: None,
         })
         .unwrap()
     };

@@ -91,13 +91,16 @@ mod tests {
     use std::path::Path;
 
     /// Files allowed to build a process outside this module, with the reason.
-    const ALLOWED: &[(&str, &str)] = &[(
-        "cursor_usage.rs",
-        "portable_pty CommandBuilder: ConPTY child, no creation-flag hook",
-    ), (
-        "local_terminal.rs",
-        "portable_pty CommandBuilder: ConPTY child, no creation-flag hook",
-    )];
+    const ALLOWED: &[(&str, &str)] = &[
+        (
+            "cursor_usage.rs",
+            "portable_pty CommandBuilder: ConPTY child, no creation-flag hook",
+        ),
+        (
+            "local_terminal.rs",
+            "portable_pty CommandBuilder: ConPTY child, no creation-flag hook",
+        ),
+    ];
 
     fn scan(dir: &Path, hits: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -129,7 +132,10 @@ mod tests {
     #[test]
     fn spawns_go_through_the_helper() {
         let mut hits = Vec::new();
-        scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut hits);
+        scan(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut hits,
+        );
         assert!(
             hits.is_empty(),
             "build child processes with crate::process_ui, not Command::new directly: {hits:?}"

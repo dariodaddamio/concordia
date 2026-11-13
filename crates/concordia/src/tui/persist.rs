@@ -403,7 +403,6 @@ impl super::App {
         Ok(())
     }
 
-
     fn clear_queue_editor(&mut self) {
         self.close_queue_edit();
         self.queue.focused = false;
@@ -606,5 +605,4 @@ mod tests {
             "keep this draft through the storage error"
         );
     }
-
 }

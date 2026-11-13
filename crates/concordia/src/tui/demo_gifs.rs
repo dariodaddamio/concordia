@@ -235,10 +235,9 @@ fn continuity() -> Value {
         .queue
         .items
         .push("Then review source freshness.".into());
-    s.app
-        .apply_progress(TurnProgress::Error(
-            "usage_limit_reached: You've hit your usage limit".into(),
-        ));
+    s.app.apply_progress(TurnProgress::Error(
+        "usage_limit_reached: You've hit your usage limit".into(),
+    ));
     s.app.on_turn_done(
         TurnOutcome {
             exit_code: Some(1),

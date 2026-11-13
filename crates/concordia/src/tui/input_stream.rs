@@ -232,10 +232,14 @@ impl InputStream {
             #[cfg(windows)]
             Message::Notification(item_id, at) => {
                 self.notification_target = Some(item_id);
-                Ok((Some(Event::Key(crossterm::event::KeyEvent::new(
-                    crossterm::event::KeyCode::Null,
-                    crossterm::event::KeyModifiers::NONE,
-                ))), at, false))
+                Ok((
+                    Some(Event::Key(crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Null,
+                        crossterm::event::KeyModifiers::NONE,
+                    ))),
+                    at,
+                    false,
+                ))
             }
         }
     }

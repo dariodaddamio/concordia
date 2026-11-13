@@ -264,32 +264,85 @@ impl App {
         let screen = argument.starts_with("file-facts") || argument.starts_with("sources");
         let argument = argument.to_owned();
         let (tx, rx) = std::sync::mpsc::channel();
-        let result = std::thread::Builder::new().name("concordia-memory-read".into()).spawn(move || {
-            let search = argument.strip_prefix("recall ").map(|q| (None, None, q))
-                .or_else(|| argument.strip_prefix("recall-account ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(a,q)| (Some(a),None,q)))
-                .or_else(|| argument.strip_prefix("recall-source ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(s,q)| (None,Some(s),q)));
-            let output = if let Some((account, source, query)) = search {
-                    crate::native_memory::retrieval::recall(&root, query, source, account, if source.is_none() { Some(&workspace) } else { None }).map(|r| {
-                    let mut lines = vec![format!("Memory search: {} matches in {} bounded source windows{}", r.hits.len(), r.pages.len(), if r.incomplete { "; incomplete scan" } else { "" })];
-                    for hit in r.hits {
-                        lines.push(format!("{} / {} · {} · message {}\n{}\nSource: {}", hit.source.account, hit.source.session_id, hit.role, hit.message, hit.preview, hit.source.id));
-                    }
-                    for page in r.pages { lines.push(format!("Scanned source: {} / {} · {}",page.account,page.session_id,page.id)); }
-                    lines.extend(r.unavailable);
-                    lines.join("\n\n")
-                })
-            } else {
-                let args: Vec<String> = argument.split_whitespace().map(str::to_owned).collect();
-                if args.first().is_some_and(|operation| operation == "file-facts") {
-                    crate::native_memory::files::command(&root, &args).map(file_facts_memory)
-                } else if args.first().is_some_and(|s| s == "next") && args.len() == 2 {
-                    crate::native_memory::history_from_pointer(&root, &args[1]).and_then(|s| serde_json::to_string_pretty(&s).map_err(|e| e.to_string()))
+        let result = std::thread::Builder::new()
+            .name("concordia-memory-read".into())
+            .spawn(move || {
+                let search = argument
+                    .strip_prefix("recall ")
+                    .map(|q| (None, None, q))
+                    .or_else(|| {
+                        argument
+                            .strip_prefix("recall-account ")
+                            .and_then(|rest| rest.split_once(char::is_whitespace))
+                            .map(|(a, q)| (Some(a), None, q))
+                    })
+                    .or_else(|| {
+                        argument
+                            .strip_prefix("recall-source ")
+                            .and_then(|rest| rest.split_once(char::is_whitespace))
+                            .map(|(s, q)| (None, Some(s), q))
+                    });
+                let output = if let Some((account, source, query)) = search {
+                    crate::native_memory::retrieval::recall(
+                        &root,
+                        query,
+                        source,
+                        account,
+                        if source.is_none() {
+                            Some(&workspace)
+                        } else {
+                            None
+                        },
+                    )
+                    .map(|r| {
+                        let mut lines = vec![format!(
+                            "Memory search: {} matches in {} bounded source windows{}",
+                            r.hits.len(),
+                            r.pages.len(),
+                            if r.incomplete {
+                                "; incomplete scan"
+                            } else {
+                                ""
+                            }
+                        )];
+                        for hit in r.hits {
+                            lines.push(format!(
+                                "{} / {} · {} · message {}\n{}\nSource: {}",
+                                hit.source.account,
+                                hit.source.session_id,
+                                hit.role,
+                                hit.message,
+                                hit.preview,
+                                hit.source.id
+                            ));
+                        }
+                        for page in r.pages {
+                            lines.push(format!(
+                                "Scanned source: {} / {} · {}",
+                                page.account, page.session_id, page.id
+                            ));
+                        }
+                        lines.extend(r.unavailable);
+                        lines.join("\n\n")
+                    })
                 } else {
-                    crate::chat_cli::run(&root, &args).map_err(|(e, _)| e)
-                }
-            };
-            let _ = tx.send(output);
-        });
+                    let args: Vec<String> =
+                        argument.split_whitespace().map(str::to_owned).collect();
+                    if args
+                        .first()
+                        .is_some_and(|operation| operation == "file-facts")
+                    {
+                        crate::native_memory::files::command(&root, &args).map(file_facts_memory)
+                    } else if args.first().is_some_and(|s| s == "next") && args.len() == 2 {
+                        crate::native_memory::history_from_pointer(&root, &args[1]).and_then(|s| {
+                            serde_json::to_string_pretty(&s).map_err(|e| e.to_string())
+                        })
+                    } else {
+                        crate::chat_cli::run(&root, &args).map_err(|(e, _)| e)
+                    }
+                };
+                let _ = tx.send(output);
+            });
         if let Err(e) = result {
             self.push_system(format!("memory reader could not start: {e}"));
             return;

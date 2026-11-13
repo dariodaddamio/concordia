@@ -10,8 +10,7 @@ use super::{contains, provider_color, App, Phase};
 use crate::accounts::{get_account, is_logged_in, normalize_account_id};
 use crate::delegate::{
     build_worker_context, extract_delegate_blocks, fmt_elapsed, result_block, use_prompt,
-    worker_trust, Delegates, Job, JobSpec, Origin, Submit,
-    WorkerState, MAX_PENDING_CONFIRMS,
+    worker_trust, Delegates, Job, JobSpec, Origin, Submit, WorkerState, MAX_PENDING_CONFIRMS,
 };
 use crate::provider::stream_cards::format_card_line;
 use crate::store::{get_settings, ChildTrust, TrustMode};
@@ -345,10 +344,7 @@ fn draw_confirm(f: &mut Frame, over: Rect, app: &App, c: &Confirm) {
         } else {
             "F7 focuses goal review; your message draft is preserved."
         };
-        let rows = wrap_plain(
-            &format!("{prompt}"),
-            over.width.saturating_sub(4) as usize,
-        );
+        let rows = wrap_plain(&format!("{prompt}"), over.width.saturating_sub(4) as usize);
         let full = rows.len().saturating_add(2) <= over.height as usize;
         c.goal_visible.set(full);
         if !full {
@@ -962,7 +958,11 @@ impl App {
                 &self.state_root,
                 &j.account,
                 &j.task,
-                if j.state == WorkerState::Done { "finished" } else { "failed" },
+                if j.state == WorkerState::Done {
+                    "finished"
+                } else {
+                    "failed"
+                },
                 Some(j.final_text()),
             );
             crate::logging::info(&format!(
@@ -1092,9 +1092,20 @@ impl App {
             changed = true;
             match proposal {
                 crate::mcp::PendingProposal::Delegate(proposal) => {
-                    crate::mcp::update_agent(&self.state_root, &proposal.agent_id, "running", None, "accepted by Concordia");
+                    crate::mcp::update_agent(
+                        &self.state_root,
+                        &proposal.agent_id,
+                        "running",
+                        None,
+                        "accepted by Concordia",
+                    );
                     if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
-                        match self.start_delegate_with_model(&block.to, &block.task, Origin::Protocol, proposal.model.as_deref()) {
+                        match self.start_delegate_with_model(
+                            &block.to,
+                            &block.task,
+                            Origin::Protocol,
+                            proposal.model.as_deref(),
+                        ) {
                             Ok(message) => self.push_system(message),
                             Err(error) => self.push_system(format!("delegate failed - {error}")),
                         }
@@ -1249,9 +1260,10 @@ impl App {
                 .into_iter()
                 .find(|account| {
                     normalize_account_id(&account.account) != orch
-                        && account.home_path.as_deref().is_some_and(|home| {
-                            is_logged_in(account.provider, home)
-                        })
+                        && account
+                            .home_path
+                            .as_deref()
+                            .is_some_and(|home| is_logged_in(account.provider, home))
                 })
                 .map(|account| account.account)
                 .unwrap_or_default()

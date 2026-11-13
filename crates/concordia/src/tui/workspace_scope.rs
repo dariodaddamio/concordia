@@ -147,5 +147,4 @@ impl App {
             .map(|(_, flag)| flag.clone())
             .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)))
     }
-
 }

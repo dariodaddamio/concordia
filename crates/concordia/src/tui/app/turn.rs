@@ -3,9 +3,7 @@ use super::super::*;
 impl App {
     fn offer_question(&mut self, text: &str) {
         self.questions.offer(text);
-        if self.questions.waiting()
-            && self.composer_value().is_empty()
-            && self.queue.edit.is_none()
+        if self.questions.waiting() && self.composer_value().is_empty() && self.queue.edit.is_none()
         {
             self.questions.focused = true;
             self.questions.auto_focused = true;

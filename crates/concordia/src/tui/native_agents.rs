@@ -8,7 +8,11 @@ pub(super) fn panel_area(area: Rect) -> Rect {
         return area;
     }
     let width = (area.width / 2).clamp(48, 86);
-    Rect { x: area.x + area.width - width, width, ..area }
+    Rect {
+        x: area.x + area.width - width,
+        width,
+        ..area
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -80,7 +84,9 @@ struct Facts {
 fn fact_value(detail: Option<&str>, key: &str) -> Option<String> {
     detail?.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
-        name.trim().eq_ignore_ascii_case(key).then(|| value.trim().to_owned())
+        name.trim()
+            .eq_ignore_ascii_case(key)
+            .then(|| value.trim().to_owned())
     })
 }
 
@@ -95,9 +101,8 @@ fn facts(detail: Option<&str>) -> Facts {
         effort: fact_value(detail, "Effort").unwrap_or_else(|| "unknown".into()),
         used: fact_number(detail, "Tokens used").or_else(|| fact_number(detail, "Used")),
         limit: fact_number(detail, "Context window").or_else(|| fact_number(detail, "Limit")),
-        compaction: fact_value(detail, "Compaction reference").and_then(|value| {
-            value.trim_end_matches('%').parse::<f64>().ok()
-        }),
+        compaction: fact_value(detail, "Compaction reference")
+            .and_then(|value| value.trim_end_matches('%').parse::<f64>().ok()),
         turns: fact_number(detail, "Turns").or_else(|| fact_number(detail, "Tasks")),
     }
 }
@@ -111,7 +116,13 @@ fn context_bar(used: Option<u64>, limit: Option<u64>, width: usize) -> String {
     }
     .min(width);
     (0..width)
-        .map(|index| if index < filled { '\u{25ae}' } else { '\u{25af}' })
+        .map(|index| {
+            if index < filled {
+                '\u{25ae}'
+            } else {
+                '\u{25af}'
+            }
+        })
         .collect()
 }
 
@@ -155,7 +166,10 @@ fn value_to_command(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(text) => Some(text.clone()),
         serde_json::Value::Array(items) => {
-            let parts = items.iter().map(|v| v.as_str()).collect::<Option<Vec<_>>>()?;
+            let parts = items
+                .iter()
+                .map(|v| v.as_str())
+                .collect::<Option<Vec<_>>>()?;
             if parts.len() >= 3
                 && matches!(
                     parts[parts.len() - 2],
@@ -168,7 +182,10 @@ fn value_to_command(value: &serde_json::Value) -> Option<String> {
                 parts
                     .iter()
                     .map(|part| {
-                        if part.is_empty() || part.contains(char::is_whitespace) || part.contains('"') {
+                        if part.is_empty()
+                            || part.contains(char::is_whitespace)
+                            || part.contains('"')
+                        {
                             format!("\"{}\"", part.replace('\\', "\\\\").replace('"', "\\\""))
                         } else {
                             (*part).to_owned()
@@ -291,7 +308,11 @@ fn shell_tokens(text: &str) -> Vec<String> {
 }
 
 fn executable(token: &str) -> String {
-    let name = token.rsplit(['/', '\\']).next().unwrap_or(token).to_ascii_lowercase();
+    let name = token
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(token)
+        .to_ascii_lowercase();
     for suffix in [".exe", ".cmd", ".bat", ".ps1"] {
         if let Some(stem) = name.strip_suffix(suffix) {
             return stem.to_owned();
@@ -303,20 +324,60 @@ fn executable(token: &str) -> String {
 fn value_flags(provider: &str) -> &'static [&'static str] {
     match provider {
         "Codex" => &[
-            "-m", "--model", "-c", "--config", "-p", "--profile", "-C", "--cd", "-s", "--sandbox",
-            "-i", "--image", "-o", "--output-last-message", "--color", "--output-schema",
-            "--add-dir", "--local-provider",
+            "-m",
+            "--model",
+            "-c",
+            "--config",
+            "-p",
+            "--profile",
+            "-C",
+            "--cd",
+            "-s",
+            "--sandbox",
+            "-i",
+            "--image",
+            "-o",
+            "--output-last-message",
+            "--color",
+            "--output-schema",
+            "--add-dir",
+            "--local-provider",
         ],
         "Claude" => &[
-            "--model", "--permission-mode", "--allowedTools", "--allowed-tools",
-            "--disallowedTools", "--disallowed-tools", "--output-format", "--input-format",
-            "--max-turns", "--append-system-prompt", "--system-prompt", "--resume", "-r",
-            "--session-id", "--mcp-config", "--settings", "--add-dir", "--fallback-model",
-            "--effort", "--agent", "--agents", "--tools",
+            "--model",
+            "--permission-mode",
+            "--allowedTools",
+            "--allowed-tools",
+            "--disallowedTools",
+            "--disallowed-tools",
+            "--output-format",
+            "--input-format",
+            "--max-turns",
+            "--append-system-prompt",
+            "--system-prompt",
+            "--resume",
+            "-r",
+            "--session-id",
+            "--mcp-config",
+            "--settings",
+            "--add-dir",
+            "--fallback-model",
+            "--effort",
+            "--agent",
+            "--agents",
+            "--tools",
         ],
         _ => &[
-            "-m", "--model", "--output-format", "--resume", "--workspace", "--cwd", "--api-key",
-            "-H", "--header", "--effort",
+            "-m",
+            "--model",
+            "--output-format",
+            "--resume",
+            "--workspace",
+            "--cwd",
+            "--api-key",
+            "-H",
+            "--header",
+            "--effort",
         ],
     }
 }
@@ -349,7 +410,9 @@ fn parse_args(provider: &'static str, args: &[String]) -> Run {
         }
         i += 1;
     }
-    let task = task.map(|text| first_line(&text)).filter(|line| !line.is_empty());
+    let task = task
+        .map(|text| first_line(&text))
+        .filter(|line| !line.is_empty());
     Run {
         provider,
         model: model.map(|m| first_line(&m)).filter(|m| !m.is_empty()),
@@ -471,7 +534,10 @@ fn untracked_label(depth: usize, status: Status, run: &Run) -> String {
         "  ".repeat(depth),
         status.icon(),
         run.provider,
-        run.model.as_deref().map(|m| format!(" {m}")).unwrap_or_default()
+        run.model
+            .as_deref()
+            .map(|m| format!(" {m}"))
+            .unwrap_or_default()
     );
     let budget = ROW_WIDTH.saturating_sub(head.chars().count()).max(12);
     format!("{head}{}", cut(&run.task, budget))
@@ -672,8 +738,14 @@ impl State {
                     metadata.model,
                     metadata.effort,
                     context_bar(metadata.used, metadata.limit, 7),
-                    metadata.turns.map_or_else(|| "unknown".into(), |value| value.to_string()),
-                    if elapsed.is_empty() { "".into() } else { elapsed },
+                    metadata
+                        .turns
+                        .map_or_else(|| "unknown".into(), |value| value.to_string()),
+                    if elapsed.is_empty() {
+                        "".into()
+                    } else {
+                        elapsed
+                    },
                 );
                 let detail = format!(
                     "{} · {} · {}",
@@ -761,29 +833,50 @@ impl State {
 }
 
 pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let Some(picker) = app.picker.as_ref().filter(|picker| picker.kind == PickerKind::Agents)
+    let Some(picker) = app
+        .picker
+        .as_ref()
+        .filter(|picker| picker.kind == PickerKind::Agents)
     else {
         return;
     };
     let rows: Vec<PickerRow> = picker.filtered().into_iter().cloned().collect();
-    let selected = picker.state.selected().unwrap_or(0).min(rows.len().saturating_sub(1));
+    let selected = picker
+        .state
+        .selected()
+        .unwrap_or(0)
+        .min(rows.len().saturating_sub(1));
     let selected_row = rows.get(selected).cloned();
-    let columns = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(area);
+    let columns =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
     f.render_widget(Clear, area);
 
     let mut detail_lines = Vec::new();
     let mut add_detail = |id: &str, row_number: usize| {
-        if let Some(index) = id.strip_prefix("native-agent:").and_then(|value| value.parse::<usize>().ok()) {
+        if let Some(index) = id
+            .strip_prefix("native-agent:")
+            .and_then(|value| value.parse::<usize>().ok())
+        {
             if let Some(card) = app.messages.get(index).and_then(|line| line.card.as_ref()) {
                 let status = Status::from(card.status);
-                let elapsed = app.native_agents.entries.get(&card.id)
+                let elapsed = app
+                    .native_agents
+                    .entries
+                    .get(&card.id)
                     .map(|entry| format_elapsed(entry.started.elapsed()))
                     .unwrap_or_else(|| "unknown".into());
                 if let Some(run) = untracked_run(card) {
-                    for (i, text) in untracked_detail(&run, status, &elapsed, row_number).into_iter().enumerate() {
+                    for (i, text) in untracked_detail(&run, status, &elapsed, row_number)
+                        .into_iter()
+                        .enumerate()
+                    {
                         detail_lines.push(if i == 0 {
-                            Line::styled(text, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                            Line::styled(
+                                text,
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            )
                         } else {
                             Line::from(text)
                         });
@@ -794,14 +887,44 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let title = task_title(card.detail.as_deref(), &card.title);
                 let used = formatted_number(metadata.used);
                 let limit = formatted_number(metadata.limit);
-                let percentage = metadata.compaction.map_or_else(|| "unknown".into(), |value| format!("{value:.1}%"));
+                let percentage = metadata
+                    .compaction
+                    .map_or_else(|| "unknown".into(), |value| format!("{value:.1}%"));
                 detail_lines.extend([
-                    Line::from(vec![Span::styled(format!("#{} {}", row_number, metadata.role), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(" "), Span::styled(format!("{} {}", status.icon(), status.word()), Style::default().fg(Color::Green))]),
-                    Line::styled(format!("{} · {}", metadata.model, metadata.effort), Style::default().fg(Color::Gray)),
+                    Line::from(vec![
+                        Span::styled(
+                            format!("#{} {}", row_number, metadata.role),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("{} {}", status.icon(), status.word()),
+                            Style::default().fg(Color::Green),
+                        ),
+                    ]),
+                    Line::styled(
+                        format!("{} · {}", metadata.model, metadata.effort),
+                        Style::default().fg(Color::Gray),
+                    ),
                     Line::from(format!("{used} / {limit} tokens")),
                     Line::from(context_bar(metadata.used, metadata.limit, 28)),
-                    Line::styled(format!("{percentage} of compaction reference"), Style::default().fg(Color::Gray)),
-                    Line::styled(format!("{} tokens remaining · last snapshot", metadata.limit.zip(metadata.used).map(|(limit, used)| limit.saturating_sub(used)).map_or_else(|| "unknown".into(), |value| value.to_string())), Style::default().fg(Color::Gray)),
+                    Line::styled(
+                        format!("{percentage} of compaction reference"),
+                        Style::default().fg(Color::Gray),
+                    ),
+                    Line::styled(
+                        format!(
+                            "{} tokens remaining · last snapshot",
+                            metadata
+                                .limit
+                                .zip(metadata.used)
+                                .map(|(limit, used)| limit.saturating_sub(used))
+                                .map_or_else(|| "unknown".into(), |value| value.to_string())
+                        ),
+                        Style::default().fg(Color::Gray),
+                    ),
                     Line::from(""),
                     Line::styled("Tasks", Style::default().add_modifier(Modifier::BOLD)),
                     Line::from(format!("{} {}    {}", status.icon(), title, elapsed)),
@@ -819,7 +942,11 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
     f.render_widget(
         Paragraph::new(detail_lines)
-            .block(Block::default().borders(Borders::ALL).title(" Agent details "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Agent details "),
+            )
             .wrap(ratatui::widgets::Wrap { trim: true }),
         columns[0],
     );
@@ -830,7 +957,9 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .map(|(index, row)| {
             let selected = index == selected;
             let style = if selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -866,16 +995,17 @@ fn format_elapsed(duration: Duration) -> String {
 
 impl App {
     pub(super) fn open_agents_picker(&mut self) {
-        let rows = self.native_agents.rows(
+        let mut rows = self.native_agents.rows(
             &self.messages,
             &self.deleg.d.visible(Instant::now(), Duration::MAX),
             &self.state_root,
         );
         if rows.is_empty() {
-            self.push_system(
-                "No agents or untracked provider runs have been reported in this conversation.",
-            );
-            return;
+            rows.push(PickerRow {
+                id: "agents-empty".into(),
+                label: "No agents reported".into(),
+                detail: "No agent runs are available for this conversation.".into(),
+            });
         }
         self.show_picker(
             PickerKind::Agents,
@@ -984,7 +1114,10 @@ mod tests {
     #[test]
     fn untracked_row_is_one_clean_line_for_a_multiline_prompt_with_escapes_and_diff_output() {
         let command = "codex exec -m gpt-5.6-luna \"Fix the parser\nsecond line with \\\"quotes\\\"\nthird\" --json";
-        let detail = pretty(command, "diff --git a/x b/x\n-old line\n+new line\nSECRET_BODY");
+        let detail = pretty(
+            command,
+            "diff --git a/x b/x\n-old line\n+new line\nSECRET_BODY",
+        );
         assert!(detail.contains("quotes") && detail.contains("\\n"));
         let messages = vec![chat("c1", "shell", &detail)];
         let mut state = State::default();
@@ -997,27 +1130,67 @@ mod tests {
         assert_eq!(label.lines().count(), 1);
         assert!(label.contains("Codex gpt-5.6-luna"), "{label}");
         assert!(label.contains("Fix the parser"), "{label}");
-        for leak in ["second line", "quotes", "\\", "diff", "old line", "SECRET_BODY", "role", "unknown"] {
-            assert!(!label.contains(leak) && !rows[1].detail.contains(leak), "{leak}: {label}");
+        for leak in [
+            "second line",
+            "quotes",
+            "\\",
+            "diff",
+            "old line",
+            "SECRET_BODY",
+            "role",
+            "unknown",
+        ] {
+            assert!(
+                !label.contains(leak) && !rows[1].detail.contains(leak),
+                "{leak}: {label}"
+            );
         }
     }
 
     #[test]
     fn model_flags_and_prompt_sources_are_parsed() {
         let run = |detail: &str| provider_run(detail).unwrap();
-        assert_eq!(run("command: codex exec -m gpt-x \"do it\"").model.as_deref(), Some("gpt-x"));
-        assert_eq!(run("command: codex exec --model gpt-y \"do it\"").model.as_deref(), Some("gpt-y"));
-        assert_eq!(run("command: codex exec --model=gpt-z \"do it\"").model.as_deref(), Some("gpt-z"));
+        assert_eq!(
+            run("command: codex exec -m gpt-x \"do it\"")
+                .model
+                .as_deref(),
+            Some("gpt-x")
+        );
+        assert_eq!(
+            run("command: codex exec --model gpt-y \"do it\"")
+                .model
+                .as_deref(),
+            Some("gpt-y")
+        );
+        assert_eq!(
+            run("command: codex exec --model=gpt-z \"do it\"")
+                .model
+                .as_deref(),
+            Some("gpt-z")
+        );
         let plain = run("command: codex exec --json -C /w \"do it\"");
         assert_eq!((plain.model, plain.task.as_str()), (None, "do it"));
         let claude = run(&pretty("claude -p --model haiku 'say hi'", ""));
-        assert_eq!((claude.provider, claude.model.as_deref(), claude.task.as_str()), ("Claude", Some("haiku"), "say hi"));
-        assert_eq!(run("cursor-agent -p --model auto \"go\"").provider, "Cursor");
+        assert_eq!(
+            (
+                claude.provider,
+                claude.model.as_deref(),
+                claude.task.as_str()
+            ),
+            ("Claude", Some("haiku"), "say hi")
+        );
+        assert_eq!(
+            run("cursor-agent -p --model auto \"go\"").provider,
+            "Cursor"
+        );
         assert_eq!(
             run("opencode run --model openai/gpt-5 \"review it\"").provider,
             "opencode"
         );
-        assert_eq!(run("{\"cmd\":[\"bash\",\"-lc\",\"cd /w && codex exec 'nested task'\"]}").task, "nested task");
+        assert_eq!(
+            run("{\"cmd\":[\"bash\",\"-lc\",\"cd /w && codex exec 'nested task'\"]}").task,
+            "nested task"
+        );
         let stdin = run("command: codex exec - <<'EOF'\nBODY TEXT\nEOF");
         assert_eq!(stdin.task, NO_TASK);
         assert_eq!(run("arguments: {\"command\":\"codex exec\"}").task, NO_TASK);
@@ -1054,8 +1227,17 @@ mod tests {
     fn untracked_detail_states_the_limit_once() {
         let run = provider_run("command: codex exec \"fix it\"").unwrap();
         let text = untracked_detail(&run, Status::Running, "5s", 3).join("\n");
-        assert_eq!(text.matches("cannot receive messages or questions").count(), 1);
-        for field in ["Provider: Codex", "Model: unknown", "running", "Elapsed: 5s", "Task: fix it"] {
+        assert_eq!(
+            text.matches("cannot receive messages or questions").count(),
+            1
+        );
+        for field in [
+            "Provider: Codex",
+            "Model: unknown",
+            "running",
+            "Elapsed: 5s",
+            "Task: fix it",
+        ] {
             assert!(text.contains(field), "{field}");
         }
         assert!(!text.contains("tokens"));

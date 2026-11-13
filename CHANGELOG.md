@@ -1,5 +1,28 @@
 # Changelog
 
+### Fixed (2026-11-13q)
+
+- Keep every connected account visible on Home, label unavailable usage explicitly and report
+  successful Documentation link handoffs without a false opener error.
+
+### Fixed (2026-11-13p)
+
+- Keep the Home introduction and every connected account's usage rows visible in compact windows.
+
+### Fixed (2026-11-13o)
+
+- Make the Home Documentation label open the docs site and keep account usage bars, percentages
+  and reset times visible at compact terminal widths.
+
+### Fixed (2026-11-13n)
+
+- Keep the Home introduction and connected-account usage visible at the default terminal size, and
+  let Ctrl+G open the Agents view when no runs have been reported.
+
+### Fixed (2026-11-13m)
+
+- Match Home, usage, provider selection and the top bar to the requested account and model views.
+
 ### Added (2026-11-13l)
 
 - Add a Concordia-owned MCP registry with project switches and per-launch delivery to Codex and

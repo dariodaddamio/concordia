@@ -240,13 +240,18 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
             Ok(json!({"agent_id":id,"status":"waiting"}).to_string())
         }
         "start" => {
-            let role_name = args.get("role").and_then(Value::as_str).unwrap_or("general");
+            let role_name = args
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("general");
             let role = crate::store::get_settings(root)
                 .roles
                 .get(role_name)
                 .cloned()
                 .ok_or_else(|| format!("unknown agent role: {role_name}"))?;
-            let account = args.get("account").and_then(Value::as_str)
+            let account = args
+                .get("account")
+                .and_then(Value::as_str)
                 .or(role.account.as_deref())
                 .ok_or_else(|| "agents needs account or a role account".to_string())?;
             let task = arg(&args, "task")?;
@@ -256,13 +261,22 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
             let record = AgentRecord {
                 agent_id: id.clone(),
                 account: account.into(),
-                provider: args.get("provider").and_then(Value::as_str)
+                provider: args
+                    .get("provider")
+                    .and_then(Value::as_str)
                     .or(role.provider.as_deref())
-                    .unwrap_or(connected.provider.as_str()).into(),
+                    .unwrap_or(connected.provider.as_str())
+                    .into(),
                 role: role_name.into(),
-                model: args.get("model").and_then(Value::as_str).map(str::to_owned)
+                model: args
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
                     .or(role.model.clone()),
-                effort: args.get("effort").and_then(Value::as_str).map(str::to_owned)
+                effort: args
+                    .get("effort")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
                     .or(role.effort.clone()),
                 task: task.into(),
                 parent: args
@@ -282,9 +296,15 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
                     to: account.into(),
                     task: task.into(),
                     role: role_name.into(),
-                    model: args.get("model").and_then(Value::as_str).map(str::to_owned)
+                    model: args
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
                         .or(role.model),
-                    effort: args.get("effort").and_then(Value::as_str).map(str::to_owned)
+                    effort: args
+                        .get("effort")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
                         .or(role.effort),
                     from_thread: record.parent.clone(),
                 },

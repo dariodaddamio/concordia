@@ -16,7 +16,7 @@ pub(super) fn portrait() -> Option<Arc<image::RgbaImage>> {
         .clone()
 }
 
-pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) -> Rect {
+pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     if area.width < 76 || area.height < 24 {
         return area;
     }
@@ -29,23 +29,45 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) -> Rect {
         hero.right() + 2,
         area.y + 1,
         area.width.saturating_sub(18),
-        4,
+        7,
     );
-    f.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                "Concordia",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Continue a chat or start a new one.",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]),
-        text,
+    let mut lines = vec![Line::from(Span::styled(
+        "Concordia",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::from(Span::styled(
+        "What's new",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.extend(
+        include_str!("../../../../CHANGELOG.md")
+            .lines()
+            .filter(|line| line.starts_with("### "))
+            .take(3)
+            .map(|line| Line::from(line.trim_start_matches("### "))),
     );
-    Rect::new(area.x, area.y + 7, area.width, area.height - 7)
+    lines.push(Line::from(Span::styled(
+        "Documentation",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::UNDERLINED),
+    )));
+    lines.push(Line::from("F1  Shortcuts"));
+    f.render_widget(Paragraph::new(lines), text);
+    app.areas.home_documentation = Some(Rect::new(
+        text.x,
+        text.y + 5,
+        "Documentation".len() as u16,
+        1,
+    ));
+    Rect::new(
+        area.x,
+        area.y + 8,
+        area.width,
+        area.height.saturating_sub(8),
+    )
 }

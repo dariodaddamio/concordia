@@ -1,7 +1,7 @@
 //! Opt-in native Codex stdio transport, matched to the 0.166.0 generated protocol.
 use super::*;
-use crate::provider::{CardStatus, interaction::InteractionConnection};
-use serde_json::{Value, json};
+use crate::provider::{interaction::InteractionConnection, CardStatus};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 const TOOL_MAP_MAX: usize = 4096;
@@ -240,7 +240,10 @@ impl Connection {
                         .as_str()
                         .unwrap_or("Native Codex turn failed");
                     let code = params["turn"]["error"]["code"].to_string();
-                    self.out.stderr_tail = format!("{message} code={code}").chars().take(2000).collect();
+                    self.out.stderr_tail = format!("{message} code={code}")
+                        .chars()
+                        .take(2000)
+                        .collect();
                     self.emit(TurnProgress::Error(self.out.stderr_tail.clone()))
                         .await;
                 }

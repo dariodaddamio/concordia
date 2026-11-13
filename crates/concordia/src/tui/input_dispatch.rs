@@ -169,7 +169,11 @@ pub(super) fn handle_key(
         }
         return false;
     }
-    if app.picker.as_ref().is_some_and(|p| p.kind == PickerKind::GrokBotForm) {
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::GrokBotForm)
+    {
         app.grok_bot_form_key(key);
         return false;
     }
@@ -190,10 +194,7 @@ pub(super) fn handle_key(
         app.key_sheet = true;
         return false;
     }
-    if key.modifiers.is_empty()
-        && app.picker.is_none()
-        && key.code == KeyCode::F(2)
-    {
+    if key.modifiers.is_empty() && app.picker.is_none() && key.code == KeyCode::F(2) {
         app.open_provider_picker();
         return false;
     }
@@ -295,7 +296,11 @@ pub(super) fn handle_key(
     if landing::navigation_key(app, key) {
         return false;
     }
-    if app.picker.is_none() && landing::visible(app) && landing::handle_key(app, key) {
+    if app.picker.is_none()
+        && landing::visible(app)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && landing::handle_key(app, key)
+    {
         return false;
     }
     if tokens::handle_key(app, key) {
@@ -521,11 +526,7 @@ pub(super) fn handle_key(
     {
         let every = key.modifiers.contains(KeyModifiers::SHIFT);
         let all = app.expanded_activity;
-        if app
-            .activity
-            .expand_last_message(&app.messages, all, every)
-            == 0
-        {
+        if app.activity.expand_last_message(&app.messages, all, every) == 0 {
             app.flash("Nothing to expand in the last message.");
         }
         return false;
@@ -1028,19 +1029,25 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_provider_pressed)
     {
-        if provider_hit { app.open_provider_picker(); }
+        if provider_hit {
+            app.open_provider_picker();
+        }
         return;
     }
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_model_pressed)
     {
-        if model_hit { app.open_model_picker(); }
+        if model_hit {
+            app.open_model_picker();
+        }
         return;
     }
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_effort_pressed)
     {
-        if effort_hit { app.open_effort_picker(); }
+        if effort_hit {
+            app.open_effort_picker();
+        }
         return;
     }
     if m.kind == MouseEventKind::Up(MouseButton::Left)
@@ -1190,7 +1197,8 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if let Drag::Scrollbar(grab) = app.drag {
         match m.kind {
             MouseEventKind::Drag(MouseButton::Left) => {
-                app.view.drag_scroll_thumb(y.saturating_sub(rail.y).saturating_sub(grab), rail.height);
+                app.view
+                    .drag_scroll_thumb(y.saturating_sub(rail.y).saturating_sub(grab), rail.height);
             }
             MouseEventKind::Up(MouseButton::Left) => app.drag = Drag::None,
             _ => {}

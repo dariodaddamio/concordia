@@ -13,9 +13,8 @@ impl App {
         self.paste_text_chunk(text, false);
     }
     pub(in crate::tui) fn paste_text_chunk(&mut self, text: &str, continues: bool) {
-        let title_focus = !worker_input::active(self)
-            && !self.raster.active()
-            && self.picker.is_none();
+        let title_focus =
+            !worker_input::active(self) && !self.raster.active() && self.picker.is_none();
         if let Some(editor) = self.rename_editor.as_mut().filter(|_| title_focus) {
             let capacity = 256usize.saturating_sub(
                 editor.chars().len() - editor.selection().map_or(0, |(a, b)| b - a),

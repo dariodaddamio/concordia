@@ -275,7 +275,8 @@ fn update_blocks_background_workers_and_never_queues_an_install() {
 fn removed_delegation_commands_do_not_start_work_during_an_update() {
     let mut h = Harness::new(100, 24);
     h.app.job = Some(fake_update_job());
-    let (command, _) = crate::commands::parse_slash("/delegate synthetic-worker check files").unwrap();
+    let (command, _) =
+        crate::commands::parse_slash("/delegate synthetic-worker check files").unwrap();
     assert!(matches!(command, crate::commands::SlashCommand::Unknown(_)));
     assert!(!h.app.deleg.d.any_active());
     assert!(!h.app.deleg.has_pending_prompt());
@@ -806,11 +807,3 @@ fn landing_chats_wrap_up_and_down() {
         "Down wraps to the first folder, which Enter collapses"
     );
 }
-
-
-
-
-
-
-
-

@@ -142,7 +142,11 @@ mod tests {
     #[test]
     fn every_icon_is_one_cell_and_distinct_within_its_group() {
         for glyph in all_glyphs() {
-            assert_eq!(Span::raw(glyph.as_str()).width(), 1, "{glyph:?} is not one cell");
+            assert_eq!(
+                Span::raw(glyph.as_str()).width(),
+                1,
+                "{glyph:?} is not one cell"
+            );
         }
         for (group, rows) in legend() {
             let mut glyphs: Vec<_> = rows.iter().map(|(glyph, _)| glyph.clone()).collect();
@@ -156,6 +160,9 @@ mod tests {
     #[test]
     fn every_icon_is_drawn_by_the_native_window_fonts() {
         let missing = super::super::native_window::glyphs_without_font(&all_glyphs());
-        assert!(missing.is_empty(), "no Consolas or Segoe UI Symbol glyph: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "no Consolas or Segoe UI Symbol glyph: {missing:?}"
+        );
     }
 }

@@ -630,7 +630,6 @@ mod tests {
             .is_err());
         assert_eq!(d.dependency_graph(), &before);
     }
-
 }
 
 #[derive(Serialize, Deserialize)]

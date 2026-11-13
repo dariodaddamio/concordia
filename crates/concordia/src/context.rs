@@ -446,7 +446,10 @@ mod tests {
         let p = build_context_pack(&msgs, ProviderKind::Claude, ProviderKind::Codex, 6000, None)
             .unwrap();
         assert!(p.text.contains("not stored"));
-        assert!(!p.text.contains("asked: question 0"), "maps do not dump the transcript");
+        assert!(
+            !p.text.contains("asked: question 0"),
+            "maps do not dump the transcript"
+        );
         assert!(p.pack_chars <= threads::MAP_CHARS);
     }
 }

@@ -1,6 +1,6 @@
 use crate::identity::cursor_api_key_for_home;
 use crate::store::TrustMode;
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -229,11 +229,9 @@ mod tests {
         let error = super::account_auth(Some(root.path()))
             .err()
             .expect("custom OAuth home must be refused");
-        assert!(
-            error
-                .to_string()
-                .contains("custom Cursor OAuth homes are unsupported")
-        );
+        assert!(error
+            .to_string()
+            .contains("custom Cursor OAuth homes are unsupported"));
         let native = super::account_auth(None).unwrap();
         assert!(native.env.is_empty());
         assert!(native.env_remove.iter().any(|key| key == "CURSOR_API_KEY"));
@@ -246,18 +244,14 @@ mod tests {
         assert!(selected.env.iter().any(
             |(key, value)| key == "CURSOR_API_KEY" && value == "synthetic-selected-account-key"
         ));
-        assert!(
-            !selected
-                .env_remove
-                .iter()
-                .any(|key| key == "CURSOR_API_KEY")
-        );
-        assert!(
-            selected
-                .env_remove
-                .iter()
-                .any(|key| key == "CURSOR_AUTH_TOKEN")
-        );
+        assert!(!selected
+            .env_remove
+            .iter()
+            .any(|key| key == "CURSOR_API_KEY"));
+        assert!(selected
+            .env_remove
+            .iter()
+            .any(|key| key == "CURSOR_AUTH_TOKEN"));
     }
 
     #[test]

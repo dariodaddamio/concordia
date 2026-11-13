@@ -330,9 +330,7 @@ fn load_internal(
 ) -> std::io::Result<Report> {
     check_cancel(cancel)?;
     let (paths, events_revision) = catalog(root, cancel)?;
-    if cursor.is_some_and(|cursor| {
-        cursor.events_revision != events_revision
-    }) {
+    if cursor.is_some_and(|cursor| cursor.events_revision != events_revision) {
         return Err(std::io::Error::other(
             "usage snapshot changed; restart from the first page",
         ));

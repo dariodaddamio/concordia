@@ -392,26 +392,22 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
         "a launch receipt is not a completed child"
     );
     app.open_agents_picker();
-    assert!(app
-        .picker
-        .as_ref()
-        .unwrap()
-        .rows
-        .iter()
-        .any(|row| { row.label.contains("◐") && row.detail.contains("child-background") && row.detail.contains("running") }));
+    assert!(app.picker.as_ref().unwrap().rows.iter().any(|row| {
+        row.label.contains("◐")
+            && row.detail.contains("child-background")
+            && row.detail.contains("running")
+    }));
     app.push_card(StreamCard {
         id: child_id,
         title: "agent child-background".into(),
         detail: Some("Task: inspect the parser\nNative result: parser verified".into()),
         status: CardStatus::Done,
     });
-    assert!(app
-        .picker
-        .as_ref()
-        .unwrap()
-        .rows
-        .iter()
-        .any(|row| { row.label.contains("✓") && row.detail.contains("child-background") && row.detail.contains("finished") }));
+    assert!(app.picker.as_ref().unwrap().rows.iter().any(|row| {
+        row.label.contains("✓")
+            && row.detail.contains("child-background")
+            && row.detail.contains("finished")
+    }));
     assert!(app.handle_slash("/new"));
     assert_eq!(app.native_agents.count(), 0);
 }
