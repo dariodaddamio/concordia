@@ -365,13 +365,15 @@ fn start_save(ws: &mut Workspace, id: u32, state_root: &Path, workspace_root: &P
     }
 }
 
-pub(super) fn poll(ws: &mut Workspace) {
+pub(super) fn poll(ws: &mut Workspace) -> bool {
+    let mut visible_change = false;
     if ws.screen.width > 0
         && ws.panes.is_empty()
         && ws.jobs.is_empty()
         && ws.editor.pending.is_some()
     {
         restore(ws);
+        visible_change = true;
     }
     let mut i = 0;
     while i < ws.editor.saves.len() {
@@ -380,6 +382,7 @@ pub(super) fn poll(ws: &mut Workspace) {
             continue;
         }
         let (id, text, job) = ws.editor.saves.swap_remove(i);
+        visible_change = true;
         let result = job
             .join()
             .unwrap_or_else(|_| Err("file save worker failed".into()));
@@ -428,6 +431,7 @@ pub(super) fn poll(ws: &mut Workspace) {
             {
                 p.colors = colors;
                 p.color_revision = rev;
+                visible_change = true;
             }
         }
     }
@@ -449,8 +453,9 @@ pub(super) fn poll(ws: &mut Workspace) {
     if let Some((_, job)) = &ws.editor.persistence {
         if job.is_finished() {
             let Some((sig, job)) = ws.editor.persistence.take() else {
-                return;
+                return visible_change;
             };
+            visible_change = true;
             match job
                 .join()
                 .unwrap_or_else(|_| Err("file recovery writer failed".into()))
@@ -489,6 +494,7 @@ pub(super) fn poll(ws: &mut Workspace) {
             }
         }
     }
+    visible_change
 }
 
 pub(super) fn refresh_preview(p: &mut Pane) {

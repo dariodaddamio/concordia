@@ -1,5 +1,497 @@
 # Changelog
 
+### Added (2026-11-13l)
+
+- Add a Concordia-owned MCP registry with project switches and per-launch delivery to Codex and
+  ACP providers. Provider homes remain unchanged and secret values are not copied into the registry.
+
+### Added (2026-11-13k)
+
+- Give provider sessions a deterministic Concordia standing context through each provider's
+  supported system or developer channel, with a bounded fallback for ACP agents without that
+  capability. Record the provider channels and required live checks in the provider documentation.
+
+### Added (2026-11-13j)
+
+- Add `concordia chat repair` with a dry run, dated task backups, content-aware repair and removal
+  of empty damaged task records. `/doctor` and the resume screen point to the repair command.
+
+### Fixed (2026-11-13i)
+
+- Stop test-controlled native windows from reaching taskbar or tray shell signals.
+- Notify each actionable Needs attention item once across focus changes and restarts, include the
+  chat and waiting action in the notification, and focus the item when the notification is clicked.
+- Add the `/config` Windows notifications setting while retaining the taskbar status.
+
+### Added (2026-11-13h)
+
+- Added the shipped feature catalog to the documentation site, including opencode and delegation
+  roles, and publish per-asset SHA-256 checksums and provenance attestations for release assets.
+
+### Added (2026-11-13g)
+
+- Limit continuation accepts structured quota signals from all supported coding providers and
+  supports role-keyed fallback models in `[continuation].fallback_models`.
+
+### Fixed (2026-11-13f)
+
+- `concordia install` creates and repairs the owned Start menu shortcut. Updates and launch repair
+  stale shortcut targets, arguments, working directories and icons without recreating an explicit
+  removal.
+- Launch checks for updates in the background and reports a ready build without interrupting the
+  current chat.
+- Added `[updates].install_on_launch` for users who want a prepared update installed at startup.
+
+### Fixed (2026-11-13e)
+
+- Added the tab and activity shortcuts and the complete tab and tool icon legend to F1.
+- Kept untracked opencode runs in the Agents view with the same bounded one-line task display as
+  the other supported provider CLIs.
+- Added deterministic coverage for provider timeout fields used by running tool timers.
+
+### Added (2026-11-13d)
+
+- Added provider, model and effort controls to the top bar.
+- Added account usage cards and the Home introduction links.
+- Removed typed and source-labelled rows from `/model`.
+
+### Fixed (2026-11-13c)
+
+- Kept explicit Harness command targets separate from guided setup panels.
+- Bounded compact tool rows and refreshed the synthetic render snapshots.
+
+### Fixed (2026-11-13b)
+
+- Kept explicitly focused question replies and note pastes in the popup, and made Ctrl+O expand
+  reply context before later tool cards.
+- Kept native input polling within one frame while preserving the retained activation and image
+  repaint checks.
+
+### Fixed (2026-11-13a)
+
+- Kept question popups from consuming pasted drafts when they open automatically.
+- Repainted the cached native frame on activation without clearing it first.
+- Batched long render updates so typing, scrolling and tab interaction stay responsive.
+- Kept the native render queue bounded during long provider output.
+
+### Fixed (2026-11-12z)
+
+- Kept option-shaped digits in the composer when an inferred question is visible.
+- Made activation repaints observable as a new visible frame without redrawing the transcript.
+
+### Fixed (2026-11-12y)
+
+- Kept the native window's last rendered frame visible when Windows activates it again.
+- Completed render-lane provider catalog and usage metadata coverage for opencode.
+
+### Guided setup commands
+
+- No-argument Harness setup commands now explain their effect, show bounded local choices, and
+  describe validation, confirmation and undo before an explicit target is supplied.
+
+### Added (2026-11-12x)
+
+- Added the opencode ACP provider and Claude Code base-URL environment profiles. Concordia stores
+  no provider keys.
+
+### Fixed (2026-11-12w)
+
+- Corrected Agents row status glyphs and selected-agent numbering. The existing picker regression
+  now checks the compact row contract.
+
+### Added (2026-11-12v)
+
+- Updated the Ctrl+G Agents view with compact numbered rows, status and context indicators, and
+  a selected-agent detail card. Provider metadata remains `unknown` when no event reports it.
+
+### Added (2026-11-12u)
+
+- Added persisted delegation roles with provider, account, model and effort defaults. The agents
+  tool accepts a role and keeps explicit provider and model selections authoritative.
+
+### Removed (2026-11-12t)
+
+- Removed pre-release compatibility readers, migration commands, numbered-home discovery,
+  unscoped token and usage records, full-text thread fallback, shared draft and queue import,
+  and version-1 worker-ledger recovery.
+
+### Fixed (2026-11-12s)
+
+- Keep screenshot comparisons in temporary output, require explicit opt-in to regenerate committed
+  SVGs, and keep native-window journey windows hidden, nonactivating and out of the taskbar.
+- Add deterministic coverage for Ctrl+T persistence, image aspect ratio, reasoning separators and
+  palette filtering while retaining the existing scroll and agent-record redaction regressions.
+
+### Fixed (2026-11-12r)
+
+- Finished Grok Bot routine setup in `/use` with a masked Credential Manager-backed key field,
+  HTTPS-only webhook validation, edit/remove/token-rotation actions, loopback listener lifecycle,
+  and focused callback trust-boundary proofs.
+
+### Added (2026-11-12q)
+
+- Added an Astro Starlight documentation site scaffold for GitHub Pages with a vendored Opifex
+  Studio theme, source-derived install and usage pages, and a Windows security warnings guide.
+
+### Added (2026-11-12p)
+
+- Added the two-way Grok Bot routine bridge: Credential Manager-backed routine keys and callback
+  tokens, localhost-only one-tool callbacks, explicit run identity checks, bounded untrusted
+  results, and Agents MCP start/status integration.
+
+### Fixed (2026-11-12o)
+
+- Kept agent records and delegation proposals redacted on disk and updated the security check
+  to exercise the current `agents` MCP tool. Needs-attention selection now uses the active
+  conversation's queue, so paused prompts open focused without losing the composer.
+
+### Fixed (2026-11-12n)
+
+- Kept malformed MCP input bounded to one error per oversized request and refreshed stale
+  cleanup-closeout assertions for the current queue, landing, handoff-map and provider surfaces.
+
+### Added (2026-11-12m)
+
+- Diagnosed task-backed chats that cannot be opened, showing the concrete native pointer cause in
+  `/resume` and `/doctor`. The repair action starts a fresh session from the stored handoff map
+  while preserving the unsent draft.
+
+### Fixed (2026-11-12l)
+
+- Routed provider slash commands through the transports Concordia actually uses: Codex
+  app-server compaction/review RPCs, Claude Agent SDK stream-json commands, and ACP advertised
+  commands through `session/prompt`. Unsupported commands now show their transport-specific reason.
+
+### Added (2026-11-12k)
+
+- Added theme-coloured Windows taskbar status overlays and unpackaged shell notifications for
+  background questions and approvals. Notification clicks focus the existing window and open
+  Needs attention without reopening it automatically.
+
+### Fixed (2026-11-12j)
+
+- Clear an unsubmitted provider slash command when cancelling its busy-turn confirmation;
+  retained queue, draft, chat-history and capacity journeys now match the current command surface.
+
+### Fixed (2026-11-12i)
+
+- Restored automatic usage-limit continuation across configured accounts and native models,
+  including bounded retry-pair tracking and manual continuation while its picker is open.
+
+### Fixed (2026-11-12h)
+
+- Filtered provider-native slash commands by the typed prefix so ordinary prompts and
+  Concordia command history are submitted and recalled without palette interference.
+
+### Added (2026-11-12g)
+
+- Added the fake-fixture-backed Grok Build provider over ACP, with explicit session resume,
+  native authentication/permission handling, account homes and bounded model metadata.
+- Documented the confirmed Grok Build interface and its unverified usage/history boundaries.
+
+- W9: the Needs attention picker now uses enriched shared request records for foreground chats
+  and worker conversations, preserving provider-owned answer paths and showing project, chat,
+  agent, source and waiting context. Native requests are retained by their explicit interaction
+  owner instead of being discarded by the generic worker progress path. The native test snapshot
+  exposes the process-wide working/needs-attention/idle status state.
+
+- W8: provider-native slash commands are discoverable in the active-provider picker, while
+  Concordia-owned cross-provider commands keep their single owner. Unknown slash names now pass
+  through to the active provider instead of stopping at an unknown-command message.
+
+- W7: enriched the deterministic v2 handoff map with verbatim goal redirects, structured-tool
+  file counts, the last recorded error, the previous agent's bounded final message, restorable
+  pointers and current state, under one fixed character budget.
+
+- W6a: removed public recovery commands and the `/use` continuation row; interruptions,
+  usage-limit handoff and failed-request retry now stay inline. Renamed the Workspace permission
+  mode to Edit, made `/harness` the sole harness action path, and report provider-command
+  shadows for user shortcuts.
+
+- W3f: Ctrl+G now keeps provider-native subagents with unmatched provider thread senders as
+  root agents, includes restored transcript cards in the same Agents projection, and keeps the
+  footer count and tree aligned for native, agents-tool and untracked provider runs.
+
+- W3e: removed compiled-out delegation routing/crew code, worker registration fields and the
+  user-facing scope command; main-turn and managed-Git safety admission remain internal.
+
+- W3d: Ctrl+G now presents provider-native, delegated and untracked provider runs as a grouped
+  Agents tree with status icons, task titles, elapsed time and parent counts. Provider CLI runs
+  started from an agent are marked as unable to receive messages or questions; left/right
+  collapses a parent without changing provider ownership.
+
+- W3c: removed the legacy slash-command delegation, routing-policy and worker test surfaces;
+  agent-initiated delegation remains available through the single `agents` MCP tool, and
+  usage-limit continuation now uses the plain account picker.
+
+- W4b: separated Markdown table body rows with horizontal rules and gave Concordia system
+  notices an icon and tinted transcript band; cancellation notices now use plain sentences.
+
+- W2e: folded local thread history under `concordia chat thread`, removed project-wide search and
+  replacement, removed `/context` policy mutation and compaction overrides, and made native
+  pointer failures identify replacement, truncation, header changes, home changes and oversized records.
+
+- W3b: removed the legacy MCP test surface; `agents` now stores delegated-agent lifecycle
+  records and bounded final results for status/result reads.
+
+## Unreleased
+
+- W2d cleanup removes provider awareness injection, `/context`, `/search`, `/worktree`, the local
+  output feed, and their public catalogs; local-time headers are configurable and enabled by default.
+
+- Removed goals, goal/source relations, memory groups, ranking/evaluation extras, manual memory
+  links, and thread pin journals. Native source indexing, exact readback and plain chat search
+  remain available; stale pointers report their concrete cause.
+
+- Fix gradual transcript scrolling after folded-history rehydration, speed up Ctrl+T by removing
+  an unnecessary synchronous recovery write, preserve reasoning separators, add tab status marks,
+  copy support in queued-message editing, a visible chat scrollbar, and theme-coloured Windows
+  title bars. Markdown table wrapping/separators, queue send-now/editing, system-message styling,
+  and image aspect-ratio scaling remain in their existing owners.
+- Reduced Concordia's MCP registration to the always-on `agents` tool. Delegation is enabled by
+  default for connected accounts, Ctrl+G toggles the Agents view, and the worker/routing slash
+  command entry points were removed.
+- Concordia now uses the native window entry point only. Removed the WezTerm host and terminal
+  CLI mode, and removed `/trust`, `/split`, `/edit`, `/login`, `/connect`, `/preview` and
+  `/integrations`. `/use` handles account addition, `/open` handles file preview, and `/doctor`
+  remains the diagnostics entry point. Questions always reach the user, and every retained slash
+  command appears in the picker.
+
+## 2026-11-11b
+
+- Fix native-window journey control compilation and preserve native key, paste, mouse, resize,
+  and authenticated control-channel behavior in the fake-provider UI journeys.
+
+## 2026-11-11a
+
+- Add an opt-in authenticated loopback control channel for native-window UI journeys. Test
+  input is dispatched through the native Windows event path and snapshots read ratatui cells.
+
+## 2026-11-09g
+
+- Make `/skills` and `/hooks` discoverable commands with shared Harness connection,
+  installation, status and verification actions. Setup defaults to all registered accounts;
+  `--current` limits it to the selected account.
+- `/skills install [PATH]` links a skill folder or collection from one source into provider homes.
+  Later accounts inherit shared sources across projects; existing same-named skills are preserved.
+- Remember shared project connections for later accounts. Apply the saved source revision
+  before their first turn, preserve per-account results and require explicit retry after failure.
+- Upgrade setup storage to version 2 so older open windows cannot silently erase shared intent.
+- Ignore identical native interaction retransmissions without replaying an answer. Reject
+  changed request content while preserving the original request and native approval ownership.
+
+## 2026-11-09f
+
+### Fixed (`2026-11-09f`)
+
+- Refresh email metadata from each restored tab's exact account/home binding; keep available
+  email private behind its existing reveal control and omit the label when none is reported.
+- Register `/recover` in command completion/help. Show additional saved work in the idle footer
+  instead of repeated startup transcript messages or implementation limits.
+- Reload exact native history for partial saved views; clear the old omission marker after a
+  complete successful read. Keep genuine partial/unavailable-source warnings and recovery data.
+- Remove routine draft-restoration announcements and fresh-chat instructions from restored tabs.
+
+## 2026-11-09e
+
+### Fixed (`2026-11-09e`)
+
+- Separate Codex app-server JSON framing from the 1 MiB diagnostic-line budget. Accept complete
+  frames up to 64 MiB, bound queued/early events, and deliver large text in small UTF-8 chunks.
+  Keep display clipping separate from native request and approval payloads.
+- Distinguish a reaped provider with unconfirmed tool completion from an unknown process exit
+  in the workspace-reservation warning. Preserve interrupted work and explicit reconciliation.
+
+## 2026-11-09d
+
+### Changed (`2026-11-09d`)
+
+- Edit chat titles directly in the tab row with double-click or F2. Keep the message composer
+  visible and unchanged; Enter saves, Esc cancels, and title paste cannot become a chat draft.
+- Replace the saved-composer rename swap with an independent bounded title editor.
+
+## 2026-11-09c
+
+### Fixed (`2026-11-09c`)
+
+- Route chat opening through one tab owner: focus an existing conversation without cancelling
+  its request or replacing drafts. Hold native-chat and conversation leases across windows.
+- Restore interrupted requests omitted from the saved tab layout as paused tabs with exact
+  source bindings. Preserve distinct duplicate snapshots in the canonical window record.
+- Persist first-send conversation identity and the original request before clearing the durable
+  composer; show the recovered request alongside its native history without replaying it.
+
+## 2026-11-09b
+
+### Fixed (`2026-11-09b`)
+
+- Queue answers inferred from tool output as ordinary follow-ups without cancelling the active
+  request, replacing its conversation or consuming the independent draft. Exact native answers
+  continue through their owned response channel.
+- Add padding to tab close controls, hand-cursor feedback, and double-click rename through the
+  existing title editor and persistence path.
+- Remove the stale `/exit` override so the documented command reaches normal shutdown.
+
+### Added (`2026-11-09b`)
+
+- Open a persistent local terminal with `/terminal` or F11 in both native-window and terminal
+  hosts. Keep shell input, output and lifecycle separate from chat; stop it when its tab closes.
+  Use the existing PTY/process owner and a bounded VT parser for the embedded screen.
+
+## 2026-11-09a
+
+### Changed (`2026-11-09a`)
+
+- Remove silent provider flag downgrades, unstructured-output recovery and unbound Cursor chat
+  startup. Reject unsupported interfaces explicitly and keep selected-account credentials isolated.
+- Replace the shipped model list and cross-account model discovery with current native metadata
+  and account-bound caches. Report refresh failures rather than claiming stale results are fresh.
+- Consolidate context maps and native-session picker rows; retire the obsolete reference writer,
+  pre-rename automatic state adoption, startup theme migration and old logging configuration alias.
+  Preserve original conversation sources and explicit data-conversion tools.
+- Retire three integrated worktrees and their duplicate build trees, obsolete local branches,
+  redundant Git bundle and inactive old executable. Keep current recovery and running windows intact.
+
+## 2026-11-08h
+
+### Fixed (`2026-11-08h`)
+
+- Reopen the prior window's tabs in order with the selected tab, conversation views, account/model
+  bindings and independent drafts. Retain paused unfinished requests alongside their conversation.
+  Keep window/pane ownership separate across concurrent windows and release it before update restart.
+- Save bounded tab-view projections and report omitted history; preserve unreadable layouts and
+  exact recovery records. Existing pre-layout interrupted records load their bound native history.
+- Preserve workspace metadata in larger native headers and reject contradictory native session IDs.
+  Keep a complete first record when a bounded history window starts exactly at its line boundary.
+- Bound managed-workspace recovery-reference enumeration and keep lifecycle actions blocked when
+  reference coverage is unknown. Preserve verified recovery bundles for obsolete local branches.
+
+## 2026-11-08g
+
+### Fixed (`2026-11-08g`)
+
+- Complete repository-wide review with per-file coverage and explicit verification limits.
+- Preserve existing account homes during login and validate physical account ownership before
+  removal. Distinguish native options from prompt/model values when enforcing permissions.
+- Publish state through exclusive temporary files, preserve unreadable stores, and keep adoption
+  create-only. Validate journal-owned files before explicit deletion; preserve native sources.
+- Preserve drafts through title edits, queue failures and account changes; repaint completed
+  background work. Correct same-size transcript changes and bound fast folded-cache comparisons.
+- Bind usage caches to account/home identity; bound auxiliary process capture, model caches,
+  editor history and feed snapshots. Keep recovery JSON valid while redacting secret values.
+- Respect approved worker order, limit worker event polling, validate theme import/export and
+  configuration quoting, and reuse canonical process, usage and bounded-file helpers.
+- Reconcile current documentation and remove the obsolete pane-guessing experimental launcher.
+
+## 2026-11-08f
+
+### Fixed (`2026-11-08f`)
+
+- Backpressure main/worker progress, preserve cancellation and exact native interactions, and
+  bound visible text/cards with explicit omissions while retaining original provider records.
+- Replace duplicate Cursor stream retention with a fingerprint and close its question listener
+  on startup/error/cancellation as well as normal completion.
+- Use OS-owned store locks; surface unreadable state in the UI. Page journal/MCP reads, preserve
+  event ordinals, bound recovery input and avoid rescanning full journals for every append.
+- Bound clean closed-tab/resting transcript retention without discarding unsaved or unfinished
+  work. Completed async reads and image decoding request repaint.
+- Native empty-session cleanup reports candidates without deleting provider-owned files.
+- Consolidate current audit guidance and reconcile public-theme privacy scan exceptions.
+
+## 2026-11-08e
+
+### Fixed (`2026-11-08e`)
+
+- Restored history repaints when its background read finishes. Reopened tabs accept new provider
+  handles; close confirmation belongs to the exact tab and includes active workers.
+- Bound auxiliary probes, workspace Git queries, configuration and question-frame reads; own
+  provider and probe descendants through their operation and preserve native answer priority.
+- Preserve unreadable/future-version stores on mutation and report their blocked writes in
+  diagnostics. Source identity reads allow bounded larger metadata without weakening freshness.
+- Accept the SBOM already shipped in release archives. Installer fixtures use the real archive
+  layout; publication scanning includes unignored files and cycle output reports exceptions.
+- Complete the interrupted audit record with reviewed coverage, focused evidence and explicit
+  unresolved retention, continuity and publication findings.
+
+## 2026-11-08d
+
+- Home navigation reuses an unbound Home tab and returns to its originating chat by stable tab
+  identity. Left/Right, Escape and the header button no longer grow a chain of empty tabs.
+  Navigation preserves independent drafts and running turns; Ctrl+T still opens a new tab.
+
+## 2026-11-08c
+
+- Home and the chat picker find native chats whose tool and instruction setup exceeds the
+  previous 64 KiB summary window. Reads remain bounded to 1 MiB per source, with 256 KiB lines.
+  Empty artifacts no longer consume the recent-chat limit before filtering. Native histories,
+  account bindings and session IDs are preserved.
+
+## 2026-11-08b
+
+- Long native turns no longer fail after 16 MiB of cumulative wire traffic. Codex app-server,
+  Cursor ACP and Claude stdio retain individual event bounds, cancellation and bounded stderr.
+  Codex's reader still backpressures through its 16-event channel.
+- Queue dispatch uses one idle/automatic/explicit state. Removed duplicate queue persistence
+  entry points, unused source helpers and a second literal-tool parser; native transports share
+  the bounded stderr drain.
+- Consolidated current rendering/input guidance, labelled superseded navigation limits, and
+  removed an unreferenced fixture-refresh placeholder that performed no refresh.
+- Native Codex assistant messages retain their boundaries. Completed conversational questions
+  become selectable while work continues, without joining the last option to later commentary.
+  Replies remain user messages, separate from native approvals.
+- Queued-message edits reuse attachment paste, file picking and remove controls. Save, cancel and
+  recovery keep the edit's screenshots separate from the main composer draft.
+- Development verification now follows focused end-to-end checks. Full suites and static delivery
+  gates are explicit qualification steps. Removed a redundant literal-hint test and the added
+  preview assertions already covered by native rendering artifacts.
+
+## 2026-11-08a
+
+- Formatted file panes and terminal previews verify bare file links relative to the document.
+  Wrapped path fragments and table borders no longer gain spurious underlines across cells;
+  explicit Markdown links keep their original targets.
+
+## 2026-11-07h
+
+- Removed unused configuration, session formatting, historical capture and helper APIs, the old
+  Codex executor, and a test-only tab dispatcher. The tracked provider runner remains authoritative.
+- Removed the unused continuity policy module; its helpers had only test callers. Documentation
+  now points to actual binding/routing enforcement and the configured worker ceiling.
+- Unified usage refresh scheduling by removing an unused cache-only mode and identical provider
+  branches. Account identity, freshness and retry behavior remain unchanged.
+- Main continuation now represents retry eligibility as ready, deferred or requiring review.
+  Policy changes and closing controls cannot bypass uncertain-action reconciliation.
+- Replaced duplicated architecture/UI tutorials and the placeholder directory map with current
+  ownership references. Preserved the complete dated verification journal separately from the
+  short current status page; existing receipt links point to the journal.
+
+## 2026-11-07g
+
+- Pickers opened over Home now own keyboard navigation and Escape. Home no longer intercepts
+  recovery dismissal or Attention, model and resume selections, or mouse navigation beneath a picker.
+- Startup recovery keeps the filtered list instead of reintroducing previously dismissed records.
+  Explicit `/recover` continues to list them without deleting saved work.
+- Replaced the plan's accumulated build history with a short capability/limit table, product
+  direction, execution order and engineering contracts. Corrected the process/tab explanation,
+  labelled the historical provider survey and refreshed the audit's stale installed-build note.
+
+## 2026-11-07f
+
+- Fixed a recursive feed-buffer lock on the first streamed text chunk that froze chat input
+  and prevented close requests from being processed.
+- Saved-draft dismissals persist across starts. `/recover` still lists preserved drafts and
+  offers a preview without replacing the current draft or queue.
+- Home opens a separate conversation tab with an empty composer and its own recovery record;
+  the previous chat retains its draft, attachments, queue and running work.
+- Resuming from the picker closes Home so loaded history is visible, and reselecting the same
+  account preserves the selected model. Recorded exhaustion is explained without hiding history.
+- The Attention badge is clickable; Ctrl+N and its items open questions, approvals, queued
+  prompts, worker results or account controls. Empty paused queues no longer create a badge.
+- Opifex and default canvases use pure black. Image preview padding uses the same canvas color.
+- Switching accounts only prepares the local binding. Context is built, displayed and attached
+  after submitting a message. Removed the obsolete map-display helper, model picker and duplicate
+  literal parser. Worker count tests now follow the configured limit.
+
 ## 2026-11-07e
 
 - Raised the delegated-worker safety ceiling from three to twelve; resource admission still

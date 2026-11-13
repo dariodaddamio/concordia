@@ -161,7 +161,7 @@ function Expand-VerifiedRelease([string]$Zip, [string]$Stage) {
         $names = @{}
         $total = 0L
         foreach ($entry in $archive.Entries) {
-            if ($entry.FullName -notin @('concordia.exe', 'LICENSE', 'THIRD-PARTY-LICENSES.txt')) {
+            if ($entry.FullName -notin @('concordia.exe', 'LICENSE', 'THIRD-PARTY-LICENSES.txt', 'bom.json')) {
                 Stop-Install "release zip contains an unexpected path: $($entry.FullName)"
             }
             if ($names.ContainsKey($entry.FullName)) { Stop-Install 'release zip contains duplicate paths' }

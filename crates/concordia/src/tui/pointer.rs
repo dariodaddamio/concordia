@@ -35,10 +35,28 @@ pub(super) fn reset(out: &mut impl Write) -> io::Result<()> {
 }
 
 pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
-    if app.project_search.active() {
-        return "default";
+    if app
+        .tab_hits
+        .get(app.tab_index)
+        .is_some_and(|rect| contains(*rect, x, y))
+        && !app.tab_close_hits.iter().any(|rect| contains(*rect, x, y))
+    {
+        return "text";
+    }
+    if app.tab_hits.iter().any(|rect| contains(*rect, x, y)) {
+        return "pointer";
+    }
+    if app.local_terminal.visible() {
+        return "text";
     }
     if contains(app.areas.run_cancel, x, y) {
+        return "pointer";
+    }
+    if app
+        .areas
+        .header_attention
+        .is_some_and(|rect| contains(rect, x, y))
+    {
         return "pointer";
     }
     if contains(app.areas.permissions, x, y)

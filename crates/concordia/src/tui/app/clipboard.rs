@@ -13,6 +13,25 @@ impl App {
         self.paste_text_chunk(text, false);
     }
     pub(in crate::tui) fn paste_text_chunk(&mut self, text: &str, continues: bool) {
+        let title_focus = !worker_input::active(self)
+            && !self.raster.active()
+            && self.picker.is_none();
+        if let Some(editor) = self.rename_editor.as_mut().filter(|_| title_focus) {
+            let capacity = 256usize.saturating_sub(
+                editor.chars().len() - editor.selection().map_or(0, |(a, b)| b - a),
+            );
+            let clean: String = text
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(capacity)
+                .collect();
+            editor.insert_paste_chunk(&clean, continues);
+            return;
+        }
+        if self.local_terminal.visible() {
+            self.local_terminal.paste(text);
+            return;
+        }
         self.busy_send_confirmation = None;
         if self.raster.active() {
             return;
@@ -22,10 +41,6 @@ impl App {
         }
         if worker_input::active(self) {
             worker_input::paste(self, text);
-            return;
-        }
-        if self.project_search.active() {
-            self.project_search.paste(text);
             return;
         }
         // Paste can arrive as one Event::Paste or as a buffered burst split into overflow

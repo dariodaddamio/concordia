@@ -11,29 +11,219 @@ use std::{
 
 const TAIL_BYTES: u64 = 8 * 1024 * 1024;
 const HEAD_BYTES: u64 = 64 * 1024;
+// Native setup can make the identity record larger than the freshness anchor.
+// Match discovery's finite prefix budget without changing existing pointer hashes.
+const IDENTITY_BYTES: u64 = 1024 * 1024;
 const LINE_BYTES: usize = 256 * 1024;
 const MAX_MESSAGES: usize = 128;
 const INDEX_BYTES: u64 = 256 * 1024;
 const EXCERPT_BYTES: usize = 8192;
 
+/// Stable user-facing categories for a native source that can no longer be trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerFailureCause {
+    FileDeletedOrMoved,
+    Replaced,
+    RewrittenOrTruncated,
+    HeaderChanged,
+    AccountHomeChanged,
+    RecordTooLarge,
+    SessionRejectedByProvider,
+    RecordUnreadable,
+}
+
+impl PointerFailureCause {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FileDeletedOrMoved => "file deleted or moved",
+            Self::Replaced => "file replaced",
+            Self::RewrittenOrTruncated => "record rewritten or truncated",
+            Self::HeaderChanged => "header changed",
+            Self::AccountHomeChanged => "account home changed",
+            Self::RecordTooLarge => "record too large",
+            Self::SessionRejectedByProvider => "session rejected by provider",
+            Self::RecordUnreadable => "record unreadable",
+        }
+    }
+
+    /// Convert existing native-reader errors into the small diagnostic taxonomy.
+    pub fn from_error(error: &str) -> Self {
+        let text = error.to_ascii_lowercase();
+        if text.contains("home changed") || text.contains("home is unavailable") {
+            Self::AccountHomeChanged
+        } else if text.contains("record too large") || text.contains("exceeds the read bound") {
+            Self::RecordTooLarge
+        } else if text.contains("header changed") {
+            Self::HeaderChanged
+        } else if text.contains("truncated")
+            || text.contains("indexed message changed")
+            || text.contains("rewritten")
+            || text.contains("compacted")
+        {
+            Self::RewrittenOrTruncated
+        } else if text.contains("replaced") {
+            Self::Replaced
+        } else if text.contains("rejected") || text.contains("session identity mismatch") {
+            Self::SessionRejectedByProvider
+        } else if text.contains("not found")
+            || text.contains("missing")
+            || text.contains("deleted")
+            || text.contains("moved")
+        {
+            Self::FileDeletedOrMoved
+        } else {
+            Self::RecordUnreadable
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use std::io::Write;
+
+    pub(super) fn fixture(provider: ProviderKind, root: &Path, account: &str) -> (PathBuf, String) {
+        let home = root.join(account);
+        let folder = home.join(if provider == ProviderKind::Codex {
+            "sessions"
+        } else {
+            "projects/fixture"
+        });
+        fs::create_dir_all(&folder).unwrap();
+        let session = "11111111-2222-4333-8444-555555555555".to_string();
+        let path = folder.join(format!("{session}.jsonl"));
+        let header = if provider == ProviderKind::Codex {
+            json!({"type":"session_meta","payload":{"id":session}})
+        } else {
+            json!({"type":"system","sessionId":session})
+        };
+        fs::write(&path, format!("{header}\n")).unwrap();
+        crate::store::upsert_stored_account(
+            root,
+            crate::store::StoredAccount {
+                id: account.into(),
+                provider,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: account.into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        (path, session)
+    }
+
+    pub(super) fn message(provider: ProviderKind, text: &str) -> String {
+        if provider == ProviderKind::Codex {
+            json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":text}]}}).to_string() + "\n"
+        } else {
+            json!({"type":"user","message":{"role":"user","content":text}}).to_string() + "\n"
+        }
+    }
+
+    pub(super) fn append(path: &Path, bytes: &[u8]) {
+        fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
+    }
+}
+
+fn timestamp_ms(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    if !text.is_ascii()
+        || !(20..=40).contains(&bytes.len())
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !matches!(bytes[10], b'T' | b't')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let number = |start: usize, end: usize| {
+        let value = text.get(start..end)?;
+        value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| value.parse::<u32>().ok())
+            .flatten()
+    };
+    let (year, month, day, hour, minute, second) = (
+        number(0, 4)?,
+        number(5, 7)?,
+        number(8, 10)?,
+        number(11, 13)?,
+        number(14, 16)?,
+        number(17, 19)?,
+    );
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+    let zone = &text[19..];
+    let (offset_minutes, fraction) = if zone.starts_with('.') {
+        let end = zone.find(['Z', 'z', '+', '-']).unwrap_or(zone.len());
+        let fraction = zone[1..end].parse::<u32>().ok()?;
+        let scale = 10_i64.pow((3usize.saturating_sub(end - 1)).min(3) as u32);
+        let rest = &zone[end..];
+        (parse_zone(rest)?, Some(i64::from(fraction) * scale))
+    } else {
+        (parse_zone(zone)?, None)
+    };
+    let days = days_from_civil(year as i64, month as i64, day as i64)?;
+    Some(
+        (days * 86_400 + hour as i64 * 3600 + minute as i64 * 60 + second as i64) * 1000
+            + fraction.unwrap_or(0)
+            - offset_minutes * 60_000,
+    )
+}
+
+fn parse_zone(zone: &str) -> Option<i64> {
+    if zone.eq_ignore_ascii_case("z") {
+        return Some(0);
+    }
+    let sign = match zone.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    if zone.len() != 6 || zone.as_bytes()[3] != b':' {
+        return None;
+    }
+    let hours: i64 = zone[1..3].parse().ok()?;
+    let minutes: i64 = zone[4..6].parse().ok()?;
+    (hours <= 23 && minutes <= 59).then_some(sign * (hours * 60 + minutes))
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
+    if day == 0 {
+        return None;
+    }
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month = month + if month > 2 { -3 } else { 9 };
+    let doy = (153 * month + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146097 + doe - 719468)
+}
+
 #[path = "cursor_history.rs"]
 mod cursor_history;
 #[path = "memory_files.rs"]
 pub mod files;
-#[path = "memory_rank.rs"]
-pub mod rank;
 #[path = "native_references.rs"]
 pub mod references;
-#[path = "memory_relations.rs"]
-pub mod relations;
 #[path = "memory_retrieval.rs"]
 pub mod retrieval;
 #[path = "native_usage.rs"]
 pub mod usage;
-
-#[cfg(test)]
-#[path = "memory_evaluation.rs"]
-mod evaluation;
 
 enum Source {
     File(File),
@@ -251,8 +441,6 @@ fn read_at(file: &mut Source, offset: u64, len: usize) -> Result<Vec<u8>, String
     let mut bytes = vec![0; len];
     file.read_exact(&mut bytes)
         .map_err(|_| "native source was truncated or became unreadable")?;
-    #[cfg(test)]
-    evaluation::count_read(len);
     Ok(bytes)
 }
 
@@ -282,13 +470,13 @@ fn message_role(value: &Value, provider: ProviderKind, session: &str) -> Option<
         }
     }
     let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
-    let event_fallback = provider == ProviderKind::Codex && kind == "event_msg";
+    let codex_event_message = provider == ProviderKind::Codex && kind == "event_msg";
     let payload = if provider == ProviderKind::Codex {
         value.get("payload").unwrap_or(value)
     } else {
         value.get("message").unwrap_or(value)
     };
-    if event_fallback {
+    if codex_event_message {
         return match payload.get("type").and_then(Value::as_str) {
             Some("user_message") => Some(("user".into(), true)),
             Some("agent_message") => Some(("assistant".into(), true)),
@@ -390,16 +578,6 @@ pub fn cursor_text(root: &Path, binding: &Binding) -> Result<Vec<(String, String
         previous = key;
     }
     Ok(messages)
-}
-
-/// Last native Codex context measurement, not cumulative billed usage. Unsupported formats and
-/// measurements invalidated by model changes/compaction remain unknown. No provider process runs.
-pub fn context_measurement(
-    root: &Path,
-    binding: &Binding,
-    model: &str,
-) -> Result<Option<crate::capacity::Measurement>, String> {
-    Ok(context_observation(root, binding, model)?.measurement)
 }
 
 /// A fresh, bounded source observation with enough metadata to explain every rejection.
@@ -523,10 +701,8 @@ pub fn context_observation(
             Some("native model does not match the selected model".into());
     } else if observation.native_turn_id.is_none() {
         observation.measurement = None;
-        observation.invalidation_reason = Some(
-            "native source does not identify the exact turn; legacy capacity remains unknown"
-                .into(),
-        );
+        observation.invalidation_reason =
+            Some("native source does not identify the exact turn; capacity remains unknown".into());
     }
     let (mut check, current) = open_bound(root, binding)?;
     if current.file_identity != index.file_identity
@@ -560,76 +736,6 @@ pub fn control_checkpoint(
         record_bytes: None,
         record_sha256: None,
     })
-}
-
-/// Successful native patch inputs from fresh turns only. Exec's public progress stream omits
-/// patch bodies, so edit rendering uses this same account/home/session-verified source reader.
-#[allow(dead_code)]
-pub(crate) fn literal_tool_argument(input: &str) -> Option<(Value, usize)> {
-    // Normalize only unquoted identifier keys in a static JSON-like literal. Never
-    // evaluate JavaScript, expressions, templates, comments, or computed properties.
-    let mut at = 0;
-    let mut json = String::new();
-    let mut depth = Vec::new();
-    while at < input.len() {
-        let byte = input.as_bytes()[at];
-        if byte == b')' && depth.is_empty() {
-            break;
-        }
-        match byte {
-            b'"' => {
-                let mut values =
-                    serde_json::Deserializer::from_str(&input[at..]).into_iter::<String>();
-                values.next()?.ok()?;
-                let end = at + values.byte_offset();
-                json.push_str(&input[at..end]);
-                at = end;
-            }
-            b'{' | b'[' => {
-                if depth.len() >= 64 {
-                    return None;
-                }
-                depth.push(byte);
-                json.push(char::from(byte));
-                at += 1;
-            }
-            b'}' | b']' => {
-                let expected = if byte == b'}' { b'{' } else { b'[' };
-                if depth.pop()? != expected {
-                    return None;
-                }
-                json.push(char::from(byte));
-                at += 1;
-            }
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
-                let start = at;
-                while input
-                    .as_bytes()
-                    .get(at)
-                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-                {
-                    at += 1;
-                }
-                let word = &input[start..at];
-                if input[at..].trim_start().starts_with(':') {
-                    json.push_str(&serde_json::to_string(word).ok()?);
-                } else if matches!(word, "true" | "false" | "null") {
-                    json.push_str(word);
-                } else {
-                    return None;
-                }
-            }
-            b'0'..=b'9' | b'-' | b'+' | b'.' | b':' | b',' | b' ' | b'\n' | b'\r' | b'\t' => {
-                json.push(char::from(byte));
-                at += 1;
-            }
-            _ => return None,
-        }
-    }
-    if !depth.is_empty() {
-        return None;
-    }
-    Some((serde_json::from_str(&json).ok()?, at))
 }
 
 #[cfg(test)]
@@ -741,7 +847,7 @@ pub(crate) fn live_codex_patches(
                 event["payload"]["turn_id"]
                     .as_str()
                     .filter(|id| id.len() <= 256),
-                event["timestamp"].as_str().and_then(rank::timestamp_ms),
+                event["timestamp"].as_str().and_then(timestamp_ms),
             ) {
                 if at >= not_before {
                     turns.insert(turn.to_owned(), at);
@@ -800,7 +906,7 @@ fn codex_patch_inputs_between(
         {
             fresh_turn = event["timestamp"]
                 .as_str()
-                .and_then(rank::timestamp_ms)
+                .and_then(timestamp_ms)
                 .is_some_and(|timestamp| timestamp >= not_before && timestamp <= not_after)
                 && turn.is_none_or(|turn| event["payload"]["turn_id"] == turn);
             pending.clear();
@@ -945,7 +1051,7 @@ pub(crate) fn historical_codex_patches(
         }
         let (Some(id), Some(timestamp)) = (
             event["payload"]["turn_id"].as_str(),
-            event["timestamp"].as_str().and_then(rank::timestamp_ms),
+            event["timestamp"].as_str().and_then(timestamp_ms),
         ) else {
             continue;
         };
@@ -1011,7 +1117,9 @@ pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
         let payload = match index.binding.provider {
             ProviderKind::Codex => &value["payload"],
             ProviderKind::Claude => &value["message"],
-            ProviderKind::Cursor => &value["params"]["update"],
+            ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
+                &value["params"]["update"]
+            }
         };
         let content = &payload["content"];
         let rendered = if let Some(blocks) = content.as_array() {
@@ -1036,7 +1144,9 @@ pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
             text.push('\n');
         }
     }
-    let _ = open_index_source(root, &index)?;
+    if index.binding.provider != ProviderKind::Cursor {
+        let _ = open_index_source(root, &index)?;
+    }
     if text.trim().is_empty() {
         return Err("no assistant result in the recorded source window".into());
     }
@@ -1077,7 +1187,7 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
     };
     let mut offset = start + skip as u64;
     let mut messages = Vec::new();
-    let mut fallback = Vec::new();
+    let mut event_messages = Vec::new();
     let mut truncated = start > 0;
     for line in bytes[skip..].split_inclusive(|b| *b == b'\n') {
         if line.len() > LINE_BYTES {
@@ -1086,7 +1196,7 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
             continue;
         }
         if let Ok(value) = serde_json::from_slice::<Value>(line) {
-            if let Some((role, is_fallback)) =
+            if let Some((role, is_event_message)) =
                 message_role(&value, binding.provider, &binding.session_id)
             {
                 let span = Span {
@@ -1095,8 +1205,8 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
                     sha256: digest(line),
                     role,
                 };
-                if is_fallback {
-                    fallback.push(span);
+                if is_event_message {
+                    event_messages.push(span);
                 } else {
                     messages.push(span);
                 }
@@ -1107,7 +1217,7 @@ pub fn index_bound(root: &Path, binding: &Binding) -> Result<Summary, String> {
         offset += line.len() as u64;
     }
     if !messages.iter().any(|span| span.role != "tool") {
-        messages.extend(fallback);
+        messages.extend(event_messages);
         messages.sort_by_key(|span| span.start);
     }
     if messages.len() > MAX_MESSAGES {
@@ -1163,18 +1273,9 @@ fn open_bound(root: &Path, binding: &Binding) -> Result<(Source, SourceIndex), S
     let source_len = file.len()?;
     let anchor_len = source_len.min(HEAD_BYTES);
     let head = read_at(&mut file, 0, anchor_len as usize)?;
-    let owns_session = head
-        .split(|b| *b == b'\n')
-        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
-        .any(|v| {
-            if binding.provider == ProviderKind::Codex {
-                v.get("type").and_then(Value::as_str) == Some("session_meta")
-                    && v.pointer("/payload/id").and_then(Value::as_str)
-                        == Some(binding.session_id.as_str())
-            } else {
-                v.get("sessionId").and_then(Value::as_str) == Some(binding.session_id.as_str())
-            }
-        });
+    let identity_header = read_at(&mut file, 0, source_len.min(IDENTITY_BYTES) as usize)?;
+    let owns_session =
+        sessions::identity_matches(binding.provider, &identity_header, &binding.session_id)?;
     if !owns_session {
         return Err(
             "native source does not confirm the exact session identity in its bounded header"
@@ -1448,7 +1549,10 @@ fn open_index_source(root: &Path, index: &SourceIndex) -> Result<Source, String>
         return Err("unsafe native source path in pointer".into());
     }
     let mut file = if index.binding.provider == ProviderKind::Cursor {
-        index.binding.account_home(root)?;
+        index
+            .binding
+            .account_home(root)
+            .map_err(|error| format!("account home changed or is unavailable: {error}"))?;
         if index.relative_file != Path::new("acp-history") {
             return Err("invalid Cursor protocol source".into());
         }
@@ -1457,15 +1561,39 @@ fn open_index_source(root: &Path, index: &SourceIndex) -> Result<Source, String>
         let allowed = index.binding.verify(root)?;
         Source::File(open_source(&allowed.join(&index.relative_file), &allowed)?)
     };
-    if file.identity()? != index.file_identity || file.len()? < index.source_len {
-        return Err(
-            "native source is stale: replaced or truncated; index this session again".into(),
-        );
+    let stamp = source_stamp(&file);
+    if file.identity()? != index.file_identity {
+        return Err(format!(
+            "native source is stale: file replaced{}; index this session again",
+            stamp
+        ));
+    }
+    if file.len()? < index.source_len {
+        return Err(format!(
+            "native source is stale: file truncated{}; index this session again",
+            stamp
+        ));
     }
     if digest(&read_at(&mut file, 0, index.anchor_len as usize)?) != index.anchor_sha256 {
-        return Err("native source is stale: its original header changed".into());
+        return Err(format!(
+            "native source is stale: original header changed{}",
+            stamp
+        ));
     }
     Ok(file)
+}
+
+fn source_stamp(source: &Source) -> String {
+    let Source::File(file) = source else {
+        return String::new();
+    };
+    let Some(modified) = file.metadata().ok().and_then(|m| m.modified().ok()) else {
+        return String::new();
+    };
+    match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => format!(" at unix {}", duration.as_secs()),
+        Err(_) => String::new(),
+    }
 }
 
 pub fn read(
@@ -1496,7 +1624,14 @@ pub fn read(
             .checked_add(span.len as u64)
             .is_none_or(|end| end > index.source_len)
     {
-        return Err("invalid native source range".into());
+        return Err(if span.len > record_limit {
+            format!(
+                "native source record too large ({} bytes; limit {}); index this session again",
+                span.len, record_limit
+            )
+        } else {
+            "invalid native source range".into()
+        });
     }
     let bytes = read_at(&mut file, span.start, span.len)?;
     if digest(&bytes) != span.sha256 {
@@ -1628,875 +1763,6 @@ pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    pub(super) fn fixture(provider: ProviderKind, root: &Path, account: &str) -> (PathBuf, String) {
-        let home = root.join(account);
-        let folder = home.join(if provider == ProviderKind::Codex {
-            "sessions"
-        } else {
-            "projects/fixture"
-        });
-        fs::create_dir_all(&folder).unwrap();
-        let session = "11111111-2222-4333-8444-555555555555".to_string();
-        let path = folder.join(format!("{session}.jsonl"));
-        let header = if provider == ProviderKind::Codex {
-            json!({"type":"session_meta","payload":{"id":session}})
-        } else {
-            json!({"type":"system","sessionId":session})
-        };
-        fs::write(&path, format!("{header}\n")).unwrap();
-        crate::store::upsert_stored_account(
-            root,
-            crate::store::StoredAccount {
-                id: account.into(),
-                provider,
-                home_path: Some(home.to_string_lossy().into_owned()),
-                label: account.into(),
-                created_at: "0".into(),
-            },
-        )
-        .unwrap();
-        (path, session)
-    }
-    pub(super) fn message(provider: ProviderKind, text: &str) -> String {
-        if provider == ProviderKind::Codex {
-            json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":text}]}}).to_string() + "\n"
-        } else {
-            json!({"type":"user","message":{"role":"user","content":text}}).to_string() + "\n"
-        }
-    }
-    pub(super) fn append(path: &Path, bytes: &[u8]) {
-        fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .unwrap()
-            .write_all(bytes)
-            .unwrap();
-    }
-    #[test]
-    fn native_context_uses_last_request_and_invalidates_after_compaction_or_model_change() {
-        let dir = tempfile::tempdir().unwrap();
-        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture");
-        let binding = Binding::new(
-            ProviderKind::Codex,
-            "fixture",
-            &dir.path().join("fixture"),
-            &session,
-        )
-        .unwrap();
-        let start = rank::timestamp_ms("2026-01-02T03:04:05Z").unwrap();
-        let patch = "*** Begin Patch\n*** Update File: src/fixture.rs\n@@\n-before\n+after\n*** End Patch\n";
-        let literal = serde_json::to_string(patch).unwrap();
-        let wrapped = format!("text(await tools.apply_patch({literal}));\ntext(await tools.exec_command({{\"cmd\":\"git status\"}}));");
-        assert_eq!(literal_exec_patch(&wrapped), Some((patch.into(), 0)));
-        assert_eq!(literal_exec_patch(&format!("text(await tools.exec_command({{\"cmd\":\"git status\"}}));\ntext(await tools.apply_patch({literal}));")), Some((patch.into(), 1)));
-        let actual = format!("text(await tools.apply_patch({literal}));\ntext(await tools.exec_command({{cmd:\"git status\",workdir:\"C:/fixture\",max_output_tokens:1200}}));");
-        assert_eq!(literal_exec_patch(&actual), Some((patch.into(), 0)));
-        let multiple = format!("// @exec: {{\"max_output_tokens\":1000}}\ntext(await tools.apply_patch({literal}));\ntext(await tools.apply_patch({literal}))");
-        assert_eq!(
-            literal_exec_patches(&multiple),
-            Some(vec![(patch.into(), 0), (patch.into(), 1)])
-        );
-        let blocks = json!([
-            {"type":"input_text","text":"Script completed\nWall time 0.7 seconds\nOutput:\n"},
-            {"type":"input_text","text":"{}"},
-            {"type":"input_text","text":"{\"exit_code\":0,\"output\":\"shell output\"}"}
-        ]);
-        assert!(successful_patch_output(&blocks, Some(0)));
-        assert!(successful_patch_output(
-            &Value::String(blocks.to_string()),
-            Some(0)
-        ));
-        let failed_blocks = json!([
-            {"type":"input_text","text":"Script completed\nOutput:\n"},
-            {"type":"input_text","text":"{\"isError\":true,\"error\":\"patch failed\"}"},
-            {"type":"input_text","text":"{}"}
-        ]);
-        assert!(!successful_patch_output(&failed_blocks, Some(0)));
-        assert!(!successful_patch_output(
-            &json!([{"type":"input_text","text":"Script running with cell ID x"},{"type":"input_text","text":"{}"}]),
-            Some(0)
-        ));
-        for source in [
-            format!("// text(await tools.apply_patch({literal}));"),
-            format!("if(false) {{ text(await tools.apply_patch({literal})); }}"),
-            format!("text(await tools.apply_patch({literal} + dynamic));"),
-            format!("text(await tools.apply_patch({literal}));text(await tools.apply_patch({literal}));"),
-            format!("text(await tools.apply_patch({literal}));text(await tools.exec_command({{cmd:dynamic}}));"),
-        ] {
-            assert!(literal_exec_patch(&source).is_none());
-        }
-        for event in [
-            json!({"timestamp":"2026-01-01T00:00:00Z","type":"turn_context","payload":{"turn_id":"old-turn"}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"old","input":patch}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"old","output":"Success. Updated the following files:\nM src/fixture.rs"}}),
-            json!({"timestamp":"2026-01-02T03:04:06Z","type":"event_msg","payload":{"type":"task_started","turn_id":"fresh-turn"}}),
-            json!({"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"turn_id":"fresh-turn"}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"unmatched","output":"Success. Updated the following files:\nM src/fixture.rs"}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"failed","input":patch}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"failed","output":{"output":"Success. Updated the following files:\nM src/fixture.rs","metadata":{"exit_code":1}}}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"unsettled","input":patch}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"success","input":patch}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"success","output":json!({"output":"Success. Updated the following files:\nM src/fixture.rs","metadata":{"exit_code":0}}).to_string()}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"wrapped","input":wrapped}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"wrapped","output":"{}"}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"functions.exec","call_id":"actual-wrapper","input":actual}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"actual-wrapper","output":blocks}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"functions.exec","call_id":"multiple-wrapper","input":multiple}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"multiple-wrapper","output":[{"type":"input_text","text":"Script completed\nOutput:\n"},{"type":"input_text","text":"{}"},{"type":"input_text","text":"{}"}]}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"failed-wrapper","input":wrapped}}),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"failed-wrapper","output":failed_blocks}}),
-        ] {
-            append(&path, format!("{event}\n").as_bytes());
-        }
-        assert_eq!(
-            codex_patch_inputs(dir.path(), &binding, start).unwrap(),
-            vec![patch, patch, patch, patch, patch]
-        );
-        assert!(codex_patch_inputs(dir.path(), &binding, start + 2000)
-            .unwrap()
-            .is_empty());
-        append(&path, format!("{}\n", json!({"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"fresh-turn"}})).as_bytes());
-        let workspace = dir.path().canonicalize().unwrap();
-        let owner = crate::provider::interaction::InteractionOwner {
-            conversation_id: uuid::Uuid::new_v4().to_string(),
-            run_id: uuid::Uuid::new_v4().to_string(),
-            attempt_id: uuid::Uuid::new_v4().to_string(),
-            provider: ProviderKind::Codex,
-            account: "fixture".into(),
-            home: Some(binding.home.clone()),
-            workspace: workspace.clone(),
-            execution_cwd: workspace.clone(),
-        };
-        let entry = crate::token_log::Entry {
-            at: ((start + 3000) / 1000) as u64,
-            provider: "codex".into(),
-            account: "fixture".into(),
-            model: None,
-            project: workspace.to_string_lossy().into_owned(),
-            chat: Some(session.clone()),
-            new_input: 0,
-            cached_input: 0,
-            output: 0,
-            cost_usd: None,
-            attribution: Some(crate::token_log::Attribution::new(
-                crate::token_log::Origin::Main,
-                &owner.run_id,
-                &owner.attempt_id,
-                owner.home.as_deref(),
-                &Default::default(),
-                "succeeded",
-                true,
-            )),
-        };
-        crate::token_log::record(dir.path(), &entry).unwrap();
-        let records = crate::artifacts::from_item(
-            &owner,
-            &session,
-            None,
-            &json!({"id":"item_4","type":"file_change","status":"completed","changes":[{"path":"src/fixture.rs","kind":"update"}]}),
-        );
-        assert_eq!(
-            historical_codex_patches(dir.path(), &records[0]).unwrap(),
-            vec![patch, patch, patch, patch, patch]
-        );
-        let recovered = records[0].inspect_edit(dir.path()).unwrap().unwrap();
-        assert!(recovered.detail.unwrap().contains("-before\n+after"));
-        let mut wrong = records[0].clone();
-        wrong.owner.account = "another-account".into();
-        assert!(historical_codex_patches(dir.path(), &wrong).is_err());
-        for event in [
-            json!({"timestamp":"2026-01-02T03:04:07.100Z","type":"event_msg","payload":{"type":"task_started","turn_id":"ambiguous-turn"}}),
-            json!({"timestamp":"2026-01-02T03:04:07.500Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"ambiguous-turn"}}),
-        ] {
-            append(&path, format!("{event}\n").as_bytes());
-        }
-        assert!(
-            historical_codex_patches(dir.path(), &records[0]).is_err(),
-            "ambiguous settlement never guesses a turn"
-        );
-        let context =
-            json!({"type":"turn_context","payload":{"model":"fixture-model","turn_id":"fixture-turn-1"}}).to_string() + "\n";
-        append(&path, context.as_bytes());
-        let count = json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":9999999},"last_token_usage":{"total_tokens":80},"model_context_window":100}}}).to_string() + "\n";
-        append(&path, count.as_bytes());
-        assert_eq!(
-            context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
-            Some(crate::capacity::Measurement {
-                used: 80,
-                window: 100
-            })
-        );
-        assert_eq!(
-            context_measurement(dir.path(), &binding, "other-model").unwrap(),
-            None
-        );
-        let observed = context_observation(dir.path(), &binding, "fixture-model").unwrap();
-        assert_eq!(observed.native_turn_id.as_deref(), Some("fixture-turn-1"));
-        assert_eq!(observed.binding, binding);
-        let evidence = observed.source.unwrap();
-        assert_eq!(evidence.source_bytes, fs::metadata(&path).unwrap().len());
-        assert_eq!(
-            evidence.record_sha256.as_deref(),
-            Some(digest(count.trim_end().as_bytes()).as_str())
-        );
-        append(&path, context.as_bytes());
-        let stale = context_observation(dir.path(), &binding, "fixture-model").unwrap();
-        assert!(stale.measurement.is_none());
-        assert!(stale
-            .invalidation_reason
-            .unwrap()
-            .contains("new native turn"));
-        append(&path, count.as_bytes());
-        append(&path, b"{\"type\":\"compacted\",\"payload\":{}}\n");
-        assert_eq!(
-            context_measurement(dir.path(), &binding, "fixture-model").unwrap(),
-            None
-        );
-        append(&path, count.as_bytes());
-        append(
-            &path,
-            b"{\"type\":\"turn_context\",\"payload\":{\"model\":\"other-model\"}}\n",
-        );
-        assert_eq!(
-            context_measurement(dir.path(), &binding, "other-model").unwrap(),
-            None
-        );
-        append(&path, context.as_bytes());
-        append(&path, b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":9999},\"model_context_window\":100}}}\n");
-        let cumulative = context_observation(dir.path(), &binding, "fixture-model").unwrap();
-        assert!(cumulative.measurement.is_none());
-        assert!(cumulative
-            .invalidation_reason
-            .unwrap()
-            .contains("cumulative"));
-        append(&path, count.as_bytes());
-        append(
-            &path,
-            b"{\"type\":\"turn_context\",\"payload\":{\"model\":\"fixture-model\"}}\n",
-        );
-        append(&path, count.as_bytes());
-        let legacy = context_observation(dir.path(), &binding, "fixture-model").unwrap();
-        assert!(legacy.measurement.is_none());
-        assert!(legacy.invalidation_reason.unwrap().contains("exact turn"));
-        append(&path, context.as_bytes());
-        append(&path, count.as_bytes());
-        append(&path, b"{broken\n");
-        let malformed = context_observation(dir.path(), &binding, "fixture-model").unwrap();
-        assert!(malformed.measurement.is_none());
-        assert!(malformed.invalidation_reason.unwrap().contains("malformed"));
-        for provider in [ProviderKind::Claude, ProviderKind::Cursor] {
-            let unknown = context_observation(
-                dir.path(),
-                &Binding {
-                    provider,
-                    ..binding.clone()
-                },
-                "fixture-model",
-            )
-            .unwrap();
-            assert!(unknown.measurement.is_none());
-            assert!(unknown.source.is_none());
-            assert_eq!(unknown.transport, "unavailable");
-        }
-    }
-
-    #[test]
-    fn retrieval_separates_exact_hits_from_verified_links_and_rejects_stale_sources() {
-        evaluation::run();
-        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
-            let dir = tempfile::tempdir().unwrap();
-            let (path, session) = fixture(provider, dir.path(), "fixture");
-            let workspace = dir.path().join("historical-project");
-            let header = if provider == ProviderKind::Codex {
-                json!({"type":"session_meta","payload":{"id":session,"cwd":workspace}})
-            } else {
-                json!({"type":"system","sessionId":session,"cwd":workspace})
-            };
-            fs::write(&path, format!("{header}\n")).unwrap();
-            let mut request: Value =
-                serde_json::from_str(&message(provider, "distinctive needle 雪")).unwrap();
-            request["timestamp"] = json!("2026-11-02T23:59:59.123-07:00");
-            append(&path, format!("{request}\n").as_bytes());
-            let paths: Vec<_> = ["src/雪 name.rs", ".env", ".git/index", "../escape.rs"]
-                .into_iter()
-                .map(str::to_owned)
-                .chain(std::iter::once(
-                    dir.path()
-                        .join("other-project/same.rs")
-                        .to_string_lossy()
-                        .into_owned(),
-                ))
-                .chain((0..80).map(|n| format!("src/historical-{n}.rs")))
-                .collect();
-            let tool = if provider == ProviderKind::Codex {
-                let patch = paths.iter().map(|path| format!("*** Update File: {path}\n@@\n-DO_NOT_COPY_NATIVE_BODY\n+synthetic replacement\n")).collect::<String>();
-                json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":format!("*** Begin Patch\n{patch}*** End Patch")}})
-            } else {
-                json!({"type":"assistant","message":{"role":"assistant","content":paths.iter().enumerate().map(|(n,path)| json!({"type":"tool_use","name":"Read","id":format!("fixture-{n}"),"input":{"file_path":path,"ignored":"DO_NOT_COPY_NATIVE_BODY"}})).collect::<Vec<_>>()}})
-            };
-            append(&path, format!("{tool}\n").as_bytes());
-            let parent = index_session(dir.path(), provider, "fixture", &session).unwrap();
-            let facts = files::read_page(dir.path(), &parent.id).unwrap();
-            assert_eq!(facts.workspace.as_ref(), Some(&workspace));
-            assert_eq!(facts.facts.len(), 64);
-            assert!(facts.overflow && facts.incomplete);
-            assert_eq!(facts.facts[0].path, Path::new("src/雪 name.rs"));
-            assert!(
-                !workspace.exists(),
-                "historical workspace and referenced files are never opened"
-            );
-            assert!(facts
-                .facts
-                .iter()
-                .all(|fact| !crate::workspace_paths::sensitive(&fact.path)
-                    && !fact.path.is_absolute()));
-            assert!(
-                read(dir.path(), &parent.id, facts.facts[0].message, 0, 8192)
-                    .unwrap()
-                    .raw
-                    .contains("雪 name.rs")
-            );
-            let listing = files::list(dir.path(), &parent.id, 0, None).unwrap();
-            assert!(serde_json::to_vec_pretty(&listing).unwrap().len() <= 28_000);
-            assert_eq!(listing["facts"].as_array().unwrap().len(), 16);
-            assert_eq!(listing["next_offset"], 16);
-            assert!(files::list(dir.path(), &parent.id, 16, None).is_err());
-            let next =
-                files::list(dir.path(), &parent.id, 16, listing["revision"].as_str()).unwrap();
-            assert_eq!(next["facts"].as_array().unwrap().len(), 16);
-            let cache_path = directory(dir.path())
-                .join("file-facts")
-                .join(format!("{}.json", parent.id));
-            let fact_cache = fs::read(&cache_path).unwrap();
-            assert!(!String::from_utf8_lossy(&fact_cache).contains("DO_NOT_COPY_NATIVE_BODY"));
-            assert_eq!(
-                index_session(dir.path(), provider, "fixture", &session)
-                    .unwrap()
-                    .id,
-                parent.id,
-                "derived facts must not change native pointer IDs"
-            );
-            let other_session = "22222222-3333-4444-8555-666666666666";
-            let other_path = path.with_file_name(format!("{other_session}.jsonl"));
-            let other_workspace = dir.path().join("other-project");
-            let other_header = if provider == ProviderKind::Codex {
-                json!({"type":"session_meta","payload":{"id":other_session,"cwd":other_workspace}})
-            } else {
-                json!({"type":"system","sessionId":other_session,"cwd":other_workspace})
-            };
-            fs::write(&other_path, format!("{other_header}\n")).unwrap();
-            let mut collision: Value =
-                serde_json::from_str(&message(provider, "needle keyword collision")).unwrap();
-            collision["timestamp"] = json!("2026-11-03T06:59:59.123Z");
-            append(&other_path, format!("{collision}\n{tool}\n").as_bytes());
-            let other = index_session(dir.path(), provider, "fixture", other_session).unwrap();
-            let goal = "synthetic-ranking-goal-v1";
-            crate::goals::save_goals(
-                dir.path(),
-                &[crate::goals::Goal {
-                    id: goal.into(),
-                    text: "Synthetic retrieval context".into(),
-                    done: false,
-                    added_at: "0".into(),
-                    closed_at: None,
-                    ..Default::default()
-                }],
-            )
-            .unwrap();
-            relations::command(
-                dir.path(),
-                &["goal-link".into(), goal.into(), parent.id.clone()],
-                dir.path(),
-            )
-            .unwrap();
-            let ranked = |source, goal, file, from, workspace| {
-                rank::recall(
-                    dir.path(),
-                    rank::Request {
-                        text: "needle",
-                        source,
-                        account: Some("fixture"),
-                        workspace,
-                        goal,
-                        file,
-                        from,
-                        at: Some("2026-11-03T06:59:59.123Z"),
-                    },
-                )
-            };
-            let goal_rank = ranked(None, Some(goal), None, None, None).unwrap();
-            let scoped_goal = ranked(None, Some(goal), None, None, Some(dir.path())).unwrap();
-            assert!(
-                scoped_goal
-                    .hits
-                    .iter()
-                    .any(|hit| hit.hit.source.id == parent.id
-                        && hit
-                            .reasons
-                            .iter()
-                            .any(|reason| reason.kind == "confirmed_goal_source")),
-                "current workspace aliases must match canonical goal associations"
-            );
-            assert_eq!(
-                goal_rank.hits[0].hit.source.id, parent.id,
-                "confirmed association outranks keyword collisions"
-            );
-            assert!(goal_rank.hits[0]
-                .reasons
-                .iter()
-                .any(|reason| reason.kind == "confirmed_goal_source"));
-            assert!(goal_rank
-                .hits
-                .iter()
-                .any(|hit| hit.hit.source.id == other.id && hit.score < 10_000));
-            assert_eq!(
-                serde_json::to_value(&goal_rank).unwrap(),
-                serde_json::to_value(ranked(None, Some(goal), None, None, None).unwrap()).unwrap(),
-                "same snapshot produces identical rank order and evidence"
-            );
-            assert_eq!(
-                rank::timestamp_ms("2026-11-02T23:59:59.123-07:00"),
-                rank::timestamp_ms("2026-11-03T06:59:59.123Z")
-            );
-            assert!(rank::timestamp_ms("2026-02-29T00:00:00Z").is_none());
-            assert!(rank::timestamp_ms("2024-02-29T00:00:00+00:00").is_some());
-            assert!(rank::timestamp_ms("2026-11-03T06:59:60Z").is_none());
-            let file_rank = ranked(
-                Some(&parent.id),
-                None,
-                Some("src/雪 name.rs"),
-                None,
-                Some(workspace.as_path()),
-            )
-            .unwrap();
-            assert!(file_rank.hits.iter().any(|hit| hit
-                .reasons
-                .iter()
-                .any(|reason| reason.kind == "exact_historical_file")));
-            let different_root = ranked(
-                Some(&other.id),
-                None,
-                Some("src/雪 name.rs"),
-                None,
-                Some(workspace.as_path()),
-            )
-            .unwrap();
-            assert!(
-                different_root.hits.iter().all(|hit| hit
-                    .reasons
-                    .iter()
-                    .all(|reason| reason.kind != "exact_historical_file")),
-                "same-named files in different workspaces cannot collide"
-            );
-            retrieval::link(dir.path(), &parent.id, &other.id, "user-confirmed").unwrap();
-            let related = ranked(Some(&other.id), None, None, Some(&parent.id), None).unwrap();
-            assert!(related.hits.iter().any(|hit| hit
-                .reasons
-                .iter()
-                .any(|reason| reason.kind == "explicit_relationship")));
-            retrieval::detach(dir.path(), &parent.id, &other.id).unwrap();
-            let report = retrieval::recall(
-                dir.path(),
-                "needle",
-                Some(&parent.id),
-                Some("fixture"),
-                None,
-            )
-            .unwrap();
-            assert_eq!(report.hits.len(), 1);
-            let hit = &report.hits[0];
-            assert!(hit.relationship.starts_with("lexical suggestion"));
-            assert!(read(dir.path(), &hit.source.id, hit.message, 0, 8192)
-                .unwrap()
-                .raw
-                .contains("needle"));
-            assert!(
-                retrieval::recall(dir.path(), "needle", Some(&parent.id), Some("other"), None)
-                    .is_err()
-            );
-            append(&path, message(provider, "later record").as_bytes());
-            let child = index_session(dir.path(), provider, "fixture", &session).unwrap();
-            retrieval::link(dir.path(), &parent.id, &child.id, "user-confirmed").unwrap();
-            assert_eq!(
-                retrieval::links(dir.path(), &parent.id).unwrap()["links"]
-                    .as_array()
-                    .unwrap()
-                    .len(),
-                1
-            );
-            retrieval::detach(dir.path(), &parent.id, &child.id).unwrap();
-            assert!(retrieval::links(dir.path(), &parent.id).unwrap()["links"]
-                .as_array()
-                .unwrap()
-                .is_empty());
-            let stored =
-                fs::read_to_string(directory(dir.path()).join(format!("{}.json", parent.id)))
-                    .unwrap();
-            assert!(!stored.contains("needle"));
-            let original_binding = load(dir.path(), &parent.id).unwrap().binding;
-            let other_binding = load(dir.path(), &other.id).unwrap().binding;
-            retrieval::observe_handoff(dir.path(), &original_binding, &other_binding, dir.path())
-                .unwrap();
-            let handoff = ranked(Some(&other.id), None, None, Some(&parent.id), None).unwrap();
-            assert!(handoff.hits.iter().any(|hit| hit
-                .reasons
-                .iter()
-                .any(|reason| reason.detail.starts_with("observed Concordia handoff"))));
-            fs::write(&cache_path, b"{broken").unwrap();
-            assert!(files::read_page(dir.path(), &parent.id).is_err());
-            assert_eq!(fs::read(&cache_path).unwrap(), b"{broken");
-            fs::write(&cache_path, &fact_cache).unwrap();
-            let bytes = fs::read(&path).unwrap();
-            fs::write(
-                &path,
-                String::from_utf8(bytes)
-                    .unwrap()
-                    .replace("needle", "edited"),
-            )
-            .unwrap();
-            assert!(retrieval::recall(dir.path(), "needle", Some(&parent.id), None, None).is_err());
-            assert!(
-                files::read_page(dir.path(), &parent.id).is_err(),
-                "stale source facts must be withheld"
-            );
-            let after_rewrite = ranked(None, Some(goal), None, None, None).unwrap();
-            assert!(after_rewrite.incomplete);
-            assert!(
-                after_rewrite
-                    .hits
-                    .iter()
-                    .all(|hit| hit.hit.source.id != parent.id),
-                "ranking never bypasses stale source verification"
-            );
-        }
-    }
-
-    #[test]
-    fn whole_history_pages_reach_every_record_and_keep_snapshot_ordinals_after_append() {
-        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
-            let dir = tempfile::tempdir().unwrap();
-            let (path, session) = fixture(provider, dir.path(), "fixture");
-            let expected: Vec<_> = (0..400)
-                .map(|i| message(provider, &format!("history token {i} 雪")))
-                .collect();
-            append(&path, expected.join("").as_bytes());
-            let binding =
-                Binding::new(provider, "fixture", &dir.path().join("fixture"), &session).unwrap();
-            let mut page = index_history(dir.path(), &binding, None).unwrap();
-            assert_eq!(page.history.as_ref().unwrap().first_message, 1);
-            append(
-                &path,
-                message(provider, "appended after the snapshot").as_bytes(),
-            );
-            let mut ordinal = 1;
-            loop {
-                let listing = describe_page(dir.path(), &page.id, Some(ordinal), 50).unwrap();
-                assert_eq!(listing["messages"][0]["message"], ordinal);
-                assert_eq!(
-                    listing["next_unlisted_message"].is_u64(),
-                    page.messages > 50
-                );
-                let stored =
-                    fs::read_to_string(directory(dir.path()).join(format!("{}.json", page.id)))
-                        .unwrap();
-                assert!(!stored.contains("history token"));
-                for _ in 0..page.messages {
-                    assert_eq!(
-                        read(dir.path(), &page.id, ordinal, 0, 8192).unwrap().raw,
-                        expected[ordinal - 1]
-                    );
-                    ordinal += 1;
-                }
-                if page.history.as_ref().unwrap().next_cursor.is_none() {
-                    break;
-                }
-                page = index_history(dir.path(), &binding, Some(&page.id)).unwrap();
-            }
-            assert_eq!(ordinal, 401);
-            assert!(page.history.as_ref().unwrap().complete);
-            assert!(index_history(dir.path(), &binding, Some(&page.id)).is_err());
-            for number in 0..600 {
-                let usage = if provider == ProviderKind::Claude {
-                    json!({"type":"assistant","sessionId":session,"message":{"id":format!("native-usage-{number}"),"role":"assistant","content":"PRIVATE_SOURCE_BODY_NOT_IMPORTED","usage":{"input_tokens":7,"cache_read_input_tokens":2,"output_tokens":3}}})
-                } else {
-                    json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":999999},"last_token_usage":{"input_tokens":7,"cached_input_tokens":2,"output_tokens":3}}}})
-                };
-                append(&path, format!("{usage}\n").as_bytes());
-            }
-            let cancel = std::sync::atomic::AtomicBool::new(false);
-            let mut cursor = None;
-            let mut imported = 0;
-            let mut last_cursor = None;
-            let mut last_retained = 0;
-            loop {
-                let usage =
-                    usage::import_page(dir.path(), &binding, cursor.as_ref(), &cancel).unwrap();
-                assert!(usage.observations.len() <= 256);
-                assert!(usage
-                    .observations
-                    .iter()
-                    .all(|observation| observation.input == Some(7)
-                        && observation.output == Some(3)
-                        && observation.cached == Some(2)));
-                imported += usage.observations.len();
-                last_retained = last_retained.max(usage.retained);
-                last_cursor = cursor.clone().or(last_cursor);
-                cursor = usage.next;
-                if cursor.is_none() {
-                    break;
-                }
-            }
-            assert_eq!(imported, 600);
-            assert_eq!(last_retained, 600);
-            let repeated =
-                usage::import_page(dir.path(), &binding, last_cursor.as_ref(), &cancel).unwrap();
-            assert_eq!(repeated.retained, 600);
-            let other = Binding {
-                session_id: "foreign-native-session".into(),
-                ..binding.clone()
-            };
-            assert!(usage::import_page(dir.path(), &other, last_cursor.as_ref(), &cancel).is_err());
-            let metadata = fs::read_dir(dir.path().join(".ao/native-usage"))
-                .unwrap()
-                .filter_map(Result::ok)
-                .filter(|file| {
-                    file.path()
-                        .extension()
-                        .is_some_and(|extension| extension == "json")
-                })
-                .map(|file| fs::read_to_string(file.path()).unwrap())
-                .collect::<String>();
-            assert!(!metadata.contains("PRIVATE_SOURCE_BODY_NOT_IMPORTED"));
-            assert!(!metadata.contains("history token"));
-            assert!(crate::token_log::load(dir.path()).is_empty());
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            assert!(usage::import_page(dir.path(), &binding, None, &cancel).is_err());
-            cancel.store(false, std::sync::atomic::Ordering::Relaxed);
-            let changed = fs::read_to_string(&path)
-                .unwrap()
-                .replace("\"input_tokens\":7", "\"input_tokens\":8");
-            fs::write(&path, changed).unwrap();
-            assert!(
-                usage::import_page(dir.path(), &binding, last_cursor.as_ref(), &cancel).is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn whole_history_scan_crosses_the_old_tail_bound_and_reports_oversized_gaps() {
-        let dir = tempfile::tempdir().unwrap();
-        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture");
-        append(
-            &path,
-            message(ProviderKind::Codex, "oldest original").as_bytes(),
-        );
-        append(
-            &path,
-            message(ProviderKind::Codex, &"x".repeat(TAIL_BYTES as usize + 1000)).as_bytes(),
-        );
-        append(
-            &path,
-            message(ProviderKind::Codex, "newest original").as_bytes(),
-        );
-        let binding = Binding::new(
-            ProviderKind::Codex,
-            "fixture",
-            &dir.path().join("fixture"),
-            &session,
-        )
-        .unwrap();
-        let first = index_history(dir.path(), &binding, None).unwrap();
-        assert!(read(dir.path(), &first.id, 1, 0, 8192)
-            .unwrap()
-            .raw
-            .contains("oldest original"));
-        let mut page = first;
-        let mut count = 0;
-        while page.history.as_ref().unwrap().next_cursor.is_some() {
-            let previous = page.history.as_ref().unwrap().scanned_through;
-            page = index_history(dir.path(), &binding, Some(&page.id)).unwrap();
-            assert!(page.history.as_ref().unwrap().scanned_through > previous);
-            count += 1;
-            assert!(count < 5, "cursor must make bounded forward progress");
-        }
-        let history = page.history.as_ref().unwrap();
-        assert_eq!(history.skipped_records, 1);
-        assert!(
-            !history.complete,
-            "an oversized source event must not be called complete"
-        );
-        assert!(read(dir.path(), &page.id, history.first_message, 0, 8192)
-            .unwrap()
-            .raw
-            .contains("newest original"));
-    }
-
-    #[test]
-    fn history_cursors_reject_other_accounts_and_rewrites_past_the_identity_anchor() {
-        let dir = tempfile::tempdir().unwrap();
-        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture");
-        let (other, _) = fixture(ProviderKind::Codex, dir.path(), "other");
-        for i in 0..200 {
-            append(
-                &path,
-                message(ProviderKind::Codex, &format!("{i}:{}", "a".repeat(1000))).as_bytes(),
-            );
-        }
-        let binding = Binding::new(
-            ProviderKind::Codex,
-            "fixture",
-            &dir.path().join("fixture"),
-            &session,
-        )
-        .unwrap();
-        let first = index_history(dir.path(), &binding, None).unwrap();
-        let second_binding = Binding::new(
-            ProviderKind::Codex,
-            "other",
-            &dir.path().join("other"),
-            &session,
-        )
-        .unwrap();
-        append(
-            &other,
-            message(ProviderKind::Codex, "other source").as_bytes(),
-        );
-        assert!(index_history(dir.path(), &second_binding, Some(&first.id))
-            .unwrap_err()
-            .contains("another native source"));
-        let index = load(dir.path(), &first.id).unwrap();
-        let span = index.messages.last().unwrap();
-        assert!(span.start > HEAD_BYTES);
-        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.seek(SeekFrom::Start(span.start + span.len as u64 - 8))
-            .unwrap();
-        file.write_all(b"z").unwrap();
-        assert!(index_history(dir.path(), &binding, Some(&first.id))
-            .unwrap_err()
-            .contains("stale"));
-        assert!(read(dir.path(), &first.id, 128, 0, 8192).is_err());
-    }
-
-    #[test]
-    fn exact_native_readback_survives_append_and_never_copies_chat_bodies_into_the_index() {
-        references::fixture_proof();
-        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
-            let dir = tempfile::tempdir().unwrap();
-            let (path, session) = fixture(provider, dir.path(), "fixture-account");
-            let raw = message(provider, "exact request with whitespace  and \nnew line");
-            append(&path, raw.as_bytes());
-            let indexed = index_session(dir.path(), provider, "fixture-account", &session).unwrap();
-            let stored =
-                fs::read(directory(dir.path()).join(format!("{}.json", indexed.id))).unwrap();
-            assert!(!String::from_utf8(stored).unwrap().contains("exact request"));
-            assert_eq!(read(dir.path(), &indexed.id, 1, 0, 8192).unwrap().raw, raw);
-            append(&path, message(provider, "later").as_bytes());
-            assert_eq!(read(dir.path(), &indexed.id, 1, 0, 8192).unwrap().raw, raw);
-            assert_eq!(
-                index_session(dir.path(), provider, "fixture-account", &session)
-                    .unwrap()
-                    .messages,
-                2
-            );
-        }
-    }
-    #[test]
-    fn same_session_id_in_two_account_homes_has_distinct_pointers_and_retargeting_fails_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        let (a, session) = fixture(ProviderKind::Codex, dir.path(), "first");
-        let (b, _) = fixture(ProviderKind::Codex, dir.path(), "second");
-        append(&a, message(ProviderKind::Codex, "one").as_bytes());
-        append(&b, message(ProviderKind::Codex, "two").as_bytes());
-        let first = index_session(dir.path(), ProviderKind::Codex, "first", &session).unwrap();
-        let second = index_session(dir.path(), ProviderKind::Codex, "second", &session).unwrap();
-        assert_ne!(first.id, second.id);
-        let mut account = crate::store::list_stored_accounts(dir.path())
-            .into_iter()
-            .find(|a| a.id == "first")
-            .unwrap();
-        account.home_path = Some(dir.path().join("second").to_string_lossy().into_owned());
-        crate::store::upsert_stored_account(dir.path(), account).unwrap();
-        assert!(read(dir.path(), &first.id, 1, 0, 100)
-            .unwrap_err()
-            .contains("binding changed"));
-    }
-    #[test]
-    fn replacement_truncation_rewrite_deletion_and_corrupt_index_are_explicitly_unavailable() {
-        for case in ["replace", "truncate", "rewrite", "delete", "index"] {
-            let dir = tempfile::tempdir().unwrap();
-            let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture-account");
-            append(&path, message(ProviderKind::Codex, "original").as_bytes());
-            let indexed =
-                index_session(dir.path(), ProviderKind::Codex, "fixture-account", &session)
-                    .unwrap();
-            match case {
-                "replace" => {
-                    let original = fs::read(&path).unwrap();
-                    fs::rename(&path, path.with_extension("old")).unwrap();
-                    fs::write(&path, original).unwrap();
-                }
-                "truncate" => {
-                    fs::OpenOptions::new()
-                        .write(true)
-                        .open(&path)
-                        .unwrap()
-                        .set_len(0)
-                        .unwrap();
-                }
-                "rewrite" => {
-                    let text = fs::read_to_string(&path)
-                        .unwrap()
-                        .replace("original", "modified");
-                    fs::write(&path, text).unwrap();
-                }
-                "delete" => fs::remove_file(&path).unwrap(),
-                "index" => fs::write(
-                    directory(dir.path()).join(format!("{}.json", indexed.id)),
-                    "{}",
-                )
-                .unwrap(),
-                _ => unreachable!(),
-            }
-            assert!(read(dir.path(), &indexed.id, 1, 0, 8192).is_err(), "{case}");
-        }
-    }
-    #[test]
-    fn excerpts_are_chunked_without_guessing_or_splitting_unicode_and_reject_invalid_arguments() {
-        let dir = tempfile::tempdir().unwrap();
-        let (path, session) = fixture(ProviderKind::Codex, dir.path(), "fixture-account");
-        let raw = message(ProviderKind::Codex, &"\u{96ea}".repeat(5000));
-        append(&path, raw.as_bytes());
-        let indexed =
-            index_session(dir.path(), ProviderKind::Codex, "fixture-account", &session).unwrap();
-        let mut output = String::new();
-        let mut offset = 0;
-        loop {
-            let chunk = read(dir.path(), &indexed.id, 1, offset, 1000).unwrap();
-            output.push_str(&chunk.raw);
-            let Some(next) = chunk.next_offset else { break };
-            offset = next;
-        }
-        assert_eq!(output, raw);
-        assert!(read(dir.path(), &indexed.id, 0, 0, 10).is_err());
-        assert!(read(dir.path(), &indexed.id, 1, 0, 8193).is_err());
-        assert!(read(dir.path(), "../auth", 1, 0, 10).is_err());
-        assert!(command(
-            dir.path(),
-            &[
-                "index".into(),
-                session,
-                "--account".into(),
-                "fixture-account".into()
-            ]
-        )
-        .is_err());
-    }
-}
-
-#[cfg(test)]
 mod more_tests {
     use super::*;
     #[test]
@@ -2546,6 +1812,26 @@ mod more_tests {
         assert!(
             !prefix.contains("modified tool result"),
             "handoff includes pointers rather than copied messages"
+        );
+    }
+
+    #[test]
+    fn pointer_failure_cause_reuses_native_error_categories() {
+        assert_eq!(
+            PointerFailureCause::from_error("native source is stale: file replaced"),
+            PointerFailureCause::Replaced
+        );
+        assert_eq!(
+            PointerFailureCause::from_error("native source is stale: original header changed"),
+            PointerFailureCause::HeaderChanged
+        );
+        assert_eq!(
+            PointerFailureCause::from_error("native source record too large"),
+            PointerFailureCause::RecordTooLarge
+        );
+        assert_eq!(
+            PointerFailureCause::from_error("session rejected by provider"),
+            PointerFailureCause::SessionRejectedByProvider
         );
     }
 }

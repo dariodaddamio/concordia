@@ -125,7 +125,7 @@ pub fn lines(
                 Box::new(|e: &Entry| match e.attribution.as_ref().map(|a| a.origin) {
                     Some(crate::token_log::Origin::Main) => "main".into(),
                     Some(crate::token_log::Origin::Worker) => "worker".into(),
-                    None => "legacy / unknown attribution".into(),
+                    None => "unknown attribution".into(),
                 }),
             ),
             (
@@ -134,7 +134,7 @@ pub fn lines(
                     e.attribution
                         .as_ref()
                         .map(|a| a.run.clone())
-                        .unwrap_or_else(|| "legacy / unknown run".into())
+                        .unwrap_or_else(|| "unknown run".into())
                 }),
             ),
             (
@@ -143,7 +143,7 @@ pub fn lines(
                     e.attribution
                         .as_ref()
                         .map(|a| a.attempt.clone())
-                        .unwrap_or_else(|| "legacy / unknown attempt".into())
+                        .unwrap_or_else(|| "unknown attempt".into())
                 }),
             ),
             (
@@ -152,7 +152,7 @@ pub fn lines(
                     e.attribution
                         .as_ref()
                         .map(|a| a.outcome.clone())
-                        .unwrap_or_else(|| "legacy / unknown outcome".into())
+                        .unwrap_or_else(|| "unknown outcome".into())
                 }),
             ),
             (
@@ -203,7 +203,7 @@ pub fn lines(
             ));
         }
         if w.incomplete_events > 0 {
-            out.push(PreviewLine::Text(format!("Coverage: {} turns have legacy attribution, missing counters or an incomplete outcome. Totals include reported counters only.", w.incomplete_events)));
+            out.push(PreviewLine::Text(format!("Coverage: {} turns have incomplete attribution or counters. Totals include reported counters only.", w.incomplete_events)));
         }
         if week.iter().any(|entry| entry.provider == "claude") {
             out.push(PreviewLine::Text("Claude token counters cover the reported main loop; native subagent coverage is not inferred. Resumed-session cost is unavailable without a verified delta.".into()));
@@ -223,7 +223,7 @@ fn chat_key(entry: &Entry) -> String {
             .attribution
             .as_ref()
             .and_then(|a| a.home_id.as_deref())
-            .unwrap_or("legacy-home-unknown"),
+            .unwrap_or("unknown-home"),
         entry.chat.as_deref().unwrap_or("no-session")
     )
 }
@@ -510,7 +510,8 @@ pub(super) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool
     }
 }
 
-pub(super) fn poll(app: &mut App) {
+pub(super) fn poll(app: &mut App) -> bool {
+    let mut changed = false;
     let current_landing = super::landing::usage_generation(app);
     let current_screen = app.token_reads.screen;
     let conversation = app.deleg.d.conversation_id().to_owned();
@@ -544,6 +545,7 @@ pub(super) fn poll(app: &mut App) {
         if !valid {
             continue;
         }
+        changed = true;
         match (job.kind, result) {
             (ReadKind::Landing, result) => {
                 let value = match result {
@@ -611,6 +613,7 @@ pub(super) fn poll(app: &mut App) {
     if super::landing::needs_usage(app) {
         start(app, None, ReadKind::Landing);
     }
+    changed
 }
 
 #[cfg(test)]
@@ -691,7 +694,20 @@ mod persistence_tests {
             cached_input: 0,
             output,
             cost_usd: None,
-            attribution: None,
+            attribution: Some(crate::token_log::Attribution::new(
+                crate::token_log::Origin::Main,
+                &uuid::Uuid::new_v4().to_string(),
+                &uuid::Uuid::new_v4().to_string(),
+                Some(root.path()),
+                &crate::provider::stream_cards::TurnUsage {
+                    input: Some(output),
+                    cached: Some(0),
+                    output: Some(output),
+                    cost_usd: None,
+                },
+                "succeeded",
+                true,
+            )),
         };
         crate::token_log::record(root.path(), &make(now() - 2 * DAY, 500)).unwrap();
         crate::token_log::record(root.path(), &make(now(), 100)).unwrap();

@@ -1,13 +1,60 @@
 use super::super::*;
 
 impl App {
+    fn run_mcp_command(&mut self, args: &str) {
+        let words: Vec<_> = args.split_whitespace().collect();
+        if words.is_empty() {
+            for line in crate::mcp_registry::status_lines(&self.state_root, &self.cwd) {
+                self.push_system(line);
+            }
+            if crate::mcp_registry::load(&self.state_root).map_or(true, |r| r.servers.is_empty()) {
+                self.push_system("/mcp add NAME stdio COMMAND [ARGS...] · secrets must be env:NAME or credential:TARGET");
+            }
+            return;
+        }
+        let action = words[0].to_ascii_lowercase();
+        let Some(name) = words.get(1).map(|s| (*s).to_owned()) else {
+            self.push_system("/mcp add NAME stdio COMMAND [ARGS...] | /mcp remove NAME | /mcp on NAME | /mcp off NAME | /mcp import");
+            return;
+        };
+        let mut registry = match crate::mcp_registry::load(&self.state_root) {
+            Ok(registry) => registry,
+            Err(error) => { self.push_system(error); return; }
+        };
+        match action.as_str() {
+            "on" | "off" => match registry.servers.get_mut(&name) {
+                Some(server) => { server.enabled = action == "on"; }
+                None => { self.push_system(format!("MCP server not found: {name}")); return; }
+            },
+            "remove" => { registry.servers.remove(&name); }
+            "add" => {
+                if words.get(2).map(|s| *s == "stdio").unwrap_or(false) && words.len() >= 4 {
+                    registry.servers.insert(name.into(), crate::mcp_registry::Server { enabled: true, transport: crate::mcp_registry::Transport::Stdio { command: words[3].into(), args: words[4..].iter().map(|s| (*s).into()).collect(), env: Default::default() } });
+                } else {
+                    self.push_system("/mcp add NAME stdio COMMAND [ARGS...] · use the guided panel for remote servers and secret references");
+                    return;
+                }
+            }
+            "import" => { self.push_system("/mcp import is read-only discovery and needs a provider file target"); return; }
+            _ => { self.push_system("/mcp add|remove|on|off|import"); return; }
+        }
+        match crate::mcp_registry::save(&self.state_root, &registry) {
+            Ok(()) => self.push_system("MCP registry saved. Provider homes were not changed."),
+            Err(error) => self.push_system(error),
+        }
+    }
+
     pub(in crate::tui) fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if trimmed == "/terminal" || trimmed.starts_with("/terminal ") {
+            local_terminal::command(self, trimmed.strip_prefix("/terminal").unwrap_or_default());
+            return true;
+        }
         if trimmed == "/rename" || trimmed.starts_with("/rename ") {
             let name = trimmed.strip_prefix("/rename").unwrap_or_default().trim();
-            self.session_ui.title = crate::session_titles::sanitize(name);
-            self.session_chip = self.session_ui.title.clone();
-            self.persist_session_title();
+            if !self.rename_session(name) {
+                return true;
+            }
             self.push_system(if self.session_ui.title.is_some() {
                 "Chat renamed."
             } else {
@@ -67,56 +114,6 @@ impl App {
             self.worker_recovery_command(trimmed.strip_prefix("/delegate ").unwrap_or_default());
             return true;
         }
-        if trimmed == "/integrations" {
-            landing::close(self);
-            self.push_command(line);
-            integrations::open(self);
-            return true;
-        }
-        if trimmed == "/context" || trimmed.starts_with("/context ") {
-            landing::close(self);
-            self.push_command(line);
-            let result = self
-                .home_path
-                .as_ref()
-                .ok_or_else(|| "account home is unavailable".to_string())
-                .and_then(|h| {
-                    crate::native_memory::Binding::new(
-                        self.provider,
-                        &self.account,
-                        h,
-                        self.native_session_id
-                            .as_deref()
-                            .unwrap_or("context-policy"),
-                    )
-                })
-                .and_then(|b| {
-                    crate::capacity::set(
-                        &self.state_root,
-                        &b,
-                        trimmed.strip_prefix("/context").unwrap_or_default().trim(),
-                    )
-                });
-            self.push_system(result.unwrap_or_else(|e| format!("context policy: {e}")));
-            return true;
-        }
-        if trimmed == "/memory" || trimmed.starts_with("/memory ") {
-            landing::close(self);
-            self.push_command(line);
-            self.memory_command(trimmed.strip_prefix("/memory").unwrap_or_default().trim());
-            return true;
-        }
-        if trimmed == "/trust" || trimmed.starts_with("/trust ") {
-            self.push_command(line);
-            self.push_system("/trust is now /mode");
-            self.run_mode_command(
-                trimmed
-                    .strip_prefix("/trust")
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty()),
-            );
-            return true;
-        }
         if trimmed == "/threads" || trimmed.starts_with("/threads ") {
             self.push_command(line);
             self.push_system("/threads is now /resume");
@@ -129,10 +126,6 @@ impl App {
             self.open_agents_picker();
             return true;
         }
-        if trimmed == "/skills" || trimmed == "/hooks" {
-            settings::catalog(self, trimmed == "/hooks");
-            return true;
-        }
         if trimmed == "/config" || trimmed.starts_with("/config ") {
             let args = trimmed.strip_prefix("/config").unwrap_or("").trim();
             match args {
@@ -142,6 +135,11 @@ impl App {
                 "hooks" => settings::catalog(self, true),
                 _ => appearance::command(self, args),
             }
+            return true;
+        }
+        if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
+            self.push_command(line);
+            self.run_mcp_command(trimmed.strip_prefix("/mcp").unwrap_or_default().trim());
             return true;
         }
         if trimmed == "/version" || trimmed == "/ver" || trimmed == "/about" {
@@ -172,46 +170,20 @@ impl App {
             }
             return true;
         }
-        if trimmed == "/preview" || trimmed.starts_with("/preview ") {
-            self.push_command(line);
-            if let Some(reference) = trimmed.strip_prefix("/preview ") {
-                self.file_command(reference, false, true);
-            } else {
-                self.push_system("usage: /preview FILE");
-            }
-            return true;
-        }
         if trimmed == "/usage all" || trimmed == "/usage refresh" {
             self.push_system(format!(
                 "{} is now /usage (use r inside the screen to refresh)",
                 trimmed
             ));
         }
-        // /workers, /queue, /edit, /close, /split, /stats and /recover keep working unlisted
-        // until the screens that replace them exist.
-        if trimmed == "/exit" || trimmed == "/quit" || trimmed == "/q" {
-            self.push_command(line);
-            self.push_system("/exit is now Ctrl+C twice");
-            return true;
-        }
-        if line.trim() == "/search" {
-            self.open_project_search();
-            return true;
-        }
+        // /workers, /queue, /close and /stats remain available until their screens
+        // replace them.
         if line.trim() == "/open" {
             self.open_related_files();
             return true;
         }
-        if matches!(line.trim(), "/preview" | "/edit") {
-            self.push_system("usage: /open FILE");
-            return true;
-        }
         if let Some(reference) = line.trim().strip_prefix("/open ") {
             self.file_command(reference, false, false);
-            return true;
-        }
-        if let Some(reference) = line.trim().strip_prefix("/edit ") {
-            self.file_command(reference, true, false);
             return true;
         }
         if line.trim() == "/close" || line.trim().starts_with("/close ") {
@@ -237,23 +209,6 @@ impl App {
             }
             return true;
         }
-        if line.trim() == "/recover" {
-            self.open_recovery_picker();
-            return true;
-        }
-        if line.trim() == "/recover legacy" {
-            self.choose_recovery("legacy");
-            return true;
-        }
-        if line.trim() == "/recover retry" {
-            self.retry_recovery_now();
-            self.push_system(
-                self.recovery_warning()
-                    .unwrap_or("saved this pane locally")
-                    .to_owned(),
-            );
-            return true;
-        }
         if let Some(arg) = queue::slash_arg(line) {
             self.push_command(line);
             let notices = if arg == "resume" {
@@ -266,14 +221,7 @@ impl App {
             }
             return true;
         }
-        if line.trim() == "/threads" || line.trim_start().starts_with("/threads ") {
-            self.push_command(line);
-            for l in self.threads_command(line.trim_start()["/threads".len()..].trim()) {
-                self.push_system(l);
-            }
-            return true;
-        }
-        let Some((cmd, split_vertical)) = parse_slash(line) else {
+        let Some((cmd, _)) = parse_slash(line) else {
             return false;
         };
         if self.busy
@@ -320,6 +268,19 @@ impl App {
                 self.push_system("model id contains unsupported characters");
                 return true;
             }
+            let offered = crate::models::available_at(&self.state_root, self.provider, &self.account)
+                .into_iter()
+                .any(|entry| {
+                    entry.id == *model
+                        || entry
+                            .efforts
+                            .iter()
+                            .any(|effort| effort.model_id.as_deref() == Some(model.as_str()))
+                });
+            if !offered {
+                self.push_system("model is not offered by the selected provider account; use /model to list available models");
+                return true;
+            }
             self.show_picker(
                 PickerKind::Model,
                 "model".into(),
@@ -342,35 +303,26 @@ impl App {
             self.run_mode_command(arg.as_deref());
             return true;
         }
-        if self.try_delegate_slash(&cmd) {
+        if let SlashCommand::Customization(hooks) = &cmd {
+            settings::catalog(self, *hooks);
             return true;
         }
         if let SlashCommand::Harness(arg) = &cmd {
             self.push_command(line);
-            let accounts = accounts_with_auth(&self.state_root)
-                .into_iter()
-                .map(|a| (a.provider, a.home_path))
-                .collect();
-            let session = crate::harness::command::Session {
-                store: &self.state_root,
-                cwd: &self.cwd,
-                provider: self.provider,
-                home: self.home_path.as_deref(),
-                accounts,
-            };
-            let cwd = self.cwd.clone();
-            let lines = crate::harness::command::dispatch(&session, arg, &|argv| {
-                crate::harness::run::run_command(argv, &cwd, crate::harness::run::DEFAULT_TIMEOUT)
-            });
-            for l in lines {
-                self.push_system(l);
-            }
+            integrations::command(self, arg);
             return true;
         }
         if matches!(&cmd, SlashCommand::Unknown(n) if n == "stats") {
             self.push_command(line);
             self.toggle_stats();
             return true;
+        }
+        // Unknown slash names are provider-owned. Returning false deliberately sends the
+        // original line through the active provider turn instead of manufacturing a Concordia
+        // "unknown command" dead end. Native execution is unavailable in print/exec mode; the
+        // picker explains that boundary while direct input remains provider-visible.
+        if matches!(&cmd, SlashCommand::Unknown(_)) {
+            return false;
         }
         let is_new = matches!(cmd, SlashCommand::New);
         if is_new && !self.save_turn_checkpoint(true) {
@@ -383,11 +335,9 @@ impl App {
             provider: self.provider,
             account: &self.account,
             trust: self.trust,
-            split_vertical,
         };
         let (outcome, lines) = dispatch_slash(cmd, &ctx);
         if is_new {
-            self.project_search.close();
             self.native_owner = None;
             self.deleg.change_conversation();
             self.keep.turn_recovery_notice = false;
@@ -404,6 +354,7 @@ impl App {
             self.view.follow_tail();
             self.clear_selections();
             self.native_session_id = None;
+            self.task_id = None;
             self.session_chip = None;
             self.usage_block = None;
             self.session_input = 0;
@@ -423,7 +374,6 @@ impl App {
         match outcome {
             CommandOutcome::Exit => self.should_quit = true,
             CommandOutcome::OpenResume => self.open_resume_picker(),
-            CommandOutcome::OpenTrust => self.open_trust_picker(),
             CommandOutcome::OpenUse => {
                 for l in crate::integration::refresh_summary(&self.state_root) {
                     self.push_system(l);

@@ -32,6 +32,33 @@ impl DisplayBackend {
             Self::Window(window) => window.set_pointer(shape),
         }
     }
+    pub fn test_state(&mut self, focused_tab: String, overlays: Vec<String>) {
+        #[cfg(windows)]
+        if let Self::Window(window) = self {
+            window.set_test_state(focused_tab, overlays);
+        }
+    }
+    /// Test-only frame cost; a no-op outside the test-controlled native window.
+    pub fn note_draw(&mut self, elapsed: std::time::Duration) {
+        #[cfg(windows)]
+        if let Self::Window(window) = self {
+            window.note_draw(elapsed);
+        }
+        #[cfg(not(windows))]
+        let _ = elapsed;
+    }
+    #[cfg(windows)]
+    pub fn status_dot(&mut self, status: super::native_window::StatusDot) {
+        if let Self::Window(window) = self {
+            window.set_status_dot(status);
+        }
+    }
+    #[cfg(windows)]
+    pub fn attention_notification(&mut self, item_id: String, text: String) {
+        if let Self::Window(window) = self {
+            window.set_attention_notification(item_id, text);
+        }
+    }
 }
 
 impl Write for DisplayBackend {

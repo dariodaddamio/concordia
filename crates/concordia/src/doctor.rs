@@ -6,7 +6,7 @@
 use crate::accounts::{is_logged_in, list_all_accounts};
 use crate::provider::compat;
 use crate::provider::launch::is_batch_shim;
-use crate::store::{load_store, store_path, ProviderKind};
+use crate::store::{store_path, ProviderKind};
 use crate::version::version_line;
 use std::path::{Path, PathBuf};
 
@@ -115,9 +115,11 @@ impl FixApplier for PathApplier {
             if status != 0 {
                 return Err(format!("registry read failed: {status}"));
             }
-            let wide =
-                unsafe { std::slice::from_raw_parts(raw.as_ptr().cast::<u16>(), raw.len() / 2) };
-            Ok(String::from_utf16_lossy(wide)
+            let wide: Vec<u16> = raw[..bytes as usize]
+                .chunks_exact(2)
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                .collect();
+            Ok(String::from_utf16_lossy(&wide)
                 .trim_end_matches('\0')
                 .to_string())
         }
@@ -149,8 +151,23 @@ impl FixApplier for PathApplier {
             if status != 0 {
                 return Err(format!("registry open failed: {status}"));
             }
-            let old = self.previous_value(fix, _state_root)?;
-            let joined = append_path_once(&old, dir);
+            let old = match self.previous_value(fix, _state_root) {
+                Ok(old) => old,
+                Err(error) => {
+                    unsafe {
+                        RegCloseKey(key);
+                    }
+                    return Err(error);
+                }
+            };
+            let joined = if !dir.is_empty() {
+                append_path_once(&old, dir)
+            } else {
+                unsafe {
+                    RegCloseKey(key);
+                }
+                return Err("unknown PATH repair; no change applied".into());
+            };
             let wide: Vec<u16> = joined.encode_utf16().chain(Some(0)).collect();
             let status = unsafe {
                 RegSetValueExW(
@@ -223,15 +240,15 @@ pub fn apply_fix_confirmed(
     let stamp = format!(
         "{}-{}",
         crate::version::VERSION.replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
-        std::process::id()
+        uuid::Uuid::new_v4()
     );
     let backup_path = state_root
         .join("backups")
         .join(format!("doctor-{stamp}.json"));
     let body = serde_json::json!({ "fix": fix.id, "previous": previous });
-    std::fs::write(
+    crate::state_io::write_atomic_new(
         &backup_path,
-        serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?,
+        &serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     applier.apply(fix, state_root)?;
@@ -283,52 +300,8 @@ pub fn proposed_fixes(state_root: &Path, checks: &[Check]) -> Vec<Fix> {
             });
         }
     }
-    if let Some(old) = crate::update::legacy_install_dir() {
-        if checks.iter().any(|c| c.name == "path") {
-            fixes.push(Fix {
-                id: "remove-legacy-orc",
-                finding: format!("legacy orc folder is available: {}", old.display()),
-                before: "User PATH contains legacy orc folder".into(),
-                after: "User PATH with that folder removed".into(),
-                impact: "prevents stale legacy launchers",
-            });
-        }
-    }
     let _ = state_root;
     fixes
-}
-
-/// Apply exactly one already-confirmed fix. The callbacks are deliberately injected so tests
-/// cannot touch a real user PATH or ACL. The backup is written before the callback is invoked.
-pub fn apply_confirmed_fix<F, A>(
-    state_root: &Path,
-    fix: &Fix,
-    confirmed: bool,
-    backup: F,
-    apply: A,
-) -> Result<String, String>
-where
-    F: FnOnce(&Path, &Fix) -> Result<(), String>,
-    A: FnOnce(&Fix) -> Result<(), String>,
-{
-    if !confirmed {
-        return Ok(format!("declined {}", fix.id));
-    }
-    std::fs::create_dir_all(state_root).map_err(|e| e.to_string())?;
-    let stamp = crate::version::VERSION.replace(|c: char| !c.is_ascii_alphanumeric(), "-");
-    let backup_path = state_root
-        .join("backups")
-        .join(format!("doctor-{stamp}.json"));
-    if let Some(parent) = backup_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    backup(&backup_path, fix)?;
-    apply(fix)?;
-    Ok(format!(
-        "applied {}; undo from {}",
-        fix.id,
-        backup_path.display()
-    ))
 }
 
 /// The one concrete action shown below every warning or failure in the doctor report.
@@ -354,7 +327,6 @@ pub fn next_action(row: &Check) -> Option<String> {
         }
         "accounts" => "/use to add an account".into(),
         "path" => "concordia install".into(),
-        "wezterm" => "winget install --id wez.wezterm -e".into(),
         "clipboard" => "install or restore powershell.exe on PATH".into(),
         "install" => "re-run scripts\\install-dev.ps1".into(),
         "store" => "move the corrupt store aside, then restart Concordia".into(),
@@ -364,16 +336,16 @@ pub fn next_action(row: &Check) -> Option<String> {
         "commands" => "rename or remove the conflicting custom command".into(),
         "providers" => "install at least one provider CLI, then retry the operation".into(),
         name if matches!(name, "codex" | "claude" | "cursor")
-            && row.detail.contains("(tested: ") =>
+            && row.detail.contains("(interface baseline: ") =>
         {
-            let tested = compat::TESTED
+            let tested = compat::OBSERVED_INTERFACES
                 .iter()
                 .find(|(provider, _)| provider.as_str() == name)
                 .and_then(|(_, versions)| versions.first())
                 .copied()
                 .unwrap_or("the verified release");
             format!(
-                "works; Concordia was tested with {tested}. Update the CLI if something misbehaves"
+                "works; read-only interface baseline {tested}; model-turn parity is separately qualified"
             )
         }
         "binary" if row.detail.contains("this process is") => {
@@ -419,10 +391,8 @@ pub struct Env<'a> {
     pub provider_bin:
         &'a dyn Fn(ProviderKind) -> Result<crate::provider::Located, crate::provider::NotFound>,
     pub which: &'a dyn Fn(&str) -> Option<PathBuf>,
-    pub wezterm_bin: &'a dyn Fn() -> Option<PathBuf>,
     /// `--version` of a CLI; `None` skips probing (fast mode for the TUI).
     pub version_of: Option<VersionProbe<'a>>,
-    pub in_wezterm: bool,
     pub source_checkout: Option<PathBuf>,
     /// `owner/name` of the configured release feed, if any.
     pub release_repo: Option<String>,
@@ -440,8 +410,15 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
     out.push(check_binary(env));
     out.push(check_pointer(env));
     out.push(check_path_resolution(env));
+    if let Some(row) = check_shortcut(false) {
+        out.push(row);
+    }
+    if let Some(row) = check_shortcut(true) {
+        out.push(row);
+    }
     out.push(check_state_dir(&env.state_root));
     out.push(check_store(&env.state_root));
+    out.extend(check_unopenable_chats(&env.state_root));
     out.push(check_log(&env.state_root));
     out.push(check_config(&env.state_root));
     out.push(check_user_commands(&env.state_root));
@@ -457,26 +434,6 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
             detail,
         ));
     }
-    out.push(match (env.wezterm_bin)() {
-        Some(p) => check(
-            Level::Ok,
-            "wezterm",
-            format!(
-                "{}{}",
-                p.display(),
-                if env.in_wezterm {
-                    " (this pane is in WezTerm)"
-                } else {
-                    ""
-                }
-            ),
-        ),
-        None => check(
-            Level::Warn,
-            "wezterm",
-            "not found; /split and login windows fall back to a plain PowerShell console",
-        ),
-    });
     out.push(match (env.which)("powershell.exe") {
         Some(_) => check(
             Level::Ok,
@@ -512,6 +469,25 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
         },
     });
     out
+}
+
+fn check_unopenable_chats(root: &Path) -> Vec<Check> {
+    crate::sessions::unopenable_tasks(root)
+        .into_iter()
+        .map(|chat| {
+            check(
+                Level::Fail,
+                "chat",
+                format!(
+                    "{} ({}/{}) is unopenable: {}; repair: concordia chat repair --dry-run (draft kept)",
+                    chat.title,
+                    chat.provider.as_str(),
+                    chat.account,
+                    chat.failure_detail()
+                ),
+            )
+        })
+        .collect()
 }
 
 fn check_binary(env: &Env<'_>) -> Check {
@@ -599,6 +575,31 @@ fn check_pointer(env: &Env<'_>) -> Check {
     }
 }
 
+fn check_shortcut(desktop: bool) -> Option<Check> {
+    let path = crate::update::shortcut_path(desktop).ok()?;
+    let actual = crate::update::owned_shortcut(desktop).ok()??;
+    let active = crate::update::resolve_active_exe();
+    let name = if desktop { "shortcut-desktop" } else { "shortcut" };
+    if same_file(&actual.target, &active) {
+        Some(check(
+            Level::Ok,
+            name,
+            format!("{} -> {}", path.display(), actual.target.display()),
+        ))
+    } else {
+        Some(check(
+            Level::Fail,
+            name,
+            format!(
+                "{} points to {}, not the active build {}; run `concordia install`",
+                path.display(),
+                actual.target.display(),
+                active.display()
+            ),
+        ))
+    }
+}
+
 fn check_state_dir(root: &Path) -> Check {
     if let Err(e) = std::fs::create_dir_all(root) {
         return check(
@@ -607,12 +608,19 @@ fn check_state_dir(root: &Path) -> Check {
             format!("cannot create {}: {e}", root.display()),
         );
     }
-    let probe = root.join(format!(".doctor-{}", std::process::id()));
+    let probe = root.join(format!(".doctor-{}", uuid::Uuid::new_v4()));
     let warning = crate::store::outside_profile_warning(root);
     let acl_status = crate::state_security::is_owner_only(root);
     let acl_warning = acl_status.as_ref().ok().filter(|ok| !**ok);
     let acl_unknown = acl_status.is_err();
-    match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|file| {
+            drop(file);
+            std::fs::remove_file(&probe)
+        }) {
         Ok(()) => check(
             if warning.is_some() || acl_warning.is_some() || acl_unknown {
                 Level::Warn
@@ -686,7 +694,7 @@ fn check_config(root: &Path) -> Check {
     }
 }
 
-/// `<state>/commands/*.md`: count, plus a warning for skipped files and built-in name clashes.
+/// `<state>/commands/*.md`: count, plus warnings for skipped files and command shadows.
 fn check_user_commands(root: &Path) -> Check {
     let s = crate::user_commands::scan(root);
     let mut detail = format!("{} custom command(s)", s.commands.len());
@@ -703,6 +711,18 @@ fn check_user_commands(root: &Path) -> Check {
                 .join(", ")
         ));
     }
+    if !s.provider_clashes.is_empty() {
+        level = Level::Warn;
+        detail.push_str(&format!(
+            "; {} shadow(s) provider commands (provider wins): {}",
+            s.provider_clashes.len(),
+            s.provider_clashes
+                .iter()
+                .map(|n| format!("/{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if let Some(first) = s.warnings.first() {
         level = Level::Warn;
         detail.push_str(&format!("; {} skipped: {first}", s.warnings.len()));
@@ -712,35 +732,29 @@ fn check_user_commands(root: &Path) -> Check {
 
 fn check_store(root: &Path) -> Check {
     let path = store_path(root);
-    match std::fs::read_to_string(&path) {
-        Err(_) => check(Level::Ok, "store", "no store yet (fresh install)"),
-        Ok(raw) => match serde_json::from_str::<crate::store::OrchestratorStore>(&raw) {
-            Ok(_) => {
-                let s = load_store(root);
-                check(
-                    Level::Ok,
-                    "store",
-                    format!(
-                        "{} account(s) registered, trust {}{}",
-                        s.accounts.len(),
-                        s.settings.trust.as_str(),
-                        if s.settings.trust == crate::store::TrustMode::Full {
-                            " (provider approvals and sandboxing are bypassed; /trust to change)"
-                        } else {
-                            ""
-                        }
-                    ),
-                )
-            }
-            Err(e) => check(
-                Level::Fail,
-                "store",
-                format!(
-                    "{} is unreadable ({e}); concordia starts fresh and keeps a .corrupt copy on the next save",
-                    path.display()
-                ),
+    match crate::store::load_store_checked(root) {
+        Ok(s) => check(
+            Level::Ok,
+            "store",
+            format!(
+                "{} account(s) registered, trust {}{}",
+                s.accounts.len(),
+                s.settings.trust.as_str(),
+                if s.settings.trust == crate::store::TrustMode::Full {
+                    " (provider approvals and sandboxing are bypassed; /mode changes this)"
+                } else {
+                    ""
+                }
             ),
-        },
+        ),
+        Err(error) => check(
+            Level::Fail,
+            "store",
+            format!(
+                "{} is unreadable or unsupported ({error:#}); writes are blocked and the original is preserved",
+                path.display()
+            ),
+        ),
     }
 }
 
@@ -751,6 +765,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
         ("codex", ProviderKind::Codex),
         ("claude", ProviderKind::Claude),
         ("cursor", ProviderKind::Cursor),
+        ("grok", ProviderKind::Grok),
     ] {
         match (env.provider_bin)(kind) {
             Err(missing) => rows.push(check(
@@ -779,16 +794,19 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
                     Some(probe) => match probe(path) {
                         Ok(v) => {
                             // Newer, older or unknown is a warning, never a failure.
-                            let t = compat::assess(kind, &v);
-                            if t != compat::Tested::Same {
+                            let t = compat::compare_version(kind, &v);
+                            if t != compat::VersionComparison::Same {
                                 level = Level::Warn;
                             }
-                            let degraded = compat::caps_for(kind)
-                                .map(|c| compat::degradation_summary(kind, &c))
+                            let unsupported = compat::caps_for(kind)
+                                .map(|c| compat::support_summary(kind, &c))
                                 .filter(|s| !s.is_empty())
                                 .map(|s| format!(" · {s}"))
                                 .unwrap_or_default();
-                            format!(" · {v} (tested: {}){degraded}", t.label())
+                            if !unsupported.is_empty() {
+                                level = Level::Warn;
+                            }
+                            format!(" · {v} (interface baseline: {}){unsupported}", t.label())
                         }
                         Err(e) => format!(" · version check failed: {e}"),
                     },
@@ -822,6 +840,8 @@ fn provider_variable(kind: ProviderKind) -> &'static str {
         ProviderKind::Codex => "CONCORDIA_CODEX_BIN",
         ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
         ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
+        ProviderKind::Grok => "CONCORDIA_GROK_BIN",
+        ProviderKind::Opencode => "CONCORDIA_OPENCODE_BIN",
     }
 }
 
@@ -970,9 +990,7 @@ pub fn real_env<'a>(
         pointer: std::fs::read_to_string(crate::update::current_pointer_path()).ok(),
         provider_bin,
         which,
-        wezterm_bin: &|| crate::host::wezterm::find_wezterm(),
         version_of,
-        in_wezterm: std::env::var_os("WEZTERM_PANE").is_some(),
         source_checkout: crate::update::source_root(&cwd),
         release_repo: crate::release::config_from_env(crate::version::VERSION).map(|c| c.repo),
     }
@@ -1025,6 +1043,8 @@ pub fn format_not_found_turn_error(
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude Code",
         ProviderKind::Cursor => "Cursor agent",
+        ProviderKind::Grok => "Grok Build",
+        ProviderKind::Opencode => "opencode",
     };
     format!(
         "{name} CLI was not found. Concordia looked in: {}. Run `concordia doctor`.",
@@ -1039,40 +1059,19 @@ pub fn format_not_found_turn_error(
 
 /// `<program> --version` with a deadline, first non-empty line.
 pub fn probe_version(program: &Path) -> Result<String, String> {
-    use std::io::Read;
-    use std::process::Stdio;
     let native = crate::provider::npm::codex(&program.to_string_lossy());
     let mut command =
         crate::process_ui::command(native.as_ref().map_or(program, |n| n.program.as_path()));
     if let Some(native) = native {
         command.envs(native.env);
     }
-    crate::process_ui::background_std(&mut command);
-    let mut child = command
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(25))
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                return Err("timed out".into());
-            }
-            Err(e) => return Err(e.to_string()),
-        }
+    command.arg("--version").stdin(std::process::Stdio::null());
+    let output =
+        crate::process_lifetime::capture(command, std::time::Duration::from_secs(8), 64 * 1024)?;
+    if !output.status.success() {
+        return Err(format!("version probe exited {}", output.status));
     }
-    let mut text = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_string(&mut text);
-    }
+    let text = String::from_utf8_lossy(&output.stdout);
     text.lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
@@ -1148,9 +1147,15 @@ pub fn run_fast_report() -> String {
 }
 
 pub fn run_fast_checks() -> Vec<Check> {
+    run_fast_checks_at(&crate::store::default_store_root())
+}
+
+pub fn run_fast_checks_at(state_root: &Path) -> Vec<Check> {
     let provider_bin = resolve_provider_bin;
     let which = |n: &str| which::which(n).ok();
-    run(&real_env(&provider_bin, &which, None))
+    let mut env = real_env(&provider_bin, &which, None);
+    env.state_root = state_root.to_path_buf();
+    run(&env)
 }
 
 #[cfg(test)]
@@ -1223,9 +1228,7 @@ mod tests {
             active_exe: active,
             provider_bin,
             which,
-            wezterm_bin: &|| None,
             version_of: None,
-            in_wezterm: false,
             source_checkout: None,
             release_repo: None,
         }
@@ -1249,10 +1252,8 @@ mod tests {
                 Err(crate::provider::NotFound { searched: vec![] })
             }
         };
-        let wz = fx.exe_file("wezterm.exe");
         let ps = fx.exe_file("powershell.exe");
         let which = move |n: &str| match n {
-            "wezterm" => Some(wz.clone()),
             "powershell.exe" => Some(ps.clone()),
             _ => None,
         };
@@ -1452,12 +1453,13 @@ mod tests {
             }
         };
         let which = |_: &str| None;
-        let same = |_: &Path| Ok("2.1.301 (Claude Code)".to_string());
+        let same = |_: &Path| Ok("2.1.319 (Claude Code)".to_string());
         let mut e = env(&fx, &pb, &which);
         e.version_of = Some(&same);
         let row = &find(&run(&e), "claude")[0].clone();
         assert!(
-            row.detail.contains("2.1.301 (Claude Code) (tested: same)"),
+            row.detail
+                .contains("2.1.319 (Claude Code) (interface baseline: same)"),
             "{}",
             row.detail
         );
@@ -1466,13 +1468,17 @@ mod tests {
         let newer = |_: &Path| Ok("9.0.0 (Claude Code)".to_string());
         e.version_of = Some(&newer);
         let row = &find(&run(&e), "claude")[0].clone();
-        assert!(row.detail.contains("(tested: newer)"), "{}", row.detail);
+        assert!(
+            row.detail.contains("(interface baseline: newer)"),
+            "{}",
+            row.detail
+        );
         assert_eq!(row.level, Level::Warn);
 
         let odd = |_: &Path| Ok("something odd".to_string());
         e.version_of = Some(&odd);
         let row = &find(&run(&e), "claude")[0].clone();
-        assert!(row.detail.contains("(tested: unknown)"));
+        assert!(row.detail.contains("(interface baseline: unknown)"));
         assert_eq!(row.level, Level::Warn, "unknown versions warn, never fail");
     }
 
@@ -1550,16 +1556,14 @@ mod tests {
     fn the_report_is_readable_and_summarises() {
         let checks = vec![
             check(Level::Ok, "build", "concordia"),
-            check(Level::Warn, "wezterm", "missing"),
             check(Level::Fail, "install", "broken"),
         ];
         let r = format_report(&checks);
         assert!(r.contains("ok    build"));
-        assert!(r.contains("warn  wezterm"));
         assert!(r.contains("FAIL  install"));
-        assert!(r.ends_with("1 problem(s), 1 warning(s)"));
+        assert!(r.ends_with("1 problem(s), 0 warning(s)"));
         assert!(format_report(&checks[..1]).ends_with("all good"));
-        assert!(format_report(&checks[..2]).ends_with("no problems, 1 warning(s)"));
+        assert!(format_report(&checks[..2]).ends_with("1 problem(s), 0 warning(s)"));
     }
 
     #[test]
@@ -1581,9 +1585,12 @@ mod tests {
                 "C:\\fixture\\concordia is writable; state directory is not owner-only",
             ),
             check(Level::Warn, "path", "not on PATH"),
-            check(Level::Warn, "wezterm", "missing"),
             check(Level::Fail, "install", "broken"),
-            check(Level::Warn, "claude", "claude: installed (tested: older)"),
+            check(
+                Level::Warn,
+                "claude",
+                "claude: installed (interface baseline: older)",
+            ),
             check(
                 Level::Warn,
                 "binary",

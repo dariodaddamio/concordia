@@ -2,14 +2,13 @@
 //! the prompt has sat idle and empty for a while. A static list: no I/O, no threads.
 
 pub const TIPS: &[&str] = &[
-    "Shift+Tab cycles plan, ask and workspace; use /mode full with confirmation.",
+    "Shift+Tab cycles plan, ask and edit; use /mode full with confirmation.",
     "/usage all shows the limits of every account at a glance.",
     "/use switches account or provider; the conversation carries over.",
     "/delegate hands a task to a background worker; the main chat stays free.",
     "Esc interrupts the running turn without leaving Concordia.",
     "Drag with the mouse to select text; Ctrl+C copies it (or the last reply).",
     "/resume picks up an earlier conversation in this folder.",
-    "/split opens a second pane so two agents can work side by side.",
     "/doctor checks your setup: CLIs, logins and homes.",
     "Start a line with / to see the slash commands and their descriptions.",
 ];
@@ -68,7 +67,7 @@ pub fn contextual_tip(
             .unwrap_or("")
     };
     if queue_non_empty {
-        return registry_tip("/workers");
+        return "Queued work is waiting; open the queue to review it.";
     }
     if limit_near {
         return registry_tip("/use");
@@ -112,7 +111,7 @@ mod tests {
 
     #[test]
     fn tips_are_contextual_and_rate_limited() {
-        assert!(contextual_tip(true, true, true, 1).starts_with("Tab"));
+        assert!(contextual_tip(true, true, true, 1).contains("Queued work"));
         assert!(contextual_tip(false, false, true, 1).contains("/use"));
         let mut limiter = RateLimiter::new(2);
         assert!(limiter.take("x").is_some());

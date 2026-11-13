@@ -7,11 +7,16 @@ use std::sync::mpsc as channel;
 
 const OWNER: &str = "concordia-native-history-v1";
 const FILE_BYTES: u64 = 4 * 1024 * 1024;
+const EVENT_COUNT: usize = 255; // Reserve one of the 256 slots for an explicit gap.
+const EVENT_BYTES: usize = 4 * 1024 * 1024 - 4096;
+const HISTORY_TEXT_BYTES: usize = 16 * 1024 * 1024;
 type Work = Box<dyn FnOnce() + Send + 'static>;
 
 struct Completion {
     saved: bool,
     durable: bool,
+    verified: Option<native::Reference>,
+    generation: u64,
 }
 
 pub(super) struct Started {
@@ -42,8 +47,27 @@ struct Pending {
     call: Option<String>,
 }
 
+impl Pending {
+    fn bytes(&self) -> usize {
+        let event = &self.event;
+        128 + self.thread.len()
+            + self.call.as_ref().map_or(0, String::len)
+            + event.k.len()
+            + event.text.as_ref().map_or(0, String::len)
+            + event.provider.as_ref().map_or(0, String::len)
+            + event.account.as_ref().map_or(0, String::len)
+            + event.model.as_ref().map_or(0, String::len)
+            + event.card.as_ref().map_or(0, |card| {
+                card.title.len()
+                    + card.detail.as_ref().map_or(0, String::len)
+                    + card.status.as_ref().map_or(0, String::len)
+            })
+    }
+}
+
 struct Active {
     run: String,
+    generation: u64,
     provider: ProviderKind,
     account: String,
     home: Option<PathBuf>,
@@ -54,7 +78,6 @@ struct Active {
 
 #[derive(Default)]
 struct Loaded {
-    legacy: Vec<String>,
     messages: Vec<String>,
     unavailable: usize,
 }
@@ -65,6 +88,11 @@ pub(super) struct State {
     active: Option<Active>,
     started: Option<Started>,
     events: Vec<Pending>,
+    omitted: Option<Pending>,
+    omission_notice: bool,
+    latest_run: Option<String>,
+    generation: u64,
+    verified: Option<native::Reference>,
     writes: Vec<(String, channel::Receiver<Completion>)>,
     work: channel::SyncSender<Work>,
     deferred_close: Option<String>,
@@ -90,6 +118,11 @@ impl Default for State {
             active: None,
             started: None,
             events: Vec::new(),
+            omitted: None,
+            omission_notice: false,
+            latest_run: None,
+            generation: 0,
+            verified: None,
             writes: Vec::new(),
             work,
             deferred_close: None,
@@ -112,9 +145,13 @@ impl State {
         history: bool,
     ) {
         self.started = None;
+        self.latest_run = Some(owner.run_id.clone());
+        self.generation = self.generation.wrapping_add(1);
+        self.verified = None;
         self.deferred_close = None;
         self.active = Some(Active {
             run: owner.run_id.clone(),
+            generation: self.generation,
             provider: owner.provider,
             account: owner.account.clone(),
             home: owner.home.clone(),
@@ -137,6 +174,7 @@ impl State {
                 .find(|pending| pending.thread == thread && pending.call.as_deref() == Some(id))
             {
                 existing.event = event;
+                self.bound_events();
                 return;
             }
         }
@@ -145,6 +183,43 @@ impl State {
             event,
             call: call.map(str::to_owned),
         });
+        self.bound_events();
+    }
+
+    fn bound_events(&mut self) {
+        let mut bytes = self.events.iter().map(Pending::bytes).sum::<usize>();
+        while self.events.len() > EVENT_COUNT || bytes > EVENT_BYTES {
+            if self.events.len() == 1 && self.events[0].event.k == "user" {
+                // The full submitted request is separately owned by Active.original.
+                // Retain its journal position without duplicating an oversized body.
+                let t = self.events[0].event.t;
+                self.events[0].event = crate::threads::ThreadEvent::new("user");
+                self.events[0].event.t = t;
+                self.events[0].call = None;
+                if self.events[0].bytes() <= EVENT_BYTES {
+                    break;
+                }
+            }
+            let index = usize::from(self.events.len() > 1 && self.events[0].event.k == "user");
+            let removed = self.events.remove(index);
+            bytes = bytes.saturating_sub(removed.bytes());
+            if self.omitted.is_none() {
+                self.omitted = Some(Pending {
+                    thread: removed.thread,
+                    event: crate::threads::ThreadEvent::new("note"),
+                    call: None,
+                });
+                self.omission_notice = true;
+            }
+        }
+    }
+
+    /// Pruning requires a verified capture of this exact latest native owner.
+    /// Restored-only or failed-capture views stay protected until a verified turn.
+    pub fn projection_verified(&self, root: &Path, binding: &Binding) -> bool {
+        self.verified.as_ref().is_some_and(|reference| {
+            reference.binding() == binding && native::hydrate_text(root, reference).is_ok()
+        })
     }
 
     fn poll_started(&mut self) {
@@ -164,10 +239,7 @@ impl State {
         let (tx, rx) = channel::channel();
         self.load = Some(rx);
         std::thread::spawn(move || {
-            let legacy = super::persist::load_history_status(&root);
             let mut loaded = load_references(&root);
-            loaded.legacy = legacy.messages;
-            loaded.unavailable += legacy.unavailable;
             let _ = tx.send(loaded);
         });
     }
@@ -175,6 +247,7 @@ impl State {
     pub fn poll(&mut self, history: &mut Vec<String>) -> Option<&'static str> {
         self.poll_started();
         let mut notice = None;
+        let omitted = std::mem::take(&mut self.omission_notice);
         if let Some(mut result) = self.load.as_ref().and_then(|rx| match rx.try_recv() {
             Ok(loaded) => Some(loaded),
             Err(channel::TryRecvError::Disconnected) => Some(Loaded {
@@ -184,12 +257,7 @@ impl State {
             Err(channel::TryRecvError::Empty) => None,
         }) {
             self.load = None;
-            let mut merged = result.legacy;
-            for message in result.messages {
-                if merged.last() != Some(&message) {
-                    merged.push(message);
-                }
-            }
+            let mut merged = result.messages;
             // New messages typed while the background read ran stay newest.
             for message in history
                 .iter()
@@ -199,14 +267,8 @@ impl State {
                     merged.push(message.clone());
                 }
             }
-            let mut bytes = merged.iter().map(String::len).sum::<usize>();
-            result.unavailable += usize::from(bytes > super::persist::HISTORY_TEXT_BYTES);
             let mut remove = 0;
-            while remove < merged.len()
-                && (merged.len() - remove > super::HISTORY_MAX
-                    || bytes > super::persist::HISTORY_TEXT_BYTES)
-            {
-                bytes -= merged[remove].len();
+            while remove < merged.len() && merged.len() - remove > super::HISTORY_MAX {
                 remove += 1;
             }
             merged.drain(..remove);
@@ -218,6 +280,9 @@ impl State {
         self.writes.retain(|(run, rx)| match rx.try_recv() {
             Ok(result) => {
                 self.durable.insert(run.clone(), result.saved && result.durable);
+                if self.latest_run.as_deref() == Some(run.as_str()) && result.generation == self.generation {
+                    self.verified = result.verified.filter(|_| result.saved && result.durable);
+                }
                 if !result.saved || !result.durable { notice = Some("Some history references are unavailable; native originals and recovery were kept."); }
                 false
             }
@@ -232,7 +297,11 @@ impl State {
             self.deferred_close.as_deref() == Some(run.as_str())
                 || self.writes.iter().any(|(pending, _)| pending == run)
         });
-        notice
+        if omitted {
+            Some("Thread recording is partial: older pending events exceeded the local projection bound. An explicit gap is recorded; original native history is unchanged.")
+        } else {
+            notice
+        }
     }
 
     pub fn backlogged(&self) -> bool {
@@ -278,7 +347,17 @@ impl State {
 
     pub fn finish(&mut self, root: PathBuf, session: Option<String>, settled: bool) {
         self.poll_started();
-        let events = std::mem::take(&mut self.events);
+        let mut events = std::mem::take(&mut self.events);
+        if let Some(gap) = self.omitted.take() {
+            events.insert(
+                usize::from(
+                    events
+                        .first()
+                        .is_some_and(|pending| pending.event.k == "user"),
+                ),
+                gap,
+            );
+        }
         let active = self.active.take();
         let started = self.started.take();
         if events.is_empty() && active.as_ref().is_none_or(|active| !active.history) {
@@ -301,12 +380,13 @@ impl State {
                 let session = session.as_deref().ok_or("unbound")?;
                 let home = active.home.as_deref().ok_or("unbound")?;
                 let binding = Binding::new(active.provider, &active.account, home, session)?;
-                match &started.scope {
+                let scope = match &started.scope {
                     Ok(Some(scope)) if scope.binding() == &binding => Ok(scope.clone()),
                     // None is emitted only for an explicitly fresh request before dispatch.
                     Ok(None) => native::fresh_scope(&root, &binding),
                     _ => Err("unbound".into()),
-                }
+                }?;
+                native::seal_scope(&root, &scope)
             })();
             let original_ref = match (scope.as_ref(), started.as_ref()) {
                 (Ok(scope), Some(started)) => started
@@ -322,6 +402,12 @@ impl State {
             for pending in events {
                 let log = crate::threads::ThreadLog::open(&root, &pending.thread);
                 let mut event = pending.event;
+                if event.k == "note" {
+                    saved &= log
+                        .append_unavailable(&event, scope.as_ref().ok(), "projection_omitted")
+                        .is_ok();
+                    continue;
+                }
                 let reference = match (scope.as_ref(), event.k.as_str()) {
                     (Ok(_), "user") => {
                         if let Some(active) = &active {
@@ -353,6 +439,8 @@ impl State {
                 }
             }
             let durable = original_ref.is_ok();
+            let verified = original_ref.as_ref().ok().cloned();
+            let generation = active.as_ref().map_or(0, |active| active.generation);
             if let Some(active) = active.filter(|active| active.history) {
                 let binding =
                     active
@@ -374,7 +462,12 @@ impl State {
                 };
                 saved &= append_reference(&root, entry).is_ok();
             }
-            let _ = tx.send(Completion { saved, durable });
+            let _ = tx.send(Completion {
+                saved,
+                durable,
+                verified,
+                generation,
+            });
         });
         let _ = self.work.try_send(work);
     }
@@ -498,7 +591,7 @@ fn load_references(root: &Path) -> Loaded {
                 };
                 if message.validate().is_ok() {
                     let encoded = message.encode();
-                    if bytes.saturating_add(encoded.len()) > super::persist::HISTORY_TEXT_BYTES {
+                    if bytes.saturating_add(encoded.len()) > HISTORY_TEXT_BYTES {
                         result.unavailable += 1;
                         break;
                     }
@@ -529,9 +622,11 @@ pub(super) fn original_range(
 }
 
 impl super::App {
-    pub(super) fn poll_reference_journal(&mut self) {
+    pub(super) fn poll_reference_journal(&mut self) -> bool {
+        let mut changed = false;
         if let Some(notice) = self.reference_journal.poll(&mut self.history) {
             self.flash(notice);
+            changed = true;
         }
         if !self.busy {
             if let Some(run) = self.reference_journal.completed_close() {
@@ -545,11 +640,13 @@ impl super::App {
                             .save_turn(None::<&super::turn_checkpoint::Checkpoint>)
                             .is_err()
                     {
+                        changed = true;
                         self.flash("History references were saved; request recovery cleanup remains pending.");
                     }
                 }
             }
         }
+        changed
     }
 }
 
@@ -589,9 +686,6 @@ pub(super) fn fixture_proof() {
     let scope = native::fresh_scope(root, &binding).unwrap();
     let range = original_range(full, "hello 雪", "hello 雪").unwrap();
     let reference = native::capture_projected_text(root, &scope, "user", full, &range).unwrap();
-    let legacy = root.join("history.jsonl");
-    std::fs::write(&legacy, "\"OLD LEGACY BODY\"\n").unwrap();
-    let old = std::fs::read(&legacy).unwrap();
     append_reference(
         root,
         HistoryEntry {
@@ -609,7 +703,6 @@ pub(super) fn fixture_proof() {
     let stored = std::fs::read_to_string(path(root)).unwrap();
     assert!(!stored.contains("hello") && !stored.contains('雪') && !stored.contains("CONTEXT"));
     assert_eq!(load_references(root).messages, ["hello 雪"]);
-    assert_eq!(std::fs::read(&legacy).unwrap(), old);
     assert!(original_range(full, "different", "hello").is_none());
     let mut app = super::App::new(root.to_path_buf(), root.to_path_buf());
     let lease =
@@ -625,7 +718,6 @@ pub(super) fn fixture_proof() {
         sources: vec![binding.clone()],
         tried: Vec::new(),
         reason: "reference transaction pending".into(),
-        routing: None,
         scope: None,
         conversation: None,
     };
@@ -683,5 +775,4 @@ pub(super) fn fixture_proof() {
     assert_eq!(unavailable.unavailable, 2);
     assert!(unavailable.messages.is_empty());
     assert_eq!(std::fs::read_to_string(path(root)).unwrap(), stored);
-    assert_eq!(std::fs::read(&legacy).unwrap(), old);
 }

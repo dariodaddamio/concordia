@@ -5,10 +5,10 @@
 //! process lifetime and routes parsed permission requests through `InteractionConnection`.
 use super::*;
 use crate::provider::interaction::InteractionConnection;
-use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet, VecDeque};
+use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
 
-/// The installed, source-matched Claude Code CLI version qualified for this bridge.
+/// Current installed Claude control schema matched to the official SDK protocol.
 pub(crate) const SUPPORTED_VERSION: &str = crate::capacity::claude_capacity::CLI_VERSION;
 
 const MAX_ID: usize = 512;
@@ -17,13 +17,14 @@ const MAX_INPUT: usize = 256 * 1024;
 const DEFERRED_TASK_LIMIT: usize = 256;
 const RUN_END_CEILING: Duration = Duration::from_secs(600);
 
-fn native_task_card(
+async fn native_task_card(
     identity: (&str, Option<&str>, Option<&str>),
     title: &str,
     status: crate::provider::stream_cards::CardStatus,
     detail: Option<String>,
     out: &mut TurnOutcome,
-    progress: &Option<tokio::sync::mpsc::UnboundedSender<TurnProgress>>,
+    progress: &Option<tokio::sync::mpsc::Sender<TurnProgress>>,
+    handle: &RunningTurn,
 ) {
     let id = format!(
         "native-agent:claude:{}",
@@ -45,7 +46,7 @@ fn native_task_card(
         ),
         status,
     };
-    emit_progress(&[StreamPart::Card(card.clone())], progress);
+    emit_progress(&[StreamPart::Card(card.clone())], progress, handle).await;
     crate::provider::stream_cards::upsert_card(&mut out.cards, card);
 }
 
@@ -353,7 +354,8 @@ pub(super) async fn run(
     plan: &PlannedTurn,
     owner: Option<crate::provider::interaction::InteractionOwner>,
     started: Option<tokio::sync::mpsc::UnboundedSender<std::sync::Arc<RunningTurn>>>,
-    progress: Option<tokio::sync::mpsc::UnboundedSender<TurnProgress>>,
+    progress: Option<tokio::sync::mpsc::Sender<TurnProgress>>,
+    handle: std::sync::Arc<RunningTurn>,
 ) -> anyhow::Result<TurnOutcome> {
     let _new_session_guard = if req.native_session_id.is_none() {
         plan.new_session_id
@@ -416,11 +418,15 @@ pub(super) async fn run(
     launch.args.extend([
         "--input-format".into(),
         "stream-json".into(),
+        "--permission-prompts".into(),
+        "host".into(),
         "--permission-prompt-tool".into(),
         "stdio".into(),
     ]);
     let mut command = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut command);
+    #[cfg(unix)]
+    command.process_group(0);
     command
         .args(&launch.args)
         .envs(plan.env.clone())
@@ -433,10 +439,17 @@ pub(super) async fn run(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    if handle.cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
     let mut child = command
         .spawn()
         .context("could not start Claude native stdio")?;
-    let handle = std::sync::Arc::new(RunningTurn::new());
+    let _process_tree =
+        crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     handle
         .pid
         .store(child.id().unwrap_or(0), std::sync::atomic::Ordering::SeqCst);
@@ -444,21 +457,7 @@ pub(super) async fn run(
     let mut output =
         tokio::io::BufReader::new(child.stdout.take().context("Claude stdout unavailable")?);
     let stderr = child.stderr.take().context("Claude stderr unavailable")?;
-    let mut stderr_task = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(stderr);
-        let mut tail = VecDeque::new();
-        let mut line = Vec::new();
-        while read_line_bounded(&mut reader, &mut line)
-            .await
-            .is_ok_and(|n| n > 0)
-        {
-            if tail.len() == STDERR_KEEP_LINES {
-                tail.pop_front();
-            }
-            tail.push_back(decode_line(&line));
-        }
-        tail.into_iter().collect::<Vec<_>>().join("\n")
-    });
+    let mut stderr_task = tokio::spawn(read_stderr_tail(stderr, || {}));
     *handle.child.lock().await = Some(child);
     if let Some(tx) = started {
         if tx.send(handle.clone()).is_err() {
@@ -480,9 +479,8 @@ pub(super) async fn run(
     let mut initialized = false;
     let mut sent_prompt = false;
     let mut pending: HashMap<String, PendingPermission> = HashMap::new();
-    let mut seen_native = HashSet::new();
+    let mut seen_native: HashSet<String> = HashSet::new();
     let mut poll = tokio::time::interval(std::time::Duration::from_millis(10));
-    let mut stream_bytes = 0usize;
     let mut result_seen = false;
     let mut result_deadline = None;
     let mut session_state = None::<String>;
@@ -554,8 +552,6 @@ pub(super) async fn run(
                 anyhow::bail!("Claude stdio closed before deferred work settled");
             }
             anyhow::ensure!(n <= LINE_MAX, "Claude native output line exceeds its bound");
-            stream_bytes = stream_bytes.saturating_add(n);
-            anyhow::ensure!(stream_bytes <= 16 * 1024 * 1024, "Claude native output exceeds its bound");
             let text = decode_line(&line);
             let value = match serde_json::from_str::<Value>(&text) { Ok(v) => v, Err(_) => continue };
             if value.get("session_id").and_then(Value::as_str).is_some_and(|reported| {
@@ -567,6 +563,8 @@ pub(super) async fn run(
                 if value.pointer("/response/request_id").and_then(Value::as_str) == Some(initialize_id.as_str()) {
                     anyhow::ensure!(value["type"] == "control_response" && value["response"]["subtype"] == "success"
                         && value["response"]["response"].is_object(), "Claude native initialize was rejected");
+                    anyhow::ensure!(value.pointer("/response/response/claude_code_version").and_then(Value::as_str) == Some(SUPPORTED_VERSION),
+                        "Claude native initialize version differs from the selected CLI");
                     initialized = true;
                     interactions.initialized_claude(SUPPORTED_VERSION).map_err(anyhow::Error::msg)?;
                     write_frame(&mut input, &message).await?;
@@ -620,7 +618,7 @@ pub(super) async fn run(
                                 None,
                                 &mut out,
                                 &progress,
-                            );
+                             &handle).await;
                         }
                     }
                     Some("task_notification") => {
@@ -650,7 +648,7 @@ pub(super) async fn run(
                                         )),
                                         &mut out,
                                         &progress,
-                                    );
+                                     &handle).await;
                                 }
                             }
                         }
@@ -678,7 +676,7 @@ pub(super) async fn run(
                                         None,
                                         &mut out,
                                         &progress,
-                                    );
+                                     &handle).await;
                                 }
                             }
                     }
@@ -701,10 +699,6 @@ pub(super) async fn run(
                 continue;
             }
             if let Some(request) = permission_request(&value).map_err(anyhow::Error::msg)? {
-                anyhow::ensure!(seen_native.len() < 1024, "Claude native request budget exceeded");
-                if !seen_native.insert(request.request_id.clone()) {
-                    continue;
-                }
                 if request.tool_name == "AskUserQuestion" {
                     let session = session.context("Claude native session identity is unavailable")?;
                     let params = match claude_question_params(&request, session) {
@@ -715,13 +709,14 @@ pub(super) async fn run(
                         }
                     };
                     let (native, rx) = match interactions.request(session, json!(request.request_id), "claude/ask_question".into(), params) {
-                        Ok(pair) => pair,
+                        Ok(Some(pair)) => pair,
+                        Ok(None) => continue,
                         Err(reason) => {
                             write_frame(&mut input, &permission_response(&request.request_id, &request.input, false, &reason)).await?;
                             continue;
                         }
                     };
-                    if !progress.as_ref().is_some_and(|tx| tx.send(TurnProgress::Interaction(Box::new(native.clone()))).is_ok()) { native.cancel(); }
+                    if !send_progress(&progress, TurnProgress::Interaction(Box::new(native.clone())), &handle).await { native.cancel(); }
                     if pending.insert(request.request_id.clone(), PendingPermission { request_id: request.request_id, input: request.input, question: true, native, rx }).is_some() {
                         anyhow::bail!("duplicate Claude native request identity");
                     }
@@ -729,8 +724,15 @@ pub(super) async fn run(
                 }
                 let session = session.context("Claude native session identity is unavailable")?;
                 let params = json!({"sessionId":session,"toolCall":{"title":request.title.as_deref().unwrap_or(&request.tool_name),"toolCallId":request.tool_use_id,"rawInput":request.input},"options":[{"optionId":"allow","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]});
-                let (native, rx) = interactions.request(session, json!(request.request_id), "claude/can_use_tool".into(), params).map_err(anyhow::Error::msg)?;
-                if !progress.as_ref().is_some_and(|tx| tx.send(TurnProgress::Interaction(Box::new(native.clone()))).is_ok()) { native.cancel(); }
+                let (native, rx) = match interactions.request(session, json!(request.request_id), "claude/can_use_tool".into(), params) {
+                    Ok(Some(pair)) => pair,
+                    Ok(None) => continue,
+                    Err(reason) => {
+                        write_frame(&mut input, &permission_response(&request.request_id, &request.input, false, &reason)).await?;
+                        continue;
+                    }
+                };
+                if !send_progress(&progress, TurnProgress::Interaction(Box::new(native.clone())), &handle).await { native.cancel(); }
                 if pending.insert(request.request_id.clone(), PendingPermission { request_id: request.request_id, input: request.input, question: false, native, rx }).is_some() {
                     anyhow::bail!("duplicate Claude native request identity");
                 }
@@ -752,16 +754,16 @@ pub(super) async fn run(
                 }
                 continue;
             }
-            artifacts.report_claude(artifact_owner.as_ref(), session, None, &value, &progress);
+            artifacts.report_claude(artifact_owner.as_ref(), session, None, &value, &progress, &handle).await;
             for mut part in parser.parse_line(&text) {
                 if req.native_session_id.is_some() {
                     if let StreamPart::Usage(usage) = &mut part { usage.cost_usd = None; }
                 }
                 if matches!(&part, StreamPart::Error(_)) { out.failed = true; }
-                emit_progress(std::slice::from_ref(&part), &progress);
+                emit_progress(std::slice::from_ref(&part), &progress, &handle).await;
                 let mut chunk = crate::provider::codex::StreamOutcome::default();
                 crate::provider::codex::apply_stream_parts(vec![part], &mut chunk);
-                out.text.push_str(&chunk.text);
+                append_visible_text(&mut out.text, &chunk.text);
                 for card in chunk.cards {
                     crate::provider::stream_cards::upsert_card(&mut out.cards, card);
                 }
@@ -789,7 +791,7 @@ pub(super) async fn run(
             if let (Some(owner), Some(session)) = (artifact_owner.as_ref(), session) {
                 if let Err(reason) = capture_context(&mut input, &mut output, owner, session,
                     interactions.capabilities.permissions.connection_id.as_deref().unwrap_or_default(), &handle, req).await {
-                    if let Some(tx) = &progress { let _ = tx.send(TurnProgress::Notice(format!("Native context remains unknown: {reason}"))); }
+                    let _ = send_progress(&progress, TurnProgress::Notice(format!("Native context remains unknown: {reason}")), &handle).await;
                 }
             }
         }
@@ -823,7 +825,9 @@ pub(super) async fn run(
                 Some("interrupted before delegated task completion".into()),
                 &mut out,
                 &progress,
-            );
+                &handle,
+            )
+            .await;
         }
     }
     for (_, request) in pending.drain() {
@@ -992,7 +996,7 @@ async fn capture_context(
                 request_id,
                 response_sha256: format!("{:x}", Sha256::digest(&response)),
             },
-            &req.compaction,
+            &crate::capacity::Compaction::Native,
         );
     }
 }

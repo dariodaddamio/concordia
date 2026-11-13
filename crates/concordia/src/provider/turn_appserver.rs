@@ -1,10 +1,13 @@
 //! Opt-in native Codex stdio transport, matched to the 0.166.0 generated protocol.
 use super::*;
-use crate::provider::{interaction::InteractionConnection, CardStatus};
-use serde_json::{json, Value};
+use crate::provider::{CardStatus, interaction::InteractionConnection};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 const TOOL_MAP_MAX: usize = 4096;
+// Wire frames can contain full tool output/history; display limits are applied separately.
+const FRAME_MAX: usize = 64 * 1024 * 1024;
+const TEXT_CHUNK_MAX: usize = 64 * 1024;
 
 fn remember_delta(deltas: &mut HashSet<String>, id: String) -> bool {
     if deltas.contains(&id) || deltas.len() < TOOL_MAP_MAX {
@@ -19,7 +22,7 @@ struct Connection {
     input: tokio::process::ChildStdin,
     output: mpsc::Receiver<Result<Value>>,
     handle: Arc<RunningTurn>,
-    progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    progress: Option<mpsc::Sender<TurnProgress>>,
     interactions: InteractionConnection,
     out: TurnOutcome,
     thread: Option<String>,
@@ -29,15 +32,34 @@ struct Connection {
     answer_tx: mpsc::UnboundedSender<(Value, Option<Value>)>,
     waiters: tokio::task::JoinSet<()>,
     deltas: HashSet<String>,
+    text_item: Option<String>,
     dropped_deltas: usize,
     buffered: Vec<Value>,
     artifacts: crate::artifacts::Collector,
 }
 impl Connection {
-    fn emit(&self, event: TurnProgress) {
-        if let Some(tx) = &self.progress {
-            let _ = tx.send(event);
+    async fn text_fragment(&mut self, id: &str, text: &str) {
+        if self.text_item.as_deref() != Some(id) {
+            if self.text_item.is_some() {
+                append_visible_text(&mut self.out.text, "\n\n");
+                self.emit(TurnProgress::TextBoundary).await;
+            }
+            self.text_item = Some(id.into());
         }
+        append_visible_text(&mut self.out.text, text);
+        let mut remaining = text;
+        while !remaining.is_empty() && !self.handle.cancel_flag.load(Ordering::SeqCst) {
+            let mut end = remaining.len().min(TEXT_CHUNK_MAX);
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.emit(TurnProgress::TextDelta(remaining[..end].into()))
+                .await;
+            remaining = &remaining[end..];
+        }
+    }
+    async fn emit(&self, event: TurnProgress) {
+        let _ = send_progress(&self.progress, event, &self.handle).await;
     }
     async fn write(&mut self, value: Value) -> Result<()> {
         anyhow::ensure!(!self.handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
@@ -48,6 +70,7 @@ impl Connection {
         Ok(())
     }
     async fn read(&mut self) -> Result<Value> {
+        anyhow::ensure!(!self.handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
         tokio::select! {
             _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
             result=self.output.recv()=>result.context("Codex app-server closed before turn completion; no fallback was started")?,
@@ -65,7 +88,7 @@ impl Connection {
                 if method == "turn/start" {
                     buffered_bytes += value.to_string().len();
                     anyhow::ensure!(
-                        self.buffered.len() < 256 && buffered_bytes <= 2 * 1024 * 1024,
+                        self.buffered.len() < 256 && buffered_bytes <= FRAME_MAX,
                         "Too many early native events"
                     );
                     self.buffered.push(value);
@@ -96,7 +119,7 @@ impl Connection {
         self.write(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":message}}))
             .await
     }
-    fn review_finished(&mut self, request: &NativeRequest, title: &str) {
+    async fn review_finished(&mut self, request: &NativeRequest, title: &str) {
         if !matches!(
             request.kind(),
             crate::provider::interaction::NativeInteraction::CodexPermission { .. }
@@ -114,7 +137,7 @@ impl Connection {
             status: CardStatus::Done,
         };
         crate::provider::stream_cards::upsert_card(&mut self.out.cards, card.clone());
-        self.emit(TurnProgress::Card(card));
+        self.emit(TurnProgress::Card(card)).await;
     }
     async fn event(&mut self, value: Value) -> Result<bool> {
         let method = value["method"].as_str().unwrap_or("");
@@ -122,7 +145,7 @@ impl Connection {
         let same_thread = params["threadId"].as_str() == self.thread.as_deref();
         let same_turn = params["turnId"].as_str() == self.turn.as_deref();
         if value.get("id").is_some() {
-            if !same_thread || !same_turn || self.pending.len() >= 8 {
+            if !same_thread || !same_turn {
                 return self
                     .reject(
                         &value["id"],
@@ -139,7 +162,8 @@ impl Connection {
             ) {
                 self.emit(TurnProgress::Notice(format!(
                     "Unsupported native request: {method}; no permission granted"
-                )));
+                )))
+                .await;
                 return self
                     .reject(&value["id"], "Client capability is not supported")
                     .await
@@ -152,11 +176,13 @@ impl Connection {
                 params.clone(),
             );
             let (request, rx) = match request {
-                Ok(request) => request,
+                Ok(Some(request)) => request,
+                Ok(None) => return Ok(false),
                 Err(reason) => {
                     self.emit(TurnProgress::Notice(format!(
                         "Native request unavailable: {reason}"
-                    )));
+                    )))
+                    .await;
                     return self
                         .reject(&value["id"], "Native request cannot be represented safely")
                         .await
@@ -173,10 +199,13 @@ impl Connection {
             self.waiters.spawn(async move {
                 let _ = tx.send((id, rx.await.ok()));
             });
-            if !self.progress.as_ref().is_some_and(|tx| {
-                tx.send(TurnProgress::Interaction(Box::new(request.clone())))
-                    .is_ok()
-            }) {
+            if !send_progress(
+                &self.progress,
+                TurnProgress::Interaction(Box::new(request.clone())),
+                &self.handle,
+            )
+            .await
+            {
                 request.cancel();
             }
             self.pending.insert(key, request);
@@ -188,7 +217,8 @@ impl Connection {
         if method == "serverRequest/resolved" {
             if let Some(request) = self.pending.remove(&params["requestId"].to_string()) {
                 request.resolve_native();
-                self.review_finished(&request, "Native request cleared by provider");
+                self.review_finished(&request, "Native request cleared by provider")
+                    .await;
             }
             return Ok(false);
         }
@@ -198,7 +228,8 @@ impl Connection {
             }
             for (_, request) in std::mem::take(&mut self.pending) {
                 request.resolve_native();
-                self.review_finished(&request, "Native request ended with turn");
+                self.review_finished(&request, "Native request ended with turn")
+                    .await;
             }
             match params["turn"]["status"].as_str() {
                 Some("completed") => {}
@@ -208,8 +239,10 @@ impl Connection {
                     let message = params["turn"]["error"]["message"]
                         .as_str()
                         .unwrap_or("Native Codex turn failed");
-                    self.out.stderr_tail = message.chars().take(2000).collect();
-                    self.emit(TurnProgress::Error(self.out.stderr_tail.clone()));
+                    let code = params["turn"]["error"]["code"].to_string();
+                    self.out.stderr_tail = format!("{message} code={code}").chars().take(2000).collect();
+                    self.emit(TurnProgress::Error(self.out.stderr_tail.clone()))
+                        .await;
                 }
             }
             return Ok(true);
@@ -225,17 +258,16 @@ impl Connection {
                     if !remember_delta(&mut self.deltas, id.into()) {
                         self.dropped_deltas += 1;
                     }
-                    self.out.text.push_str(delta);
-                    self.emit(TurnProgress::TextDelta(delta.into()));
+                    self.text_fragment(id, delta).await;
                 }
             }
             "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
                 if let Some(delta) = params["delta"].as_str() {
-                    self.emit(TurnProgress::ThinkingDelta(delta.into()));
+                    self.emit(TurnProgress::ThinkingDelta(delta.into())).await;
                 }
             }
             "item/started" | "item/completed" => {
-                self.item(&params["item"], method == "item/completed")
+                self.item(&params["item"], method == "item/completed").await
             }
             // Cumulative thread totals and the last model response are not full-turn totals.
             // Existing native-source accounting remains authoritative until a baseline is proven.
@@ -243,15 +275,18 @@ impl Connection {
         }
         Ok(false)
     }
-    fn item(&mut self, item: &Value, completed: bool) {
+    async fn item(&mut self, item: &Value, completed: bool) {
         if completed {
-            self.artifacts.report(
-                self.interactions.owner(),
-                self.thread.as_deref(),
-                self.turn.as_deref(),
-                item,
-                &self.progress,
-            );
+            self.artifacts
+                .report(
+                    self.interactions.owner(),
+                    self.thread.as_deref(),
+                    self.turn.as_deref(),
+                    item,
+                    &self.progress,
+                    &self.handle,
+                )
+                .await;
         }
         let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) else {
             return;
@@ -260,9 +295,11 @@ impl Connection {
         if kind == "agentMessage" {
             if completed && !self.deltas.contains(id) {
                 if let Some(text) = item["text"].as_str() {
-                    self.out.text.push_str(text);
-                    self.emit(TurnProgress::TextDelta(text.into()));
+                    self.text_fragment(id, text).await;
                 }
+            }
+            if completed && self.text_item.as_deref() == Some(id) {
+                self.emit(TurnProgress::TextBoundary).await;
             }
             return;
         }
@@ -271,7 +308,7 @@ impl Connection {
             for part in crate::provider::stream_cards::classify_collab_tool_call(&translated) {
                 if let StreamPart::Card(card) = part {
                     crate::provider::stream_cards::upsert_card(&mut self.out.cards, card.clone());
-                    self.emit(TurnProgress::Card(card));
+                    self.emit(TurnProgress::Card(card)).await;
                 }
             }
             return;
@@ -318,7 +355,7 @@ impl Connection {
             status,
         };
         crate::provider::stream_cards::upsert_card(&mut self.out.cards, card.clone());
-        self.emit(TurnProgress::Card(card));
+        self.emit(TurnProgress::Card(card)).await;
     }
     async fn listen(&mut self) -> Result<()> {
         for value in std::mem::take(&mut self.buffered) {
@@ -327,20 +364,21 @@ impl Connection {
             }
         }
         loop {
+            anyhow::ensure!(!self.handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
             tokio::select! {
                 biased;
                 _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
-                next=self.output.recv()=> {if self.event(next.context("Codex app-server closed before turn completion; no fallback was started")??).await? {return Ok(());}},
                 Some((id,answer))=self.answers.recv()=> {
                     if let Some(request)=self.pending.remove(&id.to_string()) {
                         if request.was_resolved() {continue;}
                         if let Some(answer)=answer {
                             let decision=answer.get("decision").map(Value::to_string).unwrap_or_else(||"answers".into());
                             self.write(json!({"jsonrpc":"2.0","id":id,"result":answer})).await?;
-                            self.review_finished(&request,&format!("Native decision sent: {decision}"));
+                            self.review_finished(&request,&format!("Native decision sent: {decision}")).await;
                         } else { self.reject(&id,"Native input was closed without an answer").await?; }
                     }
                 }
+                next=self.output.recv()=> {if self.event(next.context("Codex app-server closed before turn completion; no fallback was started")??).await? {return Ok(());}},
             }
             while self.waiters.try_join_next().is_some() {}
         }
@@ -352,7 +390,8 @@ pub(super) async fn run(
     plan: &PlannedTurn,
     owner: Option<InteractionOwner>,
     started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    progress: Option<mpsc::Sender<TurnProgress>>,
+    handle: Arc<RunningTurn>,
 ) -> Result<TurnOutcome> {
     anyhow::ensure!(
         req.images.len() <= crate::attachments::MAX_IMAGES,
@@ -394,12 +433,14 @@ pub(super) async fn run(
     })
     .await?
     .map_err(anyhow::Error::msg)?;
-    anyhow::ensure!(version.trim()=="codex-cli 0.166.0","Native Codex input supports CLI 0.166.0; installed version is unverified. No fallback was started");
-    let read_only = plan.argv.windows(2).any(|args| args == ["-s", "read-only"]);
-    let full = plan
-        .argv
-        .iter()
-        .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox");
+    anyhow::ensure!(
+        version.trim() == "codex-cli 0.166.0",
+        "Native Codex input supports CLI 0.166.0; installed version is unverified. No fallback was started"
+    );
+    let read_only = planned_options(&plan.argv)
+        .any(|(flag, value)| matches!(flag, "-s" | "--sandbox") && value == Some("read-only"));
+    let full = planned_options(&plan.argv)
+        .any(|(flag, _)| flag == "--dangerously-bypass-approvals-and-sandbox");
     let (sandbox, approval, policy) = if read_only {
         (
             "read-only",
@@ -414,7 +455,7 @@ pub(super) async fn run(
         )
     } else {
         anyhow::ensure!(
-            plan.argv.iter().any(|arg| arg == "--approve-for-me"),
+            planned_options(&plan.argv).any(|(flag, _)| flag == "--approve-for-me"),
             "Final Codex plan has no verified sandbox policy; prompt withheld"
         );
         (
@@ -429,13 +470,17 @@ pub(super) async fn run(
     }
     let mut command = crate::process_ui::tokio_command(&program);
     crate::process_ui::background(&mut command);
+    #[cfg(unix)]
+    command.process_group(0);
     if let Some((_, script)) = bridge {
         command.arg(script);
     }
     command.arg("app-server");
     // Carry the process-local compaction overrides from the final enforcement plan.
-    for args in plan.argv.windows(2).filter(|args| args[0] == "-c") {
-        command.args(args);
+    for (flag, value) in planned_options(&plan.argv).filter(|(flag, _)| *flag == "-c") {
+        if let Some(value) = value {
+            command.args([flag, value]);
+        }
     }
     command.envs(plan.env.clone());
     if let Some(native) = native {
@@ -447,31 +492,43 @@ pub(super) async fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if handle.cancel_flag.load(Ordering::SeqCst) {
+        return Ok(TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
     let mut child = command
         .spawn()
         .context("Could not start Codex app-server")?;
-    let handle = Arc::new(RunningTurn::new());
+    let _process_tree =
+        crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     let input = child.stdin.take().context("Codex stdin unavailable")?;
     let stdout = child.stdout.take().context("Codex stdout unavailable")?;
-    let (output_tx, output) = mpsc::channel(16);
+    // Backpressure bounds queued large frames; do not retain sixteen full output snapshots.
+    let (output_tx, output) = mpsc::channel(1);
     let output_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
-        let mut total = 0usize;
         loop {
             let mut bytes = Vec::new();
             let next = async {
-                let n = read_line_bounded(&mut reader, &mut bytes).await?;
+                let n = read_line_bounded_with_limit(&mut reader, &mut bytes, FRAME_MAX).await?;
                 anyhow::ensure!(
                     n > 0,
                     "Codex app-server closed before turn completion; no fallback was started"
                 );
-                total = total.saturating_add(n);
                 anyhow::ensure!(
-                    n <= LINE_MAX && total <= 16 * 1024 * 1024,
-                    "Codex app-server output bound exceeded"
+                    n <= FRAME_MAX,
+                    "Codex app-server event exceeds the 64 MiB transport frame limit; original native session is preserved"
                 );
-                serde_json::from_slice::<Value>(&bytes).context("Invalid Codex app-server JSON")
+                if bytes.len() > LINE_MAX {
+                    tokio::task::spawn_blocking(move || serde_json::from_slice::<Value>(&bytes))
+                        .await?
+                        .context("Invalid Codex app-server JSON")
+                } else {
+                    serde_json::from_slice::<Value>(&bytes).context("Invalid Codex app-server JSON")
+                }
             }
             .await;
             let failed = next.is_err();
@@ -481,21 +538,7 @@ pub(super) async fn run(
         }
     });
     let stderr = child.stderr.take().context("Codex stderr unavailable")?;
-    let mut stderr_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr);
-        let mut tail = VecDeque::new();
-        let mut line = Vec::new();
-        while read_line_bounded(&mut reader, &mut line)
-            .await
-            .is_ok_and(|n| n > 0)
-        {
-            if tail.len() == STDERR_KEEP_LINES {
-                tail.pop_front();
-            }
-            tail.push_back(decode_line(&line));
-        }
-        tail.into_iter().collect::<Vec<_>>().join("\n")
-    });
+    let mut stderr_task = tokio::spawn(read_stderr_tail(stderr, || {}));
     *handle.child.lock().await = Some(child);
     if let Some(tx) = started {
         if tx.send(handle.clone()).is_err() {
@@ -517,6 +560,7 @@ pub(super) async fn run(
         answer_tx,
         waiters: tokio::task::JoinSet::new(),
         deltas: HashSet::new(),
+        text_item: None,
         dropped_deltas: 0,
         buffered: Vec::new(),
         artifacts: crate::artifacts::Collector::default(),
@@ -534,7 +578,18 @@ pub(super) async fn run(
         anyhow::ensure!(req.native_session_id.is_none_or(|expected|expected==id),"Codex resumed a different thread; prompt withheld");
         anyhow::ensure!(thread["cwd"].as_str().and_then(|path|Path::new(path).canonicalize().ok())==Some(Path::new(&plan.cwd).canonicalize()?),"Codex thread workspace mismatch; prompt withheld");
         anyhow::ensure!(thread["approvalPolicy"]==approval && thread["approvalsReviewer"]=="user","Codex did not honor the requested approval policy; prompt withheld");
-        conn.thread=Some(id.into());conn.out.session_id=Some(id.into());conn.emit(TurnProgress::Session(id.into()));
+        conn.thread=Some(id.into());conn.out.session_id=Some(id.into());conn.emit(TurnProgress::Session(id.into())).await;
+        let command = req.prompt.split_whitespace().next().unwrap_or("");
+        if command == "/compact" && req.prompt.split_whitespace().count() == 1 {
+            tokio::time::timeout(Duration::from_secs(12), conn.rpc(4, "thread/compact/start", json!({"threadId": id}))).await??;
+            conn.emit(TurnProgress::Notice("Codex compaction requested".into())).await;
+            return Ok::<(), anyhow::Error>(());
+        }
+        if command == "/review" && req.prompt.split_whitespace().count() == 1 {
+            let review = tokio::time::timeout(Duration::from_secs(12), conn.rpc(4, "review/start", json!({"threadId": id, "delivery": "inline", "target": {"type": "uncommittedChanges"}}))).await??;
+            conn.turn = Some(review["turn"]["id"].as_str().filter(|turn| !turn.is_empty() && turn.len() <= 4096).context("Codex review returned no turn ID")?.into());
+            return conn.listen().await;
+        }
         let mut params=json!({"threadId":id,"input":content,"cwd":plan.cwd,"approvalPolicy":approval,"approvalsReviewer":"user","sandboxPolicy":policy});
         if let Some(model)=req.model {params["model"]=json!(model);}
         let turn=tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"turn/start",params)).await??;
@@ -546,7 +601,8 @@ pub(super) async fn run(
         if !conn.out.cancelled {
             conn.out.failed = true;
             conn.out.stderr_tail = format!("{error:#}");
-            conn.emit(TurnProgress::Error(conn.out.stderr_tail.clone()));
+            conn.emit(TurnProgress::Error(conn.out.stderr_tail.clone()))
+                .await;
         }
     }
     for (_, request) in conn.pending.drain() {
@@ -557,7 +613,7 @@ pub(super) async fn run(
     kill_process_tree(handle.pid.load(Ordering::SeqCst));
     let mut reaped = false;
     if let Some(mut child) = handle.child.lock().await.take() {
-        let _ = child.kill().await;
+        let _ = child.start_kill();
         reaped = tokio::time::timeout(REAP_TIMEOUT, child.wait())
             .await
             .is_ok_and(|r| r.is_ok());

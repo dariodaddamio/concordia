@@ -1,67 +1,53 @@
-# Thread references and MCP
+# MCP registry and delivery
 
-Type `@` in a prompt to choose a recorded thread. Concordia expands the reference to its
-bounded map and shows that map with the submitted prompt. Recording is opt-in through
-`[threads] enabled = true`. A provider can retrieve more with `concordia thread read <id>`.
+Concordia stores its MCP registry in `<state>/mcp.toml`. `/mcp` reads and changes this file. The
+registry is separate from provider homes. Concordia never writes a user's `.claude`, `.codex` or
+`.cursor` home.
 
-`concordia mcp` serves JSON-RPC over newline-delimited stdin/stdout. It exposes `threads`,
-`thread_map`, `thread_read`, `native_read`, `usage`, `feed`, `memory`, `goals`, `delegate` and `integrations`. Read tools stay local;
-`native_read` resolves revision-checked native-session pointers without transcript recording.
-Build `2026-11-05b` supplies standard read-only, non-destructive, idempotent and closed-world
-effect hints for all seven pure read tools. Derived local index caches may be populated; original sources and
-user work are not changed. These hints describe the tool, not an approval grant. Native prompt,
-strict-review and managed policies remain authoritative. Proposal tools are not marked read-only.
-`delegate` writes a proposal; the user must approve it in the TUI before any worker starts.
-It is available only when delegation protocol is enabled.
+Each server has an enabled switch and one transport. Stdio entries contain a command, arguments
+and environment references. Remote entries contain a URL and header references. A reference is
+`{ env = "NAME" }` or `{ credential = "TARGET" }`. Literal secret values are not accepted.
+Project switches live under `projects` and can turn a global server off.
 
-Browser MCP servers configured in a provider are separate from this server and retain their
-own executables and update policies. See the [browser security audit](quality/browser-security.md)
-for the checked scope, old local automation installations, and the Harness audit command.
+| Provider | Launch interface | Current boundary |
+| --- | --- | --- |
+| Codex | `-c mcp_servers.<name>...` overrides | Stdio and URL entries are projected per turn. |
+| Cursor | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
+| Grok Build | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
+| opencode | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
+| Claude Code | `--mcp-config` JSON file | Not delivered yet. No provider-home or secret-bearing temporary file is written. |
 
-Set `[threads] mcp = true` in `config.toml` to register the server in Concordia-created
-Claude and Codex homes. Registration is off by default; schemas add provider context usage.
-Existing personal provider homes are never edited. Cursor registration is not supported.
-Each registration also sets `CONCORDIA_MCP_SCOPE` to JSON `{\"account\":\"...\",\"workspace\":\"...\"}`.
-The server rejects history reads outside that account and workspace, and fails closed when the
-variable is absent or malformed. Cross-scope selection remains a local TUI action (`/resume`).
+`/mcp` lists state. `/mcp add NAME stdio COMMAND [ARGS...]`, `/mcp remove NAME`, `/mcp on NAME`
+and `/mcp off NAME` mutate the registry. Bare `/mcp` shows the guided syntax. Import discovery is
+read-only at the registry API boundary; the interactive import panel is not shipped yet.
 
-`[threads] awareness = true` adds a short explanation of Concordia maps to instructions in
-Concordia-created homes. Turn it off to remove Concordia's marked block. `/use` refreshes
-these integration settings; `/doctor` reports their status without changing files.
+The registry does not implement a proxy or remote OAuth sign-in. `concordia mcp` still serves the
+existing `agents` tool only. Remote servers that need provider-specific authentication therefore
+show a missing sign-in or unsupported boundary instead of being represented as complete.
 
-`native_read` accepts an exact index `id`, optional `message` ordinal (1-based), `offset` in bytes
-and `max_bytes` (1..8192, default 4096). Without `message`, it returns range metadata. Generate an
-index with `concordia chat index SESSION --account ACCOUNT --provider codex|claude`; handoffs can
-supply index IDs automatically. Stale/unavailable sources produce an error, never another session.
-See [native memory](native-memory.md) for source validation, budgets and Cursor limitations.
+## Existing Concordia MCP server
 
-`goals` reads the existing goal store in pages of ten, with bounded display text. Supply the
-returned `next_offset` and `revision` for a later page; changed state requires a fresh listing.
-With `goal` and an exact `workspace`, it reads confirmed goal/source association metadata instead.
-Metadata listings launch no provider or native replay and do not claim that a source is currently
-available; use `native_read` for revision-checked readback. Source links cannot be mutated through
-MCP. The nine-tool schema stays below 4,000 bytes; MCP registration remains opt-in.
+`concordia mcp` serves JSON-RPC over newline-delimited stdin/stdout. It registers exactly one
+always-on tool, `agents`, with four actions:
 
-Goal changes use `action: "propose_add"` with `text`, or `action: "propose_close"` with an exact
-`goal` id. Both require a canonical UUID `request_id` and the current goal-list `revision`.
-These calls only queue proposals. The local UI shows the full proposed goal, observed revision
-and unverified requester, then requires F7 focus and Y/N. Existing message drafts remain intact.
-`action: "status"` with `request_id` reads the result/uncertainty without replay. Goal proposals
-do not require enabling worker delegation and never authorize native tools or workers.
-[Goal change contracts and recovery](quality/goal-proposals.md).
+| Action | Result |
+| --- | --- |
+| `list` | Connected accounts, providers, discovered models and cached usage. |
+| `start` | Starts a delegated provider run and returns its lifecycle id. |
+| `status` | Current lifecycle status (`queued`, `running`, `finished` or `failed`) for an explicit id. |
+| `result` | The bounded final result and recent activity for an explicit id. |
 
-`integrations` discovers existing Harness connection metadata and Concordia-owned MCP registration
-status without executing adapters. With an integration `id`, it returns eight namespaced tool
-descriptions at a time. Later `offset` pages require the exact returned manifest `revision`.
-Descriptions are untrusted display data and grant no permissions. Changed manifests expose no
-current tool list; command-backed manifests need an explicit Harness refresh. The same catalog
-opens with F10 or `/integrations`, preserving the message draft. See [catalog limits](quality/integrations-catalog.md).
+`start` accepts a task and any connected account. Provider and model choices are supplied by the
+calling agent or its harness; Concordia does not apply a routing table. The child stays within the
+parent chat's permission mode. Task text is the Agents view title, never raw task JSON.
 
-`memory` gives agents structured read-only discovery without asking the user to type `/memory`.
-Choose `recall` (literal search), `ranked` (opt-in evidence ranking), `files` (historical file facts),
-`groups` or `members`. Search accepts `query`, optional exact `source`, `account` and `workspace`;
-ranking also accepts `goal` and `file`. Groups require `workspace`, members require `group`, and
-files require `source`. Paged metadata accepts the returned `offset` and `revision`. Native freshness,
-scope, provenance and coverage stay in the result. Oversized results are refused with narrowing
-instructions, rather than cutting through JSON or an exact source pointer. This tool cannot confirm
-relationships, change memberships, approve native requests or start a provider.
+The server does not expose chat history, memory, usage or integrations.
+History remains available through the `concordia chat` CLI and handoff pointers. The per-turn
+`ask_user` bridge is separate and unchanged. MCP registration in Concordia-created provider homes
+remains controlled by `[threads] mcp = true`; personal provider homes are never edited.
+
+MCP never reads credentials or launches a provider during catalog listing. Cached usage is labeled
+with its freshness. Account and agent ids are explicit, and malformed or oversized requests are
+rejected at the JSON-RPC boundary.
+
+Lifecycle records are local Concordia metadata; provider sessions and approvals remain provider-owned.

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.astro/
 target/
 *.log
 .DS_Store
@@ -12,3 +13,6 @@ SHA256SUMS
 concordia-x86_64-pc-windows-msvc.exe
 
 .claude/worktrees/
+
+# Cargo output from a worker that built without the shared target folder.
+/debug/

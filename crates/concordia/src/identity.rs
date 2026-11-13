@@ -2,7 +2,6 @@
 
 use crate::store::ProviderKind;
 use serde_json::Value;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -27,14 +26,7 @@ pub fn format_identity_label(id: &ProviderIdentity) -> String {
 }
 
 fn read_json(path: &Path) -> Option<Value> {
-    use std::io::Read;
-    let file = fs::File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 1024 * 1024 {
-        return None;
-    }
-    serde_json::from_slice(&bytes).ok()
+    serde_json::from_str(&crate::fs_safe::read_text_bounded(path, 1024 * 1024)?).ok()
 }
 
 fn jwt_claims(token: &str) -> Option<Value> {
@@ -89,25 +81,16 @@ fn decode_b64(s: &str) -> Option<Vec<u8>> {
 }
 
 pub fn parse_toml_model(toml: &str) -> Option<String> {
-    for line in toml.lines() {
-        let t = line.trim();
-        if let Some(rest) = t.strip_prefix("model") {
-            let rest = rest.trim_start();
-            if let Some(rest) = rest.strip_prefix('=') {
-                let rest = rest.trim();
-                if let Some(inner) = rest.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-                    return Some(inner.to_string());
-                }
-            }
-        }
-    }
-    None
+    toml::from_str::<toml::Value>(toml)
+        .ok()?
+        .get("model")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 pub fn inspect_codex_home(home: &Path) -> ProviderIdentity {
     let auth = read_json(&home.join("auth.json"));
-    let model = fs::read_to_string(home.join("config.toml"))
-        .ok()
+    let model = crate::fs_safe::read_text_bounded(&home.join("config.toml"), 1024 * 1024)
         .and_then(|t| parse_toml_model(&t));
     let tokens = auth.as_ref().and_then(|a| a.get("tokens"));
     let id_token = tokens
@@ -124,7 +107,10 @@ pub fn inspect_codex_home(home: &Path) -> ProviderIdentity {
                 .and_then(|t| t.get("account_id"))
                 .and_then(|x| x.as_str())
                 .unwrap_or("?");
-            Some(format!("chatgpt:{}", &acct[..acct.len().min(8)]))
+            Some(format!(
+                "chatgpt:{}",
+                acct.chars().take(8).collect::<String>()
+            ))
         } else {
             None
         }
@@ -210,7 +196,7 @@ pub fn inspect_claude_home(home: &Path) -> ProviderIdentity {
 pub fn cursor_api_key_for_home(home: &Path) -> Option<String> {
     for name in ["concordia-api-key", "api-key"] {
         let p = home.join(name);
-        if let Ok(t) = fs::read_to_string(&p) {
+        if let Some(t) = crate::fs_safe::read_text_bounded(&p, 16 * 1024) {
             let t = t.trim();
             if !t.is_empty() {
                 crate::redact::register_runtime_secret(t);
@@ -256,12 +242,37 @@ pub fn inspect_cursor_home(home: &Path) -> ProviderIdentity {
     }
 }
 
+pub fn inspect_grok_home(home: &Path) -> ProviderIdentity {
+    let model = crate::fs_safe::read_text_bounded(&home.join("config.toml"), 1024 * 1024)
+        .and_then(|text| parse_toml_model(&text));
+    let logged_in = home.join("config.toml").is_file() && home.join("auth.json").is_file();
+    ProviderIdentity {
+        provider: ProviderKind::Grok,
+        home_path: home.to_path_buf(),
+        login: logged_in.then(|| "cached-token".into()),
+        team: None,
+        plan: None,
+        model,
+        logged_in,
+    }
+}
+
 pub fn inspect_provider(provider: ProviderKind, home: &Path) -> ProviderIdentity {
     crate::test_guard::check_not_real_state(home);
     match provider {
         ProviderKind::Codex => inspect_codex_home(home),
         ProviderKind::Claude => inspect_claude_home(home),
         ProviderKind::Cursor => inspect_cursor_home(home),
+        ProviderKind::Grok => inspect_grok_home(home),
+        ProviderKind::Opencode => ProviderIdentity {
+            provider,
+            home_path: home.to_path_buf(),
+            login: crate::provider::opencode::home_ready(home).then(|| "configured".into()),
+            team: None,
+            plan: None,
+            model: crate::provider::opencode::inspect_model(home),
+            logged_in: crate::provider::opencode::home_ready(home),
+        },
     }
 }
 

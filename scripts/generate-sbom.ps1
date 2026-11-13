@@ -1,4 +1,4 @@
-param([string]$Output = 'bom.json')
+param([string]$Output = 'bom.json', [switch]$RequireComplete)
 $ErrorActionPreference = 'Stop'
 $env:NO_COLOR = $null
 $metadataPreference = $ErrorActionPreference
@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Continue'
 $metadataText = @(& cargo metadata --format-version 1 --locked 2>&1)
 $complete = $LASTEXITCODE -eq 0
 if (-not $complete) {
+    if ($RequireComplete) { throw 'complete locked dependency metadata is required for a release SBOM' }
     # Offline developer sandboxes may have the build cache but not every registry index entry.
     # CI uses the first query and therefore records the complete locked dependency graph.
     $metadataText = @(& cargo metadata --format-version 1 --locked --no-deps 2>&1)
@@ -29,7 +30,7 @@ if (-not $application) { throw 'cargo metadata did not contain the concordia pac
 $bom = [ordered]@{
     bomFormat = 'CycloneDX'
     specVersion = '1.5'
-    serialNumber = 'urn:uuid:00000000-0000-0000-0000-000000000001'
+    serialNumber = "urn:uuid:$([Guid]::NewGuid())"
     version = 1
     metadata = [ordered]@{
         timestamp = [DateTime]::UtcNow.ToString('o')

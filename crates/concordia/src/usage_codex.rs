@@ -25,6 +25,9 @@ pub(crate) fn fetch(home: &Path) -> Result<String, String> {
 
 pub(crate) async fn fetch_with(bin: &str, home: &Path) -> Result<String, String> {
     use std::process::Stdio;
+    let expected_home = home
+        .canonicalize()
+        .map_err(|_| "Codex usage home is unavailable")?;
     let native = crate::provider::npm::codex(bin);
     let mut cmd = crate::process_ui::tokio_command(
         native
@@ -32,6 +35,8 @@ pub(crate) async fn fetch_with(bin: &str, home: &Path) -> Result<String, String>
             .map_or(Path::new(bin), |n| n.program.as_path()),
     );
     crate::process_ui::background(&mut cmd);
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd.arg("app-server")
         .env("CODEX_HOME", home)
         .current_dir(std::env::temp_dir())
@@ -45,6 +50,7 @@ pub(crate) async fn fetch_with(bin: &str, home: &Path) -> Result<String, String>
     let mut child = cmd
         .spawn()
         .map_err(|_| "could not start Codex usage reader".to_owned())?;
+    let _process_tree = crate::process_lifetime::own_tokio_process(&child)?;
     let pid = child.id().unwrap_or(0);
     let mut input = child.stdin.take().ok_or("usage reader stdin unavailable")?;
     let mut lines = BufReader::new(
@@ -69,14 +75,38 @@ pub(crate) async fn fetch_with(bin: &str, home: &Path) -> Result<String, String>
         }
         let init = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"concordia_usage","version":crate::version::VERSION}}});
         input.write_all(format!("{init}\n").as_bytes()).await.map_err(|_| "usage initialization failed")?;
-        receive(&mut lines,1).await?;
+        let initialized = receive(&mut lines,1).await?;
+        if initialized["codexHome"].as_str().and_then(|home| Path::new(home).canonicalize().ok()).as_ref() != Some(&expected_home) {
+            return Err("Codex usage reader reported a different account home".into());
+        }
         input.write_all(b"{\"method\":\"initialized\"}\n{\"id\":2,\"method\":\"account/rateLimits/read\"}\n").await.map_err(|_| "usage request failed")?;
         let result = receive(&mut lines,2).await?;
-        let limits = result.get("rateLimitsByLimitId").and_then(|m| m.get("codex")).filter(|v|v.is_object()).or_else(||result.get("rateLimits").filter(|v| v.is_object())).ok_or("Codex returned no quota windows")?;
-        Ok(json!({"rate_limits":limits}).to_string())
+        Ok(json!({"rate_limits":limits_with_buckets(&result)?}).to_string())
     }).await.unwrap_or_else(|_|Err("live usage read timed out".into()));
     crate::provider::turn::kill_process_tree(pid);
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
     result
+}
+
+/// The main `codex` bucket, with every other bucket in `rateLimitsByLimitId` (for example a
+/// separate allowance for one model) attached under `extra`, in limit-id order.
+pub(crate) fn limits_with_buckets(result: &Value) -> Result<Value, String> {
+    let by_id = result.get("rateLimitsByLimitId").and_then(Value::as_object);
+    let mut limits = by_id
+        .and_then(|m| m.get("codex"))
+        .filter(|v| v.is_object())
+        .or_else(|| result.get("rateLimits").filter(|v| v.is_object()))
+        .cloned()
+        .ok_or("Codex returned no quota windows")?;
+    let main_id = limits.get("limitId").and_then(Value::as_str).unwrap_or("codex").to_owned();
+    let mut extra: Vec<(&String, &Value)> = by_id
+        .into_iter()
+        .flatten()
+        .filter(|(id, bucket)| **id != "codex" && **id != main_id && bucket.is_object())
+        .take(32)
+        .collect();
+    extra.sort_by(|a, b| a.0.cmp(b.0));
+    limits["extra"] = Value::Array(extra.into_iter().map(|(_, bucket)| bucket.clone()).collect());
+    Ok(limits)
 }

@@ -1,12 +1,26 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Routing overrides have a separately versioned bounded transaction, preserving config.toml.
-pub fn route_policy(root: &Path) -> Result<crate::routing::Policies, String> {
-    crate::routing::load_policies(root)
+/// Complete reads and writes fail visibly above this bound; original records are never truncated.
+const STORE_BYTES: u64 = 32 * 1024 * 1024;
+
+fn read_store_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(STORE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > STORE_BYTES {
+        return Err(std::io::Error::other(
+            "store exceeds the 32 MiB complete-read budget; original preserved; inspect it with a compatible tool",
+        ));
+    }
+    Ok(bytes)
 }
+
+/// Routing overrides have a separately versioned bounded transaction, preserving config.toml.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -14,6 +28,8 @@ pub enum ProviderKind {
     Codex,
     Claude,
     Cursor,
+    Grok,
+    Opencode,
 }
 
 impl ProviderKind {
@@ -22,6 +38,8 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Cursor => "cursor",
+            Self::Grok => "grok",
+            Self::Opencode => "opencode",
         }
     }
 }
@@ -32,7 +50,7 @@ pub enum TrustMode {
     /// Read-only planning: the provider analyses and proposes, it does not edit.
     Plan,
     Ask,
-    Workspace,
+    Edit,
     Full,
 }
 
@@ -42,7 +60,7 @@ impl TrustMode {
         match self {
             Self::Plan => 0,
             Self::Ask => 1,
-            Self::Workspace => 2,
+            Self::Edit => 2,
             Self::Full => 3,
         }
     }
@@ -51,7 +69,7 @@ impl TrustMode {
         match self {
             Self::Plan => "plan",
             Self::Ask => "ask",
-            Self::Workspace => "workspace",
+            Self::Edit => "edit",
             Self::Full => "full",
         }
     }
@@ -135,6 +153,8 @@ pub struct UseSelection {
     pub home_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub updated_at: String,
 }
 
@@ -151,6 +171,8 @@ pub struct StoredAccount {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrchestratorSettings {
+    #[serde(default = "default_roles")]
+    pub roles: std::collections::BTreeMap<String, RoleConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_panel_open: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,12 +181,6 @@ pub struct OrchestratorSettings {
     pub trust: TrustMode,
     #[serde(default = "default_child_trust")]
     pub child_trust: ChildTrust,
-    /// Accounts that may run as delegated workers (max 3, never the orchestrator).
-    #[serde(default)]
-    pub workers: Vec<String>,
-    /// Per-worker native model ids. Missing entry means the provider's own default.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub worker_models: std::collections::BTreeMap<String, String>,
     /// Explicit opt-in: return worker batches to their owning conversation.
     #[serde(default)]
     pub delegate_auto_return: bool,
@@ -188,10 +204,49 @@ pub struct OrchestratorSettings {
     /// Opt-in: record conversations to `<state>/threads` (stores prompts). Read via `threads::enabled`.
     #[serde(default)]
     pub thread_log: bool,
+    #[serde(default)]
+    pub attention_notifications: std::collections::BTreeSet<String>,
+}
+
+/// The provider selection used when an agent asks for a role without a model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+fn default_roles() -> std::collections::BTreeMap<String, RoleConfig> {
+    [
+        "orchestrator",
+        "implementer",
+        "reviewer",
+        "re-reviewer",
+        "general",
+    ]
+    .into_iter()
+    .map(|name| {
+        (
+            name.to_owned(),
+            RoleConfig {
+                provider: None,
+                account: None,
+                model: None,
+                effort: Some("medium".into()),
+            },
+        )
+    })
+    .collect()
 }
 
 fn default_trust() -> TrustMode {
-    TrustMode::Workspace
+    TrustMode::Edit
 }
 
 fn default_handoff_cap() -> usize {
@@ -202,7 +257,7 @@ fn default_handoff_cap() -> usize {
 #[serde(rename_all = "lowercase")]
 pub enum ChildTrust {
     Ask,
-    Workspace,
+    Edit,
     Full,
     Inherit,
 }
@@ -214,12 +269,11 @@ fn default_child_trust() -> ChildTrust {
 impl Default for OrchestratorSettings {
     fn default() -> Self {
         Self {
+            roles: default_roles(),
             worker_panel_open: None,
             file_action: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             child_trust: ChildTrust::Inherit,
-            workers: Vec::new(),
-            worker_models: Default::default(),
             delegate_auto_return: false,
             delegate_quota_failover: false,
             delegation_protocol: None,
@@ -229,6 +283,7 @@ impl Default for OrchestratorSettings {
             accepted_terms_providers: Default::default(),
             automatic_handoffs_today: Default::default(),
             thread_log: false,
+            attention_notifications: Default::default(),
         }
     }
 }
@@ -313,6 +368,36 @@ mod state_hygiene_tests {
     }
 }
 
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_settings_ship_the_five_roles() {
+        let roles = OrchestratorSettings::default().roles;
+        assert_eq!(
+            roles.keys().collect::<Vec<_>>(),
+            vec![
+                "general",
+                "implementer",
+                "orchestrator",
+                "re-reviewer",
+                "reviewer"
+            ]
+        );
+        assert!(roles
+            .values()
+            .all(|role| role.effort.as_deref() == Some("medium")));
+    }
+
+    #[test]
+    fn old_settings_deserialize_with_role_defaults() {
+        let value = serde_json::json!({"trust":"edit","childTrust":"inherit"});
+        let settings: OrchestratorSettings = serde_json::from_value(value).unwrap();
+        assert!(settings.roles.contains_key("orchestrator"));
+    }
+}
+
 /// Ensure the product-owned state root has restrictive permissions when it is first created.
 pub fn ensure_state_root(root: &Path) -> std::io::Result<()> {
     if root.exists() {
@@ -331,38 +416,6 @@ pub fn ensure_state_root(root: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// State directory of the product before it was renamed (`%LOCALAPPDATA%\orc`).
-pub fn legacy_state_root() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("orc"))
-}
-
-/// Carry the pre-rename `store.json` over to `root`, once. Registered accounts keep working
-/// because their home paths are absolute and the homes stay where they were. The old file is
-/// copied, never moved or deleted. Returns whether anything was copied.
-pub fn adopt_state_from(legacy_root: &Path, root: &Path) -> Result<bool> {
-    let new_store = store_path(root);
-    let old_store = store_path(legacy_root);
-    if new_store.exists() || !old_store.is_file() {
-        return Ok(false);
-    }
-    let dir = store_dir(root);
-    ensure_state_root(root).with_context(|| format!("create {}", root.display()))?;
-    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    fs::copy(&old_store, &new_store).with_context(|| format!("copy {}", old_store.display()))?;
-    Ok(true)
-}
-
-/// First run after the rename: adopt the old state unless an explicit state dir is in use.
-pub fn adopt_legacy_state(root: &Path) -> Result<bool> {
-    if std::env::var("CONCORDIA_STATE_DIR").is_ok_and(|d| !d.trim().is_empty()) {
-        return Ok(false);
-    }
-    match legacy_state_root() {
-        Some(legacy) if legacy != root => adopt_state_from(&legacy, root),
-        _ => Ok(false),
-    }
-}
-
 pub fn store_dir(root: &Path) -> PathBuf {
     root.join(".ao")
 }
@@ -373,10 +426,10 @@ pub fn store_path(root: &Path) -> PathBuf {
 
 fn sanitize_settings(settings: OrchestratorSettings) -> OrchestratorSettings {
     match settings.trust {
-        TrustMode::Plan | TrustMode::Ask | TrustMode::Workspace | TrustMode::Full => {}
+        TrustMode::Plan | TrustMode::Ask | TrustMode::Edit | TrustMode::Full => {}
     }
     match settings.child_trust {
-        ChildTrust::Ask | ChildTrust::Workspace | ChildTrust::Full | ChildTrust::Inherit => {}
+        ChildTrust::Ask | ChildTrust::Edit | ChildTrust::Full | ChildTrust::Inherit => {}
     }
     settings
 }
@@ -388,27 +441,42 @@ fn fresh_store(root: &Path) -> OrchestratorStore {
     store
 }
 
+/// Checked read status for views that must distinguish missing records from unreadable state.
+pub fn store_read_error(root: &Path) -> Option<String> {
+    load_store_checked(root)
+        .err()
+        .map(|error| format!("{error:#}"))
+}
+
 pub fn load_store(root: &Path) -> OrchestratorStore {
+    load_store_checked(root).unwrap_or_else(|_| fresh_store(root))
+}
+
+/// A mutation must not turn unreadable, corrupt or future-version state into defaults.
+pub(crate) fn load_store_checked(root: &Path) -> Result<OrchestratorStore> {
     crate::test_guard::check_not_real_state(root);
     let path = store_path(root);
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return fresh_store(root);
+    let raw = match read_store_bytes(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(fresh_store(root)),
+        Err(error) => return Err(error).context("store could not be read; original preserved"),
     };
-    let parsed: Result<OrchestratorStore, _> = serde_json::from_str(&raw);
-    match parsed {
-        Ok(mut store) if store.version == 1 => {
-            store.settings = sanitize_settings(store.settings);
-            // A store written before a mode was ever saved: config default, not the legacy one.
-            let has_mode = serde_json::from_str::<serde_json::Value>(&raw)
-                .ok()
-                .is_some_and(|v| v.pointer("/settings/trust").is_some());
-            if !has_mode {
-                store.settings.trust = crate::config::for_root(root).mode.default;
-            }
-            store
-        }
-        _ => fresh_store(root),
+    let value: serde_json::Value = serde_json::from_slice(&raw)
+        .context("store is invalid; original preserved; inspect the saved store before retrying")?;
+    let has_mode = value.pointer("/settings/trust").is_some();
+    let mut store: OrchestratorStore =
+        serde_json::from_value(value).context("store format is invalid; original preserved")?;
+    if store.version != 1 {
+        anyhow::bail!(
+            "unsupported store version {}; original preserved; use a compatible Concordia build",
+            store.version
+        );
     }
+    store.settings = sanitize_settings(store.settings);
+    if !has_mode {
+        store.settings.trust = crate::config::for_root(root).mode.default;
+    }
+    Ok(store)
 }
 
 /// Whether the orchestrator may propose delegations: the user's saved choice, else the config
@@ -419,84 +487,39 @@ pub fn delegation_protocol_on(root: &Path) -> bool {
         .unwrap_or_else(|| crate::config::for_root(root).delegation.protocol)
 }
 
-/// Write the store atomically (temp file + rename) so a crash cannot leave half a file. An
-/// existing file that no longer parses is copied aside first rather than silently destroyed.
+/// Write an already checked store atomically (temp file + rename). Normal mutations must use
+/// `modify_store`, which refuses invalid existing state before running the mutation. If the
+/// existing file becomes malformed before this final write, preserve its exact bytes in a backup.
 pub fn save_store(root: &Path, store: &OrchestratorStore) -> Result<()> {
     crate::test_guard::check_not_real_state(root);
     let dir = store_dir(root);
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = store_path(root);
-    if let Ok(raw) = fs::read_to_string(&path) {
-        if serde_json::from_str::<OrchestratorStore>(&raw).is_err() {
-            let backup = dir.join(format!(
-                "store.json.corrupt-{}",
-                chrono_now().replace('.', "-")
-            ));
-            let _ = fs::copy(&path, backup);
+    match read_store_bytes(&path) {
+        Ok(raw) => match serde_json::from_slice::<OrchestratorStore>(&raw) {
+            Ok(existing) if existing.version != 1 => anyhow::bail!(
+                "unsupported existing store version {}; original preserved",
+                existing.version
+            ),
+            Ok(_) => {}
+            Err(_) => {
+                let backup = dir.join(format!("store.json.corrupt-{}", uuid::Uuid::new_v4()));
+                crate::state_io::write_atomic_new(&backup, &raw).context(
+                    "could not preserve corrupt store backup; original was not overwritten",
+                )?;
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).context("could not inspect existing store; original preserved")
         }
     }
     let json = serde_json::to_string_pretty(store).context("serialize store")?;
-    let tmp = dir.join(format!("store.json.tmp-{}", std::process::id()));
-    fs::write(&tmp, json).with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, &path).with_context(|| format!("replace {}", path.display()))?;
-    Ok(())
-}
-
-const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(10);
-const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Removes the lock file when dropped, including on panic.
-struct StoreLock(PathBuf);
-
-impl Drop for StoreLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+    if json.len() as u64 > STORE_BYTES {
+        anyhow::bail!("store exceeds the 32 MiB write budget; original preserved");
     }
-}
-
-/// Several concordia panes share one store, so a read-modify-write must not interleave with another
-/// pane's or an update would be lost. A lock file taken with `create_new` serializes them; a
-/// lock left behind by a crashed process is reclaimed after `LOCK_STALE`.
-fn lock_store(root: &Path) -> Result<StoreLock> {
-    let dir = store_dir(root);
-    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let path = dir.join("store.lock");
-    let start = std::time::Instant::now();
-    loop {
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(_) => return Ok(StoreLock(path)),
-            // On Windows a lock file that is mid-delete (another process just released it)
-            // reports "access denied" rather than "already exists"; both mean "try again".
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-                ) =>
-            {
-                let stale = fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.elapsed().ok())
-                    .is_some_and(|age| age > LOCK_STALE);
-                if stale {
-                    let _ = fs::remove_file(&path);
-                    continue;
-                }
-                if start.elapsed() > LOCK_WAIT {
-                    anyhow::bail!(
-                        "state is locked by another concordia process ({})",
-                        path.display()
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(15));
-            }
-            Err(e) => return Err(e).with_context(|| format!("lock {}", path.display())),
-        }
-    }
+    crate::state_io::write_atomic(&path, json.as_bytes())
+        .with_context(|| format!("replace {}; original preserved on failure", path.display()))
 }
 
 /// Load, change and save the store under the lock.
@@ -509,15 +532,50 @@ pub fn modify_store<T>(
     // another local writer times out, even though every individual update is brief.
     static LOCAL_WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _local = LOCAL_WRITER.lock().unwrap_or_else(|e| e.into_inner());
-    let _lock = lock_store(root)?;
-    let mut store = load_store(root);
-    let out = f(&mut store)?;
-    save_store(root, &store)?;
-    Ok(out)
+    fs::create_dir_all(store_dir(root))?;
+    let mutate = || -> Result<T> {
+        let mut store = load_store_checked(root)?;
+        let out = f(&mut store)?;
+        save_store(root, &store)?;
+        Ok(out)
+    };
+    // Keep the lock inode stable: OS ownership ends on close or process exit.
+    // An old timestamp never authorizes taking another writer's lock.
+    crate::state_io::with_lock_file(&store_dir(root).join("store.lock"), |file, created_new| {
+        const MARKER: &[u8] = b"concordia-store-lock-v1\n";
+        if created_new {
+            file.write_all(MARKER)?;
+            file.flush()?;
+        } else {
+            let mut marker = Vec::new();
+            file.take(MARKER.len() as u64 + 1)
+                .read_to_end(&mut marker)?;
+            if marker != MARKER {
+                return Err(std::io::Error::other(
+                        "state is locked by an older Concordia writer or an unrecognized lock; original preserved; let that writer finish and retry",
+                    ));
+            }
+        }
+        Ok(mutate())
+    })?
 }
 
 pub fn get_settings(root: &Path) -> OrchestratorSettings {
     load_store(root).settings
+}
+
+pub fn attention_notification_seen(root: &Path, item_id: &str) -> bool {
+    get_settings(root).attention_notifications.contains(item_id)
+}
+
+pub fn mark_attention_notification(root: &Path, item_id: &str) -> anyhow::Result<()> {
+    modify_store(root, |store| {
+        store
+            .settings
+            .attention_notifications
+            .insert(item_id.to_owned());
+        Ok(())
+    })
 }
 
 /// Create or update the task containing a native session.  Repeated observations of the same
@@ -672,14 +730,6 @@ pub fn set_trust_mode(root: &Path, trust: TrustMode) -> Result<OrchestratorSetti
     })
 }
 
-/// Replace the worker list (validation lives in `delegate`).
-pub fn set_workers(root: &Path, workers: Vec<String>) -> Result<()> {
-    modify_store(root, |store| {
-        store.settings.workers = workers;
-        Ok(())
-    })
-}
-
 pub fn set_delegation_protocol(root: &Path, on: bool) -> Result<()> {
     modify_store(root, |store| {
         store.settings.delegation_protocol = Some(on);
@@ -735,7 +785,6 @@ pub fn upsert_stored_account(root: &Path, account: StoredAccount) -> Result<()> 
 }
 
 pub fn ensure_default_selection(root: &Path) -> Result<()> {
-    let _ = adopt_legacy_state(root);
     if get_use_selection(root).is_some() {
         return Ok(());
     }
@@ -751,6 +800,7 @@ pub fn ensure_default_selection(root: &Path) -> Result<()> {
             account: "codex".into(),
             home_path: Some(codex_home.to_string_lossy().into_owned()),
             model: None,
+            effort: None,
             updated_at: chrono_now(),
         },
     )
@@ -853,9 +903,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sessions_appear_as_single_session_tasks() {
+    fn native_sessions_have_direct_resume_rows() {
         let sessions = vec![crate::sessions::SessionSummary {
-            account: "legacy".into(),
+            account: "historical".into(),
             provider: ProviderKind::Claude,
             session_id: "native-1".into(),
             cwd: Some("C:\\work".into()),
@@ -863,10 +913,9 @@ mod tests {
             modified_ms: 1,
             user_messages: 1,
         }];
-        let tasks = crate::sessions::legacy_session_tasks(&sessions);
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].sessions.len(), 1);
-        assert!(tasks[0].id.starts_with("legacy-"));
+        let rows = crate::sessions::native_session_picker_rows(&sessions);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "resume:historical:native-1");
     }
 
     #[test]
@@ -891,16 +940,14 @@ mod tests {
     }
 
     #[test]
-    fn workers_and_protocol_persist_and_default_off() {
+    fn delegation_protocol_persists_and_uses_config_default() {
         let dir = tempfile::tempdir().unwrap();
         let s = get_settings(dir.path());
-        assert!(s.workers.is_empty() && s.delegation_protocol.is_none());
-        assert!(!delegation_protocol_on(dir.path()));
-        set_workers(dir.path(), vec!["codex-2".into()]).unwrap();
+        assert!(s.delegation_protocol.is_none());
+        assert!(delegation_protocol_on(dir.path()));
         set_delegation_protocol(dir.path(), true).unwrap();
         set_trust_mode(dir.path(), TrustMode::Ask).unwrap();
         let s = get_settings(dir.path());
-        assert_eq!(s.workers, ["codex-2"]);
         assert_eq!(s.delegation_protocol, Some(true));
         assert_eq!(s.trust, TrustMode::Ask);
         // An older store without the new keys still loads.
@@ -909,7 +956,6 @@ mod tests {
             r#"{"version":1,"settings":{"trust":"ask","childTrust":"inherit"}}"#,
         )
         .unwrap();
-        assert!(get_settings(dir.path()).workers.is_empty());
     }
 
     #[test]
@@ -948,35 +994,6 @@ mod tests {
     }
 
     #[test]
-    fn the_pre_rename_store_is_adopted_once_and_never_overwritten() {
-        let legacy = tempfile::tempdir().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        // Nothing to adopt yet.
-        assert!(!adopt_state_from(legacy.path(), root.path()).unwrap());
-
-        upsert_stored_account(legacy.path(), acct("old-account")).unwrap();
-        assert!(adopt_state_from(legacy.path(), root.path()).unwrap());
-        let adopted = load_store(root.path());
-        assert_eq!(adopted.accounts.len(), 1);
-        assert_eq!(adopted.accounts[0].id, "old-account");
-        // The old file is left in place.
-        assert!(store_path(legacy.path()).is_file());
-
-        // Once a store exists in the new root, the old one is never copied over it.
-        upsert_stored_account(root.path(), acct("new-account")).unwrap();
-        upsert_stored_account(legacy.path(), acct("changed-later")).unwrap();
-        assert!(!adopt_state_from(legacy.path(), root.path()).unwrap());
-        let ids: Vec<_> = load_store(root.path())
-            .accounts
-            .into_iter()
-            .map(|a| a.id)
-            .collect();
-        assert!(
-            ids.contains(&"new-account".to_string()) && !ids.contains(&"changed-later".to_string())
-        );
-    }
-
-    #[test]
     fn concurrent_writers_never_lose_each_others_updates() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
@@ -1000,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn a_save_leaves_no_temp_or_lock_files_behind() {
+    fn a_save_leaves_only_the_store_and_stable_lock_file() {
         let dir = tempfile::tempdir().unwrap();
         upsert_stored_account(dir.path(), acct("a")).unwrap();
         let names = || -> Vec<String> {
@@ -1009,34 +1026,47 @@ mod tests {
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
                 .collect()
         };
-        assert!(eventually(|| names() == ["store.json"]), "{:?}", names());
+        assert!(
+            eventually(|| names()
+                .iter()
+                .all(|name| matches!(name.as_str(), "store.json" | "store.lock"))
+                && names().len() == 2),
+            "{:?}",
+            names()
+        );
     }
 
     #[test]
-    fn an_unreadable_store_is_backed_up_not_silently_destroyed() {
+    fn an_unreadable_store_rejects_mutation_and_preserves_original_bytes() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(store_dir(dir.path())).unwrap();
-        fs::write(store_path(dir.path()), "{ this is not json").unwrap();
-        upsert_stored_account(dir.path(), acct("fresh")).unwrap();
-        let backups: Vec<_> = fs::read_dir(store_dir(dir.path()))
+        let original = b"{ this is not json";
+        fs::write(store_path(dir.path()), original).unwrap();
+        let mut mutation_ran = false;
+        let error = modify_store(dir.path(), |store| {
+            mutation_ran = true;
+            store.accounts.push(acct("fresh"));
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("original preserved"));
+        assert!(!mutation_ran, "invalid state must reject before mutation");
+        assert_eq!(fs::read(store_path(dir.path())).unwrap(), original);
+        let names: Vec<_> = fs::read_dir(store_dir(dir.path()))
             .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("store.json.corrupt-")
-            })
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(backups.len(), 1);
-        assert_eq!(
-            fs::read_to_string(backups[0].path()).unwrap(),
-            "{ this is not json"
+        assert_eq!(names.len(), 2);
+        assert!(
+            names
+                .iter()
+                .all(|name| matches!(name.as_str(), "store.json" | "store.lock")),
+            "no replacement or backup was needed"
         );
-        assert_eq!(load_store(dir.path()).accounts.len(), 1);
     }
 
     #[test]
-    fn a_stale_lock_from_a_crashed_process_is_reclaimed() {
+    fn an_unmarked_lock_blocks_writes_until_its_owner_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(store_dir(dir.path())).unwrap();
         let lock = store_dir(dir.path()).join("store.lock");
@@ -1048,9 +1078,23 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
+        let error = upsert_stored_account(dir.path(), acct("a")).unwrap_err();
+        assert!(error.to_string().contains("older Concordia writer"));
+        assert_eq!(fs::read(&lock).unwrap(), b"");
+        assert!(!store_path(dir.path()).exists());
+        // Simulate only this synthetic owner releasing its fixture pathname.
+        fs::remove_file(&lock).unwrap();
         upsert_stored_account(dir.path(), acct("a")).unwrap();
         assert_eq!(load_store(dir.path()).accounts.len(), 1);
-        assert!(eventually(|| !lock.exists()), "stale lock was not released");
+        assert!(lock.exists(), "the stable lock file must remain");
+        assert_eq!(fs::read(&lock).unwrap(), b"concordia-store-lock-v1\n");
+        assert!(fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .try_lock()
+            .is_ok());
     }
 
     #[test]
@@ -1064,8 +1108,29 @@ mod tests {
         assert!(r.is_err());
         assert_eq!(load_store(dir.path()).accounts.len(), 1);
         let lock = store_dir(dir.path()).join("store.lock");
-        assert!(eventually(|| !lock.exists()), "lock was not released");
+        assert!(
+            fs::File::options()
+                .read(true)
+                .write(true)
+                .open(&lock)
+                .unwrap()
+                .try_lock()
+                .is_ok(),
+            "lock ownership was not released"
+        );
         // ...and it really is free: the next update goes straight through.
         upsert_stored_account(dir.path(), acct("next")).unwrap();
+    }
+
+    #[test]
+    fn attention_notification_ids_are_durable_and_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!attention_notification_seen(dir.path(), "chat:question"));
+        mark_attention_notification(dir.path(), "chat:question").unwrap();
+        assert!(attention_notification_seen(dir.path(), "chat:question"));
+        assert!(!attention_notification_seen(dir.path(), "chat:approval"));
+        assert!(get_settings(dir.path())
+            .attention_notifications
+            .contains("chat:question"));
     }
 }

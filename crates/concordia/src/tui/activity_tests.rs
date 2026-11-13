@@ -8,6 +8,25 @@ use crate::provider::turn::{TurnOutcome, TurnProgress};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier};
 use ratatui::{backend::TestBackend, Terminal};
+use std::time::{Duration, Instant};
+
+#[test]
+fn running_tool_timer_snapshot_shows_elapsed_and_reported_time_remaining() {
+    let card = StreamCard {
+        id: "timed-shell".into(),
+        title: "shell".into(),
+        detail: Some(r#"arguments: {"cmd":"cargo test","timeout_ms":600000}"#.into()),
+        status: CardStatus::Running,
+    };
+    let now = Instant::now();
+    let timer = super::activity::card_timer(
+        &card,
+        Some(now - Duration::from_secs(125)),
+        now,
+    )
+    .unwrap();
+    assert_eq!(timer, " · 2:05 · 7:55 left of 10:00");
+}
 
 #[test]
 fn expansion_and_detail_use_independent_message_identity() {
@@ -230,7 +249,7 @@ fn activity_modal_handles_older_and_newer_cards_through_main_key_handler() {
     app.queue.items.push("queued prompt".into());
     let mut pending = Editor::default();
     pending.set_text("pending queue edit");
-    app.queue.edit = Some(pending);
+    app.begin_queue_edit(pending);
     app.messages.push(card("one", "older", "one full result"));
     app.messages.push(card("two", "newer", "two full result"));
     app.activity.open(2);
@@ -245,7 +264,7 @@ fn activity_modal_handles_older_and_newer_cards_through_main_key_handler() {
     assert_eq!(app.activity.detail, Some(2));
     assert_eq!(app.editor.text(), "preserve draft");
     assert_eq!(
-        app.queue.edit.as_ref().unwrap().text(),
+        app.queue.edit.as_ref().unwrap().editor.text(),
         "pending queue edit"
     );
     handle_key(
@@ -269,7 +288,7 @@ fn paste_events_and_overflow_chunks_are_routed_to_activity_query_only() {
     app.queue.sel = 0;
     let mut edit = Editor::default();
     edit.set_text("pending queued edit");
-    app.queue.edit = Some(edit);
+    app.begin_queue_edit(edit);
     app.messages.push(card("one", "tool", "output"));
     app.activity.open(1);
     // Same centralized path used by Event::Paste and Windows' buffered overflow chunks.
@@ -299,7 +318,7 @@ fn paste_events_and_overflow_chunks_are_routed_to_activity_query_only() {
     assert!(app.activity.query.ends_with("\nlast"));
     assert_eq!(app.editor.text(), "main draft");
     assert_eq!(
-        app.queue.edit.as_ref().unwrap().text(),
+        app.queue.edit.as_ref().unwrap().editor.text(),
         "pending queued edit"
     );
     assert_eq!(app.queue.items[0], "queued prompt");
@@ -312,7 +331,8 @@ fn paste_into_picker_edits_its_filter_without_touching_draft_or_queue_edit() {
     app.editor.set_text("main draft");
     let mut edit = Editor::default();
     edit.set_text("pending edit");
-    app.queue.edit = Some(edit);
+    app.queue.items.push("pending edit".into());
+    app.begin_queue_edit(edit);
     app.picker = Some(Picker {
         kind: PickerKind::Usage,
         title: "picker".into(),
@@ -323,7 +343,10 @@ fn paste_into_picker_edits_its_filter_without_touching_draft_or_queue_edit() {
     app.paste_text_chunk("filter\ntext", true);
     assert_eq!(app.picker.as_ref().unwrap().filter, "filter\ntext");
     assert_eq!(app.editor.text(), "main draft");
-    assert_eq!(app.queue.edit.as_ref().unwrap().text(), "pending edit");
+    assert_eq!(
+        app.queue.edit.as_ref().unwrap().editor.text(),
+        "pending edit"
+    );
 }
 
 #[test]

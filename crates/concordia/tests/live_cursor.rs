@@ -67,7 +67,7 @@ async fn turn_with(
     session: Option<&str>,
     mode: Mode,
 ) -> (TurnOutcome, Vec<String>) {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(64);
     let seen = tokio::spawn(async move {
         let mut kinds = Vec::new();
         while let Some(event) = rx.recv().await {

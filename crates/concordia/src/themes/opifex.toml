@@ -1,6 +1,6 @@
 name = "Opifex Studio"
 author = "Concordia"
-background = "#050506"
+background = "#000000"
 foreground = "#D8D0C0"
 accent = "#FFB000"
 dim = "#918B80"

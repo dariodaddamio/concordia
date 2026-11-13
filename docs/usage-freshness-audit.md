@@ -1,5 +1,7 @@
 # Usage cache identity and freshness audit
 
+Current contract reconciled 2026-11-08 (earlier build observations below are historical).
+
 Build `2026-10-31g`: account pickers show one wrapped line per usage window, each with its own
 remaining capacity and reset. Unknown reset times are labeled unavailable. Cursor's table header
 reset is shared by its monthly categories. Expired readings continue to show usage as unknown.
@@ -21,15 +23,15 @@ local cache data and is not sent to MCP clients; MCP displays only provider and 
 Fetch completion carries the full identity. A delayed worker can only update the matching entry;
 changing selection while a fetch runs does not put its result in the selected account's cache. A
 matching cache survives process restart. Prior `<account>.json` entries have no identity binding
-and are not loaded into the live fetcher; a fresh fetch is requested instead. They remain visible
-in MCP as legacy data with an explicit unknown identity label.
+and are not loaded into the live fetcher; a fresh fetch is requested instead. MCP also excludes these unbound entries.
 
 Codex uses the same account/provider/home-bound fetch cache for live limits. Build
 `2026-11-01d` starts the official CLI's app-server, initializes it, then sends only
 `account/rateLimits/read`. No thread/start, turn/start, login, logout, reset consumption or email
 operation is issued. The official [Codex App Server documentation](https://learn.chatgpt.com/docs/app-server)
 defines the quota read and its window/reset fields. Output is bounded to 512 KiB and 128 response
-lines per reply, with a 12-second timeout and cleanup of that reader's process tree.
+lines per reply, with a 12-second timeout and cleanup of that reader's process tree. The initialize
+reply must report the requested physical Codex home before the quota request is sent.
 
 Native recorded files remain a labeled fallback while refreshing or if a live check fails. The
 UI retains the recorded reset date/time and last percentage, but does not present an expired
@@ -38,16 +40,14 @@ binary disables automatic live reads; fixtures use an explicit test seam. The st
 `read_codex_usage` and MCP historical reads remain file-only. Codex camelCase server fields and
 snake_case recorded fields are both accepted.
 
-The normalized path is slash-normalized and case-folded on Windows; it does not resolve symlinks.
-Pointing two path aliases at one physical home may create separate cache entries, which can cost a
-refresh but does not mix identities. Filename hashes can collide and the standard-library hash
+Existing home paths are canonicalized, stripped of the Windows extended-path prefix, slash-normalized
+and case-folded on Windows. Missing paths retain their normalized lexical identity. Repointing an
+alias to a different physical home causes a safe cache miss. Filename hashes can collide and the standard-library hash
 algorithm is not a stable cross-version format contract. A collision can overwrite a cache file,
 but exact serialized identity validation rejects the wrong entry; a changed hash can cause a safe
 cache miss and another fetch.
 
-An entry with a future timestamp is not used by the fetcher and causes a new fetch. MCP retains it
-only as a cache record with `cache age unknown` so it does not present the clock-skewed entry as
-recent.
+An entry with a future timestamp is not used by the fetcher and causes a new fetch. MCP excludes future timestamps through the same canonical cache reader.
 
 ## Freshness behavior
 
@@ -60,8 +60,10 @@ TUI warning helper handles its own account-scoped refresh status; this audit doe
 rendering state in that helper.
 
 MCP `usage` never refreshes. It labels entries `recent cache` when their timestamp is less than
-120 seconds old, otherwise `stale cache`; absent or future timestamps are `cache age unknown`.
-Bound entries identify provider and account. Legacy entries say `identity unknown`. Expired windows
+120 seconds old, otherwise `stale cache`. It iterates registered accounts and reads only the exact
+provider/account/home-bound cache through `cached_usage_view`; it neither scans arbitrary cache filenames
+nor starts a provider. Unbound, malformed, mismatched and future entries are excluded. Each read is
+bounded to 64 KiB and validates regular owned storage plus bounded, finite percentage metadata. Expired windows
 are rendered as current usage unknown rather than as a percentage of capacity after reset. MCP
 continues to show stale cached percentages because it is a read-only historical view, with the
 stale label beside them.
@@ -73,18 +75,16 @@ stale label beside them.
 - Added coverage holds a home A fetch while home B finishes for the same account id, then releases
   A and verifies B remains selected and warm after restart. The same case verifies provider changes
   have separate identities.
-- Added coverage seeds an old unbound cache and verifies the fetcher requests a bound reading
-  instead of showing the legacy percentage.
 - Added coverage forces a failed refresh after a success and verifies the successful values remain
   visibly identified as cached.
-- MCP tests cover recent, stale and unknown-age cache entries, bound versus legacy identity, reset
+- MCP tests cover recent and stale bound entries, exclusion of unbound/future entries, reset
   windows without a fabricated percentage, and the read-only behavior (no files are added or
   removed during the call).
 
 These tests establish the listed deterministic paths. They do not exercise concurrent processes
 writing the same cache, symlink aliases, filesystem permission failures, arbitrary cache corruption
 combinations, or every selected-account timing interleaving. Cache timestamps are wall-clock based;
-clock skew can result in the deliberately conservative `cache age unknown` label for future data.
+clock skew causes future entries to be excluded and the fetcher to request a fresh reading.
 
 ## Explicit command refresh (2026-10-31q)
 

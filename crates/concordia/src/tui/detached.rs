@@ -15,9 +15,11 @@ use std::{
     time::Duration,
 };
 
+type WindowKey = (uuid::Uuid, u32);
+
 enum Message {
-    Input(u32, native_window::NativeEvent),
-    Closed(u32),
+    Input(WindowKey, native_window::NativeEvent),
+    Closed(WindowKey),
 }
 
 struct FileWindow {
@@ -37,7 +39,7 @@ impl Drop for FileWindow {
 }
 
 pub(super) struct DetachedWindows {
-    windows: BTreeMap<u32, FileWindow>,
+    windows: BTreeMap<WindowKey, FileWindow>,
     sender: SyncSender<Message>,
     receiver: Receiver<Message>,
     wake: WakeHandle,
@@ -54,8 +56,8 @@ impl DetachedWindows {
         }
     }
 
-    fn open(&mut self, id: u32) -> io::Result<()> {
-        let (backend, receiver) = native_window::open_detailed()?;
+    fn open(&mut self, key: WindowKey) -> io::Result<()> {
+        let (backend, receiver) = native_window::open()?;
         let mut terminal = Terminal::new(backend)?;
         terminal.clear()?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -63,14 +65,14 @@ impl DetachedWindows {
         let sender = self.sender.clone();
         let wake = self.wake.clone();
         let input = thread::Builder::new()
-            .name(format!("concordia-file-input-{id}"))
+            .name(format!("concordia-file-input-{}-{}", key.0, key.1))
             .spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
                     let message = match receiver.recv_timeout(Duration::from_millis(25)) {
-                        Ok(event) => Message::Input(id, event),
+                        Ok(event) => Message::Input(key, event),
                         Err(RecvTimeoutError::Timeout) => continue,
                         Err(RecvTimeoutError::Disconnected) => {
-                            send(&sender, Message::Closed(id), &stopped, &wake);
+                            send(&sender, Message::Closed(key), &stopped, &wake);
                             break;
                         }
                     };
@@ -80,7 +82,7 @@ impl DetachedWindows {
                 }
             })?;
         self.windows.insert(
-            id,
+            key,
             FileWindow {
                 terminal,
                 stop,
@@ -91,12 +93,14 @@ impl DetachedWindows {
     }
 
     /// Reconcile HWND ownership after detach/dock/close. Opening failures restore the pane.
-    pub(super) fn sync(&mut self, app: &mut App) {
+    pub(super) fn sync(&mut self, owner: uuid::Uuid, app: &mut App) {
         let ids = app.workspace.detached_ids();
-        self.windows.retain(|id, _| ids.contains(id));
+        self.windows
+            .retain(|(tab, id), _| *tab != owner || ids.contains(id));
         for id in ids {
-            if !self.windows.contains_key(&id) {
-                if let Err(error) = self.open(id) {
+            let key = (owner, id);
+            if !self.windows.contains_key(&key) {
+                if let Err(error) = self.open(key) {
                     app.workspace.request_dock(id);
                     app.flash(format!("Could not open file window: {error}"));
                 }
@@ -104,44 +108,60 @@ impl DetachedWindows {
         }
     }
 
+    pub(super) fn retain_tabs(&mut self, owners: &[uuid::Uuid]) {
+        self.windows.retain(|(owner, _), _| owners.contains(owner));
+    }
+
     /// Drain child input before root drawing. Closing a file HWND docks its existing document.
-    pub(super) fn drain(&mut self, app: &mut App) -> bool {
+    pub(super) fn drain(
+        &mut self,
+        mut dispatch: impl FnMut(uuid::Uuid, u32, Option<Event>),
+    ) -> bool {
         let mut changed = false;
         for _ in 0..1024 {
             let Ok(message) = self.receiver.try_recv() else {
                 break;
             };
-            let (id, event) = match message {
-                Message::Closed(id) => {
-                    app.workspace.request_dock(id);
+            let (key, event) = match message {
+                Message::Closed(key) => {
+                    if self.windows.contains_key(&key) {
+                        dispatch(key.0, key.1, None);
+                    }
                     changed = true;
                     continue;
                 }
-                Message::Input(id, native_window::NativeEvent::Event(event)) => (id, event),
-                Message::Input(id, native_window::NativeEvent::MouseUp { event, .. }) => {
-                    (id, Event::Mouse(event))
+                Message::Input(key, native_window::NativeEvent::Event(event)) => (key, event),
+                Message::Input(key, native_window::NativeEvent::MouseUp { event, .. }) => {
+                    (key, Event::Mouse(event))
+                }
+                Message::Input(_key, native_window::NativeEvent::Attention(_)) => {
+                    continue;
                 }
             };
             // Messages already queued when a child was docked cannot affect another view.
-            if !self.windows.contains_key(&id) || !app.workspace.detached_ids().contains(&id) {
+            if !self.windows.contains_key(&key) {
                 continue;
             }
             if matches!(event, Event::Key(key) if key.kind != KeyEventKind::Release && key.code == KeyCode::F(12) && key.modifiers.contains(KeyModifiers::CONTROL))
             {
-                app.workspace.request_dock(id);
+                dispatch(key.0, key.1, None);
                 changed = true;
                 continue;
             }
-            workspace::handle_window_event(app, id, event);
+            dispatch(key.0, key.1, Some(event));
             changed = true;
         }
         changed
     }
 
     /// Render the same documents after the root view; workspace helpers preserve root hit areas.
-    pub(super) fn draw(&mut self, app: &mut App) {
+    pub(super) fn draw(&mut self, owner: uuid::Uuid, app: &mut App) {
         let mut failed = Vec::new();
-        for (&id, window) in &mut self.windows {
+        for (&key, window) in &mut self.windows {
+            if key.0 != owner {
+                continue;
+            }
+            let id = key.1;
             let result = (|| -> io::Result<()> {
                 if let Some(title) = app.workspace.detached_title(id, &app.cwd) {
                     window.terminal.backend_mut().set_title(&title)?;
@@ -154,12 +174,12 @@ impl DetachedWindows {
                 Ok(())
             })();
             if let Err(error) = result {
-                failed.push((id, error));
+                failed.push((key, error));
             }
         }
-        for (id, error) in failed {
-            app.workspace.request_dock(id);
-            self.windows.remove(&id);
+        for (key, error) in failed {
+            app.workspace.request_dock(key.1);
+            self.windows.remove(&key);
             app.flash(format!("File window closed: {error}"));
         }
     }

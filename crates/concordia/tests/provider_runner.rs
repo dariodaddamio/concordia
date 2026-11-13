@@ -8,6 +8,104 @@ use tokio::sync::mpsc;
 const FAKE: &str = env!("CARGO_BIN_EXE_concordia-fake-provider");
 
 #[tokio::test]
+async fn native_retransmissions_emit_one_interaction_and_never_replay_an_answer() {
+    use concordia::{
+        native_input::Mode,
+        provider::{
+            interaction::InteractionOwner,
+            turn::{run_provider_turn_with_transport, TurnProgress},
+        },
+    };
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::env::set_var("CONCORDIA_STATE_DIR", root.path().join("state"));
+    std::env::set_var("CONCORDIA_CODEX_BIN", FAKE);
+    std::env::set_var("FAKE_PROVIDER_NATIVE_CODEX", "1");
+    for resolved in [false, true] {
+        std::fs::write(
+            root.path().join("appserver-fixture.json"),
+            serde_json::json!({"duplicate":true,"resolved":resolved,"question":resolved})
+                .to_string(),
+        )
+        .unwrap();
+        let owner = InteractionOwner {
+            conversation_id: uuid::Uuid::new_v4().to_string(),
+            workspace: root.path().into(),
+            execution_cwd: root.path().into(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            provider: ProviderKind::Codex,
+            account: "synthetic-account".into(),
+            home: Some(home.clone()),
+        };
+        let req = ProviderTurnRequest {
+            images: &[],
+            provider: ProviderKind::Codex,
+            prompt: "fixture",
+            cwd: root.path(),
+            home_path: Some(&home),
+            model: None,
+            native_session_id: None,
+            trust: TrustMode::Ask,
+            context_prefix: None,
+            local_time: None,
+            compaction: Default::default(),
+        };
+        let owner = owner
+            .validate_for(ProviderKind::Codex, root.path(), Some(&home))
+            .unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        let run = run_provider_turn_with_transport(
+            &req,
+            owner.clone(),
+            Mode::CodexAppServer,
+            None,
+            Some(tx),
+        );
+        let collect = async {
+            let mut count = 0;
+            while let Some(event) = rx.recv().await {
+                match event {
+                    TurnProgress::Interaction(request) => {
+                        count += 1;
+                        if !resolved {
+                            request
+                                .respond_owned(&owner, serde_json::json!({"decision":"decline"}))
+                                .unwrap();
+                        }
+                    }
+                    TurnProgress::Notice(message) => {
+                        assert!(!message.contains("Native request unavailable"), "{message}")
+                    }
+                    _ => {}
+                }
+            }
+            count
+        };
+        let (result, count) = tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(run, collect)
+        })
+        .await
+        .unwrap();
+        let outcome = result.unwrap();
+        assert!(!outcome.failed, "{outcome:?}");
+        assert_eq!(count, 1);
+    }
+    let calls = std::fs::read_to_string(root.path().join("appserver-calls.jsonl")).unwrap();
+    let replies: Vec<serde_json::Value> = calls
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|value: &serde_json::Value| value["id"] == 100 && value.get("method").is_none())
+        .collect();
+    assert_eq!(replies.len(), 1);
+    assert!(replies[0].get("error").is_none());
+    std::env::remove_var("CONCORDIA_CODEX_BIN");
+    std::env::remove_var("FAKE_PROVIDER_NATIVE_CODEX");
+    std::env::remove_var("CONCORDIA_STATE_DIR");
+}
+
+#[tokio::test]
 async fn closed_started_receiver_cancels_the_provider() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().join("work");
@@ -27,7 +125,7 @@ async fn closed_started_receiver_cancels_the_provider() {
         home_path: None,
         model: None,
         native_session_id: None,
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
         context_prefix: None,
         local_time: None,
         compaction: Default::default(),
@@ -64,7 +162,7 @@ async fn closed_started_receiver_cancels_the_provider() {
     std::env::set_var("FAKE_PROVIDER_STREAM", &stream);
     std::env::set_var("CONCORDIA_STATE_DIR", dir.path());
     for session in [None, Some("11111111-2222-4333-8444-555555555555")] {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(64);
         let req = ProviderTurnRequest {
             provider: ProviderKind::Claude,
             native_session_id: session,

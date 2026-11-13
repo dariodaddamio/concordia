@@ -41,33 +41,6 @@ fn finish(app: &mut App) {
 }
 
 #[test]
-fn memory_search_preserves_draft_and_discards_results_after_conversation_change() {
-    let (mut app, _dir, _) = setup();
-    app.editor.set_text("2 finish the requested features");
-    assert!(app.handle_slash("/memory recall-account synthetic synthetic history"));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while app.session_ui.memory_reading() {
-        app.poll_memory();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
-    assert!(app
-        .messages
-        .iter()
-        .any(|m| m.text.contains("Lexical suggestion")));
-    assert_eq!(app.editor.text(), "2 finish the requested features");
-    app.handle_slash("/memory recall-account synthetic synthetic history");
-    app.session_ui.invalidate();
-    app.messages.clear();
-    while app.session_ui.memory_reading() {
-        app.poll_memory();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
-    assert!(app.messages.is_empty());
-}
-
-#[test]
 fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_draft() {
     let (mut app, _dir, home) = setup();
     app.provider = ProviderKind::Claude;
@@ -193,21 +166,120 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
 }
 
 #[test]
-fn resume_of_legacy_session_without_task_record_works() {
+fn resume_of_session_without_task_record_works() {
     let (mut app, _dir, home) = setup();
+    crate::tui::landing::open_home_tab(&mut app);
+    select_account(&app.state_root, "synthetic").unwrap();
+    set_model(&app.state_root, "chosen-small-model").unwrap();
     app.open_resume_picker();
     let picker = app.picker.as_ref().expect("resume picker");
     assert_eq!(picker.rows.len(), 1);
     assert_eq!(picker.rows[0].id, "resume:synthetic:target-session");
     assert!(crate::store::list_tasks(&app.state_root).is_empty());
 
-    app.apply_picker_selection(None);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &tx,
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "resume reads history without a model turn"
+    );
 
-    assert_eq!(app.native_session_id.as_deref(), Some("target-session"));
-    assert_eq!(app.account, "synthetic");
-    assert_eq!(app.home_path.as_ref(), Some(&home));
+    assert!(
+        app.native_session_id.is_none(),
+        "selection must wait for window-level ownership routing"
+    );
+    super::run::inspect_requested_resume(app, |app| {
+        assert_eq!(app.native_session_id.as_deref(), Some("target-session"));
+        assert_eq!(app.account, "synthetic");
+        assert_eq!(app.home_path.as_ref(), Some(&home));
+        assert!(app.picker.is_none());
+        assert!(app.task_id.is_none());
+        finish(app);
+        assert!(!crate::tui::landing::visible(app));
+        assert_eq!(app.model, "chosen-small-model");
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|f| draw_ui(f, app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            text.contains("message-79"),
+            "resumed history must replace Home"
+        );
+    });
+}
+
+#[test]
+fn selecting_an_account_defers_context_until_submission() {
+    let (mut app, _dir, _) = setup();
+    app.provider = ProviderKind::Claude;
+    app.account = "previous-account".into();
+    app.native_session_id = Some("previous-session".into());
+    app.push_user("previous task".into());
+    app.push_system("previous local notice");
+    app.editor.set_text("unsent followup");
+    app.show_picker(
+        PickerKind::Use,
+        "account".into(),
+        vec![PickerRow {
+            id: "use:synthetic".into(),
+            label: "synthetic".into(),
+            detail: String::new(),
+        }],
+        false,
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    app.apply_picker_selection(Some(&tx));
+    assert_eq!(app.provider, ProviderKind::Codex);
+    assert_eq!(app.editor.text(), "unsent followup");
+    assert!(app.native_session_id.is_none());
+    assert!(app.need_context_pack);
+    assert!(!app.messages.iter().any(ChatLine::is_map));
+    assert!(
+        rx.try_recv().is_err(),
+        "an account switch must not dispatch a model turn"
+    );
+}
+
+#[test]
+fn home_model_selection_is_saved_without_sending_a_turn_or_map() {
+    let (mut app, _dir, _) = setup();
+    select_account(&app.state_root, "synthetic").unwrap();
+    app.refresh_binding();
+    crate::tui::landing::open_home_tab(&mut app);
+    app.show_picker(
+        PickerKind::Model,
+        "model".into(),
+        vec![PickerRow {
+            id: "model:chosen-small-model".into(),
+            label: "chosen-small-model".into(),
+            detail: String::new(),
+        }],
+        true,
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &tx,
+    );
     assert!(app.picker.is_none());
-    assert!(app.task_id.is_none());
+    assert_eq!(app.model, "chosen-small-model");
+    assert_eq!(
+        get_use_selection(&app.state_root).unwrap().model.as_deref(),
+        Some("chosen-small-model")
+    );
+    assert!(crate::tui::landing::visible(&app));
+    assert!(!app.messages.iter().any(ChatLine::is_map));
+    assert!(rx.try_recv().is_err());
 }
 
 #[test]
@@ -256,6 +328,15 @@ fn titles_are_generated_without_thread_logging_and_survive_native_binding() {
 }
 
 #[test]
+fn tab_title_rename_keeps_the_display_title_bounded_and_resettable() {
+    let (mut app, _dir, _home) = setup();
+    assert!(app.rename_session("  Review   parser  "));
+    assert_eq!(app.tab_label(), "Review parser");
+    assert!(app.rename_session(""));
+    assert_eq!(app.session_ui.title, None);
+}
+
+#[test]
 fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
     let (mut app, _dir, _) = setup();
     app.push_card(StreamCard {
@@ -280,7 +361,8 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
         detail: Some("reported result: changed while picker open".into()),
         status: CardStatus::Error,
     });
-    assert!(app.picker.as_ref().unwrap().rows[0]
+    assert!(app.picker.as_ref().unwrap().rows[0].label.contains("✗"));
+    assert!(!app.picker.as_ref().unwrap().rows[0]
         .label
         .contains("failed/interrupted"));
     app.apply_picker_selection(None);
@@ -316,7 +398,7 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
         .unwrap()
         .rows
         .iter()
-        .any(|row| { row.label.contains("child-background") && row.label.contains("running") }));
+        .any(|row| { row.label.contains("◐") && row.detail.contains("child-background") && row.detail.contains("running") }));
     app.push_card(StreamCard {
         id: child_id,
         title: "agent child-background".into(),
@@ -329,7 +411,7 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
         .unwrap()
         .rows
         .iter()
-        .any(|row| { row.label.contains("child-background") && row.label.contains("finished") }));
+        .any(|row| { row.label.contains("✓") && row.detail.contains("child-background") && row.detail.contains("finished") }));
     assert!(app.handle_slash("/new"));
     assert_eq!(app.native_agents.count(), 0);
 }

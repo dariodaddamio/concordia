@@ -11,8 +11,12 @@ pub(in crate::tui) enum Drag {
 #[derive(Default, Clone, Copy)]
 pub(in crate::tui) struct Areas {
     pub(in crate::tui) header_home: Option<Rect>,
+    pub(in crate::tui) header_provider: Option<Rect>,
+    pub(in crate::tui) header_model: Option<Rect>,
+    pub(in crate::tui) header_effort: Option<Rect>,
     pub(in crate::tui) header_credits: Option<Rect>,
     pub(in crate::tui) header_email: Option<Rect>,
+    pub(in crate::tui) header_attention: Option<Rect>,
     pub(in crate::tui) transcript: Rect,
     pub(in crate::tui) input: Rect,
     pub(in crate::tui) bottom_button: Rect,
@@ -88,7 +92,7 @@ impl Phase {
 
     pub(in crate::tui) fn frame(&self, tick: u64) -> &'static str {
         if let Phase::Tool(name) = self {
-            return crate::provider::stream_cards::tool_icon(name);
+            return crate::provider::stream_cards::ToolKind::of_title(name).icon();
         }
         let f = self.frames();
         f[(tick as usize) % f.len()]
@@ -114,7 +118,8 @@ pub(in crate::tui) struct ChatLine {
 impl ChatLine {
     pub(in crate::tui) fn is_map(&self) -> bool {
         self.role == MsgRole::System
-            && self.text.starts_with("[concordia map]")
+            && (self.text.starts_with("[concordia map]")
+                || self.text.starts_with("Context for this message"))
             && self.text.contains('\n')
     }
 
@@ -141,6 +146,7 @@ pub(in crate::tui) struct PendingLogin {
 pub(in crate::tui) enum PickerKind {
     Doctor,
     DoctorConfirm,
+    ChatRepair,
     Settings,
     FilePreferences,
     Customization,
@@ -156,7 +162,6 @@ pub(in crate::tui) enum PickerKind {
     Integrations,
     Related,
     Agents,
-    Recovery,
     Files,
     FileActions,
     Artifacts,
@@ -165,6 +170,10 @@ pub(in crate::tui) enum PickerKind {
     Trust,
     FullModeConfirm,
     Use,
+    Provider,
+    Effort,
+    GrokBotForm,
+    GrokBotActions,
     AddProvider,
     Remove,
     RemoveConfirm,
@@ -175,6 +184,16 @@ pub(in crate::tui) enum PickerKind {
     ResumeDeleteConfirm,
     Update,
     NeedsYou,
+}
+
+#[derive(Default)]
+pub(in crate::tui) struct GrokBotForm {
+    pub(in crate::tui) account: String,
+    pub(in crate::tui) routine_id: String,
+    pub(in crate::tui) name: String,
+    pub(in crate::tui) webhook_url: String,
+    pub(in crate::tui) key: String,
+    pub(in crate::tui) active: usize,
 }
 
 pub(in crate::tui) struct Picker {
@@ -194,7 +213,7 @@ pub(in crate::tui) struct DoctorUi {
 pub(in crate::tui) struct ModelRefresh {
     pub(in crate::tui) provider: ProviderKind,
     pub(in crate::tui) account: String,
-    pub(in crate::tui) rx: std_mpsc::Receiver<Vec<crate::models::ModelEntry>>,
+    pub(in crate::tui) rx: std_mpsc::Receiver<Result<crate::models::RefreshedModels, String>>,
 }
 
 impl Picker {
@@ -215,19 +234,6 @@ impl Picker {
     pub(in crate::tui) fn sync_typed_model(&mut self) {
         if self.kind != PickerKind::Model {
             return;
-        }
-        self.rows.retain(|r| !r.id.starts_with(TYPED_MODEL_PREFIX));
-        let typed = self.filter.trim();
-        let listed = self
-            .rows
-            .iter()
-            .any(|r| r.id.strip_prefix("model:") == Some(typed));
-        if valid_model_id(typed) && !listed {
-            self.rows.push(PickerRow {
-                id: format!("{TYPED_MODEL_PREFIX}{typed}"),
-                label: format!("use {typed}"),
-                detail: "typed model id".into(),
-            });
         }
     }
 
@@ -250,7 +256,17 @@ pub(in crate::tui) struct BusySendConfirmation {
     pub(in crate::tui) armed: Instant,
 }
 
+/// One tab as the strip draws it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::tui) struct TabChip {
+    pub(in crate::tui) title: String,
+    pub(in crate::tui) provider: ProviderKind,
+    pub(in crate::tui) status: icons::TabStatus,
+}
+
 pub(crate) struct App {
+    pub(in crate::tui) chat_ownership_error: Option<String>,
+    pub(in crate::tui) local_terminal: local_terminal::State,
     pub(in crate::tui) appearance: appearance::State,
     pub(in crate::tui) continuation: continuation::State,
     pub(in crate::tui) native_owner: Option<crate::provider::interaction::InteractionOwner>,
@@ -260,16 +276,21 @@ pub(crate) struct App {
         Option<crate::provider::interaction::InteractionOwner>,
     pub(in crate::tui) scopes: workspace_scope::State,
     pub(in crate::tui) managed_workspaces: managed_workspaces::State,
-    pub(in crate::tui) project_search: workspace_search::State,
     pub(in crate::tui) file_action_target: Option<(crate::file_links::ResolvedFile, PathBuf)>,
     pub(in crate::tui) continuation_target: Option<String>,
     pub(in crate::tui) state_root: PathBuf,
     pub(in crate::tui) cwd: PathBuf,
     pub(in crate::tui) account_names: std::collections::BTreeMap<String, String>,
+    pub(in crate::tui) store_warning: Option<String>,
+    pub(in crate::tui) account_changes_blocked: bool,
     pub(in crate::tui) account_email: Option<String>,
     pub(in crate::tui) header_email_revealed: bool,
     pub(in crate::tui) header_email_pressed: bool,
     pub(in crate::tui) header_home_pressed: bool,
+    pub(in crate::tui) header_provider_pressed: bool,
+    pub(in crate::tui) header_model_pressed: bool,
+    pub(in crate::tui) header_effort_pressed: bool,
+    pub(in crate::tui) header_attention_pressed: bool,
     pub(in crate::tui) permissions_pressed: bool,
     pub(in crate::tui) permission_rows: Vec<(Rect, usize)>,
     pub(in crate::tui) permission_row_pressed: Option<usize>,
@@ -294,6 +315,7 @@ pub(crate) struct App {
     pub(in crate::tui) hist_draft: String,
     pub(in crate::tui) parked_draft: Option<String>,
     pub(in crate::tui) fresh_draft: bool,
+    pub(in crate::tui) tab_request: Option<tabs::TabAction>,
     pub(in crate::tui) quit_armed: Option<Instant>,
     pub(in crate::tui) busy_send_confirmation: Option<BusySendConfirmation>,
     pub(in crate::tui) full_mode_confirmed: bool,
@@ -319,14 +341,17 @@ pub(crate) struct App {
     pub(in crate::tui) account: String,
     pub(in crate::tui) home_path: Option<PathBuf>,
     pub(in crate::tui) model: String,
+    pub(in crate::tui) effort: Option<String>,
     pub(in crate::tui) trust: TrustMode,
     pub(in crate::tui) native_session_id: Option<String>,
     pub(in crate::tui) task_id: Option<String>,
+    pub(in crate::tui) pending_repair_map: Option<String>,
     pub(in crate::tui) session_chip: Option<String>,
     pub(in crate::tui) session_ui: session_ui::State,
     pub(in crate::tui) native_agents: native_agents::State,
     pub(in crate::tui) footer_left: String,
     pub(in crate::tui) picker: Option<Picker>,
+    pub(in crate::tui) repair_task: Option<String>,
     pub(in crate::tui) doctor: Option<DoctorUi>,
     pub(in crate::tui) doctor_applier: Box<dyn crate::doctor::FixApplier>,
     pub(in crate::tui) model_refresh: Option<ModelRefresh>,
@@ -343,7 +368,6 @@ pub(crate) struct App {
     pub(in crate::tui) prior_provider: ProviderKind,
     pub(in crate::tui) prior_home: Option<String>,
     pub(in crate::tui) need_context_pack: bool,
-    pub(in crate::tui) task_map: Option<String>,
     pub(in crate::tui) thread: Option<crate::threads::ThreadLog>,
     pub(in crate::tui) thread_meta_done: bool,
     pub(in crate::tui) reference_journal: reference_journal::State,
@@ -380,11 +404,17 @@ pub(crate) struct App {
     pub(in crate::tui) worker_panel_explicit: Option<bool>,
     /// Labels of every open tab and the index of this one; empty with a single tab. The runner
     /// fills it before each frame, and the drawn label rects come back for mouse hits.
-    pub(in crate::tui) tab_strip: Vec<String>,
+    pub(in crate::tui) tab_strip: Vec<TabChip>,
     pub(in crate::tui) tab_index: usize,
+    /// Set by the runner while a tab is dragged: the dragged tab and the insertion slot.
+    pub(in crate::tui) tab_drag: Option<(usize, usize)>,
+    /// How the last turn ended, shown on the tab until the user looks at it.
+    pub(in crate::tui) tab_outcome: Option<bool>,
+    /// When each running tool card was first seen, for its elapsed-time display.
+    pub(in crate::tui) tool_started: HashMap<String, Instant>,
     pub(in crate::tui) tab_hits: Vec<Rect>,
     pub(in crate::tui) tab_close_hits: Vec<Rect>,
-    pub(in crate::tui) rename_active: bool,
+    pub(in crate::tui) rename_editor: Option<Editor>,
     pub(in crate::tui) user_cmds: Vec<crate::user_commands::UserCommand>,
     pub(in crate::tui) queue: queue::Queue,
     pub(in crate::tui) last_sent: Option<String>,
@@ -392,26 +422,32 @@ pub(crate) struct App {
     pub(in crate::tui) signed_out_confirmation: Option<(String, String)>,
     pub(in crate::tui) signed_out_overrides: HashSet<String>,
     pub(in crate::tui) needs_you: crate::needs_you::Queue,
+    pub(in crate::tui) grok_bot_form: Option<GrokBotForm>,
 }
 
 impl App {
-    #[allow(dead_code)]
-    pub(crate) fn is_busy(&self) -> bool {
-        self.busy
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn has_unsent_work(&self) -> bool {
-        !self.editor.text().is_empty() || !self.queue.items.is_empty() || self.queue.edit.is_some()
-    }
-
     pub(in crate::tui) fn continuity_home(&self) -> Option<String> {
         self.home_path
             .as_ref()
             .and_then(|home| home.canonicalize().ok())
             .map(|home| home.to_string_lossy().into_owned())
     }
+    pub(in crate::tui) fn refresh_store_warning(&mut self) -> bool {
+        let warning = crate::store::store_read_error(&self.state_root).map(|error| {
+            format!("Account and chat index unavailable: {error}. Original state kept; run concordia doctor.")
+        });
+        let changed = warning != self.store_warning;
+        if changed {
+            if let Some(message) = &warning {
+                self.push_system(message.clone());
+            }
+            self.store_warning = warning;
+        }
+        changed
+    }
+
     pub(in crate::tui) fn refresh_binding(&mut self) {
+        self.refresh_store_warning();
         self.account_names = crate::store::load_store(&self.state_root).account_nicknames;
         if let Some(sel) = get_use_selection(&self.state_root) {
             if self.account != sel.account
@@ -438,7 +474,17 @@ impl App {
                         .and_then(|h| inspect_provider(self.provider, h).model)
                 })
                 .unwrap_or_else(|| "?".into());
+            self.effort = sel.effort.or_else(|| {
+                crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
+                    .and_then(|model| model.default_effort)
+            });
         }
+        self.refresh_account_email();
+        self.trust = get_settings(&self.state_root).trust;
+        self.refresh_usage();
+    }
+
+    pub(in crate::tui) fn refresh_account_email(&mut self) {
         let email = self
             .home_path
             .as_ref()
@@ -450,31 +496,45 @@ impl App {
             self.header_email_pressed = false;
         }
         self.account_email = email;
-        self.trust = get_settings(&self.state_root).trust;
-        self.refresh_usage();
     }
 
-    /// Short label for the tab strip: the chat title, a busy marker and a needs-input marker.
+    /// Short title for the tab strip; the status and provider are drawn as icons beside it.
     pub(in crate::tui) fn tab_label(&self) -> String {
         let title = if self.landing.is_some() {
             "Home"
         } else {
             self.session_ui.title.as_deref().unwrap_or("New chat")
         };
-        let mut label: String = title
+        title
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
             .chars()
             .filter(|c| !c.is_control())
             .take(24)
-            .collect();
-        if self.busy && self.questions.waiting() {
-            label.push_str(" ?");
-        } else if self.busy {
-            label.push_str(" …");
+            .collect()
+    }
+
+    pub(in crate::tui) fn tab_status(&self) -> icons::TabStatus {
+        if self.questions.waiting() || (self.queue.paused && !self.queue.items.is_empty()) {
+            icons::TabStatus::Waiting
+        } else if self.busy || self.deleg.d.any_active() {
+            icons::TabStatus::Running
+        } else {
+            match self.tab_outcome {
+                Some(true) => icons::TabStatus::Done,
+                Some(false) => icons::TabStatus::Failed,
+                None => icons::TabStatus::Idle,
+            }
         }
-        label
+    }
+
+    pub(in crate::tui) fn tab_chip(&self) -> TabChip {
+        TabChip {
+            title: self.tab_label(),
+            provider: self.provider,
+            status: self.tab_status(),
+        }
     }
 
     pub(in crate::tui) fn window_title(&self) -> String {
@@ -552,7 +612,7 @@ impl App {
 
     pub(in crate::tui) fn run_status_label(&self) -> String {
         if self.cancel_requested {
-            return if self.queue.force_pending {
+            return if self.queue.dispatch.is_explicit() {
                 "Stopping to send the queued message\u{2026}".into()
             } else {
                 "Stopping this turn\u{2026}".into()
@@ -578,7 +638,7 @@ impl App {
 
     /// Suggestions for the prompt as typed (empty when closed, dismissed, or not a slash prompt).
     pub(in crate::tui) fn palette_entries(&self) -> Vec<palette::Entry> {
-        if self.editor.text().starts_with("/open ") || self.editor.text().starts_with("/preview ") {
+        if self.editor.text().starts_with("/open ") {
             return Vec::new();
         }
         // Not while a recalled prompt is on screen: up/down must keep walking history.
@@ -599,18 +659,24 @@ impl App {
             let models = if lower.starts_with("/model") {
                 self.home_path
                     .as_deref()
-                    .map(|h| list_models(self.provider, h))
+                    .map(|h| {
+                        crate::models::ids_at(&self.state_root, self.provider, &self.account, h)
+                    })
                     .unwrap_or_default()
             } else {
                 Vec::new()
             };
             return palette::matching_arguments(&input, &accounts, &models);
         }
-        palette::matching_with(&input, &self.user_cmds)
+        palette::matching_for_provider(&input, &self.user_cmds, Some(self.provider))
     }
 
     /// Put the chosen command in the prompt.
     pub(in crate::tui) fn complete_palette(&mut self, entry: palette::Entry) {
+        if entry.disabled {
+            self.flash("provider command unavailable: Concordia uses the provider's print/exec mode; type it to send it as a provider prompt");
+            return;
+        }
         let complete_branch = self.editor.text().eq_ignore_ascii_case(&entry.command)
             && palette::is_branch(&entry.command);
         self.editor.set_text(&if complete_branch {
@@ -639,7 +705,7 @@ impl App {
         if self.hist_pos.is_none() && self.fresh_draft {
             let draft = self
                 .parked_draft
-                .replace(self.editor.text())
+                .replace(self.composer_value())
                 .unwrap_or_default();
             self.restore_composer(&draft);
             self.fresh_draft = false;
@@ -668,7 +734,7 @@ impl App {
             {
                 let next = self
                     .parked_draft
-                    .replace(self.editor.text())
+                    .replace(self.composer_value())
                     .unwrap_or_default();
                 self.restore_composer(&next);
                 self.fresh_draft = true;
@@ -691,11 +757,9 @@ impl App {
             && clipboard::has_attachment()
             && self.picker.is_none()
             && self.workspace.focused.is_none()
-            && self.queue.edit.is_none()
             && !self.questions.focused
             && self.activity.detail.is_none()
             && !worker_input::active(self)
-            && !self.project_search.active()
         {
             self.start_image_import(None, true);
             return;
@@ -725,7 +789,11 @@ impl App {
     }
 
     pub(in crate::tui) fn push_system(&mut self, text: impl Into<String>) {
-        let text = text.into();
+        let mut text = text.into();
+        if text.len() > crate::provider::turn::VISIBLE_TEXT_MAX {
+            let full = std::mem::take(&mut text);
+            crate::provider::turn::append_visible_text(&mut text, &full);
+        }
         // A provider often reports one failure several ways (an event, a result, stderr).
         // Say it once.
         if self
@@ -750,7 +818,14 @@ impl App {
                     .as_ref()
                     .is_some_and(|(_, label)| label == "__concordia_idle_notice__")
             }) {
-                self.messages.remove(index);
+                // Live artifact/history jobs hold message indexes. Retire this presentation
+                // row in place so a resumed stream cannot retarget their results.
+                self.messages[index] = ChatLine {
+                    role: MsgRole::System,
+                    text: String::new(),
+                    card: None,
+                    meta: None,
+                };
             }
         }
     }
@@ -817,20 +892,18 @@ impl App {
     }
 
     pub(in crate::tui) fn sync_needs_you(&mut self) {
-        use crate::needs_you::{Item, ItemKind, SessionState};
+        use crate::needs_you::{Item, ItemKind};
         self.questions.refresh_native();
         let session = self.needs_you_session();
-        let state = if self.busy {
-            SessionState::Running
-        } else if self.signed_out_confirmation.is_some()
-            || self.questions.waiting()
-            || self.queue.paused
-        {
-            SessionState::Waiting
-        } else {
-            SessionState::Idle
-        };
-        self.needs_you.set_state(session.clone(), state);
+        let project = self.cwd.file_name().map_or_else(
+            || "project".into(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let chat = self
+            .session_ui
+            .title
+            .clone()
+            .unwrap_or_else(|| "New chat".into());
         let approval = self.questions.native_approval_waiting();
         let current = [
             (
@@ -847,7 +920,7 @@ impl App {
             ),
             (
                 "paused-queue",
-                self.queue.paused,
+                self.queue.paused && !self.queue.items.is_empty(),
                 ItemKind::PausedQueue,
                 "resume paused prompt queue",
             ),
@@ -867,15 +940,29 @@ impl App {
         for (suffix, present, kind, title) in current {
             self.needs_you.remove_suffix(suffix);
             let id = format!("{session}:{suffix}");
+            crate::needs_you::withdraw(&id);
             if present {
-                self.needs_you.add(Item {
-                    id,
+                let item = Item {
+                    id: id.clone(),
                     session_id: session.clone(),
                     title: title.into(),
                     kind,
-                });
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: self.provider.as_str().into(),
+                    request: suffix.into(),
+                    context: self
+                        .questions
+                        .native_session_id()
+                        .unwrap_or_else(|| "Waiting for a response".into()),
+                    source: "conversation".into(),
+                    created: std::time::Instant::now(),
+                };
+                crate::needs_you::publish(item.clone());
+                self.needs_you.add(item);
             }
         }
+        self.needs_you.remove_kind(ItemKind::WorkerResult);
         for job in &self.deleg.d.jobs {
             let id = format!("worker:{}", job.id);
             if job.state == crate::delegate::WorkerState::Done && !job.collected {
@@ -884,25 +971,111 @@ impl App {
                     session_id: job.session_id.clone().unwrap_or_else(|| job.id.to_string()),
                     title: format!("worker {} finished", job.id),
                     kind: ItemKind::WorkerResult,
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: format!("worker #{}", job.id),
+                    request: "result".into(),
+                    context: job.snippet.clone(),
+                    source: "worker conversation".into(),
+                    created: std::time::Instant::now(),
                 });
             } else {
                 self.needs_you.remove(&id);
+            }
+            for request in job.native_inputs() {
+                let id = format!("worker-native:{}:{}", job.id, request.envelope().request_id);
+                let approval = matches!(
+                    request.kind(),
+                    crate::provider::interaction::NativeInteraction::Permission { .. }
+                        | crate::provider::interaction::NativeInteraction::CodexPermission { .. }
+                        | crate::provider::interaction::NativeInteraction::PlanApproval { .. }
+                );
+                let item = Item {
+                    id: id.clone(),
+                    session_id: request.envelope().native_session_id.clone(),
+                    title: if approval {
+                        "worker approval"
+                    } else {
+                        "worker question"
+                    }
+                    .into(),
+                    kind: if approval {
+                        ItemKind::Approval
+                    } else {
+                        ItemKind::Question
+                    },
+                    project: project.clone(),
+                    chat: chat.clone(),
+                    agent: format!("worker #{}", job.id),
+                    request: request.envelope().request_id.to_string(),
+                    context: request.params.to_string().chars().take(512).collect(),
+                    source: "worker conversation".into(),
+                    created: std::time::Instant::now(),
+                };
+                crate::needs_you::publish(item.clone());
+                self.needs_you.add(item);
             }
         }
     }
 
     pub(in crate::tui) fn open_needs_you_picker(&mut self) {
         self.sync_needs_you();
+        if self.needs_you.is_empty() {
+            self.flash("No questions, approvals or results need your attention.");
+            return;
+        }
         let rows = self
             .needs_you
             .items()
             .map(|item| PickerRow {
                 id: format!("needs:{}", item.id),
-                label: item.title.clone(),
-                detail: format!("{} · {}", item.kind.label(), item.session_id),
+                label: format!("{} - {}", item.project, item.title),
+                detail: format!(
+                    "{} · {} · {} · waiting {}s · {}",
+                    item.chat,
+                    item.agent,
+                    item.kind.label(),
+                    item.created.elapsed().as_secs(),
+                    item.source
+                ),
             })
             .collect();
         self.show_picker(PickerKind::NeedsYou, "needs you".into(), rows, false);
+    }
+
+    pub(in crate::tui) fn focus_needs_you_item(&mut self, item_id: &str) {
+        self.sync_needs_you();
+        let Some(item) = self.needs_you.items().find(|item| item.id == item_id).cloned() else {
+            return;
+        };
+        landing::close(self);
+        self.activity.detail = None;
+        match item.kind {
+            crate::needs_you::ItemKind::Question | crate::needs_you::ItemKind::Approval => {
+                if let Some(job) = item
+                    .id
+                    .strip_prefix("worker-native:")
+                    .and_then(|value| value.split(':').next())
+                    .and_then(|value| value.parse().ok())
+                {
+                    self.inspect_worker(job);
+                } else {
+                    self.queue.focused = false;
+                    self.questions.focused = true;
+                }
+            }
+            crate::needs_you::ItemKind::PausedQueue => {
+                self.queue.focused = true;
+                self.questions.focused = false;
+            }
+            crate::needs_you::ItemKind::WorkerResult => {
+                if let Some(id) = item.id.strip_prefix("worker:").and_then(|id| id.parse().ok()) {
+                    self.inspect_worker(id);
+                }
+            }
+            crate::needs_you::ItemKind::IdleNotice => self.open_idle_picker(),
+            crate::needs_you::ItemKind::SignedOut => self.open_use_picker(),
+        }
     }
 
     pub(in crate::tui) fn idle_provider_name(provider: ProviderKind) -> &'static str {
@@ -910,34 +1083,93 @@ impl App {
             ProviderKind::Codex => "Codex",
             ProviderKind::Claude => "Claude Code",
             ProviderKind::Cursor => "Cursor",
+            ProviderKind::Grok => "Grok Build",
+            ProviderKind::Opencode => "opencode",
         }
     }
 
-    pub(in crate::tui) fn poll_model_refresh(&mut self) {
+    pub(in crate::tui) fn poll_model_refresh(&mut self) -> bool {
         let Some(refresh) = self.model_refresh.as_ref() else {
-            return;
+            return false;
         };
-        let Ok(models) = refresh.rx.try_recv() else {
-            return;
+        let result = match refresh.rx.try_recv() {
+            Ok(result) => result,
+            Err(std_mpsc::TryRecvError::Empty) => return false,
+            Err(std_mpsc::TryRecvError::Disconnected) => {
+                Err("native metadata worker stopped without a result".into())
+            }
         };
         let provider = refresh.provider;
         let account = refresh.account.clone();
         self.model_refresh = None;
         if self.provider != provider || self.account != account {
-            return;
+            return false;
         }
+        let models = match result {
+            Ok(result)
+                if self
+                    .home_path
+                    .as_ref()
+                    .and_then(|home| home.canonicalize().ok())
+                    .as_ref()
+                    == Some(&result.home)
+                    && get_account(&self.state_root, &account)
+                        .and_then(|account| account.home_path)
+                        .and_then(|home| home.canonicalize().ok())
+                        .as_ref()
+                        == Some(&result.home) =>
+            {
+                result.models
+            }
+            Ok(_) => {
+                if let Some(picker) = self
+                    .picker
+                    .as_mut()
+                    .filter(|picker| picker.kind == PickerKind::Model)
+                {
+                    picker.title = "model - refresh withheld; previous observations".into();
+                }
+                self.footer_left = "model account changed; reopen the model picker".into();
+                self.push_system(
+                    "Model refresh withheld: account/home changed; previous observations retained",
+                );
+                return true;
+            }
+            Err(error) => {
+                if let Some(picker) = self
+                    .picker
+                    .as_mut()
+                    .filter(|picker| picker.kind == PickerKind::Model)
+                {
+                    picker.title = "model - refresh unavailable; previous observations".into();
+                }
+                self.push_system(format!(
+                    "Model refresh unavailable: {error}. Existing rows are previous observations."
+                ));
+                self.footer_left =
+                    "model refresh failed; r retries; typed ID/native default still available"
+                        .into();
+                return true;
+            }
+        };
         let Some(picker) = self.picker.as_mut().filter(|p| p.kind == PickerKind::Model) else {
-            return;
+            return false;
         };
         let filter = picker.filter.clone();
         let selected = picker.state.selected().unwrap_or(0);
         let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
         picker.rows = model_picker_rows(models, chosen);
-        picker.title = "model".into();
+        picker.title = if provider == ProviderKind::Codex {
+            "model - native cache read"
+        } else {
+            "model - native list refreshed"
+        }
+        .into();
         picker.filter = filter;
         picker.state.select(Some(selected));
         picker.select_clamp();
         self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
+        true
     }
 
     pub(in crate::tui) fn update_running(&self) -> bool {
@@ -974,9 +1206,9 @@ impl App {
     }
 
     /// Deliver a finished background job (called on every tick).
-    pub(in crate::tui) fn poll_job(&mut self) {
+    pub(in crate::tui) fn poll_job(&mut self) -> bool {
         let Some(result) = self.job.as_ref().and_then(Job::poll) else {
-            return;
+            return false;
         };
         let cancelled = self.job.as_ref().is_some_and(Job::is_cancelled);
         self.job = None;
@@ -1018,6 +1250,16 @@ impl App {
                 self.push_system(format!("update failed - {e:#}"));
             }
             JobResult::Check(Ok(preview)) => {
+                if preview.install_available
+                    && !self
+                        .picker
+                        .as_ref()
+                        .is_some_and(|picker| picker.kind == PickerKind::Update)
+                {
+                    self.push_system(
+                        "A Concordia update is ready. Type /update to review and press Enter to install it, or continue later.",
+                    );
+                }
                 self.footer_left = if preview.install_available {
                     "Enter installs \u{b7} \u{2191}\u{2193} scroll \u{b7} Esc close"
                 } else {
@@ -1049,6 +1291,7 @@ impl App {
                 }
             }
         }
+        true
     }
 
     pub(in crate::tui) fn submit_input(&mut self, turn_tx: &mpsc::UnboundedSender<String>) {
@@ -1068,12 +1311,19 @@ impl App {
         if line.trim().is_empty() {
             return;
         }
-        let user_prompt = crate::user_commands::expand(&self.user_cmds, &line);
+        let provider_passthrough = crate::commands::is_provider_passthrough(&line);
+        let user_prompt = match crate::user_commands::expand(&self.user_cmds, &line) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                self.flash(error);
+                return;
+            }
+        };
         if self.session_ui.loading() && (!line.starts_with('/') || user_prompt.is_some()) {
             self.flash("recent messages are loading; your draft is kept");
             return;
         }
-        if self.busy && (!line.starts_with('/') || user_prompt.is_some()) {
+        if self.busy && (!line.starts_with('/') || user_prompt.is_some() || provider_passthrough) {
             let confirmed = self.busy_send_confirmation.take().is_some_and(|armed| {
                 armed.prompt == original_prompt
                     && armed.conversation == self.deleg.d.conversation_id()
@@ -1090,7 +1340,15 @@ impl App {
                 self.flash("Enter again to interrupt and send this message; Tab queues it.");
                 return;
             }
-            if self.queue.force_pending {
+            // A slash command typed while a turn is busy is only an interrupt
+            // confirmation, not a submitted prompt. Do not leave that command
+            // in the composer when Esc cancels the running turn.
+            if line.starts_with('/') {
+                self.editor.clear();
+                self.clear_selections();
+                self.persist_draft_now();
+            }
+            if self.queue.dispatch.is_explicit() {
                 self.flash("Stopping the active turn before sending the pending message…");
                 return;
             }
@@ -1099,7 +1357,7 @@ impl App {
             followup.text = line;
             self.queue.items.push(followup.encode());
             let notice = self.force_queued(index);
-            if self.queue.force_pending {
+            if self.queue.dispatch.is_explicit() {
                 self.editor.clear();
                 self.images.draft.clear();
                 self.clear_selections();
@@ -1119,7 +1377,7 @@ impl App {
             return;
         }
         if !self.busy
-            && (!line.starts_with('/') || user_prompt.is_some())
+            && (!line.starts_with('/') || user_prompt.is_some() || provider_passthrough)
             && self.reference_journal.backlogged()
         {
             self.flash("Finishing history references; your draft is kept.");
@@ -1138,15 +1396,17 @@ impl App {
         self.remember_prompt(&dispatch);
         self.editor.clear();
         self.clear_selections();
-        self.persist_draft_now();
         let was_busy = self.busy;
         if line != "/config" && !line.starts_with("/config ") {
             landing::close(self);
         }
         self.run_line(dispatch, turn_tx);
+        // Keep the durable composer until run_line has either saved its request
+        // checkpoint or restored a rejected submission. A restart must not see
+        // an empty draft before the accepted request exists on disk.
+        self.persist_draft_now();
         if !was_busy && self.busy && self.submitted_prompt.is_some() {
             self.submitted_prompt = Some(original_prompt);
-            let _ = self.feed().emit("turn_start", "");
         }
     }
 
@@ -1188,45 +1448,6 @@ impl App {
         if !line.starts_with('/') {
             self.questions.clear();
         }
-        if let Some(arg) = line
-            .strip_prefix("/continue")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            if arg.trim().is_empty() {
-                self.show_unfinished_request();
-                return;
-            }
-            if self
-                .picker
-                .as_ref()
-                .is_some_and(|picker| picker.kind == PickerKind::Continuation)
-            {
-                self.dismiss_picker();
-            }
-            self.continue_usage(arg.trim(), turn_tx);
-            return;
-        }
-        if let Some(arg) = line
-            .strip_prefix("/worktree")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            self.managed_workspace_command(arg.trim());
-            return;
-        }
-        if let Some(arg) = line
-            .strip_prefix("/scope")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            self.scope_command(arg.trim());
-            return;
-        }
-        if let Some(arg) = line
-            .strip_prefix("/continuation")
-            .filter(|arg| arg.is_empty() || arg.starts_with(' '))
-        {
-            self.continuation_command(arg.trim());
-            return;
-        }
         if self.session_ui.loading() && !line.starts_with('/') {
             self.flash("recent messages are loading; wait before sending");
             if self.editor.text().is_empty() {
@@ -1237,10 +1458,31 @@ impl App {
         self.view.follow_tail();
         // A user command shows as typed and sends its rendered template as an ordinary turn.
         let mut send = line.clone();
-        if let Some(prompt) = crate::user_commands::expand(&self.user_cmds, &line) {
-            send = prompt;
-        } else if self.handle_slash(&line) {
-            self.flush_delegate_prompt(turn_tx);
+        match crate::user_commands::expand(&self.user_cmds, &line) {
+            Ok(Some(prompt)) => send = prompt,
+            Ok(None) => {
+                if self.handle_slash(&line) {
+                    self.flush_delegate_prompt(turn_tx);
+                    return;
+                }
+            }
+            Err(error) => {
+                self.restore_composer(&original_line);
+                self.persist_draft_now();
+                self.flash(error);
+                return;
+            }
+        }
+        if self.account.is_empty() {
+            self.restore_composer(&original_line);
+            self.persist_draft_now();
+            self.flash("No account selected. Use /use to connect an account; your draft is kept.");
+            return;
+        }
+        if let Some(error) = self.chat_ownership_error.clone() {
+            self.restore_composer(&original_line);
+            self.persist_draft_now();
+            self.flash(format!("Cannot send: {error}"));
             return;
         }
         let selected_account = get_use_selection(&self.state_root).is_some_and(|selection| {
@@ -1283,7 +1525,6 @@ impl App {
         self.submitted_prompt = Some(request.clone());
         self.continuation
             .begin(&self.account, &self.model, &original_line);
-        self.freeze_continuation_routes();
         if let Err(error) = self.bind_main_scope() {
             self.push_system(format!(
                 "workspace scope not approved: {error}; request kept"
@@ -1307,12 +1548,6 @@ impl App {
             self.push_user(incoming.display());
         }
         self.turn_started = Some(Instant::now());
-        let feed = crate::feed::FeedWriter::new(
-            &self.state_root,
-            self.thread_id().unwrap_or("main"),
-            crate::config::for_root(&self.state_root).feed.enabled,
-        );
-        let _ = feed.emit("turn_start", &request);
         self.phase = Phase::Waiting;
         self.live_thinking.clear();
         self.busy = true;
@@ -1328,6 +1563,12 @@ impl App {
     }
 
     pub(in crate::tui) fn request_cancel(&mut self) {
+        if self.editor.text().starts_with('/') {
+            self.busy_send_confirmation = None;
+            self.editor.clear();
+            self.clear_selections();
+            self.persist_draft_now();
+        }
         self.questions.cancel_native();
         self.native_owner = None;
         if self.cancel_requested {
@@ -1382,16 +1623,24 @@ impl App {
         let state_root_for_usage = state_root.clone();
         let state_root_for_cmds = state_root.clone();
         App {
+            chat_ownership_error: None,
+            local_terminal: local_terminal::State::default(),
             appearance: appearance::State::load(&state_root),
             continuation: continuation::State::new(&state_root),
             continuation_target: None,
             state_root,
             cwd,
             account_names: Default::default(),
+            store_warning: None,
+            account_changes_blocked: false,
             account_email: None,
             header_email_revealed: false,
             header_email_pressed: false,
             header_home_pressed: false,
+            header_provider_pressed: false,
+            header_model_pressed: false,
+            header_effort_pressed: false,
+            header_attention_pressed: false,
             permissions_pressed: false,
             permission_rows: Vec::new(),
             permission_row_pressed: None,
@@ -1399,10 +1648,9 @@ impl App {
             header_credits_pressed: false,
             messages: vec![ChatLine {
                 role: MsgRole::System,
-                text: "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts."
-                    .into(),
+                text: super::super::START_HINT.into(),
                 card: None,
-            meta: None,
+                meta: None,
             }],
             idle_notice: None,
             handoff_after_cancel: false,
@@ -1421,7 +1669,6 @@ impl App {
             native_accounting_owner: None,
             scopes: workspace_scope::State::default(),
             managed_workspaces: managed_workspaces::State::default(),
-            project_search: workspace_search::State::default(),
             file_action_target: None,
             images: images::State::default(),
             raster: raster::State::default(),
@@ -1430,6 +1677,7 @@ impl App {
             hist_draft: String::new(),
             parked_draft: None,
             fresh_draft: false,
+            tab_request: None,
             quit_armed: None,
             busy_send_confirmation: None,
             full_mode_confirmed: false,
@@ -1455,14 +1703,17 @@ impl App {
             account: "codex".into(),
             home_path: None,
             model: "?".into(),
-            trust: TrustMode::Workspace,
+            effort: None,
+            trust: TrustMode::Edit,
             native_session_id: None,
             task_id: None,
+            pending_repair_map: None,
             session_chip: None,
             session_ui: session_ui::State::default(),
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            repair_task: None,
             doctor: None,
             doctor_applier: Box::new(crate::doctor::DoctorAppliers),
             model_refresh: None,
@@ -1479,7 +1730,6 @@ impl App {
             prior_provider: ProviderKind::Codex,
             prior_home: None,
             need_context_pack: false,
-            task_map: None,
             thread: crate::threads::start(&state_root_for_usage),
             reference_journal: reference_journal::State::default(),
             thread_meta_done: false,
@@ -1490,7 +1740,10 @@ impl App {
             usage_warning: None,
             usage_fetcher: UsageFetcher::new(state_root_for_usage.clone()),
             usage_block: None,
-            stats: appearance::State::load(&state_root_for_usage).ui.stats.then(crate::sysstats::StatsHandle::start),
+            stats: appearance::State::load(&state_root_for_usage)
+                .ui
+                .stats
+                .then(crate::sysstats::StatsHandle::start),
             compat_rx: None,
             picker_tones: HashMap::new(),
             live_cards: Vec::new(),
@@ -1513,12 +1766,16 @@ impl App {
             reexec_path: None,
             deleg: workers::Panel::default(),
             worker_panel_open: false,
-            worker_panel_explicit: crate::store::get_settings(&state_root_for_cmds).worker_panel_open,
+            worker_panel_explicit: crate::store::get_settings(&state_root_for_cmds)
+                .worker_panel_open,
             tab_strip: Vec::new(),
             tab_index: 0,
+            tab_drag: None,
+            tab_outcome: None,
+            tool_started: HashMap::new(),
             tab_hits: Vec::new(),
             tab_close_hits: Vec::new(),
-            rename_active: false,
+            rename_editor: None,
             user_cmds: crate::user_commands::scan(&state_root_for_cmds).commands,
             queue: queue::Queue::default(),
             last_sent: None,
@@ -1526,6 +1783,7 @@ impl App {
             signed_out_confirmation: None,
             signed_out_overrides: HashSet::new(),
             needs_you: crate::needs_you::Queue::default(),
+            grok_bot_form: None,
         }
     }
 }
@@ -1533,6 +1791,11 @@ pub(in crate::tui) fn select_account(state_root: &Path, account_id: &str) -> any
     let Some(acct) = get_account(state_root, account_id) else {
         anyhow::bail!("unknown account {account_id}");
     };
+    let model = get_use_selection(state_root)
+        .filter(|selection| {
+            selection.account == acct.account && selection.provider == acct.provider
+        })
+        .and_then(|selection| selection.model);
     set_use_selection(
         state_root,
         UseSelection {
@@ -1542,21 +1805,11 @@ pub(in crate::tui) fn select_account(state_root: &Path, account_id: &str) -> any
                 .home_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
-            model: None,
+            model,
+            effort: get_use_selection(state_root).and_then(|selection| selection.effort),
             updated_at: now_stamp(),
         },
     )
-}
-
-pub(in crate::tui) const TYPED_MODEL_PREFIX: &str = "typed-model:";
-
-pub(in crate::tui) fn model_source_tag(source: crate::models::ModelSource) -> &'static str {
-    match source {
-        crate::models::ModelSource::ListedByCli => "reported by CLI",
-        crate::models::ModelSource::Cached => "cached",
-        crate::models::ModelSource::Catalog => "catalog",
-        crate::models::ModelSource::Typed => "typed",
-    }
 }
 
 pub(in crate::tui) fn model_picker_rows(
@@ -1579,14 +1832,20 @@ pub(in crate::tui) fn model_picker_rows(
             .push(model);
     }
     for (family, mut entries) in families {
-        entries.sort_by_key(|m| (m.deprecated, m.display_name.to_ascii_lowercase()));
+        entries.sort_by_key(|m| m.display_name.to_ascii_lowercase());
         rows.push(PickerRow {
             id: format!("model-group:{family}"),
             label: family,
             detail: String::new(),
         });
         for model in entries {
-            let current = chosen == Some(model.id.as_str());
+            let current = chosen.is_some_and(|chosen| {
+                chosen == model.id
+                    || model
+                        .efforts
+                        .iter()
+                        .any(|effort| effort.model_id.as_deref() == Some(chosen))
+            });
             rows.push(PickerRow {
                 id: format!("model:{}", model.id),
                 label: format!(
@@ -1594,16 +1853,11 @@ pub(in crate::tui) fn model_picker_rows(
                     model.display_name,
                     if current { " · current" } else { "" }
                 ),
-                detail: format!(
-                    "{} · {}{}",
-                    model.id,
-                    model_source_tag(model.source),
-                    if model.deprecated {
-                        " · deprecated"
-                    } else {
-                        ""
-                    }
-                ),
+                detail: if model.efforts.is_empty() {
+                    model.id
+                } else {
+                    format!("{} · efforts: {}", model.id, model.effort_names().join(", "))
+                },
             });
         }
     }

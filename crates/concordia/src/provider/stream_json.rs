@@ -1,16 +1,52 @@
 //! Streaming JSON events from Claude Code (`--output-format stream-json --verbose`) and Cursor
 //! (`--output-format stream-json`) -> text, thinking and tool cards.
 //!
-//! Both formats are line-delimited JSON. The parser is tolerant on purpose: an unknown event is
-//! ignored, and a line that is not JSON at all is passed through as plain text, so a CLI that
-//! rejects the flag or prints a notice still shows something.
+//! Both formats require JSON objects. Unknown structured events are ignored; invalid protocol
+//! output is reported as an error and is never promoted into an assistant reply.
 
 use super::stream_cards::{CardStatus, StreamCard, StreamPart, TurnUsage};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const TOOL_MAP_MAX: usize = 4096;
+
+/// Compare Cursor's repeated whole messages without keeping a second copy of the stream.
+#[derive(Default)]
+struct SegmentFingerprint {
+    hash: Sha256,
+    trimmed: Sha256,
+    started: bool,
+}
+
+impl SegmentFingerprint {
+    fn push(&mut self, text: &str) {
+        let text = if self.started {
+            text
+        } else {
+            text.trim_start()
+        };
+        if text.is_empty() {
+            return;
+        }
+        self.started = true;
+        let trimmed = text.trim_end();
+        if !trimmed.is_empty() {
+            self.trimmed = self.hash.clone();
+            self.trimmed.update(trimmed.as_bytes());
+        }
+        self.hash.update(text.as_bytes());
+    }
+
+    fn matches(&self, text: &str) -> bool {
+        self.trimmed.clone().finalize() == Sha256::digest(text.trim().as_bytes())
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
@@ -29,9 +65,10 @@ pub struct StreamParser {
     /// Cursor is mid-way through a run of stamped text (see `parse_line`).
     streaming_text: bool,
     /// The last run of stamped text, to recognise Cursor's unstamped repeat of it.
-    segment: String,
+    segment: SegmentFingerprint,
     /// Tool paths inside this folder are shown relative to it.
     cwd: Option<PathBuf>,
+    invalid_output: bool,
 }
 
 fn remember_tool<K, V>(map: &mut HashMap<K, V>, key: K, value: V) -> bool
@@ -56,8 +93,9 @@ impl StreamParser {
             dropped_partial_tools: 0,
             saw_text: false,
             streaming_text: false,
-            segment: String::new(),
+            segment: SegmentFingerprint::default(),
             cwd: None,
+            invalid_output: false,
         }
     }
 
@@ -72,10 +110,15 @@ impl StreamParser {
             return Vec::new();
         }
         let Ok(ev) = serde_json::from_str::<Value>(t) else {
-            return vec![StreamPart::Text(t.to_string())];
+            self.invalid_output = true;
+            return vec![StreamPart::Error("Provider returned invalid structured JSON output; plain-text downgrade is disabled.".into())];
         };
         if !ev.is_object() {
-            return vec![StreamPart::Text(t.to_string())];
+            self.invalid_output = true;
+            return vec![StreamPart::Error(
+                "Provider returned a non-object JSON event; current structured output is required."
+                    .into(),
+            )];
         }
         let typ = ev.get("type").and_then(Value::as_str).unwrap_or("");
         let mut out = Vec::new();
@@ -94,7 +137,7 @@ impl StreamParser {
             // tool call that copy is stamped too, so it is recognised by matching the segment.
             "assistant" if self.flavor == Flavor::Cursor && ev.get("timestamp_ms").is_some() => {
                 let whole = Self::block_texts(&ev).concat();
-                if self.streaming_text && whole.len() > 1 && whole.trim() == self.segment.trim() {
+                if self.streaming_text && whole.len() > 1 && self.segment.matches(&whole) {
                     return out;
                 }
                 for t in Self::block_texts(&ev) {
@@ -103,14 +146,14 @@ impl StreamParser {
                         self.segment.clear();
                     }
                     self.saw_text = true;
-                    self.segment.push_str(&t);
+                    self.segment.push(&t);
                     out.push(StreamPart::TextDelta(t));
                 }
             }
             "assistant" if self.flavor == Flavor::Cursor => {
                 self.end_segment(&mut out);
                 let repeat = Self::block_texts(&ev).concat();
-                if repeat.trim() != self.segment.trim() {
+                if !self.segment.matches(&repeat) {
                     self.content_blocks(&ev, &mut out);
                 }
                 self.segment.clear();
@@ -139,6 +182,10 @@ impl StreamParser {
             _ => {}
         }
         out
+    }
+
+    pub fn invalid_output(&self) -> bool {
+        self.invalid_output
     }
 
     fn claude_stream_event(&mut self, ev: &Value, out: &mut Vec<StreamPart>) {
@@ -369,9 +416,12 @@ impl StreamParser {
             .and_then(tool_input_detail)
             .map(|d| self.relative(&d))
             .or_else(|| self.tools.get(&id).and_then(|(_, d)| d.clone()));
-        self.tools
-            .insert(id.clone(), (title.clone(), detail.clone()));
         let done = ev.get("subtype").and_then(Value::as_str) == Some("completed");
+        if done {
+            self.tools.remove(&id);
+        } else if !remember_tool(&mut self.tools, id.clone(), (title.clone(), detail.clone())) {
+            self.dropped_tools += 1;
+        }
         if done {
             if let Some(summary) = self.cursor_result_summary(kind, body) {
                 detail = Some(summary);
@@ -641,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_and_unknown_events_are_tolerated() {
+    fn invalid_protocol_is_an_error_and_unknown_structured_events_are_ignored() {
         let parts = parse(
             Flavor::Cursor,
             &[
@@ -651,8 +701,8 @@ mod tests {
                 "[1,2]",
             ],
         );
-        assert!(matches!(&parts[0], StreamPart::Text(t) if t == "just a notice"));
-        assert!(matches!(&parts[1], StreamPart::Text(t) if t == "[1,2]"));
+        assert!(matches!(&parts[0], StreamPart::Error(_)));
+        assert!(matches!(&parts[1], StreamPart::Error(_)));
         assert_eq!(parts.len(), 2);
     }
 
@@ -674,16 +724,20 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(cards.len(), 3);
-        assert!(cards
-            .iter()
-            .all(|c| c.id == "call-雪" && c.status == CardStatus::Running));
-        assert!(cards
-            .last()
-            .unwrap()
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("echo 雪"));
+        assert!(
+            cards
+                .iter()
+                .all(|c| c.id == "call-雪" && c.status == CardStatus::Running)
+        );
+        assert!(
+            cards
+                .last()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("echo 雪")
+        );
     }
 
     #[test]
@@ -892,10 +946,12 @@ mod usage_tests {
         assert_eq!(titles, ["glob", "getmcptools", "read"]);
         assert!(cards.iter().all(|c| c.status == CardStatus::Done));
         assert_eq!(cards[2].detail.as_deref(), Some("calc.py · 7 lines"));
-        assert!(cards[0]
-            .detail
-            .as_deref()
-            .is_some_and(|d| d.starts_with("**/calc.py\n")));
+        assert!(
+            cards[0]
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("**/calc.py\n"))
+        );
 
         let first_card = parts
             .iter()
@@ -968,9 +1024,11 @@ mod usage_tests {
             "{:?}",
             outcome.text
         );
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::TextDelta(t) if t == "divide")));
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::TextDelta(t) if t == "divide"))
+        );
 
         let cards = final_cards(&parts);
         let edit = cards.iter().find(|c| c.title == "edit").unwrap();

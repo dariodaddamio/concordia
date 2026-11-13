@@ -1,14 +1,12 @@
 //! Deterministic, local redaction for values which must not enter Concordia records.
 //!
-//! Scanning is deliberately bounded: for each line only its first 64 KiB is examined.  This
-//! keeps an accidentally unterminated or minified input from making redaction unbounded while
-//! retaining the original suffix verbatim.
+//! Input readers own their byte limits. Every supplied line is scanned, including long
+//! serialized records, so a scan boundary cannot copy a credential verbatim into storage.
 
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::sync::{OnceLock, RwLock};
 
-const LINE_LIMIT: usize = 64 * 1024;
 static RUNTIME_SECRETS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
 static INSTALL_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 
@@ -16,32 +14,40 @@ static INSTALL_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 pub fn register_runtime_secret(value: impl Into<String>) {
     let value = value.into();
     if !value.is_empty() {
-        RUNTIME_SECRETS
+        let mut secrets = RUNTIME_SECRETS
             .get_or_init(|| RwLock::new(Vec::new()))
             .write()
-            .expect("runtime redaction lock poisoned")
-            .push(value);
+            .expect("runtime redaction lock poisoned");
+        if !secrets.contains(&value) {
+            secrets.push(value);
+        }
     }
 }
 
 /// Redact credentials and high-entropy values from text.
 pub fn redact(text: &str) -> Cow<'_, str> {
-    if let Some((begin, end)) = pem_range(text) {
-        let mut output = redact(&text[..begin]).into_owned();
-        output.push_str(&token("pem_private_key", &text[begin..end]));
-        output.push_str(&redact(&text[end..]));
-        return Cow::Owned(output);
+    let mut rest = text;
+    let mut output = String::new();
+    while let Some((begin, end)) = pem_range(rest) {
+        output.push_str(&redact_lines(&rest[..begin]));
+        output.push_str(&token("pem_private_key", &rest[begin..end]));
+        rest = &rest[end..];
     }
+    if rest.len() == text.len() {
+        return redact_lines(text);
+    }
+    output.push_str(&redact_lines(rest));
+    Cow::Owned(output)
+}
+
+fn redact_lines(text: &str) -> Cow<'_, str> {
     let mut output = String::with_capacity(text.len());
     let mut changed = false;
     let mut start = 0;
-    for (line_start, line) in text.match_indices('\n') {
+    for (line_start, _) in text.match_indices('\n') {
         let end = line_start + 1;
         changed |= redact_line(&text[start..end], &mut output);
         start = end;
-        if line.is_empty() {
-            // `match_indices` yields the newline itself; this branch is intentionally empty.
-        }
     }
     changed |= redact_line(&text[start..], &mut output);
     if changed {
@@ -52,17 +58,39 @@ pub fn redact(text: &str) -> Cow<'_, str> {
 }
 
 pub fn redact_bytes(bytes: &[u8]) -> Vec<u8> {
+    fn strings(value: &mut serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::String(text) => match redact(text) {
+                Cow::Owned(safe) => {
+                    *text = safe;
+                    true
+                }
+                Cow::Borrowed(_) => false,
+            },
+            serde_json::Value::Array(values) => values
+                .iter_mut()
+                .fold(false, |changed, value| strings(value) || changed),
+            serde_json::Value::Object(values) => values
+                .values_mut()
+                .fold(false, |changed, value| strings(value) || changed),
+            _ => false,
+        }
+    }
+    if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        return if strings(&mut value) {
+            // Value serialization cannot fail for an already parsed JSON tree.
+            serde_json::to_vec(&value).expect("serialize redacted JSON")
+        } else {
+            bytes.to_vec()
+        };
+    }
     std::str::from_utf8(bytes)
         .map(|text| redact(text).into_owned().into_bytes())
         .unwrap_or_else(|_| bytes.to_vec())
 }
 
 fn redact_line(line: &str, output: &mut String) -> bool {
-    let mut boundary = line.len().min(LINE_LIMIT);
-    while boundary > 0 && !line.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    let (scan, suffix) = line.split_at(boundary);
+    let scan = line;
     let mut ranges = Vec::new();
     if let Some(secrets) = RUNTIME_SECRETS.get() {
         for secret in secrets
@@ -97,7 +125,6 @@ fn redact_line(line: &str, output: &mut String) -> bool {
         changed = true;
     }
     output.push_str(&scan[cursor..]);
-    output.push_str(suffix);
     changed
 }
 
@@ -215,6 +242,9 @@ fn url_secret(s: &str, i: usize) -> Option<(usize, usize, &'static str)> {
     .iter()
     .find(|p| rest.starts_with(**p))?;
     let end = value_end(s, i);
+    if end - i > 64 * 1024 {
+        return Some((i, end, "oversized_url"));
+    }
     let url = &s[i..end];
     if let Some(at) = url.find('@') {
         if let Some(colon) = url[..at].find(':') {
@@ -232,21 +262,21 @@ fn url_secret(s: &str, i: usize) -> Option<(usize, usize, &'static str)> {
     }
     let query = url.find('?')?;
     let query = &url[query + 1..];
-    let mut offset = i + url.find('?').unwrap() + 1;
     for pair in query.split('&') {
-        let (name, value) = pair.split_once('=')?;
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
         if matches!(
             name.to_ascii_lowercase().as_str(),
             "token" | "key" | "sig" | "access_token" | "api_key"
         ) && value.len() >= 3
         {
             return Some((
-                offset + name.len() + 1,
-                offset + pair.len(),
+                i + url.find('?').unwrap() + 1,
+                i + url.len(),
                 "url_query_secret",
             ));
         }
-        offset += pair.len() + 1;
     }
     None
 }
@@ -254,9 +284,10 @@ fn url_secret(s: &str, i: usize) -> Option<(usize, usize, &'static str)> {
 fn assignment_secret(s: &str, i: usize) -> Option<(usize, usize, &'static str)> {
     let bytes = s.as_bytes();
     let mut p = i;
-    while bytes
-        .get(p)
-        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    while p - i <= 256
+        && bytes
+            .get(p)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
     {
         p += 1;
     }
@@ -360,9 +391,8 @@ fn pem_range(s: &str) -> Option<(usize, usize)> {
     let key = s[begin..].find("PRIVATE KEY-----")?;
     let body = begin + key + "PRIVATE KEY-----".len();
     let end = body + s[body..].find("-----END")?;
-    s[end..]
-        .contains("PRIVATE KEY-----")
-        .then_some((begin, end + "PRIVATE KEY-----".len()))
+    let trailer_end = end + s[end..].find("PRIVATE KEY-----")? + "PRIVATE KEY-----".len();
+    Some((begin, trailer_end))
 }
 
 fn find_all(
@@ -394,7 +424,7 @@ fn key() -> [u8; 32] {
     *INSTALL_KEY.get_or_init(|| {
         // Keep token generation independent of process-wide test/application environment.
         // The state directory is intentionally not consulted here: lib tests run concurrently
-        // and some legacy tests temporarily alter CONCORDIA_STATE_DIR while exercising isolated
+        // and some isolated tests temporarily alter CONCORDIA_STATE_DIR while exercising
         // storage.  Reading it during lazy initialization made the redaction key depend on which
         // test happened to win the race (and could create redact.key in another test's state).
         let digest =

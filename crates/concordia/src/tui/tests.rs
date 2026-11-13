@@ -1,9 +1,6 @@
 //! End-to-end input tests: real key/mouse events through the handlers, rendered with ratatui's
 //! `TestBackend`, asserting on text, selection, caret and clipboard (in-memory under `cfg(test)`).
 
-#[path = "reliability_tests.rs"]
-mod reliability;
-
 use super::*;
 #[path = "tests/app.rs"]
 mod app;
@@ -551,7 +548,20 @@ fn log_turn(h: &Harness, provider: &str, parts: (u64, u64, u64)) {
             cached_input: parts.1,
             output: parts.2,
             cost_usd: None,
-            attribution: None,
+            attribution: Some(crate::token_log::Attribution::new(
+                crate::token_log::Origin::Main,
+                &uuid::Uuid::new_v4().to_string(),
+                &uuid::Uuid::new_v4().to_string(),
+                Some(&h.app.cwd),
+                &crate::provider::stream_cards::TurnUsage {
+                    input: Some(parts.0.saturating_add(parts.1)),
+                    cached: Some(parts.1),
+                    output: Some(parts.2),
+                    cost_usd: None,
+                },
+                "succeeded",
+                true,
+            )),
         },
     )
     .unwrap();

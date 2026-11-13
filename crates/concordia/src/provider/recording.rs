@@ -1,7 +1,7 @@
 use crate::{redact, store::ProviderKind};
 use serde::Serialize;
 use std::{
-    fs::{create_dir_all, OpenOptions},
+    fs::{OpenOptions, create_dir_all},
     io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -35,15 +35,10 @@ impl Recorder {
         Some(Self(Arc::new(Mutex::new(file)), provider))
     }
     pub fn line(&self, stream: &str, line: &str) {
-        let version = crate::provider::compat::TESTED
-            .iter()
-            .find(|(p, _)| *p == self.1)
-            .and_then(|(_, v)| v.first())
-            .copied()
-            .unwrap_or("unknown");
+        let version = super::compat::version_for(self.1);
         let entry = Entry {
             provider: self.1.as_str(),
-            cli_version: version,
+            cli_version: &version,
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),

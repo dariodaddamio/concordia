@@ -1,57 +1,44 @@
 # UI architecture
 
-## Product
+Concordia's native Windows window renders the ratatui application.
+Native tabs retain independent conversation state. Provider CLIs supply structured events, not a
+hidden native TUI to scrape.
 
-Concordia is a **terminal app** you talk to. It should feel like a polished agent client. Codex, Claude
-and Cursor are **backends** (your subscriptions and their tools), not the thing you live in.
+## Ownership and input
 
-Image attachments show a bounded snapshot thumbnail above the composer without requiring a click.
-The first attached image previews automatically; every image chip can open the enlarged viewer.
-The thumbnail leaves typing active, and monochrome terminals use luminance characters. Pasted file
-paths retain their text and offer explicit attachment through F9; a path alone is not an attachment.
+- `tui/run.rs` owns tab lifecycle, provider channels, polling and redraw scheduling.
+- `tui/window_session.rs` owns OS-locked workspace window layouts, exact pane references and
+  bounded saved conversation projections; native approval/process state is never serialized.
+- `tui/app/` owns the conversation, draft, queue, native binding and turn finalization.
+- `tui/input_dispatch.rs` routes input to the active control before the composer or Home.
+- `tui/draw/` renders cells; `tui/native_window.rs` renders those cells/images on Windows.
+- `tui/transcript.rs` owns wrapped transcript rows, scrolling and selection.
+- `tui/workspace.rs` owns file panes; preview/edit/save use the file modules.
 
-The second header row separates native credit balance/availability from subscription limits. A
-missing native balance reads `Credits: not reported`; the usage view also states when credit spend
-is not reported separately. App title glyphs describe activity. The graphical Windows Terminal tab
-icon belongs to the host profile and is independent of Concordia's title text.
+Home reuses an unbound tab and returns to the originating chat; each tab keeps its own draft,
+attachments, queue and running work. Ctrl+T explicitly creates a new tab.
+Restart restores the last closed workspace window's open tabs, selected conversation and drafts;
+held window and pane locks prevent concurrent windows from claiming the same saved ownership.
+Choosing a recorded chat resumes its explicit session and reads history without starting a model.
+An open picker owns navigation, Enter and Escape even when Home remains underneath it.
 
-The header email is hidden by default. Click its label to show or hide it; changing accounts
-resets disclosure. The app name/version has no duplicate animated activity glyph. The usage view
-links to the provider dashboard when more credit-balance detail is needed; absent native amounts
-remain explicitly unreported.
+## Rendering and status
 
-## Non-negotiables
+The prompt editor, transcript view and workspace panes have separate layout/selection state.
+The composer keeps up to 200 undo steps with a 32 MiB budget per direction; an oversized newest
+step remains protected. Clipboard helpers share the process-lifetime deadline/output owner.
+Background pollers explicitly report accepted visible changes to the runner. Folded transcripts
+reuse exact source keys while their estimated structs and payload fit an 8 MiB budget; larger
+projections use a full content fingerprint. Both paths check content, presentation, link roots
+and diagram revisions. Initial wrapping and oversized fingerprint comparisons remain linear;
+static review does not establish a latency guarantee.
+Provider events update text, reasoning and tool cards. The named activity phase explains current
+output; it does not decide whether a process is running or a tool is safe to replay.
+[State ownership](tui-states.md) describes those separate responsibilities.
 
-The header's left arrow opens Home over the current chat, preserving its messages, draft, queue,
-and running turn. The return arrow or Esc restores that chat. Home also works with an empty chat
-history. Choosing another chat uses the existing explicit resume flow and running-turn checks.
-Left/Right Arrow navigate between chat and Home when the composer is empty. Alt+Left/Alt+Right
-also navigate with a draft present. Plain arrows continue editing nonempty text; focused panes,
-queue/goal editors and modal decisions keep their arrow keys.
+Themes apply one semantic palette to the cell buffer; source image pixels remain image data.
+Native image padding and client margins use the selected canvas. Header account, model, usage and
+Attention controls refer to the active tab. Unknown usage/credit values stay unknown.
 
-The credit row is clickable. Its details separate numeric balance from availability and include
-the native source and a read-only refresh action. Codex accounts also have a direct dashboard
-action for balance and purchase details omitted by the native quota response. Null balances
-remain unknown; token counts and availability are not converted into invented credit amounts.
-
-- One input for chat and orchestrator commands (`/use`, `/config`, ...).
-- One logical conversation can continue across providers and accounts with **bounded** context
-  handoff (connected context, minimal tokens).
-- Real text editing in the prompt: click to place the caret, drag to select, copy and paste with
-  visible success or failure.
-- Multi-session through WezTerm panes and tabs; each pane runs its own Concordia.
-- Clean-room look and feel: no provider UI source is copied.
-
-## Backend
-
-Concordia draws the transcript, prompt and slash UI. Turns go through the programmatic CLIs
-(`codex exec`, `claude -p`, `agent --print`). Richer tool and command cards come from their
-structured event streams, rendered by Concordia.
-
-## Rendering model
-
-The transcript is a list of wrapped rows (hanging gutters, soft-wrap aware) cached per message, so
-a very long session redraws quickly. Selection, scrolling and hit-testing operate on those rows;
-copied text rejoins soft wraps. The prompt is a separate multi-line editor with its own layout.
-
-Turn state, its colours and animation, and the transcript separation rules are in [tui-states.md](tui-states.md).
+Behavior details: [chat/input rendering](chat-rendering.md), [workspace panes](workspace-panes.md),
+[images and diagrams](images-and-diagrams.md). Keybindings and commands: [UI glossary](ui-glossary.md).

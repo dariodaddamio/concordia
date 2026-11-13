@@ -15,6 +15,27 @@ pub struct RowSpan {
 
 /// Undo steps kept per editor.
 const UNDO_CAP: usize = 200;
+const UNDO_BYTES: usize = 32 * 1024 * 1024;
+
+fn bound_steps(steps: &mut Vec<Snap>) {
+    let mut bytes = steps
+        .iter()
+        .map(|step| step.text.len().saturating_mul(std::mem::size_of::<char>()))
+        .sum::<usize>();
+    let mut remove = 0;
+    while steps.len().saturating_sub(remove) > 1
+        && (steps.len() - remove > UNDO_CAP || bytes > UNDO_BYTES)
+    {
+        bytes = bytes.saturating_sub(
+            steps[remove]
+                .text
+                .len()
+                .saturating_mul(std::mem::size_of::<char>()),
+        );
+        remove += 1;
+    }
+    steps.drain(..remove);
+}
 
 /// A restorable editor state: text, caret and selection anchor.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,9 +158,7 @@ impl Editor {
             !had_selection && burst.is_some_and(|b| self.hist.burst == Some((b, before.cursor)));
         if !merge {
             self.hist.undo.push(before);
-            if self.hist.undo.len() > UNDO_CAP {
-                self.hist.undo.remove(0);
-            }
+            bound_steps(&mut self.hist.undo);
         }
         self.hist.redo.clear();
         self.hist.burst = burst.map(|b| (b, self.cursor));
@@ -152,6 +171,7 @@ impl Editor {
         };
         let cur = self.snap();
         self.hist.redo.push(cur);
+        bound_steps(&mut self.hist.redo);
         self.restore(prev);
         true
     }
@@ -163,6 +183,7 @@ impl Editor {
         };
         let cur = self.snap();
         self.hist.undo.push(cur);
+        bound_steps(&mut self.hist.undo);
         self.restore(next);
         true
     }

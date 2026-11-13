@@ -1,7 +1,12 @@
 # Native worker input and activity presentation
 
-Baseline: main `c5e34f3`. This slice connects the existing interaction contract to worker
-execution and makes activity, edits, agent results and account limits easier to inspect.
+Scoped source record: `2026-11-09a`; see [verification](../e2e-status.md) for the current build.
+That source pins Claude's native-stdio contract to CLI `2.1.319`. An
+initialize-only exchange was observed; live 2.1.319 permission/question, background-task and
+capacity parity remain unqualified. Earlier 2.1.318 process/live receipts below remain historical.
+
+This feature record began at main `c5e34f3`, connecting the interaction contract to workers and
+making activity, edits, agent results and account limits easier to inspect.
 
 ## Native execution
 
@@ -35,9 +40,9 @@ never a success claim or automatic replay. Long-lived remote tasks, shell comman
 are outside this retention contract.
 
 [Codex app-server input](codex-native-input.md) extends this contract behind explicit account/home
-selection. Claude now has a separately gated stdio contract: the source-matched Claude Code
-The installed 2026-11-04b candidate tracks Claude CLI `2.1.318`; the source-matched Python SDK v0.2.178
-defines the same `--input-format stream-json --output-format stream-json
+selection. Claude has a separately gated stdio contract. The historical installed 2026-11-04b
+candidate used Claude CLI `2.1.318`; the matching Python SDK v0.2.178 defined the same
+`--input-format stream-json --output-format stream-json
 --permission-prompt-tool stdio`; after an `initialize` control exchange, top-level
 `control_request`/`can_use_tool` frames carry a request id, tool name, original input and
 tool-use id, and the only native response is a matching `control_response`. The adapter keeps
@@ -49,7 +54,8 @@ before dispatch; `/native ACCOUNT off` selects the existing standard adapter. It
 falls back from an approval-capable transport. Duplicate IDs receive no second grant. Native
 cancellation invalidates pending review while stdout continues being consumed; closing or losing
 the provider leaves uncertain completion paused. Image content is preserved. Structured Claude
-`AskUserQuestion` is now supported in the existing broker for the scoped native 2.1.318 shape.
+`AskUserQuestion` is supported in the broker using the versioned shape exercised by the historical
+2.1.318 fixtures; the initialize-only 2.1.319 observation does not qualify live question handling.
 The broker preserves original question text/options and returns answers as strings; multi-select
 answers are joined with `, `. Malformed, unsupported or cancelled payloads are denied, and no HTML
 preview is rendered. This follows the official [user-input contract](https://platform.claude.com/docs/en/agent-sdk/user-input)
@@ -59,13 +65,13 @@ the focused choice and Enter confirms; mouse clicks toggle choices and the confi
 the reviewed set. A free-text `Other` response reuses the existing note row rather than opening
 HTML or a second editor. The same bounded ownership, cancellation and at-most-once response
 rules apply to these answers.
-The d322 native source checks pass 26 native unit cases plus extended foreground/worker process
+The historical d322 native source checks passed 26 native unit cases plus extended foreground/worker process
 fixtures, including background, cancellation, foreign-owner and EOF cases. No live model turn or
 physical-host parity is claimed;
 exact historical artifact evidence is in [E2E status](../e2e-status.md). Source evidence: [Python
 v0.2.178 CLI version](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/_cli_version.py),
 [query control methods](https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/v0.2.178/src/claude_agent_sdk/_internal/query.py),
-and [TypeScript v0.3.318 release parity](https://github.com/anthropics/claude-agent-sdk-typescript/releases). Build source is `22b4da5`; exact artifact identity and release receipt remain in E2E status.
+and [TypeScript v0.3.318 release parity](https://github.com/anthropics/claude-agent-sdk-typescript/releases). That historical build source was `22b4da5`; exact artifact identity and receipt remain in E2E status.
 
 ## Activity and navigation
 
@@ -87,7 +93,7 @@ the main agent. Native provider subagents retain their own result ownership. Nar
 the available width. No executor or result delivery is added by inspection.
 
 Down from the last queued item returns to the composer. Inline queue editing and Alt+Down reorder
-keep their existing meanings. Intricate memory/context/scope/worktree/Harness commands stay available
+keep their existing meanings. Provider-native commands stay available
 by explicit prefix but are absent from the bare slash menu. Agents use the read-only `memory` MCP
 tool; relationship confirmation and native grants remain explicit user decisions.
 
@@ -100,7 +106,7 @@ reading. Cached or failed refreshes retain freshness labels. No model calls or e
 
 ## Verification
 
-Production source `24e6d9d`, build `2026-11-03e`, passes all 983 enabled checks through everyday
+Historical production source `24e6d9d`, build `2026-11-03e`, passed all 983 enabled checks through everyday
 smoke, all-target Clippy and OSS gates (340 tracked text files). The isolated installed candidate
 is 19,097,088 bytes, SHA-256 `19dd5d649822015c9750edfcc4321cf37f92f45ed7eb2ffb4a0d0dfd6f1b2097`.
 Forty-seven installed terminal journeys pass in the full run; the extended worker journey passes
@@ -111,10 +117,10 @@ main turn or print fallback is launched. Final remote CI remains a separate reco
 
 ## Scoped 05c native evidence
 
-Production-transport checks qualify Codex offered cancellation and Claude structured Review
+Historical 05c production-transport checks qualified Codex offered cancellation and Claude structured Review
 answers with wrong-owner and duplicate-response rejection. The cancelled command was not granted;
 sentinel files and the main selection stayed unchanged. These helper-driven calls do not establish
 physical worker-window parity. A no-model worker-window rehearsal stopped at its fake executable's
 unverified version gate before issuing a native request; no fallback or live retry was started.
 Original driver failures and separate manual corrections are retained in
-[the current evidence record](../e2e-status.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).
+[the Git-preserved historical journal](../e2e-status.md#earlier-evidence).

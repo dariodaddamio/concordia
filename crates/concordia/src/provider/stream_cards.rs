@@ -1,4 +1,5 @@
 //! Clean-room Codex JSONL -> text / tool cards.
+use crate::tool_literals::literal_wrapper_calls;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +15,50 @@ pub struct StreamCard {
     pub title: String,
     pub detail: Option<String>,
     pub status: CardStatus,
+}
+
+const VISIBLE_CARDS_MAX: usize = 256;
+const CARD_TEXT_MAX: usize = 64 * 1024;
+const OMITTED_CARDS_ID: &str = "concordia:omitted-tool-history";
+
+fn bound_card_text(text: &mut String, limit: usize) {
+    const NOTICE: &str =
+        "\n[Display clipped; inspect the original native session for full output.]";
+    if text.len() <= limit {
+        return;
+    }
+    let mut end = limit.saturating_sub(NOTICE.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push_str(NOTICE);
+}
+
+pub(crate) fn bound_card(card: &mut StreamCard) {
+    if card.id.len() > 4096 {
+        use sha2::{Digest, Sha256};
+        card.id = format!("concordia:long-id:{:x}", Sha256::digest(card.id.as_bytes()));
+    }
+    bound_card_text(&mut card.title, 4096);
+    if let Some(detail) = &mut card.detail {
+        bound_card_text(detail, CARD_TEXT_MAX);
+    }
+}
+
+fn bound_card_history(cards: &mut Vec<StreamCard>) {
+    if cards.len() <= VISIBLE_CARDS_MAX {
+        return;
+    }
+    cards.retain(|card| card.id != OMITTED_CARDS_ID);
+    let remove = cards.len().saturating_sub(VISIBLE_CARDS_MAX - 1);
+    cards.drain(..remove);
+    cards.insert(0, StreamCard {
+        id: OMITTED_CARDS_ID.into(),
+        title: "Earlier tool cards omitted from this view".into(),
+        detail: Some("Inspect the original native session for full tool history. Native permissions and pending questions remain separate.".into()),
+        status: CardStatus::Done,
+    });
 }
 
 /// Token counts and cost a provider reported for one turn. Every field is optional: a provider
@@ -109,6 +154,8 @@ pub fn usage_exhausted(text: &str) -> bool {
         "insufficient_quota",
         "you've hit your limit",
         "you have hit your limit",
+        "you've hit your weekly limit",
+        "you have hit your weekly limit",
         "rate_limit_exceeded",
         "rate limit reached",
         "usage has been exhausted",
@@ -858,6 +905,7 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
         .detail
         .as_deref()
         .map(|detail| crate::redact::redact(detail).into_owned());
+    bound_card(&mut next);
     if let Some(prev) = cards.iter_mut().find(|c| c.id == next.id) {
         let is_result_update = next.title == "result";
         let search_heartbeat = next.title == "Search web"
@@ -920,9 +968,11 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
         // A native result supplies the successful output only after its input was merged.
         // This also runs during exact-session history hydration.
         super::edit_display::normalize(prev);
+        bound_card(prev);
     } else {
         cards.push(next);
     }
+    bound_card_history(cards);
 }
 
 pub fn format_card_line(card: &StreamCard) -> String {
@@ -943,7 +993,7 @@ pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
         CardStatus::Done => "✓",
     };
     let mut summary = CardSummary {
-        text: format!("│ {mark} "),
+        text: format!("│ {mark} {} ", ToolKind::of(card).icon()),
         files: Vec::new(),
     };
     let detail = card.detail.as_deref().unwrap_or("");
@@ -1072,7 +1122,8 @@ pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
     {
         summary.text.push_str(&format!("{run} tools"));
     } else {
-        summary.text.push_str(&compact_detail(&label, 64));
+        // Keep the complete compact row within the picker width even for an unknown long title.
+        summary.text.push_str(&compact_detail(&label, 60));
         if !detail.is_empty() && !matches!(label.as_str(), "Run tool" | "apply_patch") {
             let preview = card_preview(input);
             if !preview.is_empty() {
@@ -1173,47 +1224,6 @@ fn append_patch_summary(summary: &mut CardSummary, patch: &str) {
     if added + removed > 0 {
         summary.text.push_str(&format!("  +{added} -{removed}"));
     }
-}
-
-/// Only complete literal host statement batches qualify; no expressions are evaluated.
-pub(crate) fn literal_wrapper_calls(input: &str) -> Option<Vec<(String, Value)>> {
-    if input.len() > 256 * 1024 {
-        return None;
-    }
-    let mut rest = input.trim();
-    if rest.starts_with("// @exec:") {
-        rest = rest.split_once('\n')?.1.trim_start();
-    }
-    let mut calls = Vec::new();
-    while !rest.is_empty() {
-        if calls.len() >= 8 {
-            return None;
-        }
-        let statement = rest.strip_prefix("text(await tools.")?;
-        let end = statement.find('(')?;
-        let name = &statement[..end];
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
-            return None;
-        }
-        let argument = &statement[end + 1..];
-        let (value, end) = crate::tool_literals::literal_tool_argument(argument)?;
-        rest = argument
-            .get(end..)?
-            .trim_start()
-            .strip_prefix("))")?
-            .trim_start();
-        if let Some(next) = rest.strip_prefix(';') {
-            rest = next.trim_start();
-        } else if !rest.is_empty() {
-            return None;
-        }
-        calls.push((name.into(), value));
-    }
-    (!calls.is_empty()).then_some(calls)
 }
 
 fn command_purpose(command: &str) -> &'static str {
@@ -1320,19 +1330,143 @@ pub fn tool_label(name: &str) -> String {
     }
 }
 
-pub fn tool_icon(name: &str) -> &'static str {
-    let label = tool_label(name).to_ascii_lowercase();
-    if label.contains("edit") || label.contains("write") || label.contains("patch") {
-        "✎"
-    } else if label.contains("search") || label.contains("grep") || label.contains("glob") {
-        "⌕"
-    } else if label.contains("read") || label.contains("file") {
-        "▤"
-    } else if label.contains("agent") || label.contains("task") {
-        "⑂"
-    } else {
-        "›"
+/// What a tool card does, for its icon. Presentation only; the card keeps the provider's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    Shell,
+    Read,
+    Edit,
+    Search,
+    Web,
+    Mcp,
+    Agent,
+    Question,
+    Image,
+    Other,
+}
+
+impl ToolKind {
+    /// Every kind with its own icon, in the order the shortcuts screen and docs list them.
+    pub const LEGEND: [ToolKind; 9] = [
+        ToolKind::Shell,
+        ToolKind::Read,
+        ToolKind::Edit,
+        ToolKind::Search,
+        ToolKind::Web,
+        ToolKind::Mcp,
+        ToolKind::Agent,
+        ToolKind::Question,
+        ToolKind::Image,
+    ];
+
+    /// Single-cell glyphs that Consolas or Segoe UI Symbol draw in the native window.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Shell => "❯",
+            Self::Read => "▤",
+            Self::Edit => "✎",
+            Self::Search => "⌕",
+            Self::Web => "⊕",
+            Self::Mcp => "⚙",
+            Self::Agent => "⑂",
+            Self::Question => "?",
+            Self::Image => "▣",
+            Self::Other => "›",
+        }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Shell => "shell command",
+            Self::Read => "file read",
+            Self::Edit => "file edit",
+            Self::Search => "search",
+            Self::Web => "web",
+            Self::Mcp => "MCP tool",
+            Self::Agent => "agent or subagent",
+            Self::Question => "question",
+            Self::Image => "image",
+            Self::Other => "other tool",
+        }
+    }
+
+    pub fn of(card: &StreamCard) -> Self {
+        if card.id.starts_with("native-agent:") {
+            return Self::Agent;
+        }
+        let detail = card.detail.as_deref().unwrap_or("");
+        // Codex exec prefixes the server; the app-server keeps its item JSON.
+        if detail.starts_with("MCP server: ") || detail.contains("\"type\":\"mcpToolCall\"") {
+            return Self::Mcp;
+        }
+        match Self::of_title(&card.title) {
+            Self::Other if detail.trim_start().starts_with("*** Begin Patch") => Self::Edit,
+            kind => kind,
+        }
+    }
+
+    pub fn of_title(name: &str) -> Self {
+        let lower = name.to_ascii_lowercase();
+        if lower.starts_with("mcp__") || lower == "mcp" {
+            return Self::Mcp;
+        }
+        if lower.contains("image") {
+            return Self::Image;
+        }
+        match tool_label(name).as_str() {
+            "Run command" => Self::Shell,
+            "Read file" => Self::Read,
+            "Edit file" | "Write file" => Self::Edit,
+            "Search files" => Self::Search,
+            "Search web" | "Browse web" | "Read web page" => Self::Web,
+            "Ask questions" => Self::Question,
+            "Start agent" | "Wait for agents" => Self::Agent,
+            _ if matches!(lower.as_str(), "task" | "agent") || lower.starts_with("agent ") => {
+                Self::Agent
+            }
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The timeout a provider put on a tool call, read from the call's own arguments.
+///
+/// Reported today: Codex function calls (`timeout_ms` on `exec_command`, `shell` and
+/// `wait_agent`), Claude Code's `Bash` (`timeout`, milliseconds) and Cursor's shell call
+/// (`timeout`, milliseconds). Codex app-server command items carry none. A bare `timeout` is
+/// read only on shell commands, where both providers define it in milliseconds; Codex's
+/// `yield_time_ms` is a polling interval, not a limit, and is ignored.
+pub fn reported_timeout(card: &StreamCard) -> Option<std::time::Duration> {
+    let detail = card.detail.as_deref()?;
+    let input = detail
+        .split_once("\nOutput: ")
+        .map_or(detail, |(input, _)| input);
+    let input = input
+        .strip_prefix("arguments: ")
+        .or_else(|| input.strip_prefix("input: "))
+        .unwrap_or(input)
+        .trim_start();
+    if !input.starts_with(['{', '"']) {
+        return None;
+    }
+    let value = serde_json::Deserializer::from_str(input)
+        .into_iter::<Value>()
+        .next()?
+        .ok()?;
+    let value = match value.as_str() {
+        Some(text) => serde_json::from_str(text).ok()?,
+        None => value,
+    };
+    let millis = value
+        .get("timeout_ms")
+        .or_else(|| {
+            (ToolKind::of(card) == ToolKind::Shell)
+                .then(|| value.get("timeout"))
+                .flatten()
+        })
+        .and_then(Value::as_u64)
+        .filter(|millis| *millis > 0)?;
+    Some(std::time::Duration::from_millis(millis))
 }
 
 /// Compact presentation only: the original arguments and output remain on the card.
@@ -1436,6 +1570,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reported_timeout_reads_provider_tool_call_fields_and_ignores_polling_intervals() {
+        let card = |title: &str, detail: &str| StreamCard {
+            id: title.into(),
+            title: title.into(),
+            detail: Some(detail.into()),
+            status: CardStatus::Running,
+        };
+        assert_eq!(
+            reported_timeout(&card(
+                "exec",
+                r#"arguments: {"cmd":"dir","timeout_ms":600000,"yield_time_ms":1000}"#
+            )),
+            Some(std::time::Duration::from_secs(600))
+        );
+        assert_eq!(
+            reported_timeout(&card(
+                "Bash",
+                r#"input: {"command":"dir","timeout":120000}"#
+            )),
+            Some(std::time::Duration::from_secs(120))
+        );
+        assert_eq!(
+            reported_timeout(&card(
+                "shell",
+                r#"arguments: {"command":"dir","timeout":30000}"#
+            )),
+            Some(std::time::Duration::from_secs(30))
+        );
+        assert_eq!(
+            reported_timeout(&card(
+                "shell",
+                r#"arguments: {"command":"dir","yield_time_ms":10000}"#
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn reported_timeout_accepts_json_string_arguments() {
+        let card = StreamCard {
+            id: "cursor-shell".into(),
+            title: "shell".into(),
+            detail: Some(r#"arguments: "{\"command\":\"dir\",\"timeout\":4500}""#.into()),
+            status: CardStatus::Running,
+        };
+        assert_eq!(
+            reported_timeout(&card),
+            Some(std::time::Duration::from_millis(4500))
+        );
+    }
+
+    #[test]
+    fn weekly_limit_wording_is_exhaustion_and_not_server_overload() {
+        for message in [
+            "You've hit your weekly limit",
+            "You have hit your weekly limit",
+        ] {
+            assert!(usage_exhausted(message));
+            assert!(!model_overloaded(message));
+        }
+    }
+
+    #[test]
     fn compact_shell_rows_show_the_command_and_preserve_full_output() {
         let detail = "command: \"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command \"cargo test -p demo\"\nOutput: first\nsecond";
         let card = StreamCard {
@@ -1458,7 +1655,10 @@ mod tests {
             "git status · 1 output line"
         );
         let patch = "*** Begin Patch\n*** Update File: C:/fixture/src/display_backend.rs\n@@\n-before\n+after\n*** End Patch";
-        let script = format!("text(await tools.apply_patch({}));\ntext(await tools.exec_command({{cmd:\"cargo build -p fixture\",workdir:\"C:/fixture\"}}));", serde_json::to_string(patch).unwrap());
+        let script = format!(
+            "text(await tools.apply_patch({}));\ntext(await tools.exec_command({{cmd:\"cargo build -p fixture\",workdir:\"C:/fixture\"}}));",
+            serde_json::to_string(patch).unwrap()
+        );
         let output = (0..22)
             .map(|line| format!("line-{line}"))
             .collect::<Vec<_>>()
@@ -1480,7 +1680,7 @@ mod tests {
         let summary = compact_card_summary(&composite);
         assert_eq!(
             summary.text,
-            "│ ✓ Edit File display_backend.rs  +1 -1 + Ran build - 22 output lines"
+            "│ ✓ › Edit File display_backend.rs  +1 -1 + Ran build - 22 output lines"
         );
         assert_eq!(summary.files.len(), 1);
         let (range, target) = &summary.files[0];
@@ -1534,15 +1734,17 @@ mod tests {
             "result replay must not duplicate the preview"
         );
         composite.status = CardStatus::Running;
-        assert!(compact_card_summary(&composite)
-            .text
-            .contains("+ Run build"));
+        assert!(
+            compact_card_summary(&composite)
+                .text
+                .contains("+ Run build")
+        );
         composite.detail = Some(format!("if (dynamic) {{ {script} }}"));
         let fallback = compact_card_summary(&composite);
-        assert_eq!(fallback.text, "│ ◉ Run tools");
+        assert_eq!(fallback.text, "│ ◉ › Run tools");
         assert!(fallback.files.is_empty());
         composite.detail = Some("text(await tools.exec_command({cmd:dynamic}));".into());
-        assert_eq!(compact_card_summary(&composite).text, "│ ◉ Run tools");
+        assert_eq!(compact_card_summary(&composite).text, "│ ◉ › Run tools");
         composite.detail = Some(
             "// text(await tools.apply_patch(\"*** Begin Patch\\n*** Update File: fake.rs\"));"
                 .into(),
@@ -1585,7 +1787,7 @@ mod tests {
         };
         assert_eq!(
             compact_card_summary(&dynamic_tail).text,
-            "│ ✓ Ran tools",
+            "│ ✓ › Ran tools",
             "hidden calls are validated too"
         );
         let names = (0..6)
@@ -1611,13 +1813,15 @@ mod tests {
         for (index, (range, target)) in summary.files.iter().enumerate() {
             assert_eq!(target, &names[index]);
             assert!(range.len() <= 64);
-            assert!(summary
-                .text
-                .chars()
-                .skip(range.start)
-                .take(range.len())
-                .collect::<String>()
-                .contains("..."));
+            assert!(
+                summary
+                    .text
+                    .chars()
+                    .skip(range.start)
+                    .take(range.len())
+                    .collect::<String>()
+                    .contains("...")
+            );
         }
         assert_eq!(edit.detail.as_deref(), Some(patch.as_str()));
         let unknown = StreamCard {
@@ -1696,23 +1900,27 @@ mod tests {
             assert_eq!(status(id), CardStatus::Error);
         }
         assert_eq!(status("g"), CardStatus::Done);
-        assert!(cards
-            .iter()
-            .find(|c| c.id == "native-agent:c")
-            .unwrap()
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("Worker failed"));
+        assert!(
+            cards
+                .iter()
+                .find(|c| c.id == "native-agent:c")
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("Worker failed")
+        );
     }
 
     #[test]
     fn native_agent_without_child_identity_does_not_fabricate_an_agent() {
-        assert!(collab_cards(serde_json::json!({
-            "type":"collab_tool_call", "tool":"spawn_agent", "status":"failed",
-            "receiver_thread_ids":[], "agents_states":{}
-        }))
-        .is_empty());
+        assert!(
+            collab_cards(serde_json::json!({
+                "type":"collab_tool_call", "tool":"spawn_agent", "status":"failed",
+                "receiver_thread_ids":[], "agents_states":{}
+            }))
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1726,19 +1934,25 @@ mod tests {
         ]
         .join("\n");
         let parts = parse_codex_stream_chunk(&chunk);
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::Session(id) if id == "thr-1")));
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::Session(id) if id == "thr-1"))
+        );
         assert!(parts.iter().any(|p| matches!(
             p,
             StreamPart::Card(c) if c.title == "shell" || c.detail.as_deref().unwrap_or("").contains("npm")
         )));
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::Text(t) if t == "all green")));
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::Error(t) if t.contains("spend"))));
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::Text(t) if t == "all green"))
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::Error(t) if t.contains("spend")))
+        );
         // Codex exec and Responses/native history use distinct web-search envelopes.
         let web_events = [
             r#"{"type":"item.started","item":{"type":"web_search","id":"web-1","query":"Rust clipboard","action":{"type":"search","query":"Rust clipboard"}}}"#,
@@ -1763,23 +1977,29 @@ mod tests {
         assert!(detail.contains("Source: Rust docs\nhttps://doc.rust-lang.org/"));
         assert!(format_card_line(&cards[0]).contains("Rust clipboard"));
         assert_eq!(cards[1].title, "Read web page");
-        assert!(cards[1]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("https://doc.rust-lang.org/"));
+        assert!(
+            cards[1]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("https://doc.rust-lang.org/")
+        );
         assert_eq!(cards[2].status, CardStatus::Done);
-        assert!(cards[2]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("native search"));
+        assert!(
+            cards[2]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("native search")
+        );
         assert_eq!(cards[3].status, CardStatus::Error);
-        assert!(cards[3]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("search unavailable"));
+        assert!(
+            cards[3]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("search unavailable")
+        );
         // Observed native account codex-2 uses a custom exec wrapper containing mixed calls.
         let mixed = classify_payload(
             &serde_json::json!({"type":"custom_tool_call", "call_id":"mixed-web", "name":"exec", "input":"text(await tools.web__run({search_query:[{q:\"Rust clipboard\"}]})); text(await tools.exec_command({cmd:\"git status\"}));"}),
@@ -1914,11 +2134,13 @@ mod tests {
             panic!("{parts:?}")
         };
         assert_eq!(command.status, CardStatus::Running);
-        assert!(command
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("git status --short\nOutput: working…"));
+        assert!(
+            command
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("git status --short\nOutput: working…")
+        );
         let StreamPart::Card(mcp) = &parts[1] else {
             panic!("{parts:?}")
         };
@@ -2017,24 +2239,30 @@ mod tests {
             std::path::Path::new("."),
         );
         assert_eq!(changed.len(), 2);
-        assert!(repeated[0]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("-one\n+two"));
+        assert!(
+            repeated[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("-one\n+two")
+        );
         assert!(!repeated[0].detail.as_deref().unwrap().contains("+three"));
-        assert!(repeated[1]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("-two\n+three"));
+        assert!(
+            repeated[1]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("-two\n+three")
+        );
         let mut ambiguous = [unresolved("only-one-of-two")];
-        assert!(super::super::edit_display::enrich_codex(
-            &mut ambiguous,
-            &[first.into(), second.into()],
-            std::path::Path::new(".")
-        )
-        .is_empty());
+        assert!(
+            super::super::edit_display::enrich_codex(
+                &mut ambiguous,
+                &[first.into(), second.into()],
+                std::path::Path::new(".")
+            )
+            .is_empty()
+        );
     }
 
     #[test]

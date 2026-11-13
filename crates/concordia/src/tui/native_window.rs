@@ -9,7 +9,9 @@ use ratatui::{
     style::{Color, Modifier},
 };
 use std::{
+    collections::VecDeque,
     io, mem,
+    net::{SocketAddr, TcpListener, TcpStream},
     ptr::{null, null_mut},
     sync::{
         atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering},
@@ -17,16 +19,19 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 use unicode_width::UnicodeWidthStr;
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Graphics::Dwm::DwmSetWindowAttribute,
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
+    System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED},
     UI::{
         HiDpi::*,
         Input::KeyboardAndMouse::*,
-        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW},
+        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW},
         WindowsAndMessaging::*,
     },
 };
@@ -35,8 +40,12 @@ const UPDATE: u32 = WM_APP + 1;
 const TITLE: u32 = WM_APP + 2;
 const POINTER: u32 = WM_APP + 3;
 const SHUTDOWN: u32 = WM_APP + 4;
+const TEST_CONTROL: u32 = WM_APP + 5;
+const TRAY_NOTIFY: u32 = WM_APP + 6;
+const TRAY_ID: u32 = 1;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
+const DWMWA_CAPTION_COLOR: u32 = 35;
 
 /// Decoded attachment pixels and their cell-aligned viewport. Provider input retains
 /// its separate immutable file snapshot; this is only a display overlay.
@@ -55,13 +64,27 @@ struct Screen {
     cursor_visible: bool,
     title: String,
     images: Vec<RasterImage>,
+    /// Frames committed by `Backend::flush`; test timing ties paints to the frame they show.
+    seq: u64,
 }
 impl Screen {
     fn resize(&mut self, cols: u16, rows: u16, pixels: Size) {
+        let old_cols = self.size.width;
+        let old_rows = self.size.height;
+        let old_cells = std::mem::take(&mut self.cells);
         self.size = Size::new(cols.clamp(1, MAX_COLS), rows.clamp(1, MAX_ROWS));
         self.pixels = pixels;
-        self.cells =
-            vec![Cell::default(); usize::from(self.size.width) * usize::from(self.size.height)];
+        self.cells = vec![
+            Cell::default();
+            usize::from(self.size.width) * usize::from(self.size.height)
+        ];
+        for y in 0..usize::from(old_rows.min(self.size.height)) {
+            let width = usize::from(old_cols.min(self.size.width));
+            let old_start = y * usize::from(old_cols);
+            let new_start = y * usize::from(self.size.width);
+            self.cells[new_start..new_start + width]
+                .clone_from_slice(&old_cells[old_start..old_start + width]);
+        }
         self.images.clear();
     }
 }
@@ -71,17 +94,58 @@ struct Shared {
     dirty: AtomicBool,
     closing: AtomicBool,
     screen: Mutex<Screen>,
+    requested_status: Mutex<StatusDot>,
+    pending_attention: Mutex<Option<(String, String)>>,
+    attention_target: Mutex<Option<String>>,
+    test_control: Option<TestControl>,
+}
+
+#[derive(Default)]
+struct TestControl {
+    state: Mutex<TestState>,
+    queue: Mutex<VecDeque<TestRequest>>,
+}
+
+#[derive(Default)]
+struct TestState {
+    focused_tab: String,
+    overlays: Vec<String>,
+    status_dot: String,
+    /// Test-only frame timing: the label, start and committed frame of the measured input.
+    measure: Option<(String, std::time::Instant, u64)>,
+    /// Every paint since `measure` started: milliseconds, frame shown and non-blank cells.
+    paints: Vec<(f64, u64, usize)>,
+    /// Application draw durations in milliseconds, newest last.
+    draws: Vec<f64>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StatusDot {
+    Idle,
+    Working,
+    NeedsAttention,
+}
+
+impl StatusDot {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::NeedsAttention => "needs_attention",
+        }
+    }
+}
+
+struct TestRequest {
+    request: serde_json::Value,
+    reply: mpsc::SyncSender<String>,
 }
 
 /// Signed cells belong to the captured mouse-up message, before terminal clamping.
 pub(super) enum NativeEvent {
     Event(Event),
     MouseUp { event: MouseEvent, x: i32, y: i32 },
-}
-
-enum EventSender {
-    Plain(SyncSender<Event>),
-    Detailed(SyncSender<NativeEvent>),
+    Attention(String),
 }
 
 fn send_until_closed<T>(sender: &SyncSender<T>, mut value: T, closing: &AtomicBool) {
@@ -101,18 +165,12 @@ pub(super) struct WindowBackend {
 }
 
 /// Every receiver belongs to one HWND and therefore one Concordia process/run UI.
-#[allow(dead_code)] // Plain-event entry point retained for standalone native diagnostics.
-pub(super) fn open() -> io::Result<(WindowBackend, Receiver<Event>)> {
+pub(super) fn open() -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
     let (events, receiver) = mpsc::sync_channel(4096);
-    Ok((open_with_sender(EventSender::Plain(events))?, receiver))
+    Ok((open_with_sender(events)?, receiver))
 }
 
-pub(super) fn open_detailed() -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
-    let (events, receiver) = mpsc::sync_channel(4096);
-    Ok((open_with_sender(EventSender::Detailed(events))?, receiver))
-}
-
-fn open_with_sender(events: EventSender) -> io::Result<WindowBackend> {
+fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend> {
     let shared = Arc::new(Shared {
         hwnd: AtomicIsize::new(0),
         pointer: AtomicUsize::new(0),
@@ -126,7 +184,12 @@ fn open_with_sender(events: EventSender) -> io::Result<WindowBackend> {
             cursor_visible: false,
             title: "Concordia".into(),
             images: Vec::new(),
+            seq: 0,
         }),
+        requested_status: Mutex::new(StatusDot::Idle),
+        pending_attention: Mutex::new(None),
+        attention_target: Mutex::new(None),
+        test_control: std::env::var_os("CONCORDIA_TEST_CONTROL").map(|_| TestControl::default()),
     });
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (stopped_tx, stopped) = mpsc::sync_channel(1);
@@ -160,6 +223,40 @@ fn open_with_sender(events: EventSender) -> io::Result<WindowBackend> {
 }
 
 impl WindowBackend {
+    pub(super) fn set_test_state(&mut self, focused_tab: String, overlays: Vec<String>) {
+        let Some(test) = self.shared.test_control.as_ref() else {
+            return;
+        };
+        let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.focused_tab = focused_tab;
+        state.overlays = overlays;
+    }
+    /// Test-only: record how long the application spent producing one frame.
+    pub(super) fn note_draw(&mut self, elapsed: Duration) {
+        let Some(test) = self.shared.test_control.as_ref() else {
+            return;
+        };
+        let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.draws.len() >= 4096 {
+            state.draws.clear();
+        }
+        state.draws.push(elapsed.as_secs_f64() * 1000.0);
+    }
+    pub(super) fn set_status_dot(&mut self, status: StatusDot) {
+        *self.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        if let Some(test) = self.shared.test_control.as_ref() {
+            test.state.lock().unwrap_or_else(|e| e.into_inner()).status_dot = status.as_str().into();
+        }
+        let _ = self.post(UPDATE);
+    }
+    pub(super) fn set_attention_notification(&mut self, item_id: String, text: String) {
+        *self
+            .shared
+            .pending_attention
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((item_id, text));
+        let _ = self.post(UPDATE);
+    }
     pub(super) fn set_images(&mut self, images: Vec<RasterImage>) -> io::Result<()> {
         if images.len() > 4
             || images.iter().any(|image| {
@@ -356,6 +453,7 @@ impl Backend for WindowBackend {
     }
     fn flush(&mut self) -> io::Result<()> {
         if self.shared.dirty.swap(false, Ordering::AcqRel) {
+            self.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).seq += 1;
             self.post(UPDATE)?;
         }
         Ok(())
@@ -364,12 +462,17 @@ impl Backend for WindowBackend {
 
 struct Window {
     shared: Arc<Shared>,
-    events: EventSender,
+    events: SyncSender<NativeEvent>,
     fonts: [HFONT; 16],
     symbol_fonts: [HFONT; 16],
     emoji_fonts: [HFONT; 16],
     glyph_fonts: [std::collections::HashMap<String, u8>; 16],
     icons: [HICON; 2],
+    overlay_icons: [HICON; 2],
+    taskbar: *mut TaskbarList3,
+    com_initialized: bool,
+    status_dot: StatusDot,
+    tray_added: bool,
     icon_color: crate::config::Rgb,
     icon_active: bool,
     icon_frame: u8,
@@ -384,6 +487,20 @@ struct Window {
     surface: Option<Surface>,
     image_pixels: Vec<BitmapPixels>,
 }
+
+#[repr(C)]
+struct TaskbarList3 {
+    vtable: *const *const (),
+}
+
+const CLSID_TASKBAR_LIST: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0x56fdf344, data2: 0xfd6d, data3: 0x11d0,
+    data4: [0x95, 0x8a, 0x00, 0x60, 0x97, 0xc9, 0xa0, 0x90],
+};
+const IID_ITASKBAR_LIST3: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0xea1afb91, data2: 0x9e28, data3: 0x4b86,
+    data4: [0x90, 0xe9, 0x9e, 0x9f, 0x8a, 0x5e, 0xea, 0x84],
+};
 
 struct BitmapPixels {
     source: Arc<image::RgbaImage>,
@@ -414,6 +531,21 @@ impl Drop for Surface {
 }
 impl Drop for Window {
     fn drop(&mut self) {
+        for icon in self.overlay_icons {
+            if !icon.is_null() {
+                unsafe { DestroyIcon(icon); }
+            }
+        }
+        if self.tray_added {
+            unsafe { notify_tray(self.shared.hwnd.load(Ordering::Acquire) as HWND, NIM_DELETE, None); }
+        }
+        if !self.taskbar.is_null() {
+            unsafe {
+                let release: unsafe extern "system" fn(*mut TaskbarList3) -> u32 = mem::transmute(*(*self.taskbar).vtable.add(2));
+                release(self.taskbar);
+            }
+        }
+        if self.com_initialized { unsafe { CoUninitialize(); } }
         for font in self.fonts {
             if !font.is_null() {
                 unsafe {
@@ -436,15 +568,76 @@ impl Drop for Window {
             }
         }
     }
+
 }
 impl Window {
-    fn emit(&self, event: Event) {
-        match &self.events {
-            EventSender::Plain(sender) => send_until_closed(sender, event, &self.shared.closing),
-            EventSender::Detailed(sender) => {
-                send_until_closed(sender, NativeEvent::Event(event), &self.shared.closing)
+    unsafe fn set_status(&mut self, hwnd: HWND, status: StatusDot) {
+        let pending = self
+            .shared
+            .pending_attention
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if self.status_dot == status {
+            if status == StatusDot::NeedsAttention && !self.focused {
+                if let Some((id, text)) = pending.as_ref() {
+                    *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(id.clone());
+                    notify_tray(
+                        hwnd,
+                        if self.tray_added { NIM_MODIFY } else { NIM_ADD },
+                        Some(text),
+                    );
+                    *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) =
+                        None;
+                    self.tray_added = true;
+                }
+            } else if self.focused && self.tray_added {
+                notify_tray(hwnd, NIM_DELETE, None);
+                self.tray_added = false;
             }
+            return;
         }
+        self.status_dot = status;
+        let icon = match status {
+            StatusDot::Idle => null_mut(),
+            StatusDot::Working | StatusDot::NeedsAttention => status_icon(16, super::theme::status_color(status)),
+        };
+        if status != StatusDot::Idle && !icon.is_null() {
+            let index = if status == StatusDot::Working { 0 } else { 1 };
+            if !self.overlay_icons[index].is_null() { DestroyIcon(self.overlay_icons[index]); }
+            self.overlay_icons[index] = icon;
+            if !self.taskbar.is_null() && native_signal_allowed(self.shared.test_control.is_none()) {
+                taskbar_overlay(self.taskbar, hwnd, icon);
+            }
+        } else if !self.taskbar.is_null()
+            && native_signal_allowed(self.shared.test_control.is_none())
+        {
+            taskbar_overlay(self.taskbar, hwnd, null_mut());
+        }
+        if status == StatusDot::NeedsAttention && !self.focused {
+            let Some((id, text)) = pending.as_ref() else {
+                return;
+            };
+            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+            notify_tray(hwnd, if self.tray_added { NIM_MODIFY } else { NIM_ADD }, Some(text));
+            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.tray_added = true;
+        } else if status != StatusDot::NeedsAttention && self.tray_added {
+            notify_tray(hwnd, NIM_DELETE, None);
+            self.tray_added = false;
+        }
+    }
+
+    fn emit(&self, event: Event) {
+        send_until_closed(
+            &self.events,
+            NativeEvent::Event(event),
+            &self.shared.closing,
+        );
+    }
+    fn emit_native(&self, event: NativeEvent) {
+        send_until_closed(&self.events, event, &self.shared.closing);
     }
     unsafe fn fonts(&mut self, hwnd: HWND, dpi: u32) {
         // Cached glyphs must be regenerated after a DPI/font change.
@@ -570,18 +763,16 @@ impl Window {
             self.last_motion = None;
         }
         if matches!(kind, MouseEventKind::Up(_)) {
-            if let EventSender::Detailed(sender) = &self.events {
-                send_until_closed(
-                    sender,
-                    NativeEvent::MouseUp {
-                        event,
-                        x: x.div_euclid(self.cell_width.max(1)),
-                        y: y.div_euclid(self.cell_height.max(1)),
-                    },
-                    &self.shared.closing,
-                );
-                return;
-            }
+            send_until_closed(
+                &self.events,
+                NativeEvent::MouseUp {
+                    event,
+                    x: x.div_euclid(self.cell_width.max(1)),
+                    y: y.div_euclid(self.cell_height.max(1)),
+                },
+                &self.shared.closing,
+            );
+            return;
         }
         self.emit(Event::Mouse(event));
     }
@@ -726,6 +917,16 @@ impl Window {
                 }
             }
         }
+        if let Some(test) = self.shared.test_control.as_ref() {
+            let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, started, _)) = &state.measure {
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                let filled = screen.cells.iter().filter(|cell| cell.symbol() != " ").count();
+                if state.paints.len() < 1024 {
+                    state.paints.push((elapsed, screen.seq, filled));
+                }
+            }
+        }
         surface.columns = screen.size.width;
         surface.rows = screen.size.height;
         surface.cells = screen.cells;
@@ -743,6 +944,21 @@ impl Window {
         BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
         if saved != 0 {
             RestoreDC(dc, saved);
+        }
+        let [red, green, blue] = super::theme::image_background();
+        let image_background =
+            u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
+        SetDCBrushColor(dc, image_background);
+        for image in &screen.images {
+            let area = RECT {
+                left: i32::from(image.area.x) * self.cell_width,
+                top: i32::from(image.area.y) * self.cell_height,
+                right: (i32::from(image.area.right()) * self.cell_width).min(client.right),
+                bottom: (i32::from(image.area.bottom()) * self.cell_height).min(client.bottom),
+            };
+            if area.right > area.left && area.bottom > area.top {
+                FillRect(dc, &area, GetStockObject(DC_BRUSH) as HBRUSH);
+            }
         }
         self.paint_images(dc, &screen.images, &client);
         if self.focused
@@ -769,17 +985,31 @@ impl Window {
 
     /// Pixel rectangle an image covers: scaled down to fit its cells, never up, top-left aligned.
     fn image_rect(&self, image: &RasterImage, client: &RECT) -> Option<RECT> {
-        let left = i32::from(image.area.x) * self.cell_width;
-        let top = i32::from(image.area.y) * self.cell_height;
-        let available_width =
-            (i32::from(image.area.width) * self.cell_width).min(client.right - left);
-        let available_height =
-            (i32::from(image.area.height) * self.cell_height).min(client.bottom - top);
+        Self::image_rect_for(
+            image.area,
+            image.pixels.width(),
+            image.pixels.height(),
+            client,
+            self.cell_width,
+            self.cell_height,
+        )
+    }
+
+    fn image_rect_for(
+        area: Rect,
+        width: u32,
+        height: u32,
+        client: &RECT,
+        cell_width: i32,
+        cell_height: i32,
+    ) -> Option<RECT> {
+        let left = i32::from(area.x) * cell_width;
+        let top = i32::from(area.y) * cell_height;
+        let available_width = (i32::from(area.width) * cell_width).min(client.right - left);
+        let available_height = (i32::from(area.height) * cell_height).min(client.bottom - top);
         if available_width <= 0 || available_height <= 0 {
             return None;
         }
-        let width = image.pixels.width();
-        let height = image.pixels.height();
         let scale = (f64::from(available_width) / f64::from(width))
             .min(f64::from(available_height) / f64::from(height))
             .min(1.0);
@@ -871,6 +1101,385 @@ impl Window {
             }
         }
     }
+}
+
+fn test_modifiers(value: Option<&serde_json::Value>) -> KeyModifiers {
+    let mut modifiers = KeyModifiers::NONE;
+    for name in value
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+    {
+        modifiers |= match name.to_ascii_uppercase().as_str() {
+            "CTRL" | "CONTROL" => KeyModifiers::CONTROL,
+            "ALT" => KeyModifiers::ALT,
+            "SHIFT" => KeyModifiers::SHIFT,
+            "SUPER" | "META" => KeyModifiers::SUPER,
+            _ => KeyModifiers::NONE,
+        };
+    }
+    modifiers
+}
+
+fn test_key(value: &str) -> Option<KeyCode> {
+    Some(match value {
+        "Enter" => KeyCode::Enter,
+        "Esc" | "Escape" => KeyCode::Esc,
+        "Tab" => KeyCode::Tab,
+        "Backspace" => KeyCode::Backspace,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        "Delete" => KeyCode::Delete,
+        "Insert" => KeyCode::Insert,
+        value if value.len() == 1 => KeyCode::Char(value.chars().next()?),
+        value
+            if value
+                .strip_prefix('F')
+                .and_then(|n| n.parse::<u8>().ok())
+                .is_some() =>
+        {
+            KeyCode::F(value[1..].parse().ok()?)
+        }
+        _ => return None,
+    })
+}
+
+fn test_response(shared: &Shared, request: &serde_json::Value) -> serde_json::Value {
+    if request.get("op").and_then(|v| v.as_str()) == Some("timing") {
+        let Some(test) = shared.test_control.as_ref() else {
+            return serde_json::json!({"ok": false, "error": "test control disabled"});
+        };
+        let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (label, start_seq) = state
+            .measure
+            .as_ref()
+            .map(|(label, _, seq)| (label.clone(), *seq))
+            .unwrap_or_default();
+        let paints = state
+            .paints
+            .iter()
+            .map(|(ms, seq, filled)| serde_json::json!({"ms": ms, "seq": seq, "filled": filled}))
+            .collect::<Vec<_>>();
+        let draws = std::mem::take(&mut state.draws);
+        return serde_json::json!({
+            "ok": true,
+            "label": label,
+            "start_seq": start_seq,
+            "paints": paints,
+            "draws": draws,
+        });
+    }
+    if request.get("op").and_then(|v| v.as_str()) != Some("snapshot") {
+        return serde_json::json!({"ok": true});
+    }
+    let screen = shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(test) = shared.test_control.as_ref() else {
+        return serde_json::json!({"ok": false, "error": "test control disabled"});
+    };
+    let state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+    let rows = (0..screen.size.height)
+        .map(|row| {
+            (0..screen.size.width)
+                .map(|column| {
+                    screen.cells
+                        [usize::from(row) * usize::from(screen.size.width) + usize::from(column)]
+                    .symbol()
+                    .to_owned()
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "ok": true,
+        "title": screen.title,
+        "focused_tab": state.focused_tab,
+        "overlays": state.overlays,
+        "status_dot": state.status_dot,
+        "columns": screen.size.width,
+        "rows": screen.size.height,
+        "grid": rows,
+    })
+}
+
+unsafe fn handle_test_control(window: &mut Window) {
+    let Some(test) = window.shared.test_control.as_ref() else {
+        return;
+    };
+    let requests = {
+        let mut queue = test.queue.lock().unwrap_or_else(|e| e.into_inner());
+        queue.drain(..).collect::<Vec<_>>()
+    };
+    for request in requests {
+        if let Some(label) = request.request.get("measure").and_then(|v| v.as_str()) {
+            let seq = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).seq;
+            let shared = window.shared.clone();
+            let test = shared.test_control.as_ref().expect("test control is enabled");
+            let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.measure = Some((label.to_owned(), std::time::Instant::now(), seq));
+            state.paints.clear();
+        }
+        match request.request.get("op").and_then(|v| v.as_str()) {
+            // Simulated Alt+Tab: the same focus messages Windows sends, without changing
+            // the foreground window of the user's desktop.
+            Some("deactivate") => {
+                let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
+                SendMessageW(hwnd, WM_ACTIVATE, WA_INACTIVE as WPARAM, 0);
+                SendMessageW(hwnd, WM_KILLFOCUS, 0, 0);
+            }
+            Some("activate") => {
+                let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
+                SendMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE as WPARAM, 0);
+                SendMessageW(hwnd, WM_SETFOCUS, 0, 0);
+                // The synthetic focus message does not enter the desktop compositor, so
+                // request the same repaint that a real activation exposes.
+                InvalidateRect(hwnd, null(), 0);
+                RedrawWindow(
+                    hwnd,
+                    null(),
+                    null_mut(),
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE,
+                );
+                UpdateWindow(hwnd);
+                if window.shared.test_control.is_some() {
+                    window.paint(hwnd, None);
+                }
+            }
+            Some("key") => {
+                if let Some(code) = request
+                    .request
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .and_then(test_key)
+                {
+                    window.emit(Event::Key(KeyEvent::new(
+                        code,
+                        test_modifiers(request.request.get("modifiers")),
+                    )));
+                }
+            }
+            Some("text") => {
+                if let Some(text) = request.request.get("text").and_then(|v| v.as_str()) {
+                    if !text.is_empty() {
+                        window.emit(Event::Paste(text.to_owned()));
+                    }
+                }
+            }
+            Some("mouse") => {
+                let x = request
+                    .request
+                    .get("x")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32
+                    * window.cell_width;
+                let y = request
+                    .request
+                    .get("y")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32
+                    * window.cell_height;
+                let kind = match request.request.get("kind").and_then(|v| v.as_str()) {
+                    Some("down") => MouseEventKind::Down(MouseButton::Left),
+                    Some("up") => MouseEventKind::Up(MouseButton::Left),
+                    Some("drag") => MouseEventKind::Drag(MouseButton::Left),
+                    Some("scroll_up") => MouseEventKind::ScrollUp,
+                    Some("scroll_down") => MouseEventKind::ScrollDown,
+                    _ => MouseEventKind::Moved,
+                };
+                window.mouse(kind, x, y);
+            }
+            Some("resize") => {
+                let width = request
+                    .request
+                    .get("columns")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(120) as i32
+                    * window.cell_width;
+                let height = request
+                    .request
+                    .get("rows")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(40) as i32
+                    * window.cell_height;
+                SetWindowPos(
+                    window.shared.hwnd.load(Ordering::Acquire) as HWND,
+                    null_mut(),
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            _ => {}
+        }
+        let response = if request.request.get("op").and_then(|v| v.as_str()) == Some("pixels") {
+            pixel_check(window, &request.request)
+        } else {
+            test_response(&window.shared, &request.request)
+        };
+        let _ = request.reply.send(response.to_string());
+    }
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn PrintWindow(hwnd: HWND, dc: HDC, flags: u32) -> i32;
+}
+
+/// A top-down 32-bit DIB selected into its own memory DC; test-only pixel access.
+struct PixelBuffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    bits: *mut u32,
+    width: i32,
+    height: i32,
+}
+impl PixelBuffer {
+    unsafe fn new(width: i32, height: i32) -> Option<Self> {
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                ..mem::zeroed()
+            },
+            ..mem::zeroed()
+        };
+        let dc = CreateCompatibleDC(null_mut());
+        let mut bits = null_mut();
+        let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if dc.is_null() || bitmap.is_null() || bits.is_null() {
+            if !bitmap.is_null() {
+                DeleteObject(bitmap);
+            }
+            if !dc.is_null() {
+                DeleteDC(dc);
+            }
+            return None;
+        }
+        let previous = SelectObject(dc, bitmap);
+        Some(Self { dc, bitmap, previous, bits: bits.cast(), width, height })
+    }
+    fn pixel(&self, x: i32, y: i32) -> u32 {
+        // SAFETY: callers stay inside the DIB, which lives as long as `self`.
+        unsafe { *self.bits.add((y * self.width + x) as usize) & 0x00ff_ffff }
+    }
+}
+impl Drop for PixelBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.previous);
+            DeleteObject(self.bitmap);
+            DeleteDC(self.dc);
+        }
+    }
+}
+
+/// Test-only proof that the window shows no stale pixels: compare the composited window
+/// with a from-scratch paint of the current frame, and require every image area to hold
+/// only the image itself and the image background.
+unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde_json::Value {
+    let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
+    let mut client: RECT = mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    let (Some(actual), Some(fresh)) = (
+        PixelBuffer::new(client.right.max(1), client.bottom.max(1)),
+        PixelBuffer::new(client.right.max(1), client.bottom.max(1)),
+    ) else {
+        return serde_json::json!({"ok": false, "error": "no pixel buffer"});
+    };
+    // Finish only the paints Windows already has pending; never invalidate more here, or
+    // a missing invalidation would be hidden by the check itself.
+    UpdateWindow(hwnd);
+    let captured = PrintWindow(hwnd, actual.dc, 1 | 2) != 0; // client only, full content
+    let blink = window.blink;
+    window.blink = false;
+    let cached = window.surface.take();
+    window.paint(hwnd, Some(fresh.dc));
+    window.surface = cached;
+    window.blink = blink;
+    // The caret blinks independently of frames; leave its cell out of the comparison.
+    let caret = {
+        let screen = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+        screen.cursor_visible.then(|| {
+            let left = i32::from(screen.cursor.x) * window.cell_width;
+            let top = i32::from(screen.cursor.y) * window.cell_height;
+            (left, top, left + window.cell_width, top + window.cell_height)
+        })
+    };
+    let mut differ = 0usize;
+    let mut first_difference = None;
+    for y in 0..actual.height {
+        for x in 0..actual.width {
+            if caret.is_some_and(|(l, t, r, b)| x >= l && x < r && y >= t && y < b) {
+                continue;
+            }
+            if actual.pixel(x, y) != fresh.pixel(x, y) {
+                differ += 1;
+                first_difference.get_or_insert((x, y));
+            }
+        }
+    }
+    let screen = window.shared.screen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let [red, green, blue] = super::theme::image_background();
+    let background = u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
+    let mut images = Vec::new();
+    for image in &screen.images {
+        let area = RECT {
+            left: i32::from(image.area.x) * window.cell_width,
+            top: i32::from(image.area.y) * window.cell_height,
+            right: (i32::from(image.area.right()) * window.cell_width).min(client.right),
+            bottom: (i32::from(image.area.bottom()) * window.cell_height).min(client.bottom),
+        };
+        let drawn = window.image_rect(image, &client);
+        let mut stale = 0usize;
+        for y in area.top..area.bottom {
+            for x in area.left..area.right {
+                let inside = drawn.is_some_and(|d| x >= d.left && x < d.right && y >= d.top && y < d.bottom);
+                if !inside && fresh.pixel(x, y) != background {
+                    stale += 1;
+                }
+            }
+        }
+        images.push(serde_json::json!({
+            "area": [area.left, area.top, area.right, area.bottom],
+            "drawn": drawn.map(|d| vec![d.left, d.top, d.right, d.bottom]),
+            "stale": stale,
+        }));
+    }
+    // Callers name the exact colour of a synthetic image to prove a closed image left no pixels.
+    let probe = request
+        .get("color")
+        .and_then(|v| v.as_str())
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+    let mut probe_count = 0usize;
+    if let Some(color) = probe {
+        for y in 0..actual.height {
+            for x in 0..actual.width {
+                probe_count += usize::from(actual.pixel(x, y) == color);
+            }
+        }
+    }
+    serde_json::json!({
+        "ok": captured,
+        "width": actual.width,
+        "height": actual.height,
+        "differ": differ,
+        "first_difference": first_difference,
+        "images": images,
+        "color_count": probe_count,
+    })
 }
 
 /// Tiny application status marks must never depend on a fallback font or script substitution.
@@ -977,6 +1586,61 @@ pub(super) fn status_fixture_proof() {
         SelectObject(dc, previous);
         DeleteObject(bitmap);
         DeleteDC(dc);
+    }
+}
+
+/// Glyphs that neither the window font nor its Segoe UI Symbol fallback can draw.
+/// The emoji font is excluded on purpose: icons must not depend on it.
+#[cfg(test)]
+pub(super) fn glyphs_without_font(glyphs: &[String]) -> Vec<String> {
+    unsafe {
+        let dc = CreateCompatibleDC(null_mut());
+        assert!(!dc.is_null());
+        let fonts = ["Consolas", "Segoe UI Symbol"].map(|family| {
+            let face = wide(family);
+            CreateFontW(
+                -18,
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                CLEARTYPE_QUALITY as u32,
+                FIXED_PITCH as u32 | FF_MODERN as u32,
+                face.as_ptr(),
+            )
+        });
+        let previous = SelectObject(dc, fonts[0]);
+        let missing = glyphs
+            .iter()
+            .filter(|glyph| {
+                let text: Vec<u16> = glyph.encode_utf16().collect();
+                let mut indices = vec![0; text.len()];
+                !fonts.iter().any(|font| {
+                    SelectObject(dc, *font);
+                    GetGlyphIndicesW(
+                        dc,
+                        text.as_ptr(),
+                        text.len() as i32,
+                        indices.as_mut_ptr(),
+                        GGI_MARK_NONEXISTING_GLYPHS,
+                    ) != GDI_ERROR as u32
+                        && indices.iter().all(|index| *index != 0xffff)
+                })
+            })
+            .cloned()
+            .collect();
+        SelectObject(dc, previous);
+        for font in fonts {
+            DeleteObject(font);
+        }
+        DeleteDC(dc);
+        missing
     }
 }
 
@@ -1243,9 +1907,79 @@ unsafe fn refresh_icon(hwnd: HWND, window: &mut Window) {
     window.icon_color = super::theme::brand_color();
 }
 
+unsafe fn taskbar_hr_init(taskbar: *mut TaskbarList3) {
+    let method: unsafe extern "system" fn(*mut TaskbarList3) -> i32 = mem::transmute(*(*taskbar).vtable.add(3));
+    let _ = method(taskbar);
+}
+
+unsafe fn taskbar_overlay(taskbar: *mut TaskbarList3, hwnd: HWND, icon: HICON) {
+    let method: unsafe extern "system" fn(*mut TaskbarList3, HWND, HICON, *const u16) -> i32 = mem::transmute(*(*taskbar).vtable.add(17));
+    let _ = method(taskbar, hwnd, icon, null());
+}
+
+unsafe fn status_icon(size: i32, [red, green, blue]: crate::config::Rgb) -> HICON {
+    let mut pixels = image::RgbaImage::new(size as u32, size as u32);
+    let center = (size as f32 - 1.0) / 2.0;
+    let radius = center - 1.0;
+    for y in 0..size as u32 {
+        for x in 0..size as u32 {
+            let distance = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
+            if distance <= radius { pixels.put_pixel(x, y, image::Rgba([blue, green, red, 255])); }
+        }
+    }
+    let mut data = vec![0u8; 40];
+    let mut header = |offset: usize, value: u32| data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    header(0, 40); header(4, size as u32); header(8, (size * 2) as u32);
+    data[12..14].copy_from_slice(&1u16.to_le_bytes());
+    data[14..16].copy_from_slice(&32u16.to_le_bytes());
+    for y in (0..size as u32).rev() { for x in 0..size as u32 { data.extend_from_slice(&pixels.get_pixel(x, y).0); } }
+    data.resize(data.len() + ((size as usize).div_ceil(32) * 4) * size as usize, 0);
+    CreateIconFromResourceEx(data.as_mut_ptr(), data.len() as u32, 1, 0x00030000, size, size, 0)
+}
+
+unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
+    // Windows driven by the test control channel are hidden; they must never notify the user.
+    if !native_signal_allowed(std::env::var_os("CONCORDIA_TEST_CONTROL").is_some()) {
+        return;
+    }
+    let mut data: NOTIFYICONDATAW = mem::zeroed();
+    data.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
+    data.hWnd = hwnd;
+    data.uID = TRAY_ID;
+    data.uFlags = NIF_MESSAGE | NIF_ICON | if message.is_some() { NIF_INFO } else { 0 };
+    data.uCallbackMessage = TRAY_NOTIFY;
+    data.hIcon = status_icon(16, super::theme::status_color(StatusDot::NeedsAttention));
+    if let Some(message) = message {
+        let mut text = message.encode_utf16().take(255).collect::<Vec<_>>();
+        text.resize(256, 0);
+        data.szInfo.copy_from_slice(&text);
+        let mut title = "Concordia".encode_utf16().collect::<Vec<_>>();
+        title.resize(64, 0);
+        data.szInfoTitle.copy_from_slice(&title);
+        data.dwInfoFlags = 1;
+    }
+    let _ = Shell_NotifyIconW(operation, &data);
+    if !data.hIcon.is_null() { DestroyIcon(data.hIcon); }
+}
+
+fn native_signal_allowed(test_control: bool) -> bool {
+    !test_control
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::native_signal_allowed;
+
+    #[test]
+    fn test_control_blocks_all_shell_signals() {
+        assert!(!native_signal_allowed(true));
+        assert!(native_signal_allowed(false));
+    }
+}
+
 unsafe fn window_thread(
     shared: Arc<Shared>,
-    events: EventSender,
+    events: SyncSender<NativeEvent>,
     ready: &mpsc::SyncSender<io::Result<()>>,
 ) -> io::Result<()> {
     // Only this thread creates/destroys windows and owns all GDI objects.
@@ -1273,6 +2007,11 @@ unsafe fn window_thread(
         emoji_fonts: [null_mut(); 16],
         glyph_fonts: std::array::from_fn(|_| std::collections::HashMap::new()),
         icons: [app_icon(32, None), app_icon(16, None)],
+        overlay_icons: [null_mut(), null_mut()],
+        taskbar: null_mut(),
+        com_initialized: false,
+        status_dot: StatusDot::Idle,
+        tray_added: false,
         icon_color: super::theme::brand_color(),
         icon_active: false,
         icon_frame: 0,
@@ -1290,13 +2029,14 @@ unsafe fn window_thread(
     let dpi = GetDpiForSystem().clamp(96, 768) as i32;
     let initial_width = (1120 * dpi / 96).min((GetSystemMetrics(SM_CXSCREEN) * 9 / 10).max(400));
     let initial_height = (860 * dpi / 96).min((GetSystemMetrics(SM_CYSCREEN) * 9 / 10).max(280));
+    let test_window = shared.test_control.is_some();
     let hwnd = CreateWindowExW(
-        WS_EX_ACCEPTFILES,
+        WS_EX_ACCEPTFILES | if test_window { WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE } else { 0 },
         class.as_ptr(),
         wide("Concordia").as_ptr(),
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
+        if test_window { -32000 } else { CW_USEDEFAULT },
+        if test_window { -32000 } else { CW_USEDEFAULT },
         initial_width,
         initial_height,
         null_mut(),
@@ -1307,7 +2047,23 @@ unsafe fn window_thread(
     if hwnd.is_null() {
         return Err(io::Error::last_os_error());
     }
+    let com_initialized = CoInitializeEx(null_mut(), COINIT_APARTMENTTHREADED as u32) >= 0;
+    window.com_initialized = com_initialized;
+    if com_initialized {
+        let mut taskbar = null_mut();
+        if CoCreateInstance(
+            &CLSID_TASKBAR_LIST,
+            null_mut(),
+            CLSCTX_INPROC_SERVER,
+            &IID_ITASKBAR_LIST3,
+            (&mut taskbar as *mut *mut TaskbarList3).cast(),
+        ) >= 0 {
+            window.taskbar = taskbar;
+            taskbar_hr_init(taskbar);
+        }
+    }
     shared.hwnd.store(hwnd as isize, Ordering::Release);
+    start_test_control(&shared, hwnd);
     if !window.icons[0].is_null() {
         SendMessageW(
             hwnd,
@@ -1328,7 +2084,11 @@ unsafe fn window_thread(
     window.resized(hwnd);
     DragAcceptFiles(hwnd, 1);
     SetTimer(hwnd, 1, 500, None);
-    ShowWindow(hwnd, SW_SHOW);
+    set_caption_color(hwnd);
+    // Keep journey windows rendered at their off-screen position.  SW_HIDE prevents normal
+    // paint delivery on some Windows versions, while NOACTIVATE and TOOLWINDOW keep this
+    // test-only window out of focus and the taskbar.
+    ShowWindow(hwnd, if test_window { SW_SHOWNOACTIVATE } else { SW_SHOW });
     UpdateWindow(hwnd);
     let _ = ready.send(Ok(()));
     let mut message: MSG = mem::zeroed();
@@ -1342,6 +2102,83 @@ unsafe fn window_thread(
     }
     shared.hwnd.store(0, Ordering::Release);
     Ok(())
+}
+
+/// Test-only control is an authenticated, local loopback channel. It is deliberately
+/// attached to the native message thread: injected events and real Win32 input share
+/// the same `Window::emit`/`Window::mouse` path and therefore the same input precedence.
+fn start_test_control(shared: &Arc<Shared>, hwnd: HWND) {
+    let Some(spec) = std::env::var_os("CONCORDIA_TEST_CONTROL") else {
+        return;
+    };
+    let Ok(spec) = spec.into_string() else { return };
+    let Some((address, token)) = spec.split_once(';') else {
+        return;
+    };
+    let Ok(address) = address.parse::<SocketAddr>() else {
+        return;
+    };
+    if !address.ip().is_loopback() || token.is_empty() {
+        return;
+    }
+    let Ok(listener) = TcpListener::bind(address) else {
+        return;
+    };
+    let hwnd = hwnd as isize;
+    let token = token.to_owned();
+    let shared = shared.clone();
+    thread::Builder::new()
+        .name("concordia-test-control".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let shared = shared.clone();
+                let token = token.to_owned();
+                thread::spawn(move || test_control_client(stream, shared, hwnd, &token));
+            }
+        })
+        .ok();
+}
+
+fn test_control_client(stream: TcpStream, shared: Arc<Shared>, hwnd: isize, token: &str) {
+    use std::io::{BufRead, BufReader, Write};
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() || line.is_empty() {
+            break;
+        }
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if request.get("token").and_then(|v| v.as_str()) != Some(token) {
+            continue;
+        }
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let Some(test) = shared.test_control.as_ref() else {
+            break;
+        };
+        test.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(TestRequest {
+                request,
+                reply: reply_tx,
+            });
+        unsafe {
+            PostMessageW(hwnd as HWND, TEST_CONTROL, 0, 0);
+        }
+        let Ok(reply) = reply_rx.recv_timeout(Duration::from_secs(5)) else {
+            break;
+        };
+        if reader.get_mut().write_all(reply.as_bytes()).is_err() {
+            break;
+        }
+        if reader.get_mut().write_all(b"\n").is_err() {
+            break;
+        }
+        let _ = reader.get_mut().flush();
+    }
 }
 
 unsafe extern "system" fn window_proc(
@@ -1365,6 +2202,10 @@ unsafe extern "system" fn window_proc(
     match message {
         SHUTDOWN => {
             DestroyWindow(hwnd);
+            return 0;
+        }
+        TEST_CONTROL => {
+            handle_test_control(&mut *pointer);
             return 0;
         }
         WM_DESTROY => {
@@ -1396,10 +2237,13 @@ unsafe extern "system" fn window_proc(
             | UPDATE
             | TITLE
             | POINTER
+            | TRAY_NOTIFY
+            | TEST_CONTROL
             | WM_SETCURSOR
             | WM_TIMER
             | WM_SIZE
             | WM_DPICHANGED
+            | WM_ACTIVATE
             | WM_SETFOCUS
             | WM_KILLFOCUS
             | WM_KEYDOWN
@@ -1437,12 +2281,53 @@ unsafe extern "system" fn window_proc(
             window.paint(hwnd, Some(wparam as HDC));
             0
         }
+        WM_ACTIVATE => {
+            if (wparam as u32 & 0xffff) != WA_INACTIVE {
+                // Activation repaints the cached surface without a new application
+                // frame. Give the paint probe a new visible-frame sequence so it can
+                // distinguish that repaint from the frame shown before deactivation.
+                window
+                    .shared
+                    .screen
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .seq += 1;
+                InvalidateRect(hwnd, null(), 0);
+                RedrawWindow(
+                    hwnd,
+                    null(),
+                    null_mut(),
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE,
+                );
+            }
+            0
+        }
         UPDATE => {
+            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            window.set_status(hwnd, status);
+            set_caption_color(hwnd);
             if super::theme::brand_color() != window.icon_color {
                 refresh_icon(hwnd, window);
             }
             window.blink = true;
             InvalidateRect(hwnd, null(), 0);
+            0
+        }
+        TRAY_NOTIFY if lparam as u32 == WM_LBUTTONUP || lparam as u32 == WM_LBUTTONDBLCLK => {
+            if window.status_dot == StatusDot::NeedsAttention {
+                SetForegroundWindow(hwnd);
+                if let Some(item_id) = window
+                    .shared
+                    .attention_target
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    window.emit_native(NativeEvent::Attention(item_id));
+                }
+                notify_tray(hwnd, NIM_DELETE, None);
+                window.tray_added = false;
+            }
             0
         }
         TITLE => {
@@ -1536,12 +2421,16 @@ unsafe extern "system" fn window_proc(
         WM_SETFOCUS => {
             window.focused = true;
             window.blink = true;
+            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            window.set_status(hwnd, status);
             window.emit(Event::FocusGained);
             InvalidateRect(hwnd, null(), 0);
             0
         }
         WM_KILLFOCUS => {
             window.focused = false;
+            let status = *window.shared.requested_status.lock().unwrap_or_else(|e| e.into_inner());
+            window.set_status(hwnd, status);
             let pressed = window.pressed.take();
             if let Some(button) = pressed {
                 let mut point: POINT = mem::zeroed();
@@ -1712,6 +2601,18 @@ unsafe extern "system" fn window_proc(
     }
 }
 
+unsafe fn set_caption_color(hwnd: HWND) {
+    let [red, green, blue] = super::theme::native_default(false);
+    // DWMWA_CAPTION_COLOR takes a COLORREF (BGR packed in a DWORD), not a ratatui RGB value.
+    let color = u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16);
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CAPTION_COLOR,
+        (&color as *const u32).cast(),
+        std::mem::size_of::<u32>() as u32,
+    );
+}
+
 unsafe fn dropped_files(window: &Window, drop: windows_sys::Win32::UI::Shell::HDROP) -> bool {
     let count = DragQueryFileW(drop, u32::MAX, null_mut(), 0);
     let mut paths = Vec::new();
@@ -1786,6 +2687,11 @@ fn key(vk: u16, modifiers: KeyModifiers) -> Option<KeyCode> {
             KeyCode::Char((b'a' + (vk - 0x41) as u8) as char)
         }
         VK_SPACE if modifiers == KeyModifiers::CONTROL => KeyCode::Char(' '),
+        0xc0 if modifiers.contains(KeyModifiers::CONTROL)
+            && !modifiers.contains(KeyModifiers::ALT) =>
+        {
+            KeyCode::Char('`')
+        }
         // Ctrl+1..9 selects a tab; AltGr (Ctrl+Alt) still types its character.
         0x31..=0x39
             if modifiers.contains(KeyModifiers::CONTROL)
@@ -1823,6 +2729,7 @@ fn dim(foreground: u32, background: u32) -> u32 {
         |shift: u32| (((foreground >> shift) & 255u32) + ((background >> shift) & 255u32)) / 2;
     blend(0) | (blend(8) << 8) | (blend(16) << 16)
 }
+
 fn color(color: Color, foreground: bool) -> u32 {
     let index = match color {
         Color::Reset => {
@@ -1878,3 +2785,23 @@ fn color(color: Color, foreground: bool) -> u32 {
     let value = index - 16;
     rgb(level(value / 36), level(value / 6 % 6), level(value % 6))
 }
+
+#[cfg(test)]
+mod image_rect_tests {
+    use super::*;
+
+    #[test]
+    fn preview_preserves_source_aspect_ratio_when_fitted_to_cells() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 400,
+            bottom: 400,
+        };
+        let rect = Window::image_rect_for(Rect::new(0, 0, 20, 20), 400, 200, &client, 9, 20)
+            .unwrap();
+        assert_eq!(rect.right - rect.left, 180);
+        assert_eq!(rect.bottom - rect.top, 90);
+    }
+}
+

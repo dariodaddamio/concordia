@@ -40,6 +40,11 @@ pub(super) fn open(app: &mut App) {
             "Saved; Windows reduced-motion preferences take precedence",
         ),
         row(
+            "notifications",
+            format!("Windows notifications · {}", enabled(ui.notifications)),
+            "Taskbar status remains active when notifications are off",
+        ),
+        row(
             "permissions",
             "Permissions",
             "Saved default for future turns; running turns retain their permissions",
@@ -55,6 +60,11 @@ pub(super) fn open(app: &mut App) {
             "Saved selection for the current provider account",
         ),
         row(
+            "roles",
+            format!("Roles · {} configured", crate::store::get_settings(&app.state_root).roles.len()),
+            "Default provider, account, model and effort for delegated agents",
+        ),
+        row(
             "continuation",
             format!(
                 "Default limit handoff · {}",
@@ -64,7 +74,7 @@ pub(super) fn open(app: &mut App) {
                     "Pause"
                 }
             ),
-            format!("Saved for future sessions; context: {} at {}% (Cursor disables fresh when usage is unreported)", context_label(app), crate::config::for_root(&app.state_root).continuation.context.threshold),
+            "Saved for future sessions; proactive rollover is Codex-only and off by default",
         ),
         row(
             "same-provider",
@@ -133,14 +143,6 @@ pub(super) fn open(app: &mut App) {
     );
 }
 
-fn context_label(app: &App) -> String {
-    let c = crate::config::for_root(&app.state_root)
-        .continuation
-        .context;
-    let (mode, _) = c.for_provider(app.provider);
-    mode.to_owned()
-}
-
 pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     if kind == PickerKind::Customization {
         if let Some(path) = id.strip_prefix("file:") {
@@ -151,7 +153,6 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     if kind == PickerKind::FilePreferences {
         let action = match id {
             "preview" => crate::file_open::FileAction::Preview,
-            "split" => crate::file_open::FileAction::Split,
             "editor" => crate::file_open::FileAction::Editor,
             _ => return,
         };
@@ -164,11 +165,12 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     }
     match id {
         "appearance" => appearance::open(app),
-        "tokens" | "tips" | "stats" | "motion" => {
+        "tokens" | "tips" | "stats" | "motion" | "notifications" => {
             let current = match id {
                 "tokens" => app.appearance.ui.token_line,
                 "tips" => app.appearance.ui.tips,
                 "motion" => app.appearance.ui.motion,
+                "notifications" => app.appearance.ui.notifications,
                 _ => app.stats.is_some(),
             };
             appearance::save(app, id, if current { "off" } else { "on" });
@@ -188,6 +190,31 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             } else {
                 app.open_model_picker();
             }
+        }
+        "roles" => {
+            let rows = crate::store::get_settings(&app.state_root)
+                .roles
+                .into_iter()
+                .map(|(name, role)| {
+                    row(
+                        &format!("role:{name}"),
+                        name,
+                        format!(
+                            "{} · {} · {} · effort {}",
+                            role.provider.as_deref().unwrap_or("provider default"),
+                            role.account.as_deref().unwrap_or("account required"),
+                            role.model.as_deref().unwrap_or("model default"),
+                            role.effort.as_deref().unwrap_or("provider default")
+                        ),
+                    )
+                })
+                .collect();
+            app.show_picker(
+                PickerKind::Settings,
+                "Roles · edit in local settings".into(),
+                rows,
+                true,
+            );
         }
         "continuation" => {
             let next = !app.continuation.automatic();
@@ -239,7 +266,6 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             "File links · saved default".into(),
             vec![
                 row("preview", "Preview here", "Open inside the current window"),
-                row("split", "Split off", "Open in an independent window"),
                 row(
                     "editor",
                     "External editor",
@@ -307,7 +333,7 @@ fn skill_rows(directory: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited:
             break;
         }
         *visited += 1;
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+        if !entry.path().is_dir() {
             continue;
         }
         let path = entry.path().join("SKILL.md");
@@ -315,7 +341,10 @@ fn skill_rows(directory: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited:
             continue;
         }
         let folder = entry.file_name().to_string_lossy().into_owned();
-        match bounded_text(&path) {
+        let native_source = std::fs::canonicalize(entry.path())
+            .map(|folder| folder.join("SKILL.md"))
+            .unwrap_or_else(|_| path.clone());
+        match bounded_text(&native_source) {
             Ok(text) => {
                 let description = text
                     .lines()
@@ -325,7 +354,7 @@ fn skill_rows(directory: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited:
                     .trim()
                     .trim_matches(['\'', '"']);
                 rows.push(source_row(
-                    &path,
+                    &native_source,
                     scope,
                     &folder,
                     &crate::sessions::clean_preview(Some(description), 120),
@@ -397,6 +426,8 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
         ProviderKind::Codex => ".agents",
         ProviderKind::Claude => ".claude",
         ProviderKind::Cursor => ".cursor",
+        ProviderKind::Grok => ".grok",
+        ProviderKind::Opencode => ".opencode",
     };
     for root in roots {
         if hooks {
@@ -416,7 +447,10 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                 ProviderKind::Cursor => {
                     hook_rows(&root.join(".cursor/hooks.json"), "Project", &mut rows)
                 }
-                ProviderKind::Codex => {}
+                ProviderKind::Codex => {
+                    hook_rows(&root.join(".codex/hooks.json"), "Project", &mut rows)
+                }
+                ProviderKind::Grok | ProviderKind::Opencode => {}
             }
         } else {
             skill_rows(
@@ -430,9 +464,29 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
     if let Some(home) = &app.home_path {
         if hooks {
             match provider {
-                ProviderKind::Claude => hook_rows(&home.join("settings.json"), "User · selected account", &mut rows),
-                ProviderKind::Cursor => hook_rows(&home.join("hooks.json"), "User · selected account", &mut rows),
-                ProviderKind::Codex => rows.push(row("notice", "Codex native hooks", "No verified native hook catalog is exposed here. Concordia does not install or emulate hooks.")),
+                ProviderKind::Claude => hook_rows(
+                    &home.join("settings.json"),
+                    "User · selected account",
+                    &mut rows,
+                ),
+                ProviderKind::Cursor => hook_rows(
+                    &home.join("hooks.json"),
+                    "User · selected account",
+                    &mut rows,
+                ),
+                ProviderKind::Codex => {
+                    hook_rows(
+                        &home.join("hooks.json"),
+                        "User · selected account",
+                        &mut rows,
+                    );
+                    rows.push(row("notice", "Native hook trust", "This inventory shows configured sources. Review native /hooks in this provider home; only native consent can enable untrusted hooks."));
+                }
+                ProviderKind::Grok | ProviderKind::Opencode => hook_rows(
+                    &home.join("hooks.json"),
+                    "User Â· selected account",
+                    &mut rows,
+                ),
             }
         } else {
             skill_rows(

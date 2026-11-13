@@ -301,24 +301,88 @@ fn mime(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     }
 }
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
-    if crate::workspace_paths::sensitive(path)
-        || path
-            .canonicalize()
-            .is_ok_and(|path| crate::workspace_paths::sensitive(&path))
-    {
-        return Err("Attachment is excluded by workspace policy".into());
-    }
-    let mut data = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|_| "image file unavailable")?
-        .take((MAX_BYTES + 1) as u64)
-        .read_to_end(&mut data)
-        .map_err(|_| "could not read image")?;
-    if data.len() > MAX_BYTES {
-        return Err("image exceeds 4 MiB; resize it before attaching".into());
-    }
+    let data = read_regular(path, MAX_BYTES, "Image")?;
     mime(&data).ok_or("attach a PNG, JPEG or WebP image")?;
     Ok(data)
+}
+
+fn read_regular(path: &Path, limit: usize, kind: &str) -> Result<Vec<u8>, String> {
+    if crate::workspace_paths::sensitive(path) {
+        return Err(format!("{kind} is excluded by workspace policy"));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| format!("{kind} file unavailable"))?;
+    if crate::workspace_paths::sensitive(&canonical) {
+        return Err(format!("{kind} is excluded by workspace policy"));
+    }
+    let valid = |metadata: &std::fs::Metadata| {
+        metadata.is_file() && !crate::workspaces::linked(metadata) && metadata.len() <= limit as u64
+    };
+    if !valid(&std::fs::symlink_metadata(path).map_err(|error| error.to_string())?) {
+        return Err(format!(
+            "Attach a regular {kind} file of at most {limit} bytes"
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // Open the reparse point itself, never follow it.
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|error| error.to_string())?;
+    if !valid(&file.metadata().map_err(|error| error.to_string())?)
+        || path.canonicalize().ok().as_ref() != Some(&canonical)
+    {
+        return Err(format!(
+            "{kind} identity changed before reading; choose it again"
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > limit {
+        return Err(format!("{kind} exceeds its {limit} byte attachment limit"));
+    }
+    Ok(bytes)
+}
+
+fn storage_directory(root: &Path) -> Result<PathBuf, String> {
+    let directory = root.join("attachments");
+    std::fs::create_dir_all(&directory).map_err(|_| "Attachment storage unavailable")?;
+    crate::workspaces::directory_id(&directory)?;
+    directory
+        .canonicalize()
+        .map_err(|_| "Attachment storage unavailable".into())
+}
+
+fn store_snapshot(
+    root: &Path,
+    hash: &str,
+    extension: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let directory = storage_directory(root)?;
+    let target = directory.join(format!("{hash}.{extension}"));
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) if !crate::fs_safe::regular_owned_file(&target, &directory) => {
+            return Err("Attachment snapshot must be an owned regular file".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::state_io::write_atomic(&target, bytes)
+                .map_err(|_| "Could not store attachment snapshot")?;
+        }
+        Err(_) => return Err("Attachment snapshot unavailable".into()),
+    }
+    Ok(target)
 }
 /// `canonicalize` on Windows returns `\\?\C:\...`; provider CLIs and image viewers handle the
 /// plain drive form. UNC and other verbatim forms are kept as they are.
@@ -340,13 +404,8 @@ pub fn import(root: &Path, path: &Path) -> Result<Image, String> {
     let data = read(path)?;
     let (mime, ext) = mime(&data).unwrap();
     let hash = format!("{:x}", Sha256::digest(&data));
-    let dir = root.join("attachments");
-    std::fs::create_dir_all(&dir).map_err(|_| "image storage unavailable")?;
-    let target = dir.join(format!("{hash}.{ext}"));
     // Same bytes can share one immutable snapshot. Existing bytes are verified at dispatch.
-    if !target.exists() {
-        crate::state_io::write_atomic(&target, &data).map_err(|_| "could not store image")?;
-    }
+    let target = store_snapshot(root, &hash, ext, &data)?;
     Ok(Image {
         path: plain_path(
             target

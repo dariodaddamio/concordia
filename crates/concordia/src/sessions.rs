@@ -1,19 +1,21 @@
 //! Resume picker — list Codex / Claude / Cursor sessions from account homes.
 //! Never uses resume --last; callers bind an explicit session id.
 
-use crate::accounts::{display_account_name, list_all_accounts};
+use crate::accounts::list_all_accounts;
 use crate::store::ProviderKind;
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 const MAX_DISCOVERY_ENTRIES: usize = 20_000;
 const MAX_DISCOVERED_FILES: usize = 5_000;
 const MAX_DISCOVERED_ACCOUNTS: usize = 32;
-const MAX_SUMMARY_BYTES: u64 = 64 * 1024;
-const MAX_SUMMARY_LINE_BYTES: usize = 32 * 1024;
+// Native Codex setup (tools, instructions and environment) can exceed 100 KiB
+// before the first user request. Keep reads bounded without hiding those chats.
+const MAX_SUMMARY_BYTES: u64 = 1024 * 1024;
+const MAX_SUMMARY_LINE_BYTES: usize = 256 * 1024;
 const MAX_SUMMARY_LINES: usize = 200;
 const MAX_SUMMARIZED_RECORDS: usize = 1000;
 
@@ -33,18 +35,75 @@ fn bounded_text(value: &str, max_chars: usize) -> String {
     out
 }
 
-fn read_summary_lines(file: File, max_lines: usize) -> Vec<Vec<u8>> {
+fn read_summary_lines(file: File, max_lines: usize, first_line_bytes: usize) -> Vec<Vec<u8>> {
     let mut reader = BufReader::new(file.take(MAX_SUMMARY_BYTES));
     let mut lines = Vec::new();
+    let mut first = true;
     while lines.len() < max_lines {
         let mut line = Vec::new();
+        let limit = if first {
+            first_line_bytes
+        } else {
+            MAX_SUMMARY_LINE_BYTES
+        };
+        first = false;
         match reader.read_until(b'\n', &mut line) {
             Ok(0) | Err(_) => break,
-            Ok(_) if line.len() <= MAX_SUMMARY_LINE_BYTES => lines.push(line),
+            Ok(_) if line.len() <= limit => lines.push(line),
             Ok(_) => continue,
         }
     }
     lines
+}
+
+/// Ignore large setup/attachment fields while extracting only exact session metadata.
+#[derive(serde::Deserialize)]
+struct IdentityRecord {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+    payload: Option<IdentityPayload>,
+}
+
+#[derive(serde::Deserialize)]
+struct IdentityPayload {
+    id: Option<String>,
+    session_id: Option<String>,
+    cwd: Option<String>,
+    thread_source: Option<String>,
+    source: Option<Value>,
+}
+
+pub(crate) fn identity_matches(
+    provider: ProviderKind,
+    bytes: &[u8],
+    expected: &str,
+) -> Result<bool, String> {
+    let mut found = false;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let Ok(record) = serde_json::from_slice::<IdentityRecord>(line) else {
+            continue;
+        };
+        let id = match provider {
+            ProviderKind::Codex if record.kind.as_deref() == Some("session_meta") => record
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.id.as_deref().or(payload.session_id.as_deref())),
+            ProviderKind::Claude => record.session_id.as_deref(),
+            _ => None,
+        };
+        if let Some(id) = id {
+            if id != expected {
+                return Err(
+                    "native source contains a conflicting session identity; original preserved"
+                        .into(),
+                );
+            }
+            found = true;
+        }
+    }
+    Ok(found)
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +125,135 @@ pub struct PickerRow {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatOpenability {
+    Openable,
+    Unopenable(crate::native_memory::PointerFailureCause),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatDiagnostic {
+    pub task_id: String,
+    pub title: String,
+    pub account: String,
+    pub provider: ProviderKind,
+    pub native_session_id: String,
+    pub status: ChatOpenability,
+    pub handoff_map: Option<String>,
+    pub handoff_map_id: Option<String>,
+}
+
+impl ChatDiagnostic {
+    pub fn cause(&self) -> Option<crate::native_memory::PointerFailureCause> {
+        match self.status {
+            ChatOpenability::Openable => None,
+            ChatOpenability::Unopenable(cause) => Some(cause),
+        }
+    }
+
+    pub fn repair_detail(&self) -> String {
+        match self.cause() {
+            Some(cause) => format!(
+                "{} · start a fresh session from the handoff map (draft kept)",
+                cause.label()
+            ),
+            None => "chat is openable".into(),
+        }
+    }
+
+    pub fn failure_detail(&self) -> String {
+        match self.cause() {
+            Some(crate::native_memory::PointerFailureCause::RecordUnreadable)
+                if self.handoff_map_id.is_some() =>
+            {
+                format!(
+                    "handoff map {} is missing or cannot be parsed",
+                    self.handoff_map_id.as_deref().unwrap_or("unknown")
+                )
+            }
+            Some(cause) => cause.label().to_owned(),
+            None => "chat is openable".into(),
+        }
+    }
+}
+
+/// Diagnose durable task chats without changing provider files or Concordia state.
+pub fn diagnose_task(root: &Path, task: &crate::store::TaskRecord) -> ChatDiagnostic {
+    let session = task.sessions.last();
+    let (account, provider, native_session_id) = session.map_or_else(
+        || (String::new(), ProviderKind::Codex, String::new()),
+        |session| {
+            (
+                session.account.clone(),
+                session.provider,
+                session.native_session_id.clone(),
+            )
+        },
+    );
+    let handoff_map = task.last_map.as_ref().and_then(|map| {
+        crate::threads::ThreadLog::open(root, &map.thread_id)
+            .read_map(crate::config::for_root(root).threads.map_chars)
+            .ok()
+    });
+    let status = if session.is_none() || (task.last_map.is_some() && handoff_map.is_none()) {
+        ChatOpenability::Unopenable(crate::native_memory::PointerFailureCause::RecordUnreadable)
+    } else {
+        match crate::accounts::get_account(root, &account) {
+            None => ChatOpenability::Unopenable(
+                crate::native_memory::PointerFailureCause::AccountHomeChanged,
+            ),
+            Some(account_def)
+                if account_def
+                    .home_path
+                    .as_deref()
+                    .is_none_or(|home| !Path::new(home).is_dir()) =>
+            {
+                ChatOpenability::Unopenable(
+                    crate::native_memory::PointerFailureCause::AccountHomeChanged,
+                )
+            }
+            Some(_) => match find_native_record(root, &account, Some(provider), &native_session_id)
+            {
+                Ok(Some(_)) => match crate::chat_cli::read_history(
+                    root,
+                    &account,
+                    provider,
+                    &native_session_id,
+                ) {
+                    Ok(_) => ChatOpenability::Openable,
+                    Err(error) => ChatOpenability::Unopenable(
+                        crate::native_memory::PointerFailureCause::from_error(&error),
+                    ),
+                },
+                Ok(None) => ChatOpenability::Unopenable(
+                    crate::native_memory::PointerFailureCause::FileDeletedOrMoved,
+                ),
+                Err(error) => ChatOpenability::Unopenable(
+                    crate::native_memory::PointerFailureCause::from_error(&error),
+                ),
+            },
+        }
+    };
+    ChatDiagnostic {
+        task_id: task.id.clone(),
+        title: task.title.clone(),
+        account,
+        provider,
+        native_session_id,
+        status,
+        handoff_map,
+        handoff_map_id: task.last_map.as_ref().map(|map| map.thread_id.clone()),
+    }
+}
+
+pub fn unopenable_tasks(root: &Path) -> Vec<ChatDiagnostic> {
+    crate::store::list_tasks(root)
+        .iter()
+        .map(|task| diagnose_task(root, task))
+        .filter(|diagnostic| diagnostic.cause().is_some())
+        .collect()
+}
+
 /// Rows for the durable task view. The latest session is shown inline; the full chain is kept in
 /// the task record and can be inspected without changing provider-native history.
 pub fn tasks_to_picker_rows(tasks: &[crate::store::TaskRecord]) -> Vec<PickerRow> {
@@ -73,16 +261,8 @@ pub fn tasks_to_picker_rows(tasks: &[crate::store::TaskRecord]) -> Vec<PickerRow
         .iter()
         .filter_map(|task| {
             let latest = task.sessions.last()?;
-            // Legacy sessions are projected as task-shaped rows for the picker, but have no
-            // durable task record to reopen. Preserve the pre-ledger row identity so selection
-            // resumes the explicitly bound native session directly.
-            let id = if task.id.starts_with("legacy-") && task.sessions.len() == 1 {
-                format!("resume:{}:{}", latest.account, latest.native_session_id)
-            } else {
-                format!("task:{}", task.id)
-            };
             Some(PickerRow {
-                id,
+                id: format!("task:{}", task.id),
                 label: task.title.clone(),
                 detail: format!(
                     "{} / {} · {} session{} · {}",
@@ -97,35 +277,19 @@ pub fn tasks_to_picker_rows(tasks: &[crate::store::TaskRecord]) -> Vec<PickerRow
         .collect()
 }
 
-/// Lazy migration view for native sessions that predate the task ledger. No provider files are
-/// rewritten; each legacy session is simply presented as a one-session task.
-pub fn legacy_session_tasks(sessions: &[SessionSummary]) -> Vec<crate::store::TaskRecord> {
+/// Current native sessions without a task ledger entry remain directly selectable.
+/// This view never fabricates durable tasks or rewrites provider-owned files.
+pub fn native_session_picker_rows(sessions: &[SessionSummary]) -> Vec<PickerRow> {
     sessions
         .iter()
-        .map(|session| {
-            let id = format!(
-                "legacy-{}-{}",
+        .map(|session| PickerRow {
+            id: format!("resume:{}:{}", session.account, session.session_id),
+            label: clean_preview(session.preview.as_deref(), 60),
+            detail: format!(
+                "{} / {} ? native session",
                 session.provider.as_str(),
-                session.session_id
-            );
-            let title = clean_preview(session.preview.as_deref(), 60);
-            let workspace = session.cwd.clone().unwrap_or_default();
-            crate::store::TaskRecord {
-                id,
-                title,
-                workspace: workspace.clone(),
-                created_at: session.modified_ms.to_string(),
-                updated_at: session.modified_ms.to_string(),
-                sessions: vec![crate::store::TaskSession {
-                    provider: session.provider,
-                    account: session.account.clone(),
-                    native_session_id: session.session_id.clone(),
-                    workspace,
-                    linked_at: session.modified_ms.to_string(),
-                }],
-                state: crate::store::TaskState::Active,
-                last_map: None,
-            }
+                session.account
+            ),
         })
         .collect()
 }
@@ -205,13 +369,6 @@ fn mtime_ms(path: &Path) -> u128 {
         .unwrap_or(0)
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
-}
-
 fn walk_jsonl(
     root: &Path,
     keep: &dyn Fn(&Path, &str) -> bool,
@@ -259,13 +416,6 @@ fn session_id_from_filename(path: &Path) -> String {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // rollout-<uuid>.jsonl
-    if let Some(idx) = name.rfind('-') {
-        let maybe = &name[idx + 1..];
-        if maybe.len() >= 32 {
-            // full uuid might still have dashes in stem
-        }
-    }
     let re_name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -401,12 +551,39 @@ fn discover_cursor(home: &Path, file_limit: usize, entry_limit: usize) -> Discov
 }
 
 fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<SessionSummary> {
+    summarize_codex_with_child(account, path, modified_ms).map(|(summary, _)| summary)
+}
+
+fn summarize_codex_with_child(
+    account: &str,
+    path: &Path,
+    modified_ms: u128,
+) -> Option<(SessionSummary, bool)> {
     let mut session_id = session_id_from_filename(path);
     let mut cwd: Option<String> = None;
     let mut preview: Option<String> = None;
     let mut user_messages = 0;
+    let mut child = false;
     let file = File::open(path).ok()?;
-    for line in read_summary_lines(file, 80) {
+    for line in read_summary_lines(file, 80, MAX_SUMMARY_BYTES as usize) {
+        if let Ok(record) = serde_json::from_slice::<IdentityRecord>(&line) {
+            if record.kind.as_deref() == Some("session_meta") {
+                if let Some(metadata) = record.payload {
+                    if let Some(id) = metadata.id.or(metadata.session_id) {
+                        session_id = id;
+                    }
+                    cwd = metadata.cwd.or(cwd);
+                    child |= metadata.thread_source.as_deref() == Some("subagent")
+                        || metadata.source.as_ref().is_some_and(|source| {
+                            source == "subagent" || source.get("subagent").is_some()
+                        });
+                }
+                continue;
+            }
+        }
+        if line.len() > MAX_SUMMARY_LINE_BYTES {
+            continue;
+        }
         let Ok(v) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
@@ -426,7 +603,7 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
             }
             continue;
         }
-        if preview.is_none() && ty == "response_item" {
+        if ty == "response_item" {
             if let Some(p) = v.get("payload") {
                 if p.get("type").and_then(|t| t.as_str()) == Some("message")
                     && p.get("role").and_then(|t| t.as_str()) == Some("user")
@@ -438,10 +615,17 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
                             .collect::<Vec<_>>()
                             .join(" ");
                         let title = crate::session_titles::title_from_prompt(&joined);
-                        if !title.is_empty() && !title.starts_with('/') {
+                        if (!title.is_empty() && !title.starts_with('/'))
+                            || arr.iter().any(|item| {
+                                matches!(
+                                    item.get("type").and_then(Value::as_str),
+                                    Some("input_image" | "image")
+                                )
+                            })
+                        {
                             user_messages += 1;
                         }
-                        if !title.is_empty() {
+                        if preview.is_none() && !title.is_empty() && !title.starts_with('/') {
                             preview = Some(bounded_text(&title, 512));
                         }
                     }
@@ -449,15 +633,18 @@ fn summarize_codex(account: &str, path: &Path, modified_ms: u128) -> Option<Sess
             }
         }
     }
-    Some(SessionSummary {
-        account: account.to_string(),
-        provider: ProviderKind::Codex,
-        session_id,
-        cwd,
-        preview,
-        modified_ms,
-        user_messages,
-    })
+    Some((
+        SessionSummary {
+            account: account.to_string(),
+            provider: ProviderKind::Codex,
+            session_id,
+            cwd,
+            preview,
+            modified_ms,
+            user_messages,
+        },
+        child,
+    ))
 }
 
 fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<SessionSummary> {
@@ -466,7 +653,7 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
     let mut preview: Option<String> = None;
     let mut user_messages = 0;
     let file = File::open(path).ok()?;
-    for line in read_summary_lines(file, MAX_SUMMARY_LINES) {
+    for line in read_summary_lines(file, MAX_SUMMARY_LINES, MAX_SUMMARY_LINE_BYTES) {
         let Ok(v) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
@@ -476,7 +663,7 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
         if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
             cwd = Some(c.to_string());
         }
-        if preview.is_none() && v.get("type").and_then(|t| t.as_str()) == Some("user") {
+        if v.get("type").and_then(|t| t.as_str()) == Some("user") {
             if v.get("isMeta").and_then(|m| m.as_bool()).unwrap_or(false) {
                 continue;
             }
@@ -485,7 +672,7 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
                 if !title.is_empty() && !title.starts_with('/') {
                     user_messages += 1;
                 }
-                if !title.is_empty() {
+                if preview.is_none() && !title.is_empty() && !title.starts_with('/') {
                     preview = Some(title);
                 }
             }
@@ -579,15 +766,16 @@ fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<Sess
         .map(|s| bounded_text(s, 512));
     let hist_path = dir.join("prompt_history.json");
     let mut user_messages = 0;
-    if preview.as_ref().map(|p| p.len() < 3).unwrap_or(true) && hist_path.is_file() {
+    if hist_path.is_file() {
         if let Ok(hist) = read_file_capped(&hist_path, 32 * 1024) {
             if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&hist) {
                 for item in &items {
                     if let Some(t) = item.as_str().map(crate::session_titles::title_from_prompt) {
                         if !t.is_empty() && !t.starts_with('/') {
                             user_messages += 1;
-                            preview = Some(bounded_text(&t, 512));
-                            break;
+                            if preview.as_ref().is_none_or(|preview| preview.len() < 3) {
+                                preview = Some(bounded_text(&t, 512));
+                            }
                         }
                     }
                 }
@@ -628,6 +816,7 @@ fn summarize_one(
         ProviderKind::Codex => summarize_codex(account, path, ms),
         ProviderKind::Claude => summarize_claude(account, path, ms),
         ProviderKind::Cursor => summarize_cursor(account, path, ms),
+        ProviderKind::Grok | ProviderKind::Opencode => None,
     }?;
     Some((summary, path.to_path_buf()))
 }
@@ -639,39 +828,6 @@ pub fn list_native_records_bounded(
     provider: Option<ProviderKind>,
 ) -> NativeRecordScan {
     scan_native_records(state_root, limit, account, provider, true)
-}
-
-// Codex can put child-agent rollouts directly beside user chats. Their inherited
-// first messages make them look like copies of the parent on Home. Keep them in
-// source discovery and exact lookup, but not the recent user-chat list.
-fn is_child_agent(provider: ProviderKind, path: &Path) -> bool {
-    if provider != ProviderKind::Codex {
-        return false;
-    }
-    let Ok(file) = File::open(path) else {
-        return false;
-    };
-    // Session metadata can exceed the display summary's per-line limit because
-    // native base instructions live in that record. Keep the same total byte cap.
-    let mut reader = BufReader::new(file.take(MAX_SUMMARY_BYTES));
-    for _ in 0..8 {
-        let mut line = Vec::new();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
-            continue;
-        };
-        if value["type"] != "session_meta" {
-            continue;
-        }
-        let metadata = &value["payload"];
-        return metadata["thread_source"] == "subagent"
-            || metadata["source"] == "subagent"
-            || metadata["source"].get("subagent").is_some();
-    }
-    false
 }
 
 fn scan_native_records(
@@ -705,6 +861,11 @@ fn scan_native_records(
             ProviderKind::Codex => discover_codex(home, file_limit, entries_left),
             ProviderKind::Claude => discover_claude(home, file_limit, entries_left),
             ProviderKind::Cursor => discover_cursor(home, file_limit, entries_left),
+            ProviderKind::Grok | ProviderKind::Opencode => Discovery {
+                files: Vec::new(),
+                truncated: false,
+                entries_scanned: 0,
+            },
         };
         let files_seen = discovery.files.len();
         let cut = discovery.truncated;
@@ -728,10 +889,14 @@ fn scan_native_records(
             truncated = true;
             break;
         }
-        if !include_child_agents && is_child_agent(*provider, path) {
-            continue;
-        }
-        if let Some(mut record) = summarize_one(account, *provider, path, *ms) {
+        let summarized = if *provider == ProviderKind::Codex && !include_child_agents {
+            summarize_codex_with_child(account, path, *ms)
+                .filter(|(_, child)| !*child)
+                .map(|(summary, _)| (summary, path.clone()))
+        } else {
+            summarize_one(account, *provider, path, *ms)
+        };
+        if let Some(mut record) = summarized {
             if !include_child_agents
                 && records
                     .iter()
@@ -753,22 +918,19 @@ fn scan_native_records(
             ) {
                 record.0.preview = Some(title);
             }
+            // Home's limit counts user chats, not empty artifacts that will be
+            // discarded afterward. Exact source lookup still includes both.
+            if !include_child_agents && record.0.user_messages == 0 {
+                continue;
+            }
             records.push(record);
         }
     }
     NativeRecordScan { records, truncated }
 }
 
-pub fn list_native_records(state_root: &Path, limit: usize) -> Vec<(SessionSummary, PathBuf)> {
-    list_native_records_bounded(state_root, limit, None, None)
-        .records
-        .into_iter()
-        .filter(|(session, _)| session.user_messages > 0)
-        .collect()
-}
-
-/// Native artifacts that contain no real user turn. These are safe prune candidates, but are
-/// only removed after the CLI prints them and receives an explicit confirmation.
+/// Native artifacts whose complete bounded content contains no real user turn.
+/// These are report candidates only; provider-owned files are never deleted here.
 pub fn list_empty_native_records(
     state_root: &Path,
     limit: usize,
@@ -776,26 +938,121 @@ pub fn list_empty_native_records(
     list_native_records_bounded(state_root, limit, None, None)
         .records
         .into_iter()
-        .filter(|(session, _)| session.user_messages == 0)
+        .filter(|(session, path)| {
+            session.user_messages == 0 && definitely_empty_native_record(session.provider, path)
+        })
         .collect()
 }
 
-/// Print and, after an explicit confirmation, remove empty native session artifacts.
-pub fn prune_empty_cli(state_root: &Path) -> Result<String, (String, i32)> {
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|e| (format!("could not read confirmation: {e}"), 1))?;
-    prune_empty_with_answer(state_root, answer.trim_end_matches(['\r', '\n']))
+/// Summary absence is not deletion proof. Retain every incomplete, unrecognized or
+/// meaningful record; a bounded prefix must never authorize removal of a whole chat.
+fn definitely_empty_native_record(provider: ProviderKind, path: &Path) -> bool {
+    fn complete_json(path: &Path) -> Option<Vec<u8>> {
+        let metadata = fs::symlink_metadata(path).ok()?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return None;
+            }
+        }
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > MAX_SUMMARY_BYTES
+        {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        File::open(path)
+            .ok()?
+            .take(MAX_SUMMARY_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (bytes.len() as u64 == metadata.len()
+            && fs::metadata(path).ok()?.modified().ok()? == metadata.modified().ok()?)
+        .then_some(bytes)
+    }
+    if provider == ProviderKind::Cursor {
+        if crate::fs_safe::resolved_directory(path).is_none() {
+            return false;
+        }
+        let Ok(entries) = fs::read_dir(path) else {
+            return false;
+        };
+        for (index, entry) in entries.enumerate() {
+            let Ok(entry) = entry else { return false };
+            if index >= 2
+                || !matches!(
+                    entry.file_name().to_str(),
+                    Some("meta.json" | "prompt_history.json")
+                )
+            {
+                return false;
+            }
+        }
+        let Some(meta) = complete_json(&path.join("meta.json")) else {
+            return false;
+        };
+        let Ok(meta) = serde_json::from_slice::<Value>(&meta) else {
+            return false;
+        };
+        if !meta.is_object()
+            || meta
+                .get("title")
+                .and_then(Value::as_str)
+                .is_some_and(|title| !title.trim().is_empty())
+        {
+            return false;
+        }
+        let history = path.join("prompt_history.json");
+        if !history.exists() {
+            return true;
+        }
+        let Some(bytes) = complete_json(&history) else {
+            return false;
+        };
+        return serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|value| value.as_array().cloned())
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .all(|item| item.as_str().is_some_and(|text| text.trim().is_empty()))
+            });
+    }
+    let Some(bytes) = complete_json(path) else {
+        return false;
+    };
+    bytes.split(|byte| *byte == b'\n').all(|line| {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return true;
+        }
+        if line.len() > MAX_SUMMARY_LINE_BYTES {
+            return false;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            return false;
+        };
+        value.as_object().is_some_and(|object| object.is_empty())
+            || (provider == ProviderKind::Codex
+                && value.get("type").and_then(Value::as_str) == Some("session_meta"))
+            || (provider == ProviderKind::Claude
+                && value.get("type").and_then(Value::as_str) == Some("system")
+                && value.get("subtype").and_then(Value::as_str) == Some("init"))
+    })
 }
 
-fn prune_empty_with_answer(state_root: &Path, answer: &str) -> Result<String, (String, i32)> {
+/// Report empty native artifacts without racing a provider-owned writer.
+/// The historical command spelling is retained; deletion requires provider-owned quiescence
+/// that Concordia cannot establish through the supported source-reading interfaces.
+pub fn prune_empty_cli(state_root: &Path) -> Result<String, (String, i32)> {
     let rows = list_empty_native_records(state_root, MAX_SUMMARIZED_RECORDS);
-    if rows.is_empty() {
-        return Ok("No empty sessions found.\n".into());
-    }
-    let mut out = String::from("Empty sessions to remove:\n");
-    for (session, path) in &rows {
+    let mut out = if rows.is_empty() {
+        String::from("No provably empty sessions found.\n")
+    } else {
+        String::from("Provably empty native session artifacts (retained):\n")
+    };
+    for (session, path) in rows {
         out.push_str(&format!(
             "- {} / {} / {}\n  {}\n",
             session.provider.as_str(),
@@ -804,24 +1061,8 @@ fn prune_empty_with_answer(state_root: &Path, answer: &str) -> Result<String, (S
             path.display()
         ));
     }
-    out.push_str("Remove these sessions? Type 'yes' to confirm: ");
-    print!("{out}");
-    if answer != "yes" {
-        return Ok("Cancelled; no sessions were removed.\n".into());
-    }
-    let mut removed = 0;
-    for (_, path) in rows {
-        let result = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        match result {
-            Ok(()) => removed += 1,
-            Err(e) => return Err((format!("could not remove {}: {e}", path.display()), 1)),
-        }
-    }
-    Ok(format!("Removed {removed} empty session(s).\n"))
+    out.push_str("No native sessions were removed. Concordia cannot prove a provider has stopped writing these sources. Use the provider's own session management for cleanup.\n");
+    Ok(out)
 }
 
 /// Find one native session by exact id inside one registered account home. If the bounded scan
@@ -849,6 +1090,11 @@ pub fn find_native_record(
         ProviderKind::Codex => discover_codex(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
         ProviderKind::Claude => discover_claude(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
         ProviderKind::Cursor => discover_cursor(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
+        ProviderKind::Grok | ProviderKind::Opencode => Discovery {
+            files: Vec::new(),
+            truncated: false,
+            entries_scanned: 0,
+        },
     };
     if discovery.truncated {
         return Err(
@@ -865,6 +1111,7 @@ pub fn find_native_record(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
+            ProviderKind::Grok | ProviderKind::Opencode => String::new(),
         };
         if uuid_id && filename_id != session_id {
             continue;
@@ -879,6 +1126,17 @@ pub fn find_native_record(
             summarize_one(&account_def.account, account_def.provider, &path, ms)
         {
             if record.0.session_id == session_id {
+                if account_def.provider != ProviderKind::Cursor {
+                    let mut header = Vec::new();
+                    File::open(&path)
+                        .map_err(|error| error.to_string())?
+                        .take(MAX_SUMMARY_BYTES)
+                        .read_to_end(&mut header)
+                        .map_err(|error| error.to_string())?;
+                    // Absence may be an oversized attachment record validated by the capture
+                    // reader; a contradictory explicit identity can never be accepted.
+                    identity_matches(account_def.provider, &header, session_id)?;
+                }
                 if let Some(title) = crate::session_titles::get(
                     state_root,
                     account_def.provider,
@@ -928,80 +1186,6 @@ pub fn count_sessions_here(sessions: &[SessionSummary], prefer_cwd: Option<&Path
         .count()
 }
 
-pub fn sessions_to_picker_rows(
-    sessions: &[SessionSummary],
-    prefer_account: Option<&str>,
-    prefer_cwd: Option<&Path>,
-) -> Vec<PickerRow> {
-    let prefer_cwd_norm = prefer_cwd.map(|p| normalize_path(&p.to_string_lossy()));
-    let prefer_folder = prefer_cwd.map(|p| basename(&p.to_string_lossy()));
-    let mut sorted: Vec<&SessionSummary> = sessions.iter().collect();
-    sorted.sort_by(|a, b| {
-        if let Some(ref norm) = prefer_cwd_norm {
-            let af = a
-                .cwd
-                .as_ref()
-                .map(|c| normalize_path(c) == *norm)
-                .unwrap_or(false);
-            let bf = b
-                .cwd
-                .as_ref()
-                .map(|c| normalize_path(c) == *norm)
-                .unwrap_or(false);
-            match (af, bf) {
-                (true, false) => return std::cmp::Ordering::Less,
-                (false, true) => return std::cmp::Ordering::Greater,
-                _ => {}
-            }
-        } else if let Some(ref folder) = prefer_folder {
-            let af = a
-                .cwd
-                .as_ref()
-                .map(|c| basename(c) == *folder)
-                .unwrap_or(false);
-            let bf = b
-                .cwd
-                .as_ref()
-                .map(|c| basename(c) == *folder)
-                .unwrap_or(false);
-            match (af, bf) {
-                (true, false) => return std::cmp::Ordering::Less,
-                (false, true) => return std::cmp::Ordering::Greater,
-                _ => {}
-            }
-        }
-        if let Some(pref) = prefer_account {
-            let ap = a.account == pref;
-            let bp = b.account == pref;
-            match (ap, bp) {
-                (true, false) => return std::cmp::Ordering::Less,
-                (false, true) => return std::cmp::Ordering::Greater,
-                _ => {}
-            }
-        }
-        b.modified_ms.cmp(&a.modified_ms)
-    });
-    let now = now_ms();
-    sorted
-        .into_iter()
-        .map(|s| {
-            let when = format_relative_time(s.modified_ms, now);
-            let folder = s
-                .cwd
-                .as_deref()
-                .map(basename)
-                .unwrap_or_else(|| "no folder".into());
-            let account = display_account_name(s.provider, &s.account);
-            let label = clean_preview(s.preview.as_deref(), 56);
-            PickerRow {
-                id: format!("resume:{}:{}", s.account, s.session_id),
-                label,
-                detail: format!("{account} · {when} · {folder}"),
-            }
-        })
-        .collect()
-}
-
 pub fn trust_picker_rows(current: crate::store::TrustMode) -> Vec<PickerRow> {
     use crate::store::TrustMode;
     let cur = |m: TrustMode| if current == m { " · current" } else { "" };
@@ -1018,7 +1202,7 @@ pub fn trust_picker_rows(current: crate::store::TrustMode) -> Vec<PickerRow> {
         },
         PickerRow {
             id: "trust:workspace".into(),
-            label: format!("Workspace{}", cur(TrustMode::Workspace)),
+            label: format!("Edit{}", cur(TrustMode::Edit)),
             detail: "Allow workspace edits; provider rules apply.".into(),
         },
         PickerRow {
@@ -1239,52 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn concordia_awareness_note_is_not_a_title() {
-        let dir = tempfile::tempdir().unwrap();
-        let codex = dir.path().join("codex.jsonl");
-        let claude = dir.path().join("claude.jsonl");
-        let cursor = dir.path().join("cursor");
-        fs::create_dir(&cursor).unwrap();
-        let note = crate::integration::AWARE_TEXT;
-        let wrapped = format!(
-            "{}\n{}\n{}",
-            crate::integration::AWARE_BEGIN,
-            note,
-            crate::integration::AWARE_END
-        );
-        fs::write(
-            &codex,
-            format!(
-                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"text\":{wrapped:?}}}]}}}}\n"
-            ),
-        )
-        .unwrap();
-        fs::write(
-            &claude,
-            format!("{{\"type\":\"user\",\"message\":{{\"content\":{note:?}}}}}\n"),
-        )
-        .unwrap();
-        fs::create_dir_all(&cursor).unwrap();
-        fs::write(cursor.join("meta.json"), "{}\n").unwrap();
-        fs::write(
-            cursor.join("prompt_history.json"),
-            format!("[{wrapped:?}, \"Repair the picker\"]"),
-        )
-        .unwrap();
-
-        let codex_summary = summarize_codex("codex", &codex, 1).unwrap();
-        assert_eq!(codex_summary.preview, None);
-        assert_eq!(codex_summary.user_messages, 0);
-        let claude_summary = summarize_claude("claude", &claude, 1).unwrap();
-        assert_eq!(claude_summary.preview, None);
-        assert_eq!(claude_summary.user_messages, 0);
-        let cursor_summary = summarize_cursor("cursor", &cursor, 1).unwrap();
-        assert_eq!(cursor_summary.preview.as_deref(), Some("Repair the picker"));
-        assert_eq!(cursor_summary.user_messages, 1);
-    }
-
-    #[test]
-    fn prune_empty_lists_candidates_and_deletes_only_after_exact_yes() {
+    fn empty_native_report_preserves_all_sources() {
         let dir = tempfile::tempdir().unwrap();
         let providers = [
             (ProviderKind::Codex, "codex", "sessions"),
@@ -1341,13 +1480,18 @@ mod tests {
         assert!(rows
             .iter()
             .all(|(_, path)| path.to_string_lossy().contains("empty")));
-        for answer in ["", "y", "YES ", "yes "] {
-            prune_empty_with_answer(dir.path(), answer).unwrap();
-            assert_eq!(list_empty_native_records(dir.path(), 10).len(), 3);
-        }
-        prune_empty_with_answer(dir.path(), "yes").unwrap();
-        assert!(list_empty_native_records(dir.path(), 10).is_empty());
-        assert_eq!(list_native_records(dir.path(), 10).len(), 3);
+        let report = prune_empty_cli(dir.path()).unwrap();
+        assert!(report.contains("No native sessions were removed"));
+        assert!(report.contains("provider's own session management"));
+        assert_eq!(list_empty_native_records(dir.path(), 10).len(), 3);
+        assert_eq!(
+            list_native_records_bounded(dir.path(), 10, None, None)
+                .records
+                .into_iter()
+                .filter(|(session, _)| session.user_messages > 0)
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -1457,5 +1601,32 @@ mod tests {
             native,
             "Home filtering never edits provider history"
         );
+    }
+
+    #[test]
+    fn missing_task_account_is_an_unopenable_chat_with_a_repair_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let task = crate::store::TaskRecord {
+            id: "task-missing-account".into(),
+            title: "Keep the draft".into(),
+            workspace: dir.path().to_string_lossy().into_owned(),
+            created_at: "0".into(),
+            updated_at: "0".into(),
+            sessions: vec![crate::store::TaskSession {
+                provider: ProviderKind::Codex,
+                account: "removed-account".into(),
+                native_session_id: "session-1".into(),
+                workspace: dir.path().to_string_lossy().into_owned(),
+                linked_at: "0".into(),
+            }],
+            state: crate::store::TaskState::Active,
+            last_map: None,
+        };
+        let diagnostic = diagnose_task(dir.path(), &task);
+        assert_eq!(
+            diagnostic.cause(),
+            Some(crate::native_memory::PointerFailureCause::AccountHomeChanged)
+        );
+        assert!(diagnostic.repair_detail().contains("draft kept"));
     }
 }

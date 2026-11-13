@@ -56,7 +56,6 @@ fn resource_compiler() -> Option<PathBuf> {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=assets/concordia.rc");
     println!("cargo:rerun-if-changed=assets/concordia.ico");
     println!("cargo:rerun-if-changed=assets/concordia.manifest");
     println!("cargo:rerun-if-env-changed=RC");
@@ -128,7 +127,13 @@ fn main() {
     );
     fs::write(&rc_source, rc).expect("write generated Windows resource");
     let compiler = resource_compiler().expect("Windows SDK rc.exe is required to embed Concordia resources; install the Windows SDK or set RC to its resource compiler");
-    let status = Command::new(compiler)
+    let mut command = Command::new(compiler);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let status = command
         .current_dir(manifest.join("assets"))
         .args([
             OsString::from("/nologo"),

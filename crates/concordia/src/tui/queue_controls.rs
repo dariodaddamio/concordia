@@ -37,7 +37,7 @@ fn resume_queue(app: &mut App) -> String {
 
     app.queue.paused = false;
     app.questions.clear();
-    app.queue.advance = true;
+    app.queue.dispatch.set_automatic();
     if app.busy {
         "queue resumed - it will continue after the current turn".into()
     } else {

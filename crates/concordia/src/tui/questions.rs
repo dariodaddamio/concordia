@@ -17,6 +17,8 @@ pub(super) struct State {
     selected: usize,
     answers: Vec<String>,
     pub focused: bool,
+    /// The question took focus only because the composer was empty.
+    pub auto_focused: bool,
     last_source: String,
     targets: Vec<(Rect, usize)>,
     pressed: Option<usize>,
@@ -26,6 +28,9 @@ pub(super) struct State {
     native_selected: Vec<usize>,
     native_texts: Vec<Option<String>>,
     note: String,
+    /// First visible line of the scrolled list, and rows per page, both set by `draw`.
+    scroll: usize,
+    page: usize,
 }
 impl State {
     pub fn waiting(&self) -> bool {
@@ -54,14 +59,16 @@ impl State {
             .filter(|request| request.is_active())
             .map(|request| request.envelope().native_session_id.clone())
     }
-    pub fn refresh_native(&mut self) {
+    pub fn refresh_native(&mut self) -> bool {
         if self
             .native
             .as_ref()
             .is_some_and(|request| !request.is_active())
         {
             self.advance_native();
+            return true;
         }
+        false
     }
     pub fn clear(&mut self) {
         for request in self.pending_native.drain(..) {
@@ -75,9 +82,11 @@ impl State {
         self.native_texts.clear();
         self.questions.clear();
         self.focused = false;
+        self.auto_focused = false;
         self.targets.clear();
         self.last_source.clear();
         self.note.clear();
+        self.scroll = 0;
     }
     pub fn cancel_native(&mut self) {
         if self.native.is_some() {
@@ -124,9 +133,11 @@ impl State {
         self.selected = 0;
         self.answers.clear();
         self.note.clear();
+        self.scroll = 0;
         // Inferred conversational replies must never take keyboard ownership from the composer.
         // F8 or a click explicitly enters the options; native requests keep their own contract.
         self.focused = false;
+        self.auto_focused = false;
     }
     /// Rows the cursor can reach: the choices plus, for conversational replies, the note row.
     fn rows(&self) -> usize {
@@ -173,6 +184,7 @@ impl State {
         self.selected = 0;
         self.answers.clear();
         self.focused = focus;
+        self.auto_focused = false;
         self.native = Some(request);
     }
 }
@@ -570,6 +582,7 @@ fn choose(app: &mut App, index: usize) {
     if s.current + 1 < s.questions.len() {
         s.current += 1;
         s.selected = 0;
+        s.scroll = 0;
         s.native_selected.clear();
         return;
     }
@@ -614,14 +627,25 @@ fn choose(app: &mut App, index: usize) {
     }
     let answer = s.answers.join("\n\n");
     s.clear();
-    app.queue.items.insert(0, answer);
+    // An inferred question has no native response channel. Its reply is a normal
+    // FIFO follow-up, never an instruction to interrupt or replace the active task.
+    app.queue.items.push(answer);
     app.queue_changed();
-    let notice = app.force_queued(0);
-    app.flash(notice);
+    if !app.busy && !app.queue.paused {
+        app.queue.dispatch.set_automatic();
+    }
+    app.flash(if app.queue.paused {
+        "Reply queued as a follow-up; the queue remains paused (Ctrl+R resumes)."
+    } else if app.busy {
+        "Reply queued as a follow-up; the active task continues."
+    } else {
+        "Reply queued as a normal follow-up."
+    });
 }
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if key.code == KeyCode::F(8) && app.questions.waiting() {
         app.questions.focused = !app.questions.focused;
+        app.questions.auto_focused = false;
         app.workspace.focused = None;
         app.queue.focused = false;
         return true;
@@ -654,11 +678,24 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                 app.questions.advance_native();
             } else {
                 app.questions.focused = false;
+                app.questions.auto_focused = false;
             }
         }
         KeyCode::Up => app.questions.selected = (app.questions.selected + count - 1) % count,
         KeyCode::Down | KeyCode::Tab => {
             app.questions.selected = (app.questions.selected + 1) % count
+        }
+        KeyCode::Home => app.questions.selected = 0,
+        KeyCode::End => app.questions.selected = count - 1,
+        KeyCode::PageUp => {
+            app.questions.selected = app
+                .questions
+                .selected
+                .saturating_sub(app.questions.page.max(1))
+        }
+        KeyCode::PageDown => {
+            app.questions.selected =
+                (app.questions.selected + app.questions.page.max(1)).min(count - 1)
         }
         KeyCode::Enter if note_allowed && key.modifiers.contains(KeyModifiers::SHIFT) => {
             app.questions.append_note("\n");
@@ -693,11 +730,20 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         {
             choose(app, c as usize - '1' as usize)
         }
+        // Inferred questions share the composer. A leading digit must not become
+        // a popup note because it is often the first character of an instruction.
+        // Native requests keep the shortcut above.
+        KeyCode::Char('1'..='9') if !native && app.questions.auto_focused => {
+            app.questions.focused = false;
+            app.questions.auto_focused = false;
+            return false;
+        }
         KeyCode::Char(c) if note_allowed => {
             if !app.questions.append_note(&c.to_string()) {
                 app.flash("Reply exceeds the 4096-byte input limit");
             }
             app.questions.selected = choices;
+            app.questions.auto_focused = false;
         }
         KeyCode::Backspace if note_allowed => {
             app.questions.note.pop();
@@ -712,7 +758,11 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
 }
 /// A deliberate paste into the focused reply panel preserves logical line breaks.
 pub(super) fn paste(app: &mut App, text: &str) -> bool {
-    if !app.questions.focused || !app.questions.note_allowed() || !app.questions.waiting() {
+    if !app.questions.focused
+        || app.questions.auto_focused
+        || !app.questions.note_allowed()
+        || !app.questions.waiting()
+    {
         return false;
     }
     if !app.questions.append_note(&text::normalize_newlines(text)) {
@@ -722,160 +772,341 @@ pub(super) fn paste(app: &mut App, text: &str) -> bool {
     app.questions.selected = app.questions.questions[app.questions.current].options.len();
     true
 }
+/// Greedy word wrap to `width` columns. Spaces are kept (a trailing space still moves the caret),
+/// words wider than a line are split, and `\n` always starts a new line.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for logical in text.split('\n') {
+        let mut tokens: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut in_space = false;
+        for c in logical.chars() {
+            if c == ' ' {
+                in_space = true;
+            } else if in_space {
+                tokens.push(std::mem::take(&mut current));
+                in_space = false;
+            }
+            current.push(c);
+        }
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+        let mut line = String::new();
+        let mut used = 0usize;
+        for token in tokens {
+            let word = token.trim_end_matches(' ');
+            let word_width = word.width();
+            if used > 0 && used + word_width > width {
+                out.push(std::mem::take(&mut line));
+                used = 0;
+            }
+            if word_width > width {
+                for c in token.chars() {
+                    let cw = c.width().unwrap_or(0);
+                    if used > 0 && used + cw > width {
+                        out.push(std::mem::take(&mut line));
+                        used = 0;
+                    }
+                    line.push(c);
+                    used += cw;
+                }
+                continue;
+            }
+            line.push_str(word);
+            used += word_width;
+            let spaces = (token.len() - word.len()).min(width - used);
+            line.push_str(&" ".repeat(spaces));
+            used += spaces;
+        }
+        out.push(line);
+    }
+    out
+}
+
+const NOTE_HINT: &str =
+    "Add a note: type here, then Enter on a choice (or here to send only the note)";
+const NOTE_INDENT: usize = 4;
+
+struct DocRow {
+    index: usize,
+    indent: usize,
+    lines: Vec<String>,
+    note: bool,
+}
+struct Doc {
+    prompt: Vec<String>,
+    rows: Vec<DocRow>,
+}
+impl Doc {
+    fn height(&self) -> usize {
+        self.prompt.len() + self.rows.iter().map(|row| row.lines.len()).sum::<usize>()
+    }
+}
+
+impl State {
+    /// The prompt and every row wrapped to `inner` columns. `None` when nothing is asked.
+    fn doc(&self, inner: usize) -> Option<Doc> {
+        let q = self.questions.get(self.current)?;
+        let title = if self.questions.len() > 1 {
+            format!("{} of {} · {}", self.current + 1, self.questions.len(), q.prompt)
+        } else {
+            q.prompt.clone()
+        };
+        let multiple = self
+            .native
+            .as_ref()
+            .is_some_and(|request| request.allows_multiple(self.current));
+        let mut rows = Vec::new();
+        for (index, choice) in q.options.iter().enumerate() {
+            let indent = 2 + format!("{}. ", index + 1).len() + if multiple { 4 } else { 0 };
+            rows.push(DocRow {
+                index,
+                indent,
+                lines: wrap(choice, inner.saturating_sub(indent)),
+                note: false,
+            });
+        }
+        if self.note_allowed() {
+            let text = if self.note.is_empty() {
+                NOTE_HINT.to_owned()
+            } else {
+                format!("{}▏", self.note.replace('\n', " ↵ "))
+            };
+            rows.push(DocRow {
+                index: q.options.len(),
+                indent: NOTE_INDENT,
+                lines: wrap(&text, inner.saturating_sub(NOTE_INDENT)),
+                note: true,
+            });
+        }
+        Some(Doc {
+            prompt: wrap(&title, inner.saturating_sub(1)),
+            rows,
+        })
+    }
+}
+
 pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
     let h = if app.questions.waiting() {
-        (app.questions.rows() + 2).min(transcript.height.saturating_sub(3) as usize) as u16
+        let inner = transcript.width.saturating_sub(2) as usize;
+        let wanted = app.questions.doc(inner).map_or(0, |doc| doc.height() + 1);
+        let cap = (transcript.height as usize * 60 / 100)
+            .min(transcript.height.saturating_sub(3) as usize);
+        let h = wanted.min(cap);
+        // One row cannot hold a prompt and a hint; leave the transcript alone instead.
+        if h < 2 {
+            0
+        } else {
+            h as u16
+        }
     } else {
         0
     };
     transcript.height -= h;
     Rect::new(transcript.x, transcript.bottom(), transcript.width, h)
 }
-/// Cut `text` to `width` columns, ending with an ellipsis when it does not fit.
-fn fit(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_owned();
+
+/// Pick the first visible line so the selected row `[start, end)` is fully inside the window,
+/// leaving a line for each "more" marker. Returns `(offset, more_above, more_below)`.
+fn window(total: usize, start: usize, end: usize, view: usize, prev: usize) -> (usize, bool, bool) {
+    if total <= view || view == 0 {
+        return (0, false, false);
     }
-    let mut out = String::new();
-    let mut used = 0;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w + 1 > width {
-            break;
+    if view < 3 {
+        return (start.min(total - view), false, false);
+    }
+    let check = |off: usize| {
+        let above = off > 0;
+        let below = off + view < total;
+        let top = off + usize::from(above);
+        let bottom = off + view - usize::from(below);
+        (start >= top && end <= bottom, above, below)
+    };
+    let best = (0..=total - view)
+        .filter(|off| check(*off).0)
+        .min_by_key(|off| off.abs_diff(prev));
+    match best {
+        Some(off) => {
+            let (_, above, below) = check(off);
+            (off, above, below)
         }
-        out.push(c);
-        used += w;
-    }
-    out.push('…');
-    out
-}
-/// The end of `text` that fits in `width` columns, so the typing position stays visible.
-fn tail(text: &str, width: usize) -> String {
-    let mut used = 0;
-    let mut out: Vec<char> = Vec::new();
-    for c in text.chars().rev() {
-        let w = c.width().unwrap_or(0);
-        if used + w > width {
-            break;
+        // A row taller than the window shows its first line.
+        None => {
+            let off = start.saturating_sub(1).min(total - view);
+            let (_, above, below) = check(off);
+            (off, above, below)
         }
-        out.push(c);
-        used += w;
     }
-    out.into_iter().rev().collect()
 }
+
+enum Item {
+    Prompt(usize),
+    Row(usize, usize),
+}
+
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     app.questions.targets.clear();
-    let s = &mut app.questions;
-    let Some(q) = s.questions.get(s.current).filter(|_| area.height > 1) else {
+    if area.height <= 1 {
+        return;
+    }
+    let inner = area.width.saturating_sub(2) as usize;
+    let Some(doc) = app.questions.doc(inner) else {
         return;
     };
-    let width = area.width.saturating_sub(2) as usize;
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(
-                " {}",
-                fit(
-                    &if s.questions.len() > 1 {
-                        format!("{} of {} · {}", s.current + 1, s.questions.len(), q.prompt)
-                    } else {
-                        q.prompt.clone()
-                    },
-                    width
-                )
+    let s = &mut app.questions;
+    let body = area.height as usize - 1;
+    let pinned = if doc.prompt.len() * 2 <= body {
+        doc.prompt.len()
+    } else {
+        0
+    };
+    let view = body - pinned;
+    let mut items = Vec::new();
+    if pinned == 0 {
+        items.extend((0..doc.prompt.len()).map(Item::Prompt));
+    }
+    let mut spans = Vec::new();
+    for (ri, row) in doc.rows.iter().enumerate() {
+        let first = items.len();
+        items.extend((0..row.lines.len()).map(|li| Item::Row(ri, li)));
+        spans.push((first, items.len()));
+    }
+    let selected = s.selected.min(doc.rows.len().saturating_sub(1));
+    let (start, end) = spans.get(selected).copied().unwrap_or((0, 0));
+    let (off, above, below) = window(items.len(), start, end, view, s.scroll);
+    s.scroll = off;
+    let top = off + usize::from(above);
+    let bottom = (off + view - usize::from(below)).min(items.len());
+    s.page = spans
+        .iter()
+        .filter(|(a, b)| *a >= top && *b <= bottom)
+        .count()
+        .max(1);
+
+    let title_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let title_line = |text: &str| Line::from(Span::styled(format!(" {text}"), title_style));
+    let dim = Style::default().fg(Color::DarkGray);
+    for (i, text) in doc.prompt.iter().take(pinned).enumerate() {
+        f.render_widget(
+            Paragraph::new(title_line(text)),
+            Rect::new(area.x, area.y + i as u16, area.width, 1),
+        );
+    }
+    let y0 = area.y + pinned as u16;
+    if above {
+        f.render_widget(
+            Paragraph::new(" ↑ more above").style(dim),
+            Rect::new(area.x, y0, area.width, 1),
+        );
+    }
+    if below {
+        f.render_widget(
+            Paragraph::new(" ↓ more below").style(dim),
+            Rect::new(area.x, y0 + view as u16 - 1, area.width, 1),
+        );
+    }
+    let multiple = s
+        .native
+        .as_ref()
+        .is_some_and(|request| request.allows_multiple(s.current));
+    let mut visible: Vec<Option<(u16, u16)>> = vec![None; doc.rows.len()];
+    for (position, item) in items.iter().enumerate().take(bottom).skip(top) {
+        let y = y0 + (position - off) as u16;
+        match item {
+            Item::Prompt(i) => f.render_widget(
+                Paragraph::new(title_line(&doc.prompt[*i])),
+                Rect::new(area.x, y, area.width, 1),
             ),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ))),
-        Rect::new(area.x, area.y, area.width, 1),
-    );
-    let rows = q.options.len() + usize::from(s.note_allowed());
-    let count = (area.height as usize).saturating_sub(2);
-    let first = s.selected.saturating_sub(count.saturating_sub(1));
-    for (row, index) in (0..rows).skip(first).take(count).enumerate() {
-        let rect = Rect::new(
-            area.x + 1,
-            area.y + 1 + row as u16,
-            area.width.saturating_sub(2),
-            1,
-        );
-        let current = s.focused && s.selected == index;
-        let base = if current {
-            Style::default().fg(Color::White).bg(Color::Indexed(238))
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        let marker = Span::styled(
-            if current { "› " } else { "  " },
-            base.fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        );
-        let line = if let Some(choice) = q.options.get(index) {
-            let number = format!("{}. ", index + 1);
-            let room = width.saturating_sub(2 + number.len());
-            let marked = s.native_selected.contains(&index);
-            Line::from(vec![
-                marker,
-                Span::styled(number, base.fg(Color::DarkGray)),
-                Span::styled(
-                    if s.native.is_some()
-                        && s.native
-                            .as_ref()
-                            .is_some_and(|request| request.allows_multiple(s.current))
-                    {
-                        if marked {
+            Item::Row(ri, li) => {
+                let row = &doc.rows[*ri];
+                let current = s.focused && s.selected == row.index;
+                let base = if current {
+                    Style::default().fg(Color::White).bg(Color::Indexed(238))
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                let text = &row.lines[*li];
+                let line = if *li > 0 {
+                    Line::from(vec![
+                        Span::styled(" ".repeat(row.indent), base),
+                        Span::styled(text.clone(), base),
+                    ])
+                } else {
+                    let marker = Span::styled(
+                        if current { "› " } else { "  " },
+                        base.fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    );
+                    if row.note {
+                        let style = if s.note.is_empty() {
+                            base.fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+                        } else {
+                            base
+                        };
+                        Line::from(vec![
+                            marker,
+                            Span::styled("✎ ", base.fg(Color::Cyan)),
+                            Span::styled(text.clone(), style),
+                        ])
+                    } else {
+                        let check = if !multiple {
+                            ""
+                        } else if s.native_selected.contains(&row.index) {
                             "[x] "
                         } else {
                             "[ ] "
-                        }
-                    } else {
-                        ""
-                    },
-                    base.fg(Color::Cyan),
+                        };
+                        Line::from(vec![
+                            marker,
+                            Span::styled(format!("{}. ", row.index + 1), base.fg(Color::DarkGray)),
+                            Span::styled(check, base.fg(Color::Cyan)),
+                            Span::styled(text.clone(), base),
+                        ])
+                    }
+                };
+                // Continuation lines of a row keep the row's background but not its marker.
+                let rect = Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1);
+                f.render_widget(Paragraph::new(line).style(base), rect);
+                let slot = &mut visible[*ri];
+                *slot = Some(slot.map_or((y, y), |(first, _)| (first, y)));
+            }
+        }
+    }
+    for (row, span) in doc.rows.iter().zip(visible) {
+        if let Some((first, last)) = span {
+            s.targets.push((
+                Rect::new(
+                    area.x + 1,
+                    first,
+                    area.width.saturating_sub(2),
+                    last - first + 1,
                 ),
-                Span::styled(fit(choice, room), base),
-            ])
-        } else {
-            let room = width.saturating_sub(4);
-            let (text, style) = if s.note.is_empty() {
-                (
-                    fit("Add a note: type here, then Enter on a choice (or here to send only the note)", room),
-                    base.fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-                )
-            } else {
-                (
-                    format!(
-                        "{}▏",
-                        tail(&s.note.replace('\n', " ↵ "), room.saturating_sub(1))
-                    ),
-                    base,
-                )
-            };
-            Line::from(vec![
-                marker,
-                Span::styled("✎ ", base.fg(Color::Cyan)),
-                Span::styled(text, style),
-            ])
-        };
-        f.render_widget(Paragraph::new(line).style(base), rect);
-        s.targets.push((rect, index));
+                row.index,
+            ));
+        }
     }
     f.render_widget(
-        Paragraph::new(
-            if s.native.is_some()
-                && s.native
-                    .as_ref()
-                    .is_some_and(|request| request.allows_multiple(s.current))
-            {
-                " F8 options · ↑↓ choose · Space toggle · Enter confirm · Esc cancel request"
-            } else if s.native.is_some() {
-                " F8 options · ↑↓ choose · Enter answer · Esc cancel request"
-            } else if s.focused {
-                " ↑↓ choose · type a reply · Shift+Enter newline · Enter send · Esc message box"
+        Paragraph::new(if s.native.is_some() && multiple {
+            if s.focused {
+                " ↑↓ select · Space toggle · Enter confirm · Esc cancel request · F8 focus"
             } else {
-                " Type in the message box, or F8 / click to reply with an option or note"
-            },
-        )
-        .style(Style::default().fg(Color::DarkGray)),
+                " F8 focus · or click · Space toggle · Enter confirm"
+            }
+        } else if s.native.is_some() {
+            if s.focused {
+                " ↑↓ select · Enter choose · Esc cancel request · F8 focus"
+            } else {
+                " F8 focus, or click an option to answer"
+            }
+        } else if s.focused {
+            "Up/Down select · Enter send · Esc close · F8 focus"
+        } else {
+            "F8 focus, or click an option to reply"
+        })
+        .style(dim),
         Rect::new(area.x, area.bottom() - 1, area.width, 1),
     );
 }
@@ -902,6 +1133,7 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                     if note_row && app.questions.note.trim().is_empty() {
                         // Clicking the empty note row starts a note rather than sending nothing.
                         app.questions.focused = true;
+                        app.questions.auto_focused = false;
                         app.questions.selected = index;
                     } else if app
                         .questions
@@ -921,9 +1153,11 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                             app.questions.native_selected.push(index);
                         }
                         app.questions.focused = true;
+                        app.questions.auto_focused = false;
                         app.questions.selected = index;
                     } else {
                         app.questions.focused = true;
+                        app.questions.auto_focused = false;
                         app.questions.selected = index;
                         app.workspace.focused = None;
                         app.queue.focused = false;
@@ -990,7 +1224,7 @@ mod tests {
         let (request, mut rx) = connection.request(
             "fixture-session", serde_json::json!(1), "session/request_permission".into(),
             serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read synthetic file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"allow-once"},{"name":"Reject","kind":"reject_once","optionId":"reject"}]}),
-        ).unwrap();
+        ).unwrap().unwrap();
         app.questions.offer_native(request, true);
         assert!(handle_key(
             &mut app,
@@ -1036,7 +1270,7 @@ mod tests {
                     ]
                 }),
             )
-            .unwrap();
+            .unwrap().unwrap();
         app.native_owner = Some(claude_owner);
         app.editor.set_text("preserve foreground draft");
         app.questions.offer_native(question, true);
@@ -1065,7 +1299,7 @@ mod tests {
         app.native_owner = Some(owner.clone());
 
         connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
-        let (plan, mut plan_rx) = connection.request("fixture-session", serde_json::json!(10), "cursor/create_plan".into(), serde_json::json!({"toolCallId":"plan-tool","plan":"Inspect the exact parser.\nPreserve unrelated files.","todos":[]})).unwrap();
+        let (plan, mut plan_rx) = connection.request("fixture-session", serde_json::json!(10), "cursor/create_plan".into(), serde_json::json!({"toolCallId":"plan-tool","plan":"Inspect the exact parser.\nPreserve unrelated files.","todos":[]})).unwrap().unwrap();
         app.busy = true;
         app.apply_progress(TurnProgress::Interaction(Box::new(plan)));
         assert!(app.activity.detail.is_some());
@@ -1100,7 +1334,7 @@ mod tests {
         let (stale, mut stale_rx) = connection.request(
             "fixture-session", serde_json::json!(2), "session/request_permission".into(),
             serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"allow-once"}]}),
-        ).unwrap();
+        ).unwrap().unwrap();
         app.busy = true;
         app.native_owner.as_mut().unwrap().attempt_id = uuid::Uuid::new_v4().to_string();
         app.apply_progress(TurnProgress::Interaction(Box::new(stale)));
@@ -1124,7 +1358,7 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         let (worker_request, mut worker_rx) = worker_connection.request("fixture-session", serde_json::json!(1), "session/request_permission".into(),
-            serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read worker file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"},{"name":"Reject","kind":"reject_once","optionId":"worker-reject"}]})).unwrap();
+            serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read worker file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"},{"name":"Reject","kind":"reject_once","optionId":"worker-reject"}]})).unwrap().unwrap();
         app.deleg.d.test_native_input(worker, worker_request);
         assert_eq!(
             app.deleg.d.get(worker).unwrap().state,
@@ -1155,7 +1389,7 @@ mod tests {
         assert_eq!(app.native_owner, main_owner);
         assert_eq!(app.editor.text(), "keep this worker-review draft");
         let (cancelled, mut cancelled_rx) = worker_connection.request("fixture-session", serde_json::json!(2), "session/request_permission".into(),
-            serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"}]})).unwrap();
+            serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"worker-allow"}]})).unwrap().unwrap();
         app.deleg.d.test_native_input(worker, cancelled);
         worker_input::open(&mut app, worker);
         app.deleg.d.cancel(worker, Instant::now());
@@ -1193,6 +1427,7 @@ mod tests {
                 "item/tool/requestUserInput".into(),
                 params.clone(),
             )
+            .unwrap()
             .unwrap();
         assert!(request
             .choices_with_text(&[0, 0, 0], &[Some("x".repeat(4097)), None, None])
@@ -1258,6 +1493,7 @@ mod tests {
                 "item/tool/requestUserInput".into(),
                 worker_params,
             )
+            .unwrap()
             .unwrap();
         app.deleg.d.test_native_input(worker, request);
         worker_input::open(app, worker);
@@ -1302,7 +1538,7 @@ mod tests {
                     "questions":[{"id":"colors","prompt":"Choose colors","options":[{"id":"Red","label":"Red"},{"id":"Blue","label":"Blue"}],"allowMultiple":true}]
                 }),
             )
-            .unwrap();
+            .unwrap().unwrap();
         app.deleg.d.test_native_input(claude_worker, claude_request);
         worker_input::open(app, claude_worker);
         worker_input::key(app, &KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
@@ -1342,6 +1578,7 @@ mod tests {
                 "item/commandExecution/requestApproval".into(),
                 params.clone(),
             )
+            .unwrap()
             .unwrap();
         let (second, mut second_rx) = connection
             .request(
@@ -1350,6 +1587,7 @@ mod tests {
                 "item/commandExecution/requestApproval".into(),
                 params,
             )
+            .unwrap()
             .unwrap();
         app.questions.offer_native(first.clone(), false);
         app.questions.offer_native(second.clone(), false);
@@ -1430,6 +1668,85 @@ mod tests {
         );
         assert_eq!(app.editor.text(), "keep the current draft");
         assert!(app.questions.native.is_none());
+        assert!(!app.queue.dispatch.is_explicit());
+        assert!(app.queue.dispatch.is_automatic());
+
+        for paused in [false, true] {
+            let mut active = App::new(
+                dir.path().join(if paused { "paused" } else { "active" }),
+                dir.path().into(),
+            );
+            active.busy = true;
+            active.submitted_prompt = Some("original sustained task".into());
+            active.last_sent = Some("original sustained task".into());
+            active.native_session_id = Some("original-session".into());
+            active.turn_started = Some(Instant::now());
+            active.continuation.begin(
+                "fixture-account",
+                "fixture-model",
+                "original sustained task",
+            );
+            let conversation = active.deleg.d.conversation_id().to_owned();
+            let run = active.continuation.run_id().to_owned();
+            let started = active.turn_started;
+            let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            active.preparing_cancel = Some(cancelled.clone());
+            active.editor.set_text("independent unsent draft");
+            active.queue.items.push("earlier queued request".into());
+            active.queue.paused = paused;
+            active.push_card(StreamCard {
+                id: "busy-async-question-fixture".into(),
+                title: "functions.request_user_input_async".into(),
+                detail: Some(format!("arguments: {payload}")),
+                status: CardStatus::Running,
+            });
+            choose(&mut active, 1);
+            assert!(active.busy && !active.cancel_requested);
+            assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(
+                active.submitted_prompt.as_deref(),
+                Some("original sustained task")
+            );
+            assert_eq!(active.last_sent.as_deref(), Some("original sustained task"));
+            assert_eq!(
+                active.native_session_id.as_deref(),
+                Some("original-session")
+            );
+            assert_eq!(active.turn_started, started);
+            assert_eq!(active.deleg.d.conversation_id(), conversation);
+            assert_eq!(active.continuation.run_id(), run);
+            assert_eq!(
+                active
+                    .continuation
+                    .checkpoint(None, Vec::new(), dir.path().into())
+                    .unwrap()
+                    .prompt,
+                "original sustained task"
+            );
+            assert_eq!(active.editor.text(), "independent unsent draft");
+            assert_eq!(
+                active.queue.items,
+                [
+                    "earlier queued request",
+                    "How are you pasting the image?\nCtrl+Shift+V"
+                ]
+            );
+            assert_eq!(active.queue.paused, paused);
+            assert!(!active.queue.dispatch.is_explicit() && !active.queue.dispatch.is_automatic());
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            active.queue_advance(&tx);
+            assert!(
+                rx.try_recv().is_err(),
+                "clarification must not launch a competing turn"
+            );
+            assert_eq!(active.queue.items.len(), 2);
+            active.turn_finished(false, false);
+            assert!(
+                active.queue.dispatch.is_automatic(),
+                "clean completion admits normal FIFO advancement"
+            );
+            assert_eq!(active.queue.paused, paused);
+        }
 
         let text = "May I use up to 18 real CLI test requests total across the currently selected, signed-in Codex/Claude/Cursor accounts? These would use disposable fixtures to check approvals, images/PDFs, exact-session continuation and a three-arm memory comparison. Seeds and compaction requests count toward the cap; no automatic retries or account switching. Mention any provider/account exclusions in your answer.\n- Allow up to 18 requests total\n- Allow up to 6 requests total\n- No additional live requests\n\nWhat provider usage may those tests consume? I will not buy credits, add paid services or change your billing settings.\n- Subscription allowances only\n- Existing purchased credits are also allowed\nThe missing decisions are the live-test allowance and whether existing purchased credits may be used. I’ve asked both together; the previous one-request allowance is consumed.";
         let parsed = parse(text);
@@ -1571,7 +1888,7 @@ mod tests {
                         }),
                     )
                 }
-                ProviderKind::Cursor => {
+                ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
                     connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
                     (
                         "cursor/ask_question",
@@ -1584,6 +1901,7 @@ mod tests {
             };
             let (request, _rx) = connection
                 .request(session, serde_json::json!(1), method.into(), params)
+                .unwrap()
                 .unwrap();
             app.native_owner = Some(owner);
             app.questions.offer_native(request, true);
@@ -1674,7 +1992,7 @@ mod tests {
                         serde_json::json!({"sessionId":session,"toolCall":{"toolCallId":"ask"},"questions":[{"id":"route","prompt":"Route?","options":[{"id":"Direct","label":"Direct"},{"id":"Review","label":"Review"}]}]}),
                     )
                 }
-                ProviderKind::Cursor => {
+                ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
                     connection.initialized_cursor(&serde_json::json!({"protocolVersion":1}));
                     (
                         "cursor/ask_question",
@@ -1684,8 +2002,14 @@ mod tests {
             };
             let (request, mut rx) = connection
                 .request(session, serde_json::json!(1), method.into(), params)
+                .unwrap()
                 .unwrap();
-            app.native_owner = Some(owner);
+            app.busy = true;
+            app.submitted_prompt = Some("original native task".into());
+            app.editor.set_text("separate native draft");
+            app.queue.items.push("queued after native task".into());
+            app.queue.paused = true;
+            app.native_owner = Some(owner.clone());
             app.questions.offer_native(request, true);
             assert!(handle_key(
                 &mut app,
@@ -1696,6 +2020,15 @@ mod tests {
                 expected,
                 "{provider:?} answer changed transport shape"
             );
+            assert!(app.busy && !app.cancel_requested);
+            assert_eq!(app.native_owner.as_ref(), Some(&owner));
+            assert_eq!(
+                app.submitted_prompt.as_deref(),
+                Some("original native task")
+            );
+            assert_eq!(app.editor.text(), "separate native draft");
+            assert_eq!(app.queue.items, ["queued after native task"]);
+            assert!(app.queue.paused && !app.queue.dispatch.is_explicit());
         }
     }
 
@@ -1709,5 +2042,183 @@ mod tests {
         assert!(!app.questions.focused);
         assert!(app.questions.native.is_none());
         assert_eq!(app.editor.text(), "keep this draft");
+    }
+
+    #[test]
+    fn inferred_question_digit_returns_to_the_composer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
+        app.questions.offer("Which route?\n1. Direct\n2. Review");
+        app.questions.focused = true;
+        app.questions.auto_focused = true;
+        assert!(!handle_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)
+        ));
+        assert!(!app.questions.focused);
+        assert!(app.questions.note.is_empty());
+    }
+
+    fn popup_app(dir: &tempfile::TempDir) -> App {
+        App::new(dir.path().join("state"), dir.path().join("workspace"))
+    }
+    fn popup_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                let mut transcript = frame.area();
+                let area = carve(&mut transcript, app);
+                draw(frame, area, app);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+    fn tokens(prefix: &str, count: usize) -> String {
+        (0..count)
+            .map(|n| format!("{prefix}{n:03}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+    fn press(app: &mut App, code: KeyCode) {
+        assert!(handle_key(app, &KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+    fn column_of(row: &str, needle: &str) -> usize {
+        row.find(needle).unwrap_or_else(|| panic!("{needle} missing in {row:?}"))
+    }
+
+    #[test]
+    fn a_prompt_and_options_longer_than_three_widths_render_in_full_and_click_per_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = popup_app(&dir);
+        let reply = format!(
+            "Which {} route?\n1. {}\n2. {}",
+            tokens("p", 70),
+            tokens("a", 70),
+            tokens("b", 70)
+        );
+        app.questions.offer(&reply);
+        assert!(app.questions.waiting());
+        let rows = popup_rows(&mut app, 100, 60);
+        let screen = rows.join("\n");
+        for prefix in ["p", "a", "b"] {
+            for n in 0..70 {
+                let token = format!("{prefix}{n:03}");
+                assert_eq!(screen.matches(&token).count(), 1, "{token} was cut or doubled");
+            }
+        }
+        assert!(!screen.contains('…'));
+        // Continuation lines sit under the option text, not under the number.
+        let first = rows.iter().position(|r| r.contains("a000")).unwrap();
+        let text_column = column_of(&rows[first], "a000");
+        assert_eq!(text_column, 6);
+        let next = rows[first + 1].find(|c: char| c != ' ').unwrap();
+        assert_eq!(next, text_column);
+        // The click target spans every wrapped row of the option, so the last line chooses it.
+        let (rect, index) = app.questions.targets[1];
+        assert_eq!(index, 1);
+        assert!(rect.height >= 4);
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert!(mouse(
+                &mut app,
+                &MouseEvent {
+                    kind,
+                    column: rect.x + 2,
+                    row: rect.bottom() - 1,
+                    modifiers: KeyModifiers::NONE
+                }
+            ));
+        }
+        assert!(app.queue.items[0].contains("b069") && !app.queue.items[0].contains("a000"));
+    }
+
+    #[test]
+    fn a_tall_popup_is_capped_scrolls_and_every_navigation_key_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = popup_app(&dir);
+        let options = (1..=9)
+            .map(|i| format!("{i}. {}", tokens(&format!("o{i}t"), 20)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.questions.offer(&format!("Which route?\n{options}"));
+        app.questions.focused = true;
+        let (width, height) = (60, 20);
+        let shown = |rows: &[String], i: usize, last: usize| {
+            let screen = rows.join("\n");
+            screen.contains(&format!("o{i}t000")) && screen.contains(&format!("o{i}t{last:03}"))
+        };
+        let rows = popup_rows(&mut app, width, height);
+        let popup_height = rows.iter().rposition(|r| r.contains("F8")).unwrap()
+            - rows.iter().position(|r| r.contains("Which route?")).unwrap()
+            + 1;
+        assert!(popup_height <= 12, "popup is capped at 60% of the area");
+        assert!(shown(&rows, 1, 19));
+        let screen = rows.join("\n");
+        assert!(screen.contains("more below") && !screen.contains("more above"));
+
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.questions.selected, 1);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.questions.selected, 0);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.questions.selected, 9, "End reaches the note row");
+        let rows = popup_rows(&mut app, width, height);
+        let screen = rows.join("\n");
+        assert!(screen.contains("Add a note"));
+        assert!(screen.contains("more above") && !screen.contains("more below"));
+        press(&mut app, KeyCode::Up);
+        let rows = popup_rows(&mut app, width, height);
+        assert!(shown(&rows, 9, 19), "the selected option is fully visible");
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.questions.selected, 0);
+        let rows = popup_rows(&mut app, width, height);
+        assert!(shown(&rows, 1, 19));
+        let page = app.questions.page;
+        assert!(page >= 1);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.questions.selected, page);
+        for _ in 0..6 {
+            popup_rows(&mut app, width, height);
+            press(&mut app, KeyCode::PageDown);
+        }
+        assert_eq!(app.questions.selected, 9, "PgDn stops at the last row");
+        press(&mut app, KeyCode::PageUp);
+        assert!(app.questions.selected < 9);
+        press(&mut app, KeyCode::Home);
+        for step in 1..=8 {
+            press(&mut app, KeyCode::Down);
+            let rows = popup_rows(&mut app, width, height);
+            assert!(shown(&rows, step + 1, 19), "option {} not fully visible", step + 1);
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.questions.focused);
+        press(&mut app, KeyCode::F(8));
+        assert!(app.questions.focused);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.queue.items[0].contains("o9t000"));
+    }
+
+    #[test]
+    fn a_long_note_wraps_in_full_with_the_caret_at_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = popup_app(&dir);
+        app.questions.offer("Which route?\n1. Direct\n2. Review");
+        app.questions.focused = true;
+        app.questions.note = tokens("n", 40);
+        app.questions.selected = 2;
+        let rows = popup_rows(&mut app, 60, 40);
+        let screen = rows.join("\n");
+        for n in 0..40 {
+            assert_eq!(screen.matches(&format!("n{n:03}")).count(), 1);
+        }
+        let last = rows.iter().position(|r| r.contains("n039")).unwrap();
+        assert!(rows[last].contains("n039▏"));
+        assert!(!screen.contains('…'));
     }
 }

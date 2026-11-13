@@ -73,21 +73,6 @@ pub fn real_user_text(prompt: &str) -> String {
             text.replace_range(start..start + open.len() + end + close.len(), " ");
         }
     }
-    // Concordia's own awareness note is provider-injected context, not a user request. Remove
-    // the exact text and its exact marker-delimited form; do not fuzzy-match user prose.
-    while let Some(start) = text.find(crate::integration::AWARE_BEGIN) {
-        let after_begin = start + crate::integration::AWARE_BEGIN.len();
-        let Some(rel_end) = text[after_begin..].find(crate::integration::AWARE_END) else {
-            text.truncate(start);
-            break;
-        };
-        let end = after_begin + rel_end + crate::integration::AWARE_END.len();
-        text.replace_range(start..end, " ");
-    }
-    while let Some(start) = text.find(crate::integration::AWARE_TEXT) {
-        let end = start + crate::integration::AWARE_TEXT.len();
-        text.replace_range(start..end, " ");
-    }
     // Codex can prepend a rendered AGENTS.md block without XML delimiters. A blank
     // line is the boundary used by the injected message format; an all-wrapper
     // message therefore remains empty.
@@ -192,6 +177,52 @@ pub fn get(
     }
     let title = clean(&record.title);
     (!title.is_empty()).then_some(title)
+}
+
+/// Explicit rename/reset, separate from automatic first-request titling.
+pub fn set(
+    root: &Path,
+    provider: ProviderKind,
+    account: &str,
+    home: &Path,
+    session_id: &str,
+    title: Option<&str>,
+) -> Result<(), String> {
+    let identity = Identity::new(provider, account, home, session_id)
+        .ok_or("title requires an explicit session identity")?;
+    let path = identity.path(root);
+    let dir = path.parent().ok_or("session title directory is missing")?;
+    fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    let owned = crate::update::resolved_directory(dir)
+        .ok_or("session title directory is linked or unavailable")?;
+    let lock = path.with_extension("lock");
+    if lock.exists() && !crate::update::regular_owned_file(&lock, &owned) {
+        return Err("session title lock is not a regular owned file".into());
+    }
+    crate::state_io::with_lock(&lock, || {
+        if path.exists()
+            && (!crate::update::regular_owned_file(&path, &owned)
+                || read(&path).is_none_or(|record| record.identity != identity))
+        {
+            return Err(std::io::Error::other(
+                "session title record is invalid or belongs to another identity",
+            ));
+        }
+        let Some(title) = title else {
+            return match fs::remove_file(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            };
+        };
+        let title =
+            sanitize(title).ok_or_else(|| std::io::Error::other("session title is empty"))?;
+        let bytes = serde_json::to_vec(&Record { identity, title })?;
+        if bytes.len() as u64 > MAX_RECORD_BYTES {
+            return Err(std::io::Error::other("session title identity is too large"));
+        }
+        crate::state_io::write_atomic(&path, &bytes)
+    })
+    .map_err(|error| error.to_string())
 }
 
 /// Atomically publish a complete record without replacing the first writer's title.

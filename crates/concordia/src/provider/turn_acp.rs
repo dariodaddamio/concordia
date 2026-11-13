@@ -3,24 +3,33 @@ use super::*;
 use crate::provider::interaction::InteractionConnection;
 use crate::provider::CardStatus;
 use serde_json::{json, Value};
+
+struct QuestionListener(tokio::task::JoinHandle<()>);
+
+impl Drop for QuestionListener {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 struct Connection {
     input: tokio::process::ChildStdin,
     output: BufReader<tokio::process::ChildStdout>,
     handle: Arc<RunningTurn>,
-    progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    progress: Option<mpsc::Sender<TurnProgress>>,
     out: TurnOutcome,
-    bytes: usize,
     session_id: Option<String>,
     interactions: InteractionConnection,
     prompting: bool,
     bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ask_bridge::BridgeRequest>,
-    bridge_task: Option<tokio::task::JoinHandle<()>>,
+    available_commands: std::collections::HashSet<String>,
+    standing_context: Option<String>,
+    system_prompt_supported: bool,
+    last_compaction: Option<String>,
 }
 impl Connection {
-    fn emit(&self, event: TurnProgress) {
-        if let Some(tx) = &self.progress {
-            let _ = tx.send(event);
-        }
+    async fn emit(&self, event: TurnProgress) {
+        let _ = send_progress(&self.progress, event, &self.handle).await;
     }
     async fn write(&mut self, value: Value) -> Result<()> {
         self.input
@@ -33,6 +42,7 @@ impl Connection {
         self.write(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
         loop {
+            anyhow::ensure!(!self.handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
             let mut bytes = Vec::new();
             let next = tokio::select! {
                 _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
@@ -45,11 +55,6 @@ impl Connection {
             let received = next?;
             anyhow::ensure!(received > 0, "Cursor ACP closed before replying");
             anyhow::ensure!(received <= LINE_MAX, "Cursor ACP response line too large");
-            self.bytes += bytes.len();
-            anyhow::ensure!(
-                self.bytes <= 16 * 1024 * 1024,
-                "Cursor ACP output bound exceeded"
-            );
             let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
                 continue;
             };
@@ -57,7 +62,7 @@ impl Connection {
                 if value.get("id").is_some() {
                     self.request(&value).await?;
                 } else {
-                    self.update(&value);
+                    self.update(&value).await;
                 }
                 continue;
             }
@@ -66,10 +71,12 @@ impl Connection {
                     let message = error["message"]
                         .as_str()
                         .unwrap_or("Cursor ACP request failed");
+                    let code = error.get("code").cloned().unwrap_or(Value::Null);
                     let info = error.get("data").map(Value::to_string).unwrap_or_default();
                     anyhow::bail!(
-                        "{} {}",
+                        "{} code={} {}",
                         message.chars().take(2000).collect::<String>(),
+                        code,
                         info.chars().take(500).collect::<String>()
                     );
                 }
@@ -86,22 +93,30 @@ impl Connection {
             return Ok(());
         };
         let session = session.as_str();
+        let bridge_id = format!("concordia-ask-user-{}", uuid::Uuid::new_v4());
         let Some(questions) = request.questions.as_array() else {
             let _ = request.answer.send(json!(crate::ask_bridge::DISMISSED));
             return Ok(());
         };
-        let native = json!({"sessionId":session,"toolCallId":"concordia-ask-user","prompt":"The agent needs a decision","questions":questions.iter().enumerate().map(|(i,q)| json!({"id":format!("question-{i}"),"prompt":q["question"],"options":q["options"].as_array().unwrap_or(&Vec::new()).iter().enumerate().map(|(j,o)| json!({"id":format!("option-{i}-{j}"),"label":o})).collect::<Vec<_>>(),"allowMultiple":q["multiple"].as_bool().unwrap_or(false)})).collect::<Vec<_>>() });
+        let native = json!({"sessionId":session,"toolCallId":bridge_id,"prompt":"The agent needs a decision","questions":questions.iter().enumerate().map(|(i,q)| json!({"id":format!("question-{i}"),"prompt":q["question"],"options":q["options"].as_array().unwrap_or(&Vec::new()).iter().enumerate().map(|(j,o)| json!({"id":format!("option-{i}-{j}"),"label":o})).collect::<Vec<_>>(),"allowMultiple":q["multiple"].as_bool().unwrap_or(false)})).collect::<Vec<_>>() });
         let (native_request, rx) = self
             .interactions
             .request(
                 session,
-                json!("concordia-ask-user"),
+                json!(bridge_id),
                 "cursor/ask_question".into(),
                 native,
             )
-            .map_err(|e| anyhow::anyhow!(e))?;
-        if let Some(tx) = &self.progress {
-            let _ = tx.send(TurnProgress::Interaction(Box::new(native_request.clone())));
+            .map_err(|e| anyhow::anyhow!(e))?
+            .ok_or_else(|| anyhow::anyhow!("bridge request identity was reused"))?;
+        if !send_progress(
+            &self.progress,
+            TurnProgress::Interaction(Box::new(native_request.clone())),
+            &self.handle,
+        )
+        .await
+        {
+            native_request.cancel();
         }
         let answer = tokio::select! {
             _ = self.handle.wake.notified() => {
@@ -120,7 +135,10 @@ impl Connection {
         let method = value["method"].as_str().unwrap_or("");
         let interactive = matches!(
             method,
-            "session/request_permission" | "cursor/ask_question" | "cursor/create_plan"
+            "session/request_permission"
+                | "cursor/ask_question"
+                | "cursor/create_plan"
+                | "elicitation/create"
         );
         if value
             .pointer("/params/sessionId")
@@ -136,7 +154,8 @@ impl Connection {
         {
             self.emit(TurnProgress::Notice(
                 "Native request rejected: session identity mismatch".into(),
-            ));
+            ))
+            .await;
             return self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32602,"message":"Session identity mismatch"}})).await;
         }
         if interactive {
@@ -152,18 +171,23 @@ impl Connection {
                 method.into(),
                 value["params"].clone(),
             ) {
-                Ok(request) => request,
+                Ok(Some(request)) => request,
+                Ok(None) => return Ok(()),
                 Err(reason) => {
                     self.emit(TurnProgress::Notice(format!(
                         "Unsupported native request: {reason}"
-                    )));
+                    )))
+                    .await;
                     return self.write(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}})).await;
                 }
             };
-            if !self.progress.as_ref().is_some_and(|tx| {
-                tx.send(TurnProgress::Interaction(Box::new(request.clone())))
-                    .is_ok()
-            }) {
+            if !send_progress(
+                &self.progress,
+                TurnProgress::Interaction(Box::new(request.clone())),
+                &self.handle,
+            )
+            .await
+            {
                 // A closed/missing UI cannot leave a provider awaiting an invisible grant.
                 request.respond(json!({"outcome":{"outcome":"cancelled"}}));
             }
@@ -173,16 +197,36 @@ impl Connection {
             };
             request.invalidate();
             anyhow::ensure!(!self.handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
+            let answer = if method == "elicitation/create" {
+                let mut content = serde_json::Map::new();
+                if let Some(items) = answer.pointer("/outcome/answers").and_then(Value::as_array) {
+                    for item in items {
+                        if let (Some(id), Some(choice)) = (
+                            item["questionId"].as_str(),
+                            item["selectedOptionIds"]
+                                .as_array()
+                                .and_then(|values| values.first())
+                                .and_then(Value::as_str),
+                        ) {
+                            content.insert(id.into(), json!(choice));
+                        }
+                    }
+                }
+                json!({"action":"accept","content":content})
+            } else {
+                answer
+            };
             self.write(json!({"jsonrpc":"2.0","id":value["id"],"result":answer}))
                 .await
         } else {
             self.emit(TurnProgress::Notice(
                 "Unsupported native interaction method".into(),
-            ));
+            ))
+            .await;
             self.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32601,"message":"Client capability is not supported"}})).await
         }
     }
-    fn update(&mut self, value: &Value) {
+    async fn update(&mut self, value: &Value) {
         // session/load replays the old transcript before its response. History belongs to
         // readback, not this turn's answer, thinking stream or active tool cards.
         if !self.prompting {
@@ -195,16 +239,46 @@ impl Connection {
         let Some(update) = value.pointer("/params/update") else {
             return;
         };
+        if update["sessionUpdate"] == "available_commands_update" {
+            self.available_commands = update["availableCommands"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|command| command["name"].as_str().map(str::to_owned))
+                .collect();
+            return;
+        }
+        if update["sessionUpdate"] == "compaction_update"
+            && update["status"] == "completed"
+            && !self.system_prompt_supported
+        {
+            let id = update["compactionId"].as_str().unwrap_or_default();
+            if should_reinject_context(
+                self.system_prompt_supported,
+                self.last_compaction.as_deref(),
+                id,
+            ) {
+                self.last_compaction = Some(id.to_owned());
+                if let (Some(session), Some(context)) =
+                    (self.session_id.as_deref(), self.standing_context.as_deref())
+                {
+                    let _ = self
+                        .write(json!({"jsonrpc":"2.0","id":9001,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":context}]}}))
+                        .await;
+                }
+            }
+            return;
+        }
         match update["sessionUpdate"].as_str().unwrap_or("") {
             "agent_message_chunk" => {
                 if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
-                    self.out.text.push_str(text);
-                    self.emit(TurnProgress::TextDelta(text.into()));
+                    append_visible_text(&mut self.out.text, text);
+                    self.emit(TurnProgress::TextDelta(text.into())).await;
                 }
             }
             "agent_thought_chunk" => {
                 if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
-                    self.emit(TurnProgress::ThinkingDelta(text.into()));
+                    self.emit(TurnProgress::ThinkingDelta(text.into())).await;
                 }
             }
             "tool_call" | "tool_call_update" => {
@@ -238,7 +312,7 @@ impl Connection {
                     crate::provider::edit_display::normalize_acp(&mut card, content);
                 }
                 crate::provider::stream_cards::upsert_card(&mut self.out.cards, card.clone());
-                self.emit(TurnProgress::Card(card));
+                self.emit(TurnProgress::Card(card)).await;
             }
             _ => {}
         }
@@ -249,11 +323,22 @@ impl Connection {
 /// mode; nothing was prompted and nothing was shown.
 pub(super) const SESSION_NOT_IN_ACP: &str = "Cursor ACP has no session with this id";
 
-fn ask_server_config(endpoint: &str, token: &str, enabled: bool) -> Value {
-    if !enabled || endpoint.is_empty() {
-        return json!([]);
+fn should_reinject_context(system_prompt_supported: bool, last: Option<&str>, id: &str) -> bool {
+    !system_prompt_supported && !id.is_empty() && last != Some(id)
+}
+
+fn ask_server_config(endpoint: &str, token: &str, enabled: bool, cwd: &std::path::Path) -> Value {
+    let mut servers = match crate::mcp_registry::acp_servers(
+        &crate::store::default_store_root(),
+        cwd,
+    ) {
+        Value::Array(values) => values,
+        _ => Vec::new(),
+    };
+    if enabled && !endpoint.is_empty() {
+        servers.push(json!({"name":"concordia-ask","command":std::env::current_exe().unwrap_or_default().to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":token}]}));
     }
-    json!([{"name":"concordia-ask","command":std::env::current_exe().unwrap_or_default().to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":token}]}])
+    Value::Array(servers)
 }
 
 /// `agent models` lists flat variants (`claude-opus-5-5-high-fast`, `cursor-grok-4.6-low`), while
@@ -296,17 +381,31 @@ fn acp_model_id(id: &str, available: &[String]) -> Option<String> {
     Some(format!("{base}[{}]", params.join(",")))
 }
 
+fn model_config_value(provider: ProviderKind, model: &str) -> Value {
+    if provider == ProviderKind::Opencode {
+        json!(model)
+    } else {
+        json!({"value": model})
+    }
+}
+
 /// Trust flags are global options and must precede the `acp` subcommand. Plan mode is set per
 /// session over the protocol instead.
-fn acp_argv(print_argv: &[String]) -> Vec<String> {
+fn acp_argv(provider: ProviderKind, print_argv: &[String]) -> Vec<String> {
     let mut argv = Vec::new();
-    if print_argv.iter().any(|a| a == "--force") {
+    if planned_options(print_argv).any(|(flag, _)| flag == "--force") {
         argv.push("--force".into());
     }
-    if let Some(i) = print_argv.iter().position(|a| a == "--sandbox") {
-        argv.extend(print_argv[i..].iter().take(2).cloned());
+    if let Some((flag, Some(value))) =
+        planned_options(print_argv).find(|(flag, _)| *flag == "--sandbox")
+    {
+        argv.extend([flag.into(), value.into()]);
     }
-    argv.push("acp".into());
+    if provider == ProviderKind::Grok {
+        argv.extend(["agent".into(), "stdio".into()]);
+    } else {
+        argv.push("acp".into());
+    }
     argv
 }
 
@@ -315,7 +414,8 @@ pub(super) async fn run(
     plan: &PlannedTurn,
     owner: Option<InteractionOwner>,
     started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    progress: Option<mpsc::Sender<TurnProgress>>,
+    handle: Arc<RunningTurn>,
 ) -> Result<TurnOutcome> {
     anyhow::ensure!(
         req.images.len() <= crate::attachments::MAX_IMAGES,
@@ -328,23 +428,23 @@ pub(super) async fn run(
     let token = uuid::Uuid::new_v4().to_string();
     let bridge_token = token.clone();
     let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (endpoint, bridge_task) = if crate::config::ui_question_popups() {
-        crate::ask_bridge::spawn_listener(token.clone(), bridge_tx).await?
-    } else {
-        (String::new(), tokio::spawn(async {}))
-    };
+    let (endpoint, bridge_task) =
+        crate::ask_bridge::spawn_listener(token.clone(), bridge_tx).await?;
+    let _question_listener = QuestionListener(bridge_task);
     let mut env = plan.env.clone();
     if !endpoint.is_empty() {
         env.push(("CONCORDIA_ASK_ENDPOINT".into(), endpoint.clone()));
         env.push(("CONCORDIA_ASK_TOKEN".into(), token));
     }
     let launch = crate::provider::launch::prepare(&PlannedTurn {
-        argv: acp_argv(&plan.argv),
+        argv: acp_argv(plan.provider, &plan.argv),
         prompt: "acp".into(),
         ..plan.clone()
     })?;
     let mut command = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut command);
+    #[cfg(unix)]
+    command.process_group(0);
     for key in &plan.env_remove {
         command.env_remove(key);
     }
@@ -357,8 +457,15 @@ pub(super) async fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let mut child = command.spawn().context("could not start Cursor ACP")?;
-    let handle = Arc::new(RunningTurn::new());
+    if handle.cancel_flag.load(Ordering::SeqCst) {
+        return Ok(TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
+    let mut child = command.spawn().context("could not start ACP provider")?;
+    let _process_tree =
+        crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     let input = child.stdin.take().context("Cursor ACP stdin unavailable")?;
     let output = BufReader::new(
@@ -371,21 +478,7 @@ pub(super) async fn run(
         .stderr
         .take()
         .context("Cursor ACP stderr unavailable")?;
-    let mut stderr_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr);
-        let mut tail = VecDeque::new();
-        let mut line = Vec::new();
-        while read_line_bounded(&mut reader, &mut line)
-            .await
-            .is_ok_and(|n| n > 0)
-        {
-            if tail.len() == STDERR_KEEP_LINES {
-                tail.pop_front();
-            }
-            tail.push_back(decode_line(&line));
-        }
-        tail.into_iter().collect::<Vec<_>>().join("\n")
-    });
+    let mut stderr_task = tokio::spawn(read_stderr_tail(stderr, || {}));
     *handle.child.lock().await = Some(child);
     if let Some(tx) = started {
         if tx.send(handle.clone()).is_err() {
@@ -398,40 +491,75 @@ pub(super) async fn run(
         handle: handle.clone(),
         progress,
         out: TurnOutcome::default(),
-        bytes: 0,
         session_id: req.native_session_id.map(str::to_owned),
         interactions: InteractionConnection::new(owner, handle.cancel_flag.clone()),
         prompting: false,
         bridge_rx,
-        bridge_task: Some(bridge_task),
+        available_commands: std::collections::HashSet::new(),
+        standing_context: plan.standing_context.clone(),
+        system_prompt_supported: false,
+        last_compaction: None,
     };
     let result=async {
-        let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
+        let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{"auth":{"terminal":true},"elicitation":{"form":true},"session":{"compaction":true}},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
         conn.interactions.initialized_cursor(&init);
-        anyhow::ensure!(init["protocolVersion"] == 1, "Installed Cursor ACP did not negotiate protocol version 1");
+        anyhow::ensure!(init["protocolVersion"] == 1, "Installed ACP provider did not negotiate protocol version 1");
+        if req.provider == ProviderKind::Grok {
+            if let Some(method_id) = init.pointer("/authMethods")
+                .and_then(Value::as_array)
+                .and_then(|methods| methods.iter().find(|method| method["id"] == "cached_token"))
+                .and_then(|method| method["id"].as_str())
+            {
+                tokio::time::timeout(Duration::from_secs(12), conn.rpc(101, "authenticate", json!({"methodId": method_id, "_meta": {"headless": true}}))).await??;
+            }
+        }
         anyhow::ensure!(req.images.is_empty() || init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
-        let mcp_servers = ask_server_config(&endpoint, &bridge_token, !endpoint.is_empty());
-        let (method,params)=if let Some(id)=req.native_session_id{
+        let mcp_servers = ask_server_config(&endpoint, &bridge_token, !endpoint.is_empty(), req.cwd);
+        let (method,mut params)=if let Some(id)=req.native_session_id{
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
             ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":mcp_servers}))
         }else{("session/new",json!({"cwd":plan.cwd,"mcpServers":mcp_servers}))};
+        let system_prompt_supported = plan.standing_context.is_some() && (init.pointer("/agentCapabilities/sessionCapabilities/systemPrompt").is_some()
+                || init.pointer("/capabilities/session/systemPrompt").is_some());
+        conn.system_prompt_supported = system_prompt_supported;
+        if let Some(context) = plan.standing_context.as_deref().filter(|_| {
+            init.pointer("/agentCapabilities/sessionCapabilities/systemPrompt").is_some()
+                || init.pointer("/capabilities/session/systemPrompt").is_some()
+        }) {
+            params["systemPrompt"] = json!({"mode":"append","content":[{"type":"text","text":context}]});
+        }
+        if req.provider == ProviderKind::Grok && req.trust == TrustMode::Full {
+            params["_meta"] = json!({"yoloMode": true});
+        }
         let session=match tokio::time::timeout(Duration::from_secs(12),conn.rpc(2,method,params)).await?{
             Err(error) if req.native_session_id.is_some() && format!("{error:#}").contains("not found") => anyhow::bail!(SESSION_NOT_IN_ACP),
             other => other?,
         };
         anyhow::ensure!(!session.get("sessionId").is_some_and(|id| req.native_session_id.is_some_and(|expected| id.as_str()!=Some(expected))), "Cursor ACP loaded a different native session; prompt withheld");
         let sid=req.native_session_id.map(str::to_owned).or_else(||session["sessionId"].as_str().map(str::to_owned)).context("Cursor ACP returned no session id")?;
-        conn.out.session_id=Some(sid.clone());conn.session_id=Some(sid.clone());conn.emit(TurnProgress::Session(sid.clone()));
+        conn.out.session_id=Some(sid.clone());conn.session_id=Some(sid.clone());conn.emit(TurnProgress::Session(sid.clone())).await;
         // Honor the final plan after locked-code enforcement, rather than the requested trust.
-        let mode=if plan.argv.windows(2).any(|v|v==["--mode","plan"]){"plan"}else{"agent"};
-        tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"session/set_mode",json!({"sessionId":sid,"modeId":mode}))).await??;
+        if req.provider == ProviderKind::Cursor {
+            let mode=if planned_options(&plan.argv).any(|(flag,value)|flag=="--mode"&&value==Some("plan")){"plan"}else{"agent"};
+            tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"session/set_mode",json!({"sessionId":sid,"modeId":mode}))).await??;
+        }
         if let Some(model)=req.model.filter(|m|!m.is_empty()&&*m!="auto"){
             let available:Vec<String>=session.pointer("/models/availableModels").and_then(Value::as_array).into_iter().flatten()
                 .filter_map(|m|m["modelId"].as_str().map(str::to_owned)).collect();
             let model=acp_model_id(model,&available).unwrap_or_else(||model.to_owned());
-            tokio::time::timeout(Duration::from_secs(12),conn.rpc(4,"session/set_model",json!({"sessionId":sid,"modelId":model}))).await??;
+            let (method, params) = if matches!(req.provider, ProviderKind::Grok | ProviderKind::Opencode) {
+                ("session/set_config_option", json!({"sessionId":sid,"configId":"model","value":model_config_value(req.provider, &model)}))
+            } else {
+                ("session/set_model", json!({"sessionId":sid,"modelId":model}))
+            };
+            tokio::time::timeout(Duration::from_secs(12),conn.rpc(4,method,params)).await??;
         }
         conn.prompting = true;
+        if plan.standing_context.is_some()
+            && !system_prompt_supported
+        {
+            content.insert(0, json!({"type":"text","text":plan.standing_context.as_deref().unwrap()}));
+        }
         let result=conn.rpc(5,"session/prompt",json!({"sessionId":sid,"prompt":content})).await?;
         if result["stopReason"]=="cancelled"{conn.out.cancelled=true;}
         Ok::<(),anyhow::Error>(())
@@ -443,18 +571,15 @@ pub(super) async fn run(
             conn.out.stderr_tail = message;
             conn.out.failed = true;
         } else if !conn.out.cancelled {
-            conn.emit(TurnProgress::Error(message.clone()));
+            conn.emit(TurnProgress::Error(message.clone())).await;
             conn.out.stderr_tail = message;
             conn.out.failed = true;
         }
     }
     kill_process_tree(handle.pid.load(Ordering::SeqCst));
-    if let Some(task) = conn.bridge_task.take() {
-        task.abort();
-    }
     let mut reaped = false;
     if let Some(mut child) = handle.child.lock().await.take() {
-        let _ = child.kill().await;
+        let _ = child.start_kill();
         reaped = tokio::time::timeout(REAP_TIMEOUT, child.wait())
             .await
             .is_ok_and(|r| r.is_ok());
@@ -475,17 +600,29 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{acp_argv, acp_model_id, ask_server_config};
+    use super::{
+        acp_argv, acp_model_id, ask_server_config, model_config_value,
+        should_reinject_context,
+    };
+    use crate::store::ProviderKind;
 
     #[test]
     fn question_server_is_registered_only_when_enabled() {
-        assert!(ask_server_config("", "token", false)
+        assert!(ask_server_config("", "token", false, std::path::Path::new("."))
             .as_array()
             .unwrap()
             .is_empty());
-        let enabled = ask_server_config("127.0.0.1:1234", "token", true);
+        let enabled = ask_server_config("127.0.0.1:1234", "token", true, std::path::Path::new("."));
         assert_eq!(enabled[0]["name"], "concordia-ask");
         assert_eq!(enabled[0]["env"][1]["value"], "token");
+    }
+
+    #[test]
+    fn compaction_reinjects_once_only_when_no_system_channel_exists() {
+        assert!(should_reinject_context(false, None, "compact-1"));
+        assert!(!should_reinject_context(false, Some("compact-1"), "compact-1"));
+        assert!(!should_reinject_context(true, None, "compact-2"));
+        assert!(!should_reinject_context(false, None, ""));
     }
 
     #[test]
@@ -536,14 +673,29 @@ mod tests {
     }
 
     #[test]
+    fn opencode_model_config_uses_the_acp_string_value() {
+        assert_eq!(
+            model_config_value(ProviderKind::Opencode, "deepseek/deepseek-chat"),
+            serde_json::json!("deepseek/deepseek-chat")
+        );
+        assert_eq!(
+            model_config_value(ProviderKind::Grok, "grok-4"),
+            serde_json::json!({"value": "grok-4"})
+        );
+    }
+
+    #[test]
     fn trust_flags_precede_the_acp_subcommand() {
         let print = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            acp_argv(&print(&["--print", "--force", "hi"])),
+            acp_argv(ProviderKind::Cursor, &print(&["--print", "--force", "hi"])),
             ["--force", "acp"]
         );
         assert_eq!(
-            acp_argv(&print(&["--print", "--mode", "plan", "hi"])),
+            acp_argv(
+                ProviderKind::Cursor,
+                &print(&["--print", "--mode", "plan", "hi"])
+            ),
             ["acp"]
         );
     }

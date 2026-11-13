@@ -15,49 +15,8 @@ pub struct Document {
     pub range: Option<std::ops::Range<usize>>,
 }
 fn read(path: &Path) -> Result<Vec<u8>, String> {
-    if crate::workspace_paths::sensitive(path) {
-        return Err("Document is excluded by workspace policy".into());
-    }
-    let canonical = path
-        .canonicalize()
-        .map_err(|_| "Document file unavailable")?;
-    if crate::workspace_paths::sensitive(&canonical) {
-        return Err("Document is excluded by workspace policy".into());
-    }
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| "Document metadata unavailable")?;
-    if !metadata.is_file()
-        || crate::workspaces::linked(&metadata)
-        || metadata.len() > MAX_DOCUMENT_BYTES as u64
-    {
-        return Err("Attach a regular UTF-8 document of at most 64 KiB".into());
-    }
-    let mut bytes = Vec::new();
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000);
-    }
-    let file = options
-        .open(path)
-        .map_err(|_| "Document could not be opened")?;
-    let opened = file
-        .metadata()
-        .map_err(|_| "Document metadata unavailable")?;
-    if !opened.is_file()
-        || crate::workspaces::linked(&opened)
-        || path.canonicalize().ok().as_ref() != Some(&canonical)
-    {
-        return Err("Document identity changed before reading; choose it again".into());
-    }
-    file.take(MAX_DOCUMENT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Document could not be read")?;
-    if bytes.len() > MAX_DOCUMENT_BYTES
-        || bytes.contains(&0)
-        || std::str::from_utf8(&bytes).is_err()
-    {
+    let bytes = super::read_regular(path, MAX_DOCUMENT_BYTES, "Document")?;
+    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
         return Err(
             "Attach UTF-8 text/Markdown/JSON of at most 64 KiB; no binary conversion is available"
                 .into(),
@@ -95,14 +54,7 @@ impl Document {
         let mime=match extension.as_str() {"txt"=>"text/plain","md"|"markdown"=>"text/markdown","json"=>"application/json",_=>return Err("Document attachments currently support .txt, .md and .json; binary transport is unavailable".into())};
         let bytes = read(path)?;
         let hash = format!("{:x}", Sha256::digest(&bytes));
-        let directory = root.join("attachments");
-        std::fs::create_dir_all(&directory).map_err(|_| "Attachment storage unavailable")?;
-        crate::workspaces::directory_id(&directory)?;
-        let target = directory.join(format!("{hash}.txt"));
-        if !target.exists() {
-            crate::state_io::write_atomic(&target, &bytes)
-                .map_err(|_| "Document snapshot could not be saved")?;
-        }
+        let target = super::store_snapshot(root, &hash, "txt", &bytes)?;
         let document = Self {
             path: target
                 .canonicalize()
@@ -152,39 +104,7 @@ pub struct PdfDocument {
 }
 
 fn read_pdf(path: &Path) -> Result<Vec<u8>, String> {
-    if crate::workspace_paths::sensitive(path) {
-        return Err("PDF is excluded by workspace policy".into());
-    }
-    let canonical = path.canonicalize().map_err(|_| "PDF file unavailable")?;
-    if crate::workspace_paths::sensitive(&canonical) {
-        return Err("PDF is excluded by workspace policy".into());
-    }
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| "PDF metadata unavailable")?;
-    if !metadata.is_file()
-        || crate::workspaces::linked(&metadata)
-        || metadata.len() > MAX_PDF_BYTES as u64
-    {
-        return Err("Attach a regular PDF of at most 8 MiB".into());
-    }
-    let mut data = Vec::new();
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000);
-    }
-    let file = options.open(path).map_err(|_| "PDF could not be opened")?;
-    let opened = file.metadata().map_err(|_| "PDF metadata unavailable")?;
-    if !opened.is_file()
-        || crate::workspaces::linked(&opened)
-        || path.canonicalize().ok().as_ref() != Some(&canonical)
-    {
-        return Err("PDF identity changed before reading; choose it again".into());
-    }
-    file.take((MAX_PDF_BYTES + 1) as u64)
-        .read_to_end(&mut data)
-        .map_err(|_| "PDF could not be read")?;
+    let data = super::read_regular(path, MAX_PDF_BYTES, "PDF")?;
     if data.len() > MAX_PDF_BYTES || !data.starts_with(b"%PDF-") {
         return Err("Attach a valid PDF document".into());
     }
@@ -225,19 +145,7 @@ impl PdfDocument {
         }
         let data = read_pdf(path)?;
         let hash = format!("{:x}", Sha256::digest(&data));
-        let directory = root.join("attachments");
-        std::fs::create_dir_all(&directory).map_err(|_| "Attachment storage unavailable")?;
-        let metadata =
-            std::fs::symlink_metadata(&directory).map_err(|_| "Attachment storage unavailable")?;
-        if !metadata.is_dir() || crate::workspaces::linked(&metadata) {
-            return Err("PDF snapshot storage must not be linked".into());
-        }
-        crate::workspaces::directory_id(&directory)?;
-        let target = directory.join(format!("{hash}.pdf"));
-        if !target.exists() {
-            crate::state_io::write_atomic(&target, &data)
-                .map_err(|_| "PDF snapshot could not be saved")?;
-        }
+        let target = super::store_snapshot(root, &hash, "pdf", &data)?;
         let snapshot = Self {
             path: target
                 .canonicalize()

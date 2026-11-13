@@ -1,11 +1,9 @@
 use crate::provider::stream_cards::{
-    parse_codex_stream_chunk, upsert_card, StreamCard, StreamPart,
+    StreamCard, StreamPart, parse_codex_stream_chunk, upsert_card,
 };
 use crate::store::TrustMode;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Debug, Clone)]
 pub struct TurnRequest<'a> {
@@ -15,6 +13,7 @@ pub struct TurnRequest<'a> {
     pub model: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
+    pub standing_context: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,7 +25,6 @@ pub struct TurnPlan {
 
 #[derive(Debug, Default, Clone)]
 pub struct StreamOutcome {
-    pub exit_code: Option<i32>,
     pub text: String,
     pub session_id: Option<String>,
     pub cards: Vec<StreamCard>,
@@ -59,7 +57,7 @@ pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Res
             argv.push("-s".into());
             argv.push("read-only".into());
         }
-        TrustMode::Workspace => {
+        TrustMode::Edit => {
             argv.push("--skip-git-repo-check".into());
             argv.push("--approve-for-me".into());
         }
@@ -67,6 +65,10 @@ pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Res
             argv.push("--skip-git-repo-check".into());
             argv.push("--dangerously-bypass-approvals-and-sandbox".into());
         }
+    }
+    if let Some(context) = req.standing_context.filter(|text| !text.is_empty()) {
+        argv.push("-c".into());
+        argv.push(format!("developer_instructions={}", serde_json::to_string(context)?));
     }
     if let Some(sid) = req
         .native_session_id
@@ -118,40 +120,4 @@ pub fn apply_stream_parts(parts: Vec<StreamPart>, out: &mut StreamOutcome) {
             StreamPart::Error(msg) => out.errors.push(msg),
         }
     }
-}
-
-pub async fn run_turn(req: &TurnRequest<'_>) -> Result<StreamOutcome> {
-    let plan = plan_turn_argv(req)?;
-    assert_safe_argv(&plan.argv)?;
-    let mut cmd = crate::process_ui::tokio_command(&plan.command);
-    crate::process_ui::background(&mut cmd);
-    cmd.args(&plan.argv)
-        .current_dir(&plan.cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(home) = req.codex_home {
-        cmd.env("CODEX_HOME", home);
-    }
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawn {} {:?}", plan.command, plan.argv))?;
-    let stdout = child.stdout.take().context("codex stdout")?;
-    let mut lines = BufReader::new(stdout).lines();
-    let mut out = StreamOutcome::default();
-    while let Some(line) = read_line(&mut lines).await? {
-        apply_stream_parts(parse_codex_stream_chunk(&line), &mut out);
-    }
-    let status = child.wait().await.context("wait codex")?;
-    out.exit_code = status.code();
-    if out.text.is_empty() && status.code().unwrap_or(1) != 0 {
-        out.text = format!("codex exited {}", status.code().unwrap_or(-1));
-    }
-    Ok(out)
-}
-
-async fn read_line(
-    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
-) -> Result<Option<String>> {
-    lines.next_line().await.context("read codex stdout line")
 }

@@ -58,7 +58,7 @@ pub fn active_query(text: &str) -> Option<(usize, String)> {
 }
 
 pub(super) fn reference_query(text: &str) -> Option<(usize, String)> {
-    for prefix in ["/open ", "/preview "] {
+    for prefix in ["/open "] {
         if let Some(query) = text.strip_prefix(prefix).filter(|q| !q.contains('\n')) {
             return Some((
                 prefix.len(),
@@ -202,9 +202,8 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
                         i = end;
                         continue;
                     }
-                    match threads::ThreadLog::open(state_root, &id).read_all() {
-                        Ok(events) => {
-                            let map = threads::build_map(&events, &id, map_chars, true);
+                    match threads::ThreadLog::open(state_root, &id).read_map(map_chars) {
+                        Ok(map) => {
                             ex.maps.push((short_id(metas, &id), map));
                             done.push(id);
                         }
@@ -291,6 +290,10 @@ impl App {
             self.chatref.last_query = None;
             return View::Hidden;
         };
+        if q.len() > 4096 {
+            return View::Hidden;
+        }
+        let folded_query = q.to_lowercase();
         self.request_related_files();
         if self.chatref.loaded.is_none_or(|t| t.elapsed() > LIST_TTL) {
             self.chatref.list = threads::list(&self.state_root);
@@ -311,13 +314,13 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, file)| {
-                file.label.to_lowercase().contains(&q.to_lowercase())
+                file.label.to_lowercase().contains(&folded_query)
                     || file
                         .candidate
                         .target
                         .replace('\\', "/")
                         .to_lowercase()
-                        .contains(&q.to_lowercase())
+                        .contains(&folded_query)
             })
             .map(|(i, _)| Reference::File(i))
             .collect();
@@ -336,7 +339,7 @@ impl App {
                 1
             }
         });
-        if !text.starts_with("/open ") && !text.starts_with("/preview ") {
+        if !text.starts_with("/open ") {
             rows.extend(
                 self.chatref
                     .list
@@ -384,7 +387,7 @@ impl App {
                     return;
                 };
                 if let Some(file) = self.related_files.entries.get(index) {
-                    if text.starts_with("/open ") || text.starts_with("/preview ") {
+                    if text.starts_with("/open ") {
                         let name = if file.label.contains(char::is_whitespace) {
                             format!("\"{}\"", file.label)
                         } else {
@@ -474,10 +477,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             app.chatref.selected = (app.chatref.selected + 1) % n;
             true
         }
-        KeyCode::Enter
-            if app.editor.text().starts_with("/open ")
-                || app.editor.text().starts_with("/preview ") =>
-        {
+        KeyCode::Enter if app.editor.text().starts_with("/open ") => {
             if let Reference::File(index) = rows[app.chatref.selected] {
                 app.editor.clear();
                 app.preview_related_file(index);
@@ -691,24 +691,15 @@ mod tests {
         }
     }
 
-    fn seed(root: &Path, id: &str, title: &str, reply: &str) {
+    fn seed(root: &Path, id: &str, title: &str, _reply: &str) {
         let log = ThreadLog::open(root, id);
         log.write_meta(&meta(id, title, threads::now_secs()))
             .unwrap();
-        // Seed explicit legacy history; production writes now require native source references.
-        let events = [
-            ThreadEvent::with_text("user", title),
-            ThreadEvent::with_text("assistant", reply),
-        ];
-        let legacy = events
-            .iter()
-            .map(|ev| serde_json::to_string(ev).unwrap() + "\n")
-            .collect::<String>();
-        std::fs::write(
-            threads::threads_dir(root).join(format!("{id}.jsonl")),
-            legacy,
-        )
-        .unwrap();
+        // Reference journals store metadata or native source pointers, never message bodies.
+        log.append_unavailable(&ThreadEvent::new("user"), None, "fixture")
+            .unwrap();
+        log.append_unavailable(&ThreadEvent::new("assistant"), None, "fixture")
+            .unwrap();
     }
 
     const A: &str = "3f9a1b2c-0000-4000-8000-000000000001";
@@ -766,7 +757,7 @@ mod tests {
         let map = &ex.maps[0].1;
         assert!(map.starts_with("[concordia map] thread c0ffee00-"));
         assert!(map.chars().count() <= 600);
-        assert!(map.contains(&format!("more: concordia thread read {C}")));
+        assert!(map.contains(&format!("read pointers with: concordia chat thread read {C}")));
         let request = "continue @c0ffee00 please";
         assert!(ex.sent.starts_with(&format!(
             "{request}\n\n[Referenced chats: source context, not new requests]\n"
@@ -957,7 +948,7 @@ mod tests {
             prepared.sent.starts_with("continue @c0ffee00 from there\n\n[Referenced chats: source context, not new requests]\n@c0ffee00\n[concordia map] thread c0ffee00-"),
             "{}", prepared.sent
         );
-        assert!(prepared.sent.contains("keeps the query string"));
+        assert!(!prepared.sent.contains("keeps the query string"));
         assert_eq!(
             prepared
                 .sent

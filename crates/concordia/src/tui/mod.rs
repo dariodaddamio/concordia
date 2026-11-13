@@ -1,5 +1,4 @@
 use crate::accounts::{accounts_with_auth, display_account_name, get_account, is_logged_in};
-use crate::catalog::list_models;
 use crate::commands::{dispatch_slash, parse_slash, CommandContext, CommandOutcome, SlashCommand};
 use crate::connect::{add_account, AddResult};
 use crate::context::{plan_continuity, ContinuityRequest, PackMessage, PackRole};
@@ -10,7 +9,7 @@ use crate::provider::turn::{
     TurnOutcome, TurnProgress,
 };
 use crate::sessions::{
-    count_sessions_here, legacy_session_tasks, list_recent_sessions, tasks_to_picker_rows,
+    count_sessions_here, list_recent_sessions, native_session_picker_rows, tasks_to_picker_rows,
     trust_picker_rows, PickerRow,
 };
 use crate::store::{
@@ -24,7 +23,7 @@ use crate::usage::{usage_rows_for_accounts, usage_tone, UsageFetcher, UsageTone}
 use crate::version::short_stamp;
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
@@ -55,8 +54,9 @@ mod artifacts;
 mod run;
 #[cfg(windows)]
 pub use run::run_chat_window;
-pub use run::{run_chat_tui, run_file_editor, run_file_preview};
+pub use run::{run_chat_tui, run_file_editor};
 mod brand;
+mod chat_ownership;
 mod chatref;
 mod clipboard;
 #[cfg(all(windows, not(test)))]
@@ -69,12 +69,14 @@ mod diagrams;
 mod display_backend;
 mod editor;
 mod files;
+mod icons;
 mod images;
 mod input;
 mod input_dispatch;
 mod input_stream;
 mod integrations;
 mod landing;
+mod local_terminal;
 mod managed_workspaces;
 mod markdown;
 mod modal;
@@ -84,14 +86,12 @@ mod native_window;
 mod palette;
 mod persist;
 mod pointer;
-mod preview;
 mod questions;
 mod queue;
 mod queue_controls;
 mod queue_focus;
 mod raster;
 mod recovery;
-mod recovery_ui;
 mod reference_journal;
 mod related_files;
 mod session_ui;
@@ -100,7 +100,6 @@ mod session_ui_tests;
 mod settings;
 mod stats_ui;
 mod syntax;
-#[allow(dead_code)]
 pub(crate) mod tabs;
 mod text;
 mod theme;
@@ -117,7 +116,6 @@ mod worker_panel;
 mod workers;
 mod workspace;
 mod workspace_scope;
-mod workspace_search;
 use editor::Editor;
 #[cfg(test)]
 use input_dispatch::should_accept_key;
@@ -132,6 +130,7 @@ const PROMPT_W: usize = 2;
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const FLASH_FOR: Duration = Duration::from_secs(3);
 const FOOTER_HINT: &str = "Enter send \u{b7} F9 attach \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
+const START_HINT: &str = "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts.";
 /// How often (in 200 ms ticks) to look for a finished login, and when to stop looking.
 /// A second idle Ctrl+C within this window exits.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
@@ -162,7 +161,6 @@ fn provider_color(p: ProviderKind) -> Color {
 #[cfg(test)]
 mod activity_tests;
 #[cfg(test)]
-mod performance;
 #[cfg(test)]
 mod queue_controls_tests;
 #[cfg(test)]
@@ -190,15 +188,16 @@ fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
         linkify: false,
         runs: &[],
         header_files: &[],
+        decor_prefix: 0,
     }
 }
 
-/// Next permission mode for Shift+Tab: plan -> ask -> workspace -> plan.
+/// Next permission mode for Shift+Tab: plan -> ask -> edit -> plan.
 fn next_mode(m: TrustMode) -> TrustMode {
     match m {
         TrustMode::Plan => TrustMode::Ask,
-        TrustMode::Ask => TrustMode::Workspace,
-        TrustMode::Workspace | TrustMode::Full => TrustMode::Plan,
+        TrustMode::Ask => TrustMode::Edit,
+        TrustMode::Edit | TrustMode::Full => TrustMode::Plan,
     }
 }
 
@@ -206,7 +205,7 @@ fn mode_label(m: TrustMode) -> &'static str {
     match m {
         TrustMode::Plan => "plan",
         TrustMode::Ask => "ask",
-        TrustMode::Workspace => "workspace",
+        TrustMode::Edit => "edit",
         TrustMode::Full => "full",
     }
 }
@@ -215,7 +214,7 @@ fn mode_blurb(m: TrustMode) -> &'static str {
     match m {
         TrustMode::Plan => "read-only, analyse and propose (advisory where a CLI has no plan flag)",
         TrustMode::Ask => "native approvals (provider support varies)",
-        TrustMode::Workspace => "auto-edit inside the workspace",
+        TrustMode::Edit => "edit files with approval for other actions",
         TrustMode::Full => "skips all permissions - careful",
     }
 }
@@ -224,7 +223,7 @@ fn mode_color(m: TrustMode) -> Color {
     match m {
         TrustMode::Plan => Color::Cyan,
         TrustMode::Ask => Color::Yellow,
-        TrustMode::Workspace => Color::Green,
+        TrustMode::Edit => Color::Green,
         TrustMode::Full => Color::Red,
     }
 }
@@ -233,7 +232,7 @@ fn parse_mode(s: &str) -> Option<TrustMode> {
     match s.trim().to_lowercase().as_str() {
         "plan" => Some(TrustMode::Plan),
         "ask" => Some(TrustMode::Ask),
-        "auto" | "auto-edit" | "autoedit" | "edit" | "workspace" => Some(TrustMode::Workspace),
+        "edit" => Some(TrustMode::Edit),
         "full" => Some(TrustMode::Full),
         _ => None,
     }

@@ -5,7 +5,7 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
@@ -68,18 +68,29 @@ pub async fn spawn_listener(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = listener.local_addr()?.to_string();
     let task = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
         loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                break;
+            let stream = tokio::select! {
+                accepted = listener.accept(), if connections.len() < MAX_QUESTIONS => {
+                    let Ok((stream, _)) = accepted else { break };
+                    stream
+                }
+                _ = connections.join_next(), if !connections.is_empty() => continue,
             };
             let token = token.clone();
             let tx = tx.clone();
-            tokio::spawn(async move {
+            connections.spawn(async move {
                 let (reader, mut writer) = stream.into_split();
-                let mut reader = AsyncBufReader::new(reader);
+                let mut reader = AsyncBufReader::new(reader.take(MAX_REQUEST_BYTES as u64 + 1));
                 let mut line = Vec::new();
-                if reader.read_until(b'\n', &mut line).await.is_err()
-                    || line.len() > MAX_REQUEST_BYTES
+                if !matches!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        reader.read_until(b'\n', &mut line)
+                    )
+                    .await,
+                    Ok(Ok(_))
+                ) || line.len() > MAX_REQUEST_BYTES
                 {
                     return;
                 }
@@ -204,9 +215,7 @@ pub fn handle_line(line: &str) -> Option<String> {
         return Some(error(Value::Null, -32700, "parse error"));
     };
     let id = value.get("id").cloned().unwrap_or(Value::Null);
-    let Some(method) = value.get("method").and_then(Value::as_str) else {
-        return None;
-    };
+    let method = value.get("method").and_then(Value::as_str)?;
     Some(match method {
         "initialize" => reply(
             id,
@@ -236,8 +245,17 @@ pub fn serve<R: BufRead, W: Write>(mut input: R, mut output: W) -> std::io::Resu
     let mut line = Vec::new();
     loop {
         line.clear();
-        let n = input.read_until(b'\n', &mut line)?;
+        let n = input
+            .by_ref()
+            .take(MAX_REQUEST_BYTES as u64 + 1)
+            .read_until(b'\n', &mut line)?;
         if n == 0 {
+            return Ok(());
+        }
+        if line.len() > MAX_REQUEST_BYTES {
+            output.write_all(error(Value::Null, -32600, "request too large").as_bytes())?;
+            output.write_all(b"\n")?;
+            output.flush()?;
             return Ok(());
         }
         if let Some(response) = handle_line(std::str::from_utf8(&line).unwrap_or("")) {

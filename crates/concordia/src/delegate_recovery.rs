@@ -18,6 +18,7 @@ pub(crate) fn managed_references(
     }
     let mut directories = vec![recovery];
     let mut files = Vec::new();
+    let mut inspected_entries = 0usize;
     for _ in 0..2 {
         let mut next = Vec::new();
         for directory in directories {
@@ -27,6 +28,10 @@ pub(crate) fn managed_references(
                 return Err("linked worker recovery directory; references unknown".into());
             }
             for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+                inspected_entries += 1;
+                if inspected_entries > 4096 {
+                    return Err("worker reference entry budget exceeded; references unknown, retain the workspace".into());
+                }
                 let entry = entry.map_err(|error| error.to_string())?;
                 let metadata = entry.metadata().map_err(|error| error.to_string())?;
                 if metadata.is_dir() {
@@ -324,7 +329,7 @@ mod tests {
         );
         assert!(
             stored.contains("task_reference") && stored.contains("original explicit task"),
-            "legacy bodies remain untouched"
+            "stored bodies remain untouched"
         );
         drop(d);
         let mut d = Delegates::default();
@@ -513,7 +518,7 @@ mod tests {
         assert_eq!(
             std::fs::read(recovery.join("workers.json")).unwrap(),
             forged,
-            "foreign references never trigger migration or fallback"
+            "foreign references never trigger conversion or fallback"
         );
     }
 
@@ -626,61 +631,6 @@ mod tests {
         assert_eq!(d.dependency_graph(), &before);
     }
 
-    #[test]
-    fn legacy_ledgers_migrate_without_replay_and_invalid_graphs_keep_original_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let recovery = dir.path().join("pane");
-        let mut d = Delegates::default();
-        d.attach_recovery(&recovery, dir.path(), dir.path())
-            .unwrap();
-        let id = d.push_test_job(
-            "synthetic",
-            ProviderKind::Codex,
-            WorkerState::Tool,
-            "in progress",
-            0,
-        );
-        d.get_mut(id).unwrap().spec.cwd = dir.path().into();
-        d.save_recovery().unwrap();
-        drop(d);
-        let path = recovery.join("workers.json");
-        let mut legacy: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        legacy["version"] = serde_json::json!(1);
-        legacy.as_object_mut().unwrap().remove("schedule");
-        for row in legacy["jobs"].as_array_mut().unwrap() {
-            row.as_object_mut().unwrap().remove("reference_storage");
-            row.as_object_mut().unwrap().remove("task_reference");
-        }
-        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let mut restored = Delegates::default();
-        restored
-            .attach_recovery(&recovery, dir.path(), dir.path())
-            .unwrap();
-        assert_eq!(restored.get(id).unwrap().state, WorkerState::Paused);
-        assert_eq!(
-            restored.dependency_graph().tasks()[0].state(),
-            schedule::RunState::PausedRecovery
-        );
-        drop(restored);
-        let mut corrupt: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(corrupt["version"], 8);
-        corrupt["schedule"]["tasks"][0]["state"] = serde_json::json!("succeeded");
-        let bytes = serde_json::to_vec(&corrupt).unwrap();
-        std::fs::write(&path, &bytes).unwrap();
-        assert!(Delegates::default()
-            .attach_recovery(&recovery, dir.path(), dir.path())
-            .is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        corrupt["version"] = serde_json::json!(99);
-        let bytes = serde_json::to_vec(&corrupt).unwrap();
-        std::fs::write(&path, &bytes).unwrap();
-        assert!(Delegates::default()
-            .attach_recovery(&recovery, dir.path(), dir.path())
-            .is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -710,10 +660,6 @@ struct SavedJob {
     state: WorkerState,
     origin: Origin,
     source: Option<String>,
-    #[serde(default)]
-    routing: Option<crate::routing::Approved>,
-    #[serde(default)]
-    route_history: Vec<String>,
     #[serde(default)]
     workspace: Option<crate::workspaces::Request>,
     #[serde(default)]
@@ -906,7 +852,7 @@ impl Delegates {
         } else {
             let ledger: Ledger = serde_json::from_slice(&bytes)
                 .map_err(|_| "invalid worker ledger; original kept")?;
-            if !matches!(ledger.version, 1..=9)
+            if !matches!(ledger.version, 2..=9)
                 || ledger.workspace != workspace
                 || ledger.jobs.len() > 64
                 || uuid::Uuid::parse_str(&ledger.owner).is_err()
@@ -921,10 +867,6 @@ impl Delegates {
                     .schedule
                     .ok_or("worker dependency graph missing; original kept")?;
                 graph.validate()?;
-            } else if ledger.schedule.is_some() {
-                return Err(
-                    "legacy ledger contains unexpected dependency metadata; original kept".into(),
-                );
             }
             let mut ids = std::collections::HashSet::new();
             let mut runs = std::collections::HashSet::new();
@@ -956,7 +898,6 @@ impl Delegates {
                     || saved.attempts.len() > 4
                     || saved.attempt_records.len() > 4
                     || saved.attempt_records.iter().any(|attempt| !attempt.valid())
-                    || saved.route_history.len() > 4
                     || saved.workspace.as_ref().is_some_and(|request| {
                         !request.structurally_valid() || request.binding.owner != workspace
                     })
@@ -964,14 +905,6 @@ impl Delegates {
                         .workspace_notice
                         .as_ref()
                         .is_some_and(|notice| notice.len() > 4096)
-                    || saved
-                        .route_history
-                        .iter()
-                        .any(|report| report.len() > 32_000)
-                    || saved
-                        .routing
-                        .as_ref()
-                        .is_some_and(|routing| !routing.valid())
                     || std::fs::canonicalize(&saved.spec.cwd).ok().as_ref()
                         != Some(
                             saved
@@ -985,9 +918,7 @@ impl Delegates {
                     );
                 }
                 let run_state = dependency_state(saved.state);
-                if ledger.version == 1 {
-                    graph.observe_run(&saved.conversation, &saved.run_id, run_state)?;
-                } else if !graph.matches_run(&saved.conversation, &saved.run_id, run_state) {
+                if !graph.matches_run(&saved.conversation, &saved.run_id, run_state) {
                     return Err(
                         "worker dependency receipt does not match its run; original kept".into(),
                     );
@@ -1014,7 +945,7 @@ impl Delegates {
                 }
                 jobs.push(Job {
                     input:input::State::default(),
-                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable, routing:saved.routing, route_history:saved.route_history,
+                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable,
                     workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None, preparation_cancel:Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
                     task:saved.task, model:saved.spec.model.clone(), trust:saved.spec.trust, spec:saved.spec,
@@ -1104,8 +1035,6 @@ impl Delegates {
                     state: j.state,
                     origin: j.origin,
                     source: j.source_id.clone(),
-                    routing: j.routing.clone(),
-                    route_history: j.route_history.clone(),
                     workspace: j.workspace.clone(),
                     workspace_notice: j.workspace_notice.clone(),
                     native_session: j.session_id.clone(),
@@ -1260,118 +1189,5 @@ impl Delegates {
         }
         job.text = result;
         Ok(())
-    }
-
-    pub(super) fn worker_failover(&mut self, id: u32, out: &TurnOutcome, now: Instant) -> bool {
-        let Some(root) = self.recovery.as_ref().map(|r| r.state_root.clone()) else {
-            return false;
-        };
-        let settings = get_settings(&root);
-        if !settings.delegate_quota_failover {
-            return false;
-        }
-        let Some(job) = self.get(id) else {
-            return false;
-        };
-        let Some(approved) = &job.routing else {
-            return false;
-        };
-        if !approved.failover {
-            return false;
-        }
-        // A confirmed terminal quota error before any work is safe to reroute. Any tool or partial
-        // answer, cancellation, or unconfirmed exit requires reconciliation instead.
-        if job.cancel_requested
-            || job.spec.native_input != crate::native_input::Mode::Standard
-            || job.input.observed()
-            || out.cancelled
-            || out.exit_code.is_none()
-            || !(out.failed || out.exit_code != Some(0))
-            || job.attempts.len() >= 4
-            || !job.cards.is_empty()
-            || !out.cards.is_empty()
-            || !job.text.trim().is_empty()
-            || !out.text.trim().is_empty()
-            || !crate::provider::stream_cards::usage_exhausted(&format!(
-                "{}\n{}",
-                out.stderr_tail,
-                job.error.as_deref().unwrap_or("")
-            ))
-        {
-            return false;
-        }
-        let mut context = crate::routing::Context::new(
-            crate::routing::Purpose::WorkerFailover,
-            &job.account,
-            job.provider,
-            job.spec.home.clone(),
-            job.model.clone(),
-        );
-        context.owner_account = approved.owner.clone();
-        context.workers = Some(settings.workers.iter().cloned().collect());
-        context
-            .attempted_accounts
-            .extend(job.attempts.iter().cloned());
-        context
-            .attempted_pairs
-            .extend(job.attempt_records.iter().filter_map(|attempt| {
-                attempt
-                    .model
-                    .as_ref()
-                    .map(|model| (attempt.account.clone(), model.clone()))
-            }));
-        for target in &approved.targets {
-            if self.jobs.iter().any(|other| {
-                other.id != id && other.account == target.target.account && other.state.is_running()
-            }) {
-                context.running.insert(target.target.account.clone());
-            }
-        }
-        let Ok(decision) = approved.evaluate(&root, &context) else {
-            return false;
-        };
-        let report: String = decision.report().join("\n").chars().take(8000).collect();
-        if let Some(job) = self.get_mut(id) {
-            if job.route_history.len() < 4 {
-                job.route_history.push(report);
-            }
-        }
-        let Some(selected) = decision.selected() else {
-            return false;
-        };
-        let Some(target) = get_account(&root, &selected.candidate.target.account) else {
-            return false;
-        };
-        let target_home = target
-            .home_path
-            .as_ref()
-            .and_then(|home| home.canonicalize().ok());
-        if target_home.is_none() {
-            return false;
-        }
-        let model = selected.candidate.target.model.clone();
-        if let Some(job) = self.get_mut(id) {
-            job.attempts.push(target.account.clone());
-            job.attempt_records.push(Attempt::new(
-                &target.account,
-                target.provider,
-                target_home.clone(),
-                model.clone(),
-            ));
-            job.account = target.account;
-            job.provider = target.provider;
-            job.model = model.clone();
-            job.spec.home = target_home;
-            job.spec.model = model;
-            job.session_id = None;
-            job.source_id = None;
-            job.error = None;
-            job.exit_code = None;
-            job.cancel = None;
-            job.state = WorkerState::Queued;
-            job.snippet = "Explicit quota exhaustion; moving to the next configured worker".into();
-        }
-        self.launch(id, now);
-        true
     }
 }

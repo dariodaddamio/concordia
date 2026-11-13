@@ -1,7 +1,7 @@
 # L3: native binary/PDF inputs
 
 Read the [common worker instructions](README.md), [input contracts](../../images-and-diagrams.md)
-and the document phases in [workspace and inputs](../workspace-input-completion.md).
+and the document phases in [images and diagrams](../../images-and-diagrams.md).
 
 ## Outcome
 

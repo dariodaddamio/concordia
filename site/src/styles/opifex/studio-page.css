@@ -1,0 +1,831 @@
+/* Vendored from C:/Users/dario/dev/opifex / apps/studio/src/styles/studio-page.css
+ * Opifex Studio source version: 1.3.0
+ * Refresh with: npm run sync:opifex
+ */
+/*
+ * Component page anatomy: Variants, States, Contract, Usage, Source.
+ * Every selector is scoped under .studio-* so the portfolio host can restyle
+ * the page without leakage. Specimens keep package tokens on a neutral stage.
+ */
+.studio-label {
+  color: var(--dossier-muted);
+  font: 10px / 1.2 var(--dossier-font);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.specimen-toolbar h2 {
+  font: 400 18px / 1.3 var(--dossier-font);
+  letter-spacing: 0.01em;
+}
+
+.studio-specimen-theme {
+  display: grid;
+  width: var(--dossier-target-min);
+  height: var(--dossier-target-min);
+  padding: 0;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--dossier-muted);
+  cursor: pointer;
+}
+
+.studio-specimen-theme:hover,
+.studio-specimen-theme:focus-visible {
+  color: var(--dossier-amber);
+}
+
+.studio-specimen-theme:focus-visible {
+  outline: 2px solid var(--dossier-amber);
+  outline-offset: 2px;
+}
+
+/* Any future specimen highlight inherits the specimen's exact silhouette. */
+.studio-specimen-highlight {
+  border-radius: inherit;
+}
+
+/* Hard-rule panels: one outer line, hairline rules between cells. */
+.studio-variant-grid,
+.studio-state-grid,
+.studio-strip,
+.studio-props {
+  border: 1px solid var(--dossier-line);
+}
+
+.studio-variant-grid,
+.studio-state-grid,
+.studio-strip {
+  display: grid;
+  overflow: hidden;
+}
+
+.studio-variant-grid,
+.studio-state-grid {
+  gap: 1px;
+  background: var(--dossier-bg);
+}
+
+.studio-variant-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}
+
+[data-page-form="complex"] .studio-variant-grid,
+[data-page-form="composition"] .studio-variant-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+}
+
+.studio-variant-grid[data-single] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#states {
+  container-type: inline-size;
+}
+
+.studio-state-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+@container (max-width: 760px) {
+  .studio-state-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  }
+}
+
+.studio-strip {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  margin: 16px 0 0;
+}
+
+.studio-variant-cell,
+.studio-state-cell,
+.studio-strip > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  margin: 0 -1px -1px 0;
+  border: solid var(--dossier-line);
+  border-width: 0 1px 1px 0;
+}
+
+.studio-variant-cell,
+.studio-state-cell {
+  margin: 0;
+  border: 0;
+  background: var(--dossier-bg);
+  box-shadow:
+    1px 0 0 var(--dossier-line),
+    0 1px 0 var(--dossier-line);
+}
+
+/*
+ * Cells share row tracks with their neighbors (subgrid), so headers, stages,
+ * descriptions, and prop lines align across a row and a specimen that grows,
+ * such as a resized textarea, never shifts the boundaries of its siblings.
+ */
+.studio-variant-cell {
+  display: grid;
+  grid-row: span 3;
+  grid-template-rows: subgrid;
+}
+
+.studio-variant-cell > .studio-cell__top {
+  grid-row: 1;
+}
+
+.studio-variant-cell > .studio-cell__stage {
+  grid-row: 2;
+}
+
+.studio-variant-cell > .studio-cell__text {
+  grid-row: 3;
+}
+
+.studio-variant-cell > .studio-cell__code {
+  grid-row: 4;
+}
+
+.studio-state-cell {
+  display: grid;
+  grid-row: span 2;
+  grid-template-rows: subgrid;
+}
+
+.studio-state-cell > .studio-cell__top {
+  grid-row: 1;
+}
+
+.studio-state-cell > .studio-state-specimen {
+  grid-row: 2;
+}
+
+.studio-state-cell > .studio-state-cell__read {
+  grid-row: 3;
+}
+
+.studio-state-grid {
+  gap: 1px;
+  min-height: 0;
+}
+
+.studio-cell__stage.studio-state-specimen {
+  min-height: 92px;
+  align-items: center;
+  padding: 24px 16px;
+}
+
+.studio-state-specimen > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.studio-variant-cell[data-wide] {
+  grid-column: 1 / -1;
+}
+
+.studio-cell__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--dossier-rule);
+  color: var(--dossier-bone);
+  font: 600 12px / 1.4 var(--dossier-font);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.studio-cell__top h3 {
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+.studio-cell__stage {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 124px;
+  flex: 1 0 auto;
+  flex-direction: column;
+  justify-content: center;
+  padding: 24px 16px;
+  background: var(--opx-canvas, #fff);
+  color: var(--opx-text, #111);
+  font-family: var(--opx-font-ui), "Inter", system-ui, sans-serif;
+}
+
+[data-page-form="complex"] .studio-cell__stage,
+[data-page-form="composition"] .studio-cell__stage,
+.studio-variant-grid[data-single] .studio-cell__stage {
+  padding: 24px 16px;
+}
+
+.studio-cell__stage .preview-canvas {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  place-items: center;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+
+@layer base {
+  /* A safety bound must not override the specimen's own max-width utilities. */
+  .studio-cell__stage .preview-canvas > * {
+    max-width: 100%;
+  }
+}
+/* Layout wrappers may shrink; native control targets keep their package minima. */
+.studio-cell__stage
+  .preview-canvas
+  > :not(button, input, select, textarea, [role="button"]) {
+  min-width: 0;
+}
+
+.studio-cell__stage .preview-canvas > .grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 600px) {
+  .studio-variant-cell > .studio-cell__stage:has(.opx-calendar),
+  .studio-state-cell > .studio-cell__stage:has(.opx-calendar) {
+    padding-inline: 0;
+  }
+  .studio-cell__stage .opx-calendar {
+    padding-inline: 0;
+  }
+}
+
+/* Keep the auxiliary Button state fixtures available to the matrix while the
+   Variants exhibit shows one canonical specimen per cell, as in the approved
+   mock. Their reserved bounds stay in the DOM for state probing. */
+.studio-variant-cell .preview-canvas [aria-label="Button states"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.studio-measure {
+  position: absolute;
+  width: 7px;
+  border-block: 1px solid var(--opx-text-muted, #555);
+  pointer-events: none;
+}
+
+.studio-measure::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  border-left: 1px solid var(--opx-text-muted, #555);
+  content: "";
+}
+
+.studio-measure__spec {
+  margin: 14px 0 0;
+  color: var(--opx-text, #111);
+  font: 500 12px / 1.5 var(--dossier-font);
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.studio-cell__text {
+  flex: none;
+  margin: 0;
+  padding: 12px;
+  border-top: 1px solid var(--dossier-rule);
+  color: var(--dossier-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.studio-cell__code {
+  display: block;
+  padding: 10px 12px;
+  border-top: 1px solid var(--dossier-rule);
+  color: var(--dossier-bone);
+  font: 11.5px / 1.5 var(--dossier-font);
+  overflow-wrap: anywhere;
+}
+
+.studio-state-cell__read {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  color: var(--dossier-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.studio-state-cell__read b {
+  color: var(--dossier-bone);
+  font-weight: 500;
+}
+
+.studio-props {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  overscroll-behavior: none;
+}
+
+.studio-props table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.studio-props th,
+.studio-props td {
+  overflow-wrap: anywhere;
+  min-width: 0;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--dossier-line);
+  border-right: 1px solid var(--dossier-line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.studio-props tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.studio-props tr > :last-child {
+  border-right: 0;
+}
+
+.studio-props thead th {
+  padding: 8px 12px;
+  background: var(--dossier-bg);
+  color: var(--dossier-bone);
+  font: 600 12px / 1.4 var(--dossier-font);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.studio-props__group th {
+  color: var(--dossier-bone);
+  font-weight: 600;
+}
+
+.studio-props td:first-child {
+  width: auto;
+  max-width: none;
+}
+
+.studio-props td:first-child > code {
+  white-space: normal;
+}
+
+.studio-props__type {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.studio-chip {
+  padding: 0 6px;
+  border: 1px solid var(--dossier-rule);
+  color: var(--dossier-muted);
+  font: 400 11px / 1.6 var(--opx-font-mono);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.studio-props td:first-child > code {
+  color: var(--dossier-amber);
+  font-weight: 600;
+}
+
+.studio-props small {
+  display: block;
+  max-inline-size: 28ch;
+  white-space: normal;
+  color: var(--dossier-muted);
+  font: 11px / 1.4 var(--opx-font-mono);
+}
+
+.studio-strip dt {
+  margin: 0;
+  padding: 10px 14px 0;
+}
+
+.studio-strip dd {
+  margin: 4px 0 0;
+  padding: 0 14px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.studio-usage {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px 32px;
+}
+
+.studio-usage-table {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  overscroll-behavior: none;
+}
+
+.studio-usage-table table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.5;
+  border: 1px solid var(--dossier-line);
+}
+.studio-usage-table th,
+.studio-usage-table td {
+  padding: 12px 16px;
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid var(--dossier-line);
+}
+.studio-usage-table th {
+  padding: 8px 12px;
+  background: var(--dossier-bg);
+  color: var(--dossier-bone);
+  font: 600 12px / 1.4 var(--dossier-font);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.studio-usage-table .studio-usage-guidance {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.studio-usage-table .studio-usage-guidance li {
+  position: relative;
+  padding-left: 22px;
+}
+.studio-usage-guidance li > span {
+  position: absolute;
+  left: 0;
+  font-weight: 600;
+}
+.studio-usage-mark--use {
+  color: var(--dossier-positive);
+}
+.studio-usage-mark--avoid {
+  color: var(--dossier-critical);
+}
+.studio-usage-table .studio-usage-guidance li + li {
+  margin-top: 12px;
+}
+.studio-usage-connections h3 {
+  margin: 0 0 4px;
+  color: var(--dossier-bone);
+  font: 600 12px / 1.4 var(--dossier-font);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.studio-usage-table td.studio-usage-connections {
+  padding-top: 8px;
+  padding-bottom: 4px;
+}
+#usage .studio-usage-table .component-page__connections {
+  margin-top: 0;
+}
+#usage .studio-usage-table a {
+  color: var(--dossier-amber);
+  text-decoration: none;
+}
+#usage .studio-usage-table a:focus-visible {
+  text-decoration: none;
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+}
+@media (max-width: 640px) {
+  .studio-usage-table thead {
+    display: none;
+  }
+  .studio-usage-table table,
+  .studio-usage-table tbody,
+  .studio-usage-table tr,
+  .studio-usage-table td {
+    display: block;
+    width: 100%;
+  }
+  .studio-usage-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 12px;
+    color: var(--dossier-bone);
+    font: 600 12px / 1.4 var(--dossier-font);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .studio-usage-table td {
+    border-width: 0 0 1px;
+  }
+  .studio-usage-table tr:last-child td:last-child {
+    border-bottom: 0;
+  }
+  .studio-usage-table td.studio-usage-connections::before {
+    display: none;
+  }
+}
+
+.studio-usage__panel {
+  padding: 0;
+}
+
+.studio-usage__panel + .studio-usage__panel {
+  border-left: 0;
+}
+
+.studio-usage__panel h3 {
+  margin: 0 0 10px;
+  font: 600 12px / 1.4 var(--dossier-font);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.studio-usage__panel ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-usage__panel li {
+  position: relative;
+  padding: 6px 0 6px 22px;
+  border-top: 0;
+}
+
+.studio-usage__panel li::before {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  font-weight: 600;
+}
+
+.studio-usage__panel--use li::before {
+  color: var(--dossier-positive);
+  content: "+";
+}
+
+.studio-usage__panel--avoid li::before {
+  color: var(--dossier-critical);
+  content: "x";
+}
+
+.studio-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 32px;
+  margin: 0 0 12px;
+}
+
+.studio-facts dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+#source .preview-source {
+  margin-top: 16px;
+  border: 1px solid var(--dossier-line);
+  background: var(--dossier-bg-elev);
+}
+
+.studio-code-block__label {
+  margin: 0 0 8px;
+  color: var(--dossier-muted);
+  font: 10px / 1.2 var(--dossier-font);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.studio-code-block .code-block {
+  margin-top: 0;
+}
+
+/* Source panes share one quiet scrollbar; dark mode uses a black track. */
+.studio-code-block .code-block__pre,
+.preview-source__panel,
+.studio-props {
+  scrollbar-width: thin;
+  scrollbar-color: var(--dossier-amber-dim) var(--dossier-bg);
+}
+
+.studio-code-block .code-block__pre::-webkit-scrollbar,
+.preview-source__panel::-webkit-scrollbar,
+.studio-props::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.studio-code-block .code-block__pre::-webkit-scrollbar-track,
+.preview-source__panel::-webkit-scrollbar-track,
+.studio-props::-webkit-scrollbar-track {
+  background: var(--dossier-bg);
+}
+
+.studio-code-block .code-block__pre::-webkit-scrollbar-thumb,
+.preview-source__panel::-webkit-scrollbar-thumb,
+.studio-props::-webkit-scrollbar-thumb {
+  border: 2px solid var(--dossier-bg);
+  background: var(--dossier-amber-dim);
+  background-clip: padding-box;
+}
+
+@media (max-width: 620px) {
+  /* Narrow screens stack each prop: name, then default and meaning beneath. */
+  .studio-props thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .studio-props table,
+  .studio-props tbody,
+  .studio-props tr,
+  .studio-props td,
+  .studio-props th {
+    display: block;
+  }
+
+  .studio-props tr {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--dossier-line);
+  }
+
+  .studio-props tr:last-child {
+    border-bottom: 0;
+    border-right: 0;
+  }
+
+  .studio-props th,
+  .studio-props td,
+  .studio-props tr:last-child > * {
+    padding: 2px 14px;
+    border-bottom: 0;
+    border-right: 0;
+  }
+
+  .studio-props td:first-child {
+    width: auto;
+    max-width: none;
+  }
+
+  .studio-props td[data-label]::before {
+    margin-right: 8px;
+    color: var(--dossier-muted);
+    content: attr(data-label);
+    font: 10px / 1.2 var(--dossier-font);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .studio-usage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .studio-usage__panel + .studio-usage__panel {
+    border-top: 0;
+    border-left: 0;
+  }
+}
+
+.studio-contract-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 28px 32px;
+  margin-top: 24px;
+  align-items: start;
+}
+.studio-contract-layout > .component-page__connections {
+  grid-column: 1 / -1;
+}
+.studio-contract-layout .contract-list {
+  font-size: 13px;
+  gap: 6px;
+}
+.studio-connections {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  padding: 0;
+  margin: 0;
+}
+.studio-connections li {
+  margin: 0;
+  display: inline-flex;
+  align-items: baseline;
+}
+.studio-connections a {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: flex-start;
+  gap: 10px;
+  border-bottom: 0;
+  text-decoration: none;
+}
+@media (pointer: coarse) {
+  .studio-connections a {
+    min-height: 44px;
+  }
+}
+#usage .studio-connections a:hover,
+#usage .studio-connections a:focus-visible {
+  text-decoration: none;
+}
+#usage .component-page__connections {
+  margin-top: 24px;
+}
+:root[data-studio-theme="dark"] #source .preview-source,
+:root[data-studio-theme="dark"] #source .preview-source__bar,
+:root[data-studio-theme="dark"] #source .preview-source__panel,
+:root[data-studio-theme="dark"] #source .code-block,
+:root[data-studio-theme="dark"] #source .code-block__pre {
+  background: #000;
+}
+@media (max-width: 640px) {
+  .studio-contract-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .studio-measure__spec {
+    font-size: 12px;
+    letter-spacing: 0;
+  }
+}
+
+#source .preview-source,
+#source .code-block {
+  background: #000;
+  color: #ededed;
+  --dossier-bg: #000;
+  --dossier-bg-elev: #000;
+  --dossier-bone: #ededed;
+  --dossier-muted: #bcbcbc;
+  --dossier-amber: #ffb000;
+  --dossier-amber-dim: #a3740c;
+  --dossier-line: rgba(255, 176, 0, 0.45);
+  --studio-feedback-ink: var(--dossier-amber);
+}
+#source .preview-source__bar,
+#source .preview-source__panel,
+#source .preview-source .code-block,
+#source .preview-source pre {
+  background: #000;
+  color: #ededed;
+}
+
+/* A labelled field includes its validation header and help, so it needs the
+   same column width as a composed specimen instead of a bare button. */
+.studio-variant-grid:has(.opx-field) {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+}
+
+/* Complete multi-part fixtures retain their natural component width. */
+.studio-state-grid[data-full-states] {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+}
+/* Single-control state fixtures stay compact; composites keep their width. */
+.studio-state-grid[data-state-layout="compact"] {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 72px), 1fr));
+}
+.studio-state-grid[data-state-layout="compact"] .studio-state-specimen {
+  min-height: 68px;
+  padding: 12px 8px;
+}
+.studio-state-grid[data-state-layout="compact"] .studio-cell__top {
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+.studio-cell__stage {
+  overflow: visible;
+}
+.studio-variant-grid,
+.studio-state-grid {
+  overflow: visible;
+}
+.studio-calendar-focus .opx-calendar__day[tabindex="0"] {
+  outline: 2px solid var(--opx-focus);
+  outline-offset: 2px;
+}
+.studio-otp-focus .opx-input-otp__slots {
+  box-shadow: var(--opx-ring-strong);
+}
+.studio-otp-focus .opx-input-otp__slot.is-active .opx-input-otp__caret {
+  display: block;
+}

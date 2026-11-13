@@ -51,17 +51,17 @@ impl State {
             job.cancelled.store(true, Ordering::Relaxed);
         }
     }
-    pub fn poll(&mut self) {
-        let Some(job) = &self.job else { return };
+    pub fn poll(&mut self) -> bool {
+        let Some(job) = &self.job else { return false };
         let result = match job.rx.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(_) => Err("Image decoder stopped; use the system viewer".into()),
         };
         let cancelled = job.cancelled.load(Ordering::Relaxed);
         self.job = None;
         if cancelled {
-            return;
+            return false;
         }
         if let (Err(error), Some(hash)) = (
             &result,
@@ -103,6 +103,7 @@ impl State {
         if let Some(view) = &mut self.view {
             view.result = Some(result);
         }
+        true
     }
 }
 impl Drop for State {
@@ -343,11 +344,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         thumb.width,
         thumb.height,
         &thumb.hash[..12],
-        if app.raster.native && !app.no_color {
-            "image preview"
-        } else {
-            "cell preview"
-        }
+        "cell preview"
     );
     f.render_widget(
         Paragraph::new(footer),
@@ -444,14 +441,18 @@ fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {
     if app.raster.native && !app.no_color {
         // A marker confined to blank image cells lets later modal widgets suppress
         // the overlay, including a Clear widget that covers only part of the image.
+        let [red, green, blue] = super::theme::image_background();
+        let marker = Color::Rgb(red, green, blue);
         for y in content.y..content.bottom() {
             for x in content.x..content.right() {
                 f.buffer_mut()[(x, y)].reset();
-                f.buffer_mut()[(x, y)]
-                    .set_fg(Color::Rgb(20, 23, 31))
-                    .set_bg(Color::Rgb(20, 23, 31));
+                f.buffer_mut()[(x, y)].set_fg(marker).set_bg(marker);
             }
         }
+        // Keep the bounded cell preview in the buffer as an observable fallback. The native
+        // window paints the original pixels over these cells after the frame is submitted, so
+        // this does not change native image fidelity or aspect-ratio fitting.
+        paint(f, content, thumb, false);
         app.raster
             .native_draws
             .borrow_mut()
@@ -479,10 +480,13 @@ pub(super) fn native_images(f: &mut Frame, app: &App) -> Vec<super::native_windo
             for y in area.y..area.bottom() {
                 for x in area.x..area.right() {
                     let cell = &f.buffer_mut()[(x, y)];
-                    if cell.symbol() != " "
-                        || cell.fg != super::theme::image_marker()
-                        || cell.bg != super::theme::image_marker()
-                    {
+                    let marker = cell.symbol() == " "
+                        && cell.fg == super::theme::image_marker()
+                        && cell.bg == super::theme::image_marker();
+                    let fallback = cell.symbol() == "▀"
+                        && matches!(cell.fg, Color::Rgb(..))
+                        && matches!(cell.bg, Color::Rgb(..));
+                    if !marker && !fallback {
                         return None;
                     }
                 }

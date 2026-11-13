@@ -1,7 +1,11 @@
 # Remaining feature implementation plan
 
-Active dispatch: [six Luna briefs and coordinator queue](luna-completion/README.md), reconciled
-against build `2026-11-03w`. Use that queue for new work; the original wave order below is historical.
+Historical backlog and acceptance references. This file does not define an active dispatch queue
+or the first-release scope. Use [PLAN.md](../../PLAN.md) for current priorities and
+[verification status](../e2e-status.md) for checked behavior.
+
+The [six Luna briefs and coordinator queue](luna-completion/README.md) were reconciled against
+build `2026-11-03w`; that dispatch order and the original waves below are historical.
 
 Current implementation/capability disposition: [2026-11-03s campaign map](../quality/overnight-roadmap-disposition.md).
 The planning baseline and proposed designs below are historical; shipped contracts are linked there.
@@ -10,8 +14,8 @@ Status: planned, 2026-11-02. Baseline: committed build `2026-11-02j` (`c6d3b7c`)
 This was the execution plan for the remaining features, prepared through three parallel source
 audits. It does not mark these features implemented or authorize provider usage or publication.
 
-Progress: [wave one](../quality/completion-wave1.md) implements D1/P0/search W1;
-[wave two](../quality/completion-wave2.md) connects approved shared-workspace dependencies to
+Progress: [wave one](../archive/quality/completion-wave1.md) implements D1/P0/search W1;
+[wave two](../archive/quality/completion-wave2.md) connects approved shared-workspace dependencies to
 normal dispatch and paused recovery. Other phases below remain planned unless evidence says otherwise.
 The [goal/source slice](../quality/goal-source-associations.md) records M0 implementation separately.
 The [accounting slice](../quality/worker-accounting.md) records U1 and bounded main/worker views;
@@ -60,8 +64,8 @@ hosted memory, resident inference, automatic summaries and model-based routing a
 | Usage and cost accounting | [Orchestration](orchestration-completion.md) | Run/attempt-bound main and worker usage, deduplicated totals, explicitly unknown costs |
 | Memory relationships and grouping | [Memory and providers](memory-provider-completion.md) | Goal/file relationships, discoverable related chats, verified provenance and measurable retrieval |
 | Context and native interactions | [Memory and providers](memory-provider-completion.md) | Capability-checked capacity policy and owner-bound native requests across main/worker runs |
-| Search/replace and file opening | [Workspace and inputs](workspace-input-completion.md) | Bounded cwd search, version-checked replacement previews and the accepted file-opening choices |
-| Images, documents, artifacts and integrations | [Workspace and inputs](workspace-input-completion.md) | Capability-gated inputs/rendering and explicit tool/plugin ownership |
+| File opening | [Workspace panes](../workspace-panes.md) | Bounded read-only panes and the accepted file-opening choices |
+| Images, documents, artifacts and integrations | [Images and diagrams](../images-and-diagrams.md) | Capability-gated inputs/rendering and explicit tool/plugin ownership |
 | Provider, host and distribution evidence | [Validation and release](validation-release-completion.md) | Reproducible evidence for the exact candidate; claims and publication gates remain explicit |
 
 Each detailed plan identifies current code, changes by phase, resource bounds, failure states,

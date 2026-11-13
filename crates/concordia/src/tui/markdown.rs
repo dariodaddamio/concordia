@@ -22,6 +22,8 @@ pub struct MdLine {
     pub base: Style,
     /// Rendered character ranges and their explicit local-file or HTTP(S) destinations.
     pub links: Vec<(usize, usize, String)>,
+    /// Decorative char ranges (quote bars, table borders) that selection and copy skip.
+    pub decor: Vec<(usize, usize)>,
 }
 
 fn code_style() -> Style {
@@ -42,6 +44,7 @@ fn plain(text: String) -> MdLine {
         hang: 0,
         base: Style::default(),
         links: Vec::new(),
+        decor: Vec::new(),
     }
 }
 
@@ -238,6 +241,7 @@ fn render_prose_inner(line: &str) -> MdLine {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
             links: Vec::new(),
+            decor: Vec::new(),
         };
     }
 
@@ -258,6 +262,8 @@ fn render_prose_inner(line: &str) -> MdLine {
                 .fg(Color::Gray)
                 .add_modifier(Modifier::ITALIC),
             links: Vec::new(),
+            // The quote bar is decoration; the quoted words stay copyable.
+            decor: vec![(0, 2)],
         };
     }
 
@@ -277,6 +283,7 @@ fn render_prose_inner(line: &str) -> MdLine {
                 hang: 2,
                 base: Style::default(),
                 links: Vec::new(),
+                decor: Vec::new(),
             };
         }
     }
@@ -307,6 +314,7 @@ fn render_prose_inner(line: &str) -> MdLine {
                 hang: marker_len,
                 base: Style::default(),
                 links: Vec::new(),
+                decor: Vec::new(),
             };
         }
     }
@@ -319,6 +327,7 @@ fn render_prose_inner(line: &str) -> MdLine {
         hang: 0,
         base: Style::default(),
         links: Vec::new(),
+        decor: Vec::new(),
     }
 }
 
@@ -575,6 +584,12 @@ mod tests {
                 .join("\n");
             assert!(!combined.contains("| :---"), "{combined}");
             assert!(combined.contains("Memory"), "{combined}");
+            if width >= 15 {
+                assert!(
+                    rows.iter().filter(|row| row.text.starts_with('├')).count() >= 2,
+                    "body rows need separators: {combined}"
+                );
+            }
             assert!(rows
                 .iter()
                 .flat_map(|r| &r.links)

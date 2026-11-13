@@ -3,16 +3,16 @@
 Status: build `2026-11-04k` adds horizontal scrolling and shared-document native file windows.
 Build `2026-11-01d` adds bounded chat/recent/workspace file discovery and directory browsing.
 Build `2026-11-01c` adds internal editing and pane-owned file recovery to the existing
-preview/search/reload/current-chat suggestion surface. Markdown/JSON open formatted by default;
+preview/find/reload/current-chat suggestion surface. Markdown/JSON open formatted by default;
 Alt+V or the view bar switches modes. Formatted view is read-only. Source code opens raw,
 editable and syntax-colored. Ctrl+S saves; Ctrl+Z/Ctrl+Y undo/redo; Ctrl+F finds; F3/Shift+F3
 navigate matches. Raw letters such as `v`, `r`, `/` and `q` are file content.
-Visible pointer shapes depend on the terminal host; the installed WezTerm 2024 build does not
+Visible pointer shapes depend on the native renderer; unsupported shapes do not
 implement the requested control. [Chat rendering](chat-rendering.md) records the evidence and
 the newer table/link rendering and input-scroll behavior.
 The initial preview slice shipped in local build `2026-10-21b`.
-`/open` uses internal panes; `/edit PATH` (unlisted) preserves the external-editor route. The
-search/replacement stage below remains a requirement. Keep the stable
+`/open` uses internal panes and the file action picker can launch the configured GUI editor. The
+search/replacement stage below is implemented with explicit source-bound previews. Keep the stable
 installed binary usable while developing this feature. No live providers are required here.
 
 Internal editing uses exact UTF-8 bytes, preserves BOM/CRLF/tabs, bounds delta history, and stages
@@ -22,7 +22,7 @@ cancel. Save errors retain the buffer. Editing is paused if recovery storage is 
 File drafts, baseline, cursor, mode and split layout are stored in the pane's recovery lease,
 debounced 250 ms and flushed at normal exit. Recovery checks canonical workspace/path bindings;
 changed or missing originals never silently replace recovered edits. Recovery retains the newest
-buffer, not the prior undo stack. The existing `/recover` flow claims interrupted pane records.
+buffer, not the prior undo stack. Interrupted pane records restore into tabs and remain paused.
 
 Concordia should provide a graphical workspace inside the terminal: chat and files share one
 screen, with mouse operations and slash commands controlling the same pane state. Harness owns
@@ -54,7 +54,7 @@ The existing pane and file limits apply across all windows.
 | Small terminal or pane limit | Keep chat usable; explain a refused additional split. Never create invisible panes with live hit targets. Tabs may be added later |
 | `/open FILE` | Open an internal pane, formatted for Markdown/JSON and raw for source code. Standalone CLI preview remains read-only |
 | Edit/save/close | Raw mode edits; explicit save, dirty decisions, external-change checks and bounded pane-owned recovery |
-| Search/replace | Later slice: search the cwd with visible scope/ignore rules. Preview replacement diffs and apply selected changes explicitly |
+| Search/replace | Search the cwd with visible scope/ignore rules. Preview hash-bound replacement diffs and apply selected changes explicitly |
 
 Initial layout: chat occupies the left column; file panes share the right column. The first slice
 has at most three file panes, a 2 MiB/50,000-line UTF-8 limit per file and small-screen refusal.
@@ -63,7 +63,7 @@ Errors for binary, oversized, missing, inaccessible or non-regular files must re
 Do not evaluate terminal control characters from file contents. Do not start an editor process
 per internal pane or scan the entire repository during rendering.
 
-The preview and editing/recovery slices are implemented. Project replacement remains planned.
+The preview, editing/recovery and selected project replacement slices are implemented.
 Keep the external-editor launch path explicitly accessible when changing `/open` semantics; never
 silently depend on an editor installation for an internal preview.
 
@@ -87,10 +87,10 @@ silently depend on an editor installation for an internal preview.
    change to a fake worker, inspect edits, run checks, review the result, interrupt and recover.
    Build a candidate separately. Activating it is explicit; failure leaves the stable app usable.
 
-For each source slice: bump `BUILD_STAMP`, update the changelog, run appropriate provider-free
-tests and clippy, and record actual results. Do not rewrite historical validation as proof of a
+For each source slice: bump `BUILD_STAMP`, update the changelog, follow the scoped verification
+rules in [AGENTS.md](../AGENTS.md), and record actual results. Do not rewrite historical validation as proof of a
 new build. Installation/activation and real-provider tests are separate from source verification.
-For this first slice, see [source preview validation](e2e-status.md#source-preview-validation-2026-10-21a).
+The first slice's dated source-preview validation is in the [Git-preserved journal](e2e-status.md#earlier-evidence).
 
 ## Resource and lifecycle requirements
 
@@ -114,7 +114,7 @@ window with shared undo/save state, rather than opening an independent editor fr
 
 ## Project content search
 
-Use `/search`, or Ctrl+F while the `/open` file browser is visible, to search UTF-8 project file
+Use the file pane's built-in find controls while a file is open to search its UTF-8 contents
 contents. The search surface owns its query separately from the chat draft. Enter scans or opens a
 selected result; Esc closes it. Case controls and completeness/limit reasons are shown on screen.
 File-pane Ctrl+F remains in-file search. Existing queues and running provider turns are preserved.

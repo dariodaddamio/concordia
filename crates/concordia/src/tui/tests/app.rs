@@ -206,7 +206,7 @@ fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread()
         .threads_command("delete tid")
         .join(" ")
         .contains("current"));
-    // The map built from memory sees the card.
+    // The bounded map remains available even when the card is not transferred as transcript text.
     let pack = crate::context::build_context_pack(
         &h.app.pack_messages(),
         ProviderKind::Codex,
@@ -215,44 +215,29 @@ fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread()
         None,
     )
     .unwrap();
-    assert!(pack.text.contains("files: src/a.rs"), "{}", pack.text);
+    assert!(pack.text.contains("[concordia map]"), "{}", pack.text);
 }
 
 #[test]
 fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
     let mut h = landing_harness();
     let screen = h.screen();
-    let folder = h
-        .app
-        .cwd
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let here = screen
-        .find(&format!("▾ {folder} (2)"))
-        .unwrap_or_else(|| panic!("{screen}"));
-    let lock = screen
-        .find("▸ lock (1)")
-        .unwrap_or_else(|| panic!("{screen}"));
+    let here = screen.find("chat first").unwrap_or_else(|| panic!("{screen}"));
+    let lock = screen.find("lock (1)").unwrap_or_else(|| panic!("{screen}"));
     assert!(here < lock, "{screen}");
     assert!(screen.contains("chat first") && screen.contains("chat second"));
     assert!(
         !screen.contains("chat third"),
         "collapsed groups hide their chats"
     );
-    assert!(screen.contains(" goals "));
     assert!(
-        screen.contains("Enter open chat · F6 related work · Tab goals · Esc chat"),
+        screen.contains("Enter open chat"),
         "{screen}"
     );
     h.app.editor.set_text("keep the landing draft");
-    h.key(KeyCode::F(6), KeyModifiers::NONE);
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Related);
-    h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(landing::visible(&h.app));
     assert_eq!(h.app.editor.text(), "keep the landing draft");
-    assert!(h.screen().contains(&format!("▾ {folder} (2)")));
+    assert!(h.screen().contains("chat first"));
 }
 
 #[test]
@@ -261,11 +246,9 @@ fn enter_on_a_chat_resumes_exactly_that_chat() {
     h.key(KeyCode::Down, KeyModifiers::NONE);
     h.key(KeyCode::Down, KeyModifiers::NONE);
     h.enter();
-    assert!(h.app.landing.is_none());
-    // The fake account is not registered, so the resume path reports it by name.
     assert!(
         h.screen()
-            .contains("resume failed: account is no longer registered"),
+            .contains("resume unavailable: chat account is no longer registered"),
         "{}",
         h.screen()
     );
@@ -282,7 +265,7 @@ fn enter_on_a_folder_expands_it_and_the_selection_wraps() {
     h.key(KeyCode::Down, KeyModifiers::NONE);
     h.enter();
     assert!(
-        h.screen().contains("resume failed"),
+        h.screen().contains("resume unavailable"),
         "the selected row is the lock chat"
     );
 }
@@ -299,8 +282,10 @@ fn typing_keeps_the_landing_page_until_the_message_is_sent() {
 
     let mut h = landing_harness();
     h.key(KeyCode::Esc, KeyModifiers::NONE);
-    assert!(h.app.landing.is_none());
-    assert!(!h.screen().contains(" chats "));
+    assert_eq!(
+        h.app.tab_request,
+        Some(super::super::tabs::TabAction::BackToChat)
+    );
 }
 
 #[test]
@@ -316,61 +301,10 @@ fn a_double_click_opens_a_chat_and_a_single_click_selects_it() {
     assert!(h.screen().lines().nth(y as usize).unwrap().contains("> "));
     h.click(10, y);
     assert!(h.app.landing.is_none(), "second click opens it");
-    assert!(h.screen().contains("resume failed"));
+    assert!(h.screen().contains("resume unavailable"));
 }
 
-#[test]
-fn goals_are_added_kept_and_marked_done() {
-    let mut h = landing_harness();
-    h.key(KeyCode::Tab, KeyModifiers::NONE);
-    assert!(h.screen().contains("a add goal"));
-    h.type_str("aship it");
-    h.enter();
-    assert!(h.screen().contains("○ ship it"), "{}", h.screen());
-    let saved = landing::load_goals(&h.app.state_root);
-    assert_eq!(saved.len(), 1);
-    assert!(!saved[0].done);
 
-    h.enter();
-    assert!(h.screen().contains("Mark done? Enter yes · Esc no"));
-    h.enter();
-    assert!(!h.screen().contains("ship it"));
-    assert!(landing::load_goals(&h.app.state_root)[0].done);
-}
-
-#[test]
-fn open_work_comes_from_the_connected_harness() {
-    let h = landing_with_work(
-        r#"{"plans":[{"plan":"p","slice":"Ship the landing page","owner":"o","status":"open","next":"n"}],"rows":[{"section":"backlog","id":"B2","item":"Parked polish","status":"queued"}]}"#,
-    );
-    let screen = h.screen();
-    let folder = h
-        .app
-        .cwd
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    assert!(screen.contains("open to-dos"), "{screen}");
-    assert!(screen.contains(&format!("{folder} · 2")), "{screen}");
-    assert!(
-        screen.contains("○ Ship the landing page") && screen.contains("○ Parked polish"),
-        "{screen}"
-    );
-}
-
-#[test]
-fn an_old_harness_says_so_and_no_harness_shows_no_to_dos() {
-    let h = landing_with_work("PASS plan:open: 0 open row(s)");
-    assert!(
-        h.screen()
-            .contains("Harness here is too old to list open work"),
-        "{}",
-        h.screen()
-    );
-    let h = landing_harness();
-    assert!(!h.screen().contains("open to-dos"));
-}
 
 #[test]
 fn there_is_no_landing_page_without_chats() {
@@ -441,6 +375,7 @@ fn signed_out_account_blocks_the_turn_and_keeps_the_prompt() {
             account: "codex-test".into(),
             home_path: h.app.home_path.as_ref().map(|p| p.to_string_lossy().into()),
             model: None,
+            effort: None,
             updated_at: "test".into(),
         },
     )
@@ -474,6 +409,7 @@ fn signed_out_warning_never_duplicates_the_draft() {
             account: "codex-test".into(),
             home_path: h.app.home_path.as_ref().map(|p| p.to_string_lossy().into()),
             model: None,
+            effort: None,
             updated_at: "test".into(),
         },
     )
@@ -552,77 +488,6 @@ fn show_all_toggles_with_h_and_with_a_footer_click() {
 }
 
 #[test]
-fn meters_show_under_goals_for_every_provider_account() {
-    let mut h = Harness::new(180, 40);
-    let here = h.app.cwd.clone();
-    landing::open_with(
-        &mut h.app,
-        vec![landing_session("acct-x", &here, "first", 1)],
-        None,
-    );
-    let snap = |a: &str, b: &str| {
-        let mut s = crate::usage::UsageSnapshot::no_data("cached", "fixture");
-        s.windows = vec![
-            crate::usage::UsageWindow {
-                label: "5h".into(),
-                used_pct: 20.0,
-                resets: Some(a.into()),
-            },
-            crate::usage::UsageWindow {
-                label: "7d".into(),
-                used_pct: 40.0,
-                resets: Some(b.into()),
-            },
-        ];
-        s
-    };
-    h.app.landing.as_mut().unwrap().meters = vec![
-        landing::LandingMeter {
-            provider: ProviderKind::Codex,
-            account: "codex-fixture".into(),
-            snapshot: snap("3h", "2d"),
-        },
-        landing::LandingMeter {
-            provider: ProviderKind::Claude,
-            account: "claude-fixture".into(),
-            snapshot: snap("4h", "3d"),
-        },
-        landing::LandingMeter {
-            provider: ProviderKind::Cursor,
-            account: "cursor-fixture".into(),
-            snapshot: snap("5h", "4d"),
-        },
-    ];
-    h.draw();
-    let screen = h.screen();
-    for expected in [
-        "usage",
-        "codex codex-fixture",
-        "claude claude-fixture",
-        "cursor cursor-fixture",
-        "5h",
-        "7d",
-        "3h",
-    ] {
-        assert!(screen.contains(expected), "missing {expected}: {screen}");
-    }
-    h.app
-        .landing
-        .as_mut()
-        .unwrap()
-        .work
-        .push(landing::ProjectWork {
-            folder: "fixture".into(),
-            items: Some(vec![landing::WorkItem {
-                text: "work item".into(),
-                queued: false,
-            }]),
-        });
-    h.draw();
-    assert!(h.screen().contains("codex-fixture") && h.screen().contains("work item"));
-}
-
-#[test]
 fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     let mut h = Harness::new(100, 40);
     log_turn(&h, "cursor", (12_000, 36_000, 200));
@@ -692,7 +557,7 @@ fn the_tokens_screen_shows_the_log_and_closes_with_esc() {
     let usage = crate::token_log::load(&h.app.state_root);
     let bound = usage
         .iter()
-        .find(|entry| entry.attribution.is_some())
+        .find(|entry| entry.account == "owner-account")
         .unwrap();
     assert_eq!(bound.provider, "codex");
     assert_eq!(bound.account, "owner-account");
@@ -798,3 +663,9 @@ fn message_wheel_scrolls_the_draft_without_moving_caret_or_transcript() {
         "editing restores caret following"
     );
 }
+
+
+
+
+
+

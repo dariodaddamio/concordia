@@ -1,5 +1,6 @@
 //! Approved, shared-workspace dependency dispatch through the ordinary worker queue.
 use super::*;
+use crate::accounts::is_logged_in;
 
 const MAX_PREREQUISITES: usize = 8;
 
@@ -156,16 +157,13 @@ impl Delegates {
                 .home_path
                 .as_ref()
                 .is_some_and(|h| is_logged_in(account.provider, h))
-            || !get_settings(&recovery.state_root)
-                .workers
-                .contains(&job.account)
         {
-            return Err(
-                "worker registration or login changed while waiting; reconcile explicitly".into(),
-            );
+            return Err("worker account or login changed while waiting; reconcile explicitly".into());
         }
         if let (Some(model), Some(home)) = (&job.model, &job.spec.home) {
-            if !crate::catalog::list_models(job.provider, home).contains(model) {
+            if !crate::models::ids_at(&recovery.state_root, job.provider, &job.account, home)
+                .contains(model)
+            {
                 return Err("worker model is no longer in its local catalog".into());
             }
         }

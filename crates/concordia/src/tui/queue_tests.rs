@@ -476,7 +476,10 @@ fn auto_advance_waits_for_an_inline_edit_to_be_saved() {
     h.finish_ok();
     assert!(h.sent().is_empty());
     assert_eq!(h.items(), ["second", "third"]);
-    assert_eq!(h.app.queue.edit.as_ref().unwrap().text(), "second revised");
+    assert_eq!(
+        h.app.queue.edit.as_ref().unwrap().editor.text(),
+        "second revised"
+    );
     h.press(KeyCode::Enter);
     h.app.queue_advance(&h.tx);
     assert_eq!(h.sent(), ["second revised"]);
@@ -594,17 +597,12 @@ fn queue_command_lists_and_clears() {
     h.send("one");
     h.queue("two");
     h.queue("three\nlines");
-    h.send("/queue");
-    let t: Vec<String> = h.app.messages.iter().map(|m| m.text.clone()).collect();
-    assert!(t.iter().any(|l| l == "2 queued"), "{t:?}");
-    assert!(t.iter().any(|l| l == "queued 2: three lines"), "{t:?}");
-    h.send("/queue clear");
+    let listed = h.app.queue_command("");
+    assert!(listed.iter().any(|l| l == "2 queued"), "{listed:?}");
+    assert!(listed.iter().any(|l| l == "queued 2: three lines"), "{listed:?}");
+    let cleared = h.app.queue_command("clear");
     assert!(h.app.queue.items.is_empty());
-    assert!(h
-        .app
-        .messages
-        .iter()
-        .any(|m| m.text.contains("cleared 2 queued prompts")));
+    assert_eq!(cleared, ["cleared 2 queued prompts".to_string()]);
     assert!(queue_json(h.root()).is_none());
     assert!(
         h.sent() == vec!["one".to_string()],
@@ -648,21 +646,11 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     assert!(h.app.queue.paused);
     assert!(h.app.messages.iter().any(|m| m
         .text
-        .contains("restored your unsent draft and queued prompts")));
+        .contains("Your unsent draft and queued messages were restored.")));
     assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
     h.key(KeyCode::Char('r'), KeyModifiers::CONTROL);
     h.app.queue_advance(&h.tx);
     assert_eq!(h.sent(), vec!["two"]);
-}
-
-#[test]
-fn a_corrupt_queue_file_is_ignored() {
-    let mut h = H::new(100, 24);
-    std::fs::write(h.root().join("queue.json"), b"{{{").unwrap();
-    h.relaunch();
-    h.app.import_legacy_recovery().unwrap();
-    assert!(h.app.queue.items.is_empty());
-    assert!(h.root().join("queue.json.bad").exists());
 }
 
 // ---- undo / redo keys --------------------------------------------------------------------
@@ -753,7 +741,7 @@ fn the_draft_is_restored_with_a_notice_and_ctrl_z_clears_it() {
         .app
         .messages
         .iter()
-        .any(|m| m.text.contains("restored your unsent draft")));
+        .any(|m| m.text.contains("Your unsent draft and queued messages were restored.")));
     h.key(KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "");
     // restoring did not make it look edited: no rewrite until the user changes something
@@ -761,16 +749,6 @@ fn the_draft_is_restored_with_a_notice_and_ctrl_z_clears_it() {
     assert_eq!(h.app.editor.text(), "left over\nsecond line");
     h.tick(10);
     assert!(saved_draft(h.root()).is_some());
-}
-
-#[test]
-fn a_corrupt_draft_file_does_not_crash_launch() {
-    let mut h = H::new(80, 24);
-    std::fs::write(h.root().join("draft.json"), b"\x00\x01 not json").unwrap();
-    h.relaunch();
-    h.app.import_legacy_recovery().unwrap();
-    assert_eq!(h.app.editor.text(), "");
-    assert!(h.root().join("draft.json.bad").exists());
 }
 
 #[test]
@@ -861,7 +839,7 @@ fn sent_prompts_persist_for_up_after_a_restart_but_slash_commands_do_not() {
     assert!(!file.contains("/queue") && !file.contains("first prompt") && !file.contains("second"));
     assert!(
         !h.root().join("history.jsonl").exists(),
-        "new history stores references, not duplicate legacy prompt bodies"
+        "new history stores references, not duplicate prompt bodies"
     );
     h.relaunch();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -893,7 +871,6 @@ fn history_persistence_can_be_turned_off() {
         "in-memory history still works"
     );
     // and a file left from an earlier run is not loaded
-    persist::append_history(h.root(), "old", &mut 0);
     std::fs::write(
         h.root().join("config.toml"),
         "[ui]\npersist_history = false\n",

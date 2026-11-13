@@ -110,7 +110,20 @@ fn unresolved(app: &App, target: &Target) -> bool {
             })
 }
 
-pub(super) fn poll(app: &mut App) {
+pub(super) fn projection_pending(app: &App) -> bool {
+    app.artifacts.inline.job.is_some()
+        || app.artifacts.inline.targets.iter().any(|target| {
+            unresolved(app, target)
+                && !app
+                    .artifacts
+                    .inline
+                    .finalized
+                    .contains(&owner(&target.record))
+        })
+}
+
+pub(super) fn poll(app: &mut App) -> bool {
+    let mut changed = false;
     let completed = app.artifacts.inline.job.as_ref().and_then(|job| {
         let result = match job.rx.try_recv() {
             Ok(result) => result,
@@ -133,6 +146,7 @@ pub(super) fn poll(app: &mut App) {
                             .as_ref()
                             .is_some_and(|old| old.id == expected && old.title == "Edit")
                     }) {
+                        changed = true;
                         message.text = format_card_line(&card);
                         message.card = Some(card);
                     }
@@ -149,7 +163,7 @@ pub(super) fn poll(app: &mut App) {
             .next
             .is_some_and(|at| at > Instant::now())
     {
-        return;
+        return changed;
     }
     let selected = app
         .artifacts
@@ -181,7 +195,7 @@ pub(super) fn poll(app: &mut App) {
         })
         .cloned();
     let Some(selected) = selected else {
-        return;
+        return changed;
     };
     let key = owner(&selected.record);
     let active = app.busy && app.native_owner.as_ref() == Some(&selected.record.owner);
@@ -252,6 +266,7 @@ pub(super) fn poll(app: &mut App) {
         rows,
         rx,
     });
+    changed
 }
 
 #[cfg(test)]

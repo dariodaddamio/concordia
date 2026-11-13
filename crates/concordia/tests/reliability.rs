@@ -15,7 +15,20 @@ fn token_entry() -> concordia::token_log::Entry {
         cached_input: 2,
         output: 3,
         cost_usd: None,
-        attribution: None,
+        attribution: Some(concordia::token_log::Attribution::new(
+            concordia::token_log::Origin::Main,
+            &uuid::Uuid::new_v4().to_string(),
+            &uuid::Uuid::new_v4().to_string(),
+            Some(std::path::Path::new("fixture")),
+            &concordia::provider::stream_cards::TurnUsage {
+                input: Some(3),
+                cached: Some(2),
+                output: Some(3),
+                cost_usd: None,
+            },
+            "succeeded",
+            true,
+        )),
     }
 }
 
@@ -38,23 +51,6 @@ fn concurrent_token_writers_never_interleave_or_lose_records() {
     let entries = concordia::token_log::load(root.path());
     assert_eq!(entries.len(), 1600);
     assert_eq!(concordia::token_log::totals(&entries).total(), 9600);
-    let page_root = tempfile::tempdir().unwrap();
-    let mut row = serde_json::to_vec(&token_entry()).unwrap();
-    row.push(b'\n');
-    std::fs::write(page_root.path().join("token-log.jsonl"), row.repeat(10_001)).unwrap();
-    let first = concordia::token_log::load_page(page_root.path(), None).unwrap();
-    assert_eq!(first.entries.len(), 10_000);
-    assert!(first.incomplete);
-    let cursor = first.next.as_ref().unwrap();
-    let last = concordia::token_log::load_page(page_root.path(), Some(cursor)).unwrap();
-    assert_eq!(last.entries.len(), 1);
-    assert!(last.next.is_none());
-    concordia::token_log::record(page_root.path(), &token_entry()).unwrap();
-    assert!(concordia::token_log::load_page(page_root.path(), Some(cursor)).is_err());
-    let cancelled = std::sync::atomic::AtomicBool::new(true);
-    assert!(
-        concordia::token_log::load_page_with_cancel(page_root.path(), None, &cancelled).is_err()
-    );
 }
 
 #[test]
@@ -70,30 +66,31 @@ fn token_totals_cannot_overflow_on_provider_or_persisted_integer_extremes() {
 }
 
 #[test]
-fn a_stalled_state_writer_times_out_and_leaves_the_log_untouched() {
+fn an_immutable_event_does_not_need_a_shared_append_lock() {
     let root = tempfile::tempdir().unwrap();
     let lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(root.path().join("token-log.lock"))
+        .open(root.path().join("token-events.lock"))
         .unwrap();
     lock.lock().unwrap();
     let start = std::time::Instant::now();
-    assert!(concordia::token_log::record(root.path(), &token_entry()).is_err());
-    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+    concordia::token_log::record(root.path(), &token_entry()).unwrap();
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
-    assert!(concordia::token_log::load(root.path()).is_empty());
+    assert_eq!(concordia::token_log::load(root.path()).len(), 1);
     drop(lock);
     concordia::token_log::record(root.path(), &token_entry()).unwrap();
-    assert_eq!(concordia::token_log::load(root.path()).len(), 1);
+    assert_eq!(concordia::token_log::load(root.path()).len(), 2);
 }
 
 #[test]
 #[ignore = "subprocess helper; invoked by the concurrent-process test"]
 fn token_writer_child() {
-    let root = std::env::var_os("CONCORDIA_RELIABILITY_CHILD_ROOT").expect("isolated fixture root");
+    let Some(root) = std::env::var_os("CONCORDIA_RELIABILITY_CHILD_ROOT") else {
+        return;
+    };
     let root = std::path::PathBuf::from(root);
     assert!(root.join("reliability-owner").is_file());
     if let Ok(run) = std::env::var("CONCORDIA_RELIABILITY_SCOPE_RUN") {
@@ -244,11 +241,9 @@ fn mcp_recovers_after_oversized_invalid_utf8_and_deep_json_messages() {
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_slice(line).unwrap())
         .collect();
-    assert_eq!(responses.len(), 1003);
-    for (response, code) in responses.iter().zip([-32600, -32700, -32700]) {
-        assert_eq!(response["error"]["code"], code);
-    }
-    for (i, response) in responses[3..].iter().enumerate() {
+    assert_eq!(responses.len(), 1001);
+    assert_eq!(responses[0]["error"]["code"], -32600);
+    for (i, response) in responses[1..].iter().enumerate() {
         assert_eq!(response["id"], i);
         assert_eq!(response["result"], json!({}));
     }

@@ -1,13 +1,14 @@
 # Feature completion audit: 2026-11-05c
 
-The full roadmap is **not complete**. The current board has seven grouped open/deferred workstreams;
+The full roadmap is **not complete**. The seven grouped open/deferred workstreams below mix
+missing capabilities, qualification and release work; they are not a feature count or a
+percentage of completion. [PLAN.md](../PLAN.md) is the short current-scope overview.
 
-Current follow-up (2026-11-07e): the delegated-worker ceiling is now 12 instead of 3, and the
-worker strip is carved directly above the composer. Image-preview behavior remains under active
-repair; local rendering is separate from unverified provider-side image processing. The installed
-2026-11-07d build does not contain these follow-ups yet.
-they mix missing capabilities, qualification and release work, so they are not a feature count
-or a percentage of completion:
+Recent follow-ups include the worker ceiling/strip changes, chat and preview repairs described
+in [chat rendering](chat-rendering.md), and the scoped [cleanup](e2e-status.md#cleanup-closeout).
+The installed build and its checks are recorded in [verification status](e2e-status.md).
+Native Home canvas pixels and synthetic streaming were checked on 07g. That evidence does not
+establish provider-side image processing or the broader provider/host matrix below.
 
 The actionable distinction is:
 
@@ -43,7 +44,7 @@ See [E2E status](e2e-status.md) for the exact checks and retained limitations.
    request 18 used the wrong source ordinal and remains invalid; corrected request 19 passed.
    The owner doubled the subscription-only cap to 36. After the broker/PDF checks, 34 requests
    are consumed and two remain, with no automatic retries or account switches.
-   [Evidence](quality/memory-evaluation.md).
+   [Evidence](native-memory.md).
 6. **Native filesystem confinement — deferred by owner:** managed worktrees and cooperative reservations exist;
    they do not establish OS-enforced write boundaries for provider tools. An isolated AppContainer
    [mechanism prototype](quality/windows-write-guard-research.md) passes file/crypto/network/cancel
@@ -63,13 +64,13 @@ Build 04k adds one-command prebuilt installation, a shared original icon, task-f
 clickable permission selection, descriptive web tools, expandable completed-operation groups,
 full-range compact counts, horizontal file scrolling and shared-document native file windows.
 Local checks and exact-candidate qualification are recorded separately in [E2E status](e2e-status.md).
-The [REA review](rea-review.md) records actual static binary inspection and a current recheck of
+The [REA review](archive/rea-review.md) records actual static binary inspection and a current recheck of
 remaining supported-interface limits. None of these UI/delivery changes close missing native
 measurements, OS confinement or live model-effectiveness evidence.
 
 Builds 04g through 04i added default application-owned Windows input and original-pixel image previews.
 The earlier terminal cell-preview and pointer limitations do not describe that native window;
-explicit terminal mode retains its host-dependent limits.
+the native window owns rendering and input, so host-dependent terminal limits do not apply.
 
 The installed 04j delivery fixes the reported native edit extraction, glyph/window identity,
 Esc emphasis, subagent rows in Home and mixed-attachment presentation. Exact historical file-output
@@ -117,7 +118,7 @@ creation does not change the implementation status recorded here.
 
 - Agent-facing goal add/close proposals share the existing local review queue and goal store.
   Full-text F7/Y/N review, revision-bound receipts and source attribution preserve drafts,
-  monotonic completion and no-replay recovery. [Scope](quality/goal-proposals.md).
+  monotonic completion and no-replay recovery. Goals are no longer a Concordia feature.
 
 - Managed cross-worktree dependencies wait for explicit result-only or already-integrated
   receipts, with source/repository revalidation and retirement references. [Scope](quality/dependency-delivery.md).
@@ -157,17 +158,17 @@ creation does not change the implementation status recorded here.
 
 - A versioned synthetic retrieval corpus and provider-free collector measure scoped relevance,
   exact excerpt resolution, visible gaps, read cost and resource observations through existing
-  checks. [Evidence and live smoke](quality/memory-evaluation.md) now include a bounded three-arm
+  checks. The removed evaluation corpus is no longer part of the shipped memory surface.
   native comparison; blocked pointer fetches leave effectiveness unqualified. Ranking stays opt-in.
 
 - Explicit related-chat groups retain overlapping membership and provenance. A separate discovery
   screen preserves drafts and landing selection, with cross-project context suggestions labelled.
-  [Behavior and evidence](quality/related-chat-groups.md). Synthetic corpus evidence is recorded;
+  Related-chat groups are no longer part of the shipped memory surface.
   live model-retention experiments remain separately budgeted.
 
 - Opt-in ranking explains verified goal/handoff/file/text/time signals with exact native
   pointers. Historical file facts never read the referenced files or claim an edit completed.
-  [Behavior and evidence](quality/memory-ranking.md). Synthetic corpus evidence is recorded;
+  Ranking and evaluation extras are no longer part of the shipped memory surface.
   lexical recall remains the default.
 
 - Explicit managed Git worktrees bind a clean committed base, repository, owner/execution
@@ -195,16 +196,16 @@ creation does not change the implementation status recorded here.
 - Explicit goal/source associations reuse the existing goal store, verified native pointers and
   one bounded relationship service. CLI/TUI link mutation is explicit; MCP source links remain
   read-only while goal add/close changes use locally approved proposals.
-  See [association evidence and limits](quality/goal-source-associations.md).
+  See [native source bounds and evidence](native-memory.md).
 
 - Approved shared-workspace dependencies now dispatch through the existing durable worker queue.
   `/delegate after ID[,ID] ACCOUNT TASK` binds exact runs; `/delegate graph` explains readiness.
   Failed prerequisites block dependants, stale results pause and restart dispatches nothing.
-  See [second-wave evidence](quality/completion-wave2.md). Cross-worktree dependency integration
+  See [second-wave evidence](archive/quality/completion-wave2.md). Cross-worktree dependency integration
   is now receipt-bound; native filesystem confinement remains a separate capability.
 
 - First completion wave adds bounded read-only project search plus dependency/recovery and native
-  interaction contract foundations. See [scope and verification](quality/completion-wave1.md).
+  interaction contract foundations. See [scope and verification](archive/quality/completion-wave1.md).
   These first-wave foundations alone do not complete dependency dispatch, workspace isolation, native worker
   approvals or provider parity. Existing Cursor ACP permissions/questions now bind to the exact
   conversation/run/attempt/connection, with native options preserved.
@@ -309,8 +310,8 @@ for the implemented campaign. The remaining boundaries below are explicit capabi
    reconciliation; no process, tool or result is automatically replayed at restart.
 6. Live provider/auth/approval parity and public-release gates. Real provider model turns remain
    prohibited without an explicit scope and budget. Synthetic fixtures do not clear these gates.
-7. Visible custom pointer shapes in the installed WezTerm 2024 host. Its parser does not support
-   the requested control; app-side shape-selection tests do not close that host limitation.
+7. Native pointer-shape support remains renderer-dependent; unsupported shapes are reported as
+   an implementation limit rather than delegated to an external terminal host.
 
 Managed worktrees and cwd search/replacement are implemented within their documented guards.
 Image/document input, explicit pasted-path attachment and inline cell rasters are implemented;
@@ -331,8 +332,8 @@ included in the two GIFs. See [PLAN](../PLAN.md), [native memory](native-memory.
 - Unsupported proactive capacity requires verified native signals for installed versions.
   Unknown signals must remain unknown; documentation/read-only inspection
   can continue without asking the owner to research them.
-- Visible pointer shapes require a terminal host that supports the requested control. The
-  installed WezTerm 2024 build does not; demo cursor overlays do not change this.
+- Visible pointer shapes require support from the native renderer; demo cursor overlays do not
+  change that limit.
 - Publishing and distribution choices are release decisions, not reasons to
   stop implementing local features.
 
@@ -345,4 +346,4 @@ Cursor movement/click feedback are editorial overlays. No real provider
 turn, real account mutation, benchmark comparison, release publication or social-media post is involved.
 
 Reproduction and files: [media](media/README.md). These drafts do not clear the full-feature
-[launch gates](launch-plan.md).
+[launch gates](plans/launch-plan.md).

@@ -1,6 +1,6 @@
 # Installing Concordia on Windows
 
-Concordia is a native Rust Windows app with an optional terminal mode. Every route below ends with a `concordia` command on your
+Concordia is a native Rust Windows app. Every route below ends with a `concordia` command on your
 PATH. None of them needs administrator rights. Routes are listed from simplest to most manual.
 
 Concordia finds provider CLIs at their standard install locations even when they are not on PATH.
@@ -11,7 +11,9 @@ The public install contract is prepared below. This repository is currently priv
 
 Release installations check the built-in official GitHub feed, with no environment configuration or source checkout required. Developer source installations retain source rebuilds. An explicit install-channel marker prevents old checkout hints from changing a release installation back into a source build.
 
-`/update` checks for an update and opens its changelog. The green action strip stays
+`/update` checks for an update and opens its changelog. Concordia also checks on launch and every
+four hours in the background. A ready build appears in the chat as a non-blocking notice; type
+`/update` to review and install it later. The green action strip stays
 visible while scrolling: **Enter installs and restarts this tab**. Concordia builds
 or downloads the update, saves the draft and queued messages, and restarts on the new
 build. Other tabs keep running their existing build. Esc closes the preview without
@@ -100,7 +102,8 @@ The bucket is a repository that holds the manifest rendered by each release (see
 ```
 
 `concordia install` copies the exe to `%LOCALAPPDATA%\concordia\bin`, adds that folder to your user
-PATH, and points the `current` launcher at it. Open a new terminal and run `concordia --version`.
+PATH, points the `current` launcher at it, and creates the per-user Start menu shortcut. The command
+prints the shortcut path. Open a new terminal and run `concordia --version`.
 
 ## 6. From source
 
@@ -124,6 +127,8 @@ reports `dbghelp.lib` missing, the Windows SDK is not installed or is still inst
 
 - Copies `concordia.exe` into `%LOCALAPPDATA%\concordia\bin` (a previous copy is swapped out, and a
   copy that is still running is kept until it exits).
+- Creates or repairs the owned Start menu shortcut. An existing Desktop shortcut is repaired too;
+  `concordia shortcut remove` records an explicit removal so updates do not recreate it.
 - Adds that folder to the **user** PATH (`HKCU\Environment`) if it is not already there. The machine
   PATH and other users are not touched, and no admin rights are used.
 - If you used the pre-rename `orc` build, it removes that folder from your user PATH. Its files are

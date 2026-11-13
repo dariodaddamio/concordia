@@ -1,0 +1,49 @@
+## This slice
+
+### Q9 test regression - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/tests/support/fake_provider.rs | ok: 1, 4, 5, 9, 10 | Keep the fake provider's visible-reply projection at the fixture boundary; reuse the existing standing-context extractor and add only the regression test required by the failed UI journey. |
+| docs/agent/anti-slop-justifications.jsonl | ok: 1, 5, 10 | Record the narrow test-fixture scope without adding a production compatibility path. |
+
+### Q4 updates, shortcuts and guided commands - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/update.rs, crates/concordia/src/main.rs, crates/concordia/src/doctor.rs | ok: 1, 4, 5, 6, 10 | Keep shortcut comparison, removal state and repair in the existing update owner; callers only trigger the bounded check, and delete the obsolete WezTerm path. |
+| crates/concordia/src/tui/{run.rs,app/state.rs,window_session.rs}, crates/concordia/src/config.rs | ok: 1, 4, 6, 9 | Reuse the existing job, tab snapshot and recovery owners for launch checks and restart choice; add one persisted update preference rather than a second state store. |
+| crates/concordia/src/harness/command.rs, crates/concordia/src/tui/{app/slash.rs,integrations.rs}, crates/concordia/tests | ok: 1, 4, 5, 9, 10 | Extend the existing guided-command and review surfaces only where argument-taking commands currently bypass them; tests exercise user-visible panels and keep mutation confirmation in the existing picker. |
+| crates/concordia/src/version.rs, CHANGELOG.md, docs | ok: 5, 10 | Record shipped behavior in the existing release metadata and canonical documentation. |
+
+### Q2 topbar lane - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/input_dispatch.rs | ok: 1, 3, 5, 10 | Remove the conflicting F3 shortcut and keep header interaction in input dispatch, where terminal events are owned. |
+| crates/concordia/src/tui/app/state.rs | ok: 4, 6, 9 | Use the existing account-bound model catalog and picker state; do not add a second model source. |
+| crates/concordia/src/tui/app/pickers.rs | ok: 1, 4, 6 | Keep provider, effort, and usage selection in the existing picker owner. |
+| crates/concordia/src/tui/draw/mod.rs | ok: 1, 5, 7 | Render the requested topbar and usage layout from existing snapshots and areas. |
+| crates/concordia/src/tui/landing.rs | ok: 1, 5, 10 | Reuse bundled CHANGELOG headings and existing usage data without new copy or a new data layer. |
+| crates/concordia/src/catalog.rs | ok: 1, 3, 6, 10 | Parse only provider-owned metadata already present in each account home; do not invent models or limits. |
+| crates/concordia/src/models.rs | ok: 2, 4, 6 | Keep one account-bound catalog and validate provider output at its boundary. |
+| crates/concordia/src/usage.rs | ok: 1, 4, 6 | Preserve the existing UsageSnapshot as the canonical source for all usage views and buckets. |
+| docs/provider-usage-sources.md | ok: 5, 10 | Document provider field sources and limitations rather than adding fallback claims. |
+
+### Tabs lane audit - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/native_agents.rs | ok: 1, 3, 5, 6 | Extend the existing bounded provider-run parser for opencode; keep the Agents projection as the canonical list owner. |
+| crates/concordia/src/tui/draw/mod.rs | ok: 1, 5, 6 | Add the requested shortcut and icon rows to the existing F1 renderer without a second shortcut registry. |
+| crates/concordia/src/provider/stream_cards.rs | ok: 2, 3, 5 | Read timeout fields at the provider event boundary and ignore polling intervals. |
+| docs/chat-rendering.md | ok: 5, 10 | Record implemented shortcuts and provider timeout coverage with explicit unknowns. |
+| docs/ui-glossary.md | ok: 5, 10 | Point the icon description at the existing legend instead of defining a second source. |
+
+### N7 README, documentation site and release integrity - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| README.md, site/src/content/docs/{features,index,install,providers,configuration}.md, site/astro.config.mjs | ok: 1, 4, 5, 6, 10 | Keep the README and site as canonical documentation surfaces, add one grouped feature page, and record shipped behavior without adding a duplicate catalog. |
+| .github/workflows/release.yml | ok: 1, 4, 5, 10 | Extend existing staging and attestation steps to cover each release asset; do not add a new release subsystem. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing documentation and release-integrity changes in existing metadata. |

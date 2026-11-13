@@ -7,7 +7,12 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     app.areas.run_cancel = Rect::default();
     app.areas.pinned_card = None;
     app.areas.modal_close = None;
-    let screen = draw_tab_strip(f, app);
+    let (screen, rename_cursor) = draw_tab_strip(f, app);
+    if app.local_terminal.visible() {
+        local_terminal::draw(f, app, screen);
+        theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
+        return;
+    }
     if app
         .picker
         .as_ref()
@@ -101,10 +106,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     {
         draw_picker(f, screen, app);
     }
-    if app.project_search.active() {
-        app.areas = Areas::default();
-        app.project_search.draw(f, screen);
-    }
     // Cover every widget, including provider-controlled titles, menus and detail panes.
     if worker_input::active(app) {
         app.areas = Areas::default();
@@ -128,28 +129,66 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
             cell.set_symbol(&clean);
         }
     }
+    if let Some(cursor) = rename_cursor.filter(|_| {
+        !worker_input::active(app) && !app.raster.active() && app.picker.is_none() && !app.key_sheet
+    }) {
+        f.set_cursor_position(cursor);
+    }
     theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
 }
 
-/// Browser-style strip on the top row while two or more tabs are open; returns the rest.
-fn draw_tab_strip(f: &mut Frame, app: &mut App) -> Rect {
+/// Keep the title editor in the tab row, including a single-tab window during rename.
+fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
     app.tab_hits.clear();
     app.tab_close_hits.clear();
     let area = f.area();
-    if app.tab_strip.len() < 2 || area.height < 4 {
-        return area;
+    if app.tab_strip.len() < 2 && app.rename_editor.is_none() || area.height < 4 {
+        return (area, None);
     }
     let row = Rect::new(area.x, area.y, area.width, 1);
     f.render_widget(Clear, row);
     let mut x = row.x;
     let mut spans = Vec::new();
-    for (index, label) in app.tab_strip.iter().enumerate() {
-        let text = format!(" {} {label} ×", index + 1);
-        let width = (text.chars().count() as u16).min(row.right().saturating_sub(x));
+    let fallback;
+    let chips = if app.tab_strip.is_empty() {
+        fallback = vec![app.tab_chip()];
+        &fallback
+    } else {
+        &app.tab_strip
+    };
+    let mut rename = None;
+    for (index, chip) in chips.iter().enumerate() {
+        // " 2 ✻ ◐ " : the Ctrl+number, the provider and the status, each one cell wide.
+        let prefix = format!(
+            " {} {} {} ",
+            index + 1,
+            icons::provider(chip.provider),
+            chip.status.icon(app.tick_count)
+        );
+        let prefix_width = Line::raw(prefix.as_str()).width();
+        let editor = app
+            .rename_editor
+            .as_ref()
+            .filter(|_| index == app.tab_index);
+        let edit_width = 24usize
+            .min(usize::from(row.right().saturating_sub(x)).saturating_sub(prefix_width + 5));
+        let title = if editor.is_some() {
+            " ".repeat(edit_width)
+        } else {
+            chip.title.clone()
+        };
+        let text_width = prefix_width + Line::raw(title.as_str()).width() + 5;
+        let width = text_width.min(usize::from(row.right().saturating_sub(x))) as u16;
         if width == 0 {
             break;
         }
-        let style = if index == app.tab_index {
+        let dragged = app.tab_drag.is_some_and(|(source, _)| source == index);
+        let style = if dragged {
+            Style::default()
+                .fg(Color::Indexed(244))
+                .bg(Color::Indexed(238))
+                .add_modifier(Modifier::ITALIC)
+        } else if index == app.tab_index {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -159,17 +198,94 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> Rect {
         };
         app.tab_hits.push(Rect::new(x, row.y, width, 1));
         app.tab_close_hits.push(Rect::new(
-            x.saturating_add(width.saturating_sub(1)),
+            x.saturating_add(width.saturating_sub(5)),
             row.y,
-            1,
+            if usize::from(width) == text_width {
+                5
+            } else {
+                0
+            },
             1,
         ));
-        spans.push(Span::styled(text, style));
+        if let Some(editor) = editor.filter(|_| edit_width > 0) {
+            let (line, col) = editor.cursor_pos(edit_width);
+            let rows = editor.layout(edit_width);
+            let slice = rows[line];
+            let selection = editor.selection();
+            let title: Vec<_> = (slice.start..slice.end)
+                .map(|i| {
+                    let selected = selection.is_some_and(|(a, b)| i >= a && i < b);
+                    Span::styled(
+                        editor.chars()[i].to_string(),
+                        if selected {
+                            Style::default().fg(Color::White).bg(Color::Blue)
+                        } else {
+                            Style::default().fg(Color::Black).bg(Color::White)
+                        },
+                    )
+                })
+                .collect();
+            rename = Some((
+                Rect::new(x + prefix_width as u16, row.y, edit_width as u16, 1),
+                title,
+                col,
+            ));
+        }
+        // On the active (cyan) tab the icons keep the tab's text colour to stay legible.
+        let icon_style = |color| {
+            if index == app.tab_index || dragged {
+                style
+            } else {
+                style.fg(color)
+            }
+        };
+        spans.push(Span::styled(format!(" {} ", index + 1), style));
+        spans.push(Span::styled(
+            icons::provider(chip.provider),
+            icon_style(provider_color(chip.provider)),
+        ));
+        spans.push(Span::styled(" ", style));
+        spans.push(Span::styled(
+            chip.status.icon(app.tick_count),
+            icon_style(chip.status.color()),
+        ));
+        spans.push(Span::styled(format!(" {title}  ×  "), style));
         spans.push(Span::raw(" "));
         x = x.saturating_add(width + 1);
     }
     f.render_widget(Paragraph::new(Line::from(spans)), row);
-    Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+    // Drop feedback: a bar in the gap where the dragged tab will land.
+    if let Some((_, slot)) = app.tab_drag {
+        let marker = match app.tab_hits.get(slot) {
+            Some(rect) => rect.x.saturating_sub(1),
+            None => app.tab_hits.last().map_or(row.x, |rect| rect.right()),
+        };
+        if marker < row.right() {
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "┃",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Rect::new(marker, row.y, 1, 1),
+            );
+        }
+    }
+    let cursor = rename.map(|(rect, title, col)| {
+        f.render_widget(
+            Paragraph::new(Line::from(title)).style(Style::default().bg(Color::White)),
+            rect,
+        );
+        Position::new(
+            rect.x + col.min(rect.width.saturating_sub(1) as usize) as u16,
+            rect.y,
+        )
+    });
+    (
+        Rect::new(area.x, area.y + 1, area.width, area.height - 1),
+        cursor,
+    )
 }
 
 fn draw_key_sheet(f: &mut Frame, app: &App) {
@@ -190,6 +306,38 @@ fn draw_key_sheet(f: &mut Frame, app: &App) {
             last = Some(category);
         }
         lines.push(Line::from(format!("  {key:<14} {command} — {description}")));
+    }
+    lines.push(Line::from("  Tabs"));
+    for (key, description) in [
+        ("Ctrl+T", "new tab"),
+        ("Ctrl+Shift+T", "reopen the last closed tab"),
+        ("Ctrl+Tab", "next tab"),
+        ("Ctrl+Shift+Tab", "previous tab"),
+        ("Ctrl+1..9", "select tab 1 through 9"),
+        ("Ctrl+Shift+PgUp", "move the current tab left"),
+        ("Ctrl+Shift+PgDn", "move the current tab right"),
+        ("Ctrl+W", "close the current tab"),
+        ("F2", "rename the current tab"),
+        ("double-click", "rename a tab title"),
+    ] {
+        lines.push(Line::from(format!("  {key:<14} {description}")));
+    }
+    lines.push(Line::from("  Activity"));
+    for (key, description) in [
+        ("Ctrl+O", "expand or collapse the last item in the last message"),
+        ("Ctrl+Shift+O", "expand or collapse every item in the last message"),
+        ("Ctrl+E", "open full activity detail"),
+        ("F5", "toggle full activity"),
+        ("F1 / ?", "open this shortcut sheet"),
+    ] {
+        lines.push(Line::from(format!("  {key:<14} {description}")));
+    }
+    lines.push(Line::from("  Icons"));
+    for (group, rows) in crate::tui::icons::legend() {
+        lines.push(Line::from(format!("  {group}")));
+        for (glyph, meaning) in rows {
+            lines.push(Line::from(format!("    {glyph}  {meaning}")));
+        }
     }
     lines.push(Line::from(""));
     lines.push(Line::from("  ? / F1 / Esc  close"));
@@ -228,11 +376,11 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
         + 2;
     let help_col = entries
         .iter()
-        .map(|e| e.help.chars().count() + if e.custom { 8 } else { 0 })
+        .map(|e| e.help.chars().count() + if e.custom || e.provider { 10 } else { 0 })
         .max()
         .unwrap_or(12);
-    let width =
-        ((cmd_col + help_col + 4) as u16).clamp(34, f.area().width.saturating_sub(2).max(10));
+    let max_width = f.area().width.saturating_sub(2);
+    let width = (cmd_col + help_col + 4).min(usize::from(max_width)) as u16;
     let y = input.y.saturating_sub(height).max(above.y);
     let rect = Rect {
         x: input.x + 1,
@@ -260,7 +408,13 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                 ),
                 Span::styled(e.help.clone(), Style::default().fg(Color::Indexed(245))),
                 Span::styled(
-                    if e.custom { "  custom" } else { "" },
+                    if e.provider {
+                        "  provider"
+                    } else if e.custom {
+                        "  custom"
+                    } else {
+                        ""
+                    },
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
@@ -363,6 +517,8 @@ pub(super) fn provider_color(p: ProviderKind) -> Color {
         ProviderKind::Codex => Color::Indexed(114),
         ProviderKind::Claude => Color::Indexed(215),
         ProviderKind::Cursor => Color::Indexed(111),
+        ProviderKind::Grok => Color::Indexed(208),
+        ProviderKind::Opencode => Color::Indexed(141),
     }
 }
 
@@ -370,24 +526,32 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.sync_needs_you();
     app.areas.header_email = None;
     app.areas.header_home = None;
+    app.areas.header_provider = None;
+    app.areas.header_model = None;
+    app.areas.header_effort = None;
     app.areas.header_credits = None;
+    app.areas.header_attention = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
     let model = if app.model == "?" {
         "model ?".to_string()
     } else {
-        app.model.clone()
+        crate::models::find_at(&app.state_root, app.provider, &app.account, &app.model)
+            .map(|entry| entry.display_name)
+            .unwrap_or_else(|| app.model.clone())
     };
     let email = if app.header_email_revealed {
-        app.account_email.as_deref().unwrap_or("email unavailable")
+        app.account_email.as_deref().unwrap_or_default()
     } else if app.account_email.is_some() {
         "view email"
     } else {
-        "email unavailable"
+        ""
     };
     let account = app.account_label();
     let right = String::new();
     let available = area.width as usize;
-    let brand = if area.width >= 75 {
+    let brand = if app.header_email_revealed && area.width < 100 {
+        " ".into()
+    } else if area.width >= 75 {
         format!(" concordia {}   ", short_stamp())
     } else {
         " concordia  ".into()
@@ -405,21 +569,31 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(navigation, bar.fg(Color::Cyan)),
         Span::styled(brand, bar.fg(Color::Indexed(75))),
     ];
+    let provider_x = left.iter().map(Span::width).sum::<usize>();
+    let provider_text = format!(" {} · {} ", app.provider.as_str(), account);
     left.push(Span::styled(
-        format!(" {account} "),
+        provider_text.clone(),
         bar.bg(provider_color(app.provider))
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     ));
+    app.areas.header_provider = Some(Rect::new(
+        area.x + provider_x as u16,
+        area.y,
+        Line::from(provider_text.clone()).width() as u16,
+        1,
+    ));
     let email_x = left.iter().map(Span::width).sum::<usize>();
     let email_text = format!("  {email}");
-    let email_text = if email_x + Line::from(email_text.clone()).width() <= available {
+    let email_text = if app.header_email_revealed
+        || email_x + Line::from(email_text.clone()).width() <= available
+    {
         email_text
     } else {
         "  email".into()
     };
     let email_width = Line::from(email_text.clone()).width();
-    if email_x + email_width <= available {
+    if app.account_email.is_some() && email_x + email_width <= available {
         if app.account_email.is_some() {
             app.areas.header_email = Some(Rect::new(
                 area.x + email_x as u16,
@@ -431,7 +605,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         left.push(Span::styled(email_text, bar));
     }
     if left.iter().map(Span::width).sum::<usize>() + model.len() <= available {
+        let model_x = left.iter().map(Span::width).sum::<usize>();
+        let model_width = model.len() as u16;
         left.push(Span::styled(model, bar.fg(Color::Gray)));
+        app.areas.header_model = Some(Rect::new(area.x + model_x as u16, area.y, model_width, 1));
+        if let Some(effort) = app.effort.as_deref() {
+            let text = format!("  effort:{effort}");
+            let x = left.iter().map(Span::width).sum::<usize>();
+            if x + text.len() <= available {
+                left.push(Span::styled(text.clone(), bar.fg(Color::Magenta)));
+                app.areas.header_effort = Some(Rect::new(area.x + x as u16, area.y, text.len() as u16, 1));
+            }
+        }
     }
     let agent_count = app.native_agents.count() + app.deleg.d.jobs.len();
     if agent_count > 0 {
@@ -442,8 +627,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let needs_you = app.needs_you.len();
     if needs_you > 0 {
-        let badge = format!("  Ctrl+N needs you {needs_you}");
+        let badge = format!("  Attention {needs_you} (Ctrl+N)");
         if left.iter().map(Span::width).sum::<usize>() + badge.len() <= available {
+            let x = left.iter().map(Span::width).sum::<usize>() as u16;
+            app.areas.header_attention = Some(Rect::new(area.x + x, area.y, badge.len() as u16, 1));
             left.push(Span::styled(
                 badge,
                 bar.fg(Color::Yellow).add_modifier(Modifier::BOLD),
@@ -468,16 +655,16 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         },
     );
     if area.height > 1 {
-        if app.picker.is_none() {
+        let credits_known = app.usage_credits != "Credits: not reported";
+        if app.picker.is_none() && credits_known {
             let width = Line::from(format!(" {} ", app.usage_credits))
                 .width()
                 .min(area.width as usize) as u16;
             app.areas.header_credits = Some(Rect::new(area.x, area.y + 1, width, 1));
         }
         let home_owns_usage = landing::usage_box_visible(app, area.width);
-        let credits_known = app.usage_credits != "Credits: not reported";
         let mut line = Vec::new();
-        if !home_owns_usage || credits_known {
+        if credits_known {
             line.push(Span::styled(
                 format!(" {}", app.usage_credits),
                 bar.fg(Color::Cyan),
@@ -538,6 +725,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         linkify: true,
         runs: &[],
         header_files: &[],
+        decor_prefix: 0,
     };
     let live_thought = if app.expanded_activity {
         app.live_thinking.clone()
@@ -606,6 +794,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             displayed[index] = text;
         }
     }
+    let now = Instant::now();
+    let mut timers: Vec<Option<(usize, usize)>> = vec![None; app.messages.len()];
     for (index, message) in app.messages.iter().enumerate() {
         if message.role == MsgRole::Card && !groups.hidden[index] {
             let body = displayed[index]
@@ -622,8 +812,16 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             } else {
                 "Expand"
             };
+            let timer = message.card.as_ref().and_then(|card| {
+                activity::card_timer(card, app.tool_started.get(&card.id).copied(), now)
+            });
+            if let Some(timer) = &timer {
+                let start = heading.chars().count();
+                timers[index] = Some((start, start + timer.chars().count()));
+            }
             displayed[index] = Some(format!(
-                "{heading} - {action}{}{}",
+                "{heading}{} - {action}{}{}",
+                timer.unwrap_or_default(),
                 if tail.is_empty() { "" } else { "\n" },
                 tail
             ));
@@ -642,7 +840,14 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             } else if m.role == MsgRole::System {
                 usage_style::runs(&m.text)
             } else if m.role == MsgRole::Card {
-                activity::card_runs(displayed[i].as_deref().unwrap_or(&m.text), m.card.as_ref())
+                let mut runs = activity::card_runs(
+                    displayed[i].as_deref().unwrap_or(&m.text),
+                    m.card.as_ref(),
+                );
+                if let Some((start, end)) = timers[i] {
+                    runs.push((0, start, end, Style::default().fg(Color::Cyan)));
+                }
+                runs
             } else {
                 Vec::new()
             }
@@ -715,7 +920,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     Color::Indexed(245)
                 };
-                (g, Style::default().fg(col), Style::default().fg(text_col))
+                let band = Color::Indexed(237);
+                (
+                    g,
+                    Style::default().fg(col).bg(band),
+                    Style::default().fg(text_col).bg(band),
+                )
             }
             MsgRole::Thinking => (
                 "▸ ",
@@ -777,6 +987,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: m.role != MsgRole::Meta,
             runs: &msg_runs[i],
             header_files: msg_files[i],
+            // The card border is decoration: selection skips it and copied text starts at the status mark.
+            decor_prefix: if m.role == MsgRole::Card && displayed[i].as_deref().unwrap_or(&m.text).starts_with("│ ") {
+                2
+            } else {
+                0
+            },
         });
         let next_is_card = app
             .messages
@@ -811,6 +1027,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: true,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         });
     }
     // Live assistant text while the turn is still running.
@@ -825,6 +1042,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: true,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         });
     }
     if let Some(tip) = &tip_text {
@@ -840,6 +1058,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: false,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         });
     }
     if app.view.link_root.as_deref() != Some(app.cwd.as_path()) {
@@ -848,18 +1067,43 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     app.view
         .rebuild(&blocks, inner.width as usize, inner.height as usize);
     f.render_widget(Paragraph::new(app.view.lines()).block(block), area);
+    if inner.height > 1 && inner.width > 1 && app.view.rows.len() > app.view.height() {
+        let rail_x = inner.right().saturating_sub(1);
+        let rail = Rect::new(rail_x, inner.y, 1, inner.height);
+        for y in rail.y..rail.bottom() {
+            f.buffer_mut()[(rail.x, y)]
+                .set_symbol("│")
+                .set_style(Style::default().fg(Color::Indexed(238)));
+        }
+        let total = app.view.rows.len().max(1);
+        let thumb_height =
+            (u32::from(inner.height) * u32::from(inner.height) / total as u32).max(1) as u16;
+        let max_offset = inner.height.saturating_sub(thumb_height);
+        let thumb_y = inner.y
+            + max_offset.saturating_mul(app.view.scroll as u16)
+                / app.view.rows.len().saturating_sub(app.view.height()).max(1) as u16;
+        for y in thumb_y..thumb_y.saturating_add(thumb_height).min(inner.bottom()) {
+            f.buffer_mut()[(rail.x, y)]
+                .set_symbol("┃")
+                .set_style(Style::default().fg(Color::Cyan));
+        }
+    }
     // Paint the complete user block, including blank and trailing cells. Line styling alone
     // leaves empty paragraph rows at the terminal's default background.
     for (row, index) in app.view.visible().enumerate() {
-        if app.view.rows[index]
+        let role = app.view.rows[index]
             .identity
             .and_then(|i| app.messages.get(i))
-            .is_some_and(|m| m.role == MsgRole::User)
-            && !app.no_color
-        {
+            .map(|m| m.role);
+        if !app.no_color && matches!(role, Some(MsgRole::User | MsgRole::System)) {
+            let bg = if role == Some(MsgRole::System) {
+                Color::Indexed(237)
+            } else {
+                Color::Indexed(235)
+            };
             f.buffer_mut().set_style(
                 Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
-                Style::default().bg(Color::Indexed(235)),
+                Style::default().bg(bg),
             );
         }
     }
@@ -1047,6 +1291,9 @@ pub(super) fn detail_lines_parts<'a>(
 ) -> Vec<Line<'a>> {
     let mut output = Vec::new();
     let mut match_cursor = 0;
+    let is_diff = parts
+        .iter()
+        .any(|part| part.lines().any(|line| line.starts_with("@@")));
     for (line_no, line) in parts.iter().flat_map(|p| p.lines()).enumerate() {
         let chars: Vec<char> = line.chars().collect();
         let byte_offsets: Vec<usize> = line
@@ -1062,9 +1309,18 @@ pub(super) fn detail_lines_parts<'a>(
             match_cursor += 1;
         }
         let line_matches = &matches[first..match_cursor];
+        let mut row_match_cursor = 0;
         for (row_start, row_end) in text::wrap_ranges(&chars, width.max(1)) {
+            while row_match_cursor < line_matches.len()
+                && line_matches[row_match_cursor].col + line_matches[row_match_cursor].len
+                    <= row_start
+            {
+                row_match_cursor += 1;
+            }
+            let row_matches = &line_matches[row_match_cursor..];
+            let row_matches = &row_matches[..row_matches.partition_point(|m| m.col < row_end)];
             let mut cuts = vec![row_start, row_end];
-            for m in line_matches {
+            for m in row_matches {
                 let a = m.col.max(row_start);
                 let b = (m.col + m.len).min(row_end);
                 if a < b {
@@ -1080,15 +1336,15 @@ pub(super) fn detail_lines_parts<'a>(
                 if a == b {
                     continue;
                 }
-                while mi < line_matches.len() && line_matches[mi].col + line_matches[mi].len <= a {
+                while mi < row_matches.len() && row_matches[mi].col + row_matches[mi].len <= a {
                     mi += 1;
                 }
-                let active = line_matches
+                let active = row_matches
                     .get(mi)
                     .filter(|m| m.col <= a && b <= m.col + m.len);
                 let style = active
                     .map(|_| {
-                        if first + mi == selected {
+                        if first + row_match_cursor + mi == selected {
                             Style::default()
                                 .fg(Color::Black)
                                 .bg(Color::Cyan)
@@ -1098,10 +1354,7 @@ pub(super) fn detail_lines_parts<'a>(
                         }
                     })
                     .unwrap_or_else(|| {
-                        if parts
-                            .iter()
-                            .any(|part| part.lines().any(|line| line.starts_with("@@")))
-                        {
+                        if is_diff {
                             transcript::diff_line_style(line)
                         } else {
                             Style::default()
@@ -1134,8 +1387,12 @@ impl Widget for DetailRows<'_> {
 }
 
 fn centered_rect(width_pct: u16, height_pct: u16, area: Rect) -> Rect {
-    let w = (area.width * width_pct / 100).max(1).min(area.width);
-    let h = (area.height * height_pct / 100).max(1).min(area.height);
+    let w = (u32::from(area.width) * u32::from(width_pct) / 100)
+        .max(1)
+        .min(u32::from(area.width)) as u16;
+    let h = (u32::from(area.height) * u32::from(height_pct) / 100)
+        .max(1)
+        .min(u32::from(area.height)) as u16;
     Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -1233,16 +1490,47 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .picker
         .as_ref()
         .is_some_and(|p| p.kind == PickerKind::Agents);
-    let area = if agents_panel {
-        native_agents::panel_area(area)
-    } else {
-        area
-    };
+    if agents_panel {
+        native_agents::draw(f, area, app);
+        return;
+    }
     let update_blocked = app.update_blocked_by_work();
     let update_lines = app.update_preview.as_ref().map(|p| p.visible_lines());
     let Some(picker) = app.picker.as_mut() else {
         return;
     };
+    if picker.kind == PickerKind::GrokBotForm {
+        if let Some(form) = &app.grok_bot_form {
+            let values = [
+                &form.account,
+                &form.routine_id,
+                &form.name,
+                &form.webhook_url,
+            ];
+            let labels = [
+                "Account",
+                "Routine ID",
+                "Display name",
+                "Webhook URL (HTTPS)",
+            ];
+            for ((row, label), value) in picker.rows.iter_mut().take(4).zip(labels).zip(values) {
+                row.label = format!(
+                    "{label}: {}",
+                    if value.is_empty() { "<empty>" } else { value }
+                );
+            }
+            if let Some(row) = picker.rows.get_mut(4) {
+                row.label = format!(
+                    "Webhook key: {}",
+                    if form.key.is_empty() {
+                        "<empty>"
+                    } else {
+                        "••••••••"
+                    }
+                );
+            }
+        }
+    }
     if matches!(
         picker.kind,
         PickerKind::Update
@@ -1317,6 +1605,38 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         modal::draw_close(f, popup, app, modal::Target::Picker);
         return;
     }
+    if picker.kind == PickerKind::Usage {
+        let popup = Rect { x: area.x + 1, y: area.y, width: area.width.saturating_sub(2), height: area.height };
+        f.render_widget(Clear, popup);
+        let cols = (popup.width / 54).max(1) as usize;
+        let rows = picker
+            .filtered()
+            .into_iter()
+            .map(|row| (row.label.clone(), row.detail.clone()))
+            .collect::<Vec<_>>();
+        let selected = picker.state.selected().unwrap_or(0);
+        let cell_width = (popup.width / cols as u16).max(1);
+        for (index, (label, detail)) in rows.into_iter().enumerate() {
+            let col = index % cols;
+            let row = index / cols;
+            let cell = Rect { x: popup.x + col as u16 * cell_width, y: popup.y + row as u16 * 5, width: cell_width.min(popup.right().saturating_sub(popup.x + col as u16 * cell_width)), height: 5 };
+            let block = Block::default().borders(Borders::ALL).border_style(if index == selected { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::DarkGray) });
+            let mut lines = label.lines().map(Line::from).collect::<Vec<_>>();
+            if !detail.is_empty() {
+                lines.push(Line::styled(detail, Style::default().fg(Color::Gray)));
+            }
+            f.render_widget(Paragraph::new(lines).block(block), cell);
+        }
+        let title = if picker.filter.is_empty() {
+            format!(" {} ", picker.title)
+        } else {
+            format!(" {} · filter: {} ", picker.title, picker.filter)
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
+        f.render_widget(block, popup);
+        modal::draw_close(f, popup, app, modal::Target::Picker);
+        return;
+    }
     let width = if picker.kind == PickerKind::Trust {
         area.width.saturating_sub(2).min(54)
     } else {
@@ -1353,7 +1673,26 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     Style::default()
                 };
-                let mut head = vec![Span::styled(label.to_owned(), label_style)];
+                let mut head = if picker.kind == PickerKind::Agents {
+                    let status_color = if label.contains("●") {
+                        Color::Yellow
+                    } else if label.contains("×") {
+                        Color::Red
+                    } else {
+                        Color::Green
+                    };
+                    if let Some((prefix, rest)) = label.split_once(' ') {
+                        vec![
+                            Span::styled(prefix.to_owned(), label_style),
+                            Span::styled(" ", label_style),
+                            Span::styled(rest.to_owned(), label_style.fg(status_color)),
+                        ]
+                    } else {
+                        vec![Span::styled(label.to_owned(), label_style)]
+                    }
+                } else {
+                    vec![Span::styled(label.to_owned(), label_style)]
+                };
                 if current {
                     head.push(Span::styled(
                         " \u{b7} current",
@@ -1503,9 +1842,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 Some(UsageTone::Mute) => Style::default().fg(Color::DarkGray),
                 None => Style::default(),
             };
-            if r.id.starts_with("model-group:")
-                || (picker.kind == PickerKind::Model && r.detail.contains("deprecated"))
-            {
+            if r.id.starts_with("model-group:") {
                 label_style = Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM);
@@ -1775,11 +2112,17 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     let job_line;
     let idle_footer_hint = format!("{FOOTER_HINT} \u{b7} Ctrl+K options");
     let scrolled = format!("\u{2191} {} rows up \u{b7} PgDn to follow", app.view.scroll);
+    let recovery_hint = format!(
+        "{} saved drafts/requests retained",
+        app.keep.recovery_choices.len()
+    );
     let (left, left_style) = if app.recovery_warning().is_some() {
         (
-            "draft not saved locally · /recover retry",
+            "draft not saved locally · retrying persistence",
             Style::default().fg(Color::Red),
         )
+    } else if let Some(warning) = app.store_warning.as_deref() {
+        (warning, Style::default().fg(Color::Red))
     } else if let Some(m) = flash {
         (m, Style::default().fg(Color::Indexed(179)))
     } else if app
@@ -1860,6 +2203,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
             },
             Style::default().fg(Color::DarkGray),
         )
+    } else if !app.keep.recovery_choices.is_empty() && app.picker.is_none() {
+        (recovery_hint.as_str(), Style::default().fg(Color::DarkGray))
     } else {
         (
             if app.idle_notice.is_some() && app.picker.is_none() {

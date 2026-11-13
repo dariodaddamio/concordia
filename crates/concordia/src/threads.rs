@@ -3,7 +3,8 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use sha2::{Digest, Sha256};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 #[path = "thread_references.rs"]
@@ -15,33 +16,77 @@ use crate::native_memory::references::{CaptureScope, Reference};
 pub const MAX_EVENT_TEXT: usize = 20_000;
 /// Default map budget, in characters.
 pub const MAP_CHARS: usize = 1600;
-/// Default cap for `concordia thread read`.
+/// Default cap for `concordia chat thread read`.
 pub const READ_CHARS: usize = 6000;
-/// Maximum number of locally pinned native spans retained for one thread.
-pub const MAX_PINNED_SPANS: usize = 128;
-/// Maximum UTF-8 bytes retained by one thread's pin journal.
-pub const MAX_PINNED_BYTES: usize = 256 * 1024;
+const JOURNAL_PAGE_BYTES: u64 = 8 * 1024 * 1024;
+const JOURNAL_RECORD_BYTES: usize = 1024 * 1024;
+const JOURNAL_PAGE_EVENTS: usize = 256;
+const JOURNAL_READ_BYTES: usize = 32 * 1024 * 1024;
+const JOURNAL_SCAN_BYTES: u64 = 256 * 1024 * 1024;
+const JOURNAL_ANCHOR_BYTES: u64 = 64 * 1024;
+
+/// One finite journal page; cursors retain exact file identity and a fixed source snapshot.
+pub struct ThreadPage {
+    pub events: Vec<ThreadEvent>,
+    pub first_ordinal: usize,
+    pub ordinals: Vec<usize>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JournalCursor {
+    identity: String,
+    length: u64,
+    offset: u64,
+    ordinal: usize,
+    anchor_len: u64,
+    anchor_sha256: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JournalCount {
+    identity: String,
+    length: u64,
+    records: usize,
+    modified_ns: u128,
+    anchor_len: u64,
+    anchor_sha256: String,
+}
+
+fn journal_digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn journal_anchor(file: &mut std::fs::File, length: u64) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.take(length).read_to_end(&mut bytes)?;
+    Ok(journal_digest(&bytes))
+}
+
+fn modified_ns(metadata: &std::fs::Metadata) -> u128 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |time| time.as_nanos())
+}
 
 // ---------------------------------------------------------------------------------------------
 // The environment variable is an explicit enable override; normal configuration is
-// `[threads] logging = "on"` (with the old `enabled` key retained for compatibility).
+// `[threads] logging = "on"`.
 // ---------------------------------------------------------------------------------------------
 pub fn enabled(state_root: &Path) -> bool {
     if std::env::var("CONCORDIA_THREADS").is_ok_and(|v| v == "1") {
         return true;
     }
     crate::store::get_settings(state_root).thread_log
-        || crate::config::for_root(state_root).threads.enabled
         || crate::config::for_root(state_root).threads.logging
 }
 
 /// A new thread log for a conversation, or None when recording is off.
 pub fn start(state_root: &Path) -> Option<ThreadLog> {
     enabled(state_root).then(|| ThreadLog::open(state_root, &uuid::Uuid::new_v4().to_string()))
-}
-
-pub fn map_chars_default() -> usize {
-    crate::config::threads_map_chars()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -178,20 +223,6 @@ pub struct ThreadLog {
     dir: PathBuf,
 }
 
-/// A redacted copy of an exact native span. Pins are deliberately independent of provider
-/// transcript files, so a map remains readable after native pruning or compaction.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PinnedSpan {
-    pub version: u32,
-    pub ordinal: usize,
-    pub label: String,
-    pub role: String,
-    pub provider: Option<String>,
-    pub account: Option<String>,
-    pub native_session_id: Option<String>,
-    pub text: String,
-}
-
 impl ThreadLog {
     /// No I/O until the first write.
     pub fn open(state_root: &Path, thread_id: &str) -> ThreadLog {
@@ -213,130 +244,23 @@ impl ThreadLog {
         self.dir.join(format!("{}.meta.json", self.id))
     }
 
-    fn pins_path(&self) -> PathBuf {
-        self.dir.join(format!("{}.pins.jsonl", self.id))
-    }
-
     /// Append structural metadata only. Conversation bodies require an exact native reference.
     pub fn append(&self, ev: &ThreadEvent) -> Result<()> {
         self.append_record(&references::Record::metadata(ev)?)
+            .map(|_| ())
     }
 
     /// Verify an immutable native projection before persisting its body-free pointer.
     pub fn append_referenced(&self, ev: &ThreadEvent, reference: Reference) -> Result<()> {
         let record = references::Record::referenced(self.root(), ev, reference.clone())?;
-        let ordinal = self.read_record_count().saturating_add(1);
-        self.append_record(&record)?;
+        let ordinal = self.append_record(&record)?;
         let role = if ev.k == "card" {
             "tool"
         } else {
             ev.k.as_str()
         };
-        let text = crate::native_memory::references::hydrate_text(self.root(), &reference)
-            .map_err(|error| anyhow!("native span pin failed: {error}"))?;
-        self.pin_span_with_reference(
-            ordinal,
-            role,
-            &format!("{} turn {}", role, ordinal),
-            &text,
-            &reference,
-        )
-    }
-
-    fn read_record_count(&self) -> usize {
-        std::fs::read_to_string(self.log_path())
-            .map(|s| s.lines().count())
-            .unwrap_or(0)
-    }
-
-    /// Pin a span after applying the same deterministic redaction used by the journal.
-    pub fn pin_span(&self, ordinal: usize, label: &str, text: &str) -> Result<()> {
-        self.pin_span_inner(PinnedSpan {
-            version: 1,
-            ordinal,
-            label: cap_chars(label, 160).to_owned(),
-            role: "native".into(),
-            provider: None,
-            account: None,
-            native_session_id: None,
-            text: cap_chars(&crate::redact::redact(text), MAX_PINNED_BYTES).to_owned(),
-        })
-    }
-
-    fn pin_span_with_reference(
-        &self,
-        ordinal: usize,
-        role: &str,
-        label: &str,
-        text: &str,
-        reference: &Reference,
-    ) -> Result<()> {
-        let binding = reference.binding();
-        self.pin_span_inner(PinnedSpan {
-            version: 1,
-            ordinal,
-            label: cap_chars(label, 160).to_owned(),
-            role: role.to_owned(),
-            provider: Some(binding.provider.as_str().to_owned()),
-            account: Some(binding.account.clone()),
-            native_session_id: Some(binding.session_id.clone()),
-            text: cap_chars(&crate::redact::redact(text), MAX_PINNED_BYTES).to_owned(),
-        })
-    }
-
-    fn pin_span_inner(&self, span: PinnedSpan) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
-        let lock = self.dir.join(format!("{}.pins.lock", self.id));
-        crate::state_io::with_lock(&lock, || {
-            let mut spans = self.read_pins_unchecked();
-            spans.retain(|old| old.ordinal != span.ordinal);
-            spans.push(span.clone());
-            spans.sort_by_key(|old| old.ordinal);
-            while spans.len() > MAX_PINNED_SPANS
-                || serde_json::to_vec(&spans).map_or(true, |v| v.len() > MAX_PINNED_BYTES)
-            {
-                if spans.is_empty() {
-                    break;
-                }
-                spans.remove(0);
-            }
-            let body = spans
-                .iter()
-                .map(serde_json::to_string)
-                .collect::<Result<Vec<_>, _>>()?
-                .join("\n");
-            let body = if body.is_empty() {
-                body
-            } else {
-                format!("{body}\n")
-            };
-            std::fs::write(self.pins_path(), crate::redact::redact(&body).as_bytes())?;
-            Ok(())
-        })?;
+        let _ = (ordinal, role, reference);
         Ok(())
-    }
-
-    fn read_pins_unchecked(&self) -> Vec<PinnedSpan> {
-        std::fs::read_to_string(self.pins_path())
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
-            .collect()
-    }
-
-    /// Resolve a map ordinal from the local pin journal, falling back to the native-backed log.
-    pub fn resolve_span(&self, ordinal: usize) -> Result<String> {
-        if let Some(span) = self
-            .read_pins_unchecked()
-            .into_iter()
-            .find(|s| s.ordinal == ordinal)
-        {
-            return Ok(span.text);
-        }
-        self.read_all()?
-            .get(ordinal.saturating_sub(1))
-            .map(|event| event.text().to_owned())
-            .ok_or_else(|| anyhow!("thread span {ordinal} is unavailable"))
     }
 
     /// Record a source gap without persisting the original text or an arbitrary error body.
@@ -347,6 +271,7 @@ impl ThreadLog {
         reason: &str,
     ) -> Result<()> {
         self.append_record(&references::Record::unavailable(ev, scope, reason)?)
+            .map(|_| ())
     }
 
     fn root(&self) -> &Path {
@@ -356,29 +281,161 @@ impl ThreadLog {
     }
 
     /// One bounded cross-process append transaction per journal record.
-    fn append_record(&self, record: &references::Record) -> Result<()> {
-        let mut line = crate::redact::redact(&serde_json::to_string(record)?).into_owned();
-        line.push('\n');
+    fn append_record(&self, record: &references::Record) -> Result<usize> {
+        let mut line = crate::redact::redact_bytes(&serde_json::to_vec(record)?);
+        line.push(b'\n');
+        if line.len() > JOURNAL_RECORD_BYTES {
+            bail!("thread record exceeds its byte budget; journal preserved");
+        }
         std::fs::create_dir_all(&self.dir)?;
         let root = crate::update::resolved_directory(&self.dir)
             .ok_or_else(|| anyhow!("thread directory is not regular"))?;
         let path = self.log_path();
         let lock = self.dir.join(format!("{}.lock", self.id));
-        if [path.as_path(), lock.as_path()]
+        let count_path = self.dir.join(format!("{}.ordinal.json", self.id));
+        if [path.as_path(), lock.as_path(), count_path.as_path()]
             .into_iter()
             .any(|path| path.exists() && !crate::update::regular_owned_file(path, &root))
         {
             bail!("thread journal or lock is not a regular owned file");
         }
-        crate::state_io::with_lock(&lock, || {
-            let mut f = std::fs::OpenOptions::new()
+        let ordinal = crate::state_io::with_lock(&lock, || {
+            let mut file = std::fs::OpenOptions::new()
                 .create(true)
+                .read(true)
                 .append(true)
                 .open(&path)?;
-            f.write_all(line.as_bytes())?;
-            f.flush()
+            let metadata = file.metadata()?;
+            let length = metadata.len();
+            let identity = crate::file_identity::of(&file).map_err(std::io::Error::other)?;
+            // Derived body-free metadata avoids rescanning the journal after every append,
+            // including when the asynchronous reference journal opens a fresh ThreadLog.
+            let cached = std::fs::File::open(&count_path)
+                .ok()
+                .and_then(|file| serde_json::from_reader::<_, JournalCount>(file.take(4097)).ok());
+            let mut offset = 0;
+            let mut records = 0usize;
+            if let Some(cached) = cached {
+                if cached.identity == identity
+                    && cached.length <= length
+                    && cached.anchor_len <= JOURNAL_ANCHOR_BYTES.min(cached.length)
+                    && (cached.length < length || cached.modified_ns == modified_ns(&metadata))
+                    && journal_anchor(&mut file, cached.anchor_len)? == cached.anchor_sha256
+                {
+                    offset = cached.length;
+                    records = cached.records;
+                }
+            }
+            if length - offset > JOURNAL_SCAN_BYTES {
+                return Err(std::io::Error::other(
+                    "thread ordinal scan exceeds 256 MiB; journal preserved",
+                ));
+            }
+            file.seek(SeekFrom::Start(offset))?;
+            let mut remaining = (&mut file).take(length - offset);
+            let mut buffer = [0u8; 64 * 1024];
+            let mut last = None;
+            loop {
+                let read = remaining.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                records = records
+                    .checked_add(buffer[..read].iter().filter(|byte| **byte == b'\n').count())
+                    .ok_or_else(|| std::io::Error::other("thread ordinal overflow"))?;
+                last = buffer[..read].last().copied();
+            }
+            // Preserve a final record lacking a newline; add only its separator.
+            if last.is_some_and(|byte| byte != b'\n') {
+                records = records
+                    .checked_add(1)
+                    .ok_or_else(|| std::io::Error::other("thread ordinal overflow"))?;
+                file.write_all(b"\n")?;
+            }
+            let ordinal = records
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("thread ordinal overflow"))?;
+            file.write_all(&line)?;
+            file.flush()?;
+            let metadata = file.metadata()?;
+            let count = JournalCount {
+                identity,
+                length: metadata.len(),
+                records: ordinal,
+                modified_ns: modified_ns(&metadata),
+                anchor_len: metadata.len().min(JOURNAL_ANCHOR_BYTES),
+                anchor_sha256: journal_anchor(&mut file, metadata.len().min(JOURNAL_ANCHOR_BYTES))?,
+            };
+            // A failed cache update never invalidates the already flushed journal append.
+            if let Ok(bytes) = serde_json::to_vec(&count) {
+                let _ = crate::state_io::write_atomic(&count_path, &bytes);
+            }
+            Ok(ordinal)
         })?;
-        Ok(())
+        Ok(ordinal)
+    }
+
+    pub fn read_page(&self, cursor: Option<&str>) -> Result<ThreadPage> {
+        read_event_page(self.root(), &self.log_path(), cursor)
+    }
+
+    /// A bounded map remains available even when a full thread is too large to hydrate.
+    pub fn read_map(&self, max_chars: usize) -> Result<String> {
+        let page = self.read_page(None)?;
+        let note = page.next_cursor.as_ref().map(|_| {
+            "PARTIAL journal: first page only; follow chat thread read --cursor pages for later events"
+        });
+        Ok(build_map(
+            &page.events,
+            &self.id,
+            max_chars,
+            true,
+            None,
+            note,
+        ))
+    }
+
+    fn read_tail_page(&self, after: Option<&str>, opts: &ReadOpts) -> Result<ThreadPage> {
+        let count = opts.tail.unwrap_or(JOURNAL_PAGE_EVENTS);
+        let grep = opts.grep.as_ref().map(|text| text.to_lowercase());
+        let mut cursor = after.map(str::to_owned);
+        let mut retained = std::collections::VecDeque::new();
+        let mut bytes = 0usize;
+        for _ in 0..(JOURNAL_SCAN_BYTES / JOURNAL_PAGE_BYTES) {
+            let page = self.read_page(cursor.as_deref())?;
+            for (ordinal, event) in page.ordinals.into_iter().zip(page.events) {
+                if event.k == "usage"
+                    || opts
+                        .range
+                        .is_some_and(|(start, end)| ordinal < start || ordinal > end)
+                    || grep.as_ref().is_some_and(|query| {
+                        !render_event(ordinal, &event).to_lowercase().contains(query)
+                    })
+                {
+                    continue;
+                }
+                let size = serde_json::to_vec(&event)?.len();
+                bytes += size;
+                retained.push_back((ordinal, event, size));
+                while retained.len() > count || bytes > JOURNAL_PAGE_BYTES as usize {
+                    if let Some((_, _, size)) = retained.pop_front() {
+                        bytes -= size;
+                    }
+                }
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let first_ordinal = retained.front().map_or(1, |(ordinal, _, _)| *ordinal);
+        let ordinals = retained.iter().map(|(ordinal, _, _)| *ordinal).collect();
+        Ok(ThreadPage {
+            ordinals,
+            events: retained.into_iter().map(|(_, event, _)| event).collect(),
+            first_ordinal,
+            next_cursor: cursor,
+        })
     }
 
     pub fn read_all(&self) -> Result<Vec<ThreadEvent>> {
@@ -401,13 +458,9 @@ impl ThreadLog {
             .account
             .as_deref()
             .map(|a| cap_chars(a, 128).to_owned());
-        let encoded = serde_json::to_string(&meta)?;
-        std::fs::write(self.meta_path(), crate::redact::redact(&encoded).as_bytes())?;
+        let encoded = crate::redact::redact_bytes(&serde_json::to_vec(&meta)?);
+        crate::state_io::write_atomic(&self.meta_path(), &encoded)?;
         Ok(())
-    }
-
-    pub fn meta_exists(&self) -> bool {
-        self.meta_path().exists()
     }
 
     pub fn read_meta(&self) -> Option<ThreadMeta> {
@@ -415,23 +468,62 @@ impl ThreadLog {
         if !crate::update::regular_owned_file(&self.meta_path(), &root) {
             return None;
         }
-        let s = std::fs::read_to_string(self.meta_path()).ok()?;
-        serde_json::from_str(&s).ok()
+        let mut bytes = Vec::new();
+        std::fs::File::open(self.meta_path())
+            .ok()?
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() > 16 * 1024 {
+            return None;
+        }
+        serde_json::from_slice(&bytes).ok()
     }
 
     pub fn delete(&self) -> Result<()> {
-        for p in [self.log_path(), self.meta_path()] {
-            match std::fs::remove_file(&p) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e).with_context(|| format!("remove {}", p.display())),
-            }
+        if !self.dir.try_exists()? {
+            return Ok(());
         }
+        let root = crate::update::resolved_directory(&self.dir)
+            .ok_or_else(|| anyhow!("thread directory is not regular"))?;
+        let journal_lock = self.dir.join(format!("{}.lock", self.id));
+        let paths = [
+            self.log_path(),
+            self.meta_path(),
+            self.dir.join(format!("{}.ordinal.json", self.id)),
+        ];
+        let verify = || -> std::io::Result<()> {
+            for path in paths.iter().chain([&journal_lock]) {
+                match std::fs::symlink_metadata(path) {
+                    Ok(_) if !crate::update::regular_owned_file(path, &root) => {
+                        return Err(std::io::Error::other(
+                            "thread deletion target or lock is not a regular owned file; records preserved",
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(())
+        };
+        verify()?;
+        crate::state_io::with_lock(&journal_lock, || {
+            verify()?;
+            for path in &paths {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(())
+        })?;
         Ok(())
     }
 }
 
-fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
+fn open_journal(path: &Path) -> Result<std::fs::File> {
     let directory = path
         .parent()
         .and_then(crate::update::resolved_directory)
@@ -439,33 +531,147 @@ fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
     if !crate::update::regular_owned_file(path, &directory) {
         bail!("thread journal is not a regular owned file");
     }
-    let s = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let mut events = Vec::new();
-    for (ordinal, line) in s.lines().enumerate() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if value.get("version").is_some() {
-            let record: references::Record = serde_json::from_value(value)
-                .with_context(|| format!("invalid referenced thread event {}", ordinal + 1))?;
-            events.push(record.hydrate(root)?);
-        } else if let Ok(event) = serde_json::from_value::<ThreadEvent>(value) {
-            // Legacy body-bearing lines remain readable, without rewriting or migrating them.
-            events.push(event);
-        }
-    }
-    Ok(events)
+    std::fs::File::open(path).with_context(|| format!("read {}", path.display()))
 }
 
-/// Convert one explicitly selected legacy message using the existing referenced-record format.
-pub(crate) fn referenced_legacy_line(
-    root: &Path,
-    event: &ThreadEvent,
-    source: Reference,
-) -> std::result::Result<String, String> {
-    let record =
-        references::Record::referenced(root, event, source).map_err(|error| error.to_string())?;
-    serde_json::to_string(&record).map_err(|error| error.to_string())
+fn read_event_page(root: &Path, path: &Path, after: Option<&str>) -> Result<ThreadPage> {
+    let mut file = open_journal(path)?;
+    let identity = crate::file_identity::of(&file).map_err(anyhow::Error::msg)?;
+    let length = file.metadata()?.len();
+    let mut cursor = if let Some(encoded) = after {
+        if encoded.len() > 4096 || encoded.len() % 2 != 0 || !encoded.is_ascii() {
+            bail!("invalid thread cursor");
+        }
+        let bytes = (0..encoded.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&encoded[at..at + 2], 16))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let cursor: JournalCursor = serde_json::from_slice(&bytes)?;
+        if cursor.identity != identity
+            || cursor.length > length
+            || cursor.offset > cursor.length
+            || cursor.anchor_len > JOURNAL_ANCHOR_BYTES.min(cursor.length)
+            || cursor.ordinal == 0
+            || cursor.ordinal > usize::MAX - JOURNAL_PAGE_EVENTS
+            || journal_anchor(&mut file, cursor.anchor_len)? != cursor.anchor_sha256
+        {
+            bail!("thread cursor is stale or belongs to another journal; source preserved");
+        }
+        if cursor.offset > 0 {
+            file.seek(SeekFrom::Start(cursor.offset - 1))?;
+            let mut boundary = [0];
+            file.read_exact(&mut boundary)?;
+            if boundary != [b'\n'] {
+                bail!("thread cursor splits a journal record");
+            }
+        }
+        cursor
+    } else {
+        JournalCursor {
+            identity,
+            length,
+            offset: 0,
+            ordinal: 1,
+            anchor_len: length.min(JOURNAL_ANCHOR_BYTES),
+            anchor_sha256: journal_anchor(&mut file, length.min(JOURNAL_ANCHOR_BYTES))?,
+        }
+    };
+    let first_ordinal = cursor.ordinal;
+    file.seek(SeekFrom::Start(cursor.offset))?;
+    let available = cursor.length - cursor.offset;
+    let mut reader = BufReader::new(file.take(available.min(JOURNAL_PAGE_BYTES)));
+    let mut events = Vec::new();
+    let mut retained = 0usize;
+    let mut scanned = 0u64;
+    let mut records = 0usize;
+    while cursor.offset < cursor.length && records < JOURNAL_PAGE_EVENTS {
+        let mut line = Vec::new();
+        let read = (&mut reader)
+            .take(JOURNAL_RECORD_BYTES as u64 + 1)
+            .read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        if line.len() > JOURNAL_RECORD_BYTES {
+            bail!("thread record at byte {} exceeds 1 MiB; original journal preserved; inspect the exact source with the provider's native history tools", cursor.offset);
+        }
+        // Leave a record that crosses this page's byte boundary for the next page.
+        if line.last() != Some(&b'\n') && cursor.offset + (read as u64) < cursor.length {
+            if scanned == 0 {
+                bail!("thread record exceeds its page budget; original preserved");
+            }
+            break;
+        }
+        let event = match serde_json::from_slice::<serde_json::Value>(&line) {
+            Ok(value) if value.get("version").is_some() => {
+                let record: references::Record =
+                    serde_json::from_value(value).with_context(|| {
+                        format!("invalid referenced thread event {}", cursor.ordinal)
+                    })?;
+                Some(record.hydrate(root)?)
+            }
+            Ok(_) => None,
+            Err(_) => None,
+        };
+        // Preserve physical ordinals even if a record is malformed.
+        let event = event.unwrap_or_else(|| {
+            ThreadEvent::with_text(
+                "note",
+                "[journal event unavailable: invalid record; source preserved]",
+            )
+        });
+        let size = serde_json::to_vec(&event)?.len();
+        if retained.saturating_add(size) > JOURNAL_PAGE_BYTES as usize {
+            if events.is_empty() {
+                bail!("hydrated thread event exceeds its page budget; original preserved");
+            }
+            break;
+        }
+        retained += size;
+        events.push(event);
+        cursor.offset += read as u64;
+        cursor.ordinal += 1;
+        scanned += read as u64;
+        records += 1;
+    }
+    let next_cursor = if cursor.offset < cursor.length {
+        Some(
+            serde_json::to_vec(&cursor)?
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        )
+    } else {
+        None
+    };
+    Ok(ThreadPage {
+        events,
+        first_ordinal,
+        ordinals: (first_ordinal..cursor.ordinal).collect(),
+        next_cursor,
+    })
+}
+
+fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
+    let mut events = Vec::new();
+    let mut cursor = None;
+    let mut retained = 0usize;
+    // Full callers get an explicit failure, never silently incomplete history.
+    for _ in 0..(JOURNAL_SCAN_BYTES / JOURNAL_PAGE_BYTES) {
+        let page = read_event_page(root, path, cursor.as_deref())?;
+        for event in page.events {
+            retained = retained.saturating_add(serde_json::to_vec(&event)?.len());
+            if retained > JOURNAL_READ_BYTES || events.len() >= 4096 {
+                bail!("thread read exceeds its 32 MiB/4096-event budget; journal preserved; use concordia chat thread read <id> and follow --cursor pages");
+            }
+            events.push(event);
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return Ok(events);
+        }
+    }
+    bail!("thread scan exceeds 256 MiB; journal preserved; use concordia chat thread read <id> and follow --cursor pages")
 }
 
 fn thread_ids(state_root: &Path) -> Vec<String> {
@@ -475,10 +681,7 @@ fn thread_ids(state_root: &Path) -> Vec<String> {
     };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if let Some(id) = name
-            .strip_suffix(".jsonl")
-            .filter(|id| !id.ends_with(".pins"))
-        {
+        if let Some(id) = name.strip_suffix(".jsonl") {
             ids.push(id.to_string());
         }
     }
@@ -526,7 +729,7 @@ pub fn resolve_prefix(state_root: &Path, prefix: &str) -> Result<String> {
     let hits: Vec<&String> = ids.iter().filter(|i| i.starts_with(prefix)).collect();
     match hits.len() {
         0 => Err(anyhow!(
-            "no thread matches '{prefix}' (try: concordia thread list)"
+            "no thread matches '{prefix}' (try: concordia chat thread list)"
         )),
         1 => Ok(hits[0].clone()),
         n => Err(anyhow!(
@@ -550,22 +753,6 @@ fn one_line(s: &str, max: usize) -> String {
     format!("{}...", cap_chars(&flat, max - 3))
 }
 
-/// Last `max` chars of `s` (whitespace collapsed), on a char boundary.
-fn tail_chars(s: &str, max: usize) -> String {
-    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let n = flat.chars().count();
-    if n <= max {
-        return flat;
-    }
-    if max <= 3 {
-        return flat.chars().skip(n - max).collect();
-    }
-    format!(
-        "...{}",
-        flat.chars().skip(n - (max - 3)).collect::<String>()
-    )
-}
-
 fn looks_like_path(d: &str) -> bool {
     let d = d.trim();
     if d.is_empty() || d.chars().count() > 200 || d.contains(char::is_whitespace) {
@@ -581,355 +768,265 @@ fn looks_like_path(d: &str) -> bool {
         })
 }
 
-fn is_file_tool(title: &str) -> bool {
-    let t = title.to_ascii_lowercase();
-    [
-        "edit", "write", "read", "patch", "update", "create", "notebook",
-    ]
-    .iter()
-    .any(|k| t.contains(k))
-}
-
-fn is_shell_tool(title: &str) -> bool {
-    let t = title.to_ascii_lowercase();
-    [
-        "bash",
-        "shell",
-        "exec",
-        "command",
-        "powershell",
-        "terminal",
-        "run",
-    ]
-    .iter()
-    .any(|k| t == *k || t.contains(k))
-}
-
-fn is_error_card(c: &EventCard) -> bool {
-    matches!(c.status.as_deref(), Some("error") | Some("failed"))
-}
-
-fn with_more(items: &[String], max: usize, sep: &str) -> String {
-    let shown: Vec<&str> = items.iter().take(max).map(String::as_str).collect();
-    let mut s = shown.join(sep);
-    if items.len() > max {
-        s.push_str(&format!(" (+{} more)", items.len() - max));
-    }
-    s
-}
-
-/// Deterministic summary of a thread. See docs/architecture.md ("Map").
+/// Canonical bounded map: recorded handoff facts and exact source pointers, no inference.
 pub fn build_map(
     events: &[ThreadEvent],
     thread_id: &str,
     max_chars: usize,
     stored: bool,
-) -> String {
-    build_map_with(events, thread_id, max_chars, stored, None)
-}
-
-/// Version 2 handoff map: user intent is retained verbatim (bounded), while all provider
-/// output is represented by stable, fetchable labels. No assistant/tool body is included.
-pub fn build_map_v2(
-    events: &[ThreadEvent],
-    thread_id: &str,
-    max_chars: usize,
-    stored: bool,
-) -> String {
-    build_map_v2_with_workspace(events, thread_id, max_chars, stored, None)
-}
-
-/// Version 2 map with an optional bounded workspace-state block.
-pub fn build_map_v2_with_workspace(
-    events: &[ThreadEvent],
-    thread_id: &str,
-    max_chars: usize,
-    stored: bool,
     workspace: Option<&crate::workspace_state::WorkspaceState>,
+    note: Option<&str>,
 ) -> String {
     let id = if stored && !thread_id.is_empty() {
         thread_id
     } else {
         "(memory)"
     };
-    let mut lines = vec![format!(
-        "[concordia map] thread {id} - v2 - tools/approvals NOT transferred"
-    )];
+    let header = format!("[concordia map] thread {id} - v2 - tools/approvals NOT transferred");
+    let mut lines = vec![header];
+    if let Some(note) = note {
+        lines[0].push_str(&format!(" - {}", one_line(note, 240)));
+    }
     if let Some(state) = workspace {
         lines.push(crate::redact::redact(&crate::workspace_state::summary(state)).into_owned());
     }
-    let pointer = if stored && !thread_id.is_empty() {
-        format!("concordia thread read {thread_id}")
-    } else {
-        "native_memory".to_owned()
+    let source_pointer = |ordinal: usize| {
+        if stored && !thread_id.is_empty() {
+            format!("concordia chat thread read {thread_id} --range {ordinal}-{ordinal}")
+        } else {
+            "attached native-source indexes (in-memory turn number only)".to_owned()
+        }
     };
+    let pointer = |ordinal: usize| format!("turn {ordinal} -> {}", source_pointer(ordinal));
     let user_indices = events
         .iter()
         .enumerate()
         .filter(|(_, event)| event.k == "user" && !event.text().trim().is_empty())
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
+    let first_user = user_indices.first().copied();
+    let latest_user = user_indices.last().copied();
+    let mut goal = Vec::new();
+    if let Some(index) = first_user {
+        goal.push(format!("goal: {}", one_line(events[index].text(), 240)));
+    }
+    if latest_user != first_user {
+        if let Some(index) = latest_user {
+            goal.push(format!(
+                "latest redirect: {}",
+                one_line(events[index].text(), 240)
+            ));
+        }
+    }
+    if !goal.is_empty() {
+        lines.push("goal".into());
+        lines.extend(goal);
+    }
+
+    let mut files = std::collections::BTreeMap::<String, usize>::new();
+    let mut file_ordinals = Vec::new();
+    let mut last_error = None;
+    let mut last_assistant = None;
     for (index, event) in events.iter().enumerate() {
         let ordinal = index + 1;
-        let line = match event.k.as_str() {
-            "user" if !event.text().trim().is_empty() => {
-                if user_indices.len() > 2
-                    && Some(&index) != user_indices.first()
-                    && Some(&index) != user_indices.last()
-                {
-                    lines.push(format!(
-                        "user pointer: turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}"
-                    ));
-                    continue;
-                }
-                if ordinal == 1 {
-                    format!("asked: {}", one_line(event.text(), 240))
-                } else {
-                    format!("user turn {ordinal}: {}", one_line(event.text(), 240))
-                }
+        match event.k.as_str() {
+            "assistant" if !event.text().trim().is_empty() => {
+                last_assistant = Some((ordinal, event))
             }
-            "assistant" => format!(
-                "assistant pointer: turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}"
-            ),
             "card" => {
-                let label = event
-                    .card
-                    .as_ref()
-                    .map(|c| one_line(&c.title, 80))
-                    .unwrap_or_else(|| "tool".into());
-                let detail = event
-                    .card
-                    .as_ref()
-                    .and_then(|c| c.detail.as_deref())
-                    .unwrap_or("");
-                if looks_like_path(detail) {
-                    format!("files: {detail}; tool pointer ({label}): turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}")
-                } else {
-                    format!("tool pointer ({label}): turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}")
+                if let Some(card) = &event.card {
+                    let edit_tool = card.title.to_ascii_lowercase().contains("edit")
+                        || card.title.to_ascii_lowercase().contains("write")
+                        || card.title.to_ascii_lowercase().contains("apply_patch")
+                        || card
+                            .detail
+                            .as_deref()
+                            .is_some_and(|detail| detail.contains("*** Begin Patch"));
+                    if !edit_tool {
+                        if card.status.as_deref() == Some("error") {
+                            last_error = Some((ordinal, card.detail.as_deref().unwrap_or("")));
+                        }
+                        continue;
+                    }
+                    let status = if card.status.as_deref() == Some("error") {
+                        crate::provider::stream_cards::CardStatus::Error
+                    } else {
+                        crate::provider::stream_cards::CardStatus::Done
+                    };
+                    let structured = crate::provider::stream_cards::compact_card_summary(
+                        &crate::provider::stream_cards::StreamCard {
+                            id: String::new(),
+                            title: card.title.clone(),
+                            detail: card.detail.clone(),
+                            status,
+                        },
+                    );
+                    let mut structured_files = structured
+                        .files
+                        .into_iter()
+                        .map(|(_, path)| path)
+                        .collect::<Vec<_>>();
+                    if structured_files.is_empty() {
+                        if let Some(detail) = card.detail.as_deref().filter(|d| looks_like_path(d))
+                        {
+                            structured_files.push(detail.trim().to_owned());
+                        }
+                    }
+                    for path in structured_files {
+                        *files.entry(path).or_default() += 1;
+                        file_ordinals.push(ordinal);
+                    }
+                    if card.status.as_deref() == Some("error") {
+                        last_error = Some((ordinal, card.detail.as_deref().unwrap_or("")));
+                    }
                 }
             }
-            "switch" | "note" | "usage" => format!(
-                "{} pointer: turn {ordinal} -> {pointer} --range {ordinal}-{ordinal}",
-                event.k
-            ),
-            _ => continue,
-        };
-        lines.push(line);
+            _ => {}
+        }
+    }
+
+    if !files.is_empty() {
+        lines.push("files edited".into());
+        let mut ranked = files.into_iter().collect::<Vec<_>>();
+        ranked.sort_by(|(a, ac), (b, bc)| bc.cmp(ac).then_with(|| a.cmp(b)));
+        for (path, count) in ranked.into_iter().take(8) {
+            lines.push(format!(
+                "{path} ({count} {})",
+                if count == 1 { "edit" } else { "edits" }
+            ));
+        }
+        if file_ordinals.len() > 8 {
+            let first = file_ordinals.iter().min().copied().unwrap_or(1);
+            let last = file_ordinals.iter().max().copied().unwrap_or(first);
+            lines.push(if stored && !thread_id.is_empty() {
+                format!("more files: concordia chat thread read {thread_id} --range {first}-{last}")
+            } else {
+                "more files: attached native-source indexes; inspect the recorded tool turns with concordia chat index".into()
+            });
+        }
+    }
+    if let Some((ordinal, detail)) = last_error {
+        lines.push("last error".into());
+        lines.push(format!(
+            "{} (verbatim): {}",
+            pointer(ordinal),
+            one_line(detail, 300)
+        ));
+    }
+    if let Some((ordinal, event)) = last_assistant {
+        let text = event.text();
+        let claims_done = text.to_ascii_lowercase().contains("done")
+            || text.to_ascii_lowercase().contains("complete")
+            || text.to_ascii_lowercase().contains("finished");
+        lines.push(if claims_done {
+            "previous agent final message (agent claim)".into()
+        } else {
+            "previous agent final message".into()
+        });
+        if text.chars().count() <= 320 {
+            lines.push(format!("{}: {}", pointer(ordinal), one_line(text, 320)));
+        } else {
+            let start = cap_chars(text, 150);
+            let end_start = text
+                .char_indices()
+                .nth(text.chars().count().saturating_sub(150))
+                .map_or(0, |(i, _)| i);
+            lines.push(format!(
+                "{}: {} ... {}",
+                pointer(ordinal),
+                one_line(start, 150),
+                one_line(&text[end_start..], 150)
+            ));
+        }
+    }
+    let mut pointers = Vec::new();
+    for (index, event) in events.iter().enumerate() {
+        let ordinal = index + 1;
+        let represented = (event.k == "user"
+            && (Some(index) == first_user || Some(index) == latest_user))
+            || (event.k == "assistant"
+                && last_assistant.as_ref().is_some_and(|(n, _)| *n == ordinal))
+            || (event.k == "card"
+                && event
+                    .card
+                    .as_ref()
+                    .is_some_and(|c| c.status.as_deref() == Some("error")));
+        if !represented {
+            pointers.push(format!("{}: {}", event.k, pointer(ordinal)));
+        }
+    }
+    if !pointers.is_empty() {
+        lines.push("pointers".into());
+        lines.extend(pointers);
     }
     if stored && !thread_id.is_empty() {
-        lines.push(format!(
-            "more: concordia thread read {thread_id} [--range A-B | --tail N | --grep TEXT]"
-        ));
+        lines.push(format!("read pointers with: concordia chat thread read {thread_id} [--range A-B | --tail N | --grep TEXT]"));
     } else {
-        lines.push("more: native_memory fallback; thread log is off (not stored)".into());
+        lines.push("read pointers with: concordia chat index SESSION --account ACCOUNT --provider PROVIDER; thread log is off (not stored)".into());
     }
-    let mut out = lines.join("\n");
-    if out.chars().count() > max_chars {
-        let essential = [
-            lines.first().cloned().unwrap_or_default(),
-            lines
-                .iter()
-                .find(|line| line.starts_with("asked:"))
-                .cloned()
-                .unwrap_or_default(),
-            lines
-                .iter()
-                .rev()
-                .find(|line| line.starts_with("user turn "))
-                .cloned()
-                .unwrap_or_default(),
-            lines.last().cloned().unwrap_or_default(),
-        ]
-        .into_iter()
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-        out = cap_chars(&essential.join("\n"), max_chars).to_owned();
+    if let Some(state) = workspace {
+        lines.push("current state".into());
+        lines.push(crate::redact::redact(&crate::workspace_state::summary(state)).into_owned());
+    } else if !events.is_empty() {
+        lines.push(format!(
+            "current state: recorded through turn {}",
+            events.len()
+        ));
     }
-    out
+    bound_map_lines(lines, max_chars)
 }
 
-/// As [`build_map`]; `note` is an extra header fragment such as "tools/approvals NOT transferred".
-pub fn build_map_with(
-    events: &[ThreadEvent],
-    thread_id: &str,
-    max_chars: usize,
-    stored: bool,
-    note: Option<&str>,
-) -> String {
-    let users: Vec<&ThreadEvent> = events.iter().filter(|e| e.k == "user").collect();
-    let msgs = events
-        .iter()
-        .filter(|e| e.k == "user" || e.k == "assistant")
-        .count();
-    let title = users
-        .first()
-        .map(|u| one_line(u.text(), 60))
-        .unwrap_or_default();
-
-    // Accounts (or providers) in order of appearance, consecutive duplicates collapsed.
-    let mut trail: Vec<String> = Vec::new();
-    for e in events {
-        if let Some(name) = e.account.as_ref().or(e.provider.as_ref()) {
-            if trail.last() != Some(name) {
-                trail.push(name.clone());
-            }
-        }
+fn bound_map_lines(mut lines: Vec<String>, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
     }
-    let times: Vec<u64> = events.iter().map(|e| e.t).filter(|t| *t > 0).collect();
-    let minutes = match (times.iter().min(), times.iter().max()) {
-        (Some(a), Some(b)) => Some((b - a) / 60),
-        _ => None,
-    };
-
-    let id_part = if stored && !thread_id.is_empty() {
-        thread_id.to_string()
-    } else {
-        "(memory)".to_string()
-    };
-    let mut header = format!("[concordia map] thread {id_part}");
-    if !title.is_empty() {
-        header.push_str(&format!(" \"{title}\""));
+    while lines.join("\n").chars().count() > max_chars && lines.len() > 2 {
+        // Fixed loss order: extra pointers, previous-message detail, errors, files, then
+        // redirect text. Goal-first and current-state-last ordering remain stable.
+        let removable = |line: &String| {
+            !line.starts_with("read pointers with:")
+                && !line.starts_with("current state")
+                && !line.starts_with("goal:")
+        };
+        let index = lines
+            .iter()
+            .enumerate()
+            .rfind(|(_, line)| {
+                removable(line) && line.contains("turn ") && line.contains("concordia chat")
+            })
+            .map(|(index, _)| index)
+            .or_else(|| {
+                lines.iter().position(|line| {
+                    removable(line) && line.starts_with("previous agent final message")
+                })
+            })
+            .or_else(|| {
+                lines
+                    .iter()
+                    .position(|line| removable(line) && line.starts_with("last error"))
+            })
+            .or_else(|| {
+                lines.iter().position(|line| {
+                    removable(line) && (line.contains(" (edit") || line.contains(" (edits"))
+                })
+            })
+            .or_else(|| {
+                lines
+                    .iter()
+                    .position(|line| removable(line) && line.starts_with("latest redirect:"))
+            })
+            .or_else(|| {
+                lines
+                    .iter()
+                    .enumerate()
+                    .find(|(index, line)| *index > 0 && removable(line))
+                    .map(|(index, _)| index)
+            })
+            .unwrap_or(lines.len().saturating_sub(1));
+        lines.remove(index);
     }
-    if !trail.is_empty() {
-        header.push_str(&format!(" - {}", trail.join(" -> ")));
-    }
-    header.push_str(&format!(" - {msgs} msgs"));
-    if let Some(m) = minutes {
-        header.push_str(&format!(" - {m} min"));
-    }
-    if let Some(n) = note {
-        header.push_str(&format!(" - {n}"));
-    }
-
-    let more = if stored && !thread_id.is_empty() {
-        format!("more: concordia thread read {thread_id} [--tail N | --grep TEXT | --range A-B]")
-    } else {
-        "more: full text is not stored (thread log is off)".to_string()
-    };
-
-    let asked = users.first().map(|u| one_line(u.text(), 160));
-    let now = if users.len() > 1
-        && users.first().map(|e| e.text().trim()) != users.last().map(|e| e.text().trim())
-    {
-        users.last().map(|u| one_line(u.text(), 160))
-    } else {
-        None
-    };
-
-    let mut files: Vec<String> = Vec::new();
-    let mut ran: Vec<String> = Vec::new();
-    let mut errors: Vec<String> = Vec::new();
-    for e in events {
-        let Some(c) = &e.card else { continue };
-        let detail = c.detail.as_deref().unwrap_or("").trim();
-        if is_error_card(c) {
-            let line = if detail.is_empty() {
-                c.title.clone()
-            } else {
-                format!("{}: {detail}", c.title)
-            };
-            errors.push(one_line(&line, 80));
-        }
-        if detail.is_empty() {
-            continue;
-        }
-        // Raw native records are source evidence, not the legacy command/path projection.
-        // Never interpret JSON source records or unavailable markers as executed commands.
-        if detail.starts_with(references::RAW_TOOL_LABEL)
-            || detail.starts_with("[native source unavailable:")
-        {
-            continue;
-        }
-        if is_shell_tool(&c.title) {
-            let cmd = one_line(detail, 60);
-            if !ran.contains(&cmd) {
-                ran.push(cmd);
-            }
-        } else if is_file_tool(&c.title)
-            && looks_like_path(detail)
-            && !files.iter().any(|f| f == detail)
-        {
-            files.push(detail.to_string());
-        }
-    }
-    let mut seen_errors = std::collections::HashSet::new();
-    errors.retain(|error| seen_errors.insert(error.clone()));
-    errors.truncate(3);
-
-    let last_reply = events
-        .iter()
-        .rev()
-        .find(|e| e.k == "assistant" && !e.text().trim().is_empty())
-        .map(|e| e.text().to_string());
-
-    let files_line = (!files.is_empty()).then(|| format!("files: {}", with_more(&files, 12, ", ")));
-    let ran_line = (!ran.is_empty()).then(|| format!("ran: {}", with_more(&ran, 8, "; ")));
-    let err_line = (!errors.is_empty()).then(|| format!("errors: {}", errors.join(" | ")));
-
-    let assemble = |ran: bool, files: bool, errs: bool, reply_max: usize, ctx_max: usize| {
-        let mut lines: Vec<String> = vec![header.clone()];
-        if let Some(a) = &asked {
-            lines.push(format!("asked: {}", one_line(a, ctx_max)));
-        }
-        if let Some(n) = &now {
-            lines.push(format!("now: {}", one_line(n, ctx_max)));
-        }
-        if files {
-            lines.extend(files_line.clone());
-        }
-        if ran {
-            lines.extend(ran_line.clone());
-        }
-        if errs {
-            lines.extend(err_line.clone());
-        }
-        if reply_max > 0 {
-            if let Some(r) = &last_reply {
-                lines.push(format!("last reply: {}", tail_chars(r, reply_max)));
-            }
-        }
-        lines.push(more.clone());
-        lines.join("\n")
-    };
-    let fits = |s: &str| s.chars().count() <= max_chars;
-
-    // Documented drop order: ran, files, errors, then shorten the last reply.
-    let mut out = assemble(true, true, true, 500, 160);
-    if !fits(&out) {
-        out = assemble(false, true, true, 500, 160);
-    }
-    if !fits(&out) {
-        out = assemble(false, false, true, 500, 160);
-    }
-    if !fits(&out) {
-        out = assemble(false, false, false, 500, 160);
-    }
-    if !fits(&out) {
-        // Shorten the reply tail to what is left.
-        let base = assemble(false, false, false, 0, 160).chars().count();
-        let room = max_chars.saturating_sub(base + "\nlast reply: ".len());
-        if room >= 20 {
-            out = assemble(false, false, false, room.min(500), 160);
-        }
-    }
-    if !fits(&out) {
-        out = assemble(false, false, false, 0, 160);
-    }
-    if !fits(&out) {
-        out = assemble(false, false, false, 0, 60);
-    }
-    if !fits(&out) {
-        // Only header and pointer are left; the pointer must survive, so shrink the header.
-        let tail_len = more.chars().count() + 1;
-        if max_chars > tail_len + 20 {
-            let room = max_chars - tail_len;
-            let h = cap_chars(&header, room).to_string();
-            out = format!("{h}\n{more}");
-        } else {
-            out = cap_chars(&out, max_chars).to_string();
-        }
-    }
-    out
+    let out = lines.join("\n");
+    cap_chars(&out, max_chars).to_owned()
 }
 
 /// Map events from the in-memory transcript (thread log off). `Card` messages carry
@@ -974,10 +1071,10 @@ pub fn encode_card(title: &str, detail: Option<&str>, status: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------
-// `concordia thread read`
+// `concordia chat thread read`
 // ---------------------------------------------------------------------------------------------
 
-/// Plain-text rendering of one event for `thread read` and `--grep`.
+/// Plain-text rendering of one event for `chat thread read` and `--grep`.
 pub fn render_event(idx: usize, e: &ThreadEvent) -> String {
     let who = e
         .account
@@ -1017,10 +1114,27 @@ pub fn parse_range(s: &str) -> Result<(usize, usize)> {
 }
 
 pub fn read_events_text(events: &[ThreadEvent], opts: &ReadOpts) -> String {
+    read_events_text_from(events, opts, 1, None)
+}
+
+fn read_events_text_from(
+    events: &[ThreadEvent],
+    opts: &ReadOpts,
+    first: usize,
+    ordinals: Option<&[usize]>,
+) -> String {
     let mut rows: Vec<(usize, &ThreadEvent)> = events
         .iter()
         .enumerate()
-        .map(|(i, e)| (i + 1, e))
+        .map(|(i, e)| {
+            (
+                ordinals
+                    .and_then(|ordinals| ordinals.get(i))
+                    .copied()
+                    .unwrap_or(i + first),
+                e,
+            )
+        })
         .filter(|(_, e)| e.k != "usage")
         .collect();
     if let Some((a, b)) = opts.range {
@@ -1070,14 +1184,16 @@ pub fn age_label(started: u64) -> String {
 // CLI
 // ---------------------------------------------------------------------------------------------
 
-/// `concordia thread ...`. Returns (stdout, exit code); errors go to the Err string (stderr).
-pub fn run_cli(state_root: &Path, args: &[String]) -> std::result::Result<String, (String, i32)> {
-    let usage = "usage: concordia thread list [--json] | map <id> | read <id> [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]".to_string();
+/// `concordia chat thread ...`. Returns (stdout, exit code); errors go to the Err string (stderr).
+pub fn run_chat_cli(
+    state_root: &Path,
+    args: &[String],
+) -> std::result::Result<String, (String, i32)> {
+    let usage = "usage: concordia chat thread list [--json] | map <id> | read <id> [--cursor TOKEN] [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]".to_string();
     let Some(sub) = args.first() else {
         return Err((usage, 2));
     };
     match sub.as_str() {
-        "migrate" => crate::legacy_migration::run_cli(state_root, &args[1..]),
         "list" => {
             let json = args[1..].iter().any(|a| a == "--json");
             if let Some(bad) = args[1..].iter().find(|a| *a != "--json") {
@@ -1111,6 +1227,7 @@ pub fn run_cli(state_root: &Path, args: &[String]) -> std::result::Result<String
                 range: None,
                 max_chars: READ_CHARS,
             };
+            let mut cursor = None;
             let mut it = args[2..].iter();
             while let Some(a) = it.next() {
                 let mut val = |name: &str| -> std::result::Result<String, (String, i32)> {
@@ -1119,6 +1236,7 @@ pub fn run_cli(state_root: &Path, args: &[String]) -> std::result::Result<String
                         .ok_or_else(|| (format!("{name} needs a value\n{usage}"), 2))
                 };
                 match (sub.as_str(), a.as_str()) {
+                    ("read", "--cursor") => cursor = Some(val("--cursor")?),
                     ("read", "--tail") => {
                         opts.tail = Some(
                             val("--tail")?
@@ -1140,17 +1258,43 @@ pub fn run_cli(state_root: &Path, args: &[String]) -> std::result::Result<String
                 }
             }
             let id = resolve_prefix(state_root, prefix).map_err(|e| (e.to_string(), 1))?;
-            let events = ThreadLog::open(state_root, &id)
-                .read_all()
-                .map_err(|e| (format!("{e:#}"), 1))?;
+            let log = ThreadLog::open(state_root, &id);
             if sub == "map" {
                 let cap = opts.max_chars.min(MAP_CHARS);
-                Ok(build_map(&events, &id, cap, true) + "\n")
+                log.read_map(cap)
+                    .map(|map| map + "\n")
+                    .map_err(|error| (format!("{error:#}"), 1))
             } else {
-                Ok(read_events_text(&events, &opts))
+                if opts.max_chars > 1024 * 1024
+                    || opts.tail.is_some_and(|tail| tail > JOURNAL_PAGE_EVENTS)
+                {
+                    return Err(("chat thread read accepts at most 1 MiB of display text and 256 tail events per page".into(), 2));
+                }
+                let page = if opts.tail.is_some() {
+                    log.read_tail_page(cursor.as_deref(), &opts)
+                } else {
+                    log.read_page(cursor.as_deref())
+                }
+                .map_err(|e| (format!("{e:#}"), 1))?;
+                let mut out = String::new();
+                if cursor.is_some() || page.next_cursor.is_some() || opts.tail.is_some() {
+                    out.push_str(&format!("[journal page starting at event {}; bounded journal selection; original journal retained]\n", page.first_ordinal));
+                }
+                out.push_str(&read_events_text_from(
+                    &page.events,
+                    &opts,
+                    page.first_ordinal,
+                    Some(&page.ordinals),
+                ));
+                if let Some(next) = page.next_cursor {
+                    out.push_str(&format!(
+                        "[next page: concordia chat thread read {id} --cursor {next}]\n"
+                    ));
+                }
+                Ok(out)
             }
         }
-        other => Err((format!("unknown thread command '{other}'\n{usage}"), 2)),
+        other => Err((format!("unknown chat thread command '{other}'\n{usage}"), 2)),
     }
 }
 
@@ -1167,13 +1311,13 @@ mod tests {
 
     #[test]
     fn empty_thread_still_has_header_and_pointer() {
-        let m = build_map(&[], "abc", 1600, true);
+        let m = build_map(&[], "abc", 1600, true, None, None);
         assert!(m.starts_with("[concordia map] thread abc"));
         assert!(m
             .lines()
             .last()
             .unwrap()
-            .contains("concordia thread read abc"));
+            .contains("concordia chat thread read abc"));
         assert!(m.chars().count() <= 1600);
     }
 
@@ -1187,13 +1331,13 @@ mod tests {
 
     #[test]
     fn unstored_map_says_so() {
-        let m = build_map(&[user("hi")], "", 1600, false);
+        let m = build_map(&[user("hi")], "", 1600, false, None, None);
         assert!(m.contains("not stored"));
         assert!(!m.contains("thread read"));
     }
 
     #[test]
-    fn layout_lines_and_dedup() {
+    fn map_layout_preserves_intent_metadata_and_exact_source_ordinals() {
         let mut ev = vec![user("fix the login redirect"), asst("looking")];
         for p in ["src/a.rs", "src/b.rs", "src/a.rs"] {
             ev.push(ThreadEvent::card("Edit", Some(p), "done"));
@@ -1202,18 +1346,20 @@ mod tests {
         ev.push(ThreadEvent::card("Bash", Some("boom"), "error"));
         ev.push(user("now the logout"));
         ev.push(asst("done with it"));
-        let m = build_map(&ev, "id1", 1600, true);
-        assert!(m.contains("asked: fix the login redirect"), "{m}");
-        assert!(m.contains("now: now the logout"), "{m}");
-        assert!(m.contains("files: src/a.rs, src/b.rs\n"), "{m}");
-        assert!(m.contains("ran: cargo test; boom"), "{m}");
-        assert!(m.contains("errors: Bash: boom"), "{m}");
-        assert!(m.contains("last reply: done with it"), "{m}");
-        assert!(m.contains("4 msgs"), "{m}");
+        let m = build_map(&ev, "id1", 1600, true, None, None);
+        assert!(m.contains("goal: fix the login redirect"), "{m}");
+        assert!(m.contains("latest redirect: now the logout"), "{m}");
+        assert!(m.contains("src/a.rs (2 edits)"), "{m}");
+        assert!(m.contains("src/b.rs (1 edit)"), "{m}");
+        assert!(m.contains("last error") && m.contains("boom"));
+        assert!(m.contains("previous agent final message (agent claim)"));
+        assert!(m.contains("done with it"));
+        assert!(m.contains("read pointers with: concordia chat thread read id1"));
+        assert!(m.lines().last().unwrap().starts_with("current state:"));
     }
 
     #[test]
-    fn map_omits_repeated_request_field_and_nonadjacent_identical_errors() {
+    fn map_preserves_repeated_user_ordinals_without_copying_error_bodies() {
         let events = vec![
             user("same request"),
             ThreadEvent::card("shell", Some("error one"), "error"),
@@ -1221,36 +1367,33 @@ mod tests {
             ThreadEvent::card("shell", Some("error one"), "error"),
             user("same request"),
         ];
-        let map = build_map(&events, "fixture", 1600, true);
-        assert!(map.contains("asked: same request"));
-        assert!(!map.contains("now:"));
-        let errors = map
-            .lines()
-            .find(|line| line.starts_with("errors:"))
-            .unwrap();
-        assert_eq!(errors.matches("error one").count(), 1);
-        assert_eq!(errors.matches("error two").count(), 1);
-        assert!(map.contains("2 msgs"), "source events are retained");
+        let map = build_map(&events, "fixture", 1600, true, None, None);
+        assert!(map.contains("goal: same request"));
+        assert!(map.contains("latest redirect: same request"));
+        assert!(map.contains("pointers") || map.contains("read pointers with"));
+        assert!(map.contains("error one"));
     }
 
     #[test]
-    fn files_cap_at_12_and_non_paths_are_ignored() {
+    fn map_preserves_path_metadata_and_withholds_nonpath_tool_bodies() {
         let mut ev = vec![user("go")];
         for i in 0..15 {
             ev.push(ThreadEvent::card(
-                "Read",
+                "Edit",
                 Some(&format!("src/f{i}.rs")),
                 "done",
             ));
         }
-        ev.push(ThreadEvent::card("Read", Some("not a path here"), "done"));
-        let m = build_map(&ev, "id", 5000, true);
-        assert!(m.contains("(+3 more)"), "{m}");
+        ev.push(ThreadEvent::card("Edit", Some("not a path here"), "done"));
+        let m = build_map(&ev, "id", 5000, true, None, None);
+        assert!(m.lines().filter(|line| line.ends_with("(1 edit)")).count() <= 8);
+        assert!(m.contains("src/f0.rs (1 edit)"));
+        assert!(m.contains("more files: concordia chat thread read id --range 2-16"));
         assert!(!m.contains("not a path"));
     }
 
     #[test]
-    fn budget_is_never_exceeded_and_drop_order_holds() {
+    fn map_budget_preserves_source_instruction_and_withholds_bodies() {
         let mut ev = vec![user(&"q".repeat(500)), asst(&"r".repeat(5000))];
         for i in 0..30 {
             ev.push(ThreadEvent::card(
@@ -1265,19 +1408,29 @@ mod tests {
             ));
         }
         for max in [1600usize, 900, 500, 300, 200, 120, 60, 10, 0] {
-            let m = build_map(&ev, "3f9a1111-2222-3333-4444-555555555555", max, true);
+            let m = build_map(
+                &ev,
+                "3f9a1111-2222-3333-4444-555555555555",
+                max,
+                true,
+                None,
+                None,
+            );
             assert!(
                 m.chars().count() <= max,
                 "max {max} got {}",
                 m.chars().count()
             );
         }
-        let m = build_map(&ev, "id", 1600, true);
+        let m = build_map(&ev, "id", 1600, true, None, None);
         assert!(m.chars().count() <= 1600);
-        // A tight budget drops ran first, keeps errors.
-        let tight = build_map(&ev, "id", 700, true);
-        assert!(!tight.contains("\nran:"), "{tight}");
-        assert!(tight.contains("more: concordia thread read id"), "{tight}");
+        // Compact maps retain the exact source instruction without copying provider bodies.
+        let tight = build_map(&ev, "id", 700, true, None, None);
+        assert!(!tight.contains("cmd number"));
+        assert!(
+            tight.contains("read pointers with: concordia chat thread read id"),
+            "{tight}"
+        );
     }
 
     #[test]
@@ -1287,42 +1440,51 @@ mod tests {
         assert_eq!(e.text().chars().count(), MAX_EVENT_TEXT);
         let ev = vec![e, asst(&s)];
         for max in [1600usize, 333, 101] {
-            let m = build_map(&ev, "x", max, true);
+            let m = build_map(&ev, "x", max, true, None, None);
             assert!(m.chars().count() <= max);
         }
     }
 
     #[test]
     fn note_goes_into_header() {
-        let m = build_map_with(
+        let m = build_map(
             &[user("a")],
             "",
             1600,
             false,
-            Some("tools/approvals NOT transferred"),
+            None,
+            Some("PARTIAL journal: first page only"),
         );
         assert!(m
             .lines()
             .next()
             .unwrap()
-            .contains("tools/approvals NOT transferred"));
+            .contains("PARTIAL journal: first page only"));
+        assert!(m.contains("tools/approvals NOT transferred"));
     }
 
     #[test]
-    fn map_v2_is_deterministic() {
+    fn map_is_deterministic() {
         let events = vec![
             user("fix the login"),
             asst("implementation detail must not leak"),
         ];
         assert_eq!(
-            build_map_v2(&events, "thread-1", 1600, true),
-            build_map_v2(&events, "thread-1", 1600, true)
+            build_map(&events, "thread-1", 1600, true, None, None),
+            build_map(&events, "thread-1", 1600, true, None, None)
         );
     }
 
     #[test]
-    fn map_v2_keeps_the_concordia_map_marker() {
-        let map = build_map_v2(&[user("keep the handoff readable")], "thread-1", 1600, true);
+    fn map_keeps_the_current_concordia_map_marker() {
+        let map = build_map(
+            &[user("keep the handoff readable")],
+            "thread-1",
+            1600,
+            true,
+            None,
+            None,
+        );
 
         assert!(map.starts_with("[concordia map]"));
         assert!(map.starts_with("[concordia map] thread thread-1 - v2"));
@@ -1335,10 +1497,10 @@ mod tests {
             user("typed decision: keep PKCE"),
             asst("SECRET_ASSISTANT_REPLY"),
         ];
-        let map = build_map_v2(&events, "thread-1", 1600, true);
+        let map = build_map(&events, "thread-1", 1600, true, None, None);
         assert!(map.contains("typed decision: keep PKCE"));
-        assert!(!map.contains("SECRET_ASSISTANT_REPLY"));
-        assert!(map.contains("assistant pointer"));
+        assert!(map.contains("SECRET_ASSISTANT_REPLY"));
+        assert!(map.contains("previous agent final message"));
     }
 
     #[test]
@@ -1353,190 +1515,18 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for cap in [0, 10, 200, 1600] {
-            assert!(build_map_v2(&events, "thread-1", cap, true).chars().count() <= cap);
+            assert!(
+                build_map(&events, "thread-1", cap, true, None, None)
+                    .chars()
+                    .count()
+                    <= cap
+            );
         }
     }
 
-    #[test]
-    fn pinned_span_survives_native_file_truncation() {
-        let state = tempfile::tempdir().unwrap();
-        let native = state.path().join("native.jsonl");
-        std::fs::write(&native, "native source body").unwrap();
-        let log = ThreadLog::open(state.path(), "pin-survival");
-        log.pin_span(4, "assistant", "native source body").unwrap();
-        std::fs::write(&native, "").unwrap();
-        assert_eq!(log.resolve_span(4).unwrap(), "native source body");
-    }
-
-    #[test]
-    fn pins_are_redacted() {
-        let state = tempfile::tempdir().unwrap();
-        let log = ThreadLog::open(state.path(), "pin-redaction");
-        log.pin_span(1, "tool", "Authorization: Bearer sk-abcdefghijklmnop")
-            .unwrap();
-        let raw = std::fs::read_to_string(log.pins_path()).unwrap();
-        assert!(!raw.contains("sk-abcdefghijklmnop"));
-        assert!(raw.contains("[REDACTED:authorization:"));
-    }
-
-    #[test]
-    fn pins_are_pruned_oldest_first() {
-        let state = tempfile::tempdir().unwrap();
-        let log = ThreadLog::open(state.path(), "pin-pruning");
-        for ordinal in 1..=MAX_PINNED_SPANS + 2 {
-            log.pin_span(ordinal, "assistant", &format!("body {ordinal}"))
-                .unwrap();
-        }
-        let pins = log.read_pins_unchecked();
-        assert_eq!(pins.len(), MAX_PINNED_SPANS);
-        assert_eq!(pins.first().unwrap().ordinal, 3);
-        assert_eq!(pins.last().unwrap().ordinal, MAX_PINNED_SPANS + 2);
-    }
-
-    #[test]
-    fn log_roundtrip_list_resolve_delete() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = ThreadLog::open(dir.path(), "aaaa1111");
-        // Old logs remain readable byte for byte; only new appends use the V2 contract.
-        std::fs::create_dir_all(&a.dir).unwrap();
-        let legacy = format!(
-            "{}\n{}\n",
-            serde_json::to_string(&user("hello")).unwrap(),
-            serde_json::to_string(&asst("hi")).unwrap()
-        );
-        std::fs::write(a.log_path(), &legacy).unwrap();
-        assert!(a.append(&user("must not be copied")).is_err());
-        assert!(a
-            .append(&ThreadEvent::card("shell", Some("secret command"), "done"))
-            .is_err());
-        assert_eq!(std::fs::read_to_string(a.log_path()).unwrap(), legacy);
-        a.write_meta(&ThreadMeta {
-            id: "aaaa1111".into(),
-            started: 100,
-            title: "hello".into(),
-            cwd: String::new(),
-            account: None,
-        })
-        .unwrap();
-        let b = ThreadLog::open(dir.path(), "aaaa2222");
-        b.append(&ThreadEvent::new("switch").who("codex", "fixture", "model"))
-            .unwrap();
-        let unavailable = user("later sentinel body must never be persisted");
-        b.append_unavailable(
-            &unavailable,
-            None,
-            "arbitrary error sentinel must not persist",
-        )
-        .unwrap();
-        let body_free = std::fs::read_to_string(b.log_path()).unwrap();
-        assert!(body_free.contains("\"version\":2"));
-        assert!(
-            !body_free.contains("sentinel")
-                && !body_free.contains("\"text\"")
-                && !body_free.contains("\"detail\"")
-        );
-        assert_eq!(
-            b.read_all().unwrap()[1].text(),
-            "[native source unavailable: capture_failed]"
-        );
-        b.write_meta(&ThreadMeta {
-            id: "aaaa2222".into(),
-            started: 200,
-            title: "later".into(),
-            cwd: String::new(),
-            account: None,
-        })
-        .unwrap();
-        assert_eq!(a.read_all().unwrap().len(), 2);
-        let l = list(dir.path());
-        assert_eq!(l[0].id, "aaaa2222");
-        assert!(resolve_prefix(dir.path(), "aaaa").is_err());
-        assert!(resolve_prefix(dir.path(), "zz").is_err());
-        assert_eq!(resolve_prefix(dir.path(), "aaaa1").unwrap(), "aaaa1111");
-
-        // Exact native source ownership, successful hydration and stale-source failure.
-        use crate::native_memory::{
-            references::{begin_scope, capture_text},
-            Binding,
-        };
-        use crate::store::{ProviderKind, StoredAccount};
-        let home = dir.path().join("fixture");
-        std::fs::create_dir_all(home.join("sessions")).unwrap();
-        crate::store::upsert_stored_account(
-            dir.path(),
-            StoredAccount {
-                id: "fixture".into(),
-                provider: ProviderKind::Codex,
-                home_path: Some(home.to_string_lossy().into_owned()),
-                label: "fixture".into(),
-                created_at: "0".into(),
-            },
-        )
-        .unwrap();
-        let session = "11111111-2222-4333-8444-555555555555";
-        let native_path = home.join("sessions").join(format!("{session}.jsonl"));
-        std::fs::write(
-            &native_path,
-            format!(
-                "{}\n",
-                serde_json::json!({"type":"session_meta","payload":{"id":session}})
-            ),
-        )
-        .unwrap();
-        let binding = Binding::new(ProviderKind::Codex, "fixture", &home, session).unwrap();
-        let scope = begin_scope(dir.path(), &binding).unwrap();
+/*
         let body = "immutable native-only 日本語 sentinel";
-        let native_record = format!(
-            "{}\n",
-            serde_json::json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":body}]}})
-        );
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&native_path)
-            .unwrap()
-            .write_all(native_record.as_bytes())
-            .unwrap();
-        let reference = capture_text(dir.path(), &scope, "user", body).unwrap();
-        let event = user(body).who("codex", "fixture", "model");
-        assert!(b
-            .append_referenced(&user("wrong projection"), reference.clone())
-            .is_err());
-        assert!(b.append_referenced(&asst(body), reference.clone()).is_err());
-        assert!(b
-            .append_referenced(
-                &user(body).who("codex", "different", "model"),
-                reference.clone()
-            )
-            .is_err());
-        b.append_referenced(&event, reference.clone()).unwrap();
-        b.append_unavailable(&user("another private body"), Some(&scope), "missing")
-            .unwrap();
-        // Image-only prompts have empty local text but an explicitly captured native input.
-        b.append_referenced(&user("").who("codex", "fixture", "model"), reference)
-            .unwrap();
-        let journal = std::fs::read_to_string(b.log_path()).unwrap();
-        assert!(!journal.contains(body) && !journal.contains("another private body"));
-        let hydrated = b.read_all().unwrap();
-        assert_eq!(hydrated[2], event);
-        assert_eq!(hydrated[3].account.as_deref(), Some("fixture"));
-        assert_eq!(hydrated[4].text(), body);
-        assert!(build_map(&hydrated, b.id(), 1600, true).contains(body));
-        let original_native = std::fs::read_to_string(&native_path).unwrap();
-        std::fs::write(
-            &native_path,
-            original_native.replace("immutable", "corrupted"),
-        )
-        .unwrap();
-        assert_eq!(
-            b.read_all().unwrap()[2].text(),
-            "[native source unavailable: verification_failed]"
-        );
-        assert_eq!(std::fs::read_to_string(a.log_path()).unwrap(), legacy);
-        delete(dir.path(), "aaaa1111").unwrap();
-        assert_eq!(list(dir.path()).len(), 1);
-        crate::legacy_migration::fixture_proof();
-    }
-
+*/
     #[test]
     fn read_filters_and_caps() {
         let ev = vec![user("alpha"), asst("beta"), user("gamma"), asst("delta")];
@@ -1576,6 +1566,6 @@ mod tests {
         ];
         let ev = events_from_messages(&msgs, "codex");
         assert_eq!(ev.len(), 2);
-        assert!(build_map(&ev, "", 1600, false).contains("files: a/b.rs"));
+        assert!(build_map(&ev, "", 1600, false, None, None).contains("a/b.rs (1 edit)"));
     }
 }

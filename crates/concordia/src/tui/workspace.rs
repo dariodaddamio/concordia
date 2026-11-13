@@ -277,41 +277,6 @@ impl Workspace {
         self.open_content(file, None)
     }
 
-    pub fn open_verified(
-        &mut self,
-        verified: crate::workspace_search::VerifiedHit,
-    ) -> Result<(), String> {
-        if self.panes.iter().any(|pane| pane.path == verified.hit.path) {
-            return Err(
-                "file is already open; close its pane before opening a search snapshot".into(),
-            );
-        }
-        let prefix = verified
-            .text
-            .get(..verified.hit.range.start)
-            .ok_or("search result byte location is invalid")?;
-        let line_prefix = prefix.rsplit('\n').next().unwrap_or(prefix);
-        let display_column = line_prefix
-            .chars()
-            .map(crate::file_document::display_width)
-            .sum::<usize>();
-        let file = file_links::ResolvedFile {
-            path: verified.hit.path,
-            line: Some(verified.hit.line),
-            column: Some(display_column.saturating_add(1) as u32),
-        };
-        let stamp = Stamp {
-            len: verified.text.len() as u64,
-            modified: verified.modified,
-        };
-        self.open_content(file, Some((verified.text, stamp)))?;
-        // Search locations refer to raw source lines, not formatted Markdown/JSON rows.
-        if let Some(pane) = self.panes.last_mut() {
-            pane.formatted_mode = false;
-        }
-        Ok(())
-    }
-
     fn open_content(
         &mut self,
         file: file_links::ResolvedFile,
@@ -460,7 +425,7 @@ impl Workspace {
                 }
             }
         }
-        edit::poll(self);
+        visible_change |= edit::poll(self);
 
         if self.watch.as_ref().is_some_and(|job| job.is_finished()) {
             visible_change = true;
@@ -500,46 +465,6 @@ impl Workspace {
                 .ok();
         }
         visible_change
-    }
-    pub fn replacement_blockers(&self) -> Vec<PathBuf> {
-        self.panes
-            .iter()
-            .filter(|pane| {
-                pane.loading
-                    || pane.saving
-                    || pane
-                        .document
-                        .as_ref()
-                        .is_some_and(|document| document.dirty())
-            })
-            .map(|pane| pane.path.clone())
-            .collect()
-    }
-    pub fn replacement_finished(
-        &mut self,
-        receipt: &crate::workspace_search::replacement::Receipt,
-    ) {
-        let ids = self
-            .panes
-            .iter()
-            .filter(|pane| {
-                !pane.saving
-                    && !pane
-                        .document
-                        .as_ref()
-                        .is_some_and(|document| document.dirty())
-                    && receipt.files.iter().any(|file| {
-                        crate::workspaces::same_key(
-                            &crate::workspaces::path_key(&file.path),
-                            &crate::workspaces::path_key(&pane.path),
-                        )
-                    })
-            })
-            .map(|pane| pane.id)
-            .collect::<Vec<_>>();
-        for id in ids {
-            let _ = self.reload(id);
-        }
     }
     fn reload(&mut self, id: u32) -> Result<(), String> {
         if let Some(pane) = self.panes.iter_mut().find(|p| p.id == id) {
@@ -723,10 +648,10 @@ fn read_text(path: &Path) -> Result<String, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| format!("file read: {e}"))?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err("preview limited to 2 MiB; use /edit FILE".into());
+        return Err("preview limited to 2 MiB; use a configured editor".into());
     }
-    let text =
-        String::from_utf8(bytes).map_err(|_| "preview requires UTF-8 text; use /edit FILE")?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| "preview requires UTF-8 text; use a configured editor")?;
     if text.contains('\0') {
         return Err("binary files cannot be previewed".into());
     }
@@ -741,7 +666,7 @@ fn display_lines(text: &str) -> Result<Vec<String>, String> {
     let (text, _) = super::text::terminal_text(text);
     for line in text.lines() {
         if lines.len() >= MAX_LINES {
-            return Err("preview limited to 50000 lines; use /edit FILE".into());
+            return Err("preview limited to 50000 lines; use a configured editor".into());
         }
         lines.push(
             line.chars()
@@ -958,6 +883,7 @@ fn draw_pane(
     } else if let Some(error) = pane.error.as_ref().filter(|_| pane.document.is_none()) {
         vec![Line::styled(error.clone(), Style::default().fg(Color::Red))]
     } else if pane.formatted_mode && pane.formatted.is_some() {
+        pane.view.link_root = pane.path.parent().map(Path::to_path_buf);
         pane.view.rebuild(
             &[TBlock {
                 identity: None,
@@ -972,6 +898,7 @@ fn draw_pane(
                     .is_some_and(|e| e.eq_ignore_ascii_case("json")),
                 runs: &[],
                 header_files: &[],
+                decor_prefix: 0,
             }],
             inner.width.max(1) as usize,
             inner.height as usize,

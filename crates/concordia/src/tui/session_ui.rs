@@ -1,9 +1,13 @@
 //! Session titles and bounded asynchronous resume scrollback. Native session ownership stays explicit.
 use super::*;
 
+pub(super) const HISTORY_OMITTED: &str =
+    "Showing recent conversation history. Earlier messages remain saved in the original chat.";
+
 #[derive(Default)]
 pub(super) struct State {
     pub title: Option<String>,
+    pub(super) resume_request: Option<ResumeRequest>,
     next: u64,
     pending: Option<u64>,
     jobs: Vec<Load>,
@@ -12,12 +16,20 @@ pub(super) struct State {
     memory_jobs: Vec<(u64, std::sync::mpsc::Receiver<Result<String, String>>)>,
 }
 
+pub(super) struct ResumeRequest {
+    pub account: String,
+    pub session: String,
+    pub task: Option<String>,
+    pub key: super::chat_ownership::Key,
+}
+
 struct Load {
     generation: u64,
     provider: ProviderKind,
     account: String,
     home: PathBuf,
-    session: String,
+    expected_session: Option<String>,
+    restoring: bool,
     rx: std::sync::mpsc::Receiver<Result<crate::chat_cli::History, String>>,
 }
 
@@ -30,6 +42,7 @@ impl State {
         self.pending.is_some()
     }
     pub fn invalidate(&mut self) {
+        self.resume_request = None;
         self.pending = None;
         self.memory_pending = None;
         self.memory_screen = None;
@@ -71,64 +84,7 @@ fn file_facts_memory(value: serde_json::Value) -> String {
     rows.join("\n\n")
 }
 
-fn groups_memory(output: String, argument: &str) -> Result<String, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(&output).map_err(|error| error.to_string())?;
-    let mut lines =
-        vec!["Confirmed related-chat groups · suggestions do not create membership".into()];
-    if let Some(group) = value["group"].as_object() {
-        lines.push(format!(
-            "{} · {}",
-            group["title"].as_str().unwrap_or_default(),
-            group["id"].as_str().unwrap_or_default()
-        ));
-    }
-    for row in value["rows"].as_array().into_iter().flatten() {
-        if row["group"].is_object() {
-            let group = &row["group"];
-            lines.push(format!(
-                "{} · {} members\nGroup: {}\n/memory group-members {}",
-                group["title"].as_str().unwrap_or_default(),
-                row["members"],
-                group["id"].as_str().unwrap_or_default(),
-                group["id"].as_str().unwrap_or_default()
-            ));
-        } else {
-            let source = row["source"].as_str().unwrap_or_default();
-            lines.push(format!(
-                "{} / {} · {}\nSource: {source}\n{}\n/memory sources {source}",
-                row["native"]["account"].as_str().unwrap_or("unavailable"),
-                row["native"]["session_id"].as_str().unwrap_or_default(),
-                row["status"].as_str().unwrap_or_default(),
-                row["reason"].as_str().unwrap_or(
-                    "User-confirmed membership; original native source verified for this read."
-                )
-            ));
-        }
-    }
-    if value["rows"].as_array().is_some_and(Vec::is_empty) {
-        lines.push("No confirmed members in this view.".into());
-    }
-    if let Some(next) = value["next_offset"].as_u64() {
-        let base = argument
-            .split_whitespace()
-            .take(if argument.starts_with("group-members ") {
-                2
-            } else {
-                1
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        lines.push(format!(
-            "Next: /memory {base} {next} {}",
-            value["revision"].as_str().unwrap_or_default()
-        ));
-    }
-    lines.push("Esc / X closes · arrows scroll · /memory group-link GROUP SOURCE confirms membership · group-unlink detaches".into());
-    Ok(lines.join("\n\n"))
-}
-
-fn ranked_memory(
+/* fn ranked_memory(
     root: &Path,
     workspace: &Path,
     argument: &str,
@@ -248,15 +204,55 @@ fn ranked_memory(
     })())
 }
 
+*/
 impl App {
+    /// Refresh a restored tab's exact native history without changing selection, draft,
+    /// conversation ownership or paused unfinished-request state.
+    pub(super) fn reload_restored_history(&mut self, session: &str) {
+        let Some(home) = self.home_path.clone() else {
+            return;
+        };
+        let root = self.state_root.clone();
+        let account = self.account.clone();
+        let provider = self.provider;
+        let requested = session.to_owned();
+        let worker_session = requested.clone();
+        let worker_account = account.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Err(error) = std::thread::Builder::new()
+            .name("concordia-restored-history".into())
+            .spawn(move || {
+                let _ = tx.send(crate::chat_cli::read_history(
+                    &root,
+                    &worker_account,
+                    provider,
+                    &worker_session,
+                ));
+            })
+        {
+            self.push_system(format!(
+                "Saved conversation kept; history refresh unavailable: {error}"
+            ));
+            return;
+        }
+        self.session_ui.next = self.session_ui.next.wrapping_add(1);
+        let generation = self.session_ui.next;
+        self.session_ui.pending = Some(generation);
+        self.session_ui.jobs.push(Load {
+            generation,
+            provider,
+            account,
+            home,
+            expected_session: self.native_session_id.clone(),
+            restoring: true,
+            rx,
+        });
+    }
+
     pub(super) fn memory_command(&mut self, argument: &str) {
         if argument.is_empty() {
-            self.push_system("Related work: /memory groups · group-create SOURCE · group-members GROUP · group-link GROUP SOURCE · group-unlink GROUP SOURCE. Membership requires your explicit action. /memory related-file PATH TEXT, related-goal GOAL TEXT and related-from SOURCE TEXT show suggestions separately.");
-            self.push_system("Ranking: /memory ranked TEXT · /memory ranked-file PATH TEXT · /memory ranked-goal GOAL TEXT. Quote paths containing spaces. Reasons retain original source pointers; suggestions never create links.");
-            self.push_system("Context: /memory ranked-from SOURCE TEXT · /memory ranked-source SOURCE TEXT · /memory ranked-at RFC3339 TEXT. Native timestamps stay unknown when their format is unsupported.");
             self.push_system("Files: /memory file-facts INDEX [OFFSET REVISION] reads historical paths from verified native tool records; it does not open referenced project files.");
-            self.push_system("Goals: /memory goals · /memory goal-link GOAL SOURCE · /memory goal-sources GOAL · /memory goal-unlink GOAL SOURCE. Associations are explicit; source readback stays revision-checked.");
-            self.push_system("Memory: /memory recall TEXT · /memory recall-account ACCOUNT TEXT · /memory recall-source INDEX TEXT · /memory sources INDEX · /memory next INDEX · /memory excerpt INDEX --message N · /memory lineage INDEX · /memory link PARENT CHILD · /memory detach PARENT CHILD. Search suggestions never become links automatically. /memory index SESSION --account ID --scope whole starts a whole-history scan.");
+            self.push_system("Memory: /memory recall TEXT · /memory recall-account ACCOUNT TEXT · /memory recall-source INDEX TEXT · /memory sources INDEX · /memory next INDEX · /memory excerpt INDEX --message N · /memory index SESSION --account ID --scope whole starts a whole-history scan.");
             return;
         }
         if self.session_ui.memory_jobs.len() >= 2 {
@@ -265,23 +261,18 @@ impl App {
         }
         let root = self.state_root.clone();
         let workspace = self.cwd.clone();
-        let screen = argument == "groups"
-            || argument.starts_with("groups ")
-            || argument.starts_with("group-members ")
-            || argument.starts_with("related-");
+        let screen = argument.starts_with("file-facts") || argument.starts_with("sources");
         let argument = argument.to_owned();
         let (tx, rx) = std::sync::mpsc::channel();
         let result = std::thread::Builder::new().name("concordia-memory-read".into()).spawn(move || {
             let search = argument.strip_prefix("recall ").map(|q| (None, None, q))
                 .or_else(|| argument.strip_prefix("recall-account ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(a,q)| (Some(a),None,q)))
                 .or_else(|| argument.strip_prefix("recall-source ").and_then(|rest| rest.split_once(char::is_whitespace)).map(|(s,q)| (None,Some(s),q)));
-            let ranking = argument.strip_prefix("related-").map(|rest| format!("ranked-{rest}"));
-            let output = if let Some(ranked) = ranked_memory(&root, &workspace, ranking.as_deref().unwrap_or(&argument), argument.starts_with("related-from ")) { ranked }
-                else if let Some((account, source, query)) = search {
+            let output = if let Some((account, source, query)) = search {
                     crate::native_memory::retrieval::recall(&root, query, source, account, if source.is_none() { Some(&workspace) } else { None }).map(|r| {
                     let mut lines = vec![format!("Memory search: {} matches in {} bounded source windows{}", r.hits.len(), r.pages.len(), if r.incomplete { "; incomplete scan" } else { "" })];
                     for hit in r.hits {
-                        lines.push(format!("{} / {} · {} · message {}\n{}\nSource: {}\nLexical suggestion; use /memory link to confirm a relationship.", hit.source.account, hit.source.session_id, hit.role, hit.message, hit.preview, hit.source.id));
+                        lines.push(format!("{} / {} · {} · message {}\n{}\nSource: {}", hit.source.account, hit.source.session_id, hit.role, hit.message, hit.preview, hit.source.id));
                     }
                     for page in r.pages { lines.push(format!("Scanned source: {} / {} · {}",page.account,page.session_id,page.id)); }
                     lines.extend(r.unavailable);
@@ -289,13 +280,8 @@ impl App {
                 })
             } else {
                 let args: Vec<String> = argument.split_whitespace().map(str::to_owned).collect();
-                if args.first().is_some_and(|operation| matches!(operation.as_str(), "groups" | "group-create" | "group-members" | "group-link" | "group-unlink")) {
-                    crate::native_memory::relations::groups::command(&root, &args, &workspace)
-                        .and_then(|output| if screen { groups_memory(output, &argument) } else { Ok(output) })
-                } else if args.first().is_some_and(|operation| operation == "file-facts") {
+                if args.first().is_some_and(|operation| operation == "file-facts") {
                     crate::native_memory::files::command(&root, &args).map(file_facts_memory)
-                } else if args.first().is_some_and(|operation| matches!(operation.as_str(), "goals" | "goal-sources" | "goal-link" | "goal-unlink")) {
-                    crate::native_memory::relations::command(&root, &args, &workspace)
                 } else if args.first().is_some_and(|s| s == "next") && args.len() == 2 {
                     crate::native_memory::history_from_pointer(&root, &args[1]).and_then(|s| serde_json::to_string_pretty(&s).map_err(|e| e.to_string()))
                 } else {
@@ -333,7 +319,8 @@ impl App {
         self.flash("reading native memory…");
     }
 
-    pub(super) fn poll_memory(&mut self) {
+    pub(super) fn poll_memory(&mut self) -> bool {
+        let mut changed = false;
         let mut i = 0;
         while i < self.session_ui.memory_jobs.len() {
             let result = match self.session_ui.memory_jobs[i].1.try_recv() {
@@ -349,6 +336,7 @@ impl App {
                 continue;
             }
             self.session_ui.memory_pending = None;
+            changed = true;
             let output = crate::chat_cli::terminal_safe(
                 &result.unwrap_or_else(|e| format!("memory unavailable: {e}")),
             );
@@ -378,6 +366,7 @@ impl App {
                 self.push_system(output);
             }
         }
+        changed
     }
 
     pub(super) fn ensure_session_title(&mut self, prompt: &str) {
@@ -410,26 +399,65 @@ impl App {
         }
     }
 
-    pub(super) fn resume_session(&mut self, account: &str, id: &str) {
+    pub(super) fn rename_session(&mut self, raw: &str) -> bool {
+        let title = crate::session_titles::sanitize(raw);
+        if let (Some(id), Some(home)) = (&self.native_session_id, &self.home_path) {
+            if let Err(error) = crate::session_titles::set(
+                &self.state_root,
+                self.provider,
+                &self.account,
+                home,
+                id,
+                title.as_deref(),
+            ) {
+                self.flash(format!("Chat title was not changed: {error}"));
+                return false;
+            }
+        }
+        self.session_ui.title = title;
+        self.session_chip = self.session_ui.title.clone();
+        true
+    }
+
+    /// Request navigation without replacing this tab before the runner checks existing owners.
+    pub(super) fn request_resume_session(&mut self, account: &str, id: &str) -> bool {
+        let key = match super::chat_ownership::Key::for_resume(&self.state_root, account, id) {
+            Ok(key) => key,
+            Err(error) => {
+                self.push_system(format!("resume unavailable: {error}"));
+                return false;
+            }
+        };
+        self.session_ui.resume_request = Some(ResumeRequest {
+            account: account.into(),
+            session: id.into(),
+            task: None,
+            key,
+        });
+        true
+    }
+
+    /// Low-level application after window-level routing has excluded another owning tab.
+    pub(super) fn resume_session(&mut self, account: &str, id: &str) -> bool {
         if self.busy {
             self.flash("finish or cancel the active turn before resuming");
-            return;
+            return false;
         }
         if self.session_ui.jobs.len() >= 2 {
             self.flash("previous history reads are finishing; try resume again shortly");
-            return;
+            return false;
         }
         let Some(target) = get_account(&self.state_root, account) else {
             self.push_system("resume failed: account is no longer registered");
-            return;
+            return false;
         };
         let Some(home) = target.home_path.clone() else {
             self.push_system("resume failed: account has no native home");
-            return;
+            return false;
         };
         if let Err(error) = select_account(&self.state_root, account) {
             self.push_system(format!("resume account switch failed: {error}"));
-            return;
+            return false;
         }
         self.refresh_binding();
         let root = self.state_root.clone();
@@ -450,8 +478,9 @@ impl App {
         {
             self.native_session_id = None;
             self.push_system(format!("could not start history reader: {error}"));
-            return;
+            return false;
         }
+        super::landing::close(self);
         self.continuation.invalidate();
         self.keep.turn_recovery_notice = false;
         self.session_ui.next = self.session_ui.next.wrapping_add(1);
@@ -461,6 +490,7 @@ impl App {
             crate::session_titles::get(&self.state_root, provider, account, &home, id);
         self.session_chip = self.session_ui.title.clone();
         self.native_session_id = Some(id.to_string());
+        self.task_id = None;
         self.native_sources.clear();
         self.remember_native_source();
         let checkpoint_cleared = self.save_turn_checkpoint(true);
@@ -470,7 +500,6 @@ impl App {
             .canonicalize()
             .ok()
             .map(|home| home.to_string_lossy().into_owned());
-        self.project_search.close();
         self.native_owner = None;
         self.deleg.change_conversation();
         self.messages.clear();
@@ -496,17 +525,25 @@ impl App {
             self.push_system("could not clear the previous unfinished-request record; it has been kept for recovery");
         }
         self.push_system("Loading recent messages for the selected session…");
+        if crate::usage::peek_cached_usage(&self.state_root, provider, account, &home)
+            .is_some_and(|usage| usage.exhausted)
+        {
+            self.push_system("This account's recorded usage is exhausted. You can still read this chat. Use /use to choose another account, /model to choose a model, or /usage refresh to check the limit before sending.");
+        }
         self.session_ui.jobs.push(Load {
             generation,
             provider,
             account: account.into(),
             home,
-            session: id.into(),
+            expected_session: Some(id.into()),
+            restoring: false,
             rx,
         });
+        true
     }
 
-    pub(super) fn poll_session_history(&mut self) {
+    pub(super) fn poll_session_history(&mut self) -> bool {
+        let mut changed = false;
         let mut i = 0;
         while i < self.session_ui.jobs.len() {
             let result = match self.session_ui.jobs[i].rx.try_recv() {
@@ -520,16 +557,62 @@ impl App {
                 }
             };
             let job = self.session_ui.jobs.swap_remove(i);
-            if self.session_ui.pending != Some(job.generation)
-                || self.provider != job.provider
+            if self.session_ui.pending != Some(job.generation) {
+                continue;
+            }
+            if self.provider != job.provider
                 || self.account != job.account
                 || self.home_path.as_ref() != Some(&job.home)
-                || self.native_session_id.as_deref() != Some(job.session.as_str())
+                || self.native_session_id != job.expected_session
             {
+                self.session_ui.pending = None;
+                changed = true;
+                let notice = "History loading stopped because the account or native session changed. Select the intended chat again.";
+                if let Some(message) = self.messages.iter_mut().find(|message| {
+                    message.role == MsgRole::System
+                        && message.text == "Loading recent messages for the selected session…"
+                }) {
+                    message.text = notice.into();
+                } else {
+                    self.push_system(notice);
+                }
                 continue;
             }
             self.session_ui.pending = None;
-            let pending_notices = self.messages.split_off(1.min(self.messages.len()));
+            changed = true;
+            let unfinished_prompt = (job.restoring && self.keep.turn_recovery_notice)
+                .then(|| self.continuation.pending_text().map(str::to_owned))
+                .flatten();
+            if job.restoring {
+                if let Err(error) = &result {
+                    self.push_system(format!(
+                        "Saved conversation kept; native history unavailable: {error}"
+                    ));
+                    continue;
+                }
+                if result
+                    .as_ref()
+                    .is_ok_and(|history| history.messages.is_empty())
+                    && self
+                        .messages
+                        .iter()
+                        .any(|message| matches!(message.role, MsgRole::User | MsgRole::Assistant))
+                {
+                    self.push_system("Saved conversation kept; the native source contains no readable messages yet.");
+                    continue;
+                }
+            }
+            let pending_notices = if job.restoring {
+                self.messages
+                    .iter()
+                    .filter(|message| {
+                        message.role == MsgRole::System && message.text != HISTORY_OMITTED
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                self.messages.split_off(1.min(self.messages.len()))
+            };
             let pending_usage = self
                 .usage_block
                 .take()
@@ -562,9 +645,11 @@ impl App {
                         }
                     }
                     let count = history.messages.len();
-                    self.push_system(if history.truncated {
-                        format!("Resumed · {count} recent messages loaded; older history is omitted from this bounded view.")
-                    } else { format!("Resumed · {count} messages loaded. Scroll up to review the conversation.") });
+                    if history.truncated {
+                        self.push_system(HISTORY_OMITTED);
+                    } else if !job.restoring {
+                        self.push_system(format!("Resumed · {count} messages loaded. Scroll up to review the conversation."));
+                    }
                     let meta = Some(self.reply_meta());
                     for message in history.messages {
                         self.messages.push(ChatLine {
@@ -602,10 +687,27 @@ impl App {
                     ));
                 }
             }
+            if let Some(prompt) = unfinished_prompt {
+                let already_last = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == MsgRole::User)
+                    .is_some_and(|message| message.text == prompt);
+                if !already_last {
+                    self.messages.push(ChatLine {
+                        role: MsgRole::User,
+                        text: prompt,
+                        card: None,
+                        meta: None,
+                    });
+                }
+            }
             let notice_offset = self.messages.len();
             self.messages.extend(pending_notices);
             self.usage_block = pending_usage.map(|index| notice_offset + index);
             self.view.follow_tail();
         }
+        changed
     }
 }

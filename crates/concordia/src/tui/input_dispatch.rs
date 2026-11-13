@@ -16,11 +16,69 @@ pub(super) fn should_accept_key(key: &KeyEvent) -> bool {
     true
 }
 
+fn rename_key(app: &mut App, key: KeyEvent) {
+    if !should_accept_key(&key) {
+        return;
+    }
+    let mut editor = app.rename_editor.take().expect("active title editor");
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Esc => return,
+        KeyCode::Enter => {
+            if app.rename_session(&editor.text()) {
+                return;
+            }
+        }
+        KeyCode::Char('a' | 'A') if ctrl && !alt => editor.select_all(),
+        KeyCode::Char('v' | 'V') if ctrl && !alt => {
+            app.rename_editor = Some(editor);
+            match clipboard::get_text() {
+                Ok(text) => app.paste_text(&text),
+                Err(error) => app.flash(format!("paste failed: {error}")),
+            }
+            return;
+        }
+        KeyCode::Backspace => editor.backspace(),
+        KeyCode::Delete => editor.delete(),
+        KeyCode::Left => editor.move_left(shift),
+        KeyCode::Right => editor.move_right(shift),
+        KeyCode::Home => editor.move_to(0, shift),
+        KeyCode::End => editor.move_to(editor.chars().len(), shift),
+        KeyCode::Char(c) if !c.is_control() && (!ctrl && !alt || ctrl && alt) => {
+            if editor.chars().len() < 256 || editor.selection().is_some() {
+                editor.insert_char(c);
+            }
+        }
+        _ => {}
+    }
+    app.rename_editor = Some(editor);
+}
+
 pub(super) fn dispatch_key_burst(
     app: &mut App,
     burst: input::KeyBurst,
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
+    if app.local_terminal.visible() {
+        if burst.text {
+            app.local_terminal
+                .paste(burst.text_content.as_deref().unwrap_or_default());
+        } else {
+            for key in burst.keys {
+                local_terminal::key(app, &key);
+            }
+        }
+        return false;
+    }
+    if app.rename_editor.is_some() && burst.text {
+        app.paste_text_chunk(
+            burst.text_content.as_deref().unwrap_or_default(),
+            burst.continues_paste,
+        );
+        return false;
+    }
     // File drops can arrive as a whole unframed burst of character keys.
     if !burst.text && burst.keys.len() > 1 {
         let dropped: Option<String> = burst
@@ -45,7 +103,7 @@ pub(super) fn dispatch_key_burst(
     }
     if burst.text {
         let text = burst.text_content.as_deref().unwrap_or_default();
-        if !app.project_search.active() && questions::paste(app, text) {
+        if questions::paste(app, text) {
             return false;
         }
         app.paste_text_chunk(
@@ -76,8 +134,8 @@ pub(super) fn dispatch_key_event(
         && !app.palette_entries().is_empty()
         && !key_burst.active();
     if input::BurstBuffer::is_candidate(&key)
+        && !app.local_terminal.visible()
         && app.picker.is_none()
-        && !app.project_search.active()
         && !palette_action
     {
         if let Some(burst) = key_burst.push(key, now) {
@@ -102,14 +160,41 @@ pub(super) fn handle_key(
     key: KeyEvent,
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
+    if local_terminal::key(app, &key) {
+        return false;
+    }
     if app.key_sheet {
         if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1)) {
             app.key_sheet = false;
         }
         return false;
     }
-    if (key.code == KeyCode::F(1) || key.code == KeyCode::Char('?')) && key.modifiers.is_empty() {
+    if app.picker.as_ref().is_some_and(|p| p.kind == PickerKind::GrokBotForm) {
+        app.grok_bot_form_key(key);
+        return false;
+    }
+    let idle_help = key.code == KeyCode::Char('?')
+        && !app.busy
+        && app.rename_editor.is_none()
+        && !app.raster.active()
+        && !workers::overlay_open(app)
+        && app.editor.chars().is_empty()
+        && app.picker.is_none()
+        && app.workspace.focused.is_none()
+        && !worker_input::active(app)
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+        && app.queue.edit.is_none()
+        && !landing::editing_goal(app);
+    if (key.code == KeyCode::F(1) || idle_help) && key.modifiers.is_empty() {
         app.key_sheet = true;
+        return false;
+    }
+    if key.modifiers.is_empty()
+        && app.picker.is_none()
+        && key.code == KeyCode::F(2)
+    {
+        app.open_provider_picker();
         return false;
     }
     // Native windows distinguish auto-repeat from a fresh press. Navigation and deletion
@@ -144,26 +229,9 @@ pub(super) fn handle_key(
     if worker_input::key(app, &key) {
         return false;
     }
-    if app.project_search.active() {
-        if (matches!(key.code, KeyCode::Char('v' | 'V'))
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT))
-            || (key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT))
-        {
-            match clipboard::get_text() {
-                Ok(text) => app.project_search.paste(&text),
-                Err(error) => app.project_search.notice(&format!("paste failed: {error}")),
-            }
-            return false;
-        }
-        let action = app.project_search.key(key);
-        app.apply_search_action(action);
-        return false;
-    }
     if key.code == KeyCode::F(9)
         && app.picker.is_none()
         && app.workspace.focused.is_none()
-        && app.queue.edit.is_none()
         && app.activity.detail.is_none()
         && !app.questions.focused
     {
@@ -181,16 +249,6 @@ pub(super) fn handle_key(
     {
         landing::close(app);
         integrations::open(app);
-        return false;
-    }
-    if key.code == KeyCode::Char('f')
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-        && app
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Files)
-    {
-        app.open_project_search();
         return false;
     }
     if key.code == KeyCode::F(4)
@@ -237,7 +295,7 @@ pub(super) fn handle_key(
     if landing::navigation_key(app, key) {
         return false;
     }
-    if landing::visible(app) && landing::handle_key(app, key) {
+    if app.picker.is_none() && landing::visible(app) && landing::handle_key(app, key) {
         return false;
     }
     if tokens::handle_key(app, key) {
@@ -250,6 +308,15 @@ pub(super) fn handle_key(
         return false;
     }
     if let Some(picker) = app.picker.as_mut() {
+        if picker.kind == PickerKind::Agents && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            if let Some(index) = picker.state.selected() {
+                if let Some(row) = picker.filtered().get(index) {
+                    let id = row.id.clone();
+                    app.toggle_agents_row(&id);
+                }
+            }
+            return false;
+        }
         // Keep the long-standing command-history affordance when `/doctor` was just submitted.
         // Once the user has typed or selected a row, the doctor picker owns navigation normally.
         if picker.kind == PickerKind::Doctor
@@ -413,56 +480,35 @@ pub(super) fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
-    if ctrl && shift && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
-        app.worker_panel_open = !app.worker_panel_open;
-        app.worker_panel_explicit = Some(app.worker_panel_open);
-        let choice = app.worker_panel_open;
-        let _ = crate::store::modify_store(&app.state_root, |store| {
-            store.settings.worker_panel_open = Some(choice);
-            Ok(())
-        });
-        app.flash(if app.worker_panel_open {
-            "worker panel open (read-only)"
-        } else {
-            "worker panel closed"
-        });
+    if key.code == KeyCode::F(2)
+        && key.modifiers.is_empty()
+        && app.rename_editor.is_none()
+        && app.workspace.focused.is_none()
+        && app.queue.edit.is_none()
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+        && !landing::editing_goal(app)
+    {
+        let mut editor = Editor::default();
+        editor.set_text(app.session_ui.title.as_deref().unwrap_or_default());
+        editor.select_all();
+        app.rename_editor = Some(editor);
         return false;
     }
-    if key.code == KeyCode::F(2) && key.modifiers.is_empty() {
-        app.rename_active = true;
-        app.editor
-            .set_text(app.session_ui.title.as_deref().unwrap_or_default());
-        return false;
-    }
-    if app.rename_active {
-        match key.code {
-            KeyCode::Esc => {
-                app.rename_active = false;
-                app.editor.clear();
-            }
-            KeyCode::Enter => {
-                app.session_ui.title = crate::session_titles::sanitize(&app.editor.text());
-                app.session_chip = app.session_ui.title.clone();
-                app.persist_session_title();
-                app.rename_active = false;
-                app.editor.clear();
-            }
-            KeyCode::Backspace => app.editor.backspace(),
-            KeyCode::Left => app.editor.move_left(false),
-            KeyCode::Right => app.editor.move_right(false),
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                app.editor.insert_char(c)
-            }
-            _ => {}
-        }
+    if app.rename_editor.is_some() {
+        rename_key(app, key);
         return false;
     }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
-        app.open_agents_picker();
+        if app
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Agents)
+        {
+            app.dismiss_picker();
+        } else {
+            app.open_agents_picker();
+        }
         return false;
     }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('n' | 'N')) {
@@ -473,12 +519,24 @@ pub(super) fn handle_key(
 
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('o' | 'O'))
     {
+        let every = key.modifiers.contains(KeyModifiers::SHIFT);
+        let all = app.expanded_activity;
+        if app
+            .activity
+            .expand_last_message(&app.messages, all, every)
+            == 0
+        {
+            app.flash("Nothing to expand in the last message.");
+        }
+        return false;
+    }
+    if app.activity.detail.is_none() && key.code == KeyCode::F(5) && key.modifiers.is_empty() {
         app.expanded_activity = !app.expanded_activity;
         app.activity.collapsed.clear();
         app.flash(if app.expanded_activity {
-            "full activity - Ctrl+O collapses"
+            "full activity everywhere - F5 returns to compact"
         } else {
-            "compact activity - Ctrl+O expands"
+            "compact activity - F5 shows full activity everywhere"
         });
         return false;
     }
@@ -825,6 +883,12 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if matches!(m.kind, MouseEventKind::Down(_)) {
+        app.rename_editor = None;
+    }
+    if local_terminal::mouse(app, m) {
+        return;
+    }
     if matches!(m.kind, MouseEventKind::Down(_) | MouseEventKind::Drag(_)) {
         app.card_header_pressed = None;
         app.busy_send_confirmation = None;
@@ -837,9 +901,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         if !modal::mouse(app, &m) {
             worker_input::mouse(app, &m);
         }
-        return;
-    }
-    if app.project_search.active() {
         return;
     }
     let permissions_hit = contains(app.areas.permissions, m.column, m.row);
@@ -915,28 +976,79 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         }
         return;
     }
+    let attention_hit = app
+        .areas
+        .header_attention
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.header_attention_pressed = attention_hit;
+        if attention_hit {
+            return;
+        }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_attention_pressed)
+    {
+        if attention_hit {
+            app.open_needs_you_picker();
+        }
+        return;
+    }
     let home_hit = app
         .areas
         .header_home
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let provider_hit = app
+        .areas
+        .header_provider
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let model_hit = app
+        .areas
+        .header_model
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let effort_hit = app
+        .areas
+        .header_effort
         .is_some_and(|rect| contains(rect, m.column, m.row));
     let credits_hit = app
         .areas
         .header_credits
         .is_some_and(|rect| contains(rect, m.column, m.row));
     if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.header_provider_pressed = provider_hit;
+        app.header_model_pressed = model_hit;
+        app.header_effort_pressed = effort_hit;
         app.header_home_pressed = home_hit;
         app.header_credits_pressed = credits_hit;
         app.header_email_pressed = false;
-        if home_hit || credits_hit {
+        if home_hit || credits_hit || provider_hit || model_hit || effort_hit {
             return;
         }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_provider_pressed)
+    {
+        if provider_hit { app.open_provider_picker(); }
+        return;
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_model_pressed)
+    {
+        if model_hit { app.open_model_picker(); }
+        return;
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_effort_pressed)
+    {
+        if effort_hit { app.open_effort_picker(); }
+        return;
     }
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_home_pressed)
     {
         if home_hit {
             if landing::visible(app) {
-                landing::close(app);
+                landing::back_to_chat(app);
             } else {
                 landing::open_home(app);
             }
@@ -972,7 +1084,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if chatref::handle_mouse(app, m) {
         return;
     }
-    if landing::visible(app) && landing::handle_mouse(app, m) {
+    if app.picker.is_none() && landing::visible(app) && landing::handle_mouse(app, m) {
         return;
     }
     if app.activity.detail.is_some() {

@@ -19,6 +19,7 @@ foreach ($module in $modules) {
     $edges[$name] = @($source | Select-String -Pattern 'crate::([A-Za-z_][A-Za-z0-9_]*)' -AllMatches |
         ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -ne $name } | Sort-Object -Unique)
 }
+$knownCycleStarts = [Collections.Generic.HashSet[string]]::new()
 foreach ($start in $edges.Keys) {
     $seen = [Collections.Generic.HashSet[string]]::new()
     $queue = [Collections.Generic.Queue[string]]::new(); $queue.Enqueue($start)
@@ -26,10 +27,11 @@ foreach ($start in $edges.Keys) {
         foreach ($next in @($edges[$current])) {
             if ($next -eq $start) {
                 if (!$allowed.ContainsKey($start)) { throw "module cycle detected: $start -> ... -> $start (add a named reason to $allowlistPath only for an intentional known cycle)" }
+                [void]$knownCycleStarts.Add($start)
                 continue
             }
             if ($edges.ContainsKey($next)) { $queue.Enqueue($next) }
         }
     }
 }
-Write-Output 'No cycles among direct top-level module references.'
+Write-Output ('No unapproved cycles among direct top-level module references; {0} named starting modules have allowed cycles.' -f $knownCycleStarts.Count)

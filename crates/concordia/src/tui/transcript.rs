@@ -8,10 +8,35 @@ use super::markdown;
 use super::text::{col_to_index, word_bounds, wrap_ranges_hang};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::hash::{Hash, Hasher};
 
 /// The row cache is a viewport cache, not a second transcript. Older content is rebuilt from
 /// the caller's thread-backed blocks when the user scrolls above the fold.
 pub const MAX_RENDERED_ROWS: usize = 5_000;
+// Reuse the existing block keys for exact folded-cache comparisons when they fit. This
+// avoids hashing every style and source byte on every unchanged frame, while larger
+// histories still use a fingerprint instead of retaining another unbounded text copy.
+const MAX_FOLDED_KEYS_BYTES: usize = 8 * 1024 * 1024;
+
+fn folded_keys_fit(blocks: &[Block]) -> bool {
+    let mut bytes = blocks
+        .len()
+        .saturating_mul(std::mem::size_of::<(BlockKey, usize)>());
+    for block in blocks {
+        bytes = bytes
+            .saturating_add(block.text.len())
+            .saturating_add(block.gutter.len())
+            .saturating_add(std::mem::size_of_val(block.runs))
+            .saturating_add(std::mem::size_of_val(block.header_files));
+        for (_, path) in block.header_files {
+            bytes = bytes.saturating_add(path.len());
+        }
+        if bytes > MAX_FOLDED_KEYS_BYTES {
+            return false;
+        }
+    }
+    bytes <= MAX_FOLDED_KEYS_BYTES
+}
 
 #[path = "diff_presentation.rs"]
 mod diff_presentation;
@@ -63,6 +88,8 @@ pub struct Block<'a> {
     /// Extra inline styles per line (plain blocks only), e.g. the coloured `/usage` block.
     pub runs: &'a [LineRun],
     pub header_files: &'a [HeaderFile],
+    /// Leading chars of the first line that are decoration (a card border) and not copied.
+    pub decor_prefix: usize,
 }
 
 #[derive(Clone)]
@@ -79,9 +106,15 @@ pub struct Row {
     pub runs: Vec<(usize, usize, Style)>,
     pub links: Vec<(usize, usize, crate::file_links::Candidate)>,
     pub web_links: Vec<(usize, usize, String)>,
+    /// Decorative char ranges (bars, borders) that are painted but never selected or copied.
+    pub decor: Vec<(usize, usize)>,
 }
 
 impl Row {
+    fn is_decor(&self, i: usize) -> bool {
+        self.decor.iter().any(|&(a, z)| a <= i && i < z)
+    }
+
     fn gutter_width(&self) -> usize {
         self.gutter.chars().count()
     }
@@ -107,6 +140,7 @@ struct BlockKey {
     diagram_revision: Option<u64>,
     runs: Vec<LineRun>,
     header_files: Vec<HeaderFile>,
+    decor_prefix: usize,
 }
 
 impl BlockKey {
@@ -122,6 +156,7 @@ impl BlockKey {
             diagram_revision: None,
             runs: b.runs.to_vec(),
             header_files: b.header_files.to_vec(),
+            decor_prefix: b.decor_prefix,
         }
     }
 
@@ -138,7 +173,27 @@ impl BlockKey {
             && self.text == b.text
             && self.runs == b.runs
             && self.header_files == b.header_files
+            && self.decor_prefix == b.decor_prefix
     }
+}
+
+fn projection_signature(blocks: &[Block], link_root: Option<&std::path::Path>) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    link_root.hash(&mut hash);
+    super::diagrams::revision().hash(&mut hash);
+    for block in blocks {
+        block.identity.hash(&mut hash);
+        block.text.hash(&mut hash);
+        block.gutter.hash(&mut hash);
+        block.gutter_style.hash(&mut hash);
+        block.style.hash(&mut hash);
+        block.markdown.hash(&mut hash);
+        block.linkify.hash(&mut hash);
+        block.decor_prefix.hash(&mut hash);
+        block.runs.hash(&mut hash);
+        block.header_files.hash(&mut hash);
+    }
+    hash.finish()
 }
 
 #[derive(Default)]
@@ -161,6 +216,9 @@ pub struct TranscriptView {
     folded: bool,
     rehydrate_fold: bool,
     folded_blocks: usize,
+    folded_signature: u64,
+    folded_link_root: Option<std::path::PathBuf>,
+    folded_head: bool,
 }
 
 impl TranscriptView {
@@ -168,10 +226,39 @@ impl TranscriptView {
     /// runs on every frame and every mouse event, so only blocks from the first one that changed
     /// are wrapped again (normally just the newest); earlier blocks reuse their cached rows.
     pub fn rebuild(&mut self, blocks: &[Block], width: usize, height: usize) {
-        let rehydrate_fold = self.rehydrate_fold;
+        let requested_rehydrate = self.rehydrate_fold;
+        let rehydrate_fold =
+            requested_rehydrate || (self.folded_head && self.folded_blocks != usize::MAX);
         self.rehydrate_fold = false;
         let width_changed = width != self.width;
-        if self.folded && !rehydrate_fold && !width_changed && self.folded_blocks == blocks.len() {
+        if self.folded && self.sel.is_some() && !width_changed {
+            // Keep the selected cache stable while the source changes underneath it.
+            // Clearing the selection lets the next rebuild reconcile the source.
+            self.height = height;
+            self.clamp_scroll();
+            return;
+        }
+        let exact_fold = self.folded && !self.keys.is_empty();
+        let fingerprint = (self.folded && !exact_fold)
+            .then(|| projection_signature(blocks, self.link_root.as_deref()));
+        let unchanged = if exact_fold {
+            self.folded_signature == super::diagrams::revision()
+                && self.folded_link_root == self.link_root
+                && self.keys.len() == blocks.len()
+                && self
+                    .keys
+                    .iter()
+                    .zip(blocks)
+                    .all(|((key, _), block)| key.matches(block))
+        } else {
+            fingerprint == Some(self.folded_signature)
+        };
+        if self.folded
+            && !requested_rehydrate
+            && !width_changed
+            && self.folded_blocks == blocks.len()
+            && unchanged
+        {
             self.height = height;
             self.clamp_scroll();
             return;
@@ -241,7 +328,7 @@ impl TranscriptView {
             }
         }
 
-        if self.rows.len() > MAX_RENDERED_ROWS {
+        if self.rows.len() > MAX_RENDERED_ROWS && self.sel.is_none() {
             let retained = MAX_RENDERED_ROWS.saturating_sub(1);
             let hidden = self.rows.len() - retained;
             let label = if rehydrate_fold {
@@ -260,12 +347,25 @@ impl TranscriptView {
                 runs: Vec::new(),
                 links: Vec::new(),
                 web_links: Vec::new(),
+                decor: Vec::new(),
             };
             if rehydrate_fold {
-                self.rows.truncate(retained);
-                self.row_blocks.truncate(retained);
-                self.rows.push(stub);
-                self.row_blocks.push((None, 0));
+                // Keep a bounded window around the requested position. Previously this kept
+                // the first rows, making one upward wheel tick jump to the transcript's top.
+                let target_first = self.rows.len().saturating_sub(height + self.scroll);
+                let window_start = target_first.saturating_sub(retained.saturating_sub(height));
+                let window_end = (window_start + retained).min(self.rows.len());
+                let target_first =
+                    target_first.clamp(window_start, window_end.saturating_sub(height));
+                self.rows = self.rows[window_start..window_end].to_vec();
+                self.row_blocks = self.row_blocks[window_start..window_end].to_vec();
+                self.rows.insert(0, stub);
+                self.row_blocks.insert(0, (None, 0));
+                self.scroll = self
+                    .rows
+                    .len()
+                    .saturating_sub(1 + target_first.saturating_sub(window_start) + height);
+                self.folded_head = window_end < blocks.len();
             } else {
                 self.rows.drain(..hidden);
                 self.row_blocks.drain(..hidden);
@@ -274,12 +374,27 @@ impl TranscriptView {
             }
             self.rows.shrink_to_fit();
             self.row_blocks.shrink_to_fit();
-            self.keys.clear();
             self.folded = true;
             self.folded_blocks = blocks.len();
+            self.folded_head = rehydrate_fold;
+            if folded_keys_fit(blocks) {
+                // Row offsets in these keys refer to the full projection. They are only
+                // equality keys while folded; any changed/re-hydrated projection clears
+                // them above before the normal row-cache code can consume those offsets.
+                self.keys.shrink_to_fit();
+                self.folded_signature = super::diagrams::revision();
+                self.folded_link_root = self.link_root.clone();
+            } else {
+                self.keys.clear();
+                self.keys.shrink_to_fit();
+                self.folded_link_root = None;
+                self.folded_signature = fingerprint
+                    .unwrap_or_else(|| projection_signature(blocks, self.link_root.as_deref()));
+            }
         } else {
             self.folded = false;
             self.folded_blocks = 0;
+            self.folded_head = false;
         }
 
         if !width_changed && self.scroll > 0 && self.rows.len() > prev_rows {
@@ -333,6 +448,9 @@ impl TranscriptView {
 
     pub fn scroll_down(&mut self, n: usize) {
         self.scroll = self.scroll.saturating_sub(n);
+        if self.scroll == 0 && self.folded_head {
+            self.folded_blocks = usize::MAX;
+        }
         self.clamp_scroll();
     }
 
@@ -341,12 +459,19 @@ impl TranscriptView {
     }
 
     pub fn follow_tail(&mut self) {
+        if self.folded_head {
+            self.folded_blocks = usize::MAX;
+        }
         self.scroll = 0;
         self.clamp_scroll();
     }
 
     pub fn visible(&self) -> std::ops::Range<usize> {
         self.first..(self.first + self.height).min(self.rows.len())
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
     }
 
     // ---- hit-testing -----------------------------------------------------------------
@@ -474,8 +599,10 @@ impl TranscriptView {
             let len = r.text.len();
             let from = if row == a.row { a.col.min(len) } else { 0 };
             let to = if row == b.row { b.col.min(len) } else { len };
-            if from < to {
-                out.extend(&r.text[from..to]);
+            for i in from..to {
+                if !r.is_decor(i) {
+                    out.push(r.text[i]);
+                }
             }
         }
         (!out.is_empty()).then_some(out)
@@ -528,6 +655,9 @@ fn row_spans(r: &Row, selection: Option<(usize, usize)>) -> Vec<Span<'static>> {
     if let Some((a, b)) = selection {
         cuts.extend([a.min(n), b.min(n)]);
     }
+    for &(a, z) in &r.decor {
+        cuts.extend([a.min(n), z.min(n)]);
+    }
     cuts.sort_unstable();
     cuts.dedup();
     let mut out = Vec::new();
@@ -543,7 +673,7 @@ fn row_spans(r: &Row, selection: Option<(usize, usize)>) -> Vec<Span<'static>> {
                 style = style.patch(*rs);
             }
         }
-        if selection.is_some_and(|(sa, sb)| sa <= a && b <= sb) {
+        if selection.is_some_and(|(sa, sb)| sa <= a && b <= sb) && !r.is_decor(a) {
             style = style.add_modifier(Modifier::REVERSED);
         }
         out.push(Span::styled(r.text[a..b].iter().collect::<String>(), style));
@@ -600,6 +730,11 @@ fn wrap_block(
                     hang: 0,
                     base: Style::default(),
                     links: Vec::new(),
+                    decor: if i == 0 && b.decor_prefix > 0 {
+                        vec![(0, b.decor_prefix)]
+                    } else {
+                        Vec::new()
+                    },
                 }
             })
             .collect()
@@ -774,6 +909,14 @@ fn wrap_block(
                         (a < b).then(|| (a - s, b - s, url.clone()))
                     })
                     .collect(),
+                decor: ml
+                    .decor
+                    .iter()
+                    .filter_map(|&(a, z)| {
+                        let (a, z) = (a.max(s), z.min(e));
+                        (a < z).then(|| (a - s, z - s))
+                    })
+                    .collect(),
             });
         }
         source_offset += ml.text.chars().count() + 1;
@@ -796,6 +939,7 @@ mod tests {
             linkify: true,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         }
     }
 
@@ -813,17 +957,20 @@ mod tests {
         let blocks: Vec<Block<'_>> = texts.iter().map(|text| blk("", text)).collect();
         let mut v = view(&blocks, 80, 10);
         assert!(v.rows.len() <= MAX_RENDERED_ROWS + 1);
-        assert!(v.rows.iter().any(|row| row
-            .text
-            .iter()
-            .collect::<String>()
-            .contains("Earlier messages folded")));
+        assert!(v.rows.iter().any(|row| {
+            row.text
+                .iter()
+                .collect::<String>()
+                .contains("Earlier messages folded")
+        }));
         v.scroll_up(1);
         v.rebuild(&blocks, 80, 10);
-        assert!(v
-            .rows
-            .iter()
-            .any(|row| row.text.iter().collect::<String>().contains("message 0")));
+        assert!(v.rows.iter().any(|row| {
+            row.text
+                .iter()
+                .collect::<String>()
+                .contains(&format!("message {MAX_RENDERED_ROWS}"))
+        }));
     }
 
     #[test]
@@ -1150,6 +1297,7 @@ mod tests {
             linkify: true,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         };
         v.rebuild(&[a], 40, 10);
         let red = Style::default().fg(ratatui::style::Color::Red);
@@ -1163,6 +1311,7 @@ mod tests {
             linkify: true,
             runs: &[],
             header_files: &[],
+            decor_prefix: 0,
         };
         v.rebuild(&[b], 40, 10);
         assert_eq!(v.rows[0].style, red);
@@ -1384,6 +1533,34 @@ mod tests {
 #[cfg(test)]
 mod diagram_cache_tests {
     use super::*;
+
+    fn blk<'a>(gutter: &'a str, text: &'a str) -> Block<'a> {
+        Block {
+            identity: None,
+            gutter,
+            gutter_style: Style::default(),
+            style: Style::default(),
+            text,
+            markdown: false,
+            linkify: true,
+            runs: &[],
+            header_files: &[],
+            decor_prefix: 0,
+        }
+    }
+
+    fn md<'a>(gutter: &'a str, text: &'a str) -> Block<'a> {
+        Block {
+            markdown: true,
+            ..blk(gutter, text)
+        }
+    }
+
+    fn view(blocks: &[Block], width: usize, height: usize) -> TranscriptView {
+        let mut value = TranscriptView::default();
+        value.rebuild(blocks, width, height);
+        value
+    }
     #[test]
     fn long_diagram_history_settles_and_later_block_changes_do_not_restart_it() {
         let mut texts: Vec<_> = (0..40)
@@ -1405,6 +1582,7 @@ mod diagram_cache_tests {
                     linkify: false,
                     runs: &[],
                     header_files: &[],
+                    decor_prefix: 0,
                 })
                 .collect();
             view.rebuild(&blocks, 90, 40);
@@ -1443,6 +1621,7 @@ mod diagram_cache_tests {
                 linkify: false,
                 runs: &[],
                 header_files: &[],
+                decor_prefix: 0,
             })
             .collect();
         view.rebuild(&blocks, 90, 40);
@@ -1458,5 +1637,42 @@ mod diagram_cache_tests {
             .join("\n");
         assert!(after.contains("Node1") && after.contains("Node39"));
         assert!(!after.contains("Rendering Mermaid") && !after.contains("flowchart LR"));
+    }
+
+    fn copy_all(blocks: &[Block]) -> (TranscriptView, String) {
+        let mut v = view(blocks, 60, 40);
+        let last = v.rows.len() - 1;
+        let end = v.rows[last].text.len();
+        v.sel = Some((Pos { row: 0, col: 0 }, Pos { row: last, col: end }));
+        let text = v.selected_text().unwrap_or_default();
+        (v, text)
+    }
+
+    #[test]
+    fn copy_skips_quote_bars_card_borders_and_table_borders_but_keeps_list_markers() {
+        let (v, quote) = copy_all(&[md("", "> wise words that wrap around the pane edge because they are long enough to need two rows")]);
+        assert_eq!(
+            quote,
+            "wise words that wrap around the pane edge because they are long enough to need two rows"
+        );
+        // The highlight skips the bar too.
+        let first = &v.lines()[0];
+        assert!(first
+            .spans
+            .iter()
+            .all(|s| !s.content.contains('\u{2502}') || !s.style.add_modifier.contains(Modifier::REVERSED)));
+
+        let card = Block {
+            decor_prefix: 2,
+            ..blk("", "│ ✓ Ran tools")
+        };
+        assert_eq!(copy_all(&[card]).1, "✓ Ran tools");
+
+        let (_, list) = copy_all(&[md("", "- one\n2. two")]);
+        assert_eq!(list, "• one\n2. two");
+
+        let (_, table) = copy_all(&[md("", "| a | b |\n| --- | --- |\n| c | d |")]);
+        assert!(!table.contains(['│', '┌', '├', '└', '─']), "{table:?}");
+        assert!(table.contains('a') && table.contains('d'));
     }
 }

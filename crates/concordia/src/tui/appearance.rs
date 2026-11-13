@@ -4,6 +4,24 @@ use crate::config::{Rgb, Theme, Ui};
 use serde::{Deserialize, Serialize};
 use std::io;
 
+fn library_path(root: &Path, value: &str) -> Option<PathBuf> {
+    let name = value.strip_prefix("library:")?;
+    if name.is_empty()
+        || name.len() > 240
+        || name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':'))
+        || !matches!(
+            Path::new(name).components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+    {
+        return None;
+    }
+    let path = crate::theme_library::library_dir(root).join(format!("{name}.toml"));
+    (!crate::workspace_paths::reserved_device_name(&path)).then_some(path)
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
@@ -11,6 +29,7 @@ struct Saved {
     theme: Option<String>,
     brand_color: Option<Rgb>,
     motion: Option<bool>,
+    notifications: Option<bool>,
     token_line: Option<bool>,
     tips: Option<bool>,
     stats: Option<bool>,
@@ -33,40 +52,27 @@ fn read(root: &Path) -> io::Result<Saved> {
             "appearance settings must be a regular file below 16 KiB",
         ));
     }
-    let saved: Saved = serde_json::from_slice(&std::fs::read(path)?)?;
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(16 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 16 * 1024 {
+        return Err(io::Error::other(
+            "appearance settings exceed 16 KiB; original preserved",
+        ));
+    }
+    let saved: Saved = serde_json::from_slice(&bytes)?;
     if saved.version != 1
-        || saved
-            .theme
-            .as_deref()
-            .is_some_and(|value| parse_theme(value).is_none())
+        || saved.theme.as_deref().is_some_and(|value| {
+            parse_theme(value).is_none() && library_path(root, value).is_none()
+        })
     {
         return Err(io::Error::other(
             "unsupported appearance settings; preserved unchanged",
         ));
     }
     Ok(saved)
-}
-
-fn migrate_opifex(root: &Path) -> io::Result<()> {
-    let marker = root.join(".ao/opifex-theme-migration-v1");
-    if marker.exists() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(root.join(".ao"))?;
-    let mut saved = read(root)?;
-    if saved
-        .theme
-        .as_deref()
-        .is_none_or(|theme| parse_theme(theme) == Some(Theme::Default))
-    {
-        saved.theme = Some("opifex".into());
-        saved.version = 1;
-        crate::state_io::write_atomic(
-            &root.join(".ao/appearance.json"),
-            &serde_json::to_vec_pretty(&saved)?,
-        )?;
-    }
-    crate::state_io::write_atomic(&marker, b"migrated\n")
 }
 
 pub(super) fn parse_theme(value: &str) -> Option<Theme> {
@@ -107,9 +113,6 @@ impl State {
     pub fn load(root: &Path) -> Self {
         let mut ui = crate::config::for_root(root).ui;
         let mut notice = None;
-        if let Err(error) = migrate_opifex(root) {
-            notice = Some(format!("Theme migration: {error}"));
-        }
         match read(root) {
             Ok(saved) => {
                 if let Some(theme) = saved.theme.as_deref().and_then(parse_theme) {
@@ -122,11 +125,13 @@ impl State {
                 } else if let Some(name) = saved
                     .theme
                     .as_deref()
-                    .and_then(|s| s.strip_prefix("library:"))
+                    .and_then(|value| library_path(root, value))
                 {
-                    let path = crate::theme_library::library_dir(root).join(format!("{name}.toml"));
-                    match crate::theme_library::load(&path) {
+                    match crate::theme_library::load(&name) {
                         Ok(theme) => {
+                            ui.background = None;
+                            ui.foreground = None;
+                            ui.accent = None;
                             ui.library_theme = Some(theme);
                             ui.theme = Theme::Opifex;
                         }
@@ -147,6 +152,9 @@ impl State {
                 }
                 if let Some(motion) = saved.motion {
                     ui.motion = motion;
+                }
+                if let Some(notifications) = saved.notifications {
+                    ui.notifications = notifications;
                 }
             }
             Err(error) => notice = Some(format!("Appearance settings: {error}")),
@@ -200,7 +208,10 @@ pub(super) fn save(app: &mut App, key: &str, value: &str) {
         crate::state_io::with_lock(&root.join(".ao/appearance.lock"), || {
             let mut saved = read(root)?;
             match key {
-                "theme" if parse_theme(value).is_some() || value.starts_with("library:") => {
+                "theme" if parse_theme(value).is_some() => saved.theme = Some(value.into()),
+                "theme" if library_path(root, value).is_some() => {
+                    crate::theme_library::load(&library_path(root, value).unwrap())
+                        .map_err(io::Error::other)?;
                     saved.theme = Some(value.into())
                 }
                 "color" => {
@@ -210,6 +221,9 @@ pub(super) fn save(app: &mut App, key: &str, value: &str) {
                     )
                 }
                 "motion" if matches!(value, "on" | "off") => saved.motion = Some(value == "on"),
+                "notifications" if matches!(value, "on" | "off") => {
+                    saved.notifications = Some(value == "on")
+                }
                 "tokens" | "tips" | "stats" if matches!(value, "on" | "off") => {
                     let preference = Some(value == "on");
                     match key {
@@ -222,13 +236,14 @@ pub(super) fn save(app: &mut App, key: &str, value: &str) {
                     saved.theme = None;
                     saved.brand_color = None;
                     saved.motion = None;
+                    saved.notifications = None;
                     saved.token_line = None;
                     saved.tips = None;
                     saved.stats = None;
                 }
                 _ => {
                     return Err(io::Error::other(
-                        "choose theme, color #RRGGBB, or motion on/off",
+                        "choose theme, color #RRGGBB, motion or notifications on/off",
                     ))
                 }
             }
@@ -274,6 +289,7 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
                 std::fs::read_dir(crate::theme_library::library_dir(&app.state_root))
             {
                 for entry in entries
+                    .take(256)
                     .flatten()
                     .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "toml"))
                 {
@@ -387,13 +403,8 @@ pub(super) fn accept_custom(app: &mut App) {
     }
     if kind == Some(PickerKind::ThemeExport) {
         app.dismiss_picker();
-        let name = match app.appearance.ui.theme {
-            Theme::Dark => "dark",
-            Theme::Light => "light",
-            _ => "opifex",
-        };
         let destination = (!value.trim().is_empty()).then(|| Path::new(value.trim()).to_path_buf());
-        match crate::theme_library::builtin(name).and_then(|theme| {
+        match theme::export_current(&app.appearance.ui).and_then(|theme| {
             crate::theme_library::export(&app.state_root, &theme, destination.as_deref())
         }) {
             Ok(path) => app.flash(format!("Exported theme to {}", path.display())),
@@ -432,18 +443,12 @@ mod tests {
         let state = State::load(root.path());
 
         assert_eq!(state.ui.theme, Theme::Opifex);
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(
-                &std::fs::read(root.path().join(".ao/appearance.json")).unwrap()
-            )
-            .unwrap()["theme"],
-            "opifex"
-        );
-        assert!(root.path().join(".ao/opifex-theme-migration-v1").exists());
+        assert!(!root.path().join(".ao/appearance.json").exists());
+        assert!(!root.path().join(".ao/opifex-theme-migration-v1").exists());
     }
 
     #[test]
-    fn existing_install_switches_to_opifex_once() {
+    fn saved_theme_is_respected_without_startup_rewrite() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join(".ao")).unwrap();
         std::fs::write(
@@ -452,10 +457,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(State::load(root.path()).ui.theme, Theme::Opifex);
-        let migrated = std::fs::read(root.path().join(".ao/appearance.json")).unwrap();
-        assert!(String::from_utf8_lossy(&migrated).contains("opifex"));
-        assert!(root.path().join(".ao/opifex-theme-migration-v1").exists());
+        assert_eq!(State::load(root.path()).ui.theme, Theme::Default);
+        assert_eq!(
+            std::fs::read(root.path().join(".ao/appearance.json")).unwrap(),
+            br#"{"version":1,"theme":"default"}"#
+        );
+        assert!(!root.path().join(".ao/opifex-theme-migration-v1").exists());
 
         std::fs::write(
             root.path().join(".ao/appearance.json"),
@@ -466,9 +473,10 @@ mod tests {
     }
 
     #[test]
-    fn user_choice_after_migration_sticks() {
+    fn saved_user_choice_sticks_across_loads() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(State::load(root.path()).ui.theme, Theme::Opifex);
+        std::fs::create_dir_all(root.path().join(".ao")).unwrap();
         std::fs::write(
             root.path().join(".ao/appearance.json"),
             br#"{"version":1,"theme":"light"}"#,
@@ -477,5 +485,18 @@ mod tests {
 
         assert_eq!(State::load(root.path()).ui.theme, Theme::Light);
         assert_eq!(State::load(root.path()).ui.theme, Theme::Light);
+    }
+
+    #[test]
+    fn saved_notification_choice_silences_windows_balloons() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".ao")).unwrap();
+        std::fs::write(
+            root.path().join(".ao/appearance.json"),
+            br#"{"version":1,"notifications":false}"#,
+        )
+        .unwrap();
+        let state = State::load(root.path());
+        assert!(!state.ui.notifications);
     }
 }

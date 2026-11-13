@@ -12,6 +12,8 @@ pub enum Mode {
     #[default]
     Standard,
     CursorAcp,
+    GrokAcp,
+    OpencodeAcp,
     CodexAppServer,
     ClaudeStdio,
 }
@@ -54,6 +56,8 @@ fn regular(path: &Path) -> Result<bool, String> {
 fn default_for(provider: ProviderKind) -> Mode {
     match provider {
         ProviderKind::Cursor => Mode::CursorAcp,
+        ProviderKind::Grok => Mode::GrokAcp,
+        ProviderKind::Opencode => Mode::OpencodeAcp,
         ProviderKind::Codex | ProviderKind::Claude => Mode::Standard,
     }
 }
@@ -79,6 +83,8 @@ pub fn load(root: &Path, binding: &Binding) -> Result<Mode, String> {
         || saved.binding.account != binding.account
         || saved.binding.home != binding.home
         || saved.mode == Mode::CursorAcp && binding.provider != ProviderKind::Cursor
+        || saved.mode == Mode::GrokAcp && binding.provider != ProviderKind::Grok
+        || saved.mode == Mode::OpencodeAcp && binding.provider != ProviderKind::Opencode
         || saved.mode == Mode::CodexAppServer && binding.provider != ProviderKind::Codex
         || saved.mode == Mode::ClaudeStdio && binding.provider != ProviderKind::Claude
     {
@@ -114,6 +120,8 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
     let mode = match command {
         "status" => current,
         "on" if registered.provider == ProviderKind::Cursor => Mode::CursorAcp,
+        "on" if registered.provider == ProviderKind::Grok => Mode::GrokAcp,
+        "on" if registered.provider == ProviderKind::Opencode => Mode::OpencodeAcp,
         "on" if registered.provider == ProviderKind::Codex => Mode::CodexAppServer,
         "on" if registered.provider == ProviderKind::Claude => Mode::ClaudeStdio,
         "off" => Mode::Standard,
@@ -150,5 +158,16 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
         })
         .map_err(|error| error.to_string())?;
     }
-    Ok(format!("{account}: native text input {}. Future tasks capture this account/home preference; existing worker attempts keep theirs. Native capabilities are checked on connection.", match mode { Mode::CursorAcp => "on (Cursor ACP)", Mode::CodexAppServer => "on (Codex app-server)", Mode::ClaudeStdio => "on (Claude native stdio; qualified CLI required)", Mode::Standard => "off (standard text transport)" }))
+    let description: String = match mode {
+        Mode::CursorAcp => "on (Cursor ACP)".into(),
+        Mode::GrokAcp => "on (Grok Build ACP)".into(),
+        Mode::OpencodeAcp => "on (opencode ACP)".into(),
+        Mode::CodexAppServer => "on (Codex app-server)".into(),
+        Mode::ClaudeStdio => format!(
+            "on (Claude native stdio; CLI {} control interface required)",
+            crate::capacity::claude_capacity::CLI_VERSION
+        ),
+        Mode::Standard => "off (standard text transport)".into(),
+    };
+    Ok(format!("{account}: native text input {description}. Future tasks capture this account/home preference; existing worker attempts keep theirs. Native capabilities are checked on connection."))
 }

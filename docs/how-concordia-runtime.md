@@ -15,8 +15,7 @@ and [`config.rs` (`Config::parse`, `for_root`)](../crates/concordia/src/config.r
 Retention is intentionally not described as “body-free everywhere”:
 
 - provider native transcripts remain in provider homes;
-- thread logging is optional and new records prefer native references, but legacy thread records
-  and pinned spans can contain redacted text;
+- thread logging is optional and records use native references;
 - pane recovery can contain drafts, queues and unfinished requests;
 - attachment snapshots contain the user-selected file bytes;
 - token logs contain counters/identity metadata, not prompt/reply bodies;
@@ -53,7 +52,7 @@ beside the manifest. Source:
 
 ### What discovery does
 
-F10/`/integrations` and MCP `integrations` call the catalog reader. It reads already recorded
+F10/`/harness` and MCP `integrations` call the catalog reader. It reads already recorded
 connections and file-backed manifests, validates the saved SHA-256 revision, displays bounded
 bindings and eight tools per page, and labels descriptions as untrusted manifest data. It does not
 run connect, verify, tool or command-backed-manifest commands. A command-backed manifest stays
@@ -72,13 +71,13 @@ Execution happens only for a reviewed `/harness`/integration action:
   manifest.
 
 Source:
-[`harness/command.rs` (`connect_in`, `verify_in`, `tools_cmd`,
-`connect_selected`)](../crates/concordia/src/harness/command.rs) and
+[`harness/command.rs` (`connect_in`, `verify_in`, `tools_cmd`)](../crates/concordia/src/harness/command.rs) and
 [`tui/integrations.rs` (`review`, `start_action`)](../crates/concordia/src/tui/integrations.rs).
 
 The runner passes an argument array without a shell, closes stdin, clears the environment, restores
-only a small platform/PATH set plus manifest-allowlisted names, caps stdout and stderr at 64 KiB
-each, and kills the tracked process tree after 60 seconds or cancellation. Source:
+only a small platform/PATH set plus manifest-allowlisted names, caps combined stdout and stderr at 64 KiB with an explicit failure on overflow, and kills the
+tracked process tree after 60 seconds or cancellation. Placeholder replacement is single-pass, so
+placeholder-shaped text inside an inserted path stays literal data. Source:
 [`harness/run.rs` (`DEFAULT_TIMEOUT`, `MAX_OUTPUT`, `run_command_cancellable`)](../crates/concordia/src/harness/run.rs).
 
 Harness tools never become an autonomous in-process plugin runtime. Catalog discovery never grants
@@ -175,7 +174,7 @@ and [`usage.rs` (`UsageSnapshot`, `credit_balance_text`)](../crates/concordia/sr
 ### Turn tokens
 
 Structured provider stream usage updates `TurnUsage`; completed main and worker attempts append
-provider/account/model/project/chat-bound records to `token-log.jsonl`. Counts retain input,
+provider/account/model/project/chat-bound records in the attributed token event store. Counts retain input,
 output, cache read/write and reported cost only where the provider supplied them. Cursor coverage
 is not inferred when its transport reports no counters, and Claude native-subagent/resumed-session
 coverage is explicitly not invented. Source:

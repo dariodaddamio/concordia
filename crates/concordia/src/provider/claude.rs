@@ -9,6 +9,7 @@ pub struct ClaudeTurnRequest<'a> {
     pub model: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
+    pub standing_context: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,38 @@ pub struct ClaudePlan {
     /// Session id chosen for a conversation's first turn (`--session-id`); recorded by the caller
     /// once that turn succeeds so later turns can `--resume` it.
     pub new_session_id: Option<String>,
+}
+
+const PROFILE_VARS: &[&str] = &[
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+];
+
+/// Forward only the documented Claude routing profile. Values come from the user's process
+/// environment, with the selected Claude settings file as a fallback. Secrets are not read.
+fn profile_env(config_dir: Option<&std::path::Path>) -> Vec<(String, String)> {
+    let settings = config_dir
+        .and_then(|dir| crate::fs_safe::read_text_bounded(&dir.join("settings.json"), 1024 * 1024))
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    PROFILE_VARS
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    settings
+                        .as_ref()
+                        .and_then(|value| value.get("env"))
+                        .and_then(|env| env.get(*name))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned)
+                })
+                .map(|value| ((*name).to_owned(), value))
+        })
+        .collect()
 }
 
 pub fn find_claude_bin() -> Result<String, String> {
@@ -60,13 +93,17 @@ pub fn plan_claude_turn_with(
             argv.push("--permission-mode".into());
             argv.push("manual".into());
         }
-        TrustMode::Workspace => {
+        TrustMode::Edit => {
             argv.push("--permission-mode".into());
             argv.push("acceptEdits".into());
         }
         TrustMode::Full => {
             argv.push("--dangerously-skip-permissions".into());
         }
+    }
+    if let Some(context) = req.standing_context.filter(|text| !text.is_empty()) {
+        argv.push("--append-system-prompt".into());
+        argv.push(context.to_owned());
     }
     if let Some(sid) = req
         .native_session_id
@@ -84,7 +121,7 @@ pub fn plan_claude_turn_with(
         new_session_id = Some(id);
     }
     argv.push(req.prompt.to_string());
-    assert_safe_claude_argv(&argv, req.trust == TrustMode::Full)?;
+    assert_safe_claude_argv(&argv[..argv.len() - 1], req.trust == TrustMode::Full)?;
     let mut env = Vec::new();
     if let Some(home) = req.config_dir {
         env.push((
@@ -92,6 +129,7 @@ pub fn plan_claude_turn_with(
             home.to_string_lossy().into_owned(),
         ));
     }
+    env.extend(profile_env(req.config_dir));
     Ok(ClaudePlan {
         command: super::locate(super::ProviderKind::Claude, locate_env)
             .map(|p| p.path.to_string_lossy().into_owned())
@@ -129,4 +167,25 @@ pub fn assert_safe_claude_argv(argv: &[String], allow_bypass: bool) -> Result<()
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_reads_only_routing_variables_from_settings() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("settings.json"), r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.example.invalid","ANTHROPIC_DEFAULT_SONNET_MODEL":"deepseek-chat","ANTHROPIC_API_KEY":"secret"}}"#).unwrap();
+        let vars = profile_env(Some(root.path()));
+        assert!(vars.contains(&(
+            "ANTHROPIC_BASE_URL".into(),
+            "https://api.example.invalid".into()
+        )));
+        assert!(vars.contains(&(
+            "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+            "deepseek-chat".into()
+        )));
+        assert!(!vars.iter().any(|(name, _)| name == "ANTHROPIC_API_KEY"));
+    }
 }

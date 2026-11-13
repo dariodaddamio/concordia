@@ -12,14 +12,14 @@ use std::path::{Path, PathBuf};
 pub const MAX_FILES: usize = 64;
 pub const MAX_BYTES: u64 = 16 * 1024;
 pub const MAX_NAME: usize = 32;
+const MAX_EXPANDED_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserCommand {
     pub name: String,
-    /// `/name`, leaked once at scan time so palette entries can stay `&'static str`.
-    pub command: &'static str,
-    /// Front-matter description (or a generic one), leaked like `command`.
-    pub description: &'static str,
+    pub command: String,
+    /// Front-matter description, or a generic one.
+    pub description: String,
     pub template: String,
 }
 
@@ -29,6 +29,8 @@ pub struct Scan {
     pub warnings: Vec<String>,
     /// Names of files that were dropped because a built-in command has the same name.
     pub clashes: Vec<String>,
+    /// Names reserved by provider-native slash commands.
+    pub provider_clashes: Vec<String>,
 }
 
 pub fn commands_dir(state_root: &Path) -> PathBuf {
@@ -47,6 +49,15 @@ pub fn is_builtin(name: &str) -> bool {
     !matches!(
         parse_slash(&format!("/{name}")),
         Some((SlashCommand::Unknown(_), _)) | None
+    )
+}
+
+/// Provider-native commands remain available through the slash passthrough and cannot be
+/// replaced by a user shortcut. This is the shared command set exposed by the supported CLIs.
+pub fn is_provider_command(name: &str) -> bool {
+    matches!(
+        name,
+        "compact" | "diff" | "fork" | "init" | "mcp" | "rewind" | "export"
     )
 }
 
@@ -97,12 +108,18 @@ pub fn scan(state_root: &Path) -> Scan {
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return out;
     };
+    let mut scanned = 0;
     let mut files: Vec<(String, PathBuf)> = rd
+        .take(4096)
+        .inspect(|_| scanned += 1)
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|e| Some((e.file_name().into_string().ok()?, e.path())))
         .filter(|(n, _)| n.to_ascii_lowercase().ends_with(".md"))
         .collect();
+    if scanned == 4096 {
+        out.warnings.push("commands: reached the 4096-entry discovery limit; additional entries were not inspected".into());
+    }
     files.sort();
     if files.len() > MAX_FILES {
         out.warnings.push(format!(
@@ -126,7 +143,7 @@ pub fn scan(state_root: &Path) -> Scan {
             ));
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = crate::fs_safe::read_text_bounded(&path, MAX_BYTES as usize) else {
             out.warnings.push(format!(
                 "commands/{file}: not readable as UTF-8 text; skipped"
             ));
@@ -134,6 +151,10 @@ pub fn scan(state_root: &Path) -> Scan {
         };
         if is_builtin(&name) {
             out.clashes.push(name);
+            continue;
+        }
+        if is_provider_command(&name) {
+            out.provider_clashes.push(name);
             continue;
         }
         let (description, template) = parse_file(&text);
@@ -144,8 +165,8 @@ pub fn scan(state_root: &Path) -> Scan {
         }
         let description = description.unwrap_or_else(|| "custom prompt".into());
         out.commands.push(UserCommand {
-            command: Box::leak(format!("/{name}").into_boxed_str()),
-            description: Box::leak(description.into_boxed_str()),
+            command: format!("/{name}"),
+            description,
             name,
             template,
         });
@@ -155,20 +176,38 @@ pub fn scan(state_root: &Path) -> Scan {
 
 /// If `line` is `/name [args]` for a user command (and `name` is not a built-in), the prompt to
 /// send. The caller shows the original line and submits this as an ordinary user turn.
-pub fn expand(commands: &[UserCommand], line: &str) -> Option<String> {
-    let body = line.trim().strip_prefix('/')?;
+pub fn expand(commands: &[UserCommand], line: &str) -> Result<Option<String>, String> {
+    let Some(body) = line.trim().strip_prefix('/') else {
+        return Ok(None);
+    };
     let (name, args) = match body.find(char::is_whitespace) {
         Some(i) => (&body[..i], &body[i..]),
         None => (body, ""),
     };
     let name = name.to_ascii_lowercase();
     if is_builtin(&name) {
-        return None;
+        return Ok(None);
     }
-    commands
-        .iter()
-        .find(|c| c.name == name)
-        .map(|c| render(&c.template, args))
+    let Some(command) = commands.iter().find(|c| c.name == name) else {
+        return Ok(None);
+    };
+    let repeats = command.template.matches("$ARGS").count();
+    let bytes = if repeats == 0 {
+        command
+            .template
+            .len()
+            .checked_add(args.trim().len())
+            .and_then(|bytes| bytes.checked_add(2))
+    } else {
+        args.trim()
+            .len()
+            .checked_mul(repeats)
+            .and_then(|bytes| bytes.checked_add(command.template.len() - repeats * 5))
+    };
+    if bytes.is_none_or(|bytes| bytes > MAX_EXPANDED_BYTES) {
+        return Err("Command expansion exceeds 4 MiB; shorten its template or arguments. Original draft retained.".into());
+    }
+    Ok(Some(render(&command.template, args)))
 }
 
 #[cfg(test)]
@@ -264,12 +303,14 @@ mod tests {
             ("doctor.md", "mine"),
             ("quit.md", "alias"),
             ("ship.md", "go"),
+            ("compact.md", "provider command"),
         ]);
         let s = scan(dir.path());
         assert_eq!(s.clashes, ["doctor", "quit"]);
+        assert_eq!(s.provider_clashes, ["compact"]);
         assert_eq!(s.commands.len(), 1);
-        assert!(expand(&s.commands, "/doctor").is_none());
-        assert!(is_builtin("workers") && !is_builtin("ship"));
+        assert!(expand(&s.commands, "/doctor").unwrap().is_none());
+        assert!(is_builtin("model") && !is_builtin("ship"));
     }
 
     #[test]
@@ -277,12 +318,17 @@ mod tests {
         let dir = state_with(&[("ship.md", "Ship it: $ARGS")]);
         let s = scan(dir.path());
         assert_eq!(
-            expand(&s.commands, "/SHIP the release\nplease").as_deref(),
+            expand(&s.commands, "/SHIP the release\nplease")
+                .unwrap()
+                .as_deref(),
             Some("Ship it: the release\nplease")
         );
-        assert_eq!(expand(&s.commands, "/ship").as_deref(), Some("Ship it: "));
-        assert!(expand(&s.commands, "/nope").is_none());
-        assert!(expand(&s.commands, "ship").is_none());
+        assert_eq!(
+            expand(&s.commands, "/ship").unwrap().as_deref(),
+            Some("Ship it: ")
+        );
+        assert!(expand(&s.commands, "/nope").unwrap().is_none());
+        assert!(expand(&s.commands, "ship").unwrap().is_none());
     }
 
     #[test]
