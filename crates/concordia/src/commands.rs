@@ -325,9 +325,9 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
     command!(
         "/terminal",
         [],
-        "[open|hide|close]",
+        "[open|native|hide|close]",
         "open the local PowerShell terminal",
-        "Run local shell commands in the current workspace. Hide keeps the shell alive; close stops it. Chat drafts stay separate.",
+        "Run local shell commands, or use native to open the selected provider's actual interface in a separate session for settings and promotions. Hide keeps it alive; close stops it. Chat drafts stay separate.",
         true,
         CommandCategory::Workspace,
         Some("F11"),

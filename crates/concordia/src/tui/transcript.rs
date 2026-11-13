@@ -461,6 +461,30 @@ impl TranscriptView {
         self.height
     }
 
+    /// Thumb offset and size, measured from the top of the rail. Scroll counts
+    /// hidden rows below the viewport, so following output is the bottom endpoint.
+    pub fn scroll_thumb(&self, track: u16) -> (u16, u16) {
+        let track = usize::from(track);
+        let total = self.rows.len().max(1);
+        let size = (track * self.height / total).clamp(1, track.max(1));
+        let max = total.saturating_sub(self.height);
+        let offset = (track.saturating_sub(size) * max.saturating_sub(self.scroll)) / max.max(1);
+        (offset as u16, size as u16)
+    }
+
+    pub fn drag_scroll_thumb(&mut self, offset: u16, track: u16) {
+        let (_, size) = self.scroll_thumb(track);
+        let travel = usize::from(track.saturating_sub(size));
+        let max = self.rows.len().saturating_sub(self.height);
+        let top = usize::from(offset).min(travel) * max / travel.max(1);
+        let target = max.saturating_sub(top);
+        if target > self.scroll {
+            self.scroll_up(target - self.scroll);
+        } else {
+            self.scroll_down(self.scroll - target);
+        }
+    }
+
     // ---- hit-testing -----------------------------------------------------------------
 
     /// Position under viewport cell `(rel_row, rel_col)`. `None` when the cell is below the last

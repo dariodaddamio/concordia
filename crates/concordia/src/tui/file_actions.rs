@@ -136,7 +136,7 @@ impl App {
                 if file.path.extension().is_some_and(|extension| {
                     matches!(
                         extension.to_string_lossy().to_ascii_lowercase().as_str(),
-                        "png" | "jpg" | "jpeg" | "webp"
+                        "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf"
                     )
                 }) {
                     self.start_raster(file.path, None);

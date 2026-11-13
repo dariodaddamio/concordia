@@ -1134,6 +1134,31 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     }
     let (x, y) = (m.column, m.row);
     let t = app.areas.transcript;
+    let rail = app.areas.transcript_rail;
+    if let Drag::Scrollbar(grab) = app.drag {
+        match m.kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                app.view.drag_scroll_thumb(y.saturating_sub(rail.y).saturating_sub(grab), rail.height);
+            }
+            MouseEventKind::Up(MouseButton::Left) => app.drag = Drag::None,
+            _ => {}
+        }
+        return;
+    }
+    if m.kind == MouseEventKind::Down(MouseButton::Left) && contains(rail, x, y) {
+        let (offset, size) = app.view.scroll_thumb(rail.height);
+        let row = y - rail.y;
+        app.view.clear_selection();
+        app.file_click = None;
+        if row < offset {
+            app.view.scroll_up(app.view.page());
+        } else if row >= offset + size {
+            app.view.scroll_down(app.view.page());
+        } else {
+            app.drag = Drag::Scrollbar(row - offset);
+        }
+        return;
+    }
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             app.file_click = None;
@@ -1248,7 +1273,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
                     let idx = input_index_at(app, x, y);
                     app.editor.move_to(idx, true);
                 }
-                Drag::None => {}
+                Drag::None | Drag::Scrollbar(_) => {}
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {

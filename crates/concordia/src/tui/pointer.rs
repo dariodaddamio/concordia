@@ -114,6 +114,9 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
     if chatref::clickable(app, x, y) {
         return "pointer";
     }
+    if contains(app.areas.transcript_rail, x, y) || matches!(app.drag, Drag::Scrollbar(_)) {
+        return "default";
+    }
     if images::clickable(app, x, y) || questions::clickable(app, x, y) {
         return "pointer";
     }
