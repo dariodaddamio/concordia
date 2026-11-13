@@ -49,6 +49,9 @@ Ask your question and press Enter
 | `/exit` | `` | exit Concordia | everyday |
 <!-- COMMANDS:END -->
 
+`/model` lists only models reported for the selected account. Provider-reported effort variants are
+shown with their supported efforts and selection keeps the exact provider model ID.
+
 ## Providers
 
 Claude Code, Codex, Cursor, Grok Build, opencode and optional Grok Bot routines are supported.

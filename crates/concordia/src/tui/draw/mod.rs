@@ -1595,26 +1595,106 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             height: area.height,
         };
         f.render_widget(Clear, popup);
-        let cols = (popup.width / 54).max(1) as usize;
+        let frame = Block::default().borders(Borders::ALL).title(if picker.filter.is_empty() {
+            format!(" {} ", picker.title)
+        } else {
+            format!(" {} · filter: {} ", picker.title, picker.filter)
+        });
+        f.render_widget(frame, popup);
+        let inner = Block::default().inner(popup);
+        let cols = (inner.width / 54).max(1) as usize;
         let rows = picker
             .filtered()
             .into_iter()
-            .map(|row| (row.label.clone(), row.detail.clone()))
+            .map(|row| (row.id.clone(), row.label.clone(), row.detail.clone()))
             .collect::<Vec<_>>();
         let selected = picker.state.selected().unwrap_or(0);
-        let cell_width = (popup.width / cols as u16).max(1);
-        for (index, (label, detail)) in rows.into_iter().enumerate() {
+        let cell_width = (inner.width / cols as u16).max(1);
+        let wrap = |text: &str, width: usize| {
+            text.lines()
+                .flat_map(|line| {
+                    let chars = line.chars().collect::<Vec<_>>();
+                    let ranges = text::wrap_ranges(&chars, width.max(1));
+                    if ranges.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        ranges
+                            .into_iter()
+                            .map(|(start, end)| chars[start..end].iter().collect())
+                            .collect()
+                    }
+                })
+                .collect::<Vec<String>>()
+        };
+        let cell_lines = rows
+            .iter()
+            .map(|(_, label, detail)| {
+                let width = cell_width.saturating_sub(2) as usize;
+                let mut lines = wrap(label, width);
+                if !detail.is_empty() {
+                    lines.extend(wrap(detail, width));
+                }
+                lines
+            })
+            .collect::<Vec<_>>();
+        if picker.usage_scroll == usize::MAX {
+            picker.usage_scroll = cell_lines
+                .get(selected)
+                .map_or(0, |lines| lines.len().saturating_sub(1));
+        }
+        const USAGE_CARD_LINES: usize = 8;
+        let visible_lines = cell_lines
+            .iter()
+            .enumerate()
+            .map(|(index, lines)| {
+                let start = if index == selected {
+                    picker.usage_scroll.min(lines.len().saturating_sub(1))
+                } else {
+                    0
+                };
+                lines
+                    .iter()
+                    .skip(start)
+                    .take(USAGE_CARD_LINES)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let cell_height = visible_lines
+            .chunks(cols)
+            .map(|chunk| chunk.iter().map(Vec::len).max().unwrap_or(1) as u16 + 2)
+            .collect::<Vec<_>>();
+        let selected_row = selected / cols;
+        let mut first_row = 0usize;
+        while first_row < selected_row {
+            let top: u16 = cell_height[..selected_row].iter().sum();
+            let visible: u16 = cell_height[first_row..=selected_row].iter().sum();
+            if top < cell_height[..first_row].iter().sum::<u16>() + inner.height
+                && visible <= inner.height
+            {
+                break;
+            }
+            first_row += 1;
+        }
+        let mut y = inner.y;
+        for (index, (id, _label, detail)) in rows.into_iter().enumerate() {
             let col = index % cols;
             let row = index / cols;
+            if row < first_row {
+                continue;
+            }
+            if y >= inner.bottom() {
+                break;
+            }
             let cell = Rect {
-                x: popup.x + col as u16 * cell_width,
-                y: popup.y + row as u16 * 5,
+                x: inner.x + col as u16 * cell_width,
+                y,
                 width: cell_width.min(
-                    popup
+                    inner
                         .right()
-                        .saturating_sub(popup.x + col as u16 * cell_width),
+                        .saturating_sub(inner.x + col as u16 * cell_width),
                 ),
-                height: 5,
+                height: cell_height[row].min(inner.bottom().saturating_sub(y)),
             };
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -1623,19 +1703,29 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     Style::default().fg(Color::DarkGray)
                 });
-            let mut lines = label.lines().map(Line::from).collect::<Vec<_>>();
+            let tone = match app.picker_tones.get(&id) {
+                Some(crate::usage::UsageTone::Ok) => Color::Green,
+                Some(crate::usage::UsageTone::Warn) => Color::Yellow,
+                Some(crate::usage::UsageTone::Bad) => Color::Red,
+                Some(crate::usage::UsageTone::Mute) => Color::DarkGray,
+                None => Color::Reset,
+            };
+            let mut lines = visible_lines[index]
+                .iter()
+                .map(|line| Line::styled(line.clone(), Style::default().fg(tone)))
+                .collect::<Vec<_>>();
             if !detail.is_empty() {
-                lines.push(Line::styled(detail, Style::default().fg(Color::Gray)));
+                let detail_count = wrap(&detail, cell_width.saturating_sub(2) as usize).len();
+                let split = lines.len().saturating_sub(detail_count.min(lines.len()));
+                for line in lines.iter_mut().skip(split) {
+                    line.style = Style::default().fg(Color::Gray);
+                }
             }
             f.render_widget(Paragraph::new(lines).block(block), cell);
+            if col + 1 == cols {
+                y = y.saturating_add(cell_height[row]);
+            }
         }
-        let title = if picker.filter.is_empty() {
-            format!(" {} ", picker.title)
-        } else {
-            format!(" {} · filter: {} ", picker.title, picker.filter)
-        };
-        let block = Block::default().borders(Borders::ALL).title(title);
-        f.render_widget(block, popup);
         modal::draw_close(f, popup, app, modal::Target::Picker);
         return;
     }

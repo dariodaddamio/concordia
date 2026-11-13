@@ -1,5 +1,29 @@
 # Changelog
 
+### Fixed (2026-11-13aa)
+
+- Group Codex effort variants in `/model` while saving only an exact provider-reported model ID.
+
+### Fixed (2026-11-13z)
+
+- Clear unavailable `/model` choices after a failed provider refresh, reject model IDs outside
+  the provider list, and make PageUp move back from the end of `/usage` details.
+
+### Fixed (2026-11-13y)
+
+- Keep opencode configured defaults out of `/model`, keep plan and workspace together in `/usage`,
+  and make usage paging reach the final reported bucket.
+
+### Fixed (2026-11-13x)
+
+- Keep Grok configured defaults out of `/model`, wrap and page `/usage` cards without covering
+  the composer, and document provider effort fields and model variant IDs.
+
+### Fixed (2026-11-13w)
+
+- Make `/model` provider-listed, show workspace beside plan in `/usage`, preserve usage bucket
+  details, and lay out usage providers responsively.
+
 ### Fixed (2026-11-13v)
 
 - Refresh repeated Agent reports by identity and keep all row columns visible in narrow views.

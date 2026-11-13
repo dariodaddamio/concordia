@@ -1004,6 +1004,7 @@ impl App {
             rows,
             filter: String::new(),
             state,
+            usage_scroll: 0,
         });
         self.footer_left = if filterable {
             "↑↓ Enter · type to filter · Esc".into()
@@ -1424,10 +1425,27 @@ impl App {
             PickerKind::GrokBotForm => {}
             PickerKind::Model => {
                 if let Some(model) = id.strip_prefix("model:") {
-                    if !model.is_empty() && !valid_model_id(model) {
-                        self.push_system("model id must be letters, digits or . _ - : / [ ]");
+                    let Some(entry) = crate::models::find_at(
+                        &self.state_root,
+                        self.provider,
+                        &self.account,
+                        model,
+                    ) else {
+                        self.push_system("model is not in the provider list for this account");
                         return;
-                    }
+                    };
+                    let requested_effort = entry
+                        .efforts
+                        .iter()
+                        .find(|effort| effort.model_id.as_deref() == Some(model))
+                        .map(|effort| effort.name.as_str());
+                    let effort = requested_effort
+                        .or(self.effort.as_deref().filter(|effort| {
+                            entry.efforts.iter().any(|candidate| candidate.name == *effort)
+                        }))
+                        .or(entry.default_effort.as_deref())
+                        .or_else(|| entry.efforts.first().map(|effort| effort.name.as_str()));
+                    let selected_model = entry.id_for_effort(effort).to_owned();
                     // A first run has no saved selection yet; save the account already shown.
                     if get_use_selection(&self.state_root).is_none() {
                         let shown = UseSelection {
@@ -1446,15 +1464,24 @@ impl App {
                             return;
                         }
                     }
-                    if let Err(e) = set_model(&self.state_root, model) {
+                    if let Err(e) = set_model(&self.state_root, &selected_model) {
                         self.push_system(format!("model save failed — {e}"));
                         return;
                     }
-                    self.model = if model.is_empty() { "?" } else { model }.to_string();
-                    if model.is_empty() {
+                    self.effort = effort.map(str::to_owned);
+                    if let Some(mut selection) = get_use_selection(&self.state_root) {
+                        selection.effort = self.effort.clone();
+                        let _ = set_use_selection(&self.state_root, selection);
+                    }
+                    self.model = if selected_model.is_empty() {
+                        "?".to_string()
+                    } else {
+                        selected_model.clone()
+                    };
+                    if selected_model.is_empty() {
                         self.push_system("model → provider default");
                     } else {
-                        self.push_system(format!("model → {model}"));
+                        self.push_system(format!("model → {selected_model}"));
                     }
                 }
             }

@@ -64,3 +64,19 @@
 | crates/concordia/src/tui/app/state.rs, crates/concordia/src/tui/input_dispatch.rs | ok: 1, 4, 5, 9 | Reuse the existing screen-area and picker selection path to make Agents clicks select rows; no second interaction registry. |
 | crates/concordia/tests/tui_journeys.rs | ok: 1, 5, 9 | Extend the real PTY journey harness for screen-level acceptance evidence; tests drive the user flow rather than expose test-only production interfaces. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing view correction through existing release metadata. |
+
+### X3 usage, model list and limit buckets - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| crates/concordia/src/tui/app/state.rs | ok: 1, 4, 5, 10 | Remove synthetic model rows and render only the existing account-bound provider catalog. |
+| crates/concordia/src/usage.rs, crates/concordia/src/tui/draw/mod.rs, crates/concordia/src/tui/app/usage_view.rs | ok: 1, 4, 5, 6, 10 | Reuse UsageSnapshot and the existing picker renderer for responsive provider cards, native buckets and their own tones. |
+| docs/provider-usage-sources.md, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 10 | Record the provider field sources and user-facing behavior in the existing documentation and metadata owners. |
+
+### X3 review correction - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| crates/concordia/src/tui/app/{state,pickers}.rs | ok: 1, 4, 5, 10 | Keep provider-list validation at the existing model selection owner and clear stale rows at the existing refresh result owner. |
+| crates/concordia/src/tui/{draw/mod.rs,input_dispatch.rs} | ok: 1, 4, 5, 6 | Resolve the existing usage End sentinel in the renderer so the existing PageUp input owner can page the same provider card. |
+| crates/concordia/tests/tui_journeys.rs, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 9, 10 | Preserve screen-level proof and release metadata for the correction without adding a test-only production path. |

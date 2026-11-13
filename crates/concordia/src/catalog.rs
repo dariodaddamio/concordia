@@ -65,23 +65,20 @@ pub fn list_model_details(provider: ProviderKind, home: &Path) -> Vec<NativeMode
         ProviderKind::Claude => Vec::new(),
         ProviderKind::Cursor => list_cursor_models(home),
         ProviderKind::Grok => list_grok_models(home),
-        ProviderKind::Opencode => crate::provider::opencode::inspect_model(home)
-            .map(|model| vec![NativeModel::named(model.clone(), model)])
-            .unwrap_or_default(),
+        // Configuration selects an ACP model but is not an account model list.
+        ProviderKind::Opencode => {
+            let _ = home;
+            Vec::new()
+        }
     }
 }
 
 fn list_grok_models(home: &Path) -> Vec<NativeModel> {
-    read_local_cache(home, "config.toml")
-        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
-        .and_then(|value| {
-            value
-                .get("models")
-                .and_then(|v| v.get("default"))
-                .and_then(|v| v.as_str())
-                .map(|id| vec![NativeModel::named(id.to_owned(), id.to_owned())])
-        })
-        .unwrap_or_default()
+    // A configured default is not a provider model catalog. Grok's current ACP
+    // integration does not expose a read-only account model-list operation, so
+    // there is no safe local fallback to display here.
+    let _ = home;
+    Vec::new()
 }
 
 /// Codex writes `models_cache.json` from its model endpoint for the signed-in account: `visibility:
@@ -210,16 +207,13 @@ mod tests {
     }
 
     #[test]
-    fn grok_catalog_reads_only_the_configured_default_model() {
+    fn grok_catalog_does_not_treat_a_configured_default_as_a_model_list() {
         let d = tempdir().unwrap();
         fs::write(
             d.path().join("config.toml"),
             "[models]\ndefault = \"grok-build\"\n",
         )
         .unwrap();
-        assert_eq!(
-            list_models(ProviderKind::Grok, d.path()),
-            vec!["grok-build"]
-        );
+        assert!(list_models(ProviderKind::Grok, d.path()).is_empty());
     }
 }

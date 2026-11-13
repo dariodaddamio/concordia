@@ -206,6 +206,7 @@ pub(in crate::tui) struct Picker {
     pub(in crate::tui) rows: Vec<PickerRow>,
     pub(in crate::tui) filter: String,
     pub(in crate::tui) state: ListState,
+    pub(in crate::tui) usage_scroll: usize,
 }
 
 pub(in crate::tui) struct DoctorUi {
@@ -1155,13 +1156,15 @@ impl App {
                     .as_mut()
                     .filter(|picker| picker.kind == PickerKind::Model)
                 {
-                    picker.title = "model - refresh unavailable; previous observations".into();
+                    picker.rows.clear();
+                    picker.state.select(None);
+                    picker.title = "model - refresh unavailable".into();
                 }
                 self.push_system(format!(
-                    "Model refresh unavailable: {error}. Existing rows are previous observations."
+                    "Model refresh unavailable: {error}. No provider model choices are available."
                 ));
                 self.footer_left =
-                    "model refresh failed; r retries; typed ID/native default still available"
+                    "model refresh failed; r retries; provider model list required"
                         .into();
                 return true;
             }
@@ -1831,29 +1834,11 @@ pub(in crate::tui) fn model_picker_rows(
     models: Vec<crate::models::ModelEntry>,
     chosen: Option<&str>,
 ) -> Vec<PickerRow> {
-    let mut rows = vec![PickerRow {
-        id: "model:".into(),
-        label: format!(
-            "provider default{}",
-            if chosen.is_none() { " · current" } else { "" }
-        ),
-        detail: "the CLI picks its own default model".into(),
-    }];
-    let mut families = std::collections::BTreeMap::<String, Vec<crate::models::ModelEntry>>::new();
-    for model in models {
-        families
-            .entry(model.family.clone())
-            .or_default()
-            .push(model);
-    }
-    for (family, mut entries) in families {
-        entries.sort_by_key(|m| m.display_name.to_ascii_lowercase());
-        rows.push(PickerRow {
-            id: format!("model-group:{family}"),
-            label: family,
-            detail: String::new(),
-        });
-        for model in entries {
+    let mut models = models;
+    models.sort_by_key(|model| model.display_name.to_ascii_lowercase());
+    models
+        .into_iter()
+        .map(|model| {
             let current = chosen.is_some_and(|chosen| {
                 chosen == model.id
                     || model
@@ -1861,7 +1846,7 @@ pub(in crate::tui) fn model_picker_rows(
                         .iter()
                         .any(|effort| effort.model_id.as_deref() == Some(chosen))
             });
-            rows.push(PickerRow {
+            PickerRow {
                 id: format!("model:{}", model.id),
                 label: format!(
                     "{}{}",
@@ -1871,16 +1856,11 @@ pub(in crate::tui) fn model_picker_rows(
                 detail: if model.efforts.is_empty() {
                     model.id
                 } else {
-                    format!(
-                        "{} · efforts: {}",
-                        model.id,
-                        model.effort_names().join(", ")
-                    )
+                    format!("{} · efforts: {}", model.id, model.effort_names().join(", "))
                 },
-            });
-        }
-    }
-    rows
+            }
+        })
+        .collect()
 }
 
 /// Typed model ids become one `--model` argv entry; keep them to model-id characters.

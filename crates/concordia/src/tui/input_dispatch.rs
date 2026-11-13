@@ -464,6 +464,38 @@ pub(super) fn handle_key(
                     picker.state.select(Some((i + 1) % n));
                 }
             }
+            KeyCode::PageUp => {
+                let n = picker.filtered().len();
+                if n > 0 && picker.kind != PickerKind::Usage {
+                    let i = picker.state.selected().unwrap_or(0);
+                    picker.state.select(Some(i.saturating_sub(8)));
+                }
+                if picker.kind == PickerKind::Usage {
+                    picker.usage_scroll = picker.usage_scroll.saturating_sub(8);
+                }
+            }
+            KeyCode::PageDown => {
+                let n = picker.filtered().len();
+                if n > 0 && picker.kind != PickerKind::Usage {
+                    let i = picker.state.selected().unwrap_or(0);
+                    picker.state.select(Some((i + 8).min(n - 1)));
+                }
+                if picker.kind == PickerKind::Usage {
+                    picker.usage_scroll = picker.usage_scroll.saturating_add(6);
+                }
+            }
+            KeyCode::End => {
+                let n = picker.filtered().len();
+                if n > 0 && picker.kind != PickerKind::Usage {
+                    picker.state.select(Some(n - 1));
+                }
+                if picker.kind == PickerKind::Usage {
+                    // Keep the current provider card selected and page within its complete
+                    // provider-reported bucket list.
+                    picker.state.select(Some(0));
+                    picker.usage_scroll = usize::MAX;
+                }
+            }
             KeyCode::Backspace => {
                 picker.filter.pop();
                 picker.select_clamp();

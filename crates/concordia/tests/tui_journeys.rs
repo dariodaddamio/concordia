@@ -1955,7 +1955,7 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     std::fs::write(home.join("auth.json"), serde_json::json!({"tokens":{"id_token":"e30.eyJlbWFpbCI6ICJtZW1iZXJAZXhhbXBsZS5pbnZhbGlkIiwgImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6IHsiY2hhdGdwdF9wbGFuX3R5cGUiOiAicGx1cyJ9fQ.fixture"}}).to_string()).unwrap();
     std::fs::write(
         home.join("models_cache.json"),
-        r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list"}]}"#,
+        r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}"#,
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
@@ -2000,12 +2000,15 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     s.until("model choice applied", |s| {
         s.screen().contains("fixture-model") && s.draft().is_empty()
     });
+    assert!(!s.screen().contains("provider default"));
+    assert!(s.screen().contains("efforts: low, high"));
     s.submit("/usage");
     s.until("account metadata shown", |s| {
         s.screen().lines().any(|line| {
             line.contains("Codex")
                 && line.contains("Email: member@example.invalid")
                 && line.contains("Plan: Plus")
+                && line.contains("Workspace:")
         })
     });
     s.send("\x1b");
@@ -2017,6 +2020,80 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
         s.screen().contains("using Cursor") && s.draft().is_empty()
     });
     assert!(s.prompts().is_empty());
+    s.exit();
+}
+
+#[test]
+#[ignore = "X3 screen evidence; fake providers only"]
+fn x3_usage_model_and_limit_bucket_screen_evidence() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let home = dir.path().join("profile/.codex");
+    std::fs::write(
+        home.join("models_cache.json"),
+        r#"{"models":[{"slug":"fixture-model-high","display_name":"fixture-model High","visibility":"list"},{"slug":"fixture-model-low","display_name":"fixture-model Low","visibility":"list"}]}"#,
+    )
+    .unwrap();
+    let tmp = home.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(
+        tmp.join("rate_limits.json"),
+        serde_json::json!({
+            "primary": {"used_percent": 23, "window_minutes": 300},
+            "secondary": {"used_percent": 61, "window_minutes": 10080},
+            "extra": (0..20).map(|i| serde_json::json!({
+                "limit_name": format!("bucket-{i}"),
+                "primary": {"used_percent": i, "window_minutes": 60}
+            })).collect::<Vec<_>>()
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut s = Session::launch(dir.path());
+    let evidence = PathBuf::from(option_env!("CARGO_TARGET_DIR").unwrap_or("target"))
+        .join("preview/X3");
+    std::fs::create_dir_all(&evidence).unwrap();
+    s.paste("/model");
+    s.enter();
+    s.until("provider model list", |s| {
+        s.screen().contains("fixture-model") && s.screen().contains("efforts: low, high")
+    });
+    assert!(s.screen().contains("fixture-model · efforts: low, high"));
+    std::fs::write(evidence.join("check-1.txt"), s.screen()).unwrap();
+    s.enter();
+    s.until("variant selection uses a reported model id", |s| {
+        s.screen().contains("model → fixture-model-low")
+    });
+    s.send("\x1b");
+    s.request(serde_json::json!({"op":"resize","columns":160,"rows":45}));
+    s.submit("/usage");
+    s.until("wide usage cards", |s| {
+        let screen = s.screen();
+        screen.lines().any(|line| line.contains("Plan:") && line.contains("Workspace:"))
+            && screen.contains("bucket-0")
+            && screen.matches("Email:").count() > 1
+    });
+    std::fs::write(evidence.join("check-2.txt"), s.screen()).unwrap();
+    std::fs::write(evidence.join("check-3.txt"), s.screen()).unwrap();
+    std::fs::write(evidence.join("check-4.txt"), s.screen()).unwrap();
+    s.request(serde_json::json!({"op":"key","code":"End"}));
+    s.until("wide usage cards page to last bucket", |s| {
+        s.screen().contains("bucket-19")
+    });
+    std::fs::write(evidence.join("check-5.txt"), s.screen()).unwrap();
+    s.request(serde_json::json!({"op":"key","code":"PageUp"}));
+    s.until("page up moves back through usage details", |s| {
+        let screen = s.screen();
+        screen.contains("bucket-") && !screen.contains("bucket-19")
+    });
+    std::fs::write(evidence.join("check-5-page-up.txt"), s.screen()).unwrap();
+    s.request(serde_json::json!({"op":"resize","columns":80,"rows":45}));
+    s.request(serde_json::json!({"op":"key","code":"End"}));
+    s.until("narrow usage cards page to last row", |s| {
+        s.screen().contains("bucket-19")
+    });
+    std::fs::write(evidence.join("check-6.txt"), s.screen()).unwrap();
     s.exit();
 }
 

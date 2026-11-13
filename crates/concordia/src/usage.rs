@@ -689,7 +689,9 @@ pub fn profiled_picker_row(
 ) -> UsageRow {
     let mut row = picker_row(id, provider, snap);
     if !snap.windows.is_empty() {
-        row.detail = snap.detail.lines().last().unwrap_or_default().to_owned();
+        // The card already contains every provider-reported bucket. Keep diagnostic detail out
+        // of the bucket scroll range so End lands on the final bucket rather than a note below it.
+        row.detail.clear();
     }
     let email = identity
         .login
@@ -720,13 +722,17 @@ pub fn profiled_picker_row(
         .split_once('\n')
         .map(|(_, limits)| limits.to_string())
         .unwrap_or_else(|| snap.used_left_text());
-    let mut label = format!("{head} \u{b7} Email: {email} \u{b7} Plan: {plan}");
+    let mut label = format!("{head} \u{b7} Plan: {plan}");
     let credits = snap.credits_text();
+    let workspace = identity
+        .team
+        .as_deref()
+        .filter(|team| !team.trim().is_empty())
+        .unwrap_or("not reported");
+    label.push_str(&format!(" \u{b7} Workspace: {workspace}"));
+    label.push_str(&format!("\nEmail: {email}"));
     if credits != "Credits: not reported" {
         label.push_str(&format!(" \u{b7} {credits}"));
-    }
-    if let Some(team) = &identity.team {
-        label.push_str(&format!("\nWorkspace: {team}"));
     }
     if !limits.is_empty() {
         label.push('\n');

@@ -26,7 +26,8 @@ treated as a contract.
 
 The [CLI reference](https://docs.x.ai/build/cli/reference) confirms `grok login`, `grok models`,
 `grok sessions`, `grok inspect`, `grok mcp`, `grok export`, `grok update` and `grok agent stdio`.
-Concordia uses native login, reads a configured default model for its bounded catalog, and reports
+Concordia uses native login. Grok Build does not currently expose a supported account model list,
+so Concordia does not turn a configured default into a picker row and reports
 usage unavailable: no supported read-only CLI/ACP usage signal was verified. The [enterprise
 guide](https://docs.x.ai/build/enterprise) confirms provider-owned authentication methods and
 inference/auth boundaries.

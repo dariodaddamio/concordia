@@ -335,6 +335,7 @@ fn paste_into_picker_edits_its_filter_without_touching_draft_or_queue_edit() {
         rows: vec![],
         filter: String::new(),
         state: Default::default(),
+        usage_scroll: 0,
     });
     app.paste_text_chunk("filter\ntext", true);
     assert_eq!(app.picker.as_ref().unwrap().filter, "filter\ntext");

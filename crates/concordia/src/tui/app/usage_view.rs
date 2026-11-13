@@ -101,17 +101,11 @@ impl App {
             "{} · Email: {email} · Plan: {plan} · Workspace: {workspace}",
             self.account_label()
         );
-        let mut details = format!(
+        let details = format!(
             "Plan: {plan} · Workspace: {workspace}\n{}\n\nSubscription limits\n{}",
             snap.credits_text(),
             snap.detail.trim()
         );
-        if self.provider == ProviderKind::Codex {
-            details.push_str(&format!(
-                "\nCredit balance details: {}",
-                crate::usage::CREDIT_DASHBOARD_URL
-            ));
-        }
         let body = details.trim();
         format!("{heading} - limits\n{body}")
     }
@@ -173,6 +167,7 @@ impl App {
         if let Some(picker) = &mut self.picker {
             picker.filter = old.filter;
             picker.state = old.state;
+            picker.usage_scroll = old.usage_scroll;
         }
     }
     pub(in crate::tui) fn show_credit_details(&mut self, force: bool) {

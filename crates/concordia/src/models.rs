@@ -114,14 +114,18 @@ pub(crate) fn available_at(root: &Path, provider: ProviderKind, account: &str) -
     let Some(identity) = selected_identity(root, provider, account) else {
         return Vec::new();
     };
-    // The provider's own list for this account wins; without one, the provider's local metadata.
-    if let Some(cache) = read_refresh_cache(root, &identity) {
-        return cache.models;
+    // opencode has no supported read-only model-list operation. Do not reuse a cache that may
+    // have been created from its configured default, because configuration is not an account list.
+    if provider != ProviderKind::Opencode {
+        // The provider's own list for this account wins; without one, the provider's local metadata.
+        if let Some(cache) = read_refresh_cache(root, &identity) {
+            return cache.models;
+        }
     }
     let mut out = Vec::new();
     let mut ids = HashSet::new();
-    for model in catalog::list_model_details(provider, &identity.home) {
-        add(&mut out, &mut ids, native_entry(model));
+    for model in native_entries(provider, catalog::list_model_details(provider, &identity.home)) {
+        add(&mut out, &mut ids, model);
     }
     out
 }
@@ -180,10 +184,7 @@ pub(crate) fn refresh_at(
         ProviderKind::Claude => list_claude(&identity.home)?,
         ProviderKind::Cursor => list_cursor(&identity.home)?,
         ProviderKind::Codex => {
-            let models = catalog::list_model_details(provider, &identity.home)
-                .into_iter()
-                .map(native_entry)
-                .collect::<Vec<_>>();
+            let models = native_entries(provider, catalog::list_model_details(provider, &identity.home));
             if models.is_empty() {
                 return Err(
                     "Codex native model metadata is unavailable; no listing was invented".into(),
@@ -242,8 +243,25 @@ pub(crate) fn ids_at(
     }
     available_at(root, provider, account)
         .into_iter()
-        .map(|model| model.id)
+        .flat_map(|model| {
+            std::iter::once(model.id).chain(
+                model
+                    .efforts
+                    .into_iter()
+                    .filter_map(|effort| effort.model_id),
+            )
+        })
         .collect()
+}
+
+fn native_entries(provider: ProviderKind, models: Vec<catalog::NativeModel>) -> Vec<ModelEntry> {
+    let entries = models.into_iter().map(native_entry).collect::<Vec<_>>();
+    if provider != ProviderKind::Codex {
+        return entries;
+    }
+    // Codex reports effort variants as separate slugs. Normalize only that provider shape so the
+    // picker can show one model row while selection still resolves to an exact reported slug.
+    group_effort_variants(entries)
 }
 
 /// Refresh only when the account has no listed catalog yet or it is older than a day.
@@ -687,6 +705,25 @@ mod tests {
             catalog::list_models(ProviderKind::Codex, home.path()),
             ["gpt-5.6-luna", "native-current-id"]
         );
+    }
+
+    #[test]
+    fn codex_effort_variants_are_grouped_but_keep_exact_provider_ids() {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("models_cache.json"),
+            r#"{"models":[{"slug":"fixture-model-high","display_name":"Fixture High","visibility":"list"},{"slug":"fixture-model-low","display_name":"Fixture Low","visibility":"list"}]}"#,
+        )
+        .unwrap();
+        let entries = native_entries(
+            ProviderKind::Codex,
+            catalog::list_model_details(ProviderKind::Codex, home.path()),
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "fixture-model");
+        assert_eq!(entries[0].effort_names(), ["low", "high"]);
+        assert_eq!(entries[0].id_for_effort(Some("low")), "fixture-model-low");
+        assert_eq!(entries[0].id_for_effort(Some("high")), "fixture-model-high");
     }
 
     #[test]

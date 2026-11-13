@@ -2,10 +2,10 @@
 
 Model choices come only from the selected account's physical provider home and an explicit CLI list
 captured for that same provider/account/home identity. Concordia neither merges other accounts' model
-caches nor supplies a built-in model catalog. No data produces an empty discovered list; the provider
-default and an explicitly typed ID remain available. A typed ID is a user request, not evidence that
-the provider offers it. Native caches and CLI output retain their reported IDs, including native
-aliases or older-looking names; Concordia does not rename or remove an ID based on its age.
+caches nor supplies a built-in model catalog. No data produces an empty discovered list. The provider
+default and typed IDs absent from the selected account's current provider list are rejected. Native
+caches and CLI output retain their reported IDs, including native aliases or older-looking names;
+Concordia does not rename or remove an ID based on its age.
 
 `available` performs bounded local reads. Codex model metadata comes from `models_cache.json` using
 its current object `models` array with required `slug`, `display_name` and `visibility` fields.
@@ -45,12 +45,13 @@ native metadata is an observation, not a guarantee of current server availabilit
 
 The model picker lists only the model IDs and display names returned for the selected account. It
 does not offer typed IDs or source labels. Each row shows the effort names returned with that model.
+When Codex reports separate IDs for effort variants, the picker groups them into one row and saving
+that row selects the exact reported variant ID and its effort. It never saves the unreported base ID.
 Model-tier classification remains a separate local routing/display heuristic; it neither creates
 selectable IDs nor establishes price, availability or native context capacity.
 
 Provider sources are explicit. Codex reads its account-bound `models_cache.json`; Claude reads the
-official initialize response; Cursor runs `agent models`; Grok Build reads its account-owned
-`config.toml` default, and opencode reads its account-owned `opencode.json` or `opencode.jsonc`
-model. Neither integration currently exposes a native complete model catalog, so Concordia shows
-no additional invented choices. The selected provider remains the authority on whether a request
-succeeds.
+official initialize response; Cursor runs `agent models`; Grok Build and opencode currently expose
+no native complete model catalog, so Concordia shows no configured defaults as selectable account
+models and adds no invented choices. The selected provider remains the authority on whether a
+request succeeds.
