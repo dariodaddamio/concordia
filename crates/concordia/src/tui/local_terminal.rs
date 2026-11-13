@@ -123,7 +123,7 @@ impl State {
 
     fn show(&mut self, cwd: &Path) {
         if self.session.is_none() {
-            match Session::start(cwd) {
+            match Session::start(cwd, None) {
                 Ok(session) => self.session = Some(session),
                 Err(error) => {
                     self.notice = Some(format!("Could not start local terminal: {error}"))
@@ -261,7 +261,7 @@ impl Session {
             }
         }
     }
-    fn start(cwd: &Path) -> anyhow::Result<Self> {
+    fn start(cwd: &Path, command: Option<CommandBuilder>) -> anyhow::Result<Self> {
         let size = (24, 80);
         let reply_size = std::sync::Arc::new(std::sync::atomic::AtomicU32::new((24 << 16) | 80));
         let reader_size = reply_size.clone();
@@ -399,20 +399,25 @@ impl Session {
                 drop(writer);
                 crate::logging::info("local_terminal input worker closed");
             })?;
-        #[cfg(windows)]
-        let program = which::which("pwsh.exe").or_else(|_| which::which("powershell.exe"))?;
-        #[cfg(not(windows))]
-        let program = std::env::var_os("SHELL")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/bin/sh"));
-        let name = program
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        let mut command = CommandBuilder::new(&program);
-        #[cfg(windows)]
-        command.args(["-NoLogo", "-NoProfile"]);
+        let mut command = if let Some(command) = command {
+            command
+        } else {
+            #[cfg(windows)]
+            let program = which::which("pwsh.exe").or_else(|_| which::which("powershell.exe"))?;
+            #[cfg(not(windows))]
+            let program = std::env::var_os("SHELL")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+            let mut command = CommandBuilder::new(&program);
+            #[cfg(windows)]
+            command.args(["-NoLogo", "-NoProfile"]);
+            command
+        };
+        let name = command
+            .get_argv()
+            .first()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .unwrap_or_default();
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
         let pair = native_pty_system().openpty(PtySize {
@@ -477,9 +482,102 @@ impl Session {
 pub(super) fn command(app: &mut App, args: &str) {
     match args.trim() {
         "" | "open" => app.local_terminal.show(&app.cwd),
+        "native" => native_controls(app),
         "hide" => app.local_terminal.view = View::Chat,
         "close" => app.local_terminal.stop(),
-        _ => app.flash("usage: /terminal [open|hide|close]"),
+        _ => app.flash("usage: /terminal [open|native|hide|close]"),
+    }
+}
+
+/// The real interactive CLI owns settings, promotions and approvals in a fresh
+/// session. It never shares the structured chat's in-flight request or session id.
+pub(super) fn native_controls(app: &mut App) {
+    if app.local_terminal.session.is_some() {
+        app.flash(
+            "Close the existing terminal with /terminal close before opening native controls",
+        );
+        return;
+    }
+    let launch = || -> anyhow::Result<Session> {
+        let located =
+            crate::provider::locate_real(app.provider).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let mut program = located.path;
+        let mut args = Vec::new();
+        let mut env = Vec::new();
+        if app.provider == ProviderKind::Codex {
+            if let Some(native) = crate::provider::npm::codex(&program.to_string_lossy()) {
+                program = native.program;
+                env = native.env;
+            }
+        }
+        if crate::provider::launch::is_batch_shim(&program.to_string_lossy()) {
+            if let Some((node, script)) =
+                crate::provider::npm::node_bridge(&program.to_string_lossy(), app.provider)
+            {
+                program = node;
+                args.push(script.into_os_string());
+            } else if app.provider == ProviderKind::Cursor {
+                let script =
+                    crate::provider::launch::cursor_ps1_beside(&program).ok_or_else(|| {
+                        anyhow::anyhow!("Cursor's native PowerShell launcher is unavailable")
+                    })?;
+                program = which::which("pwsh.exe").or_else(|_| which::which("powershell.exe"))?;
+                args.extend([
+                    "-NoLogo".into(),
+                    "-NoProfile".into(),
+                    "-File".into(),
+                    script.into_os_string(),
+                ]);
+            } else {
+                anyhow::bail!("Native controls need a native executable or a verified npm launcher; this batch launcher is unsupported");
+            }
+        }
+        let mut command = CommandBuilder::new(program);
+        command.args(args);
+        match app.provider {
+            ProviderKind::Codex | ProviderKind::Claude | ProviderKind::Grok => {
+                if let Some(home) = &app.home_path {
+                    let key = match app.provider {
+                        ProviderKind::Codex => "CODEX_HOME",
+                        ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
+                        _ => "GROK_HOME",
+                    };
+                    command.env(key, home);
+                }
+            }
+            // opencode reads its own configuration; no per-account home variable is set here.
+            ProviderKind::Opencode => {}
+            ProviderKind::Cursor => {
+                let auth = crate::provider::cursor::account_auth(app.home_path.as_deref())?;
+                for key in auth.env_remove {
+                    command.env_remove(key);
+                }
+                env.extend(auth.env);
+            }
+        }
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        // Keep provider-native login/settings authoritative; inherited API keys
+        // must not silently select a different account or billing mode.
+        if app.provider == ProviderKind::Grok {
+            command.env_remove("XAI_API_KEY");
+        }
+        let mut session = Session::start(&app.cwd, Some(command))?;
+        session.name = format!(
+            "{} · {} · native controls · separate session",
+            app.provider.as_str(),
+            app.account
+        );
+        Ok(session)
+    };
+    match launch() {
+        Ok(session) => {
+            app.local_terminal.session = Some(session);
+            app.local_terminal.view = View::Shell;
+            app.local_terminal.notice = None;
+        }
+        Err(error) => app.flash(format!("Native controls could not open: {error}")),
     }
 }
 

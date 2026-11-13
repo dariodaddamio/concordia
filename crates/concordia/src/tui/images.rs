@@ -396,7 +396,7 @@ fn import_attachment(root: &Path, path: &Path) -> Result<Paste, String> {
     if path.extension().is_some_and(|extension| {
         matches!(
             extension.to_string_lossy().to_ascii_lowercase().as_str(),
-            "txt" | "md" | "markdown" | "json"
+            "txt" | "md" | "markdown" | "json" | "csv" | "svg"
         )
     }) {
         Document::import(root, path).map(Paste::Document)
@@ -413,7 +413,7 @@ fn import_attachment(root: &Path, path: &Path) -> Result<Paste, String> {
     {
         PdfDocument::import(root, path).map(Paste::Pdf)
     } else {
-        Err("Attach PNG/JPEG/WebP, UTF-8 .txt/.md/.json, or a PDF".into())
+        Err("Attach PNG/JPEG/WebP, UTF-8 .txt/.md/.json/.csv/.svg, or a PDF".into())
     }
 }
 #[cfg(not(test))]
@@ -431,7 +431,7 @@ fn capture(root: &Path, clipboard: bool) -> Result<Paste, String> {
     let script = if clipboard {
         "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $image=[Windows.Forms.Clipboard]::GetImage(); if ($null -eq $image) {$data=[Windows.Forms.Clipboard]::GetDataObject(); if ($null -ne $data -and $data.GetDataPresent('PNG',$false)) {$png=$data.GetData('PNG',$false); if ($png -isnot [IO.Stream] -or -not $png.CanSeek -or $png.Length -gt 4194304) {throw 'Clipboard PNG exceeds 4 MiB or has an unsupported stream'}; try {$png.Position=0; $file=[IO.File]::Create($env:CONCORDIA_IMAGE_CAPTURE); try {$png.CopyTo($file)} finally {$file.Dispose()}} finally {$png.Dispose()}; exit 0}; $files=[Windows.Forms.Clipboard]::GetFileDropList(); if ($files.Count -gt 0) {if ($files.Count -gt 4) {throw 'At most four attachments'}; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write('FILES:'); [Console]::Write((ConvertTo-Json -InputObject @($files) -Compress)); exit 0}; [Console]::Write('NO_IMAGE'); exit 0}; try {$image.Save($env:CONCORDIA_IMAGE_CAPTURE,[Drawing.Imaging.ImageFormat]::Png)} finally {$image.Dispose()}"
     } else {
-        "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $dialog=New-Object Windows.Forms.OpenFileDialog; $dialog.Title='Attach image or document to Concordia'; $dialog.Filter='Images, documents and PDF|*.png;*.jpg;*.jpeg;*.webp;*.txt;*.md;*.json;*.pdf|Images|*.png;*.jpg;*.jpeg;*.webp|UTF-8 documents|*.txt;*.md;*.json|PDF documents|*.pdf'; if ($dialog.ShowDialog() -ne 'OK') {[Console]::Write('CANCELLED'); exit 0}; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($dialog.FileName)"
+        "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $dialog=New-Object Windows.Forms.OpenFileDialog; $dialog.Title='Attach image or document to Concordia'; $dialog.Filter='Images, documents and PDF|*.png;*.jpg;*.jpeg;*.webp;*.txt;*.md;*.markdown;*.json;*.csv;*.svg;*.pdf|Images|*.png;*.jpg;*.jpeg;*.webp|UTF-8 documents|*.txt;*.md;*.markdown;*.json;*.csv;*.svg|PDF documents|*.pdf'; if ($dialog.ShowDialog() -ne 'OK') {[Console]::Write('CANCELLED'); exit 0}; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($dialog.FileName)"
     };
     cmd.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
         .env("CONCORDIA_IMAGE_CAPTURE", &temp);
@@ -733,11 +733,7 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
                         app.flash(error);
                         return true;
                     }
-                    let path = document.path.to_string_lossy();
-                    app.open_host_target(
-                        path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned(),
-                        "PDF",
-                    );
+                    app.start_raster(document.path, Some(document.sha256));
                     return true;
                 }
             };

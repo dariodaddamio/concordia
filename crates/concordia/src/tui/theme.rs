@@ -282,11 +282,6 @@ pub(super) fn status_color(status: super::native_window::StatusDot) -> Rgb {
     }
 }
 
-#[cfg(windows)]
-pub(super) fn motion_enabled() -> bool {
-    current().motion
-}
-
 pub(super) fn apply(buffer: &mut Buffer, no_color: bool, native: bool) {
     current().apply(buffer, no_color, native);
 }

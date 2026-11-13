@@ -508,6 +508,15 @@ pub(super) fn refresh_preview(p: &mut Pane) {
         .as_deref()
     {
         Some("md" | "markdown" | "mdx") => Some(source),
+        Some("csv") => match csv_preview(&source) {
+            Ok(table) => Some(table),
+            Err(error) => {
+                p.error = Some(format!(
+                    "CSV preview: {error}; raw editing remains available"
+                ));
+                None
+            }
+        },
         Some("json") => {
             serde_json::from_str::<serde_json::Value>(source.trim_start_matches('\u{feff}'))
                 .ok()
@@ -515,6 +524,51 @@ pub(super) fn refresh_preview(p: &mut Pane) {
         }
         _ => None,
     };
+}
+
+fn csv_preview(source: &str) -> Result<String, csv::Error> {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(false)
+        .from_reader(source.trim_start_matches('\u{feff}').as_bytes());
+    let records = reader.records().collect::<Result<Vec<_>, _>>()?;
+    let columns = records.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut table = String::new();
+    for start in (0..columns).step_by(16) {
+        let end = (start + 16).min(columns);
+        let displayed = (end - start).max(2);
+        if columns > 16 {
+            table.push_str(&format!("Columns {}?{}\n\n", start + 1, end));
+        }
+        for (index, record) in records.iter().enumerate() {
+            table.push('|');
+            for column in start..start + displayed {
+                table.push(' ');
+                for character in record.get(column).unwrap_or("").chars() {
+                    match character {
+                        '\\' | '|' | '`' | '*' | '_' | '[' | ']' | '<' | '>' => {
+                            table.push('\\');
+                            table.push(character);
+                        }
+                        '\n' => table.push_str(" ↵ "),
+                        '\r' => {}
+                        _ => table.push(character),
+                    }
+                }
+                table.push_str(" |");
+            }
+            table.push('\n');
+            if index == 0 {
+                table.push('|');
+                for _ in 0..displayed {
+                    table.push_str(" --- |");
+                }
+                table.push('\n');
+            }
+        }
+        table.push('\n');
+    }
+    Ok(table)
 }
 
 pub(super) fn loaded(p: &mut Pane, snapshot: Snapshot) {

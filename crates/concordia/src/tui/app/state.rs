@@ -4,6 +4,7 @@ use super::super::*;
 pub(in crate::tui) enum Drag {
     None,
     Transcript,
+    Scrollbar(u16),
     Input,
 }
 
@@ -18,6 +19,7 @@ pub(in crate::tui) struct Areas {
     pub(in crate::tui) header_email: Option<Rect>,
     pub(in crate::tui) header_attention: Option<Rect>,
     pub(in crate::tui) transcript: Rect,
+    pub(in crate::tui) transcript_rail: Rect,
     pub(in crate::tui) input: Rect,
     pub(in crate::tui) bottom_button: Rect,
     pub(in crate::tui) footer: Rect,

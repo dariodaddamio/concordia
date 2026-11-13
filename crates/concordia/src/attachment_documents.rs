@@ -34,7 +34,7 @@ impl Document {
             || !self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
             || !matches!(
                 self.mime.as_str(),
-                "text/plain" | "text/markdown" | "application/json"
+                "text/plain" | "text/markdown" | "application/json" | "text/csv" | "image/svg+xml"
             )
             || self
                 .range
@@ -51,10 +51,17 @@ impl Document {
             .and_then(|extension| extension.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let mime=match extension.as_str() {"txt"=>"text/plain","md"|"markdown"=>"text/markdown","json"=>"application/json",_=>return Err("Document attachments currently support .txt, .md and .json; binary transport is unavailable".into())};
+        let (mime, snapshot_extension) = match extension.as_str() {
+            "txt" => ("text/plain", "txt"),
+            "md" | "markdown" => ("text/markdown", "md"),
+            "json" => ("application/json", "json"),
+            "csv" => ("text/csv", "csv"),
+            "svg" => ("image/svg+xml", "svg"),
+            _ => return Err("Attach UTF-8 .txt, .md, .json, .csv or .svg".into()),
+        };
         let bytes = read(path)?;
         let hash = format!("{:x}", Sha256::digest(&bytes));
-        let target = super::store_snapshot(root, &hash, "txt", &bytes)?;
+        let target = super::store_snapshot(root, &hash, snapshot_extension, &bytes)?;
         let document = Self {
             path: target
                 .canonicalize()

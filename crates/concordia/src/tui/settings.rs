@@ -36,7 +36,7 @@ pub(super) fn open(app: &mut App) {
         ),
         row(
             "motion",
-            format!("Window icon animation · {}", enabled(ui.motion)),
+            format!("Interface animation · {}", enabled(ui.motion)),
             "Saved; Windows reduced-motion preferences take precedence",
         ),
         row(
@@ -63,6 +63,11 @@ pub(super) fn open(app: &mut App) {
             "roles",
             format!("Roles · {} configured", crate::store::get_settings(&app.state_root).roles.len()),
             "Default provider, account, model and effort for delegated agents",
+        ),
+        row(
+            "native-controls",
+            "Native provider controls",
+            "Open the actual CLI for this account in a separate terminal session: settings, promotions and native appearance",
         ),
         row(
             "continuation",
@@ -165,6 +170,7 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     }
     match id {
         "appearance" => appearance::open(app),
+        "native-controls" => local_terminal::native_controls(app),
         "tokens" | "tips" | "stats" | "motion" | "notifications" => {
             let current = match id {
                 "tokens" => app.appearance.ui.token_line,
