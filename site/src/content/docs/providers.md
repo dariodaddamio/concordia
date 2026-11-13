@@ -11,6 +11,7 @@ Concordia starts official provider tools under your accounts. Provider tools own
 | Codex | App Server or standard CLI | Native thread identity and approvals remain with Codex. |
 | Cursor | Agent Client Protocol or standard CLI | ACP capabilities come from the active session. |
 | Grok Build | Agent Client Protocol | `grok agent stdio` provides session and permission messages. |
+| opencode | Agent Client Protocol | ACP capabilities and model metadata come from the active session. |
 | Grok Bot | Webhook and localhost callback | Concordia starts a registered routine and accepts one bounded callback. |
 
 ## Claude Code
@@ -28,6 +29,12 @@ Concordia uses Cursor's ACP session when available. Cursor commands are enabled 
 ## Grok Build
 
 Concordia launches `grok agent stdio` through ACP. The account home is explicit, and login checks inspect metadata without copying credentials. Usage is shown as unavailable when no supported signal exists.
+
+## opencode
+
+Concordia launches opencode through its ACP transport. Provider-run records remain visible in
+the Agents view, and provider model and usage metadata stays unknown when opencode does not
+report it.
 
 ## Grok Bot
 

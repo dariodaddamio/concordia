@@ -135,6 +135,7 @@ jobs:
           # SHA256SUMS keeps its name and the exe line: the in-app updater (release.rs) reads it.
           Set-Content -Path SHA256SUMS -Value @("$exeHash  $name", "$zipHash  $zipName") -Encoding ascii
           # Per-asset checksum file that install.ps1 downloads next to the zip.
+          Set-Content -Path "$name.sha256" -Value "$exeHash  $name" -Encoding ascii
           Set-Content -Path "$zipName.sha256" -Value "$zipHash  $zipName" -Encoding ascii
           Get-Content SHA256SUMS
           Get-Content "$zipName.sha256"
@@ -184,6 +185,7 @@ jobs:
         with:
           files: |
             concordia-x86_64-pc-windows-msvc.exe
+            concordia-x86_64-pc-windows-msvc.exe.sha256
             concordia-x86_64-pc-windows-msvc.zip
             concordia-x86_64-pc-windows-msvc.zip.sha256
             SHA256SUMS
@@ -202,7 +204,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: concordia-x86_64-pc-windows-msvc.exe
+          subject-path: |
+            concordia-x86_64-pc-windows-msvc.exe
+            concordia-x86_64-pc-windows-msvc.zip
 
       - name: Keep the rehearsal artifacts
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -211,6 +215,7 @@ jobs:
           name: concordia-rehearsal
           path: |
             concordia-x86_64-pc-windows-msvc.exe
+            concordia-x86_64-pc-windows-msvc.exe.sha256
             concordia-x86_64-pc-windows-msvc.zip
             concordia-x86_64-pc-windows-msvc.zip.sha256
             SHA256SUMS

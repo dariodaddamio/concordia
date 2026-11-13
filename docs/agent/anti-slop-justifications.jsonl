@@ -32,3 +32,11 @@
 | crates/concordia/src/provider/stream_cards.rs | ok: 2, 3, 5 | Read timeout fields at the provider event boundary and ignore polling intervals. |
 | docs/chat-rendering.md | ok: 5, 10 | Record implemented shortcuts and provider timeout coverage with explicit unknowns. |
 | docs/ui-glossary.md | ok: 5, 10 | Point the icon description at the existing legend instead of defining a second source. |
+
+### N7 README, documentation site and release integrity - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| README.md, site/src/content/docs/{features,index,install,providers,configuration}.md, site/astro.config.mjs | ok: 1, 4, 5, 6, 10 | Keep the README and site as canonical documentation surfaces, add one grouped feature page, and record shipped behavior without adding a duplicate catalog. |
+| .github/workflows/release.yml | ok: 1, 4, 5, 10 | Extend existing staging and attestation steps to cover each release asset; do not add a new release subsystem. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing documentation and release-integrity changes in existing metadata. |

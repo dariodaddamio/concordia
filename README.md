@@ -1,22 +1,9 @@
 # Concordia
 
-Concordia is a Windows-first native app that runs the official Codex, Claude Code, Cursor, Grok Build and opencode
-CLIs under your own accounts, with bounded handoff between them. It keeps one conversation
-navigable while each provider remains responsible for its own sessions, approvals and tools.
-It can also trigger configured cloud-hosted Grok Bot routines through their webhook and receive
-one result or question through a user-run tunnel; see [Grok Bot routines](docs/provider-grok-bot.md).
+Concordia allows any supported provider to easily and efficiently share context, continue the same task on another account after a usage limit, delegate work across providers with a model per role, and hand off exact pointers into provider history instead of summaries, among others ([full feature list](https://dariodaddamio.github.io/concordia/features/)).
 
-For the short view of what works, what remains unproven and the intended direction, read the
-[project plan](PLAN.md). The [documentation index](docs/README.md) separates current references,
-planned work and historical evidence. Concordia is currently private and pre-release.
-
-Concordia is independent and unofficial. It is not affiliated with or endorsed by OpenAI,
-Anthropic, Anysphere, Cursor or xAI. It runs their official, unmodified CLIs using your own accounts.
-Each CLI keeps its own login; Concordia only checks that a login exists. For optional integrations,
-Concordia may handle the minimum secret needed to perform the explicitly requested integration:
-Grok Bot webhook keys and callback tokens are kept in Windows Credential Manager and are never
-passed to agents. This protects against other users and disk theft, not a same-user process with
-unrestricted access.
+Concordia runs official provider CLIs under your accounts. Providers keep ownership of their
+authentication, sessions, approvals and tools. Concordia is independent and unofficial.
 
 ## Install
 
@@ -26,36 +13,18 @@ From a source checkout, run this in Windows PowerShell:
 .\scripts\install-dev.ps1 -Install
 ```
 
-This builds and installs the local executable on your user PATH. The public installer command
-will be available after the first release; see [the full installation guide](docs/install.md).
+This builds and installs the local executable on your user PATH. See the [installation guide](https://dariodaddamio.github.io/concordia/install/).
 
 ## Quick start
 
 ```text
 concordia
-/use                 # choose or connect Codex, Claude Code, Cursor, Grok Build or opencode
+/use
 Ask your question and press Enter
-/usage               # inspect provider-reported usage
-/resume              # continue a recorded conversation
-/model               # choose a model from the active provider
+/usage
+/resume
+/model
 ```
-
-The `/use` picker also configures Grok Bot routines. Their HTTPS webhook key is entered in a
-masked form and stored in Windows Credential Manager; routine metadata stays in Concordia state.
-
-`concordia` opens the native app window. Inside it, `/terminal`
-or F11 opens a local shell in the project; F11 returns to chat with its draft intact.
-`/terminal hide` keeps that shell alive, and `/terminal close` stops it.
-
-Tabs use Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+1 through Ctrl+9,
-Ctrl+Shift+PgUp, Ctrl+Shift+PgDn, F2 and double-click rename. Ctrl+O expands or collapses the
-last activity item in the last message. Ctrl+Shift+O applies that action to every item. F1 lists
-these controls and the provider, status and tool-card icons.
-
-The Windows taskbar shows a theme-coloured overlay dot while work runs or user input is waiting;
-the waiting state takes precedence and idle clears the dot. If background work needs input while
-the window is unfocused, Windows shows a notification. Selecting it focuses the existing window
-and opens Needs attention; the window does not reopen itself.
 
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |
@@ -79,53 +48,14 @@ and opens Needs attention; the window does not reopen itself.
 | `/exit` | `` | exit Concordia | everyday |
 <!-- COMMANDS:END -->
 
-`/skills` and `/hooks` show the selected account's local sources. Use `/harness connect PATH`
-to apply a declared setup across registered accounts;
+## Providers
 
-The slash picker also lists the active provider's native commands. Concordia owns cross-provider,
-account and session commands; native commands unavailable in the provider's programmatic mode are
-shown disabled, and any other slash name is passed to the active provider. See the [command
-ownership table](docs/command-audit.md#slash-command-ownership).
-later accounts inherit that connection in this project before their first turn. Use `--current`
-for an account-specific setup. `/skills install [PATH]` links a skill folder or collection into provider homes; the default
-source is `~/.agents/skills`. Later accounts inherit shared skill sources across projects.
-Links keep one current source, and existing same-named skills are preserved.
-`/skills remove PATH` stops sharing and removes matching directory links across accounts;
-source files and other skill directories are preserved.
-`/harness skill` installs Concordia's connection instructions.
-`/harness status` shows shared sources and per-account connection results; `/harness verify`
-runs declared verification probes and `/harness tools` lists and test-runs connected tools.
-Native hook consent must be reviewed in each provider's own client. A connected configuration
-does not prove that hooks are trusted, active or able to protect every source language.
+Claude Code, Codex, Cursor, Grok Build, opencode and optional Grok Bot routines are supported.
+See the [provider guide](https://dariodaddamio.github.io/concordia/providers/).
 
-Use `/doctor` inside Concordia, or `concordia doctor` in a terminal, when setup or provider
-discovery needs diagnosis.
+## Site
 
-If a saved chat can no longer be opened because its provider session or Concordia record is
-missing or stale, `/resume` and `/doctor` show the concrete cause. Choose the repair action to
-start a fresh provider session from the chat's deterministic handoff map; any unsent draft stays
-in the composer.
-
-## Safety at a glance
-
-- Plan, Ask and Edit modes limit what a provider may do. Full access requires explicit
-  `/mode full` confirmation.
-- Delegated agents never exceed the mode selected for their parent conversation.
-- Concordia itself makes no LLM calls; memory and handoff are deterministic local logic.
-- Concordia does not make provider model calls. Besides provider CLI traffic, it makes only the
-  outbound requests you explicitly configure, such as a Grok Bot routine webhook or an update;
-  the optional callback listener is localhost-only and tunnelled by software you run.
-- Native provider authentication, approvals and session state remain authoritative. See
-  [provider terms and boundaries](docs/provider-terms.md).
-
-## Learn more
-
-- [How Concordia works, end to end](docs/how-concordia-works.md)
-- [Current capabilities and limits](PLAN.md)
-- [Architecture and data boundaries](docs/architecture.md)
-- [Deterministic handoff map layout](docs/continuity-map-v2.md)
-- [Verified behavior and remaining limits](docs/e2e-status.md)
-- [Contributing](CONTRIBUTING.md)
-- [License](LICENSE)
-
-The walkthrough links the detailed provider, memory, input and configuration references.
+- [Overview](https://dariodaddamio.github.io/concordia/)
+- [Features](https://dariodaddamio.github.io/concordia/features/)
+- [Quick start](https://dariodaddamio.github.io/concordia/quick-start/)
+- [Windows security warnings](https://dariodaddamio.github.io/concordia/install/#windows-security-warnings)

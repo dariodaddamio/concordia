@@ -1,5 +1,10 @@
 # Changelog
 
+### Added (2026-11-13h)
+
+- Added the shipped feature catalog to the documentation site, including opencode and delegation
+  roles, and publish per-asset SHA-256 checksums and provenance attestations for release assets.
+
 ### Added (2026-11-13g)
 
 - Limit continuation accepts structured quota signals from all supported coding providers and

@@ -1,11 +1,11 @@
 ---
 title: Concordia
-description: Run Claude Code, Codex, Cursor and Grok Build chats in one Windows app.
+description: Run Claude Code, Codex, Cursor, Grok Build and opencode chats in one Windows app.
 ---
 
 <!-- OWNER PLACEHOLDER: approve the opening product paragraph before publication. -->
 
-Concordia is a local Windows application that runs official provider CLIs under your accounts and coordinates their chats, projects, approvals and workers.
+Concordia is a local Windows application that runs official provider CLIs under your accounts and coordinates their chats, projects, approvals and agents.
 
 This site documents the current implementation. It does not promise future panels, integrations or provider behavior that the application does not expose today.
 
@@ -22,3 +22,4 @@ Concordia owns cross-provider routing, chat state, questions, approvals, project
 - [Install Concordia](/concordia/install/)
 - [Run the quick start](/concordia/quick-start/)
 - [Choose a provider](/concordia/providers/)
+- [Review the feature list](/concordia/features/)

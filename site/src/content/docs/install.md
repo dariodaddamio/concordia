@@ -17,7 +17,9 @@ Run the resulting executable from `target/release` and configure provider CLIs t
 
 ## Release install
 
-When a release exists, download the official zip and its SHA-256 checksum from the GitHub release. Verify the archive before running it. The release installer does not require administrator rights.
+When a release exists, download the official zip and its `.sha256` file from the GitHub release.
+Verify the archive before running it. The release also publishes `SHA256SUMS` for the executable
+and zip. The release installer does not require administrator rights.
 
 ## Windows security warnings
 
@@ -27,16 +29,18 @@ For the official release file, select **More info**, then **Run anyway** only af
 
 ### Verify the file
 
-Use the published SHA-256 checksum in PowerShell:
+Use the published SHA-256 checksum in PowerShell. Compare the output with the line for the same
+filename in `SHA256SUMS` or its per-file `.sha256` file:
 
 ```powershell
 Get-FileHash .\concordia-x86_64-pc-windows-msvc.exe -Algorithm SHA256
 ```
 
-For an attested release, verify the GitHub artifact as documented by the release:
+For an attested release, verify the executable or zip against the GitHub Actions build provenance:
 
 ```powershell
 gh attestation verify .\concordia-x86_64-pc-windows-msvc.exe -o OWNER/REPOSITORY
+gh attestation verify .\concordia-x86_64-pc-windows-msvc.zip -o OWNER/REPOSITORY
 ```
 
 You can also build from source and compare the source revision with the release tag.
