@@ -993,7 +993,7 @@ pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
         CardStatus::Done => "✓",
     };
     let mut summary = CardSummary {
-        text: format!("│ {mark} "),
+        text: format!("│ {mark} {} ", ToolKind::of(card).icon()),
         files: Vec::new(),
     };
     let detail = card.detail.as_deref().unwrap_or("");
@@ -1329,19 +1329,143 @@ pub fn tool_label(name: &str) -> String {
     }
 }
 
-pub fn tool_icon(name: &str) -> &'static str {
-    let label = tool_label(name).to_ascii_lowercase();
-    if label.contains("edit") || label.contains("write") || label.contains("patch") {
-        "✎"
-    } else if label.contains("search") || label.contains("grep") || label.contains("glob") {
-        "⌕"
-    } else if label.contains("read") || label.contains("file") {
-        "▤"
-    } else if label.contains("agent") || label.contains("task") {
-        "⑂"
-    } else {
-        "›"
+/// What a tool card does, for its icon. Presentation only; the card keeps the provider's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    Shell,
+    Read,
+    Edit,
+    Search,
+    Web,
+    Mcp,
+    Agent,
+    Question,
+    Image,
+    Other,
+}
+
+impl ToolKind {
+    /// Every kind with its own icon, in the order the shortcuts screen and docs list them.
+    pub const LEGEND: [ToolKind; 9] = [
+        ToolKind::Shell,
+        ToolKind::Read,
+        ToolKind::Edit,
+        ToolKind::Search,
+        ToolKind::Web,
+        ToolKind::Mcp,
+        ToolKind::Agent,
+        ToolKind::Question,
+        ToolKind::Image,
+    ];
+
+    /// Single-cell glyphs that Consolas or Segoe UI Symbol draw in the native window.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Shell => "❯",
+            Self::Read => "▤",
+            Self::Edit => "✎",
+            Self::Search => "⌕",
+            Self::Web => "⊕",
+            Self::Mcp => "⚙",
+            Self::Agent => "⑂",
+            Self::Question => "?",
+            Self::Image => "▣",
+            Self::Other => "›",
+        }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Shell => "shell command",
+            Self::Read => "file read",
+            Self::Edit => "file edit",
+            Self::Search => "search",
+            Self::Web => "web",
+            Self::Mcp => "MCP tool",
+            Self::Agent => "agent or subagent",
+            Self::Question => "question",
+            Self::Image => "image",
+            Self::Other => "other tool",
+        }
+    }
+
+    pub fn of(card: &StreamCard) -> Self {
+        if card.id.starts_with("native-agent:") {
+            return Self::Agent;
+        }
+        let detail = card.detail.as_deref().unwrap_or("");
+        // Codex exec prefixes the server; the app-server keeps its item JSON.
+        if detail.starts_with("MCP server: ") || detail.contains("\"type\":\"mcpToolCall\"") {
+            return Self::Mcp;
+        }
+        match Self::of_title(&card.title) {
+            Self::Other if detail.trim_start().starts_with("*** Begin Patch") => Self::Edit,
+            kind => kind,
+        }
+    }
+
+    pub fn of_title(name: &str) -> Self {
+        let lower = name.to_ascii_lowercase();
+        if lower.starts_with("mcp__") || lower == "mcp" {
+            return Self::Mcp;
+        }
+        if lower.contains("image") {
+            return Self::Image;
+        }
+        match tool_label(name).as_str() {
+            "Run command" => Self::Shell,
+            "Read file" => Self::Read,
+            "Edit file" | "Write file" => Self::Edit,
+            "Search files" => Self::Search,
+            "Search web" | "Browse web" | "Read web page" => Self::Web,
+            "Ask questions" => Self::Question,
+            "Start agent" | "Wait for agents" => Self::Agent,
+            _ if matches!(lower.as_str(), "task" | "agent") || lower.starts_with("agent ") => {
+                Self::Agent
+            }
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The timeout a provider put on a tool call, read from the call's own arguments.
+///
+/// Reported today: Codex function calls (`timeout_ms` on `exec_command`, `shell` and
+/// `wait_agent`), Claude Code's `Bash` (`timeout`, milliseconds) and Cursor's shell call
+/// (`timeout`, milliseconds). Codex app-server command items carry none. A bare `timeout` is
+/// read only on shell commands, where both providers define it in milliseconds; Codex's
+/// `yield_time_ms` is a polling interval, not a limit, and is ignored.
+pub fn reported_timeout(card: &StreamCard) -> Option<std::time::Duration> {
+    let detail = card.detail.as_deref()?;
+    let input = detail
+        .split_once("\nOutput: ")
+        .map_or(detail, |(input, _)| input);
+    let input = input
+        .strip_prefix("arguments: ")
+        .or_else(|| input.strip_prefix("input: "))
+        .unwrap_or(input)
+        .trim_start();
+    if !input.starts_with(['{', '"']) {
+        return None;
+    }
+    let value = serde_json::Deserializer::from_str(input)
+        .into_iter::<Value>()
+        .next()?
+        .ok()?;
+    let value = match value.as_str() {
+        Some(text) => serde_json::from_str(text).ok()?,
+        None => value,
+    };
+    let millis = value
+        .get("timeout_ms")
+        .or_else(|| {
+            (ToolKind::of(card) == ToolKind::Shell)
+                .then(|| value.get("timeout"))
+                .flatten()
+        })
+        .and_then(Value::as_u64)
+        .filter(|millis| *millis > 0)?;
+    Some(std::time::Duration::from_millis(millis))
 }
 
 /// Compact presentation only: the original arguments and output remain on the card.
@@ -1503,7 +1627,7 @@ mod tests {
         let summary = compact_card_summary(&composite);
         assert_eq!(
             summary.text,
-            "│ ✓ Edit File display_backend.rs  +1 -1 + Ran build - 22 output lines"
+            "│ ✓ › Edit File display_backend.rs  +1 -1 + Ran build - 22 output lines"
         );
         assert_eq!(summary.files.len(), 1);
         let (range, target) = &summary.files[0];
@@ -1564,10 +1688,10 @@ mod tests {
         );
         composite.detail = Some(format!("if (dynamic) {{ {script} }}"));
         let fallback = compact_card_summary(&composite);
-        assert_eq!(fallback.text, "│ ◉ Run tools");
+        assert_eq!(fallback.text, "│ ◉ › Run tools");
         assert!(fallback.files.is_empty());
         composite.detail = Some("text(await tools.exec_command({cmd:dynamic}));".into());
-        assert_eq!(compact_card_summary(&composite).text, "│ ◉ Run tools");
+        assert_eq!(compact_card_summary(&composite).text, "│ ◉ › Run tools");
         composite.detail = Some(
             "// text(await tools.apply_patch(\"*** Begin Patch\\n*** Update File: fake.rs\"));"
                 .into(),
@@ -1610,7 +1734,7 @@ mod tests {
         };
         assert_eq!(
             compact_card_summary(&dynamic_tail).text,
-            "│ ✓ Ran tools",
+            "│ ✓ › Ran tools",
             "hidden calls are validated too"
         );
         let names = (0..6)

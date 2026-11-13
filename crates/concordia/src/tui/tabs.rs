@@ -6,6 +6,7 @@
 
 use super::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::layout::Rect;
 
 /// What a tab must answer before it closes.
 pub(crate) trait TabState {
@@ -160,6 +161,91 @@ impl<T: TabState> TabSet<T> {
             self.active = number - 1;
         }
     }
+
+    /// Move a tab to `to` (an index in the final order). The active tab stays active.
+    pub(crate) fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
+            return false;
+        }
+        let active = self.active;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = if active == from {
+            to
+        } else if from < active && active <= to {
+            active - 1
+        } else if to <= active && active < from {
+            active + 1
+        } else {
+            active
+        };
+        true
+    }
+
+    /// Ctrl+Shift+PgUp/PgDn: move the active tab one place, without wrapping.
+    pub(crate) fn move_active(&mut self, right: bool) -> bool {
+        let to = if right {
+            self.active + 1
+        } else {
+            match self.active.checked_sub(1) {
+                Some(to) => to,
+                None => return false,
+            }
+        };
+        self.move_tab(self.active, to)
+    }
+}
+
+/// Pointer drag that reorders items laid out in one row, such as the tab strip.
+///
+/// It knows only the row's rectangles, so a panel strip can reuse it; docking would add
+/// further drop targets beside `slot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DragReorder {
+    pub source: usize,
+    origin: u16,
+    pointer: u16,
+    moved: bool,
+}
+
+impl DragReorder {
+    pub(crate) fn press(source: usize, x: u16) -> Self {
+        Self {
+            source,
+            origin: x,
+            pointer: x,
+            moved: false,
+        }
+    }
+
+    /// Track the pointer; a drag starts once it leaves the pressed column.
+    pub(crate) fn hover(&mut self, x: u16) {
+        self.pointer = x;
+        self.moved |= x.abs_diff(self.origin) >= 2;
+    }
+
+    pub(crate) fn dragging(&self) -> bool {
+        self.moved
+    }
+
+    /// The insertion slot under the pointer, `0..=items.len()`: before the item whose centre
+    /// is right of the pointer.
+    pub(crate) fn slot(&self, items: &[Rect]) -> usize {
+        items
+            .iter()
+            .position(|rect| self.pointer < rect.x + rect.width / 2)
+            .unwrap_or(items.len())
+    }
+
+    /// Where the dragged item lands, as an index in the final order, or `None` for no change.
+    pub(crate) fn target(&self, items: &[Rect]) -> Option<usize> {
+        if !self.moved || self.source >= items.len() {
+            return None;
+        }
+        let slot = self.slot(items);
+        let to = if slot > self.source { slot - 1 } else { slot };
+        (to != self.source).then_some(to)
+    }
 }
 
 /// Tab keys, recognised before any other dispatch so pickers and the editor never see them.
@@ -177,6 +263,8 @@ pub(crate) fn action_for(key: KeyEvent) -> TabAction {
         KeyCode::Char('w') if !shift => TabAction::Close,
         KeyCode::BackTab => TabAction::Previous,
         KeyCode::Tab if shift => TabAction::Previous,
+        KeyCode::PageUp if shift => TabAction::MoveLeft,
+        KeyCode::PageDown if shift => TabAction::MoveRight,
         KeyCode::Tab | KeyCode::PageDown => TabAction::Next,
         KeyCode::PageUp => TabAction::Previous,
         KeyCode::Char(c @ '1'..='9') if !shift => TabAction::Select(c as usize - '0' as usize),
@@ -196,6 +284,10 @@ pub(crate) enum TabAction {
     Next,
     Previous,
     Select(usize),
+    MoveLeft,
+    MoveRight,
+    /// A finished drag: (from, to) as indexes in the final order.
+    Move(usize, usize),
 }
 
 #[cfg(test)]
@@ -284,5 +376,60 @@ mod tests {
             action_for(key('t', KeyModifiers::NONE)),
             TabAction::Unhandled
         );
+    }
+
+    #[test]
+    fn moving_tabs_keeps_the_active_tab_selected() {
+        let mut set = TabSet::new(app());
+        set.add(app());
+        set.add(app());
+        set.tabs[0].editor.set_text("first");
+        set.active = 0;
+        assert!(set.move_active(true));
+        assert_eq!((set.active, set.tabs[1].editor.text()), (1, "first".into()));
+        assert!(set.move_tab(2, 0));
+        assert_eq!((set.active, set.tabs[2].editor.text()), (2, "first".into()));
+        assert!(!set.move_active(true), "the last tab does not wrap");
+        set.active = 0;
+        assert!(!set.move_active(false), "the first tab does not wrap");
+        assert_eq!(
+            action_for(KeyEvent::new(
+                KeyCode::PageUp,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )),
+            TabAction::MoveLeft
+        );
+        assert_eq!(
+            action_for(KeyEvent::new(
+                KeyCode::PageDown,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )),
+            TabAction::MoveRight
+        );
+        assert_eq!(
+            action_for(KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL)),
+            TabAction::Next
+        );
+    }
+
+    #[test]
+    fn dragging_a_tab_reports_the_insertion_slot_and_final_index() {
+        let strip = [
+            Rect::new(0, 0, 10, 1),
+            Rect::new(11, 0, 10, 1),
+            Rect::new(22, 0, 10, 1),
+        ];
+        let mut drag = DragReorder::press(0, 3);
+        drag.hover(4);
+        assert!(!drag.dragging(), "a one-column wobble is still a click");
+        assert_eq!(drag.target(&strip), None);
+        drag.hover(28);
+        assert_eq!(drag.slot(&strip), 3);
+        assert_eq!(drag.target(&strip), Some(2));
+        drag.hover(14);
+        assert_eq!(drag.target(&strip), None, "slot 1 is its own place");
+        let mut back = DragReorder::press(2, 25);
+        back.hover(1);
+        assert_eq!((back.slot(&strip), back.target(&strip)), (0, Some(0)));
     }
 }

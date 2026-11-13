@@ -904,7 +904,11 @@ fn interaction(args: &[String]) {
         "reasoning-start {} reasoning-end",
         "checking the requested changes. ".repeat(30)
     );
-    let command = format!("synthetic-command {} command-tail", "argument ".repeat(15));
+    let command = if prompt.contains("[launch]") {
+        "codex exec -m gpt-5.6-luna \"Fix the parser\nsecond line with \\\"quotes\\\"\"".to_owned()
+    } else {
+        format!("synthetic-command {} command-tail", "argument ".repeat(15))
+    };
     let tool_output = if prompt.contains("[long-tool]") {
         format!(
             "tool-output-start\n{}\ntool-output-end",

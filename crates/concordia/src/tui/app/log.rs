@@ -211,6 +211,13 @@ impl App {
             }
         }
         self.related_files.invalidate();
+        if card.status == CardStatus::Running {
+            self.tool_started
+                .entry(card.id.clone())
+                .or_insert_with(Instant::now);
+        } else {
+            self.tool_started.remove(&card.id);
+        }
         let turn_start = self
             .messages
             .iter()

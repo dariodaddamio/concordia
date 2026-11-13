@@ -458,8 +458,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let redraw_always = std::env::var_os("CONCORDIA_REDRAW_ALWAYS").is_some();
 
     let mut close_armed: Option<(uuid::Uuid, Instant)> = None;
-    let mut previous_labels: Vec<String> = Vec::new();
+    let mut previous_labels: Vec<TabChip> = Vec::new();
     let mut tab_click: Option<(usize, u16, u16, Instant)> = None;
+    let mut strip_drag: Option<tabs::DragReorder> = None;
 
     macro_rules! draw_if_needed {
         ($app:ident, $force:expr) => {
@@ -566,8 +567,10 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     super::native_window::StatusDot::Idle
                 });
             }
-            let labels: Vec<String> = if tabs.has_multiple() {
-                tabs.tabs.iter().map(|t| t.app.tab_label()).collect()
+            // The tab in front has been seen; only background tabs keep a finished mark.
+            tabs.active_mut().app.tab_outcome = None;
+            let labels: Vec<TabChip> = if tabs.has_multiple() {
+                tabs.tabs.iter().map(|t| t.app.tab_chip()).collect()
             } else {
                 Vec::new()
             };
@@ -581,6 +584,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 let RunTab { app, turn_tx, .. } = &mut tabs.tabs[active];
                 app.tab_strip = labels;
                 app.tab_index = active;
+                app.tab_drag = strip_drag
+                    .filter(tabs::DragReorder::dragging)
+                    .map(|drag| (drag.source, drag.slot(&app.tab_hits)));
                 // Drain pending paste chunks before repainting the growing prompt.
                 draw_if_needed!(app, redraw_always);
                 let title = app.window_title();
@@ -648,6 +654,32 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             }
                         }
                         if let Event::Mouse(m) = &event {
+                            if let Some(drag) = strip_drag.as_mut() {
+                                match m.kind {
+                                    // The app never saw the press, so it gets none of the drag.
+                                    MouseEventKind::Drag(MouseButton::Left) => {
+                                        drag.hover(m.column);
+                                        if drag.dragging() {
+                                            tab_click = None;
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                    MouseEventKind::Up(MouseButton::Left) => {
+                                        drag.hover(m.column);
+                                        let dragged = drag.dragging();
+                                        if let Some(to) = drag.target(&app.tab_hits) {
+                                            tab_action = tabs::TabAction::Move(drag.source, to);
+                                        }
+                                        strip_drag = None;
+                                        if dragged {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                    _ => strip_drag = None,
+                                }
+                            }
                             if m.kind == MouseEventKind::Down(MouseButton::Left) {
                                 if let Some(index) = app.tab_hits.iter().position(|r| {
                                     r.contains(ratatui::layout::Position::new(m.column, m.row))
@@ -677,6 +709,8 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                             tab_click = Some((index, m.column, m.row, captured_at));
                                         }
                                         tab_action = tabs::TabAction::Select(index + 1);
+                                        strip_drag =
+                                            Some(tabs::DragReorder::press(index, m.column));
                                     }
                                     break;
                                 }
@@ -858,6 +892,14 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 tabs::TabAction::Next => tabs.next(false),
                 tabs::TabAction::Previous => tabs.next(true),
                 tabs::TabAction::Select(n) => tabs.select_number(n),
+                tabs::TabAction::MoveLeft | tabs::TabAction::MoveRight => {
+                    tabs.move_active(tab_action == tabs::TabAction::MoveRight);
+                    dirty = true;
+                }
+                tabs::TabAction::Move(from, to) => {
+                    tabs.move_tab(from, to);
+                    dirty = true;
+                }
             }
             if let Some(request) = resume_request {
                 resume_in_tabs(&mut tabs, request, &state_root, use_window);

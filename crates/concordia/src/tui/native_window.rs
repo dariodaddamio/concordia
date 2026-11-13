@@ -1131,6 +1131,7 @@ unsafe fn handle_test_control(window: &mut Window) {
                 let kind = match request.request.get("kind").and_then(|v| v.as_str()) {
                     Some("down") => MouseEventKind::Down(MouseButton::Left),
                     Some("up") => MouseEventKind::Up(MouseButton::Left),
+                    Some("drag") => MouseEventKind::Drag(MouseButton::Left),
                     Some("scroll_up") => MouseEventKind::ScrollUp,
                     Some("scroll_down") => MouseEventKind::ScrollDown,
                     _ => MouseEventKind::Moved,
@@ -1271,6 +1272,61 @@ pub(super) fn status_fixture_proof() {
         SelectObject(dc, previous);
         DeleteObject(bitmap);
         DeleteDC(dc);
+    }
+}
+
+/// Glyphs that neither the window font nor its Segoe UI Symbol fallback can draw.
+/// The emoji font is excluded on purpose: icons must not depend on it.
+#[cfg(test)]
+pub(super) fn glyphs_without_font(glyphs: &[String]) -> Vec<String> {
+    unsafe {
+        let dc = CreateCompatibleDC(null_mut());
+        assert!(!dc.is_null());
+        let fonts = ["Consolas", "Segoe UI Symbol"].map(|family| {
+            let face = wide(family);
+            CreateFontW(
+                -18,
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                CLEARTYPE_QUALITY as u32,
+                FIXED_PITCH as u32 | FF_MODERN as u32,
+                face.as_ptr(),
+            )
+        });
+        let previous = SelectObject(dc, fonts[0]);
+        let missing = glyphs
+            .iter()
+            .filter(|glyph| {
+                let text: Vec<u16> = glyph.encode_utf16().collect();
+                let mut indices = vec![0; text.len()];
+                !fonts.iter().any(|font| {
+                    SelectObject(dc, *font);
+                    GetGlyphIndicesW(
+                        dc,
+                        text.as_ptr(),
+                        text.len() as i32,
+                        indices.as_mut_ptr(),
+                        GGI_MARK_NONEXISTING_GLYPHS,
+                    ) != GDI_ERROR as u32
+                        && indices.iter().all(|index| *index != 0xffff)
+                })
+            })
+            .cloned()
+            .collect();
+        SelectObject(dc, previous);
+        for font in fonts {
+            DeleteObject(font);
+        }
+        DeleteDC(dc);
+        missing
     }
 }
 
