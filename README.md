@@ -41,6 +41,7 @@ Ask your question and press Enter
 | `/harness` | `ACTION` | connect and run harness tools | advanced |
 | `/skills` | `[list\|install [PATH]\|remove PATH]` | inspect skills and toggle their availability | advanced |
 | `/hooks` | `[list]` | inspect native hooks | advanced |
+| `/mcp` | `[add\|remove\|on\|off\|import] [NAME]` | manage Concordia-wide MCP servers | advanced |
 | `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
 | `/copy` | `` | copy the last reply | everyday |
 | `/doctor` | `` | check your setup | everyday |

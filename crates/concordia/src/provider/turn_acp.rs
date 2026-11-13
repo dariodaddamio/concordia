@@ -327,11 +327,18 @@ fn should_reinject_context(system_prompt_supported: bool, last: Option<&str>, id
     !system_prompt_supported && !id.is_empty() && last != Some(id)
 }
 
-fn ask_server_config(endpoint: &str, token: &str, enabled: bool) -> Value {
-    if !enabled || endpoint.is_empty() {
-        return json!([]);
+fn ask_server_config(endpoint: &str, token: &str, enabled: bool, cwd: &std::path::Path) -> Value {
+    let mut servers = match crate::mcp_registry::acp_servers(
+        &crate::store::default_store_root(),
+        cwd,
+    ) {
+        Value::Array(values) => values,
+        _ => Vec::new(),
+    };
+    if enabled && !endpoint.is_empty() {
+        servers.push(json!({"name":"concordia-ask","command":std::env::current_exe().unwrap_or_default().to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":token}]}));
     }
-    json!([{"name":"concordia-ask","command":std::env::current_exe().unwrap_or_default().to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":token}]}])
+    Value::Array(servers)
 }
 
 /// `agent models` lists flat variants (`claude-opus-5-5-high-fast`, `cursor-grok-4.6-low`), while
@@ -507,7 +514,7 @@ pub(super) async fn run(
             }
         }
         anyhow::ensure!(req.images.is_empty() || init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
-        let mcp_servers = ask_server_config(&endpoint, &bridge_token, !endpoint.is_empty());
+        let mcp_servers = ask_server_config(&endpoint, &bridge_token, !endpoint.is_empty(), req.cwd);
         let (method,mut params)=if let Some(id)=req.native_session_id{
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
             ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":mcp_servers}))
@@ -601,11 +608,11 @@ mod tests {
 
     #[test]
     fn question_server_is_registered_only_when_enabled() {
-        assert!(ask_server_config("", "token", false)
+        assert!(ask_server_config("", "token", false, std::path::Path::new("."))
             .as_array()
             .unwrap()
             .is_empty());
-        let enabled = ask_server_config("127.0.0.1:1234", "token", true);
+        let enabled = ask_server_config("127.0.0.1:1234", "token", true, std::path::Path::new("."));
         assert_eq!(enabled[0]["name"], "concordia-ask");
         assert_eq!(enabled[0]["env"][1]["value"], "token");
     }

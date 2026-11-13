@@ -21,6 +21,7 @@ pub mod identity;
 pub mod integration;
 pub mod logging;
 pub mod mcp;
+pub mod mcp_registry;
 pub mod models;
 pub mod native_input;
 pub mod native_memory;

@@ -332,14 +332,27 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 trust: req.trust,
             standing_context,
             })?;
-            codex::assert_safe_argv(&plan.argv[..plan.argv.len() - 1])?;
+            let mut argv = plan.argv;
+            let overrides = crate::mcp_registry::codex_overrides(
+                &crate::store::default_store_root(),
+                req.cwd,
+            );
+            if !overrides.is_empty() {
+                let prompt = argv.pop().expect("provider prompt is always present");
+                for override_value in overrides {
+                    argv.push("-c".into());
+                    argv.push(override_value);
+                }
+                argv.push(prompt);
+            }
+            codex::assert_safe_argv(&argv[..argv.len() - 1])?;
             let mut env = Vec::new();
             if let Some(home) = req.home_path {
                 env.push(("CODEX_HOME".into(), home.to_string_lossy().into_owned()));
             }
             Ok(PlannedTurn {
                 command: plan.command,
-                argv: plan.argv,
+                argv,
                 env,
                 env_remove: Vec::new(),
                 cwd: plan.cwd,

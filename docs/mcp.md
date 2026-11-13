@@ -1,4 +1,31 @@
-# Agents MCP
+# MCP registry and delivery
+
+Concordia stores its MCP registry in `<state>/mcp.toml`. `/mcp` reads and changes this file. The
+registry is separate from provider homes. Concordia never writes a user's `.claude`, `.codex` or
+`.cursor` home.
+
+Each server has an enabled switch and one transport. Stdio entries contain a command, arguments
+and environment references. Remote entries contain a URL and header references. A reference is
+`{ env = "NAME" }` or `{ credential = "TARGET" }`. Literal secret values are not accepted.
+Project switches live under `projects` and can turn a global server off.
+
+| Provider | Launch interface | Current boundary |
+| --- | --- | --- |
+| Codex | `-c mcp_servers.<name>...` overrides | Stdio and URL entries are projected per turn. |
+| Cursor | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
+| Grok Build | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
+| opencode | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
+| Claude Code | `--mcp-config` JSON file | Not delivered yet. No provider-home or secret-bearing temporary file is written. |
+
+`/mcp` lists state. `/mcp add NAME stdio COMMAND [ARGS...]`, `/mcp remove NAME`, `/mcp on NAME`
+and `/mcp off NAME` mutate the registry. Bare `/mcp` shows the guided syntax. Import discovery is
+read-only at the registry API boundary; the interactive import panel is not shipped yet.
+
+The registry does not implement a proxy or remote OAuth sign-in. `concordia mcp` still serves the
+existing `agents` tool only. Remote servers that need provider-specific authentication therefore
+show a missing sign-in or unsupported boundary instead of being represented as complete.
+
+## Existing Concordia MCP server
 
 `concordia mcp` serves JSON-RPC over newline-delimited stdin/stdout. It registers exactly one
 always-on tool, `agents`, with four actions:

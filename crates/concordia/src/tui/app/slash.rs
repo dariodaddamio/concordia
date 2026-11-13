@@ -1,6 +1,49 @@
 use super::super::*;
 
 impl App {
+    fn run_mcp_command(&mut self, args: &str) {
+        let words: Vec<_> = args.split_whitespace().collect();
+        if words.is_empty() {
+            for line in crate::mcp_registry::status_lines(&self.state_root, &self.cwd) {
+                self.push_system(line);
+            }
+            if crate::mcp_registry::load(&self.state_root).map_or(true, |r| r.servers.is_empty()) {
+                self.push_system("/mcp add NAME stdio COMMAND [ARGS...] · secrets must be env:NAME or credential:TARGET");
+            }
+            return;
+        }
+        let action = words[0].to_ascii_lowercase();
+        let Some(name) = words.get(1).map(|s| (*s).to_owned()) else {
+            self.push_system("/mcp add NAME stdio COMMAND [ARGS...] | /mcp remove NAME | /mcp on NAME | /mcp off NAME | /mcp import");
+            return;
+        };
+        let mut registry = match crate::mcp_registry::load(&self.state_root) {
+            Ok(registry) => registry,
+            Err(error) => { self.push_system(error); return; }
+        };
+        match action.as_str() {
+            "on" | "off" => match registry.servers.get_mut(&name) {
+                Some(server) => { server.enabled = action == "on"; }
+                None => { self.push_system(format!("MCP server not found: {name}")); return; }
+            },
+            "remove" => { registry.servers.remove(&name); }
+            "add" => {
+                if words.get(2).map(|s| *s == "stdio").unwrap_or(false) && words.len() >= 4 {
+                    registry.servers.insert(name.into(), crate::mcp_registry::Server { enabled: true, transport: crate::mcp_registry::Transport::Stdio { command: words[3].into(), args: words[4..].iter().map(|s| (*s).into()).collect(), env: Default::default() } });
+                } else {
+                    self.push_system("/mcp add NAME stdio COMMAND [ARGS...] · use the guided panel for remote servers and secret references");
+                    return;
+                }
+            }
+            "import" => { self.push_system("/mcp import is read-only discovery and needs a provider file target"); return; }
+            _ => { self.push_system("/mcp add|remove|on|off|import"); return; }
+        }
+        match crate::mcp_registry::save(&self.state_root, &registry) {
+            Ok(()) => self.push_system("MCP registry saved. Provider homes were not changed."),
+            Err(error) => self.push_system(error),
+        }
+    }
+
     pub(in crate::tui) fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
         if trimmed == "/terminal" || trimmed.starts_with("/terminal ") {
@@ -92,6 +135,11 @@ impl App {
                 "hooks" => settings::catalog(self, true),
                 _ => appearance::command(self, args),
             }
+            return true;
+        }
+        if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
+            self.push_command(line);
+            self.run_mcp_command(trimmed.strip_prefix("/mcp").unwrap_or_default().trim());
             return true;
         }
         if trimmed == "/version" || trimmed == "/ver" || trimmed == "/about" {

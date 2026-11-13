@@ -673,6 +673,14 @@ Going public:
 
 ## This slice
 
+### Q10 Concordia-wide MCP registry - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/mcp_registry.rs` | ok: 1, 4, 5, 6, 9, 10 | One state-owned registry validates references and builds provider launch projections; no proxy is added without a complete client owner. |
+| `crates/concordia/src/provider/{turn,turn_acp}.rs`, `commands.rs`, `tui/app/slash.rs` | ok: 1, 4, 5, 7 | Reuse existing launch and slash-command owners for Codex and ACP delivery and keep provider homes read-only. |
+| `docs/mcp.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Document shipped boundaries and missing Claude/proxy work without claiming unsupported delivery. |
+
 ### Q9 provider session context - anti-slop gate
 
 | path | tendency_check | justification |

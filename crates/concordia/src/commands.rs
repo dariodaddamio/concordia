@@ -32,6 +32,7 @@ pub enum SlashCommand {
     /// `/harness ...` is executed by the TUI because it needs the live account home.
     Harness(String),
     Customization(bool),
+    Mcp(String),
     /// A known command received an unsupported argument. Keeping this distinct prevents
     /// misspelled destructive commands such as `/update typo` from running.
     Invalid(String),
@@ -245,6 +246,7 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         "version" | "ver" | "about" => Some((SlashCommand::Version, false)),
         "copy" | "cp" => Some((SlashCommand::Copy, false)),
         "doctor" | "diag" => Some((SlashCommand::Doctor, false)),
+        "mcp" => Some((SlashCommand::Mcp(body[cmd.len()..].trim().to_string()), false)),
         "skills" | "hooks" => {
             let args = body[cmd.len()..].trim();
             let (action, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
@@ -444,6 +446,12 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         "/hooks", [], "[list]",
         "inspect native hooks",
         "List native hook sources. Connect and verify harness setup through /harness. Native trust remains separate.",
+        false, CommandCategory::Settings, None, None
+    ),
+    command!(
+        "/mcp", [], "[add|remove|on|off|import] [NAME]",
+        "manage Concordia-wide MCP servers",
+        "List MCP servers and their delivery state. Add, remove, enable, disable or import provider configurations without writing provider homes.",
         false, CommandCategory::Settings, None, None
     ),
     command!(
@@ -699,6 +707,7 @@ pub fn dispatch_slash(
             CommandOutcome::Ok,
             vec!["/harness runs inside the Concordia TUI".into()],
         ),
+        SlashCommand::Mcp(_) => (CommandOutcome::Ok, vec!["/mcp runs inside the Concordia TUI".into()]),
     }
 }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+### Added (2026-11-13l)
+
+- Add a Concordia-owned MCP registry with project switches and per-launch delivery to Codex and
+  ACP providers. Provider homes remain unchanged and secret values are not copied into the registry.
+
 ### Added (2026-11-13k)
 
 - Give provider sessions a deterministic Concordia standing context through each provider's
