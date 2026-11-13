@@ -1171,7 +1171,11 @@ fn multiline_paste_and_expand_work_through_the_real_terminal_for_each_provider()
         s.enter();
         s.until("one complete prompt", |s| s.prompts() == [prompt]);
         s.until("reply visible", |s| s.screen().contains("FAKE REPLY:"));
-        s.send("\x0f"); // Ctrl+O
+        s.request(serde_json::json!({
+            "op": "key",
+            "code": "o",
+            "modifiers": ["CTRL", "SHIFT"]
+        })); // Ctrl+Shift+O expands every activity item.
         s.until("full command visible", |s| {
             s.screen().contains("command-tail")
         });
@@ -1250,7 +1254,11 @@ fn cancellation_pauses_queued_work_and_restart_restores_both_queue_and_draft() {
             s.journal().iter().all(|event| event["kind"] != "done"),
             "provider must still be running when its command is visible"
         );
-        s.send("\x0f"); // Ctrl+O: inspect the running command, not only its compact row.
+        s.request(serde_json::json!({
+            "op": "key",
+            "code": "o",
+            "modifiers": ["CTRL", "SHIFT"]
+        })); // Ctrl+Shift+O expands every activity item.
         s.until("full running command visible before completion", |s| {
             s.screen().contains("command-tail")
         });
@@ -1792,7 +1800,11 @@ fn pinned_expanded_tool_header_collapses_through_real_mouse_input() {
     let mut s = Session::launch(dir.path());
     s.submit("inspect [long-tool]");
     s.until("reply completed", |s| s.screen().contains("FAKE REPLY:"));
-    s.send("\x0f");
+    s.request(serde_json::json!({
+        "op": "key",
+        "code": "o",
+        "modifiers": ["CTRL", "SHIFT"]
+    })); // Ctrl+Shift+O expands every activity item.
     s.until("sticky expanded header", |s| {
         s.screen()
             .lines()

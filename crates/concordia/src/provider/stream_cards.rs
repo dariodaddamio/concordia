@@ -1122,7 +1122,8 @@ pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
     {
         summary.text.push_str(&format!("{run} tools"));
     } else {
-        summary.text.push_str(&compact_detail(&label, 64));
+        // Keep the complete compact row within the picker width even for an unknown long title.
+        summary.text.push_str(&compact_detail(&label, 60));
         if !detail.is_empty() && !matches!(label.as_str(), "Run tool" | "apply_patch") {
             let preview = card_preview(input);
             if !preview.is_empty() {

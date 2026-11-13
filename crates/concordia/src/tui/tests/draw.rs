@@ -620,7 +620,10 @@ fn unified_diff_cards_show_counts_and_review_colours() {
         );
     }
 
-    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.key(
+        KeyCode::Char('o'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
     h.draw();
     assert!(
         h.screen().contains("Edit File"),
@@ -1241,11 +1244,18 @@ fn expand_activity_restores_full_tool_and_reasoning_text_without_touching_draft(
     };
     assert!(!rows(&h).contains("hidden-output"));
     assert!(!rows(&h).contains("early-reasoning"));
-    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.key(
+        KeyCode::Char('o'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
     assert!(rows(&h).contains("hidden-output"));
     assert!(rows(&h).contains("early-reasoning"));
     assert_eq!(h.app.editor.text(), "keep my draft");
-    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.app.expanded_activity = true;
+    h.key(
+        KeyCode::Char('o'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
     assert!(!rows(&h).contains("hidden-output"));
 }
 

@@ -661,6 +661,15 @@ Going public:
 
 ## This slice
 
+### Q1b full-suite closeout - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/harness/command.rs` | ok: 1, 4, 5, 6, 9, 10 | Preserve guided no-argument behavior and update command tests to exercise explicit mutation targets. |
+| `crates/concordia/src/provider/stream_cards.rs` | ok: 1, 4, 5, 10 | Enforce the existing compact-row bound at the card-summary owner; keep full provider output on the card. |
+| `crates/concordia/src/tui/{native_agents.rs,tests/draw.rs}` | ok: 1, 4, 5, 9, 10 | Align stale assertions with the recorded Agents row and Ctrl+O/Ctrl+Shift+O decisions. |
+| `docs/img/*.svg`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Refresh only synthetic screenshot baselines affected by the shipped render contract and record the build identity. |
+
 ### Q1 render lane - anti-slop gate
 
 | path | tendency_check | justification |

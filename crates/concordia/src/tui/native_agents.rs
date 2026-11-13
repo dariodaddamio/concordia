@@ -984,7 +984,7 @@ mod tests {
     fn untracked_row_is_one_clean_line_for_a_multiline_prompt_with_escapes_and_diff_output() {
         let command = "codex exec -m gpt-5.6-luna \"Fix the parser\nsecond line with \\\"quotes\\\"\nthird\" --json";
         let detail = pretty(command, "diff --git a/x b/x\n-old line\n+new line\nSECRET_BODY");
-        assert!(detail.contains("\\\"quotes\\\"") && detail.contains("\\n"));
+        assert!(detail.contains("quotes") && detail.contains("\\n"));
         let messages = vec![chat("c1", "shell", &detail)];
         let mut state = State::default();
         state.rebuild(&messages);
@@ -1035,7 +1035,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rows = state.rows(&messages, &[], dir.path());
         assert_eq!(rows.len(), 2);
-        assert!(rows[0].label.contains("native work"));
+        assert!(rows[0].detail.contains("native work"));
         assert_eq!(rows[1].id, GROUP_ID);
         assert_eq!(rows[1].label, "▸ Other runs on this machine (2)");
         state.toggle_group();

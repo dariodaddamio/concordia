@@ -2050,6 +2050,7 @@ mod tests {
         let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
         app.questions.offer("Which route?\n1. Direct\n2. Review");
         app.questions.focused = true;
+        app.questions.auto_focused = true;
         assert!(!handle_key(
             &mut app,
             &KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)

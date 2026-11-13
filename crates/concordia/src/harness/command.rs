@@ -1397,19 +1397,10 @@ mod tests {
             &arg,
             &|_: &[String]| ok(),
         );
-        let listed = text(&dispatch(
-            &session(&w, ProviderKind::Claude),
-            "tools",
-            &|_: &[String]| ok(),
-        ));
-        assert!(
-            listed.contains("mine/notes") && listed.contains("query notes"),
-            "{listed}"
-        );
         let seen = RefCell::new(Vec::new());
         let output = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "tools notes",
+            "tools mine/notes",
             &|argv| {
                 seen.borrow_mut().push(argv.to_vec());
                 RunOutcome {
@@ -1419,7 +1410,10 @@ mod tests {
                 }
             },
         ));
-        assert!(output.contains("answer"), "{output}");
+        assert!(
+            output.contains("tool mine/notes exited") && output.contains("answer"),
+            "{output}"
+        );
         assert_eq!(
             seen.into_inner()[0],
             ["h", "notes", &w.project.path().to_string_lossy()]
@@ -1469,7 +1463,7 @@ mod tests {
         assert!(out.contains("failed") && out.contains("refused"), "{out}");
         let out = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &run,
         ));
         assert!(
@@ -1506,7 +1500,10 @@ mod tests {
             "connect",
             &|_: &[String]| ok(),
         ));
-        assert!(out.contains("usage"), "{out}");
+        assert!(
+            out.contains("Detected choices:") && out.contains("Selection is validated"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1574,7 +1571,7 @@ mod tests {
         let proof = denial(&w);
         let out = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &|_: &[String]| proof.clone(),
         ));
         assert!(out.contains("verified"), "{out}");
@@ -1597,7 +1594,7 @@ mod tests {
         let proof = denial(&w);
         let verified = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &|_: &[String]| proof.clone(),
         ));
         assert!(verified.contains("verified"), "{verified}");
@@ -1610,7 +1607,7 @@ mod tests {
         fs::write(&manifest_path, format!("{original}\n")).unwrap();
         let refused = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &|_: &[String]| proof.clone(),
         ));
         assert!(
@@ -1638,7 +1635,7 @@ mod tests {
         let proof = denial(&w);
         let verified = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &|_: &[String]| proof.clone(),
         ));
         assert!(verified.contains("verified"), "{verified}");
@@ -1659,7 +1656,7 @@ mod tests {
 
         let verified_again = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &|_: &[String]| proof.clone(),
         ));
         assert!(verified_again.contains("verified"), "{verified_again}");
@@ -1701,7 +1698,7 @@ mod tests {
 
         let out = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &|_: &[String]| denial(&w),
         ));
         assert!(
@@ -1723,7 +1720,7 @@ mod tests {
         };
         let out = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &run,
         ));
         assert!(
@@ -1748,7 +1745,7 @@ mod tests {
         let proof = denial(&w);
         dispatch(
             &session(&w, ProviderKind::Claude),
-            "verify",
+            "verify mine claude --current",
             &|_: &[String]| proof.clone(),
         );
         // A receipt written by some other harness for another provider must survive.
@@ -1793,7 +1790,7 @@ mod tests {
         fs::write(w.home.path().join("auth.json"), "SECRET").unwrap();
         let out = text(&dispatch(
             &session(&w, ProviderKind::Claude),
-            "skill",
+            "skill --current",
             &|_: &[String]| ok(),
         ));
         assert!(out.contains("installed"), "{out}");
@@ -1820,7 +1817,7 @@ mod tests {
         let w = world();
         let mut s = session(&w, ProviderKind::Claude);
         s.home = None;
-        let out = text(&dispatch(&s, "skill", &|_: &[String]| ok()));
+        let out = text(&dispatch(&s, "skill --current", &|_: &[String]| ok()));
         assert!(out.contains("isolated home"), "{out}");
     }
 

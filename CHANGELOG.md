@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-13c)
+
+- Kept explicit Harness command targets separate from guided setup panels.
+- Bounded compact tool rows and refreshed the synthetic render snapshots.
+
 ### Fixed (2026-11-13b)
 
 - Kept explicitly focused question replies and note pastes in the popup, and made Ctrl+O expand
