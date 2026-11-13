@@ -176,6 +176,7 @@ pub(in crate::tui) enum PickerKind {
     Effort,
     GrokBotForm,
     GrokBotActions,
+    FallbackModel,
     AddProvider,
     Remove,
     RemoveConfirm,
@@ -425,6 +426,7 @@ pub(crate) struct App {
     pub(in crate::tui) signed_out_overrides: HashSet<String>,
     pub(in crate::tui) needs_you: crate::needs_you::Queue,
     pub(in crate::tui) grok_bot_form: Option<GrokBotForm>,
+    pub(in crate::tui) fallback_role: Option<String>,
 }
 
 impl App {
@@ -1815,6 +1817,7 @@ impl App {
             signed_out_overrides: HashSet::new(),
             needs_you: crate::needs_you::Queue::default(),
             grok_bot_form: None,
+            fallback_role: None,
         }
     }
 }

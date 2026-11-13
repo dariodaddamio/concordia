@@ -1,5 +1,15 @@
 ## This slice
 
+### Y3 continue after usage limit - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/provider/failure.rs` | ok: 1, 2, 4, 5, 10 | Keep provider-owned structured signal classification in the existing failure owner; remove prose-based quota promotion from the usage-limit path. |
+| `crates/concordia/src/tui/continuation.rs`, `crates/concordia/src/tui/app/pickers.rs`, `crates/concordia/src/tui/app/state.rs`, `crates/concordia/src/tui/input_dispatch.rs`, `crates/concordia/src/tui/draw/mod.rs` | ok: 1, 4, 5, 6, 7 | Extend the existing continuation picker and queue owner with ordered rows, disabled exhausted accounts, reset waiting, and explicit handoff text; do not add another prompt or usage store. |
+| `crates/concordia/src/tui/settings.rs`, `crates/concordia/src/config.rs` | ok: 1, 4, 6, 10 | Expose the existing continuation preference and role fallback map through `/config`, with ask as the default and one persisted source of truth. |
+| `crates/concordia/tests/tui_journeys.rs`, provider fixture tests | ok: 5, 9, 10 | Add deterministic journey and provider-signal coverage at the existing harness boundary; no live provider turns or test-only production branches. |
+| `PLAN.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Record the shipped decision and required build identity in existing project metadata. |
+
 ### Q7 notifications completion - anti-slop gate
 
 | path | tendency_check | justification |

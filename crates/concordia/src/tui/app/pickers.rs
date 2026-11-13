@@ -413,8 +413,7 @@ impl App {
         let mut accounts = accounts_with_auth(&self.state_root)
             .into_iter()
             .filter(|a| {
-                (a.account != self.account || self.continuation.same_account_allowed())
-                    && a.home_path.is_some()
+                a.home_path.is_some()
             })
             .collect::<Vec<_>>();
         accounts.sort_by(|a, b| {
@@ -439,62 +438,71 @@ impl App {
                 })
                 .then_with(|| a.account.cmp(&b.account))
         });
-        let mut rows = accounts
+        let rows = accounts
             .into_iter()
-            .map(|a| {
-                let remaining = a.home_path.as_ref().and_then(|home| {
+            .flat_map(|a| {
+                let observation = a.home_path.as_ref().and_then(|home| {
                     crate::usage::peek_cached_usage(&self.state_root, a.provider, &a.account, home)
-                        .and_then(|o| o.remaining_pct)
                 });
-                let tier = crate::models::catalog_tier(&self.model);
-                let tier = match tier {
-                    crate::models::ModelTier::Frontier => "frontier",
-                    crate::models::ModelTier::Standard => "standard",
-                    crate::models::ModelTier::Fast => "fast",
-                };
-                PickerRow {
-                    id: format!("continue:{}", a.account),
-                    label: a.label,
-                    detail: format!(
-                        "5h {}% left · {tier} · continue the paused request",
-                        remaining
-                            .map(|p| p.round() as i64)
-                            .map_or("??".into(), |p| p.to_string())
-                    ),
-                }
+                let remaining = observation.as_ref().and_then(|o| o.remaining_pct);
+                let available = observation.as_ref().is_some_and(|o| {
+                    !o.exhausted && o.remaining_pct.is_some_and(|remaining| remaining > 0.0)
+                });
+                let reset = observation.and_then(|o| o.reset);
+                let models = a.home_path.as_ref().map(|home| {
+                    crate::models::ids_at(&self.state_root, a.provider, &a.account, home)
+                }).unwrap_or_default();
+                models.into_iter().map(move |model| PickerRow {
+                    id: format!("{}{} {model}", if available { "continue:" } else { "continue-disabled:" }, a.account),
+                    label: format!("{} → {model}", a.label),
+                    detail: if !available && reset.is_some() {
+                        format!("at limit · {}", reset.as_deref().unwrap_or("reset time unavailable"))
+                    } else if !available {
+                        "usage unavailable · capacity must be confirmed before continuing".into()
+                    } else {
+                        remaining.map_or_else(
+                            || "usage unavailable · continue the paused request".into(),
+                            |p| format!("{}% left · continue the paused request", p.round() as i64),
+                        )
+                    },
+                }).collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        let (mut exhausted_rows, mut available_rows): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .partition(PickerRow::disabled);
+        available_rows.sort_by(|a, b| {
+            let left = a.detail.split('%').next().and_then(|value| value.parse::<f64>().ok());
+            let right = b.detail.split('%').next().and_then(|value| value.parse::<f64>().ok());
+            right.partial_cmp(&left).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut rows = available_rows;
         let fallback = crate::config::for_root(&self.state_root)
             .continuation
             .fallback_models
             .get("general")
-            .cloned();
-        if let Some(model) = fallback.filter(|model| {
-            self.home_path.as_ref().is_some_and(|home| {
-                crate::models::ids_at(&self.state_root, self.provider, &self.account, home)
-                    .iter()
-                    .any(|available| available == model)
+            .cloned()
+            .filter(|model| {
+            rows.iter().any(|row| {
+                row.id.starts_with("continue:") && row.id.ends_with(&format!(" {model}"))
             })
-        }) {
-            rows.insert(0, PickerRow {
-                id: format!("continue:{} {model}", self.account),
-                label: format!("Fallback model: {model}"),
-                detail: "configured for the general role; current account usage is shown above".into(),
-            });
+        });
+        if let Some(model) = fallback {
+            if let Some(index) = rows.iter().position(|row| {
+                row.id.starts_with("continue:") && row.id.ends_with(&format!(" {model}"))
+            }) {
+                let mut row = rows.remove(index);
+                row.label = format!("Fallback · {}", row.label);
+                row.detail = format!("configured fallback for the general role · {}", row.detail);
+                rows.insert(0, row);
+            }
         }
-        if let Some(home) = &self.home_path {
-            rows.extend(
-                crate::models::ids_at(&self.state_root, self.provider, &self.account, home)
-                    .into_iter()
-                    .filter(|model| model != &self.model)
-                    .map(|model| PickerRow {
-                        id: format!("continue:{} {model}", self.account),
-                        label: format!("{} \u{2192} {model}", self.account_label()),
-                        detail: "continue on another model; account-wide quota may still apply"
-                            .into(),
-                    }),
-            );
-        }
+        rows.append(&mut exhausted_rows);
+        let reset = self.home_path.as_ref().and_then(|home| {
+            crate::usage::peek_cached_usage(&self.state_root, self.provider, &self.account, home)
+        }).and_then(|o| o.reset);
+        rows.push(PickerRow { id: "continue:wait".into(), label: "Wait for the reset".into(), detail: reset.map_or_else(|| "resume when the provider reports capacity again".into(), |r| format!("resume automatically when {r} passes")) });
+        rows.push(PickerRow { id: "continue:stop".into(), label: "Stop here".into(), detail: "keep the interrupted request for later".into() });
         if rows.is_empty() {
             self.push_system("usage limit reached; /use add another account to continue");
         } else {
@@ -1048,6 +1056,9 @@ impl App {
         let id = row.id.clone();
         let label = row.label.clone();
         let kind = picker.kind;
+        if row.disabled() {
+            return;
+        }
         if kind == PickerKind::Doctor {
             if let Some(index) = id.strip_prefix("doctor:fix:").and_then(|s| s.parse().ok()) {
                 self.open_doctor_confirmation(index);
@@ -1288,6 +1299,17 @@ impl App {
                 }
             }
             PickerKind::GrokBotForm => {}
+            PickerKind::FallbackModel => {
+                if let (Some(role), Some(model)) = (
+                    self.fallback_role.take(),
+                    id.strip_prefix("model:"),
+                ) {
+                    match crate::config::set_fallback_model(&self.state_root, &role, model) {
+                        Ok(()) => self.push_system(format!("fallback for {role} → {model}")),
+                        Err(error) => self.push_system(format!("fallback save failed · {error}")),
+                    }
+                }
+            }
             PickerKind::Model => {
                 if let Some(model) = id.strip_prefix("model:") {
                     if !model.is_empty() && !valid_model_id(model) {
@@ -1370,7 +1392,12 @@ impl App {
                 }
             }
             PickerKind::Continuation => {
-                if let Some(account) = id.strip_prefix("continue:") {
+                if id == "continue:wait" {
+                    self.wait_for_usage_reset();
+                } else if id == "continue:stop" {
+                    self.continuation.invalidate();
+                    self.push_system("stopped here; the interrupted request remains unsent");
+                } else if let Some(account) = id.strip_prefix("continue:") {
                     if let Some(tx) = turn_tx {
                         self.continue_usage(account, tx);
                     } else {

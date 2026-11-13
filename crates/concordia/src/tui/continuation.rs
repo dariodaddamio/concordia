@@ -26,6 +26,8 @@ pub(super) struct State {
     run_id: String,
     context_limited: bool,
     context_rollovers: u8,
+    waiting_for_reset: bool,
+    reset_target: Option<(crate::store::ProviderKind, String, String)>,
 }
 
 impl State {
@@ -62,6 +64,8 @@ impl State {
             run_id: uuid::Uuid::new_v4().to_string(),
             context_limited: false,
             context_rollovers: 0,
+            waiting_for_reset: false,
+            reset_target: None,
         }
     }
 
@@ -79,6 +83,8 @@ impl State {
         self.pending = None;
         self.retry_draft = None;
         self.context_limited = false;
+        self.waiting_for_reset = false;
+        self.reset_target = None;
     }
 
     pub(super) fn checkpoint(
@@ -172,17 +178,6 @@ fn usage_exhausted(provider: crate::store::ProviderKind, text: &str) -> bool {
     crate::provider::failure::structured_usage_limit(provider, text)
 }
 
-fn context_exhausted(text: &str) -> bool {
-    matches!(
-        crate::provider::failure::classify_failure_text(
-            crate::store::ProviderKind::Codex,
-            text,
-            Some(1)
-        ),
-        crate::provider::failure::FailureKind::Context
-    )
-}
-
 impl App {
     pub(super) fn open_handoff_settings(&mut self) {
         let mut rows = vec![
@@ -265,24 +260,8 @@ impl App {
         let exhausted = self.continuation.errors.iter().any(|e| usage_exhausted(self.provider, e))
             || (outcome.exit_code.is_some_and(|code| code != 0)
                 && usage_exhausted(self.provider, &outcome.stderr_tail));
-        let context_full = self
-            .continuation
-            .errors
-            .iter()
-            .any(|error| context_exhausted(error))
-            || (outcome.exit_code.is_some_and(|code| code != 0)
-                && context_exhausted(&outcome.stderr_tail));
-        // The turn's own error wins over stderr side effects such as a late tool result that
-        // Codex could no longer record after the turn had already failed.
-        let overloaded = self
-            .continuation
-            .errors
-            .iter()
-            .any(|error| crate::provider::stream_cards::model_overloaded(error))
-            || (outcome.exit_code.is_some_and(|code| code != 0)
-                && crate::provider::stream_cards::model_overloaded(&outcome.stderr_tail));
-        self.continuation.context_limited = context_full;
-        if !exhausted && !context_full && !overloaded {
+        self.continuation.context_limited = false;
+        if !exhausted {
             if crate::provider::turn::thread_recording_failed(self.provider, &outcome.stderr_tail) {
                 self.continuation.pending = self.continuation.prompt.clone();
                 self.continuation.retry_draft = self.last_sent.clone();
@@ -308,9 +287,7 @@ impl App {
             Retry::Ready
         };
         self.push_system(
-            if context_full { "provider reported context capacity exhausted; a new native session can continue using exact-source pointers. Queued prompts stay paused." }
-            else if overloaded && !exhausted { "the selected model is at capacity on the provider's servers (not your quota); choose another model or account to continue. Queued prompts stay paused." }
-            else { "usage limit reached; choose another account or model to continue. Queued prompts stay paused." },
+            "usage limit reached; choose another account or model to continue. Queued prompts stay paused.",
         );
         if !self.continuation.automatic {
             self.open_continuation_picker();
@@ -357,8 +334,39 @@ impl App {
         {
             return None;
         }
+        if self.continuation.waiting_for_reset {
+            let (provider, account, model) = self
+                .continuation
+                .reset_target
+                .clone()
+                .unwrap_or_else(|| (self.provider, self.account.clone(), self.model.clone()));
+            let ready = get_account(&self.state_root, &account)
+                .and_then(|definition| definition.home_path)
+                .and_then(|home| {
+                    crate::usage::peek_cached_usage(
+                        &self.state_root,
+                        provider,
+                        &account,
+                        &home,
+                    )
+                })
+                .is_some_and(|o| o.reset_passed);
+            if !ready {
+                return None;
+            }
+            return Some(format!("{account} {model}"));
+        }
         self.continuation.retry = Retry::Ready;
         self.next_usage_target()
+    }
+
+    pub(super) fn wait_for_usage_reset(&mut self) {
+        self.continuation.reset_target =
+            Some((self.provider, self.account.clone(), self.model.clone()));
+        self.continuation.waiting_for_reset = true;
+        self.continuation.retry = Retry::Deferred;
+        self.continuation.automatic = true;
+        self.push_system("waiting for the provider reset; the interrupted request will resume automatically");
     }
 
     fn next_usage_target(&mut self) -> Option<String> {
@@ -366,6 +374,12 @@ impl App {
             return Some(self.account.clone());
         }
         let mut candidates = Vec::new();
+        let fallbacks = crate::config::for_root(&self.state_root)
+            .continuation
+            .fallback_models;
+        if let Some(model) = fallbacks.get("general").cloned() {
+            candidates.push((self.account.clone(), Some(model)));
+        }
         if let Some(account) = &self.continuation.preferred_account {
             candidates.push((account.clone(), None));
         }
@@ -453,11 +467,16 @@ impl App {
         if target.is_empty()
             || (target == self.account
                 && !self.continuation.same_account_allowed()
+                && !self.continuation.waiting_for_reset
                 && model.is_none_or(|m| m == self.model))
         {
             self.push_system("choose another account or model in the inline picker");
             return;
         }
+        let resuming_reset_target = self.continuation.waiting_for_reset
+            && self.continuation.reset_target.as_ref().is_some_and(|(_, account, reset_model)| {
+                account == target && model.is_some_and(|selected| selected == reset_model)
+            });
         if let Some(model) = model {
             let valid = get_account(&self.state_root, target).is_some_and(|account| {
                 account.home_path.as_ref().is_some_and(|home| {
@@ -515,6 +534,10 @@ impl App {
             }
             self.model = model.to_owned();
         }
+        if resuming_reset_target {
+            self.continuation.waiting_for_reset = false;
+            self.continuation.reset_target = None;
+        }
         self.trust = trust;
         self.native_session_id = None;
         self.native_agents = native_agents::State::default();
@@ -528,7 +551,7 @@ impl App {
         self.editor.clear();
         self.images.draft.clear();
         self.persist_draft_now();
-        self.push_system(format!("continuing with {} using the conversation map; native tool and approval state stay with the previous account", self.account_label()));
+        self.push_system(format!("continuing with {} · {} using the conversation map; native tool and approval state stay with the previous account", self.account_label(), self.model));
         let instruction = crate::attachments::Message{text:format!("Continue the interrupted request in this new native session. First inspect the workspace and recorded completed actions. Reconcile any uncertain tool result before proceeding; do not blindly repeat commands or edits. Follow the current provider's approval rules. Original request:\n{}",original.text),..original}.encode();
         if self.continuation.context_limited {
             self.continuation.context_rollovers =

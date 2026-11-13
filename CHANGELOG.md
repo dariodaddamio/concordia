@@ -1,5 +1,28 @@
 # Changelog
 
+### Fixed (2026-11-13aa)
+
+- Keep ordinary provider errors out of usage-limit continuation, disable targets without a
+  confirmed usage reading, use only the active chat role's fallback, and retry the original target
+  after its reset.
+
+### Fixed (2026-11-13z)
+
+- Recognize nested ACP 429 quota signals, disable zero-usage continuation rows, and bind reset
+  waiting to the original provider, account, and model.
+
+### Fixed (2026-11-13y)
+
+- Preserve structured quota errors from Codex app-server and ACP providers, resume the original
+  account and model after a reset, and edit role fallback models directly from `/config`.
+
+### Fixed (2026-11-13x)
+
+- Complete usage-limit continuation choices with ordered fallback and model rows, exhausted
+  account reset details, wait-for-reset resumption, and visible per-role fallback configuration.
+- Restrict the continuation prompt to structured usage-limit signals, validate displayed catalog
+  models, preserve usage details in fallback rows, and resume the original model after reset.
+
 ### Fixed (2026-11-13v)
 
 - Keep notification identities stable across provider reconnects and preserve the clicked item

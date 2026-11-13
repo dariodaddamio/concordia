@@ -205,9 +205,12 @@ record answers and open proposals; they are not approved final product wording o
 - Usage-limit continuation decision (2026-11-13): keep the existing inline continuation path.
   Open it only for provider-owned structured quota signals from Claude Code, Codex, Cursor, Grok
   Build or opencode. Put the role-configured fallback model first and keep the default policy as
-  ask. Account usage and reset times come from provider snapshots. Disabled exhausted rows,
-  wait-for-reset and the complete per-chat role selector remain follow-up UI work because the
-  current picker row contract has no disabled state.
+  ask. Account usage and reset times come from provider snapshots. The continuation picker owns
+  available and disabled model rows, wait-for-reset, stop, and the per-role fallback editor.
+- Y3 completion: the continuation picker now orders configured fallback, available account/model
+  rows, disabled exhausted rows, wait-for-reset and stop. Reset waiting resumes from cached
+  provider usage, and `/config` exposes role fallbacks alongside the ask/automatic setting.
+  Provider-facing live behavior remains unverified.
 - Command consolidation following the picker principle: account switching, adding and removing
   live in one `/use` picker (`/login` and `/connect` go); `/open` and `/preview` merge into one
   `/open` that previews read-only with an edit action.
@@ -679,6 +682,15 @@ Going public:
 - After the owner's final go, make the repository public and enable Pages.
 
 ## This slice
+
+### Y3 review-2 correction - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/provider/failure.rs` | ok: 1, 3, 4, 5, 10 | Extend the existing structured provider signal visitor to nested ACP HTTP 429 fields; no prose fallback or new classifier. |
+| `crates/concordia/src/tui/continuation.rs` | ok: 1, 4, 5, 6, 10 | Keep reset waiting in the continuation owner and bind its existing target to provider, account, and model. |
+| `crates/concordia/src/tui/app/pickers.rs` | ok: 1, 4, 5, 10 | Correct the existing disabled-row predicate at the picker construction owner for cached zero usage. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 10 | Record the correction and advance the user-facing build identity. |
 
 ### Y6 ACP compaction review correction - anti-slop gate
 

@@ -439,6 +439,15 @@ impl Session {
         std::fs::write(folder.join(format!("check-{check}.txt")), self.screen()).unwrap();
     }
 
+    fn save_y3_check(&self, check: u8) {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("target"));
+        let folder = target.join("preview/y3-continue-after-limit");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("check-{check}.txt")), self.screen()).unwrap();
+    }
+
     fn clone_request(&self, mut value: Value) -> Value {
         let mut stream = self.control.try_clone().unwrap();
         value["token"] = Value::String(self.token.clone());
@@ -1356,6 +1365,7 @@ fn usage_limit_automatically_continues_on_configured_provider_without_foreign_se
         .any(|arg| arg == "quota-source-session" || arg == "--resume"));
     assert!(starts[1]["home"].as_str().unwrap().ends_with(".claude"));
     s.until("idle after continuation", |s| s.screen().contains("in 123"));
+    s.save_y3_check(3);
     s.exit();
 }
 

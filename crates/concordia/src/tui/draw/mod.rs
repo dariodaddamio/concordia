@@ -1844,6 +1844,11 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM);
             }
+            if r.disabled() {
+                label_style = Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM);
+            }
             if r.label.contains('\n') {
                 let mut lines = Vec::new();
                 for line in r.label.lines() {
