@@ -721,6 +721,10 @@ pub fn profiled_picker_row(
         .map(|(_, limits)| limits.to_string())
         .unwrap_or_else(|| snap.used_left_text());
     let mut label = format!("{head} \u{b7} Email: {email} \u{b7} Plan: {plan}");
+    let credits = snap.credits_text();
+    if credits != "Credits: not reported" {
+        label.push_str(&format!(" \u{b7} {credits}"));
+    }
     if let Some(team) = &identity.team {
         label.push_str(&format!("\nWorkspace: {team}"));
     }
@@ -2616,6 +2620,13 @@ mod profile_row_tests {
         assert!(row.label.contains(
             "Email: member@example.invalid \u{b7} Plan: Pro\nWorkspace: Fixture Team\n5h"
         ));
+        snapshot.credits = Some(Credits {
+            has_credits: Some(true),
+            unlimited: None,
+            balance: Some(12.5),
+        });
+        let row = profiled_picker_row("claude", identity.provider, &snapshot, &identity);
+        assert!(row.label.contains("Plan: Pro \u{b7} Credits: 12.5 balance"));
         let missing = crate::identity::ProviderIdentity {
             login: None,
             plan: None,

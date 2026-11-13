@@ -110,7 +110,7 @@ pub fn available(provider: ProviderKind, account: &str) -> Vec<ModelEntry> {
     available_at(&root, provider, account)
 }
 
-fn available_at(root: &Path, provider: ProviderKind, account: &str) -> Vec<ModelEntry> {
+pub(crate) fn available_at(root: &Path, provider: ProviderKind, account: &str) -> Vec<ModelEntry> {
     let Some(identity) = selected_identity(root, provider, account) else {
         return Vec::new();
     };
@@ -124,6 +124,23 @@ fn available_at(root: &Path, provider: ProviderKind, account: &str) -> Vec<Model
         add(&mut out, &mut ids, native_entry(model));
     }
     out
+}
+
+pub(crate) fn find_at(
+    root: &Path,
+    provider: ProviderKind,
+    account: &str,
+    model_id: &str,
+) -> Option<ModelEntry> {
+    available_at(root, provider, account)
+        .into_iter()
+        .find(|model| {
+            model.id == model_id
+                || model
+                    .efforts
+                    .iter()
+                    .any(|effort| effort.model_id.as_deref() == Some(model_id))
+        })
 }
 
 fn native_entry(model: catalog::NativeModel) -> ModelEntry {
@@ -149,6 +166,14 @@ pub struct RefreshedModels {
 /// Read current native metadata without a model request. Failure never masquerades as refresh.
 pub fn refresh(provider: ProviderKind, account: &str) -> Result<RefreshedModels, String> {
     let root = default_store_root();
+    refresh_at(&root, provider, account)
+}
+
+pub(crate) fn refresh_at(
+    root: &Path,
+    provider: ProviderKind,
+    account: &str,
+) -> Result<RefreshedModels, String> {
     let identity = selected_identity(&root, provider, account)
         .ok_or("selected model account/provider/home is unavailable")?;
     let models = match provider {
@@ -223,10 +248,13 @@ pub(crate) fn ids_at(
 
 /// Refresh only when the account has no listed catalog yet or it is older than a day.
 pub fn needs_refresh(provider: ProviderKind, account: &str) -> bool {
+    needs_refresh_at(&default_store_root(), provider, account)
+}
+
+pub(crate) fn needs_refresh_at(root: &Path, provider: ProviderKind, account: &str) -> bool {
     if provider == ProviderKind::Codex {
         return false;
     }
-    let root = default_store_root();
     let Some(identity) = selected_identity(&root, provider, account) else {
         return false;
     };

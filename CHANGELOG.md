@@ -1,5 +1,11 @@
 # Changelog
 
+### Added (2026-11-13d)
+
+- Added provider, model and effort controls to the top bar.
+- Added account usage cards and the Home introduction links.
+- Removed typed and source-labelled rows from `/model`.
+
 ### Fixed (2026-11-13c)
 
 - Kept explicit Harness command targets separate from guided setup panels.

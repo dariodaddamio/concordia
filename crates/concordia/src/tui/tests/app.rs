@@ -375,6 +375,7 @@ fn signed_out_account_blocks_the_turn_and_keeps_the_prompt() {
             account: "codex-test".into(),
             home_path: h.app.home_path.as_ref().map(|p| p.to_string_lossy().into()),
             model: None,
+            effort: None,
             updated_at: "test".into(),
         },
     )
@@ -408,6 +409,7 @@ fn signed_out_warning_never_duplicates_the_draft() {
             account: "codex-test".into(),
             home_path: h.app.home_path.as_ref().map(|p| p.to_string_lossy().into()),
             model: None,
+            effort: None,
             updated_at: "test".into(),
         },
     )

@@ -494,13 +494,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.sync_needs_you();
     app.areas.header_email = None;
     app.areas.header_home = None;
+    app.areas.header_provider = None;
+    app.areas.header_model = None;
+    app.areas.header_effort = None;
     app.areas.header_credits = None;
     app.areas.header_attention = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
     let model = if app.model == "?" {
         "model ?".to_string()
     } else {
-        app.model.clone()
+        crate::models::find_at(&app.state_root, app.provider, &app.account, &app.model)
+            .map(|entry| entry.display_name)
+            .unwrap_or_else(|| app.model.clone())
     };
     let email = if app.header_email_revealed {
         app.account_email.as_deref().unwrap_or_default()
@@ -512,7 +517,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     let account = app.account_label();
     let right = String::new();
     let available = area.width as usize;
-    let brand = if area.width >= 75 {
+    let brand = if app.header_email_revealed && area.width < 100 {
+        " ".into()
+    } else if area.width >= 75 {
         format!(" concordia {}   ", short_stamp())
     } else {
         " concordia  ".into()
@@ -530,15 +537,25 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(navigation, bar.fg(Color::Cyan)),
         Span::styled(brand, bar.fg(Color::Indexed(75))),
     ];
+    let provider_x = left.iter().map(Span::width).sum::<usize>();
+    let provider_text = format!(" {} · {} ", app.provider.as_str(), account);
     left.push(Span::styled(
-        format!(" {account} "),
+        provider_text.clone(),
         bar.bg(provider_color(app.provider))
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     ));
+    app.areas.header_provider = Some(Rect::new(
+        area.x + provider_x as u16,
+        area.y,
+        Line::from(provider_text.clone()).width() as u16,
+        1,
+    ));
     let email_x = left.iter().map(Span::width).sum::<usize>();
     let email_text = format!("  {email}");
-    let email_text = if email_x + Line::from(email_text.clone()).width() <= available {
+    let email_text = if app.header_email_revealed
+        || email_x + Line::from(email_text.clone()).width() <= available
+    {
         email_text
     } else {
         "  email".into()
@@ -556,7 +573,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         left.push(Span::styled(email_text, bar));
     }
     if left.iter().map(Span::width).sum::<usize>() + model.len() <= available {
+        let model_x = left.iter().map(Span::width).sum::<usize>();
+        let model_width = model.len() as u16;
         left.push(Span::styled(model, bar.fg(Color::Gray)));
+        app.areas.header_model = Some(Rect::new(area.x + model_x as u16, area.y, model_width, 1));
+        if let Some(effort) = app.effort.as_deref() {
+            let text = format!("  effort:{effort}");
+            let x = left.iter().map(Span::width).sum::<usize>();
+            if x + text.len() <= available {
+                left.push(Span::styled(text.clone(), bar.fg(Color::Magenta)));
+                app.areas.header_effort = Some(Rect::new(area.x + x as u16, area.y, text.len() as u16, 1));
+            }
+        }
     }
     let agent_count = app.native_agents.count() + app.deleg.d.jobs.len();
     if agent_count > 0 {
@@ -595,16 +623,16 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         },
     );
     if area.height > 1 {
-        if app.picker.is_none() {
+        let credits_known = app.usage_credits != "Credits: not reported";
+        if app.picker.is_none() && credits_known {
             let width = Line::from(format!(" {} ", app.usage_credits))
                 .width()
                 .min(area.width as usize) as u16;
             app.areas.header_credits = Some(Rect::new(area.x, area.y + 1, width, 1));
         }
         let home_owns_usage = landing::usage_box_visible(app, area.width);
-        let credits_known = app.usage_credits != "Credits: not reported";
         let mut line = Vec::new();
-        if !home_owns_usage || credits_known {
+        if credits_known {
             line.push(Span::styled(
                 format!(" {}", app.usage_credits),
                 bar.fg(Color::Cyan),
@@ -1542,6 +1570,38 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .title(format!(" {} ", picker.title))
             .padding(ratatui::widgets::Padding::horizontal(1));
         f.render_widget(Paragraph::new(visible).block(block), popup);
+        modal::draw_close(f, popup, app, modal::Target::Picker);
+        return;
+    }
+    if picker.kind == PickerKind::Usage {
+        let popup = Rect { x: area.x + 1, y: area.y, width: area.width.saturating_sub(2), height: area.height };
+        f.render_widget(Clear, popup);
+        let cols = (popup.width / 54).max(1) as usize;
+        let rows = picker
+            .filtered()
+            .into_iter()
+            .map(|row| (row.label.clone(), row.detail.clone()))
+            .collect::<Vec<_>>();
+        let selected = picker.state.selected().unwrap_or(0);
+        let cell_width = (popup.width / cols as u16).max(1);
+        for (index, (label, detail)) in rows.into_iter().enumerate() {
+            let col = index % cols;
+            let row = index / cols;
+            let cell = Rect { x: popup.x + col as u16 * cell_width, y: popup.y + row as u16 * 5, width: cell_width.min(popup.right().saturating_sub(popup.x + col as u16 * cell_width)), height: 5 };
+            let block = Block::default().borders(Borders::ALL).border_style(if index == selected { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::DarkGray) });
+            let mut lines = label.lines().map(Line::from).collect::<Vec<_>>();
+            if !detail.is_empty() {
+                lines.push(Line::styled(detail, Style::default().fg(Color::Gray)));
+            }
+            f.render_widget(Paragraph::new(lines).block(block), cell);
+        }
+        let title = if picker.filter.is_empty() {
+            format!(" {} ", picker.title)
+        } else {
+            format!(" {} · filter: {} ", picker.title, picker.filter)
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
+        f.render_widget(block, popup);
         modal::draw_close(f, popup, app, modal::Target::Picker);
         return;
     }

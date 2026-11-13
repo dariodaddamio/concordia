@@ -11,6 +11,9 @@ pub(in crate::tui) enum Drag {
 #[derive(Default, Clone, Copy)]
 pub(in crate::tui) struct Areas {
     pub(in crate::tui) header_home: Option<Rect>,
+    pub(in crate::tui) header_provider: Option<Rect>,
+    pub(in crate::tui) header_model: Option<Rect>,
+    pub(in crate::tui) header_effort: Option<Rect>,
     pub(in crate::tui) header_credits: Option<Rect>,
     pub(in crate::tui) header_email: Option<Rect>,
     pub(in crate::tui) header_attention: Option<Rect>,
@@ -167,6 +170,8 @@ pub(in crate::tui) enum PickerKind {
     Trust,
     FullModeConfirm,
     Use,
+    Provider,
+    Effort,
     GrokBotForm,
     GrokBotActions,
     AddProvider,
@@ -230,19 +235,6 @@ impl Picker {
         if self.kind != PickerKind::Model {
             return;
         }
-        self.rows.retain(|r| !r.id.starts_with(TYPED_MODEL_PREFIX));
-        let typed = self.filter.trim();
-        let listed = self
-            .rows
-            .iter()
-            .any(|r| r.id.strip_prefix("model:") == Some(typed));
-        if valid_model_id(typed) && !listed {
-            self.rows.push(PickerRow {
-                id: format!("{TYPED_MODEL_PREFIX}{typed}"),
-                label: format!("use {typed}"),
-                detail: "typed model id".into(),
-            });
-        }
     }
 
     pub(in crate::tui) fn select_clamp(&mut self) {
@@ -295,6 +287,9 @@ pub(crate) struct App {
     pub(in crate::tui) header_email_revealed: bool,
     pub(in crate::tui) header_email_pressed: bool,
     pub(in crate::tui) header_home_pressed: bool,
+    pub(in crate::tui) header_provider_pressed: bool,
+    pub(in crate::tui) header_model_pressed: bool,
+    pub(in crate::tui) header_effort_pressed: bool,
     pub(in crate::tui) header_attention_pressed: bool,
     pub(in crate::tui) permissions_pressed: bool,
     pub(in crate::tui) permission_rows: Vec<(Rect, usize)>,
@@ -346,6 +341,7 @@ pub(crate) struct App {
     pub(in crate::tui) account: String,
     pub(in crate::tui) home_path: Option<PathBuf>,
     pub(in crate::tui) model: String,
+    pub(in crate::tui) effort: Option<String>,
     pub(in crate::tui) trust: TrustMode,
     pub(in crate::tui) native_session_id: Option<String>,
     pub(in crate::tui) task_id: Option<String>,
@@ -478,6 +474,10 @@ impl App {
                         .and_then(|h| inspect_provider(self.provider, h).model)
                 })
                 .unwrap_or_else(|| "?".into());
+            self.effort = sel.effort.or_else(|| {
+                crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
+                    .and_then(|model| model.default_effort)
+            });
         }
         self.refresh_account_email();
         self.trust = get_settings(&self.state_root).trust;
@@ -1592,6 +1592,9 @@ impl App {
             header_email_revealed: false,
             header_email_pressed: false,
             header_home_pressed: false,
+            header_provider_pressed: false,
+            header_model_pressed: false,
+            header_effort_pressed: false,
             header_attention_pressed: false,
             permissions_pressed: false,
             permission_rows: Vec::new(),
@@ -1655,6 +1658,7 @@ impl App {
             account: "codex".into(),
             home_path: None,
             model: "?".into(),
+            effort: None,
             trust: TrustMode::Edit,
             native_session_id: None,
             task_id: None,
@@ -1757,19 +1761,10 @@ pub(in crate::tui) fn select_account(state_root: &Path, account_id: &str) -> any
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
             model,
+            effort: get_use_selection(state_root).and_then(|selection| selection.effort),
             updated_at: now_stamp(),
         },
     )
-}
-
-pub(in crate::tui) const TYPED_MODEL_PREFIX: &str = "typed-model:";
-
-pub(in crate::tui) fn model_source_tag(source: crate::models::ModelSource) -> &'static str {
-    match source {
-        crate::models::ModelSource::ListedByCli => "reported by CLI",
-        crate::models::ModelSource::Cached => "cached",
-        crate::models::ModelSource::Typed => "typed",
-    }
 }
 
 pub(in crate::tui) fn model_picker_rows(
@@ -1799,7 +1794,13 @@ pub(in crate::tui) fn model_picker_rows(
             detail: String::new(),
         });
         for model in entries {
-            let current = chosen == Some(model.id.as_str());
+            let current = chosen.is_some_and(|chosen| {
+                chosen == model.id
+                    || model
+                        .efforts
+                        .iter()
+                        .any(|effort| effort.model_id.as_deref() == Some(chosen))
+            });
             rows.push(PickerRow {
                 id: format!("model:{}", model.id),
                 label: format!(
@@ -1807,7 +1808,11 @@ pub(in crate::tui) fn model_picker_rows(
                     model.display_name,
                     if current { " · current" } else { "" }
                 ),
-                detail: format!("{} · {}", model.id, model_source_tag(model.source),),
+                detail: if model.efforts.is_empty() {
+                    model.id
+                } else {
+                    format!("{} · efforts: {}", model.id, model.effort_names().join(", "))
+                },
             });
         }
     }

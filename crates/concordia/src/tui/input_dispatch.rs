@@ -190,6 +190,13 @@ pub(super) fn handle_key(
         app.key_sheet = true;
         return false;
     }
+    if key.modifiers.is_empty()
+        && app.picker.is_none()
+        && key.code == KeyCode::F(2)
+    {
+        app.open_provider_picker();
+        return false;
+    }
     // Native windows distinguish auto-repeat from a fresh press. Navigation and deletion
     // must keep moving while held; action shortcuts (send, cancel, toggles) run once.
     match key.kind {
@@ -991,17 +998,50 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         .areas
         .header_home
         .is_some_and(|rect| contains(rect, m.column, m.row));
+    let provider_hit = app
+        .areas
+        .header_provider
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let model_hit = app
+        .areas
+        .header_model
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let effort_hit = app
+        .areas
+        .header_effort
+        .is_some_and(|rect| contains(rect, m.column, m.row));
     let credits_hit = app
         .areas
         .header_credits
         .is_some_and(|rect| contains(rect, m.column, m.row));
     if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.header_provider_pressed = provider_hit;
+        app.header_model_pressed = model_hit;
+        app.header_effort_pressed = effort_hit;
         app.header_home_pressed = home_hit;
         app.header_credits_pressed = credits_hit;
         app.header_email_pressed = false;
-        if home_hit || credits_hit {
+        if home_hit || credits_hit || provider_hit || model_hit || effort_hit {
             return;
         }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_provider_pressed)
+    {
+        if provider_hit { app.open_provider_picker(); }
+        return;
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_model_pressed)
+    {
+        if model_hit { app.open_model_picker(); }
+        return;
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_effort_pressed)
+    {
+        if effort_hit { app.open_effort_picker(); }
+        return;
     }
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_home_pressed)

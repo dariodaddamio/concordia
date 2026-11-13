@@ -220,6 +220,19 @@ impl App {
                 self.push_system("model id contains unsupported characters");
                 return true;
             }
+            let offered = crate::models::available_at(&self.state_root, self.provider, &self.account)
+                .into_iter()
+                .any(|entry| {
+                    entry.id == *model
+                        || entry
+                            .efforts
+                            .iter()
+                            .any(|effort| effort.model_id.as_deref() == Some(model.as_str()))
+                });
+            if !offered {
+                self.push_system("model is not offered by the selected provider account; use /model to list available models");
+                return true;
+            }
             self.show_picker(
                 PickerKind::Model,
                 "model".into(),

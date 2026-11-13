@@ -190,11 +190,7 @@ fn chat_header_keeps_credits_text() {
     let mut h = Harness::new(120, 30);
     h.app.landing = None;
     h.draw();
-    assert!(
-        h.screen().contains("Credits: not reported"),
-        "{}",
-        h.screen()
-    );
+    assert!(!h.screen().contains("Credits: not reported"), "{}", h.screen());
 }
 
 #[test]

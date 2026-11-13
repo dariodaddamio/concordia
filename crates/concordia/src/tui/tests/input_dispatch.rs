@@ -1551,6 +1551,7 @@ fn model_argument_completion_uses_the_account_catalog_and_can_apply_it() {
             account: "codex".into(),
             home_path: Some(home.to_string_lossy().into_owned()),
             model: None,
+            effort: None,
             updated_at: "fixture".into(),
         },
     )
@@ -1606,7 +1607,7 @@ fn account_argument_completion_switches_only_to_a_connected_fixture() {
 }
 
 #[test]
-fn typed_model_ids_are_accepted_but_unsafe_and_unknown_accounts_cannot_change_binding() {
+fn unavailable_model_ids_are_rejected_but_unsafe_and_unknown_accounts_cannot_change_binding() {
     let _iso = Isolated::new();
     let mut h = Harness::new(100, 24);
     let home = h.app.state_root.join("fixture-catalog");
@@ -1620,7 +1621,7 @@ fn typed_model_ids_are_accepted_but_unsafe_and_unknown_accounts_cannot_change_bi
     h.app.model = "fixture-model".into();
     let account = h.app.account.clone();
     assert!(h.app.handle_slash("/model extra"));
-    assert_eq!(h.app.model, "extra");
+    assert_eq!(h.app.model, "fixture-model");
     assert!(h.app.picker.is_none());
     for line in [
         "/model ../outside",
@@ -1629,7 +1630,7 @@ fn typed_model_ids_are_accepted_but_unsafe_and_unknown_accounts_cannot_change_bi
         "/use not-connected",
     ] {
         assert!(h.app.handle_slash(line));
-        assert_eq!(h.app.model, "extra");
+        assert_eq!(h.app.model, "fixture-model");
         assert_eq!(h.app.account, account);
         assert!(h.app.picker.is_none());
     }
@@ -1666,7 +1667,7 @@ fn model_picker_groups_by_family_with_default_first() {
 }
 
 #[test]
-fn model_picker_shows_source_tags_and_marks_current() {
+fn model_picker_hides_source_tags_and_marks_current() {
     let rows = super::model_picker_rows(
         vec![crate::models::ModelEntry {
             id: "sol".into(),
@@ -1680,7 +1681,25 @@ fn model_picker_shows_source_tags_and_marks_current() {
         Some("sol"),
     );
     assert!(rows[2].label.contains("current"));
-    assert!(rows[2].detail.contains("sol") && rows[2].detail.contains("cached"));
+    assert!(rows[2].detail.contains("sol") && !rows[2].detail.contains("cached"));
+}
+
+#[test]
+fn model_picker_lists_provider_efforts_in_the_row() {
+    let rows = super::model_picker_rows(
+        vec![crate::models::ModelEntry {
+            id: "sol".into(),
+            display_name: "Sol".into(),
+            family: "GPT".into(),
+            tier: crate::models::ModelTier::Frontier,
+            source: crate::models::ModelSource::ListedByCli,
+            efforts: vec![crate::models::ModelEffort { name: "low".into(), model_id: None }],
+            default_effort: Some("low".into()),
+        }],
+        None,
+    );
+    assert!(rows[2].detail.contains("efforts: low"));
+    assert!(!rows[2].detail.contains("reported by CLI"));
 }
 
 #[test]

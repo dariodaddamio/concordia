@@ -676,7 +676,7 @@ impl App {
     pub(in crate::tui) fn open_model_picker(&mut self) {
         let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
         let rows = model_picker_rows(
-            crate::models::available(self.provider, &self.account),
+            crate::models::available_at(&self.state_root, self.provider, &self.account),
             chosen,
         );
         let selected = rows
@@ -685,9 +685,45 @@ impl App {
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
         self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
-        if !cfg!(test) && crate::models::needs_refresh(self.provider, &self.account) {
+        if !cfg!(test)
+            && crate::models::needs_refresh_at(&self.state_root, self.provider, &self.account)
+        {
             self.refresh_model_picker();
         }
+    }
+
+    pub(in crate::tui) fn open_provider_picker(&mut self) {
+        let rows = crate::accounts::accounts_with_auth(&self.state_root)
+            .into_iter()
+            .filter_map(|account| {
+                let home = account.home_path?;
+                let snap = self.usage_fetcher.snapshot(account.provider, &account.account, &home);
+                Some(PickerRow {
+                    id: format!("provider:{}", account.account),
+                    label: format!("{} · {}", account.provider.as_str(), self.named_account(account.provider, &account.account)),
+                    detail: snap.used_left_text(),
+                })
+            })
+            .collect();
+        self.show_picker(PickerKind::Provider, "providers and accounts".into(), rows, false);
+    }
+
+    pub(in crate::tui) fn open_effort_picker(&mut self) {
+        let Some(model) = crate::models::find_at(
+            &self.state_root,
+            self.provider,
+            &self.account,
+            &self.model,
+        ) else {
+            self.push_system("effort - provider did not report options for this model");
+            return;
+        };
+        let rows = model.efforts.into_iter().map(|effort| PickerRow {
+            id: format!("effort:{}", effort.name),
+            label: format!("{}{}", effort.name, if self.effort.as_deref() == Some(effort.name.as_str()) { " · current" } else { "" }),
+            detail: "provider-reported model effort".into(),
+        }).collect();
+        self.show_picker(PickerKind::Effort, format!("effort · {}", model.display_name), rows, false);
     }
     pub(in crate::tui) fn refresh_model_picker(&mut self) {
         if self.model_refresh.is_some() {
@@ -695,11 +731,12 @@ impl App {
         }
         let provider = self.provider;
         let account = self.account.clone();
+        let state_root = self.state_root.clone();
         let (tx, rx) = std_mpsc::channel();
         std::thread::spawn({
             let account = account.clone();
             move || {
-                let _ = tx.send(crate::models::refresh(provider, &account));
+                let _ = tx.send(crate::models::refresh_at(&state_root, provider, &account));
             }
         });
         self.model_refresh = Some(ModelRefresh {
@@ -1274,10 +1311,7 @@ impl App {
             }
             PickerKind::GrokBotForm => {}
             PickerKind::Model => {
-                if let Some(model) = id
-                    .strip_prefix(TYPED_MODEL_PREFIX)
-                    .or_else(|| id.strip_prefix("model:"))
-                {
+                if let Some(model) = id.strip_prefix("model:") {
                     if !model.is_empty() && !valid_model_id(model) {
                         self.push_system("model id must be letters, digits or . _ - : / [ ]");
                         return;
@@ -1292,6 +1326,7 @@ impl App {
                                 .as_ref()
                                 .map(|p| p.to_string_lossy().into_owned()),
                             model: None,
+                            effort: None,
                             updated_at: now_stamp(),
                         };
                         if let Err(e) = set_use_selection(&self.state_root, shown) {
@@ -1308,6 +1343,38 @@ impl App {
                         self.push_system("model → provider default");
                     } else {
                         self.push_system(format!("model → {model}"));
+                    }
+                }
+            }
+            PickerKind::Effort => {
+                if let Some(effort) = id.strip_prefix("effort:") {
+                    self.effort = Some(effort.to_owned());
+                    if let Some(entry) = crate::models::find_at(
+                        &self.state_root,
+                        self.provider,
+                        &self.account,
+                        &self.model,
+                    )
+                    {
+                        let selected_id = entry.id_for_effort(Some(effort)).to_owned();
+                        if selected_id != self.model && !selected_id.is_empty() {
+                            let _ = set_model(&self.state_root, &selected_id);
+                            self.model = selected_id;
+                        }
+                    }
+                    if let Some(mut selection) = get_use_selection(&self.state_root) {
+                        selection.effort = self.effort.clone();
+                        let _ = set_use_selection(&self.state_root, selection);
+                    }
+                    self.push_system(format!("effort → {effort}"));
+                }
+            }
+            PickerKind::Provider => {
+                if let Some(account) = id.strip_prefix("provider:") {
+                    if let Err(error) = select_account(&self.state_root, account) {
+                        self.push_system(format!("provider switch failed · {error}"));
+                    } else {
+                        self.refresh_account_continuity();
                     }
                 }
             }

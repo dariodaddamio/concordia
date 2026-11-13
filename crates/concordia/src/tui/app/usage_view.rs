@@ -59,8 +59,50 @@ impl App {
         self.usage_block = Some(self.messages.len() - 1);
     }
     pub(in crate::tui) fn usage_block_text(&self, snap: &crate::usage::UsageSnapshot) -> String {
+        let identity = self
+            .home_path
+            .as_deref()
+            .map(|home| crate::identity::inspect_provider(self.provider, home));
+        let email = identity
+            .as_ref()
+            .and_then(|profile| profile.login.as_deref())
+            .filter(|login| login.contains('@'))
+            .unwrap_or("not reported");
+        let plan = identity
+            .as_ref()
+            .and_then(|profile| profile.plan.as_deref())
+            .or(snap.plan.as_deref())
+            .filter(|plan| !plan.trim().is_empty() && *plan != "unknown")
+            .map(|plan| match plan.to_ascii_lowercase().as_str() {
+                "free" => "Free",
+                "plus" => "Plus",
+                "pro" => "Pro",
+                "max" => "Max",
+                "team" => "Team",
+                "business" => "Business",
+                "enterprise" => "Enterprise",
+                "edu" => "Education",
+                "individual" => "Individual",
+                _ => plan,
+            })
+            .unwrap_or("not reported");
+        let workspace = identity
+            .as_ref()
+            .and_then(|profile| profile.team.as_deref())
+            .filter(|team| !team.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                self.cwd
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "current project".into())
+            });
+        let heading = format!(
+            "{} · Email: {email} · Plan: {plan} · Workspace: {workspace}",
+            self.account_label()
+        );
         let mut details = format!(
-            "{}\nCredit spend: not reported separately\n\nSubscription limits\n{}",
+            "Plan: {plan} · Workspace: {workspace}\n{}\n\nSubscription limits\n{}",
             snap.credits_text(),
             snap.detail.trim()
         );
@@ -71,7 +113,7 @@ impl App {
             ));
         }
         let body = details.trim();
-        format!("{} - limits\n{}", self.account_label(), body)
+        format!("{heading} - limits\n{body}")
     }
     pub(in crate::tui) fn update_usage_block(&mut self) {
         let Some(idx) = self.usage_block else {

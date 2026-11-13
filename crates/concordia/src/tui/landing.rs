@@ -1163,6 +1163,18 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 "Next: /use to add an account (Enter)",
                 selected,
             ));
+            lines.push(Line::default());
+            lines.push(Line::styled("What's new", selected));
+            for heading in include_str!("../../../../CHANGELOG.md")
+                .lines()
+                .filter(|line| line.starts_with("### "))
+                .take(3)
+            {
+                lines.push(Line::from(heading.trim_start_matches("### ")));
+            }
+            lines.push(Line::default());
+            lines.push(Line::from("Documentation  https://concordia.dev/docs"));
+            lines.push(Line::from("F1  Shortcuts"));
             f.render_widget(Paragraph::new(lines), inner);
             landing.goals_area = Rect::default();
             return;

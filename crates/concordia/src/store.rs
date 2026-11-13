@@ -153,6 +153,8 @@ pub struct UseSelection {
     pub home_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub updated_at: String,
 }
 
@@ -781,6 +783,7 @@ pub fn ensure_default_selection(root: &Path) -> Result<()> {
             account: "codex".into(),
             home_path: Some(codex_home.to_string_lossy().into_owned()),
             model: None,
+            effort: None,
             updated_at: chrono_now(),
         },
     )

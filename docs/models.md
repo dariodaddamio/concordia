@@ -43,7 +43,14 @@ cache records and records for a rebound home are not accepted or automatically d
 eligibility uses the validated identity and recorded age; future timestamps are rejected. Cached
 native metadata is an observation, not a guarantee of current server availability.
 
-The former static `assets/models.toml` and its catalog/deprecation UI were removed. Model-tier
-classification remains a separate local routing/display heuristic; it neither creates selectable
-IDs nor establishes price, availability or native context capacity. The selected CLI remains the
-authority on whether an explicit model request succeeds.
+The model picker lists only the model IDs and display names returned for the selected account. It
+does not offer typed IDs or source labels. Each row shows the effort names returned with that model.
+Model-tier classification remains a separate local routing/display heuristic; it neither creates
+selectable IDs nor establishes price, availability or native context capacity.
+
+Provider sources are explicit. Codex reads its account-bound `models_cache.json`; Claude reads the
+official initialize response; Cursor runs `agent models`; Grok Build reads its account-owned
+`config.toml` default, and opencode reads its account-owned `opencode.json` or `opencode.jsonc`
+model. Neither integration currently exposes a native complete model catalog, so Concordia shows
+no additional invented choices. The selected provider remains the authority on whether a request
+succeeds.

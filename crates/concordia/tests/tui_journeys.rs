@@ -58,6 +58,7 @@ fn setup(root: &Path, provider: ProviderKind) {
                     .into_owned(),
             ),
             model: Some("synthetic-model".into()),
+            effort: None,
             updated_at: "0".into(),
         }),
         accounts: [
@@ -675,7 +676,7 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
             let screen = s.screen();
             screen.contains("Image 1: diagram.png") && screen.contains('▀')
         });
-        assert!(s.screen().contains("Credits: not reported"));
+        assert!(!s.screen().contains("Credits: not reported"));
         let screen = s.screen();
         let (y, row) = screen
             .lines()
