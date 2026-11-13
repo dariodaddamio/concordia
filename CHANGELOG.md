@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (2026-11-13i)
+
+- Stop test-controlled native windows from reaching taskbar or tray shell signals.
+- Notify each actionable Needs attention item once across focus changes and restarts, include the
+  chat and waiting action in the notification, and focus the item when the notification is clicked.
+- Add the `/config` Windows notifications setting while retaining the taskbar status.
+
 ### Added (2026-11-13h)
 
 - Added the shipped feature catalog to the documentation site, including opencode and delegation

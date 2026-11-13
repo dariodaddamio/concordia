@@ -134,6 +134,9 @@ impl DetachedWindows {
                 Message::Input(key, native_window::NativeEvent::MouseUp { event, .. }) => {
                     (key, Event::Mouse(event))
                 }
+                Message::Input(_key, native_window::NativeEvent::Attention(_)) => {
+                    continue;
+                }
             };
             // Messages already queued when a child was docked cannot affect another view.
             if !self.windows.contains_key(&key) {

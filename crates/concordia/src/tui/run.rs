@@ -582,10 +582,24 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             if use_window {
                 let mut needs_attention = false;
                 let mut working = false;
+                let mut notification = None;
                 for tab in &mut tabs.tabs {
                     tab.app.sync_needs_you();
                     needs_attention |= !tab.app.needs_you.is_empty();
                     working |= tab.app.busy || tab.app.deleg.d.any_active();
+                    if notification.is_none() && tab.app.appearance.ui.notifications {
+                        notification = tab
+                            .app
+                            .needs_you
+                            .items()
+                            .find(|item| {
+                                !crate::store::attention_notification_seen(
+                                    &state_root,
+                                    &item.id,
+                                )
+                            })
+                            .map(|item| (item.id.clone(), item.notification_text()));
+                    }
                 }
                 terminal.backend_mut().status_dot(if needs_attention {
                     super::native_window::StatusDot::NeedsAttention
@@ -594,6 +608,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 } else {
                     super::native_window::StatusDot::Idle
                 });
+                if let Some((item_id, text)) = notification {
+                    if crate::store::mark_attention_notification(&state_root, &item_id).is_ok() {
+                        terminal
+                            .backend_mut()
+                            .attention_notification(item_id, text);
+                    }
+                }
             }
             // The tab in front has been seen; only background tabs keep a finished mark.
             tabs.active_mut().app.tab_outcome = None;
@@ -608,6 +629,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             }
             let mut tab_action = tabs::TabAction::Unhandled;
             let mut rename_tab = None;
+            let mut notification_item = None;
             {
                 let RunTab {
                     app,
@@ -669,6 +691,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             }
                             continue;
                         };
+                        #[cfg(windows)]
+                        if let Some(item_id) = terminal_input.take_notification_target() {
+                            notification_item = Some(item_id);
+                            break;
+                        }
                         // Any input event may have changed a visible interaction state, including
                         // events that are intentionally no-ops for the current screen.
                         dirty = true;
@@ -935,6 +962,15 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
                 tabs::TabAction::Move(from, to) => {
                     tabs.move_tab(from, to);
+                    dirty = true;
+                }
+            }
+            if let Some(item_id) = notification_item {
+                if let Some(index) = tabs.tabs.iter().position(|tab| {
+                    tab.app.needs_you.items().any(|item| item.id == item_id)
+                }) {
+                    tabs.active = index;
+                    tabs.active_mut().app.focus_needs_you_item(&item_id);
                     dirty = true;
                 }
             }

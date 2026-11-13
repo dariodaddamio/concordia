@@ -28,6 +28,17 @@ impl ItemKind {
             Self::SignedOut => "signed out",
         }
     }
+
+    pub fn notification_phrase(self) -> &'static str {
+        match self {
+            Self::Approval => "is waiting for approval",
+            Self::Question => "has a question for you",
+            Self::PausedQueue => "has prompts waiting in its queue",
+            Self::IdleNotice => "is waiting for your decision",
+            Self::WorkerResult => "has a worker result waiting",
+            Self::SignedOut => "is waiting for account confirmation",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +54,12 @@ pub struct Item {
     pub context: String,
     pub source: String,
     pub created: Instant,
+}
+
+impl Item {
+    pub fn notification_text(&self) -> String {
+        format!("{} {}", self.chat, self.kind.notification_phrase())
+    }
 }
 
 static GLOBAL: OnceLock<Mutex<Queue>> = OnceLock::new();
@@ -157,6 +174,14 @@ mod tests {
         q.add(item("question", "chat", ItemKind::Question));
         assert!(q.remove("question").is_some());
         assert!(q.is_empty());
+    }
+
+    #[test]
+    fn notification_names_the_chat_and_waiting_action() {
+        let question = item("question", "chat", ItemKind::Question);
+        let approval = item("approval", "chat", ItemKind::Approval);
+        assert_eq!(question.notification_text(), "chat has a question for you");
+        assert_eq!(approval.notification_text(), "chat is waiting for approval");
     }
 
     #[test]

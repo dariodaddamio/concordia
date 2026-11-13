@@ -29,6 +29,7 @@ struct Saved {
     theme: Option<String>,
     brand_color: Option<Rgb>,
     motion: Option<bool>,
+    notifications: Option<bool>,
     token_line: Option<bool>,
     tips: Option<bool>,
     stats: Option<bool>,
@@ -152,6 +153,9 @@ impl State {
                 if let Some(motion) = saved.motion {
                     ui.motion = motion;
                 }
+                if let Some(notifications) = saved.notifications {
+                    ui.notifications = notifications;
+                }
             }
             Err(error) => notice = Some(format!("Appearance settings: {error}")),
         }
@@ -217,6 +221,9 @@ pub(super) fn save(app: &mut App, key: &str, value: &str) {
                     )
                 }
                 "motion" if matches!(value, "on" | "off") => saved.motion = Some(value == "on"),
+                "notifications" if matches!(value, "on" | "off") => {
+                    saved.notifications = Some(value == "on")
+                }
                 "tokens" | "tips" | "stats" if matches!(value, "on" | "off") => {
                     let preference = Some(value == "on");
                     match key {
@@ -229,13 +236,14 @@ pub(super) fn save(app: &mut App, key: &str, value: &str) {
                     saved.theme = None;
                     saved.brand_color = None;
                     saved.motion = None;
+                    saved.notifications = None;
                     saved.token_line = None;
                     saved.tips = None;
                     saved.stats = None;
                 }
                 _ => {
                     return Err(io::Error::other(
-                        "choose theme, color #RRGGBB, or motion on/off",
+                        "choose theme, color #RRGGBB, motion or notifications on/off",
                     ))
                 }
             }
@@ -477,5 +485,18 @@ mod tests {
 
         assert_eq!(State::load(root.path()).ui.theme, Theme::Light);
         assert_eq!(State::load(root.path()).ui.theme, Theme::Light);
+    }
+
+    #[test]
+    fn saved_notification_choice_silences_windows_balloons() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".ao")).unwrap();
+        std::fs::write(
+            root.path().join(".ao/appearance.json"),
+            br#"{"version":1,"notifications":false}"#,
+        )
+        .unwrap();
+        let state = State::load(root.path());
+        assert!(!state.ui.notifications);
     }
 }

@@ -186,6 +186,7 @@ install_on_launch = false # install a prepared update when Concordia starts
 | `ui.tips` | `true` | Tips while the prompt is idle |
 | `ui.persist_history` | `true` | Stores native prompt-recall references (last 500); `false` keeps new recall in memory only |
 | `ui.stats` | `false` | Footer memory and CPU for Concordia and the agents it started (`/stats` toggles it) |
+| `ui.notifications` | `true` | Windows attention notifications; taskbar status remains active when false |
 | `threads.logging` | `"off"` | Explicit `"on"` enables metadata/native-reference recording; existing logs are preserved |
 | `threads.map_chars` | `1600` | Out of range is clamped to 200..8000 |
 | `threads.mcp` | `false` | Registers the `concordia mcp` server in those homes; `false` removes the entry (see [mcp.md](mcp.md)) |

@@ -1043,6 +1043,41 @@ impl App {
         self.show_picker(PickerKind::NeedsYou, "needs you".into(), rows, false);
     }
 
+    pub(in crate::tui) fn focus_needs_you_item(&mut self, item_id: &str) {
+        self.sync_needs_you();
+        let Some(item) = self.needs_you.items().find(|item| item.id == item_id).cloned() else {
+            return;
+        };
+        landing::close(self);
+        self.activity.detail = None;
+        match item.kind {
+            crate::needs_you::ItemKind::Question | crate::needs_you::ItemKind::Approval => {
+                if let Some(job) = item
+                    .id
+                    .strip_prefix("worker-native:")
+                    .and_then(|value| value.split(':').next())
+                    .and_then(|value| value.parse().ok())
+                {
+                    self.inspect_worker(job);
+                } else {
+                    self.queue.focused = false;
+                    self.questions.focused = true;
+                }
+            }
+            crate::needs_you::ItemKind::PausedQueue => {
+                self.queue.focused = true;
+                self.questions.focused = false;
+            }
+            crate::needs_you::ItemKind::WorkerResult => {
+                if let Some(id) = item.id.strip_prefix("worker:").and_then(|id| id.parse().ok()) {
+                    self.inspect_worker(id);
+                }
+            }
+            crate::needs_you::ItemKind::IdleNotice => self.open_idle_picker(),
+            crate::needs_you::ItemKind::SignedOut => self.open_use_picker(),
+        }
+    }
+
     pub(in crate::tui) fn idle_provider_name(provider: ProviderKind) -> &'static str {
         match provider {
             ProviderKind::Codex => "Codex",

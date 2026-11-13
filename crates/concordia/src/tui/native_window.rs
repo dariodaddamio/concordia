@@ -31,7 +31,7 @@ use windows_sys::Win32::{
     UI::{
         HiDpi::*,
         Input::KeyboardAndMouse::*,
-        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW},
+        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW},
         WindowsAndMessaging::*,
     },
 };
@@ -95,6 +95,8 @@ struct Shared {
     closing: AtomicBool,
     screen: Mutex<Screen>,
     requested_status: Mutex<StatusDot>,
+    pending_attention: Mutex<Option<(String, String)>>,
+    attention_target: Mutex<Option<String>>,
     test_control: Option<TestControl>,
 }
 
@@ -143,6 +145,7 @@ struct TestRequest {
 pub(super) enum NativeEvent {
     Event(Event),
     MouseUp { event: MouseEvent, x: i32, y: i32 },
+    Attention(String),
 }
 
 fn send_until_closed<T>(sender: &SyncSender<T>, mut value: T, closing: &AtomicBool) {
@@ -184,6 +187,8 @@ fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend
             seq: 0,
         }),
         requested_status: Mutex::new(StatusDot::Idle),
+        pending_attention: Mutex::new(None),
+        attention_target: Mutex::new(None),
         test_control: std::env::var_os("CONCORDIA_TEST_CONTROL").map(|_| TestControl::default()),
     });
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -242,6 +247,14 @@ impl WindowBackend {
         if let Some(test) = self.shared.test_control.as_ref() {
             test.state.lock().unwrap_or_else(|e| e.into_inner()).status_dot = status.as_str().into();
         }
+        let _ = self.post(UPDATE);
+    }
+    pub(super) fn set_attention_notification(&mut self, item_id: String, text: String) {
+        *self
+            .shared
+            .pending_attention
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((item_id, text));
         let _ = self.post(UPDATE);
     }
     pub(super) fn set_images(&mut self, images: Vec<RasterImage>) -> io::Result<()> {
@@ -559,10 +572,26 @@ impl Drop for Window {
 }
 impl Window {
     unsafe fn set_status(&mut self, hwnd: HWND, status: StatusDot) {
+        let pending = self
+            .shared
+            .pending_attention
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if self.status_dot == status {
-            if status == StatusDot::NeedsAttention && !self.focused && !self.tray_added {
-                notify_tray(hwnd, NIM_ADD, Some("Concordia needs your attention"));
-                self.tray_added = true;
+            if status == StatusDot::NeedsAttention && !self.focused {
+                if let Some((id, text)) = pending.as_ref() {
+                    *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(id.clone());
+                    notify_tray(
+                        hwnd,
+                        if self.tray_added { NIM_MODIFY } else { NIM_ADD },
+                        Some(text),
+                    );
+                    *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) =
+                        None;
+                    self.tray_added = true;
+                }
             } else if self.focused && self.tray_added {
                 notify_tray(hwnd, NIM_DELETE, None);
                 self.tray_added = false;
@@ -578,12 +607,21 @@ impl Window {
             let index = if status == StatusDot::Working { 0 } else { 1 };
             if !self.overlay_icons[index].is_null() { DestroyIcon(self.overlay_icons[index]); }
             self.overlay_icons[index] = icon;
-            if !self.taskbar.is_null() { taskbar_overlay(self.taskbar, hwnd, icon); }
-        } else if !self.taskbar.is_null() {
+            if !self.taskbar.is_null() && native_signal_allowed(self.shared.test_control.is_none()) {
+                taskbar_overlay(self.taskbar, hwnd, icon);
+            }
+        } else if !self.taskbar.is_null()
+            && native_signal_allowed(self.shared.test_control.is_none())
+        {
             taskbar_overlay(self.taskbar, hwnd, null_mut());
         }
-        if status == StatusDot::NeedsAttention && !self.focused && !self.tray_added {
-            notify_tray(hwnd, NIM_ADD, Some("Concordia needs your attention"));
+        if status == StatusDot::NeedsAttention && !self.focused {
+            let Some((id, text)) = pending.as_ref() else {
+                return;
+            };
+            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+            notify_tray(hwnd, if self.tray_added { NIM_MODIFY } else { NIM_ADD }, Some(text));
+            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
             self.tray_added = true;
         } else if status != StatusDot::NeedsAttention && self.tray_added {
             notify_tray(hwnd, NIM_DELETE, None);
@@ -597,6 +635,9 @@ impl Window {
             NativeEvent::Event(event),
             &self.shared.closing,
         );
+    }
+    fn emit_native(&self, event: NativeEvent) {
+        send_until_closed(&self.events, event, &self.shared.closing);
     }
     unsafe fn fonts(&mut self, hwnd: HWND, dpi: u32) {
         // Cached glyphs must be regenerated after a DPI/font change.
@@ -1898,7 +1939,7 @@ unsafe fn status_icon(size: i32, [red, green, blue]: crate::config::Rgb) -> HICO
 
 unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
     // Windows driven by the test control channel are hidden; they must never notify the user.
-    if std::env::var_os("CONCORDIA_TEST_CONTROL").is_some() {
+    if !native_signal_allowed(std::env::var_os("CONCORDIA_TEST_CONTROL").is_some()) {
         return;
     }
     let mut data: NOTIFYICONDATAW = mem::zeroed();
@@ -1919,6 +1960,21 @@ unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
     }
     let _ = Shell_NotifyIconW(operation, &data);
     if !data.hIcon.is_null() { DestroyIcon(data.hIcon); }
+}
+
+fn native_signal_allowed(test_control: bool) -> bool {
+    !test_control
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::native_signal_allowed;
+
+    #[test]
+    fn test_control_blocks_all_shell_signals() {
+        assert!(!native_signal_allowed(true));
+        assert!(native_signal_allowed(false));
+    }
 }
 
 unsafe fn window_thread(
@@ -2260,7 +2316,15 @@ unsafe extern "system" fn window_proc(
         TRAY_NOTIFY if lparam as u32 == WM_LBUTTONUP || lparam as u32 == WM_LBUTTONDBLCLK => {
             if window.status_dot == StatusDot::NeedsAttention {
                 SetForegroundWindow(hwnd);
-                window.emit(Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)));
+                if let Some(item_id) = window
+                    .shared
+                    .attention_target
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    window.emit_native(NativeEvent::Attention(item_id));
+                }
                 notify_tray(hwnd, NIM_DELETE, None);
                 window.tray_added = false;
             }

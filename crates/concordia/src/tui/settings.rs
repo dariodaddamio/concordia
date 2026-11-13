@@ -40,6 +40,11 @@ pub(super) fn open(app: &mut App) {
             "Saved; Windows reduced-motion preferences take precedence",
         ),
         row(
+            "notifications",
+            format!("Windows notifications · {}", enabled(ui.notifications)),
+            "Taskbar status remains active when notifications are off",
+        ),
+        row(
             "permissions",
             "Permissions",
             "Saved default for future turns; running turns retain their permissions",
@@ -160,11 +165,12 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     }
     match id {
         "appearance" => appearance::open(app),
-        "tokens" | "tips" | "stats" | "motion" => {
+        "tokens" | "tips" | "stats" | "motion" | "notifications" => {
             let current = match id {
                 "tokens" => app.appearance.ui.token_line,
                 "tips" => app.appearance.ui.tips,
                 "motion" => app.appearance.ui.motion,
+                "notifications" => app.appearance.ui.notifications,
                 _ => app.stats.is_some(),
             };
             appearance::save(app, id, if current { "off" } else { "on" });

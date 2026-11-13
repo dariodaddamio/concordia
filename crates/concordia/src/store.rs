@@ -204,6 +204,8 @@ pub struct OrchestratorSettings {
     /// Opt-in: record conversations to `<state>/threads` (stores prompts). Read via `threads::enabled`.
     #[serde(default)]
     pub thread_log: bool,
+    #[serde(default)]
+    pub attention_notifications: std::collections::BTreeSet<String>,
 }
 
 /// The provider selection used when an agent asks for a role without a model.
@@ -281,6 +283,7 @@ impl Default for OrchestratorSettings {
             accepted_terms_providers: Default::default(),
             automatic_handoffs_today: Default::default(),
             thread_log: false,
+            attention_notifications: Default::default(),
         }
     }
 }
@@ -559,6 +562,20 @@ pub fn modify_store<T>(
 
 pub fn get_settings(root: &Path) -> OrchestratorSettings {
     load_store(root).settings
+}
+
+pub fn attention_notification_seen(root: &Path, item_id: &str) -> bool {
+    get_settings(root).attention_notifications.contains(item_id)
+}
+
+pub fn mark_attention_notification(root: &Path, item_id: &str) -> anyhow::Result<()> {
+    modify_store(root, |store| {
+        store
+            .settings
+            .attention_notifications
+            .insert(item_id.to_owned());
+        Ok(())
+    })
 }
 
 /// Create or update the task containing a native session.  Repeated observations of the same
@@ -1103,5 +1120,17 @@ mod tests {
         );
         // ...and it really is free: the next update goes straight through.
         upsert_stored_account(dir.path(), acct("next")).unwrap();
+    }
+
+    #[test]
+    fn attention_notification_ids_are_durable_and_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!attention_notification_seen(dir.path(), "chat:question"));
+        mark_attention_notification(dir.path(), "chat:question").unwrap();
+        assert!(attention_notification_seen(dir.path(), "chat:question"));
+        assert!(!attention_notification_seen(dir.path(), "chat:approval"));
+        assert!(get_settings(dir.path())
+            .attention_notifications
+            .contains("chat:question"));
     }
 }

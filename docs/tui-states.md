@@ -32,11 +32,13 @@ Working uses the current theme success colour; Needs attention uses the current 
 colour and wins over working; idle clears the overlay. Icons are generated in memory and owned by
 the native window thread.
 
-When Needs attention arrives while the window is unfocused, Concordia uses the unpackaged desktop
+When a new actionable item enters Needs attention while the window is unfocused, Concordia uses the unpackaged desktop
 shell notification API
 [`Shell_NotifyIconW`](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw)
 with an `NIF_INFO` balloon. This API does not require MSIX packaging or a package identity. A
-notification click foregrounds the existing window and opens the existing Needs attention picker;
+The notification names the chat and action. Each item ID is notified once, with the told-item ledger
+persisted in the local store across restarts. A notification click foregrounds the existing window,
+selects the chat and focuses the item;
 Concordia never reopens the window or foregrounds it without that click. The picker and the source
 conversation read the same request record, so answering in either path resolves the same native
 request.

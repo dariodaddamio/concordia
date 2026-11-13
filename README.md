@@ -53,6 +53,10 @@ Ask your question and press Enter
 Claude Code, Codex, Cursor, Grok Build, opencode and optional Grok Bot routines are supported.
 See the [provider guide](https://dariodaddamio.github.io/concordia/providers/).
 
+Needs attention uses the taskbar status and Windows notifications for actionable questions and
+approvals. Each item is notified once across focus changes and restarts. `/config` can turn off
+Windows notifications while keeping the taskbar status.
+
 ## Site
 
 - [Overview](https://dariodaddamio.github.io/concordia/)

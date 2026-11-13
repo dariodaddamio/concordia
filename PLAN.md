@@ -445,6 +445,12 @@ record answers and open proposals; they are not approved final product wording o
   bridge). Every request an agent makes must reach the user in the chat and in Needs attention.
   Concordia cannot surface a question the agent only reasons about without making a request;
   preventing unrequested actions such as commits belongs to provider permissions and the harness.
+- Needs attention decision (2026-11-13): a Windows notification is emitted once per actionable
+  item ID and the told-item ledger persists across restarts. The notification names the chat and
+  waiting action, and its click selects that chat and focuses the item. Closed, finished or
+  cancelled items do not contribute to the status. `/config` can disable Windows notifications
+  while retaining the taskbar status. Test-controlled windows emit neither tray nor taskbar shell
+  signals.
 - Reported regressions (2026-11-11, user reports, causes not yet inspected): attachment image
   previews render squished again; streamed reasoning text is joined without separators
   (for example, "Await again.All 107 scenarios passed").
@@ -666,6 +672,14 @@ Going public:
 - After the owner's final go, make the repository public and enable Pages.
 
 ## This slice
+
+### Q7 Windows attention notifications - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/{needs_you,store,config}.rs` | ok: 1, 4, 6, 10 | Keep item identity and the durable told-item ledger at existing state owners; do not add a notification service. |
+| `crates/concordia/src/tui/{run,settings,appearance,state,pickers,input_stream,display_backend,native_window}.rs` | ok: 1, 4, 5, 6, 9, 10 | Route status, settings, native signals and click focus through their existing owners; test coverage uses the same native event path. |
+| `README.md`, `docs/{config,tui-states}.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Record the implemented notification boundary, setting and build identity in canonical documents. |
 
 ### N9 usage-limit continuation regression - anti-slop gate
 

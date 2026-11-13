@@ -90,6 +90,7 @@ pub struct Ui {
     pub accent: Option<Rgb>,
     pub brand_color: Option<Rgb>,
     pub motion: bool,
+    pub notifications: bool,
     pub library_theme: Option<crate::theme_library::ThemeFile>,
 }
 
@@ -157,6 +158,7 @@ impl Default for Config {
                 accent: None,
                 brand_color: None,
                 motion: true,
+                notifications: true,
                 library_theme: None,
             },
             threads: Threads {
@@ -371,6 +373,7 @@ impl Config {
                     "ui.accent" => set_color(v, &full, &mut cfg.ui.accent, &mut warnings),
                     "ui.brand_color" => set_color(v, &full, &mut cfg.ui.brand_color, &mut warnings),
                     "ui.motion" => set_bool(v, &full, &mut cfg.ui.motion, &mut warnings),
+                    "ui.notifications" => set_bool(v, &full, &mut cfg.ui.notifications, &mut warnings),
                     "threads.logging" => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
                         Some("on") => cfg.threads.logging = true,
                         Some("off") => cfg.threads.logging = false,
@@ -620,6 +623,7 @@ foreground = '#232729'
 accent = '#1b5a9e'
 brand_color = '#c9a5ff'
 motion = false
+notifications = false
 [threads]
 logging = "on"
 map_chars = 800
@@ -636,6 +640,7 @@ protocol = true
         assert_eq!(c.ui.accent, Some([27, 90, 158]));
         assert_eq!(c.ui.brand_color, Some([201, 165, 255]));
         assert!(!c.ui.motion);
+        assert!(!c.ui.notifications);
         for (name, theme) in [
             ("default", Theme::Default),
             ("dark", Theme::Dark),

@@ -22,6 +22,8 @@ enum Message {
     Wake,
     #[cfg(windows)]
     MouseUp(crossterm::event::MouseEvent, i32, i32, Instant),
+    #[cfg(windows)]
+    Notification(String, Instant),
 }
 
 #[cfg(windows)]
@@ -47,6 +49,8 @@ pub struct InputStream {
     wake_sender: Option<SyncSender<Message>>,
     #[cfg(windows)]
     native_mouse_up: Option<(i32, i32)>,
+    #[cfg(windows)]
+    notification_target: Option<String>,
 }
 
 impl InputStream {
@@ -72,6 +76,9 @@ impl InputStream {
                                 }
                                 super::native_window::NativeEvent::MouseUp { event, x, y } => {
                                     Message::MouseUp(event, x, y, Instant::now())
+                                }
+                                super::native_window::NativeEvent::Attention(item_id) => {
+                                    Message::Notification(item_id, Instant::now())
                                 }
                             };
                             if sender.send(message).is_err() {
@@ -102,6 +109,7 @@ impl InputStream {
             reader: Some(reader),
             wake_sender: Some(wake_sender),
             native_mouse_up: None,
+            notification_target: None,
         })
     }
     /// Start the reader. Call this only after terminal input modes have been configured.
@@ -130,6 +138,8 @@ impl InputStream {
             wake_sender: Some(wake_sender),
             #[cfg(windows)]
             native_mouse_up: None,
+            #[cfg(windows)]
+            notification_target: None,
         })
     }
 
@@ -148,6 +158,11 @@ impl InputStream {
         self.native_mouse_up.take()
     }
 
+    #[cfg(windows)]
+    pub(super) fn take_notification_target(&mut self) -> Option<String> {
+        self.notification_target.take()
+    }
+
     /// Wait for an event for at most `timeout`. A queued reader error is returned immediately.
     pub fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
         if let Some(message) = &self.pending {
@@ -155,7 +170,7 @@ impl InputStream {
                 Message::Event(..) | Message::Quiet(..) => Ok(true),
                 Message::Error(error) => Err(clone_error(error)),
                 #[cfg(windows)]
-                Message::Wake | Message::MouseUp(..) => Ok(true),
+                Message::Wake | Message::MouseUp(..) | Message::Notification(..) => Ok(true),
             };
         }
         let receiver = self.receiver.as_ref().expect("reader receiver is alive");
@@ -170,7 +185,7 @@ impl InputStream {
                 result
             }
             #[cfg(windows)]
-            Ok(message @ (Message::Wake | Message::MouseUp(..))) => {
+            Ok(message @ (Message::Wake | Message::MouseUp(..) | Message::Notification(..))) => {
                 self.pending = Some(message);
                 Ok(true)
             }
@@ -213,6 +228,14 @@ impl InputStream {
             Message::MouseUp(event, x, y, at) => {
                 self.native_mouse_up = Some((x, y));
                 Ok((Some(Event::Mouse(event)), at, false))
+            }
+            #[cfg(windows)]
+            Message::Notification(item_id, at) => {
+                self.notification_target = Some(item_id);
+                Ok((Some(Event::Key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Null,
+                    crossterm::event::KeyModifiers::NONE,
+                ))), at, false))
             }
         }
     }
@@ -388,6 +411,8 @@ mod tests {
             wake_sender: Some(sender.clone()),
             #[cfg(windows)]
             native_mouse_up: None,
+            #[cfg(windows)]
+            notification_target: None,
         };
         let expected = [
             (Some(first), first_at, false),
@@ -448,6 +473,8 @@ mod tests {
             wake_sender: None,
             #[cfg(windows)]
             native_mouse_up: None,
+            #[cfg(windows)]
+            notification_target: None,
         };
         drop(stream);
     }

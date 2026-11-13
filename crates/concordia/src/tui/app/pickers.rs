@@ -1136,47 +1136,7 @@ impl App {
             }
             PickerKind::NeedsYou => {
                 if let Some(item_id) = id.strip_prefix("needs:") {
-                    let item = self
-                        .needs_you
-                        .items()
-                        .find(|item| item.id == item_id)
-                        .cloned();
-                    if let Some(item) = item {
-                        landing::close(self);
-                        self.activity.detail = None;
-                        match item.kind {
-                            crate::needs_you::ItemKind::Question
-                            | crate::needs_you::ItemKind::Approval => {
-                                if let Some(job) = item
-                                    .id
-                                    .strip_prefix("worker-native:")
-                                    .and_then(|value| value.split(':').next())
-                                    .and_then(|value| value.parse().ok())
-                                {
-                                    self.inspect_worker(job);
-                                } else {
-                                    self.queue.focused = false;
-                                    self.questions.focused = true;
-                                }
-                            }
-                            crate::needs_you::ItemKind::PausedQueue => {
-                                self.queue.focused = true;
-                                self.questions.focused = false;
-                                self.flash("Queue paused. Ctrl+R resumes it; Enter edits the selected prompt.");
-                            }
-                            crate::needs_you::ItemKind::WorkerResult => {
-                                if let Some(id) = item
-                                    .id
-                                    .strip_prefix("worker:")
-                                    .and_then(|id| id.parse().ok())
-                                {
-                                    self.inspect_worker(id);
-                                }
-                            }
-                            crate::needs_you::ItemKind::IdleNotice => self.open_idle_picker(),
-                            crate::needs_you::ItemKind::SignedOut => self.open_use_picker(),
-                        }
-                    }
+                    self.focus_needs_you_item(item_id);
                 }
             }
             PickerKind::Resume => {

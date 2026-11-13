@@ -53,6 +53,12 @@ impl DisplayBackend {
             window.set_status_dot(status);
         }
     }
+    #[cfg(windows)]
+    pub fn attention_notification(&mut self, item_id: String, text: String) {
+        if let Self::Window(window) = self {
+            window.set_attention_notification(item_id, text);
+        }
+    }
 }
 
 impl Write for DisplayBackend {
