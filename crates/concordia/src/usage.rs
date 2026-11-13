@@ -1009,11 +1009,6 @@ pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<Str
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     let out = crate::process_lifetime::capture(cmd, timeout, 1024 * 1024)?;
     if !out.status.success() {
         return Err(format!("Claude usage reader exited with {}", out.status));

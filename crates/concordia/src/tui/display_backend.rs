@@ -38,6 +38,15 @@ impl DisplayBackend {
             window.set_test_state(focused_tab, overlays);
         }
     }
+    /// Test-only frame cost; a no-op outside the test-controlled native window.
+    pub fn note_draw(&mut self, elapsed: std::time::Duration) {
+        #[cfg(windows)]
+        if let Self::Window(window) = self {
+            window.note_draw(elapsed);
+        }
+        #[cfg(not(windows))]
+        let _ = elapsed;
+    }
     #[cfg(windows)]
     pub fn status_dot(&mut self, status: super::native_window::StatusDot) {
         if let Self::Window(window) = self {

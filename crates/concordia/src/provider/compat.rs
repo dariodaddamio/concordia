@@ -474,11 +474,6 @@ pub fn run_cli(program: &Path, args: &[&str]) -> Result<String, String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     let out = crate::process_lifetime::capture(cmd, PROBE_TIMEOUT, OUTPUT_MAX)?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push('\n');

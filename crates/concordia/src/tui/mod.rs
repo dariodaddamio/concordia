@@ -188,6 +188,7 @@ fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
         linkify: false,
         runs: &[],
         header_files: &[],
+        decor_prefix: 0,
     }
 }
 

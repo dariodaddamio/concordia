@@ -72,14 +72,16 @@ fn append(to: &mut MdLine, from: &MdLine, chars: &[char], start: usize, end: usi
 }
 
 fn rule(widths: &[usize], left: char, join: char, right: char) -> MdLine {
-    plain(format!(
+    let mut line = plain(format!(
         "{left}{}{right}",
         widths
             .iter()
             .map(|w| "─".repeat(w + 2))
             .collect::<Vec<_>>()
             .join(&join.to_string())
-    ))
+    ));
+    line.decor.push((0, line.text.chars().count()));
+    line
 }
 
 pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
@@ -179,6 +181,7 @@ pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
             .collect();
         for part in 0..ranges.iter().map(Vec::len).max().unwrap_or(1) {
             let mut line = plain("│ ".into());
+            line.decor.push((0, 1));
             for (i, cell) in row.iter().enumerate() {
                 let (a, mut b) = ranges[i].get(part).copied().unwrap_or((0, 0));
                 let chars = &characters[r][i];
@@ -199,6 +202,8 @@ pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
                 let used = slice_width(&chars[a..b]);
                 line.text
                     .push_str(&" ".repeat(widths[i].saturating_sub(used)));
+                let bar = line.text.chars().count() + 1;
+                line.decor.push((bar, bar + 1));
                 line.text
                     .push_str(if i + 1 == columns { " │" } else { " │ " });
             }

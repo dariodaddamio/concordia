@@ -284,11 +284,6 @@ fn run_child_with_format(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1231,11 +1226,6 @@ fn user_path_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -1282,7 +1272,8 @@ pub fn ensure_on_user_path(dir: &Path) -> Result<bool> {
 /// keyboard and swallow each other's keystrokes.
 pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<i32> {
     persist_concordia_exe_env(new_exe);
-    let mut command = Command::new(new_exe); // visible-spawn: replacement owns the interactive console.
+    // Visible by design: the replacement owns the interactive console.
+    let mut command = crate::process_ui::visible_command(new_exe);
     let status = command
         .current_dir(cwd)
         .env("CONCORDIA_EXE", new_exe)

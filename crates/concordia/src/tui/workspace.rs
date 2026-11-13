@@ -898,6 +898,7 @@ fn draw_pane(
                     .is_some_and(|e| e.eq_ignore_ascii_case("json")),
                 runs: &[],
                 header_files: &[],
+                decor_prefix: 0,
             }],
             inner.width.max(1) as usize,
             inner.height as usize,

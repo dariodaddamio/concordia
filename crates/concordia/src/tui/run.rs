@@ -470,6 +470,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 }
                 app.raster.native = use_window;
+                let draw_started = Instant::now();
                 #[cfg(windows)]
                 let mut image = Vec::new();
                 let drawn = terminal
@@ -486,6 +487,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 if drawn.is_ok() {
                     terminal.backend_mut().image(image)?;
                 }
+                terminal.backend_mut().note_draw(draw_started.elapsed());
                 let ended = if use_window {
                     Ok(())
                 } else {
