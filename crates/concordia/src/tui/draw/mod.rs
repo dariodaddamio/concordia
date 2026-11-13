@@ -307,6 +307,38 @@ fn draw_key_sheet(f: &mut Frame, app: &App) {
         }
         lines.push(Line::from(format!("  {key:<14} {command} — {description}")));
     }
+    lines.push(Line::from("  Tabs"));
+    for (key, description) in [
+        ("Ctrl+T", "new tab"),
+        ("Ctrl+Shift+T", "reopen the last closed tab"),
+        ("Ctrl+Tab", "next tab"),
+        ("Ctrl+Shift+Tab", "previous tab"),
+        ("Ctrl+1..9", "select tab 1 through 9"),
+        ("Ctrl+Shift+PgUp", "move the current tab left"),
+        ("Ctrl+Shift+PgDn", "move the current tab right"),
+        ("Ctrl+W", "close the current tab"),
+        ("F2", "rename the current tab"),
+        ("double-click", "rename a tab title"),
+    ] {
+        lines.push(Line::from(format!("  {key:<14} {description}")));
+    }
+    lines.push(Line::from("  Activity"));
+    for (key, description) in [
+        ("Ctrl+O", "expand or collapse the last item in the last message"),
+        ("Ctrl+Shift+O", "expand or collapse every item in the last message"),
+        ("Ctrl+E", "open full activity detail"),
+        ("F5", "toggle full activity"),
+        ("F1 / ?", "open this shortcut sheet"),
+    ] {
+        lines.push(Line::from(format!("  {key:<14} {description}")));
+    }
+    lines.push(Line::from("  Icons"));
+    for (group, rows) in crate::tui::icons::legend() {
+        lines.push(Line::from(format!("  {group}")));
+        for (glyph, meaning) in rows {
+            lines.push(Line::from(format!("    {glyph}  {meaning}")));
+        }
+    }
     lines.push(Line::from(""));
     lines.push(Line::from("  ? / F1 / Esc  close"));
     let width = lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 4;

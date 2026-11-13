@@ -20,6 +20,11 @@ retains its model. Completed background history reads request repaint. Reopened 
 new provider handles; closing a tab with active workers requires that tab's own confirmation.
 After submission, `Context for this message` shows the context attached to that request.
 
+Browser-style tab controls are Ctrl+Tab and Ctrl+Shift+Tab for switching, Ctrl+1 through Ctrl+9
+for selection, Ctrl+Shift+PgUp and Ctrl+Shift+PgDn for moving the current tab, Ctrl+W for close,
+Ctrl+Shift+T for reopening the last closed tab, and F2 or a double-click on a tab title for rename.
+Dragging a tab shows its insertion marker and reorders the same tab model used by the window strip.
+
 Closing and reopening restores the most recently closed window for the same workspace:
 open-tab order, selected tab, account/model bindings, scroll position, saved conversation views
 and each tab's independent draft/queue. A held window lock keeps concurrent windows independent.
@@ -93,6 +98,20 @@ a verified captured conversation retains its latest 2,048 rows/16 MiB; native or
 available separately. Active inspections, unsaved work and unavailable-source views remain
 protected. The reopen cache keeps eight clean conversations, retaining unfinished closed tabs.
 Async image, search, memory and history completion requests repaint.
+
+Running tool cards show elapsed wall time. When the provider includes a timeout in the tool-call
+arguments, the card also shows the remaining time and the reported limit. The current event-field
+coverage is:
+
+| Provider event | Timeout field | Displayed |
+| --- | --- | --- |
+| Codex function call | `timeout_ms` | Yes |
+| Claude Code Bash call | `timeout` in milliseconds | Yes |
+| Cursor shell call | `timeout` in milliseconds | Yes |
+| Grok Build | No timeout field is currently reported by the adapter | No |
+| opencode | No timeout field is currently reported by the adapter | No |
+
+`yield_time_ms` is a polling interval, so Concordia does not display it as a timeout.
 Model catalogs, integration readers, artifact details, worker results, file saves/highlighting,
 native request expiry and Mermaid completion also request repaint without another input event.
 Folded rows check source content and diagram revision even when message count is unchanged;

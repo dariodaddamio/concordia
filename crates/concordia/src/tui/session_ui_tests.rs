@@ -328,6 +328,15 @@ fn titles_are_generated_without_thread_logging_and_survive_native_binding() {
 }
 
 #[test]
+fn tab_title_rename_keeps_the_display_title_bounded_and_resettable() {
+    let (mut app, _dir, _home) = setup();
+    assert!(app.rename_session("  Review   parser  "));
+    assert_eq!(app.tab_label(), "Review parser");
+    assert!(app.rename_session(""));
+    assert_eq!(app.session_ui.title, None);
+}
+
+#[test]
 fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
     let (mut app, _dir, _) = setup();
     app.push_card(StreamCard {

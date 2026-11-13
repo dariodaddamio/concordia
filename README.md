@@ -47,6 +47,11 @@ masked form and stored in Windows Credential Manager; routine metadata stays in 
 or F11 opens a local shell in the project; F11 returns to chat with its draft intact.
 `/terminal hide` keeps that shell alive, and `/terminal close` stops it.
 
+Tabs use Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+1 through Ctrl+9,
+Ctrl+Shift+PgUp, Ctrl+Shift+PgDn, F2 and double-click rename. Ctrl+O expands or collapses the
+last activity item in the last message. Ctrl+Shift+O applies that action to every item. F1 lists
+these controls and the provider, status and tool-card icons.
+
 The Windows taskbar shows a theme-coloured overlay dot while work runs or user input is waiting;
 the waiting state takes precedence and idle clears the dot. If background work needs input while
 the window is unfocused, Windows shows a notification. Selecting it focuses the existing window

@@ -77,3 +77,14 @@ draft, attachments and editor state stay visible and unchanged. Enter saves; Esc
 Switching tabs or clicking outside cancels the pending title edit. `/rename TITLE` changes the same local title;
 `/rename` resets it to automatic naming. F1 opens shortcuts; `?` opens them only from an empty,
 idle composer, so question marks remain ordinary text in drafts and focused editors.
+
+The F1 sheet lists every tab and activity shortcut. Tab icons combine a provider glyph with running,
+waiting, finished or failed status. Tool cards use separate icons for shell, file read, file edit,
+search, web, MCP, agent, question and image operations. The glyph legend is the source for both F1
+and this document.
+
+| Icon group | Glyphs and meaning |
+| --- | --- |
+| Providers | `⚡` Codex, `✻` Claude Code, `➤` Cursor, `⊘` Grok, `◇` opencode |
+| Tab status | `◐ ◓ ◑ ◒` running, `●` waiting, `✓` finished, `✗` failed |
+| Tool cards | `❯` shell, `▤` read, `✎` edit, `⌕` search, `⊕` web, `⚙` MCP, `⑂` agent, `?` question, `▣` image |

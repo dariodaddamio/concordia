@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (2026-11-13e)
+
+- Added the tab and activity shortcuts and the complete tab and tool icon legend to F1.
+- Kept untracked opencode runs in the Agents view with the same bounded one-line task display as
+  the other supported provider CLIs.
+- Added deterministic coverage for provider timeout fields used by running tool timers.
+
 ### Added (2026-11-13d)
 
 - Added provider, model and effort controls to the top bar.

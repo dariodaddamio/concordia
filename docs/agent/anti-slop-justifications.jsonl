@@ -13,3 +13,13 @@
 | crates/concordia/src/models.rs | ok: 2, 4, 6 | Keep one account-bound catalog and validate provider output at its boundary. |
 | crates/concordia/src/usage.rs | ok: 1, 4, 6 | Preserve the existing UsageSnapshot as the canonical source for all usage views and buckets. |
 | docs/provider-usage-sources.md | ok: 5, 10 | Document provider field sources and limitations rather than adding fallback claims. |
+
+### Tabs lane audit - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/native_agents.rs | ok: 1, 3, 5, 6 | Extend the existing bounded provider-run parser for opencode; keep the Agents projection as the canonical list owner. |
+| crates/concordia/src/tui/draw/mod.rs | ok: 1, 5, 6 | Add the requested shortcut and icon rows to the existing F1 renderer without a second shortcut registry. |
+| crates/concordia/src/provider/stream_cards.rs | ok: 2, 3, 5 | Read timeout fields at the provider event boundary and ignore polling intervals. |
+| docs/chat-rendering.md | ok: 5, 10 | Record implemented shortcuts and provider timeout coverage with explicit unknowns. |
+| docs/ui-glossary.md | ok: 5, 10 | Point the icon description at the existing legend instead of defining a second source. |

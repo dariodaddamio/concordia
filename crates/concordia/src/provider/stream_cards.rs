@@ -1570,6 +1570,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reported_timeout_reads_provider_tool_call_fields_and_ignores_polling_intervals() {
+        let card = |title: &str, detail: &str| StreamCard {
+            id: title.into(),
+            title: title.into(),
+            detail: Some(detail.into()),
+            status: CardStatus::Running,
+        };
+        assert_eq!(
+            reported_timeout(&card(
+                "exec",
+                r#"arguments: {"cmd":"dir","timeout_ms":600000,"yield_time_ms":1000}"#
+            )),
+            Some(std::time::Duration::from_secs(600))
+        );
+        assert_eq!(
+            reported_timeout(&card(
+                "Bash",
+                r#"input: {"command":"dir","timeout":120000}"#
+            )),
+            Some(std::time::Duration::from_secs(120))
+        );
+        assert_eq!(
+            reported_timeout(&card(
+                "shell",
+                r#"arguments: {"command":"dir","timeout":30000}"#
+            )),
+            Some(std::time::Duration::from_secs(30))
+        );
+        assert_eq!(
+            reported_timeout(&card(
+                "shell",
+                r#"arguments: {"command":"dir","yield_time_ms":10000}"#
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn reported_timeout_accepts_json_string_arguments() {
+        let card = StreamCard {
+            id: "cursor-shell".into(),
+            title: "shell".into(),
+            detail: Some(r#"arguments: "{\"command\":\"dir\",\"timeout\":4500}""#.into()),
+            status: CardStatus::Running,
+        };
+        assert_eq!(
+            reported_timeout(&card),
+            Some(std::time::Duration::from_millis(4500))
+        );
+    }
+
+    #[test]
     fn weekly_limit_wording_is_exhaustion_and_not_server_overload() {
         for message in [
             "You've hit your weekly limit",

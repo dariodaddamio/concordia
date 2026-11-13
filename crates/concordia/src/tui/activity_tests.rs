@@ -8,6 +8,25 @@ use crate::provider::turn::{TurnOutcome, TurnProgress};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier};
 use ratatui::{backend::TestBackend, Terminal};
+use std::time::{Duration, Instant};
+
+#[test]
+fn running_tool_timer_snapshot_shows_elapsed_and_reported_time_remaining() {
+    let card = StreamCard {
+        id: "timed-shell".into(),
+        title: "shell".into(),
+        detail: Some(r#"arguments: {"cmd":"cargo test","timeout_ms":600000}"#.into()),
+        status: CardStatus::Running,
+    };
+    let now = Instant::now();
+    let timer = super::activity::card_timer(
+        &card,
+        Some(now - Duration::from_secs(125)),
+        now,
+    )
+    .unwrap();
+    assert_eq!(timer, " · 2:05 · 7:55 left of 10:00");
+}
 
 #[test]
 fn expansion_and_detail_use_independent_message_identity() {

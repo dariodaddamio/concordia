@@ -1821,6 +1821,26 @@ fn waiting_status_and_the_adjacent_timer_describe_the_current_run() {
 }
 
 #[test]
+fn f1_snapshot_lists_tab_activity_shortcuts_and_the_icon_legend() {
+    let mut h = Harness::new(180, 60);
+    h.key(KeyCode::F(1), KeyModifiers::NONE);
+    let screen = h.screen();
+    for text in [
+        "Ctrl+Shift+PgUp",
+        "Ctrl+Shift+PgDn",
+        "Ctrl+O",
+        "Ctrl+Shift+O",
+        "double-click",
+        "Tab providers",
+        "Tool cards",
+        "MCP tool",
+        "agent or subagent",
+    ] {
+        assert!(screen.contains(text), "F1 snapshot is missing {text}:\n{screen}");
+    }
+}
+
+#[test]
 fn account_nickname_persists_without_changing_the_native_binding() {
     let _iso = Isolated::new();
     let mut h = Harness::new(120, 24);

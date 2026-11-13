@@ -377,6 +377,7 @@ fn find_run(tokens: &[String], depth: usize) -> Option<Run> {
                 .then(|| parse_args("Claude", &rest)),
             "cursor-agent" => Some(parse_args("Cursor", &rest)),
             "grok" if !rest.is_empty() => Some(parse_args("Grok", &rest)),
+            "opencode" if !rest.is_empty() => Some(parse_args("opencode", &rest)),
             _ => None,
         };
         if run.is_some() {
@@ -447,7 +448,7 @@ fn cut(text: &str, width: usize) -> String {
 /// remain ordinary activity; no command is executed or inferred from prose.
 fn provider_run(detail: &str) -> Option<Run> {
     let lower = detail.to_ascii_lowercase();
-    if !["codex", "claude", "cursor-agent", "grok"]
+    if !["codex", "claude", "cursor-agent", "grok", "opencode"]
         .iter()
         .any(|needle| lower.contains(needle))
     {
@@ -1012,6 +1013,10 @@ mod tests {
         let claude = run(&pretty("claude -p --model haiku 'say hi'", ""));
         assert_eq!((claude.provider, claude.model.as_deref(), claude.task.as_str()), ("Claude", Some("haiku"), "say hi"));
         assert_eq!(run("cursor-agent -p --model auto \"go\"").provider, "Cursor");
+        assert_eq!(
+            run("opencode run --model openai/gpt-5 \"review it\"").provider,
+            "opencode"
+        );
         assert_eq!(run("{\"cmd\":[\"bash\",\"-lc\",\"cd /w && codex exec 'nested task'\"]}").task, "nested task");
         let stdin = run("command: codex exec - <<'EOF'\nBODY TEXT\nEOF");
         assert_eq!(stdin.task, NO_TASK);
