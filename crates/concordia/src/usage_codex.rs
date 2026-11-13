@@ -81,11 +81,32 @@ pub(crate) async fn fetch_with(bin: &str, home: &Path) -> Result<String, String>
         }
         input.write_all(b"{\"method\":\"initialized\"}\n{\"id\":2,\"method\":\"account/rateLimits/read\"}\n").await.map_err(|_| "usage request failed")?;
         let result = receive(&mut lines,2).await?;
-        let limits = result.get("rateLimitsByLimitId").and_then(|m| m.get("codex")).filter(|v|v.is_object()).or_else(||result.get("rateLimits").filter(|v| v.is_object())).ok_or("Codex returned no quota windows")?;
-        Ok(json!({"rate_limits":limits}).to_string())
+        Ok(json!({"rate_limits":limits_with_buckets(&result)?}).to_string())
     }).await.unwrap_or_else(|_|Err("live usage read timed out".into()));
     crate::provider::turn::kill_process_tree(pid);
     let _ = child.start_kill();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
     result
+}
+
+/// The main `codex` bucket, with every other bucket in `rateLimitsByLimitId` (for example a
+/// separate allowance for one model) attached under `extra`, in limit-id order.
+pub(crate) fn limits_with_buckets(result: &Value) -> Result<Value, String> {
+    let by_id = result.get("rateLimitsByLimitId").and_then(Value::as_object);
+    let mut limits = by_id
+        .and_then(|m| m.get("codex"))
+        .filter(|v| v.is_object())
+        .or_else(|| result.get("rateLimits").filter(|v| v.is_object()))
+        .cloned()
+        .ok_or("Codex returned no quota windows")?;
+    let main_id = limits.get("limitId").and_then(Value::as_str).unwrap_or("codex").to_owned();
+    let mut extra: Vec<(&String, &Value)> = by_id
+        .into_iter()
+        .flatten()
+        .filter(|(id, bucket)| **id != "codex" && **id != main_id && bucket.is_object())
+        .take(32)
+        .collect();
+    extra.sort_by(|a, b| a.0.cmp(b.0));
+    limits["extra"] = Value::Array(extra.into_iter().map(|(_, bucket)| bucket.clone()).collect());
+    Ok(limits)
 }

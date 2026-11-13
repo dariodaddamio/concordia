@@ -34,9 +34,21 @@ pub struct UsageWindow {
     pub used_pct: f64,
     /// When the window resets, already human-readable (`3h`, `Oct 21, 9am`).
     pub resets: Option<String>,
+    /// The provider's own name for an extra limit bucket, such as a separate allowance for one
+    /// model. `None` for the account's main limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
 }
 
 impl UsageWindow {
+    /// The label people read: the bucket name, when there is one, then the window.
+    pub fn name(&self) -> String {
+        match &self.bucket {
+            Some(bucket) => format!("{bucket} {}", self.label),
+            None => self.label.clone(),
+        }
+    }
+
     /// The reading predates the window's reset, so its percentage no longer applies.
     fn expired(&self) -> bool {
         self.expired_at(local_now())
@@ -84,7 +96,7 @@ impl UsageWindow {
         if self.expired() {
             return format!(
                 "{} · {} · current usage unavailable (last reading {}% used)",
-                self.label,
+                self.name(),
                 self.resets
                     .as_deref()
                     .map(reset_phrase)
@@ -94,7 +106,7 @@ impl UsageWindow {
         }
         format!(
             "{} {}% left ({}% used)",
-            self.label,
+            self.name(),
             self.left_i(),
             self.used_i()
         )
@@ -194,9 +206,11 @@ impl UsageSnapshot {
     }
 
     fn max_used(&self) -> Option<f64> {
+        // An extra bucket running out limits one model, not the account, so it does not set the
+        // account's tone.
         self.windows
             .iter()
-            .filter(|window| !window.expired())
+            .filter(|window| !window.expired() && window.bucket.is_none())
             .map(|w| w.used_pct)
             .reduce(f64::max)
             .or_else(|| match (self.primary_pct, self.weekly_pct) {
@@ -401,7 +415,11 @@ fn system_now() -> Option<WallTime> {
 }
 
 fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
-    let width = windows.iter().map(|w| w.label.len()).max().unwrap_or(0);
+    let width = windows
+        .iter()
+        .map(|w| w.name().chars().count())
+        .max()
+        .unwrap_or(0);
     windows
         .iter()
         .map(|w| {
@@ -410,7 +428,7 @@ fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
             }
             let mut line = format!(
                 "{:<width$}  {:>3}% left · {:>3}% used",
-                w.label,
+                w.name(),
                 w.left_i(),
                 w.used_i(),
             );
@@ -441,10 +459,15 @@ fn snapshot_from_windows(
         parts.push(format!("LIMIT · {kind}"));
     }
     for w in &windows {
+        // The footer summary covers the main limits; extra buckets are listed in the detail.
+        if w.bucket.is_some() && windows.iter().any(|w| w.bucket.is_none()) {
+            continue;
+        }
+        let label = w.name();
         parts.push(if w.expired() {
-            format!("{} reset · usage unknown", w.label)
+            format!("{label} reset · usage unknown")
         } else {
-            format!("{} {}% left", w.label, w.left_i())
+            format!("{label} {}% left", w.left_i())
         });
     }
     parts.extend(extras.iter().cloned());
@@ -462,11 +485,15 @@ fn snapshot_from_windows(
     if !source.is_empty() {
         lines.push(source.to_string());
     }
-    let primary_pct = windows.first().filter(|w| !w.expired()).map(|w| w.used_pct);
+    let primary_pct = windows
+        .iter()
+        .find(|w| w.bucket.is_none())
+        .filter(|w| !w.expired())
+        .map(|w| w.used_pct);
     let weekly_pct = windows
         .iter()
-        .find(|w| w.label.starts_with("7d"))
-        .or_else(|| windows.get(1))
+        .find(|w| w.bucket.is_none() && w.label.starts_with("7d"))
+        .or_else(|| windows.iter().filter(|w| w.bucket.is_none()).nth(1))
         .filter(|w| !w.expired())
         .map(|w| w.used_pct);
     UsageSnapshot {
@@ -489,9 +516,35 @@ struct CodexRateLimits {
     plan_type: Option<String>,
     #[serde(alias = "limitId")]
     limit_id: Option<String>,
+    /// The provider's display name for this bucket (`limitName`).
+    #[serde(default, alias = "limitName")]
+    limit_name: Option<String>,
+    /// The model a model-specific bucket applies to (`normalModelSlug`).
+    #[serde(default, alias = "normalModelSlug")]
+    normal_model_slug: Option<String>,
     #[serde(alias = "rateLimitReachedType")]
     rate_limit_reached_type: Option<String>,
     credits: Option<Credits>,
+    /// Every other bucket the provider reported beside the main `codex` one
+    /// (`rateLimitsByLimitId`), in limit-id order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    extra: Vec<CodexRateLimits>,
+}
+
+impl CodexRateLimits {
+    /// The name shown for an extra bucket: the provider's name, else its model, else its id.
+    fn bucket_name(&self) -> String {
+        [&self.limit_name, &self.normal_model_slug, &self.limit_id]
+            .into_iter()
+            .flatten()
+            .map(|name| name.trim())
+            .find(|name| !name.is_empty())
+            .unwrap_or("extra limit")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(60)
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -826,9 +879,10 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
             // A redrawn screen repeats rows: the last reading wins.
             windows.retain(|w| w.label != label);
             windows.push(UsageWindow {
-                label: label.to_string(),
+                label,
                 used_pct,
                 resets: None,
+                bucket: None,
             });
         } else if label == "On-Demand" && lower.contains("disabled") {
             on_demand_off = true;
@@ -850,8 +904,10 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
     Some((windows, note.join(", ")))
 }
 
-/// `(canonical label, text after it)` for a usage-table row.
-fn cursor_row(line: &str) -> Option<(&'static str, &str)> {
+/// `(label, text after it)` for a usage-table row. Known rows get their canonical spelling; any
+/// other row that reports a percentage keeps the name Cursor printed (a per-model or temporary
+/// allowance), taken from the text before the first wide gap.
+fn cursor_row(line: &str) -> Option<(String, &str)> {
     for (name, label) in [
         ("included", "Included"),
         ("auto", "Auto"),
@@ -862,11 +918,17 @@ fn cursor_row(line: &str) -> Option<(&'static str, &str)> {
         if line.len() >= name.len() && line.is_char_boundary(name.len()) {
             let (head, rest) = line.split_at(name.len());
             if head.eq_ignore_ascii_case(name) && rest.starts_with(char::is_whitespace) {
-                return Some((label, rest));
+                return Some((label.to_owned(), rest));
             }
         }
     }
-    None
+    let (head, rest) = line.split_once("  ")?;
+    let head = head.trim();
+    let named = head.chars().next().is_some_and(char::is_alphabetic)
+        && head.chars().count() <= 40
+        && !head.chars().any(char::is_control)
+        && !head.eq_ignore_ascii_case("category");
+    (named && rest.to_ascii_lowercase().contains("% used")).then(|| (head.to_owned(), rest))
 }
 
 fn claude_label(name: &str) -> String {
@@ -1551,6 +1613,9 @@ fn scan_file_for_rate_limits(path: &Path) -> Option<CodexRateLimits> {
     };
     let mut last_any: Option<CodexRateLimits> = None;
     let mut last_pct: Option<CodexRateLimits> = None;
+    // Model-specific buckets arrive as their own events; the latest of each is kept beside the
+    // main `codex` bucket.
+    let mut extra = std::collections::BTreeMap::<String, CodexRateLimits>::new();
     for line in text.lines() {
         if !line.contains("rate_limits") {
             continue;
@@ -1564,13 +1629,23 @@ fn scan_file_for_rate_limits(path: &Path) -> Option<CodexRateLimits> {
         let Ok(limits) = serde_json::from_value::<CodexRateLimits>(block) else {
             continue;
         };
+        if let Some(id) = limits.limit_id.as_deref().filter(|id| *id != "codex") {
+            if has_percents(&limits) {
+                extra.insert(id.to_owned(), limits);
+            }
+            continue;
+        }
         if has_percents(&limits) {
             last_pct = Some(limits);
         } else {
             last_any = Some(limits);
         }
     }
-    last_pct.or(last_any)
+    let mut main = last_pct.or(last_any)?;
+    if main.extra.is_empty() {
+        main.extra = extra.into_values().collect();
+    }
+    Some(main)
 }
 
 fn parse_rate_limits_blob(raw: &str) -> Option<CodexRateLimits> {
@@ -1605,7 +1680,8 @@ fn has_percents(u: &CodexRateLimits) -> bool {
         || u.secondary.as_ref().and_then(|s| s.used_percent).is_some()
 }
 
-fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
+/// The windows of one Codex bucket; `bucket` names an extra bucket.
+fn codex_windows(u: &CodexRateLimits, bucket: Option<&str>) -> Vec<UsageWindow> {
     let mut windows = Vec::new();
     for (w, fallback) in [(&u.primary, "5h"), (&u.secondary, "7d")] {
         if let Some(w) = w {
@@ -1628,15 +1704,25 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
                             format_reset_unix(r).unwrap_or_else(|| "time unavailable".into())
                         }
                     }),
+                    bucket: bucket.map(str::to_owned),
                 });
             }
         }
+    }
+    windows
+}
+
+fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
+    let mut windows = codex_windows(u, None);
+    let main = windows.len();
+    for extra in &u.extra {
+        windows.extend(codex_windows(extra, Some(&extra.bucket_name())));
     }
     let limit_kind = u
         .rate_limit_reached_type
         .as_ref()
         .map(|k| k.trim_end_matches("_reached").replace('_', " "))
-        .filter(|_| !windows.iter().any(UsageWindow::expired));
+        .filter(|_| !windows[..main].iter().any(UsageWindow::expired));
     let mut extras = Vec::new();
     if let Some(c) = &u.credits {
         if c.unlimited == Some(true) {
@@ -1784,7 +1870,8 @@ pub fn low_limit_warning(
         .windows
         .iter()
         .filter(|w| {
-            (w.label == "5h" || w.label.starts_with("7d"))
+            w.bucket.is_none()
+                && (w.label == "5h" || w.label.starts_with("7d"))
                 && w.used_pct.is_finite()
                 && w.used_pct >= 80.0
                 && !w.expired()
