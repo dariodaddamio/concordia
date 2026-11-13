@@ -1,5 +1,10 @@
 # Changelog
 
+### Guided setup commands
+
+- No-argument Harness setup commands now explain their effect, show bounded local choices, and
+  describe validation, confirmation and undo before an explicit target is supplied.
+
 ### Added (2026-11-12x)
 
 - Added the opencode ACP provider and Claude Code base-URL environment profiles. Concordia stores

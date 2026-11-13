@@ -82,6 +82,109 @@ pub fn help_lines() -> Vec<String> {
     .collect()
 }
 
+/// Explain setup choices before any command can mutate receipts, links or provider homes.
+/// Discovery is deliberately shallow and bounded: a guided command is an entry point, not a
+/// filesystem indexer.
+pub fn guided_lines(session: &Session<'_>, subcommand: &str) -> Vec<String> {
+    let mut lines = match subcommand {
+        "connect" => vec![
+            "Connect a local Harness so Concordia can expose its declared tools to provider agents.".into(),
+            "Choose one detected Harness checkout or enter a path to harness.json; connecting writes a receipt and shares this project setup.".into(),
+        ],
+        "verify" => vec![
+            "Verify a connected Harness by running its declared probe for the selected provider.".into(),
+            "Choose a connected Harness and provider; verification updates only its receipt.".into(),
+        ],
+        "disconnect" => vec![
+            "Disconnect a Harness and withdraw the receipts Concordia created for it.".into(),
+            "Choose a connected Harness; provider homes and the Harness files are not deleted.".into(),
+        ],
+        "skill" => vec![
+            "Install Concordia's Harness connection skill so provider agents understand the connection boundary.".into(),
+            "Choose the current account or all configured accounts; this writes only the embedded skill file.".into(),
+        ],
+        "skills" => vec![
+            "Share a local skill collection with configured provider accounts.".into(),
+            "Choose a detected skill folder; Concordia validates SKILL.md files before creating links.".into(),
+        ],
+        "tools" => vec![
+            "Inspect or run a tool declared by a connected Harness.".into(),
+            "Choose a connected Harness and one of its declared tools; running it uses its argument array without a shell.".into(),
+        ],
+        _ => return help_lines(),
+    };
+    lines.push("Detected choices:".into());
+    match subcommand {
+        "connect" => detected_harnesses(session, &mut lines),
+        "skills" => detected_skills(session, &mut lines),
+        "verify" | "disconnect" | "tools" => match connections::load(session.store) {
+            Ok(entries) if !entries.is_empty() => {
+                for entry in entries.into_iter().take(32) {
+                        let target = entry.entries.first().map(|target| {
+                            format!("{} · {}", target.provider, target.project)
+                        }).unwrap_or_else(|| "no provider target recorded".into());
+                        lines.push(format!("  {} · {target}", entry.name));
+                }
+            }
+            _ => lines.push("  none connected yet; use /harness connect to add one".into()),
+        },
+        "skill" => lines.push("  current account or all configured accounts".into()),
+        _ => {}
+    }
+    lines.extend([
+        "Selection is validated and a review of the files, receipts and provider accounts changed appears before confirmation.".into(),
+        "After confirmation, the panel reports exactly what was connected and shows the matching undo command.".into(),
+        "Esc cancels without changing provider homes or existing receipts.".into(),
+    ]);
+    lines
+}
+
+fn detected_harnesses(session: &Session<'_>, lines: &mut Vec<String>) {
+    let mut found = 0;
+    for root in session.cwd.ancestors().take(8) {
+        let path = root.join("harness.json");
+        if path.is_file() {
+            lines.push(format!(
+                "  {} · connects the Harness tools declared by this checkout",
+                path.display()
+            ));
+            found += 1;
+        }
+    }
+    for name in [".brain", "brain", "brain-vault"] {
+        let path = session.cwd.join(name);
+        if path.is_dir() {
+            lines.push(format!(
+                "  {} · local memory source available to a Harness",
+                path.display()
+            ));
+            found += 1;
+        }
+    }
+    if found == 0 {
+        lines.push(
+            "  none found under the current checkout; enter a Harness path to continue".into(),
+        );
+    }
+}
+
+fn detected_skills(session: &Session<'_>, lines: &mut Vec<String>) {
+    let mut found = 0;
+    for root in session.cwd.ancestors().take(8) {
+        let path = root.join(".agents").join("skills");
+        if path.is_dir() {
+            lines.push(format!(
+                "  {} · shares the SKILL.md folders found here",
+                path.display()
+            ));
+            found += 1;
+        }
+    }
+    if found == 0 {
+        lines.push("  no skill folder found under the current checkout; enter a folder containing SKILL.md".into());
+    }
+}
+
 /// Split on spaces, keeping a "quoted path" together.
 fn split_args(arg: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -1030,6 +1133,14 @@ pub fn dispatch_cancellable(
     let Some((sub, rest)) = args.split_first() else {
         return help_lines();
     };
+    if rest.is_empty()
+        && matches!(
+            sub.as_str(),
+            "connect" | "verify" | "disconnect" | "remove" | "skill" | "skills" | "tools"
+        )
+    {
+        return guided_lines(session, if sub == "remove" { "disconnect" } else { sub });
+    }
     if matches!(sub.as_str(), "connect" | "verify" | "skill" | "skills") {
         if let Some(flag) = rest
             .iter()
@@ -1214,6 +1325,55 @@ mod tests {
                 "help",
                 &|_: &[String]| ok()
             ))
+        );
+    }
+
+    #[test]
+    fn argument_commands_without_arguments_open_guides() {
+        let w = world();
+        for command in [
+            "connect",
+            "verify",
+            "disconnect",
+            "remove",
+            "skill",
+            "skills",
+            "tools",
+        ] {
+            let out = text(&dispatch(
+                &session(&w, ProviderKind::Claude),
+                command,
+                &|_: &[String]| ok(),
+            ));
+            assert!(
+                out.contains("Detected choices:")
+                    && out.contains("Selection is validated")
+                    && out.contains("Esc cancels"),
+                "{command}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn connect_guide_detects_harness_checkout_and_explains_its_effect() {
+        let w = world();
+        fs::copy(
+            w.tool.path().join("harness.json"),
+            w.project.path().join("harness.json"),
+        )
+        .unwrap();
+        let out = text(&dispatch(
+            &session(&w, ProviderKind::Claude),
+            "connect",
+            &|_: &[String]| ok(),
+        ));
+        assert!(
+            out.contains("harness.json") && out.contains("Harness tools"),
+            "{out}"
+        );
+        assert!(
+            out.contains("receipt") && out.contains("undo command"),
+            "{out}"
         );
     }
 
