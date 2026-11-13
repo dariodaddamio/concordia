@@ -1,5 +1,30 @@
 # Changelog
 
+### Fixed (2026-11-13q)
+
+- Verify Claude and Codex standing-context delivery again after a synthetic compaction boundary,
+  and acknowledge ACP context resend requests in the provider fixture.
+
+### Fixed (2026-11-13p)
+
+- Exercise ACP standing-context delivery through the native test connection and verify one
+  resend per completed compaction, including duplicate compaction notifications.
+
+### Fixed (2026-11-13o)
+
+- Restore the protected built-in theme identity and verify the ACP provider wire messages for
+  standing context delivery after compaction.
+
+### Fixed (2026-11-13n)
+
+- Deliver the standing Concordia context to every ACP provider on its first prompt and once per
+  completed compaction, and remove private theme and site-source wording from distributable files.
+
+### Fixed (2026-11-13m)
+
+- Keep provider standing context under 150 words, cover every supported provider in control-plane
+  tests, and remove private project wording from the public source surface.
+
 ### Added (2026-11-13l)
 
 - Add a Concordia-owned MCP registry with project switches and per-launch delivery to Codex and
@@ -130,7 +155,7 @@
 
 ### Added (2026-11-12q)
 
-- Added an Astro Starlight documentation site scaffold for GitHub Pages with a vendored Opifex
+- Added an Astro Starlight documentation site scaffold for GitHub Pages with a vendored studio
   Studio theme, source-derived install and usage pages, and a Windows security warnings guide.
 
 ### Added (2026-11-12p)
@@ -487,7 +512,7 @@
   account preserves the selected model. Recorded exhaustion is explained without hiding history.
 - The Attention badge is clickable; Ctrl+N and its items open questions, approvals, queued
   prompts, worker results or account controls. Empty paused queues no longer create a badge.
-- Opifex and default canvases use pure black. Image preview padding uses the same canvas color.
+- Studio and default canvases use pure black. Image preview padding uses the same canvas color.
 - Switching accounts only prepares the local binding. Context is built, displayed and attached
   after submitting a message. Removed the obsolete map-display helper, model picker and duplicate
   literal parser. Worker count tests now follow the configured limit.
@@ -597,7 +622,7 @@
   "resets <time>".
 - Chats from folders that no longer exist (for example deleted git worktrees) are hidden from
   home; they stay reachable with `/resume` and the `h` show-all toggle.
-- Opifex Studio (near-black, amber, bone) is the default theme; existing installs switch once,
+- Studio (near-black, amber, bone) is the default theme; existing installs switch once,
   and any theme you pick afterwards sticks. Themes can be imported and exported as TOML files
   from `/config`, with a contrast check.
 
@@ -710,7 +735,7 @@
 
 - `/config` now opens live appearance settings with immediate, persistent theme, Concordia color
   and motion controls; it no longer redirects to diagnostics. Hand-edited config files stay intact.
-- Added Opifex Studio's near-black/amber/bone palette and a rotating, depth-tested classical
+- Added the studio near-black/amber/bone palette and a rotating, depth-tested classical
   Concordia bust with local scan/glitch treatment. Motion-off and Windows animation preferences
   are respected. The compact CC0 source and deterministic mesh conversion have recorded provenance.
 - Concordia color presets/custom hex values tint both the sculpture and running-window icon.

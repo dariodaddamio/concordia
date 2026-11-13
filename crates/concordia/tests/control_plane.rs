@@ -7,6 +7,8 @@ use concordia::provider::codex::{
 };
 use concordia::provider::cursor::{assert_safe_cursor_argv, plan_cursor_turn, CursorTurnRequest};
 use concordia::provider::turn::{plan_provider_turn, ProviderTurnRequest};
+use concordia::provider::standing_context::{render, State as StandingContextState};
+use concordia::mcp::registered_tool_names;
 use concordia::store::{ProviderKind, TrustMode};
 use concordia::usage::read_codex_usage;
 use std::path::PathBuf;
@@ -121,6 +123,31 @@ fn standing_context_uses_native_claude_and_codex_channels_once() {
         .argv
         .iter()
         .any(|arg| arg == r#"developer_instructions="You are running inside Concordia. Use agents.""#));
+}
+
+#[test]
+fn every_provider_context_names_the_registered_tools_within_budget() {
+    let tools = registered_tool_names();
+    for provider in [
+        ProviderKind::Claude,
+        ProviderKind::Codex,
+        ProviderKind::Cursor,
+        ProviderKind::Grok,
+        ProviderKind::Opencode,
+    ] {
+        let context = render(&StandingContextState {
+            provider,
+            account: "account-a",
+            role: "worker",
+            tools: &tools,
+            handoff_map: None,
+        });
+        assert!(context.contains("inside Concordia"), "{provider:?}");
+        for tool in &tools {
+            assert!(context.contains(tool), "{provider:?} omitted {tool}");
+        }
+        assert!(context.split_whitespace().count() < 150, "{provider:?}");
+    }
 }
 
 #[test]

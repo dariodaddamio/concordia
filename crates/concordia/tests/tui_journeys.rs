@@ -32,6 +32,9 @@ fn setup(root: &Path, provider: ProviderKind) {
             "cli-config.json",
             "{\"authInfo\":{\"email\":\"fake@example.invalid\"}}",
         ),
+        (".grok", "auth.json", "synthetic-login-existence-marker"),
+        (".grok", "config.toml", "default_model = 'synthetic-model'"),
+        (".opencode", "auth.json", "synthetic-login-existence-marker"),
     ] {
         std::fs::create_dir_all(profile.join(name)).unwrap();
         std::fs::write(profile.join(name).join(marker), body).unwrap();
@@ -65,6 +68,8 @@ fn setup(root: &Path, provider: ProviderKind) {
             ("codex", ProviderKind::Codex),
             ("claude", ProviderKind::Claude),
             ("cursor", ProviderKind::Cursor),
+            ("grok", ProviderKind::Grok),
+            ("opencode", ProviderKind::Opencode),
         ]
         .into_iter()
         .map(|(id, provider)| StoredAccount {
@@ -124,6 +129,8 @@ impl Session {
             "AO_CODEX_HOME_B",
             "AO_CLAUDE_CONFIG_DIR",
             "AO_CURSOR_HOME",
+            "CONCORDIA_GROK_BIN",
+            "CONCORDIA_OPENCODE_BIN",
         ] {
             cmd.env_remove(key);
         }
@@ -131,6 +138,8 @@ impl Session {
             "CONCORDIA_CODEX_BIN",
             "CONCORDIA_CLAUDE_BIN",
             "CONCORDIA_AGENT_BIN",
+            "CONCORDIA_GROK_BIN",
+            "CONCORDIA_OPENCODE_BIN",
         ] {
             cmd.env(key, FAKE);
         }
@@ -639,6 +648,122 @@ fn shared_setup_commands_are_discoverable_and_work_through_the_terminal_ui() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/09g-command-journey.txt");
     std::fs::write(artifact, session.screen()).unwrap();
     session.exit();
+}
+
+#[test]
+#[ignore = "ACP compaction wire journey; synthetic providers only"]
+fn acp_standing_context_is_sent_once_and_resent_once_after_compaction() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for provider in [ProviderKind::Cursor, ProviderKind::Grok, ProviderKind::Opencode] {
+        let dir = tempfile::tempdir().unwrap();
+        setup(dir.path(), provider);
+        if provider == ProviderKind::Cursor {
+            concordia::native_input::command(dir.path(), "cursor", "on").unwrap();
+        }
+        std::fs::write(
+            dir.path().join("workspace/acp-fixture.json"),
+            serde_json::json!({"compaction": true, "reply": "ACP context verified"}).to_string(),
+        )
+        .unwrap();
+        let mut session = Session::launch(dir.path());
+        session.submit("verify standing context");
+        session.until("ACP reply after compaction", |s| {
+            s.screen().contains("ACP context verified")
+        });
+
+        let calls = std::fs::read_to_string(dir.path().join("workspace/acp-calls.jsonl"))
+            .unwrap();
+        let messages: Vec<Value> = calls
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let context_prompts: Vec<&Value> = messages
+            .iter()
+            .filter(|call| {
+                call["method"] == "session/prompt"
+                    && call["params"]["prompt"]
+                        .as_array()
+                        .is_some_and(|prompt| {
+                            prompt.iter().any(|part| {
+                                part["text"]
+                                    .as_str()
+                                    .is_some_and(|text| text.contains("inside Concordia"))
+                            })
+                        })
+            })
+            .collect();
+        assert_eq!(context_prompts.len(), 2, "{provider:?}: {calls}");
+        assert!(messages.windows(2).all(|pair| {
+            !(pair[0]["method"] == "session/prompt"
+                && pair[1]["method"] == "session/prompt"
+                && pair[0]["params"]["prompt"]
+                    .to_string()
+                    .contains("inside Concordia")
+                && pair[1]["params"]["prompt"]
+                    .to_string()
+                    .contains("inside Concordia"))
+        }));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|call| call["params"]["update"]["sessionUpdate"]
+                    == "compaction_update")
+                .count(),
+            2,
+            "{provider:?}: duplicate compaction event fixture was not observed"
+        );
+        let artifact = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/preview/y6-context")
+            .join(format!("check-1-{}.txt", provider.as_str()));
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(artifact, session.screen()).unwrap();
+        session.exit();
+    }
+}
+
+#[test]
+#[ignore = "provider compaction boundary journey; synthetic providers only"]
+fn cli_standing_context_is_sent_again_after_compaction() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for provider in [ProviderKind::Claude, ProviderKind::Codex] {
+        let dir = tempfile::tempdir().unwrap();
+        setup(dir.path(), provider);
+        let mut session = Session::launch(dir.path());
+        session.submit("[compaction] first context check");
+        session.until("first provider turn", |s| {
+            s.journal().iter().any(|event| event["kind"] == "done")
+        });
+        session.submit("second context check");
+        session.until("second provider turn", |s| {
+            s.journal().iter().filter(|event| event["kind"] == "done").count() == 2
+        });
+
+        let journal = session.journal();
+        let starts: Vec<&Value> = journal
+            .iter()
+            .filter(|event| event["kind"] == "start")
+            .collect();
+        assert_eq!(starts.len(), 2, "{provider:?}: {journal:?}");
+        assert!(journal.iter().any(|event| event["kind"] == "compaction"));
+        for start in starts {
+            let prompt = start["prompt"].as_str().unwrap_or_default();
+            let args = start["args"].to_string();
+            assert!(
+                prompt.contains("inside Concordia") || args.contains("inside Concordia"),
+                "{provider:?} launch did not carry standing context: {start}"
+            );
+            assert!(
+                prompt.contains("Registered Concordia tools:")
+                    || args.contains("Registered Concordia tools:")
+            );
+        }
+        let artifact = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/preview/y6-context")
+            .join(format!("check-1-{}.txt", provider.as_str()));
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(artifact, session.screen()).unwrap();
+        session.exit();
+    }
 }
 
 #[test]

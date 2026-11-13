@@ -5,7 +5,7 @@ Gold/bronze pixel art suits a terminal-oriented tool; it remains a compact accen
 the bundled application icon. Build 05d restores this original static portrait, replacing the
 05c 3D experiment at the owner's request. Small windows omit it to preserve chat and goal space.
 `/config` changes the running-window icon tint; the Home portrait and Explorer icon retain the
-original artwork. Opifex Studio retains near-black `#050506`, amber `#FFB000` and bone `#D8D0C0`
+original artwork. The studio theme retains near-black `#050506`, amber `#FFB000` and bone `#D8D0C0`
 colors. There is no rotating sculpture or decorative glitch.
 
 The reference is the warm terminal aesthetic of the

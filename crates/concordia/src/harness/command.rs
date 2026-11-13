@@ -151,7 +151,7 @@ fn detected_harnesses(session: &Session<'_>, lines: &mut Vec<String>) {
             found += 1;
         }
     }
-    for name in [".brain", "brain", "brain-vault"] {
+    for name in [".notes", "notes", "notes-vault"] {
         let path = session.cwd.join(name);
         if path.is_dir() {
             lines.push(format!(

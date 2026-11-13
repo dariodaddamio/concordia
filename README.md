@@ -1,6 +1,6 @@
 # Concordia
 
-Concordia allows any supported provider to easily and efficiently share context, continue the same task on another account after a usage limit, delegate work across providers with a model per role, and hand off exact pointers into provider history instead of summaries, among others ([full feature list](https://dariodaddamio.github.io/concordia/features/)).
+Concordia allows any supported provider to share context, continue the same task on another account after a usage limit, delegate work across providers with a model per role, and hand off exact pointers into provider history instead of summaries, among others ([full feature list](site/src/content/docs/features.md)).
 
 Concordia runs official provider CLIs under your accounts. Providers keep ownership of their
 authentication, sessions, approvals and tools. Concordia is independent and unofficial.
@@ -13,7 +13,7 @@ From a source checkout, run this in Windows PowerShell:
 .\scripts\install-dev.ps1 -Install
 ```
 
-This builds and installs the local executable on your user PATH. See the [installation guide](https://dariodaddamio.github.io/concordia/install/).
+This builds and installs the local executable on your user PATH. See the [installation guide](site/src/content/docs/install.md).
 
 ## Quick start
 
@@ -52,7 +52,7 @@ Ask your question and press Enter
 ## Providers
 
 Claude Code, Codex, Cursor, Grok Build, opencode and optional Grok Bot routines are supported.
-See the [provider guide](https://dariodaddamio.github.io/concordia/providers/).
+See the [provider guide](site/src/content/docs/providers.md).
 
 Needs attention uses the taskbar status and Windows notifications for actionable questions and
 approvals. Each item is notified once across focus changes and restarts. `/config` can turn off
@@ -60,7 +60,7 @@ Windows notifications while keeping the taskbar status.
 
 ## Site
 
-- [Overview](https://dariodaddamio.github.io/concordia/)
-- [Features](https://dariodaddamio.github.io/concordia/features/)
-- [Quick start](https://dariodaddamio.github.io/concordia/quick-start/)
-- [Windows security warnings](https://dariodaddamio.github.io/concordia/install/#windows-security-warnings)
+- [Overview](site/src/content/docs/index.md)
+- [Features](site/src/content/docs/features.md)
+- [Quick start](site/src/content/docs/quick-start.md)
+- [Windows security warnings](site/src/content/docs/install.md#windows-security-warnings)

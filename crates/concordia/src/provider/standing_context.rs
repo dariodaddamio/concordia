@@ -36,7 +36,7 @@ pub fn render(state: &State<'_>) -> String {
         tools = compact(&tools),
         guidance = guidance,
     );
-    text.chars().take(1100).collect()
+    text.split_whitespace().take(149).collect::<Vec<_>>().join(" ")
 }
 
 pub fn tag(text: &str) -> String {
@@ -82,7 +82,7 @@ mod tests {
             tools: &tools,
             handoff_map: Some("source map 42"),
         });
-        assert!(text.len() < 1500);
+        assert!(text.split_whitespace().count() < 150);
         assert!(text.contains("inside Concordia"));
         assert!(text.contains("agents, question"));
         assert!(text.contains("source map 42"));

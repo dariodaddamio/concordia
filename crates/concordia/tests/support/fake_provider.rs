@@ -139,6 +139,12 @@ fn fake_acp() {
             }
             "authenticate" | "session/set_mode" | "session/set_model" | "session/set_config_option" => serde_json::json!({}),
             "session/prompt" => {
+                if value["id"] == 9001 {
+                    // The standing-context resend is deliberately a separate wire request. It
+                    // must be acknowledged, but it must not start another fake turn.
+                    emit(serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}}));
+                    continue;
+                }
                 if fixture["quota"] == true {
                     emit(
                         serde_json::json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":429,"message":"UsageLimitExceeded"}}),
@@ -154,6 +160,13 @@ fn fake_acp() {
                         serde_json::json!({"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"title":fixture["permission_title"].as_str().unwrap_or("Read attached image"),"toolCallId":"image-read","rawInput":{"path":"synthetic-input"}},"options":[{"optionId":"yes","name":"Allow once","kind":"allow_once"},{"optionId":"no","name":"Decline","kind":"reject_once"}]}}),
                     );
                 } else {
+                    if fixture["compaction"] == true {
+                        for _ in 0..2 {
+                            let update = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session_id,"update":{"sessionUpdate":"compaction_update","status":"completed","compactionId":"fixture-compaction"}}});
+                            writeln!(journal, "{update}").unwrap();
+                            emit(update);
+                        }
+                    }
                     finish(&session_id);
                 }
                 continue;
@@ -886,6 +899,9 @@ fn interaction(args: &[String]) {
         let _ = std::io::stdout().flush();
     };
     journal("start");
+    if prompt.contains("[compaction]") {
+        journal("compaction");
+    }
     // `[bulk N]`: a long synthetic transcript for render timing journeys. The fixture emits
     // bounded text batches so the test measures transcript layout rather than provider pipe
     // backpressure.
