@@ -673,6 +673,14 @@ Going public:
 
 ## This slice
 
+### Q8 chat repair - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/{chat_cli,sessions,store,doctor}.rs` | ok: 1, 2, 4, 6, 10 | Keep diagnosis in sessions, persistence in store and the single CLI mutation in chat_cli; remove only damaged task links or empty tasks after a native-message check. |
+| `crates/concordia/src/tui/app/pickers.rs`, `crates/concordia/src/main.rs` | ok: 1, 4, 5, 9 | Expose the existing repair owner through the existing picker and command table; no second UI repair implementation. |
+| `crates/concordia/src/**tests**`, `CHANGELOG.md`, `docs/continuity.md`, `crates/concordia/src/version.rs` | ok: 5, 9, 10 | Add deterministic synthetic coverage and record the shipped command and boundary in canonical documentation. |
+
 ### Q7 Windows attention notifications - anti-slop gate
 
 | path | tendency_check | justification |

@@ -1,5 +1,10 @@
 # Changelog
 
+### Added (2026-11-13j)
+
+- Add `concordia chat repair` with a dry run, dated task backups, content-aware repair and removal
+  of empty damaged task records. `/doctor` and the resume screen point to the repair command.
+
 ### Fixed (2026-11-13i)
 
 - Stop test-controlled native windows from reaching taskbar or tray shell signals.

@@ -475,18 +475,15 @@ fn check_unopenable_chats(root: &Path) -> Vec<Check> {
     crate::sessions::unopenable_tasks(root)
         .into_iter()
         .map(|chat| {
-            let cause = chat
-                .cause()
-                .expect("unopenable_tasks only returns failed diagnostics");
             check(
                 Level::Fail,
                 "chat",
                 format!(
-                    "{} ({}/{}) is unopenable: {}; repair: start a fresh session from its handoff map; draft kept",
+                    "{} ({}/{}) is unopenable: {}; repair: concordia chat repair --dry-run (draft kept)",
                     chat.title,
                     chat.provider.as_str(),
                     chat.account,
-                    cause.label()
+                    chat.failure_detail()
                 ),
             )
         })

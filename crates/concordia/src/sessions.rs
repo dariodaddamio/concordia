@@ -140,6 +140,7 @@ pub struct ChatDiagnostic {
     pub native_session_id: String,
     pub status: ChatOpenability,
     pub handoff_map: Option<String>,
+    pub handoff_map_id: Option<String>,
 }
 
 impl ChatDiagnostic {
@@ -156,6 +157,21 @@ impl ChatDiagnostic {
                 "{} · start a fresh session from the handoff map (draft kept)",
                 cause.label()
             ),
+            None => "chat is openable".into(),
+        }
+    }
+
+    pub fn failure_detail(&self) -> String {
+        match self.cause() {
+            Some(crate::native_memory::PointerFailureCause::RecordUnreadable)
+                if self.handoff_map_id.is_some() =>
+            {
+                format!(
+                    "handoff map {} is missing or cannot be parsed",
+                    self.handoff_map_id.as_deref().unwrap_or("unknown")
+                )
+            }
+            Some(cause) => cause.label().to_owned(),
             None => "chat is openable".into(),
         }
     }
@@ -226,6 +242,7 @@ pub fn diagnose_task(root: &Path, task: &crate::store::TaskRecord) -> ChatDiagno
         native_session_id,
         status,
         handoff_map,
+        handoff_map_id: task.last_map.as_ref().map(|map| map.thread_id.clone()),
     }
 }
 

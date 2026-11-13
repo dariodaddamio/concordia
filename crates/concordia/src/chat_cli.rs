@@ -9,7 +9,7 @@ use std::{
     path::Path,
 };
 
-const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|claude|cursor|grok] [--json] [--limit N]\n       concordia chat read SESSION --account ID [--provider codex|claude|cursor|grok] [--tail N] [--grep TEXT] [--max-chars N]\n       concordia chat search TEXT [--account ID] [--provider codex|claude|cursor|grok] [--json] [--limit N] (session IDs and previews/titles only)\n       concordia chat thread list [--json] | map ID | read ID [--cursor TOKEN] [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]";
+const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|claude|cursor|grok] [--json] [--limit N]\n       concordia chat read SESSION --account ID [--provider codex|claude|cursor|grok] [--tail N] [--grep TEXT] [--max-chars N]\n       concordia chat search TEXT [--account ID] [--provider codex|claude|cursor|grok] [--json] [--limit N] (session IDs and previews/titles only)\n       concordia chat repair [--dry-run]\n       concordia chat thread list [--json] | map ID | read ID [--cursor TOKEN] [--tail N] [--grep TEXT] [--range A-B] [--max-chars N]";
 const MAX_CHAT_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
 /// Read-only restoration data. Loading it never dispatches a provider turn.
@@ -427,6 +427,9 @@ pub fn run(root: &Path, args: &[String]) -> Result<String, (String, i32)> {
 
 fn run_inner(root: &Path, args: &[String]) -> Result<String, String> {
     let operation = args.first().map(String::as_str).ok_or(HELP)?;
+    if operation == "repair" {
+        return repair_chats(root, &args[1..]);
+    }
     if !matches!(operation, "list" | "read" | "search") {
         return Err("unknown chat operation".into());
     }
@@ -624,6 +627,105 @@ fn run_inner(root: &Path, args: &[String]) -> Result<String, String> {
     Ok(output)
 }
 
+fn short_title(title: &str) -> String {
+    title.split_whitespace().take(5).collect::<Vec<_>>().join(" ")
+}
+
+fn repair_chats(root: &Path, args: &[String]) -> Result<String, String> {
+    let dry_run = match args {
+        [] => false,
+        [flag] if flag == "--dry-run" => true,
+        _ => return Err("chat repair accepts only --dry-run".into()),
+    };
+    let diagnostics = crate::sessions::unopenable_tasks(root);
+    let tasks = crate::store::list_tasks(root);
+    let mut actions = Vec::new();
+    for diagnostic in diagnostics {
+        let task = tasks.iter().find(|task| task.id == diagnostic.task_id);
+        let action = match task.and_then(|task| task.sessions.last()) {
+            Some(session) => match crate::sessions::find_native_record(
+                root,
+                &session.account,
+                Some(session.provider),
+                &session.native_session_id,
+            ) {
+                Ok(Some((summary, _))) if summary.user_messages == 0 => "removed",
+                Ok(Some(_)) if diagnostic.handoff_map_id.is_some() => "repaired",
+                Ok(Some(_)) => "still unreadable",
+                Ok(None) => "still unreadable",
+                Err(_) => "still unreadable",
+            },
+            None => "still unreadable",
+        };
+        actions.push((diagnostic, action));
+    }
+    let changes: Vec<_> = actions
+        .iter()
+        .filter(|(_, action)| *action != "still unreadable")
+        .collect();
+    let mut output = String::new();
+    if !dry_run && !changes.is_empty() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs();
+        let backup = crate::store::store_dir(root).join(format!("chat-repair-{stamp}"));
+        std::fs::create_dir_all(backup.join("tasks")).map_err(|e| e.to_string())?;
+        for (diagnostic, _) in &changes {
+            let task = tasks.iter().find(|task| task.id == diagnostic.task_id).unwrap();
+            let bytes = serde_json::to_vec_pretty(task).map_err(|e| e.to_string())?;
+            std::fs::write(backup.join("tasks").join(format!("{}.json", task.id)), bytes)
+                .map_err(|e| e.to_string())?;
+        }
+        output.push_str(&format!("backup: {}\n", backup.display()));
+        for (diagnostic, action) in &changes {
+            if *action != "repaired" {
+                continue;
+            }
+            let task = tasks.iter().find(|task| task.id == diagnostic.task_id).unwrap();
+            let map_id = task.last_map.as_ref().unwrap().thread_id.clone();
+            let thread_dir = root.join("threads");
+            std::fs::create_dir_all(&thread_dir).map_err(|e| e.to_string())?;
+            let log = crate::threads::ThreadLog::open(root, &map_id);
+            let safe_map_id = log.id().to_owned();
+            let log_path = thread_dir.join(format!("{safe_map_id}.jsonl"));
+            if !log_path.exists() {
+                std::fs::File::create_new(&log_path).map_err(|e| e.to_string())?;
+            }
+            log.write_meta(&crate::threads::ThreadMeta {
+                id: safe_map_id,
+                started: crate::threads::now_secs(),
+                title: task.title.clone(),
+                cwd: task.workspace.clone(),
+                account: Some(diagnostic.account.clone()),
+            })
+                .map_err(|e| e.to_string())?;
+        }
+        crate::store::modify_store(root, |store| {
+            for (diagnostic, action) in &changes {
+                if *action == "removed" {
+                    store.tasks.retain(|task| task.id != diagnostic.task_id);
+                }
+            }
+            Ok(())
+        }).map_err(|e| e.to_string())?;
+    }
+    for (diagnostic, action) in actions {
+        let result = if dry_run && action != "still unreadable" {
+            format!("would be {action}")
+        } else if action == "still unreadable" {
+            format!("still unreadable: {}", diagnostic.failure_detail())
+        } else {
+            action.to_owned()
+        };
+        output.push_str(&format!("{} ({}/{}): {}\n", short_title(&diagnostic.title), diagnostic.provider.as_str(), diagnostic.account, result));
+    }
+    if output.is_empty() {
+        output.push_str("no damaged chats found\n");
+    }
+    Ok(output)
+}
+
 fn read_messages(path: &Path, provider: ProviderKind) -> Result<(Vec<String>, bool), String> {
     const CAP: u64 = 8 * 1024 * 1024;
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -710,11 +812,97 @@ pub(crate) use crate::text_safe::terminal_safe;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::{record_task_session, TaskMapPointer};
+    use std::fs;
 
     #[test]
     fn terminal_safe_strips_bidi_and_zero_width() {
         let spoofed = "invoice\u{202e}fdp.exe\u{200b}\u{2066}🙂";
         assert_eq!(terminal_safe(spoofed), "invoicefdp.exe🙂");
+    }
+
+    #[test]
+    fn repair_dry_run_backup_and_second_run_are_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("codex-home");
+        let session_dir = home.join("sessions/2026/11/13");
+        fs::create_dir_all(&session_dir).unwrap();
+        let with_message = "11111111-1111-4111-8111-111111111111";
+        let empty = "22222222-2222-4222-8222-222222222222";
+        for (id, body) in [(with_message, Some("keep this")), (empty, None)] {
+            let mut text = format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"session_id\":\"{id}\"}}}}\n"
+            );
+            if let Some(body) = body {
+                text.push_str(&format!(
+                    "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{body}\"}}]}}}}\n"
+                ));
+            }
+            fs::write(
+                session_dir.join(format!("rollout-2026-11-13T00-00-00-{id}.jsonl")),
+                text,
+            )
+            .unwrap();
+        }
+        crate::store::upsert_stored_account(
+            dir.path(),
+            crate::store::StoredAccount {
+                id: "fixture".into(),
+                provider: ProviderKind::Codex,
+                home_path: Some(home.to_string_lossy().into_owned()),
+                label: "Fixture".into(),
+                created_at: "0".into(),
+            },
+        )
+        .unwrap();
+        for (id, title, session) in [
+            ("keep-task", "Keep task", with_message),
+            ("empty-task", "Empty task", empty),
+        ] {
+            record_task_session(
+                dir.path(),
+                id,
+                title,
+                &home.to_string_lossy(),
+                ProviderKind::Codex,
+                "fixture",
+                session,
+                Some(TaskMapPointer {
+                    version: 2,
+                    thread_id: format!("map-{id}"),
+                }),
+            )
+            .unwrap();
+        }
+        let before = fs::read(crate::store::store_path(dir.path())).unwrap();
+        let dry = run(
+            dir.path(),
+            &["repair".into(), "--dry-run".into()],
+        )
+        .unwrap();
+        assert!(dry.contains("would be repaired"));
+        assert!(dry.contains("would be removed"));
+        assert_eq!(fs::read(crate::store::store_path(dir.path())).unwrap(), before);
+
+        let repaired = run(dir.path(), &["repair".into()]).unwrap();
+        assert!(repaired.contains("backup:"));
+        let backup = fs::read_dir(crate::store::store_dir(dir.path()))
+            .unwrap()
+            .flatten()
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("chat-repair-"))
+            .unwrap();
+        assert!(backup.path().join("tasks/keep-task.json").is_file());
+        assert!(backup.path().join("tasks/empty-task.json").is_file());
+        assert!(crate::store::task(dir.path(), "empty-task").is_none());
+        assert!(crate::store::task(dir.path(), "keep-task")
+            .unwrap()
+            .last_map
+            .is_some());
+        assert!(dir.path().join("threads/map-keep-task.jsonl").is_file());
+        assert!(dir.path().join("threads/map-keep-task.meta.json").is_file());
+        let second = run(dir.path(), &["repair".into()]).unwrap();
+        assert!(second.contains("still unreadable") || second.contains("no damaged chats"));
+        assert_eq!(crate::store::list_tasks(dir.path()).len(), 1);
     }
     #[test]
     fn a_resumed_transcript_hides_the_time_header_on_user_prompts() {

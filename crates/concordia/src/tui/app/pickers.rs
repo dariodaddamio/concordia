@@ -37,7 +37,7 @@ impl App {
                 let diagnostic = crate::sessions::diagnose_task(&self.state_root, task);
                 if let Some(cause) = diagnostic.cause() {
                     row.detail = format!(
-                        "unopenable · {} · Enter to repair (fresh session from handoff map; draft kept)",
+                        "unopenable · {} · Enter to repair (or run chat repair; draft kept)",
                         cause.label()
                     );
                 }

@@ -32,6 +32,12 @@ replays the old provider session. The composer draft remains intact.
 `/doctor` reports the same failed chat rows and repair action. A missing or damaged handoff map is
 reported as `record unreadable`, and Concordia keeps the original state for inspection.
 
+`concordia chat repair --dry-run` reports the same damaged task records without writing. The repair
+command writes each changed task to a dated backup under `.ao`, removes a task only when its native
+record has no user message, and materializes a current-format handoff journal at the existing pointer
+when native content exists. A missing native source remains unreadable. Running the command again
+makes no further changes.
+
 `context.rs` owns pack planning and the binding decision, and `tui/run.rs` prepares
 submitted turns. `tui/continuation.rs` coordinates bounded retry with an explicit account picker. Its review state
 prevents automatic replay after uncertain tool completion. [State ownership](tui-states.md).
