@@ -440,17 +440,24 @@ record answers and open proposals; they are not approved final product wording o
   (such as a private notes service) or a harness into Concordia through a defined extension point. Concordia owns
   that extension point; a specific integration's setup belongs to that integration, not to
   Concordia's core. This does not authorize publishing or changing vault data.
+- Needs attention status and Windows notifications are reserved for items with a user action.
+  Passive idle notices remain available in the local picker but do not raise taskbar status or
+  notifications. Questions, approvals, paused queues, signed-out confirmations and worker results
+  remain actionable; each item notification is durable by item identity and clicking it focuses
+  its owning chat and item.
 - Question and approval requests must work reliably across every supported provider, despite
   differing native mechanisms (native question tools, Cursor ACP extensions, the MCP question
   bridge). Every request an agent makes must reach the user in the chat and in Needs attention.
   Concordia cannot surface a question the agent only reasons about without making a request;
   preventing unrequested actions such as commits belongs to provider permissions and the harness.
 - Needs attention decision (2026-11-13): a Windows notification is emitted once per actionable
-  item ID and the told-item ledger persists across restarts. The notification names the chat and
-  waiting action, and its click selects that chat and focuses the item. Closed, finished or
-  cancelled items do not contribute to the status. `/config` can disable Windows notifications
-  while retaining the taskbar status. Test-controlled windows emit neither tray nor taskbar shell
-  signals.
+  item ID after Windows accepts delivery, and the told-item ledger persists across restarts. Native
+  item IDs use the provider session and request identity, never a transient connection ID. The
+  notification names the chat and waiting action, and its click captures the item before
+  foregrounding, then selects that chat and focuses the item. Closed, finished, cancelled or
+  resolved worker-native items do not contribute to the status. `/config` can disable Windows
+  notifications while retaining the taskbar status. Test-controlled windows emit neither tray nor
+  taskbar shell signals.
 - Reported regressions (2026-11-11, user reports, causes not yet inspected): attachment image
   previews render squished again; streamed reasoning text is joined without separators
   (for example, "Await again.All 107 scenarios passed").

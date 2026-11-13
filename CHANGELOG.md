@@ -1,5 +1,31 @@
 # Changelog
 
+### Fixed (2026-11-13v)
+
+- Keep notification identities stable across provider reconnects and preserve the clicked item
+  while the window is brought to the foreground.
+
+### Fixed (2026-11-13u)
+
+- Keep notification click targets tied to the displayed item, clear queued notifications when
+  Windows notifications are disabled, and include provider connection and session identity in
+  attention notification records.
+
+### Fixed (2026-11-13t)
+
+- Give each attention request its own durable notification identity, reload the shared notification
+  setting across tabs, and extend the native journey to count notifications through focus changes.
+
+### Fixed (2026-11-13s)
+
+- Record attention items only after Windows accepts their notification, handle balloon clicks, clear
+  resolved worker requests, and keep taskbar status and test-window shell isolation correct.
+
+### Fixed (2026-11-13r)
+
+- Keep passive idle notices out of Windows Needs attention status and notifications while retaining
+  actionable questions, approvals, queues, account confirmations and worker results.
+
 ### Fixed (2026-11-13q)
 
 - Verify Claude and Codex standing-context delivery again after a synthetic compaction boundary,

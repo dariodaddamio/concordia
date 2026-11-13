@@ -399,7 +399,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let (backend, mut terminal_input) = if use_window {
         #[cfg(windows)]
         {
-            let (backend, events) = native_window::open()?;
+            let (backend, events) = native_window::open_with_state_root(state_root.clone())?;
             let input = input_stream::InputStream::from_native(events)?;
             // This process owns a native window now. Detach only its inherited console,
             // so another application's console control events cannot terminate its runs.
@@ -583,15 +583,21 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 let mut needs_attention = false;
                 let mut working = false;
                 let mut notification = None;
+                let notifications_enabled =
+                    super::appearance::notifications_enabled(&state_root);
+                terminal
+                    .backend_mut()
+                    .notifications_enabled(notifications_enabled);
                 for tab in &mut tabs.tabs {
                     tab.app.sync_needs_you();
-                    needs_attention |= !tab.app.needs_you.is_empty();
+                    needs_attention |= tab.app.needs_you.items().any(|item| item.is_actionable());
                     working |= tab.app.busy || tab.app.deleg.d.any_active();
-                    if notification.is_none() && tab.app.appearance.ui.notifications {
+                    if notification.is_none() && notifications_enabled {
                         notification = tab
                             .app
                             .needs_you
                             .items()
+                            .filter(|item| item.is_actionable())
                             .find(|item| {
                                 !crate::store::attention_notification_seen(
                                     &state_root,
@@ -609,11 +615,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     super::native_window::StatusDot::Idle
                 });
                 if let Some((item_id, text)) = notification {
-                    if crate::store::mark_attention_notification(&state_root, &item_id).is_ok() {
-                        terminal
-                            .backend_mut()
-                            .attention_notification(item_id, text);
-                    }
+                    terminal
+                        .backend_mut()
+                        .attention_notification(item_id, text);
                 }
             }
             // The tab in front has been seen; only background tabs keep a finished mark.

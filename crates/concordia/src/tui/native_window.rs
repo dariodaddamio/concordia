@@ -43,6 +43,7 @@ const SHUTDOWN: u32 = WM_APP + 4;
 const TEST_CONTROL: u32 = WM_APP + 5;
 const TRAY_NOTIFY: u32 = WM_APP + 6;
 const TRAY_ID: u32 = 1;
+const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
 const DWMWA_CAPTION_COLOR: u32 = 35;
@@ -97,6 +98,8 @@ struct Shared {
     requested_status: Mutex<StatusDot>,
     pending_attention: Mutex<Option<(String, String)>>,
     attention_target: Mutex<Option<String>>,
+    notifications_enabled: AtomicBool,
+    attention_state_root: Option<std::path::PathBuf>,
     test_control: Option<TestControl>,
 }
 
@@ -117,6 +120,9 @@ struct TestState {
     paints: Vec<(f64, u64, usize)>,
     /// Application draw durations in milliseconds, newest last.
     draws: Vec<f64>,
+    notification_count: u64,
+    notification_texts: Vec<String>,
+    notification_ids: std::collections::BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -166,11 +172,26 @@ pub(super) struct WindowBackend {
 
 /// Every receiver belongs to one HWND and therefore one Concordia process/run UI.
 pub(super) fn open() -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
-    let (events, receiver) = mpsc::sync_channel(4096);
-    Ok((open_with_sender(events)?, receiver))
+    open_with_root(None)
 }
 
-fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend> {
+pub(super) fn open_with_state_root(
+    state_root: std::path::PathBuf,
+) -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
+    open_with_root(Some(state_root))
+}
+
+fn open_with_root(
+    attention_state_root: Option<std::path::PathBuf>,
+) -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
+    let (events, receiver) = mpsc::sync_channel(4096);
+    Ok((open_with_sender(events, attention_state_root)?, receiver))
+}
+
+fn open_with_sender(
+    events: SyncSender<NativeEvent>,
+    attention_state_root: Option<std::path::PathBuf>,
+) -> io::Result<WindowBackend> {
     let shared = Arc::new(Shared {
         hwnd: AtomicIsize::new(0),
         pointer: AtomicUsize::new(0),
@@ -189,6 +210,8 @@ fn open_with_sender(events: SyncSender<NativeEvent>) -> io::Result<WindowBackend
         requested_status: Mutex::new(StatusDot::Idle),
         pending_attention: Mutex::new(None),
         attention_target: Mutex::new(None),
+        notifications_enabled: AtomicBool::new(true),
+        attention_state_root,
         test_control: std::env::var_os("CONCORDIA_TEST_CONTROL").map(|_| TestControl::default()),
     });
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -250,11 +273,26 @@ impl WindowBackend {
         let _ = self.post(UPDATE);
     }
     pub(super) fn set_attention_notification(&mut self, item_id: String, text: String) {
+        if let Some(test) = self.shared.test_control.as_ref() {
+            let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.notification_ids.insert(item_id.clone()) {
+                state.notification_count = state.notification_count.saturating_add(1);
+                state.notification_texts.push(text.clone());
+            }
+        }
         *self
             .shared
             .pending_attention
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some((item_id, text));
+        let _ = self.post(UPDATE);
+    }
+    pub(super) fn set_notifications_enabled(&mut self, enabled: bool) {
+        self.shared.notifications_enabled.store(enabled, Ordering::Release);
+        if !enabled {
+            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
         let _ = self.post(UPDATE);
     }
     pub(super) fn set_images(&mut self, images: Vec<RasterImage>) -> io::Result<()> {
@@ -570,29 +608,46 @@ impl Drop for Window {
 }
 impl Window {
     unsafe fn set_status(&mut self, hwnd: HWND, status: StatusDot) {
+        let notifications_enabled = self.shared.notifications_enabled.load(Ordering::Acquire);
+        if !notifications_enabled {
+            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            if self.tray_added {
+                notify_tray(hwnd, NIM_DELETE, None);
+                self.tray_added = false;
+            }
+        }
         let pending = self
             .shared
             .pending_attention
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        if self.shared.test_control.is_some() && pending.is_some() {
+            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
         if self.status_dot == status {
-            if status == StatusDot::NeedsAttention && !self.focused {
+            if status == StatusDot::NeedsAttention && !self.focused && notifications_enabled {
                 if let Some((id, text)) = pending.as_ref() {
-                    *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(id.clone());
-                    notify_tray(
+                    let target_is_free = self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()).is_none();
+                    if self.tray_added && !target_is_free {
+                        return;
+                    }
+                    if target_is_free {
+                        *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+                    }
+                    if notify_tray(
                         hwnd,
                         if self.tray_added { NIM_MODIFY } else { NIM_ADD },
                         Some(text),
-                    );
-                    *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) =
-                        None;
-                    self.tray_added = true;
+                    ) {
+                        self.attention_delivered(id);
+                    }
                 }
             } else if self.focused && self.tray_added {
                 notify_tray(hwnd, NIM_DELETE, None);
                 self.tray_added = false;
+                *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
             return;
         }
@@ -605,26 +660,41 @@ impl Window {
             let index = if status == StatusDot::Working { 0 } else { 1 };
             if !self.overlay_icons[index].is_null() { DestroyIcon(self.overlay_icons[index]); }
             self.overlay_icons[index] = icon;
-            if !self.taskbar.is_null() && native_signal_allowed(self.shared.test_control.is_none()) {
+            if !self.taskbar.is_null() && native_signal_allowed(self.shared.test_control.is_some()) {
                 taskbar_overlay(self.taskbar, hwnd, icon);
             }
         } else if !self.taskbar.is_null()
-            && native_signal_allowed(self.shared.test_control.is_none())
+            && native_signal_allowed(self.shared.test_control.is_some())
         {
             taskbar_overlay(self.taskbar, hwnd, null_mut());
         }
-        if status == StatusDot::NeedsAttention && !self.focused {
+        if status == StatusDot::NeedsAttention && !self.focused && notifications_enabled {
             let Some((id, text)) = pending.as_ref() else {
                 return;
             };
-            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
-            notify_tray(hwnd, if self.tray_added { NIM_MODIFY } else { NIM_ADD }, Some(text));
-            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            self.tray_added = true;
+            let target_is_free = self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()).is_none();
+            if self.tray_added && !target_is_free {
+                return;
+            }
+            if target_is_free {
+                *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+            }
+            if notify_tray(hwnd, if self.tray_added { NIM_MODIFY } else { NIM_ADD }, Some(text)) {
+                self.attention_delivered(id);
+            }
         } else if status != StatusDot::NeedsAttention && self.tray_added {
             notify_tray(hwnd, NIM_DELETE, None);
             self.tray_added = false;
+            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
+    }
+
+    unsafe fn attention_delivered(&mut self, item_id: &str) {
+        *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if let Some(root) = &self.shared.attention_state_root {
+            let _ = crate::store::mark_attention_notification(root, item_id);
+        }
+        self.tray_added = true;
     }
 
     fn emit(&self, event: Event) {
@@ -1200,6 +1270,8 @@ fn test_response(shared: &Shared, request: &serde_json::Value) -> serde_json::Va
         "focused_tab": state.focused_tab,
         "overlays": state.overlays,
         "status_dot": state.status_dot,
+        "notification_count": state.notification_count,
+        "notification_texts": state.notification_texts,
         "columns": screen.size.width,
         "rows": screen.size.height,
         "grid": rows,
@@ -1267,6 +1339,19 @@ unsafe fn handle_test_control(window: &mut Window) {
                     if !text.is_empty() {
                         window.emit(Event::Paste(text.to_owned()));
                     }
+                }
+            }
+            // Test-only delivery of the target selected by the native notification path. The
+            // shell notification itself stays disabled for test-controlled windows.
+            Some("notification_click") => {
+                if let Some(item_id) = window
+                    .shared
+                    .attention_target
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    window.emit_native(NativeEvent::Attention(item_id));
                 }
             }
             Some("mouse") => {
@@ -1907,10 +1992,10 @@ unsafe fn status_icon(size: i32, [red, green, blue]: crate::config::Rgb) -> HICO
     CreateIconFromResourceEx(data.as_mut_ptr(), data.len() as u32, 1, 0x00030000, size, size, 0)
 }
 
-unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
+unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) -> bool {
     // Windows driven by the test control channel are hidden; they must never notify the user.
     if !native_signal_allowed(std::env::var_os("CONCORDIA_TEST_CONTROL").is_some()) {
-        return;
+        return false;
     }
     let mut data: NOTIFYICONDATAW = mem::zeroed();
     data.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -1928,8 +2013,9 @@ unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
         data.szInfoTitle.copy_from_slice(&title);
         data.dwInfoFlags = 1;
     }
-    let _ = Shell_NotifyIconW(operation, &data);
+    let delivered = Shell_NotifyIconW(operation, &data) != 0;
     if !data.hIcon.is_null() { DestroyIcon(data.hIcon); }
+    delivered
 }
 
 fn native_signal_allowed(test_control: bool) -> bool {
@@ -2281,16 +2367,20 @@ unsafe extern "system" fn window_proc(
             InvalidateRect(hwnd, null(), 0);
             0
         }
-        TRAY_NOTIFY if lparam as u32 == WM_LBUTTONUP || lparam as u32 == WM_LBUTTONDBLCLK => {
+        TRAY_NOTIFY
+            if lparam as u32 == WM_LBUTTONUP
+                || lparam as u32 == WM_LBUTTONDBLCLK
+                || lparam as u32 == NIN_BALLOONUSERCLICK =>
+        {
             if window.status_dot == StatusDot::NeedsAttention {
-                SetForegroundWindow(hwnd);
-                if let Some(item_id) = window
+                let item_id = window
                     .shared
                     .attention_target
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                {
+                    .take();
+                SetForegroundWindow(hwnd);
+                if let Some(item_id) = item_id {
                     window.emit_native(NativeEvent::Attention(item_id));
                 }
                 notify_tray(hwnd, NIM_DELETE, None);

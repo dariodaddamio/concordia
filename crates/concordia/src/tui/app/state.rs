@@ -895,7 +895,9 @@ impl App {
 
     pub(in crate::tui) fn sync_needs_you(&mut self) {
         use crate::needs_you::{Item, ItemKind};
+        use sha2::{Digest, Sha256};
         self.questions.refresh_native();
+        self.deleg.d.refresh_native_inputs();
         let session = self.needs_you_session();
         let project = self.cwd.file_name().map_or_else(
             || "project".into(),
@@ -940,8 +942,32 @@ impl App {
             ),
         ];
         for (suffix, present, kind, title) in current {
-            self.needs_you.remove_suffix(suffix);
-            let id = format!("{session}:{suffix}");
+            for id in self
+                .needs_you
+                .remove_prefix(&format!("{session}:{suffix}:"))
+            {
+                crate::needs_you::withdraw(&id);
+            }
+            let legacy_id = format!("{session}:{suffix}");
+            self.needs_you.remove(&legacy_id);
+            crate::needs_you::withdraw(&legacy_id);
+            let identity = match suffix {
+                "question" | "approval" => self
+                    .questions
+                    .attention_identity()
+                    .unwrap_or_else(|| suffix.into()),
+                "paused-queue" => format!(
+                    "queue:{:x}",
+                    Sha256::digest(self.queue.items.join("\0").as_bytes())
+                ),
+                "signed-out" => self
+                    .signed_out_confirmation
+                    .as_ref()
+                    .map(|value| format!("signed-out:{value:?}"))
+                    .unwrap_or_else(|| suffix.into()),
+                _ => suffix.into(),
+            };
+            let id = format!("{session}:{suffix}:{identity}");
             crate::needs_you::withdraw(&id);
             if present {
                 let item = Item {
@@ -965,6 +991,9 @@ impl App {
             }
         }
         self.needs_you.remove_kind(ItemKind::WorkerResult);
+        for id in self.needs_you.remove_prefix("worker-native:") {
+            crate::needs_you::withdraw(&id);
+        }
         for job in &self.deleg.d.jobs {
             let id = format!("worker:{}", job.id);
             if job.state == crate::delegate::WorkerState::Done && !job.collected {

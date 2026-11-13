@@ -414,6 +414,31 @@ impl Session {
             .into()
     }
 
+    fn notification_count(&self) -> u64 {
+        self.clone_request(serde_json::json!({"op":"snapshot"}))["notification_count"]
+            .as_u64()
+            .unwrap_or_default()
+    }
+
+    fn notification_texts(&self) -> Vec<String> {
+        self.clone_request(serde_json::json!({"op":"snapshot"}))["notification_texts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn save_check(&self, check: u8) {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("target"));
+        let folder = target.join("preview/q7-notifications");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("check-{check}.txt")), self.screen()).unwrap();
+    }
+
     fn clone_request(&self, mut value: Value) -> Value {
         let mut stream = self.control.try_clone().unwrap();
         value["token"] = Value::String(self.token.clone());
@@ -515,9 +540,35 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     let mut s = Session::launch(dir.path());
     s.request(serde_json::json!({"op":"resize","columns":180,"rows":30}));
     s.submit("Inspect the synthetic app-server request");
+    s.until("turn shows working status before the request", |s| {
+        s.status_dot() == "working"
+    });
     s.until("native question needs attention", |s| {
         s.status_dot() == "needs_attention"
     });
+    s.until("one question produces one notification", |s| {
+        s.notification_count() == 1
+    });
+    assert!(
+        s.notification_texts()[0].contains("Inspect the synthetic app-server request"),
+        "notification text: {:?}",
+        s.notification_texts()
+    );
+    assert!(s.notification_texts()[0].contains("has a question for you"));
+
+    s.request(serde_json::json!({"op":"deactivate"}));
+    s.request(serde_json::json!({"op":"activate"}));
+    s.until("needs attention survives focus changes", |s| {
+        s.status_dot() == "needs_attention"
+    });
+    assert_eq!(s.notification_count(), 1);
+    s.save_check(1);
+    s.request(serde_json::json!({"op":"deactivate"}));
+    s.request(serde_json::json!({"op":"notification_click"}));
+    s.until("notification click opens the waiting item", |s| {
+        s.screen().contains("Choose the route") && s.screen().contains("Direct")
+    });
+    s.save_check(3);
 
     s.send("\x0e");
     s.until("needs attention panel lists the question details", |s| {
@@ -529,9 +580,15 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
             && screen.contains("question")
             && screen.contains("waiting")
     });
+    s.save_check(2);
+    assert_eq!(s.status_dot(), "needs_attention");
+    s.save_check(5);
     s.enter();
     s.request(serde_json::json!({"op":"key","code":"1"}));
     s.request(serde_json::json!({"op":"key","code":"Enter"}));
+    s.until("second item produces a second notification", |s| {
+        s.notification_count() == 2
+    });
     std::thread::sleep(Duration::from_millis(120));
     s.request(serde_json::json!({"op":"key","code":"Esc"}));
     std::thread::sleep(Duration::from_millis(120));
@@ -539,12 +596,36 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     std::thread::sleep(Duration::from_millis(120));
     s.request(serde_json::json!({"op":"key","code":"1"}));
     s.request(serde_json::json!({"op":"key","code":"Enter"}));
-    s.until("question answer is working", |s| s.status_dot() == "working");
     s.release();
     s.until("question answer resolves in the chat", |s| {
         s.screen().contains("Native approval handled")
     });
     s.until("app-server turn is idle", |s| s.status_dot() == "idle");
+    s.save_check(4);
+    s.save_check(6);
+    drop(s);
+    let mut s = Session::launch(dir.path());
+    s.until("resolved attention stays idle after restart", |s| {
+        s.status_dot() == "idle"
+    });
+    s.exit();
+}
+
+#[test]
+fn notifications_can_be_disabled_from_config_without_changing_idle_status() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.submit("/config");
+    for _ in 0..5 {
+        s.request(serde_json::json!({"op":"key","code":"Down"}));
+    }
+    s.request(serde_json::json!({"op":"key","code":"Enter"}));
+    s.until("notifications setting is saved", |s| {
+        s.screen().contains("Appearance saved")
+    });
+    assert_eq!(s.status_dot(), "idle");
     s.exit();
 }
 

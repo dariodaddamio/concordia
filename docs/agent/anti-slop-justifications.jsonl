@@ -1,5 +1,13 @@
 ## This slice
 
+### Q7 notifications completion - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/needs_you.rs`, `crates/concordia/src/tui/run.rs` | ok: 1, 4, 5, 6, 10 | Keep the existing Needs attention queue as the sole item owner; add one item-level actionability predicate and use it only in the existing Windows status projection. |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 9, 10 | Extend the existing native journey for visible status, chat/action text, resolution and config behavior; test-controlled windows remain blocked from shell signals. |
+| `crates/concordia/src/version.rs`, `CHANGELOG.md`, `PLAN.md` | ok: 5, 10 | Record the decision and user-facing correction in existing project metadata. |
+
 ### Q9 test regression - anti-slop gate
 
 | path | tendency_check | justification |

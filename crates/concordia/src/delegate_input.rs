@@ -123,6 +123,12 @@ impl Job {
 }
 
 impl Delegates {
+    pub(crate) fn refresh_native_inputs(&mut self) {
+        for job in &mut self.jobs {
+            job.refresh_native_input();
+        }
+    }
+
     pub(super) fn accept_native_input(&mut self, id: u32, request: Box<NativeRequest>) {
         for job in &mut self.jobs {
             job.refresh_native_input();
