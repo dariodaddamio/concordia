@@ -68,10 +68,12 @@ impl Connection {
                     let message = error["message"]
                         .as_str()
                         .unwrap_or("Cursor ACP request failed");
+                    let code = error.get("code").cloned().unwrap_or(Value::Null);
                     let info = error.get("data").map(Value::to_string).unwrap_or_default();
                     anyhow::bail!(
-                        "{} {}",
+                        "{} code={} {}",
                         message.chars().take(2000).collect::<String>(),
+                        code,
                         info.chars().take(500).collect::<String>()
                     );
                 }

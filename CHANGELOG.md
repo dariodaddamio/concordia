@@ -1,5 +1,10 @@
 # Changelog
 
+### Added (2026-11-13g)
+
+- Limit continuation accepts structured quota signals from all supported coding providers and
+  supports role-keyed fallback models in `[continuation].fallback_models`.
+
 ### Fixed (2026-11-13f)
 
 - `concordia install` creates and repairs the owned Start menu shortcut. Updates and launch repair

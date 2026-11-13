@@ -464,6 +464,24 @@ impl App {
                 }
             })
             .collect::<Vec<_>>();
+        let fallback = crate::config::for_root(&self.state_root)
+            .continuation
+            .fallback_models
+            .get("general")
+            .cloned();
+        if let Some(model) = fallback.filter(|model| {
+            self.home_path.as_ref().is_some_and(|home| {
+                crate::models::ids_at(&self.state_root, self.provider, &self.account, home)
+                    .iter()
+                    .any(|available| available == model)
+            })
+        }) {
+            rows.insert(0, PickerRow {
+                id: format!("continue:{} {model}", self.account),
+                label: format!("Fallback model: {model}"),
+                detail: "configured for the general role; current account usage is shown above".into(),
+            });
+        }
         if let Some(home) = &self.home_path {
             rows.extend(
                 crate::models::ids_at(&self.state_root, self.provider, &self.account, home)

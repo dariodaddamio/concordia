@@ -918,7 +918,7 @@ fn interaction(args: &[String]) {
                 json!({"type":"turn.failed","error":{"code":-32000,"codexErrorInfo":"usageLimitExceeded","message":"Request cannot be completed"}}),
             );
         } else {
-            emit(json!({"type":"turn.failed","error":{"message":"You've hit your usage limit"}}));
+            emit(json!({"type":"turn.failed","error":{"code":"usage_limit_reached","message":"You've hit your usage limit"}}));
         }
         journal("limited");
         std::process::exit(1);

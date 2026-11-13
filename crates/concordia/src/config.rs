@@ -48,6 +48,8 @@ pub struct Continuation {
     pub accounts: Vec<String>,
     /// Ordered models on the current account, validated against its native catalog.
     pub models: Vec<String>,
+    /// Optional role-keyed first fallback model.
+    pub fallback_models: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Continuation {
@@ -59,6 +61,7 @@ impl Default for Continuation {
             automatic_handoff_cap: 3,
             accounts: Vec::new(),
             models: Vec::new(),
+            fallback_models: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -323,6 +326,12 @@ impl Config {
                         }
                         _ => warnings.push("continuation.accounts must be an array of account ids".into()),
                     },
+                    "continuation.fallback_models" => match v.as_table() {
+                        Some(models) if models.iter().all(|(role, model)| !role.trim().is_empty() && model.as_str().is_some_and(|m| !m.trim().is_empty())) => {
+                            cfg.continuation.fallback_models = models.iter().filter_map(|(role, model)| model.as_str().map(|model| (role.clone(), model.to_owned()))).collect();
+                        }
+                        _ => warnings.push("continuation.fallback_models must map roles to model ids".into()),
+                    },
                     "turn.idle_timeout_minutes" => match v.as_integer() {
                         Some(n) if n >= 0 => cfg.turn.idle_timeout_minutes = n as u64,
                         _ => warnings.push("turn.idle_timeout_minutes must be a nonnegative integer; using 10".into()),
@@ -527,6 +536,15 @@ mod tests {
         assert!(!cfg.continuation.automatic);
         assert!(cfg.continuation.accounts.is_empty());
         assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn continuation_parses_role_fallback_models() {
+        let (cfg, warnings) = Config::parse(
+            "[continuation]\nfallback_models = { general = 'claude-sonnet', reviewer = 'gpt-5' }\n",
+        );
+        assert!(warnings.is_empty());
+        assert_eq!(cfg.continuation.fallback_models["reviewer"], "gpt-5");
     }
 
     #[test]

@@ -26,6 +26,7 @@ uncertain provider work. Persistent handoff defaults:
 ```toml
 [continuation]
 mode = "manual" # manual | automatic
+fallback_models = { general = "provider-model" } # role-keyed first fallback model
 accounts = ["codex-2", "claude-1"] # choose ids shown by /use, in preferred order
 models = [] # optional model ids from /model; tried on the current account first
 context = "provider" # provider (native compaction, default) or fresh

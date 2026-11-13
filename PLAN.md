@@ -202,6 +202,12 @@ record answers and open proposals; they are not approved final product wording o
   request; automatic restoration of drafts and queued prompts. A chat whose provider session or
   Concordia record cannot be opened shows a repair action when opened, and `/doctor` lists such
   chats.
+- Usage-limit continuation decision (2026-11-13): keep the existing inline continuation path.
+  Open it only for provider-owned structured quota signals from Claude Code, Codex, Cursor, Grok
+  Build or opencode. Put the role-configured fallback model first and keep the default policy as
+  ask. Account usage and reset times come from provider snapshots. Disabled exhausted rows,
+  wait-for-reset and the complete per-chat role selector remain follow-up UI work because the
+  current picker row contract has no disabled state.
 - Command consolidation following the picker principle: account switching, adding and removing
   live in one `/use` picker (`/login` and `/connect` go); `/open` and `/preview` merge into one
   `/open` that previews read-only with an edit action.
@@ -660,6 +666,15 @@ Going public:
 - After the owner's final go, make the repository public and enable Pages.
 
 ## This slice
+
+### N9 usage-limit continuation regression - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/provider/failure.rs` | ok: 1, 3, 4, 5, 10 | Keep structured quota classification at the provider failure boundary and extend only the missing Claude code used by its fixture. |
+| `crates/concordia/src/tui/continuation.rs`, `crates/concordia/src/tui/demo_gifs.rs` | ok: 1, 4, 5, 9, 10 | Repair stale deterministic callers to provide the structured signal required by the shipped contract; do not restore prose matching. |
+| `crates/concordia/tests/support/fake_provider.rs`, `crates/concordia/tests/fixtures/streams/**` | ok: 1, 4, 5, 9, 10 | Make provider fixtures carry native limit codes so the existing end-to-end paths prove structured detection. |
+| `PLAN.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Record the decision, regression correction and build identity in the existing metadata owners. |
 
 ### Q1b full-suite closeout - anti-slop gate
 

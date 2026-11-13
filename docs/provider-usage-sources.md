@@ -12,3 +12,19 @@ Concordia displays fields only when the selected provider reports them for the s
 
 The Home meters and `/usage` picker use the same `UsageSnapshot`. A missing or expired value is
 shown as unavailable, not estimated.
+
+## Structured usage-limit signals
+
+The inline continuation path accepts only these provider-owned structured signals. Limit wording
+without one of these fields does not open the continuation prompt.
+
+| Provider | Structured signal |
+| --- | --- |
+| Claude Code stream-json | `error.type = rate_limit_error` |
+| Codex app-server | `codexErrorInfo.UsageLimitExceeded`, `error.code = usage_limit_reached` |
+| Cursor ACP | `error.code = rate_limit_exceeded` or `quota_exceeded` |
+| Grok Build ACP | `error.code = rate_limit_exceeded` or `quota_exceeded` |
+| opencode | `error.type = rate_limit` or `quota_exceeded` |
+
+The adapter preserves the structured code in its terminal error. Reset times and remaining usage
+come from the provider usage snapshot used by `/usage`; Concordia does not infer them.

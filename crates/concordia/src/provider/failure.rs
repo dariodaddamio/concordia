@@ -10,6 +10,45 @@ pub enum FailureKind {
     None,
 }
 
+/// Detect only an explicit structured quota signal. Error prose is not a signal.
+pub fn structured_usage_limit(provider: ProviderKind, input: &str) -> bool {
+    let signals: &[&str] = match provider {
+        ProviderKind::Claude => &[
+            "rate_limit_error",
+            "rate_limit_exceeded",
+            "usage_limit_reached",
+            "quota_exceeded",
+        ],
+        ProviderKind::Codex => &[
+            "UsageLimitExceeded",
+            "usage_limit_reached",
+            "quota_exceeded",
+            "insufficient_quota",
+        ],
+        ProviderKind::Cursor | ProviderKind::Grok => &["rate_limit_exceeded", "quota_exceeded", "usage_limit_reached"],
+        ProviderKind::Opencode => &["rate_limit", "rate_limit_exceeded", "quota_exceeded"],
+    };
+    input.lines().any(|line| {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return false; };
+        fn visit(value: &serde_json::Value, signals: &[&str]) -> bool {
+            match value {
+                serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
+                    (signals.iter().any(|signal| key.eq_ignore_ascii_case(signal))
+                        || matches!(key.as_str(), "code" | "type" | "errorType" | "error_code")
+                        && value.as_str().is_some_and(|text| signals.iter().any(|signal| text.eq_ignore_ascii_case(signal))))
+                        || visit(value, signals)
+                }),
+                serde_json::Value::Array(values) => values.iter().any(|value| visit(value, signals)),
+                _ => false,
+            }
+        }
+        visit(&value, signals) || value.get("status").and_then(serde_json::Value::as_u64) == Some(429)
+    }) || input.split_whitespace().any(|token| {
+        let token = token.split_once('=').map_or(token, |(_, value)| value);
+        signals.iter().any(|signal| token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_').eq_ignore_ascii_case(signal))
+    })
+}
+
 pub fn classify_failure(provider: ProviderKind, outcome: &TurnOutcome) -> FailureKind {
     let mut structured = Vec::new();
     for line in outcome.stderr_tail.lines() {
@@ -33,7 +72,7 @@ pub fn classify_failure(provider: ProviderKind, outcome: &TurnOutcome) -> Failur
         if text.contains("context") || text.contains("context_window") {
             return FailureKind::Context;
         }
-        if text.contains("quota") || text.contains("usage") || text.contains("rate_limit") {
+        if structured_usage_limit(provider, &v.to_string()) {
             return FailureKind::Usage;
         }
         if text.contains("overload") || text.contains("capacity") {
@@ -43,7 +82,7 @@ pub fn classify_failure(provider: ProviderKind, outcome: &TurnOutcome) -> Failur
             return FailureKind::Other;
         }
     }
-    if outcome.exit_code == Some(429) {
+    if outcome.exit_code == Some(429) || structured_usage_limit(provider, &outcome.stderr_tail) {
         return FailureKind::Usage;
     }
     let fallback = classify_failure_text(provider, &outcome.stderr_tail, outcome.exit_code);
@@ -101,5 +140,22 @@ mod tests {
             classify_failure_text(ProviderKind::Cursor, "unrelated", Some(0)),
             FailureKind::None
         );
+    }
+
+    #[test]
+    fn each_provider_limit_fixture_uses_a_structured_signal() {
+        let fixtures = [
+            (ProviderKind::Claude, r#"{"type":"error","error":{"type":"rate_limit_error"}}"#),
+            (ProviderKind::Codex, r#"{"error":{"codexErrorInfo":{"UsageLimitExceeded":{}}}}"#),
+            (ProviderKind::Cursor, r#"{"error":{"code":"rate_limit_exceeded"}}"#),
+            (ProviderKind::Grok, r#"{"error":{"code":"quota_exceeded"}}"#),
+            (ProviderKind::Opencode, r#"{"error":{"type":"rate_limit"}}"#),
+        ];
+        for (provider, fixture) in fixtures {
+            let outcome = TurnOutcome { stderr_tail: fixture.into(), exit_code: Some(1), ..Default::default() };
+            assert_eq!(classify_failure(provider, &outcome), FailureKind::Usage);
+        }
+        let ordinary = TurnOutcome { stderr_tail: r#"{"type":"error","message":"usage limit mentioned in prose"}"#.into(), exit_code: Some(1), ..Default::default() };
+        assert_eq!(classify_failure(ProviderKind::Claude, &ordinary), FailureKind::Other);
     }
 }

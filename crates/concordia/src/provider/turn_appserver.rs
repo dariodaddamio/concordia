@@ -239,7 +239,8 @@ impl Connection {
                     let message = params["turn"]["error"]["message"]
                         .as_str()
                         .unwrap_or("Native Codex turn failed");
-                    self.out.stderr_tail = message.chars().take(2000).collect();
+                    let code = params["turn"]["error"]["code"].to_string();
+                    self.out.stderr_tail = format!("{message} code={code}").chars().take(2000).collect();
                     self.emit(TurnProgress::Error(self.out.stderr_tail.clone()))
                         .await;
                 }

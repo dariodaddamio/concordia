@@ -168,15 +168,8 @@ impl State {
     }
 }
 
-fn usage_exhausted(text: &str) -> bool {
-    matches!(
-        crate::provider::failure::classify_failure_text(
-            crate::store::ProviderKind::Codex,
-            text,
-            Some(1)
-        ),
-        crate::provider::failure::FailureKind::Usage
-    )
+fn usage_exhausted(provider: crate::store::ProviderKind, text: &str) -> bool {
+    crate::provider::failure::structured_usage_limit(provider, text)
 }
 
 fn context_exhausted(text: &str) -> bool {
@@ -269,9 +262,9 @@ impl App {
             self.continuation.pending = None;
             return None;
         }
-        let exhausted = self.continuation.errors.iter().any(|e| usage_exhausted(e))
+        let exhausted = self.continuation.errors.iter().any(|e| usage_exhausted(self.provider, e))
             || (outcome.exit_code.is_some_and(|code| code != 0)
-                && usage_exhausted(&outcome.stderr_tail));
+                && usage_exhausted(self.provider, &outcome.stderr_tail));
         let context_full = self
             .continuation
             .errors
@@ -883,7 +876,9 @@ mod tests {
     }
 
     fn exhausted(app: &mut App, tx: &mpsc::UnboundedSender<String>) {
-        app.apply_progress(TurnProgress::Error("You've hit your usage limit".into()));
+        app.apply_progress(TurnProgress::Error(
+            "usage_limit_reached: You've hit your usage limit".into(),
+        ));
         app.on_turn_done(
             TurnOutcome {
                 exit_code: Some(1),
@@ -940,7 +935,9 @@ mod tests {
             let (tx, mut rx) = mpsc::unbounded_channel();
             app.run_line("Fix the graph".into(), &tx);
             rx.try_recv().unwrap();
-            app.apply_progress(TurnProgress::Error("usage limit reached".into()));
+            app.apply_progress(TurnProgress::Error(
+                "usage_limit_reached: usage limit reached".into(),
+            ));
             app.on_turn_done(
                 TurnOutcome {
                     exit_code: Some(0),
@@ -1023,7 +1020,7 @@ mod tests {
                 if case == "ordinary" {
                     "connection failed"
                 } else {
-                    "usage limit reached"
+                    "usage_limit_reached: usage limit reached"
                 }
                 .into(),
             ));
@@ -1092,7 +1089,7 @@ mod model_tests {
         app.run_line("Finish the existing changes".into(), &tx);
         rx.try_recv().unwrap();
         for expected in ["model-b", "model-c"] {
-            app.apply_progress(TurnProgress::Error("rate_limit_exceeded".into()));
+            app.apply_progress(TurnProgress::Error("usage_limit_reached".into()));
             app.on_turn_done(
                 TurnOutcome {
                     exit_code: Some(1),
@@ -1106,7 +1103,7 @@ mod model_tests {
             assert_eq!(app.account, "synthetic");
             assert!(app.need_context_pack);
         }
-        app.apply_progress(TurnProgress::Error("usage limit".into()));
+        app.apply_progress(TurnProgress::Error("usage_limit_reached".into()));
         app.on_turn_done(
             TurnOutcome {
                 exit_code: Some(1),
