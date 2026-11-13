@@ -89,7 +89,7 @@ impl Phase {
 
     pub(in crate::tui) fn frame(&self, tick: u64) -> &'static str {
         if let Phase::Tool(name) = self {
-            return crate::provider::stream_cards::tool_icon(name);
+            return crate::provider::stream_cards::ToolKind::of_title(name).icon();
         }
         let f = self.frames();
         f[(tick as usize) % f.len()]
@@ -264,6 +264,14 @@ pub(in crate::tui) struct BusySendConfirmation {
     pub(in crate::tui) armed: Instant,
 }
 
+/// One tab as the strip draws it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::tui) struct TabChip {
+    pub(in crate::tui) title: String,
+    pub(in crate::tui) provider: ProviderKind,
+    pub(in crate::tui) status: icons::TabStatus,
+}
+
 pub(crate) struct App {
     pub(in crate::tui) chat_ownership_error: Option<String>,
     pub(in crate::tui) local_terminal: local_terminal::State,
@@ -400,8 +408,14 @@ pub(crate) struct App {
     pub(in crate::tui) worker_panel_explicit: Option<bool>,
     /// Labels of every open tab and the index of this one; empty with a single tab. The runner
     /// fills it before each frame, and the drawn label rects come back for mouse hits.
-    pub(in crate::tui) tab_strip: Vec<String>,
+    pub(in crate::tui) tab_strip: Vec<TabChip>,
     pub(in crate::tui) tab_index: usize,
+    /// Set by the runner while a tab is dragged: the dragged tab and the insertion slot.
+    pub(in crate::tui) tab_drag: Option<(usize, usize)>,
+    /// How the last turn ended, shown on the tab until the user looks at it.
+    pub(in crate::tui) tab_outcome: Option<bool>,
+    /// When each running tool card was first seen, for its elapsed-time display.
+    pub(in crate::tui) tool_started: HashMap<String, Instant>,
     pub(in crate::tui) tab_hits: Vec<Rect>,
     pub(in crate::tui) tab_close_hits: Vec<Rect>,
     pub(in crate::tui) rename_editor: Option<Editor>,
@@ -484,44 +498,43 @@ impl App {
         self.account_email = email;
     }
 
-    /// Short label for the tab strip: the chat title, a busy marker and a needs-input marker.
+    /// Short title for the tab strip; the status and provider are drawn as icons beside it.
     pub(in crate::tui) fn tab_label(&self) -> String {
         let title = if self.landing.is_some() {
             "Home"
         } else {
             self.session_ui.title.as_deref().unwrap_or("New chat")
         };
-        let last_user = self.messages.iter().rposition(|m| m.role == MsgRole::User);
-        let failed = last_user.is_some_and(|start| {
-            self.messages[start..]
-                .iter()
-                .rev()
-                .find(|m| m.role == MsgRole::System)
-                .is_some_and(|m| super::super::level_of(&m.text) == super::super::Level::Error)
-        });
-        let status = if self.busy && self.questions.waiting() {
-            "⚠"
-        } else if self.busy {
-            "◉"
-        } else if failed {
-            "×"
-        } else {
-            "✓"
-        };
-        let mut label: String = format!("{status} {title}")
+        title
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
             .chars()
             .filter(|c| !c.is_control())
             .take(24)
-            .collect();
-        if self.busy && self.questions.waiting() {
-            label.push_str(" ?");
-        } else if self.busy {
-            label.push_str(" …");
+            .collect()
+    }
+
+    pub(in crate::tui) fn tab_status(&self) -> icons::TabStatus {
+        if self.questions.waiting() || (self.queue.paused && !self.queue.items.is_empty()) {
+            icons::TabStatus::Waiting
+        } else if self.busy || self.deleg.d.any_active() {
+            icons::TabStatus::Running
+        } else {
+            match self.tab_outcome {
+                Some(true) => icons::TabStatus::Done,
+                Some(false) => icons::TabStatus::Failed,
+                None => icons::TabStatus::Idle,
+            }
         }
-        label
+    }
+
+    pub(in crate::tui) fn tab_chip(&self) -> TabChip {
+        TabChip {
+            title: self.tab_label(),
+            provider: self.provider,
+            status: self.tab_status(),
+        }
     }
 
     pub(in crate::tui) fn window_title(&self) -> String {
@@ -1708,6 +1721,9 @@ impl App {
                 .worker_panel_open,
             tab_strip: Vec::new(),
             tab_index: 0,
+            tab_drag: None,
+            tab_outcome: None,
+            tool_started: HashMap::new(),
             tab_hits: Vec::new(),
             tab_close_hits: Vec::new(),
             rename_editor: None,

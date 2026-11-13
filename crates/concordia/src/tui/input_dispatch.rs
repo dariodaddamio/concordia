@@ -512,12 +512,24 @@ pub(super) fn handle_key(
 
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('o' | 'O'))
     {
+        let every = key.modifiers.contains(KeyModifiers::SHIFT);
+        let all = app.expanded_activity;
+        if app
+            .activity
+            .expand_last_message(&app.messages, all, every)
+            == 0
+        {
+            app.flash("Nothing to expand in the last message.");
+        }
+        return false;
+    }
+    if app.activity.detail.is_none() && key.code == KeyCode::F(5) && key.modifiers.is_empty() {
         app.expanded_activity = !app.expanded_activity;
         app.activity.collapsed.clear();
         app.flash(if app.expanded_activity {
-            "full activity - Ctrl+O collapses"
+            "full activity everywhere - F5 returns to compact"
         } else {
-            "compact activity - Ctrl+O expands"
+            "compact activity - F5 shows full activity everywhere"
         });
         return false;
     }

@@ -1388,17 +1388,38 @@ fn two_tabs_draw_a_clickable_strip_on_the_top_row_above_the_header() {
     let mut h = Harness::new(100, 30);
     let single = h.screen();
     assert!(h.app.tab_hits.is_empty());
-    h.app.tab_strip = vec!["Home".into(), "Fix the images …".into()];
+    let chip = |title: &str, provider, status| TabChip {
+        title: title.into(),
+        provider,
+        status,
+    };
+    h.app.tab_strip = vec![
+        chip("Home", ProviderKind::Codex, icons::TabStatus::Idle),
+        chip("Fix the images …", ProviderKind::Claude, icons::TabStatus::Failed),
+        chip("Docs", ProviderKind::Cursor, icons::TabStatus::Waiting),
+    ];
     h.app.tab_index = 1;
     h.draw();
     let screen = h.screen();
     let top = screen.lines().next().unwrap();
     assert!(
-        top.contains("1 Home") && top.contains("2 Fix the images"),
+        top.contains("1 ⬡   Home") && top.contains("2 ✻ ✗ Fix the images") && top.contains("3 ➤ ● Docs"),
         "{top}"
     );
-    assert_eq!(h.app.tab_hits.len(), 2);
+    assert_eq!(h.app.tab_hits.len(), 3);
     assert!(h.app.tab_hits.iter().all(|r| r.y == 0 && r.width > 0));
     // The header moves down one row instead of being drawn over.
     assert_eq!(screen.lines().nth(1), single.lines().next());
+
+    // While a tab is dragged, a bar marks the gap where it will land.
+    h.app.tab_drag = Some((0, 2));
+    h.draw();
+    let marker = h.app.tab_hits[2].x - 1;
+    let top: Vec<char> = h.screen().lines().next().unwrap().chars().collect();
+    assert_eq!(top[usize::from(marker)], '┃', "{top:?}");
+    h.app.tab_strip[1].status = icons::TabStatus::Running;
+    h.app.tick_count = 1;
+    h.app.tab_drag = None;
+    h.draw();
+    assert!(h.screen().lines().next().unwrap().contains("2 ✻ ◓ Fix"));
 }

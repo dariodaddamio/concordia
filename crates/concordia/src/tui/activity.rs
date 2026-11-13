@@ -1,6 +1,11 @@
 use super::{ChatLine, MsgRole};
-use crate::provider::stream_cards::{format_card_line, tool_label, CardStatus, StreamCard};
+use crate::provider::stream_cards::{
+    format_card_line, tool_label, CardStatus, StreamCard, ToolKind,
+};
 use ratatui::style::{Color, Modifier, Style};
+
+/// Kind icons share one accent so the status mark keeps its meaning.
+pub(super) const KIND_ICON: Color = Color::Indexed(110);
 
 /// Style the presentation, never the provider payload. All offsets are Unicode characters.
 pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::transcript::LineRun> {
@@ -37,11 +42,17 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
             }
         }
         let label = tool_label(&card.title);
-        let body = heading
+        let mut body = heading
             .strip_prefix("│ ")
             .unwrap_or(heading)
             .trim_start_matches(['◉', '✓', '✗'])
             .trim_start();
+        let icon = ToolKind::of(card).icon();
+        if let Some(rest) = body.strip_prefix(icon) {
+            let start = heading.len() - body.len();
+            mark(start, start + icon.len(), Style::default().fg(KIND_ICON));
+            body = rest.trim_start();
+        }
         let mut start = heading.len() - body.len();
         for part in body.split(" + ") {
             // The action and its subject form one heading. Styling only guessed action words
@@ -84,6 +95,38 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
         }
     }
     runs
+}
+
+/// `m:ss`, or `h:mm:ss` from an hour.
+pub(super) fn clock(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+/// A running card's elapsed time and, when the provider set a timeout, the time left:
+/// ` · 0:42 · 9:18 left of 10:00`. Finished cards have no timer.
+pub(super) fn card_timer(
+    card: &StreamCard,
+    started: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Option<String> {
+    if card.status != CardStatus::Running {
+        return None;
+    }
+    let elapsed = now.saturating_duration_since(started?);
+    let mut timer = format!(" · {}", clock(elapsed));
+    if let Some(limit) = crate::provider::stream_cards::reported_timeout(card) {
+        timer.push_str(&format!(
+            " · {} left of {}",
+            clock(limit.saturating_sub(elapsed)),
+            clock(limit)
+        ));
+    }
+    Some(timer)
 }
 
 /// The title row is an accordion target; links retain their file/web actions.
@@ -154,7 +197,15 @@ pub(super) fn grouped_cards(messages: &[ChatLine], activity: &Activity, all: boo
             end += 1;
         }
         if end - start > 1 {
-            let summary = format!("│ ✓ {category} · {} operations · completed", end - start);
+            // The first card's icon, so the heading styles the same way as a single card.
+            let icon = messages[start]
+                .card
+                .as_ref()
+                .map_or("›", |card| ToolKind::of(card).icon());
+            let summary = format!(
+                "│ ✓ {icon} {category} · {} operations · completed",
+                end - start
+            );
             if activity.is_expanded(start, all) {
                 let card = messages[start].card.as_ref().unwrap();
                 grouped.text[start] = Some(format!(
@@ -410,6 +461,52 @@ impl Activity {
             self.collapsed.remove(&message);
             self.toggle(message);
         }
+    }
+
+    pub fn set_expanded(&mut self, message: usize, expanded: bool, all: bool) {
+        if expanded {
+            self.collapsed.remove(&message);
+            self.expanded.insert(message);
+        } else {
+            self.expanded.remove(&message);
+            if all {
+                self.collapsed.insert(message);
+            }
+        }
+    }
+
+    /// Ctrl+O: expand the last collapsed item of the last message; when none is collapsed,
+    /// collapse its last item. Ctrl+Shift+O (`every`): expand all of them, or collapse all
+    /// when they are already open. Returns the number of items changed.
+    pub fn expand_last_message(
+        &mut self,
+        messages: &[ChatLine],
+        all: bool,
+        every: bool,
+    ) -> usize {
+        let hidden = grouped_cards(messages, self, all).hidden;
+        let start = messages
+            .iter()
+            .rposition(|m| m.role == MsgRole::User)
+            .map_or(0, |user| user + 1);
+        let items: Vec<usize> = (start..messages.len())
+            .filter(|&i| messages[i].toggles() && !hidden[i])
+            .collect();
+        let collapsed: Vec<usize> = items
+            .iter()
+            .copied()
+            .filter(|&i| !self.is_expanded(i, all))
+            .collect();
+        let (targets, expand) = match (every, collapsed.last()) {
+            (true, Some(_)) => (collapsed.clone(), true),
+            (true, None) => (items.clone(), false),
+            (false, Some(&last)) => (vec![last], true),
+            (false, None) => (items.last().copied().into_iter().collect(), false),
+        };
+        for &message in &targets {
+            self.set_expanded(message, expand, all);
+        }
+        targets.len()
     }
 
     pub fn toggle(&mut self, message: usize) {

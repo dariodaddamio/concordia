@@ -1002,6 +1002,10 @@ impl App {
         if kind == PickerKind::Model && id.starts_with("model-group:") {
             return;
         }
+        if kind == PickerKind::Agents && id == crate::tui::native_agents::GROUP_ID {
+            self.toggle_agents_row(&id);
+            return;
+        }
         self.dismiss_picker();
         if self.busy
             && matches!(

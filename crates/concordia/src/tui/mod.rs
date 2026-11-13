@@ -69,6 +69,7 @@ mod diagrams;
 mod display_backend;
 mod editor;
 mod files;
+mod icons;
 mod images;
 mod input;
 mod input_dispatch;

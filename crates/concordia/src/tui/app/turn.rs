@@ -363,6 +363,8 @@ impl App {
                     Some(code) => code != 0,
                     None => !outcome.stderr_tail.trim().is_empty(),
                 });
+        // The runner clears this on the active tab; a background tab keeps it until visited.
+        self.tab_outcome = (!outcome.cancelled).then_some(!failed);
         let finish_incomplete = |mut card: StreamCard| {
             card.status = CardStatus::Error;
             let reason = if outcome.cancelled {

@@ -150,32 +150,45 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
     let mut x = row.x;
     let mut spans = Vec::new();
     let fallback;
-    let labels = if app.tab_strip.is_empty() {
-        fallback = vec![app.tab_label()];
+    let chips = if app.tab_strip.is_empty() {
+        fallback = vec![app.tab_chip()];
         &fallback
     } else {
         &app.tab_strip
     };
     let mut rename = None;
-    for (index, label) in labels.iter().enumerate() {
-        let prefix = format!(" {} ", index + 1);
+    for (index, chip) in chips.iter().enumerate() {
+        // " 2 ✻ ◐ " : the Ctrl+number, the provider and the status, each one cell wide.
+        let prefix = format!(
+            " {} {} {} ",
+            index + 1,
+            icons::provider(chip.provider),
+            chip.status.icon(app.tick_count)
+        );
+        let prefix_width = Line::raw(prefix.as_str()).width();
         let editor = app
             .rename_editor
             .as_ref()
             .filter(|_| index == app.tab_index);
         let edit_width = 24usize
-            .min(usize::from(row.right().saturating_sub(x)).saturating_sub(prefix.len() + 5));
-        let text = if editor.is_some() {
-            format!("{prefix}{}  ×  ", " ".repeat(edit_width))
+            .min(usize::from(row.right().saturating_sub(x)).saturating_sub(prefix_width + 5));
+        let title = if editor.is_some() {
+            " ".repeat(edit_width)
         } else {
-            format!("{prefix}{label}  ×  ")
+            chip.title.clone()
         };
-        let text_width = Line::raw(text.as_str()).width();
+        let text_width = prefix_width + Line::raw(title.as_str()).width() + 5;
         let width = text_width.min(usize::from(row.right().saturating_sub(x))) as u16;
         if width == 0 {
             break;
         }
-        let style = if index == app.tab_index {
+        let dragged = app.tab_drag.is_some_and(|(source, _)| source == index);
+        let style = if dragged {
+            Style::default()
+                .fg(Color::Indexed(244))
+                .bg(Color::Indexed(238))
+                .add_modifier(Modifier::ITALIC)
+        } else if index == app.tab_index {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -213,16 +226,52 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
                 })
                 .collect();
             rename = Some((
-                Rect::new(x + prefix.len() as u16, row.y, edit_width as u16, 1),
+                Rect::new(x + prefix_width as u16, row.y, edit_width as u16, 1),
                 title,
                 col,
             ));
         }
-        spans.push(Span::styled(text, style));
+        // On the active (cyan) tab the icons keep the tab's text colour to stay legible.
+        let icon_style = |color| {
+            if index == app.tab_index || dragged {
+                style
+            } else {
+                style.fg(color)
+            }
+        };
+        spans.push(Span::styled(format!(" {} ", index + 1), style));
+        spans.push(Span::styled(
+            icons::provider(chip.provider),
+            icon_style(provider_color(chip.provider)),
+        ));
+        spans.push(Span::styled(" ", style));
+        spans.push(Span::styled(
+            chip.status.icon(app.tick_count),
+            icon_style(chip.status.color()),
+        ));
+        spans.push(Span::styled(format!(" {title}  ×  "), style));
         spans.push(Span::raw(" "));
         x = x.saturating_add(width + 1);
     }
     f.render_widget(Paragraph::new(Line::from(spans)), row);
+    // Drop feedback: a bar in the gap where the dragged tab will land.
+    if let Some((_, slot)) = app.tab_drag {
+        let marker = match app.tab_hits.get(slot) {
+            Some(rect) => rect.x.saturating_sub(1),
+            None => app.tab_hits.last().map_or(row.x, |rect| rect.right()),
+        };
+        if marker < row.right() {
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "┃",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Rect::new(marker, row.y, 1, 1),
+            );
+        }
+    }
     let cursor = rename.map(|(rect, title, col)| {
         f.render_widget(
             Paragraph::new(Line::from(title)).style(Style::default().bg(Color::White)),
@@ -684,6 +733,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             displayed[index] = text;
         }
     }
+    let now = Instant::now();
+    let mut timers: Vec<Option<(usize, usize)>> = vec![None; app.messages.len()];
     for (index, message) in app.messages.iter().enumerate() {
         if message.role == MsgRole::Card && !groups.hidden[index] {
             let body = displayed[index]
@@ -700,8 +751,16 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             } else {
                 "Expand"
             };
+            let timer = message.card.as_ref().and_then(|card| {
+                activity::card_timer(card, app.tool_started.get(&card.id).copied(), now)
+            });
+            if let Some(timer) = &timer {
+                let start = heading.chars().count();
+                timers[index] = Some((start, start + timer.chars().count()));
+            }
             displayed[index] = Some(format!(
-                "{heading} - {action}{}{}",
+                "{heading}{} - {action}{}{}",
+                timer.unwrap_or_default(),
                 if tail.is_empty() { "" } else { "\n" },
                 tail
             ));
@@ -720,7 +779,14 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             } else if m.role == MsgRole::System {
                 usage_style::runs(&m.text)
             } else if m.role == MsgRole::Card {
-                activity::card_runs(displayed[i].as_deref().unwrap_or(&m.text), m.card.as_ref())
+                let mut runs = activity::card_runs(
+                    displayed[i].as_deref().unwrap_or(&m.text),
+                    m.card.as_ref(),
+                );
+                if let Some((start, end)) = timers[i] {
+                    runs.push((0, start, end, Style::default().fg(Color::Cyan)));
+                }
+                runs
             } else {
                 Vec::new()
             }
