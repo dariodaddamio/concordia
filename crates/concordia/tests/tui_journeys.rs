@@ -2318,7 +2318,7 @@ impl Session {
         let started = Instant::now();
         let mut first = None;
         // Watch long enough to see any later blank or replacement frame.
-        while started.elapsed() < Duration::from_millis(600) || first.is_none() {
+        loop {
             let timing = self.request(serde_json::json!({"op":"timing"}));
             let paints = timing["paints"].as_array().unwrap().clone();
             if first.is_none() {
@@ -2334,13 +2334,9 @@ impl Session {
                     draws: Vec::new(),
                 };
             }
-            assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "no paint after activation"
-            );
+            assert!(started.elapsed() < Duration::from_secs(10), "no paint after activation");
             std::thread::sleep(Duration::from_millis(10));
         }
-        unreachable!()
     }
 }
 

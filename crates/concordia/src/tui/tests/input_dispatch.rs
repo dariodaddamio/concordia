@@ -1645,6 +1645,8 @@ fn model_picker_groups_by_family_with_default_first() {
                 family: "Family B".into(),
                 tier: crate::models::ModelTier::Standard,
                 source: crate::models::ModelSource::Cached,
+                efforts: Vec::new(),
+                default_effort: None,
             },
             crate::models::ModelEntry {
                 id: "a".into(),
@@ -1652,6 +1654,8 @@ fn model_picker_groups_by_family_with_default_first() {
                 family: "Family A".into(),
                 tier: crate::models::ModelTier::Standard,
                 source: crate::models::ModelSource::Cached,
+                efforts: Vec::new(),
+                default_effort: None,
             },
         ],
         None,
@@ -1670,6 +1674,8 @@ fn model_picker_shows_source_tags_and_marks_current() {
             family: "GPT-5.6".into(),
             tier: crate::models::ModelTier::Frontier,
             source: crate::models::ModelSource::Cached,
+            efforts: Vec::new(),
+            default_effort: None,
         }],
         Some("sol"),
     );
@@ -1686,6 +1692,8 @@ fn model_picker_filter_matches_names_and_ids() {
             family: "GPT-5.6".into(),
             tier: crate::models::ModelTier::Frontier,
             source: crate::models::ModelSource::Cached,
+            efforts: Vec::new(),
+            default_effort: None,
         }],
         None,
     );

@@ -199,7 +199,9 @@ fn conversational_choices_never_take_a_typed_instruction_from_the_composer() {
             },
             &ui.tx,
         );
-        assert!(!ui.app.questions.focused);
+        // An empty composer gives the new question focus. The first digit still
+        // returns to the composer instead of becoming popup text.
+        assert!(ui.app.questions.focused);
         if explicit_focus {
             ui.key(KeyCode::F(8), KeyModifiers::NONE);
             // Return from the choices to ordinary typing without choosing or clearing work.

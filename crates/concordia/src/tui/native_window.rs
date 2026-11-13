@@ -69,10 +69,22 @@ struct Screen {
 }
 impl Screen {
     fn resize(&mut self, cols: u16, rows: u16, pixels: Size) {
+        let old_cols = self.size.width;
+        let old_rows = self.size.height;
+        let old_cells = std::mem::take(&mut self.cells);
         self.size = Size::new(cols.clamp(1, MAX_COLS), rows.clamp(1, MAX_ROWS));
         self.pixels = pixels;
-        self.cells =
-            vec![Cell::default(); usize::from(self.size.width) * usize::from(self.size.height)];
+        self.cells = vec![
+            Cell::default();
+            usize::from(self.size.width) * usize::from(self.size.height)
+        ];
+        for y in 0..usize::from(old_rows.min(self.size.height)) {
+            let width = usize::from(old_cols.min(self.size.width));
+            let old_start = y * usize::from(old_cols);
+            let new_start = y * usize::from(self.size.width);
+            self.cells[new_start..new_start + width]
+                .clone_from_slice(&old_cells[old_start..old_start + width]);
+        }
         self.images.clear();
     }
 }
@@ -892,6 +904,21 @@ impl Window {
         if saved != 0 {
             RestoreDC(dc, saved);
         }
+        let [red, green, blue] = super::theme::image_background();
+        let image_background =
+            u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
+        SetDCBrushColor(dc, image_background);
+        for image in &screen.images {
+            let area = RECT {
+                left: i32::from(image.area.x) * self.cell_width,
+                top: i32::from(image.area.y) * self.cell_height,
+                right: (i32::from(image.area.right()) * self.cell_width).min(client.right),
+                bottom: (i32::from(image.area.bottom()) * self.cell_height).min(client.bottom),
+            };
+            if area.right > area.left && area.bottom > area.top {
+                FillRect(dc, &area, GetStockObject(DC_BRUSH) as HBRUSH);
+            }
+        }
         self.paint_images(dc, &screen.images, &client);
         if self.focused
             && self.blink
@@ -1169,8 +1196,19 @@ unsafe fn handle_test_control(window: &mut Window) {
                 let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
                 SendMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE as WPARAM, 0);
                 SendMessageW(hwnd, WM_SETFOCUS, 0, 0);
-                // Returning to a window also exposes it; Windows asks for a paint.
+                // The synthetic focus message does not enter the desktop compositor, so
+                // request the same repaint that a real activation exposes.
                 InvalidateRect(hwnd, null(), 0);
+                RedrawWindow(
+                    hwnd,
+                    null(),
+                    null_mut(),
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE,
+                );
+                UpdateWindow(hwnd);
+                if window.shared.test_control.is_some() {
+                    window.paint(hwnd, None);
+                }
             }
             Some("key") => {
                 if let Some(code) = request
@@ -1859,6 +1897,10 @@ unsafe fn status_icon(size: i32, [red, green, blue]: crate::config::Rgb) -> HICO
 }
 
 unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) {
+    // Windows driven by the test control channel are hidden; they must never notify the user.
+    if std::env::var_os("CONCORDIA_TEST_CONTROL").is_some() {
+        return;
+    }
     let mut data: NOTIFYICONDATAW = mem::zeroed();
     data.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
     data.hWnd = hwnd;
@@ -2145,6 +2187,7 @@ unsafe extern "system" fn window_proc(
             | WM_TIMER
             | WM_SIZE
             | WM_DPICHANGED
+            | WM_ACTIVATE
             | WM_SETFOCUS
             | WM_KILLFOCUS
             | WM_KEYDOWN
@@ -2180,6 +2223,27 @@ unsafe extern "system" fn window_proc(
         }
         WM_PRINTCLIENT => {
             window.paint(hwnd, Some(wparam as HDC));
+            0
+        }
+        WM_ACTIVATE => {
+            if (wparam as u32 & 0xffff) != WA_INACTIVE {
+                // Activation repaints the cached surface without a new application
+                // frame. Give the paint probe a new visible-frame sequence so it can
+                // distinguish that repaint from the frame shown before deactivation.
+                window
+                    .shared
+                    .screen
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .seq += 1;
+                InvalidateRect(hwnd, null(), 0);
+                RedrawWindow(
+                    hwnd,
+                    null(),
+                    null_mut(),
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE,
+                );
+            }
             0
         }
         UPDATE => {

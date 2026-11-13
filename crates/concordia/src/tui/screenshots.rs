@@ -419,6 +419,7 @@ fn snap(windows: &[(&str, f64, &str)]) -> crate::usage::UsageSnapshot {
             label: (*l).into(),
             used_pct: *u,
             resets: Some((*r).into()),
+            bucket: None,
         })
         .collect();
     crate::usage::UsageSnapshot {

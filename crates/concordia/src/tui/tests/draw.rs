@@ -142,11 +142,13 @@ fn header_and_status_never_repeat_usage() {
         label: "5h".into(),
         used_pct: 60.0,
         resets: Some("3h".into()),
+        bucket: None,
     });
     snap.windows.push(crate::usage::UsageWindow {
         label: "7d".into(),
         used_pct: 86.0,
         resets: Some("Nov 11, 8:59am".into()),
+        bucket: None,
     });
     h.app.set_usage_footer(&snap);
     h.app.usage_summary = "5h 40% left \u{b7} 7d 14% left".into();
@@ -169,6 +171,7 @@ fn home_header_omits_subscription_when_usage_box_visible() {
         label: "7d".into(),
         used_pct: 86.0,
         resets: Some("Nov 11, 8:59am".into()),
+        bucket: None,
     });
     landing.meters.push(crate::tui::landing::LandingMeter {
         provider: ProviderKind::Codex,
@@ -203,7 +206,8 @@ fn use_picker_shows_every_limit_reset_at_narrow_widths_and_clears_on_close() {
             snap.windows.push(crate::usage::UsageWindow {
                 label: label.into(),
                 used_pct,
-                resets: Some(reset.into()),
+        resets: Some(reset.into()),
+        bucket: None,
             });
         }
         let row = picker_row("codex", ProviderKind::Codex, &snap);
@@ -331,6 +335,7 @@ fn limit_warning_updates_with_account_snapshot_and_unknown_clears_it() {
         label: "5h".into(),
         used_pct: 96.0,
         resets: Some("2026-10-16 06:03 local".into()),
+        bucket: None,
     });
     h.app.provider = ProviderKind::Codex;
     h.app.set_usage_footer(&snap);

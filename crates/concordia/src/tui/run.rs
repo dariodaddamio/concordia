@@ -39,7 +39,10 @@ impl RunTab {
         let (turn_tx, turn_rx) = mpsc::unbounded_channel();
         let (done_tx, done_rx) = mpsc::unbounded_channel();
         let (handle_tx, handle_rx) = mpsc::unbounded_channel();
-        let (progress_tx, progress_rx) = mpsc::channel(crate::provider::turn::PROGRESS_CAPACITY);
+        // Native-window input polling can sleep while a provider emits a fast transcript burst.
+        // Keep the render tab queue bounded, but large enough to absorb one burst so the
+        // provider can publish completion and the UI can drain it on the next wake.
+        let (progress_tx, progress_rx) = mpsc::channel(1024);
         Self {
             chat_lease: None,
             conversation_lease: None,
@@ -454,6 +457,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     // extracts native images.  Keep the wait loop responsive, but only do that work after a
     // state change that can affect the screen.
     let mut dirty = true;
+    let mut last_draw = Instant::now() - Duration::from_millis(16);
     let mut diagram_revision = diagrams::revision();
     let redraw_always = std::env::var_os("CONCORDIA_REDRAW_ALWAYS").is_some();
 
@@ -464,7 +468,15 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
 
     macro_rules! draw_if_needed {
         ($app:ident, $force:expr) => {
-            if $force || (dirty && (!key_burst.active() || !terminal_input.poll(Duration::ZERO)?)) {
+            // Drain a burst of provider progress before rebuilding the frame. A fast provider
+            // otherwise makes every event trigger a full presentation pass over the transcript.
+            if $force
+                || (dirty
+                    // Streaming updates can append hundreds of blocks. Keep the provider
+                    // consumer ahead of the renderer while still showing periodic progress.
+                    && (!(*$app).busy || last_draw.elapsed() >= Duration::from_millis(250))
+                    && (!key_burst.active() || !terminal_input.poll(Duration::ZERO)?))
+            {
                 let app = &mut *$app;
                 if !use_window {
                     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
@@ -488,6 +500,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     terminal.backend_mut().image(image)?;
                 }
                 terminal.backend_mut().note_draw(draw_started.elapsed());
+                last_draw = Instant::now();
                 let ended = if use_window {
                     Ok(())
                 } else {
@@ -583,7 +596,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             let mut tab_action = tabs::TabAction::Unhandled;
             let mut rename_tab = None;
             {
-                let RunTab { app, turn_tx, .. } = &mut tabs.tabs[active];
+                let RunTab {
+                    app,
+                    turn_tx,
+                    ..
+                } = &mut tabs.tabs[active];
                 app.tab_strip = labels;
                 app.tab_index = active;
                 app.tab_drag = strip_drag
@@ -613,8 +630,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
 
                 let mut timeout = tick_rate.saturating_sub(last_tick.elapsed());
-                // Input already wakes immediately. Provider channels used to wait for the
-                // 200 ms animation tick; drain them at interactive latency during live turns.
+                // Keep the native input path inside one frame even when the idle tick is longer.
+                // Provider channels also stay responsive during a live turn.
+                timeout = timeout.min(Duration::from_millis(8));
                 if app.busy || app.deleg.d.any_active() {
                     timeout = timeout.min(Duration::from_millis(33));
                 }
@@ -784,12 +802,16 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     }
                                 }
                             }
-                            Event::FocusGained | Event::Resize(..) => {
-                                // The host may have invalidated visible cells while our diff buffer
-                                // still describes the old screen (tab switches and resizes).
-                                // Query the current size: queued resize events may already be stale.
+                            Event::Resize(..) => {
+                                // Query the current size: queued resize events may already be
+                                // stale. The next dirty frame paints the resized surface without
+                                // exposing an intermediate blank clear.
                                 terminal.autoresize()?;
-                                terminal.clear()?;
+                            }
+                            Event::FocusGained => {
+                                // Native activation repaints the cached backing surface. Clearing
+                                // the cell buffer here would expose a blank frame until the next
+                                // application draw.
                             }
                             _ => {}
                         }

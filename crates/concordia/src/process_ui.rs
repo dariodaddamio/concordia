@@ -94,6 +94,9 @@ mod tests {
     const ALLOWED: &[(&str, &str)] = &[(
         "cursor_usage.rs",
         "portable_pty CommandBuilder: ConPTY child, no creation-flag hook",
+    ), (
+        "local_terminal.rs",
+        "portable_pty CommandBuilder: ConPTY child, no creation-flag hook",
     )];
 
     fn scan(dir: &Path, hits: &mut Vec<String>) {

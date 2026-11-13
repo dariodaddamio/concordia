@@ -66,7 +66,7 @@ pub fn list_model_details(provider: ProviderKind, home: &Path) -> Vec<NativeMode
         ProviderKind::Cursor => list_cursor_models(home),
         ProviderKind::Grok => list_grok_models(home),
         ProviderKind::Opencode => crate::provider::opencode::inspect_model(home)
-            .map(|model| vec![(model.clone(), model)])
+            .map(|model| vec![NativeModel::named(model.clone(), model)])
             .unwrap_or_default(),
     }
 }

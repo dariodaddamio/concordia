@@ -17,6 +17,8 @@ pub(super) struct State {
     selected: usize,
     answers: Vec<String>,
     pub focused: bool,
+    /// The question took focus only because the composer was empty.
+    pub auto_focused: bool,
     last_source: String,
     targets: Vec<(Rect, usize)>,
     pressed: Option<usize>,
@@ -80,6 +82,7 @@ impl State {
         self.native_texts.clear();
         self.questions.clear();
         self.focused = false;
+        self.auto_focused = false;
         self.targets.clear();
         self.last_source.clear();
         self.note.clear();
@@ -134,6 +137,7 @@ impl State {
         // Inferred conversational replies must never take keyboard ownership from the composer.
         // F8 or a click explicitly enters the options; native requests keep their own contract.
         self.focused = false;
+        self.auto_focused = false;
     }
     /// Rows the cursor can reach: the choices plus, for conversational replies, the note row.
     fn rows(&self) -> usize {
@@ -180,6 +184,7 @@ impl State {
         self.selected = 0;
         self.answers.clear();
         self.focused = focus;
+        self.auto_focused = false;
         self.native = Some(request);
     }
 }
@@ -640,6 +645,7 @@ fn choose(app: &mut App, index: usize) {
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if key.code == KeyCode::F(8) && app.questions.waiting() {
         app.questions.focused = !app.questions.focused;
+        app.questions.auto_focused = false;
         app.workspace.focused = None;
         app.queue.focused = false;
         return true;
@@ -672,6 +678,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                 app.questions.advance_native();
             } else {
                 app.questions.focused = false;
+                app.questions.auto_focused = false;
             }
         }
         KeyCode::Up => app.questions.selected = (app.questions.selected + count - 1) % count,
@@ -723,11 +730,20 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         {
             choose(app, c as usize - '1' as usize)
         }
+        // Inferred questions share the composer. A leading digit must not become
+        // a popup note because it is often the first character of an instruction.
+        // Native requests keep the shortcut above.
+        KeyCode::Char('1'..='9') if !native && app.questions.auto_focused => {
+            app.questions.focused = false;
+            app.questions.auto_focused = false;
+            return false;
+        }
         KeyCode::Char(c) if note_allowed => {
             if !app.questions.append_note(&c.to_string()) {
                 app.flash("Reply exceeds the 4096-byte input limit");
             }
             app.questions.selected = choices;
+            app.questions.auto_focused = false;
         }
         KeyCode::Backspace if note_allowed => {
             app.questions.note.pop();
@@ -742,7 +758,11 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
 }
 /// A deliberate paste into the focused reply panel preserves logical line breaks.
 pub(super) fn paste(app: &mut App, text: &str) -> bool {
-    if !app.questions.focused || !app.questions.note_allowed() || !app.questions.waiting() {
+    if !app.questions.focused
+        || app.questions.auto_focused
+        || !app.questions.note_allowed()
+        || !app.questions.waiting()
+    {
         return false;
     }
     if !app.questions.append_note(&text::normalize_newlines(text)) {
@@ -1082,9 +1102,9 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 " F8 focus, or click an option to answer"
             }
         } else if s.focused {
-            " ↑↓ select · type a reply · Shift+Enter newline · Enter send · Esc close · F8 focus"
+            "Up/Down select · Enter send · Esc close · F8 focus"
         } else {
-            " Type in the message box, or F8 / click to reply with an option or note"
+            "F8 focus, or click an option to reply"
         })
         .style(dim),
         Rect::new(area.x, area.bottom() - 1, area.width, 1),
@@ -1113,6 +1133,7 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                     if note_row && app.questions.note.trim().is_empty() {
                         // Clicking the empty note row starts a note rather than sending nothing.
                         app.questions.focused = true;
+                        app.questions.auto_focused = false;
                         app.questions.selected = index;
                     } else if app
                         .questions
@@ -1132,9 +1153,11 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                             app.questions.native_selected.push(index);
                         }
                         app.questions.focused = true;
+                        app.questions.auto_focused = false;
                         app.questions.selected = index;
                     } else {
                         app.questions.focused = true;
+                        app.questions.auto_focused = false;
                         app.questions.selected = index;
                         app.workspace.focused = None;
                         app.queue.focused = false;
@@ -2019,6 +2042,20 @@ mod tests {
         assert!(!app.questions.focused);
         assert!(app.questions.native.is_none());
         assert_eq!(app.editor.text(), "keep this draft");
+    }
+
+    #[test]
+    fn inferred_question_digit_returns_to_the_composer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
+        app.questions.offer("Which route?\n1. Direct\n2. Review");
+        app.questions.focused = true;
+        assert!(!handle_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)
+        ));
+        assert!(!app.questions.focused);
+        assert!(app.questions.note.is_empty());
     }
 
     fn popup_app(dir: &tempfile::TempDir) -> App {

@@ -1,5 +1,29 @@
 # Changelog
 
+### Fixed (2026-11-13b)
+
+- Kept explicitly focused question replies and note pastes in the popup, and made Ctrl+O expand
+  reply context before later tool cards.
+- Kept native input polling within one frame while preserving the retained activation and image
+  repaint checks.
+
+### Fixed (2026-11-13a)
+
+- Kept question popups from consuming pasted drafts when they open automatically.
+- Repainted the cached native frame on activation without clearing it first.
+- Batched long render updates so typing, scrolling and tab interaction stay responsive.
+- Kept the native render queue bounded during long provider output.
+
+### Fixed (2026-11-12z)
+
+- Kept option-shaped digits in the composer when an inferred question is visible.
+- Made activation repaints observable as a new visible frame without redrawing the transcript.
+
+### Fixed (2026-11-12y)
+
+- Kept the native window's last rendered frame visible when Windows activates it again.
+- Completed render-lane provider catalog and usage metadata coverage for opencode.
+
 ### Guided setup commands
 
 - No-argument Harness setup commands now explain their effect, show bounded local choices, and

@@ -184,7 +184,7 @@ pub fn refresh(provider: ProviderKind, account: &str) -> Result<RefreshedModels,
         ProviderKind::Opencode => {
             let models = catalog::list_model_details(provider, &identity.home)
                 .into_iter()
-                .map(|(id, name)| entry_named(id, name, ModelSource::Cached))
+                .map(native_entry)
                 .collect::<Vec<_>>();
             if models.is_empty() {
                 return Err(

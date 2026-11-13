@@ -796,6 +796,7 @@ pub fn parse_claude_usage(text: &str) -> Option<UsageSnapshot> {
             label: claude_label(name),
             used_pct,
             resets,
+            bucket: None,
         });
     }
     if windows.is_empty() {
@@ -1944,11 +1945,13 @@ mod tests {
                     label: "5h".into(),
                     used_pct: 64.0,
                     resets: Some("Oct 29, 4:19am".into()),
+                    bucket: None,
                 },
                 UsageWindow {
                     label: "7d".into(),
                     used_pct: 21.0,
                     resets: Some("Nov 6, 9am".into()),
+                    bucket: None,
                 },
             ],
             None,
@@ -2115,6 +2118,7 @@ mod tests {
                     label: "5h".into(),
                     used_pct: p,
                     resets: None,
+                    bucket: None,
                 }],
                 None,
                 vec![],
@@ -2423,6 +2427,9 @@ mod tests {
             limit_id: None,
             rate_limit_reached_type: None,
             credits: None,
+            limit_name: None,
+            normal_model_slug: None,
+            extra: Vec::new(),
         };
         let snap = format_limits(&limits, "as of your last chat");
         assert_eq!(
@@ -2599,6 +2606,7 @@ mod profile_row_tests {
             label: "5h".into(),
             used_pct: 20.0,
             resets: None,
+            bucket: None,
         });
         let row = profiled_picker_row("claude", identity.provider, &snapshot, &identity);
         assert_eq!(

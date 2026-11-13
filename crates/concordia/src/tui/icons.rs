@@ -12,6 +12,7 @@ pub(super) fn provider(kind: ProviderKind) -> &'static str {
         ProviderKind::Claude => "✻",
         ProviderKind::Cursor => "➤",
         ProviderKind::Grok => "⊘",
+        ProviderKind::Opencode => "◇",
     }
 }
 
@@ -21,6 +22,7 @@ pub(super) fn provider_name(kind: ProviderKind) -> &'static str {
         ProviderKind::Claude => "Claude Code",
         ProviderKind::Cursor => "Cursor",
         ProviderKind::Grok => "Grok",
+        ProviderKind::Opencode => "opencode",
     }
 }
 
@@ -86,6 +88,7 @@ pub(super) fn legend() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
                 ProviderKind::Claude,
                 ProviderKind::Cursor,
                 ProviderKind::Grok,
+                ProviderKind::Opencode,
             ]
             .into_iter()
             .map(|kind| (provider(kind).to_owned(), provider_name(kind)))

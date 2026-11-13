@@ -661,6 +661,15 @@ Going public:
 
 ## This slice
 
+### Q1 render lane - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/{catalog,models,usage}.rs`, `crates/concordia/src/tui/{icons,transcript,tests}.rs` | ok: 1, 4, 5, 10 | Repair the merged opencode types and test fixtures at their existing owners. No new abstraction or compatibility path. |
+| `crates/concordia/src/tui/{questions,native_window,run,app/turn}.rs`, `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 5, 6, 9, 10 | Complete the existing popup, retained-render, activation, image and tab behavior with deterministic regressions in the owning UI tests. |
+| `crates/concordia/src/process_ui.rs` | ok: 1, 4, 5, 9 | Keep one existing child-process owner and its source scan as the regression boundary. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 10 | Record the user-facing render changes and advance the required build stamp. |
+
 ### N4 Agents view follow-up - anti-slop gate
 
 | path | tendency_check | justification |

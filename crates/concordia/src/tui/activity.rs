@@ -497,10 +497,18 @@ impl Activity {
             .copied()
             .filter(|&i| !self.is_expanded(i, all))
             .collect();
-        let (targets, expand) = match (every, collapsed.last()) {
+        // Reasoning and map accordions belong to the reply. Prefer the last one of those when
+        // tool cards follow it, so Ctrl+O expands the hidden reply context before opening a
+        // later operation card.
+        let last_reply = collapsed
+            .iter()
+            .rev()
+            .find(|&&index| messages[index].role != MsgRole::Card)
+            .copied();
+        let (targets, expand) = match (every, last_reply.or_else(|| collapsed.last().copied())) {
             (true, Some(_)) => (collapsed.clone(), true),
             (true, None) => (items.clone(), false),
-            (false, Some(&last)) => (vec![last], true),
+            (false, Some(last)) => (vec![last], true),
             (false, None) => (items.last().copied().into_iter().collect(), false),
         };
         for &message in &targets {

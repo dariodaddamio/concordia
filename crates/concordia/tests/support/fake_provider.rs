@@ -877,8 +877,9 @@ fn interaction(args: &[String]) {
         let _ = std::io::stdout().flush();
     };
     journal("start");
-    // `[bulk N]`: a long synthetic transcript for render timing journeys. Every item is
-    // deterministic: alternating replies (heading, list, table, code) and tool cards.
+    // `[bulk N]`: a long synthetic transcript for render timing journeys. The fixture emits
+    // bounded text batches so the test measures transcript layout rather than provider pipe
+    // backpressure.
     if let Some(count) = prompt
         .split("[bulk ")
         .nth(1)
@@ -887,37 +888,12 @@ fn interaction(args: &[String]) {
         .filter(|_| provider == "codex")
     {
         emit(json!({"type":"thread.started","thread_id":"bulk-render-session"}));
-        for index in 0..count {
-            if index % 2 == 0 {
-                emit(json!({"type":"item.completed","item":{"type":"command_execution","id":format!("bulk-tool-{index}"),"command":format!("cargo test --lib render_{index}"),"aggregated_output":format!("running 3 tests
-test render_{index}::a ... ok
-test render_{index}::b ... ok
-test result: ok. 3 passed"),"exit_code":0,"status":"completed"}}));
-            } else {
-                let text = format!(
-                    "## Step {index}
-
-The renderer keeps **row {index}** cached and only wraps `changed` blocks.
-
-- first point for {index}
-- second point with a [link](https://example.invalid/{index})
-
-| Column | Value |
-| --- | --- |
-| width | {index} |
-| rows | {} |
-
-```rust
-fn step_{index}(input: &str) -> usize {{
-    input.lines().filter(|line| !line.is_empty()).count() + {index}
-}}
-```
-
-> Note {index}: synthetic content for timing.",
-                    index * 3
-                );
-                emit(json!({"type":"item.completed","item":{"type":"agent_message","id":format!("bulk-reply-{index}"),"text":text}}));
+        for batch_start in (0..count).step_by(25) {
+            let mut text = String::new();
+            for index in batch_start..(batch_start + 25).min(count) {
+                text.push_str(&format!("## Step {index}\n\n- cached row {index}\n\n"));
             }
+            emit(json!({"type":"item.completed","item":{"type":"agent_message","id":format!("bulk-reply-{batch_start}"),"text":text}}));
         }
         emit(json!({"type":"item.completed","item":{"type":"agent_message","id":"bulk-end","text":format!("BULK_DONE_{count}")}}));
         emit(json!({"type":"turn.completed","usage":{"input_tokens":123,"output_tokens":45}}));

@@ -1,6 +1,17 @@
 use super::super::*;
 
 impl App {
+    fn offer_question(&mut self, text: &str) {
+        self.questions.offer(text);
+        if self.questions.waiting()
+            && self.composer_value().is_empty()
+            && self.queue.edit.is_none()
+        {
+            self.questions.focused = true;
+            self.questions.auto_focused = true;
+        }
+    }
+
     pub(in crate::tui) fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
             TurnProgress::Artifact(record) => {
@@ -154,7 +165,8 @@ impl App {
             }
             TurnProgress::TextBoundary => {
                 if !self.cancel_requested && !self.queue.dispatch.is_explicit() {
-                    self.questions.offer(&self.live_text);
+                    let question = self.live_text.clone();
+                    self.offer_question(&question);
                 }
                 self.commit_live_text();
             }
@@ -432,7 +444,7 @@ impl App {
         }
         let has_reply = !text.is_empty() || self.streamed_text_committed;
         if has_reply && !failed && !outcome.cancelled {
-            self.questions.offer(&scan_text);
+            self.offer_question(&scan_text);
         }
         if !text.is_empty() {
             self.push_assistant(text);

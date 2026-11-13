@@ -1533,6 +1533,34 @@ mod tests {
 #[cfg(test)]
 mod diagram_cache_tests {
     use super::*;
+
+    fn blk<'a>(gutter: &'a str, text: &'a str) -> Block<'a> {
+        Block {
+            identity: None,
+            gutter,
+            gutter_style: Style::default(),
+            style: Style::default(),
+            text,
+            markdown: false,
+            linkify: true,
+            runs: &[],
+            header_files: &[],
+            decor_prefix: 0,
+        }
+    }
+
+    fn md<'a>(gutter: &'a str, text: &'a str) -> Block<'a> {
+        Block {
+            markdown: true,
+            ..blk(gutter, text)
+        }
+    }
+
+    fn view(blocks: &[Block], width: usize, height: usize) -> TranscriptView {
+        let mut value = TranscriptView::default();
+        value.rebuild(blocks, width, height);
+        value
+    }
     #[test]
     fn long_diagram_history_settles_and_later_block_changes_do_not_restart_it() {
         let mut texts: Vec<_> = (0..40)
