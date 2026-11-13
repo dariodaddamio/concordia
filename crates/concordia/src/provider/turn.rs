@@ -1,14 +1,14 @@
 //! Unified provider turns with tracked cancel (Ctrl+C).
 
-use crate::provider::claude::{ClaudeTurnRequest, plan_claude_turn};
-use crate::provider::codex::{self, TurnRequest as CodexReq, apply_stream_parts, plan_turn_argv};
-use crate::provider::cursor::{CursorTurnRequest, plan_cursor_turn};
+use crate::provider::claude::{plan_claude_turn, ClaudeTurnRequest};
+use crate::provider::codex::{self, apply_stream_parts, plan_turn_argv, TurnRequest as CodexReq};
+use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
 use crate::provider::enforcement;
-use crate::provider::grok::{GrokTurnRequest, plan_grok_turn};
+use crate::provider::grok::{plan_grok_turn, GrokTurnRequest};
 use crate::provider::interaction::InteractionOwner;
 pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
-use crate::provider::stream_cards::{StreamCard, StreamPart, TurnUsage, classify_codex_event};
+use crate::provider::stream_cards::{classify_codex_event, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
 #[path = "turn_acp.rs"]
 mod acp;
@@ -21,12 +21,12 @@ use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{mpsc, Mutex, Notify};
 
 /// Lines of provider stderr kept for error reporting.
 const STDERR_KEEP_LINES: usize = 12;
@@ -229,7 +229,9 @@ pub fn attach_images(
             ));
         }
         ProviderKind::Cursor => anyhow::bail!("Cursor image input requires ACP"),
-        ProviderKind::Grok => anyhow::bail!("Grok Build image input requires ACP"),
+        ProviderKind::Grok | ProviderKind::Opencode => {
+            anyhow::bail!("ACP image input requires the ACP transport")
+        }
     }
     Ok(())
 }
@@ -402,6 +404,26 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 provider: ProviderKind::Grok,
             })
         }
+        ProviderKind::Opencode => {
+            let command = crate::provider::locate_real(ProviderKind::Opencode)
+                .map(|located| located.path.to_string_lossy().into_owned())
+                .map_err(|e| {
+                    anyhow::anyhow!(crate::doctor::format_not_found_turn_error(
+                        ProviderKind::Opencode,
+                        &e
+                    ))
+                })?;
+            Ok(PlannedTurn {
+                command,
+                argv: vec!["acp".into()],
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                cwd: req.cwd.to_string_lossy().into_owned(),
+                prompt: prompt.clone(),
+                new_session_id: None,
+                provider: ProviderKind::Opencode,
+            })
+        }
     }
 }
 
@@ -554,6 +576,8 @@ pub async fn run_provider_turn_with_transport(
     anyhow::ensure!(
         (mode != crate::native_input::Mode::CursorAcp || req.provider == ProviderKind::Cursor)
             && (mode != crate::native_input::Mode::GrokAcp || req.provider == ProviderKind::Grok)
+            && (mode != crate::native_input::Mode::OpencodeAcp
+                || req.provider == ProviderKind::Opencode)
             && (mode != crate::native_input::Mode::CodexAppServer
                 || req.provider == ProviderKind::Codex)
             && (mode != crate::native_input::Mode::ClaudeStdio
@@ -718,10 +742,13 @@ async fn run_provider_turn_inner(
             .await
             .map_err(|_| anyhow::anyhow!("progress receiver closed before provider startup"))?;
     }
-    if matches!(req.provider, ProviderKind::Cursor | ProviderKind::Grok)
-        && (!req.images.is_empty()
-            || mode == crate::native_input::Mode::CursorAcp
-            || mode == crate::native_input::Mode::GrokAcp)
+    if matches!(
+        req.provider,
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode
+    ) && (!req.images.is_empty()
+        || mode == crate::native_input::Mode::CursorAcp
+        || mode == crate::native_input::Mode::GrokAcp
+        || mode == crate::native_input::Mode::OpencodeAcp)
     {
         let out = acp::run(
             req,
@@ -894,7 +921,7 @@ async fn run_provider_turn_inner(
     let mut out = TurnOutcome::default();
     let flavor = match plan.provider {
         ProviderKind::Claude => Some(Flavor::Claude),
-        ProviderKind::Cursor | ProviderKind::Grok => Some(Flavor::Cursor),
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => Some(Flavor::Cursor),
         ProviderKind::Codex => None,
     };
     let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));
@@ -1248,10 +1275,8 @@ mod replay_tests {
             assert!(!events.repeated(snapshot));
             assert!(!events.repeated(snapshot));
         }
-        assert!(
-            !CompletedEvents::default()
-                .repeated(r#"{"type":"item.completed","item":{"id":"one","text":"done"}}"#)
-        );
+        assert!(!CompletedEvents::default()
+            .repeated(r#"{"type":"item.completed","item":{"id":"one","text":"done"}}"#));
     }
 }
 
@@ -1567,7 +1592,7 @@ mod gate_tests {
 
     #[test]
     fn a_locked_project_refuses_a_turn_whose_cli_cannot_run_read_only() {
-        use crate::provider::compat::{Caps, caps_for, set_caps};
+        use crate::provider::compat::{caps_for, set_caps, Caps};
         let dir = tempfile::tempdir().unwrap();
         locked(dir.path());
         let before = caps_for(ProviderKind::Cursor);

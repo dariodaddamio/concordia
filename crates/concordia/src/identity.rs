@@ -246,7 +246,15 @@ pub fn inspect_grok_home(home: &Path) -> ProviderIdentity {
     let model = crate::fs_safe::read_text_bounded(&home.join("config.toml"), 1024 * 1024)
         .and_then(|text| parse_toml_model(&text));
     let logged_in = home.join("config.toml").is_file() && home.join("auth.json").is_file();
-    ProviderIdentity { provider: ProviderKind::Grok, home_path: home.to_path_buf(), login: logged_in.then(|| "cached-token".into()), team: None, plan: None, model, logged_in }
+    ProviderIdentity {
+        provider: ProviderKind::Grok,
+        home_path: home.to_path_buf(),
+        login: logged_in.then(|| "cached-token".into()),
+        team: None,
+        plan: None,
+        model,
+        logged_in,
+    }
 }
 
 pub fn inspect_provider(provider: ProviderKind, home: &Path) -> ProviderIdentity {
@@ -256,6 +264,15 @@ pub fn inspect_provider(provider: ProviderKind, home: &Path) -> ProviderIdentity
         ProviderKind::Claude => inspect_claude_home(home),
         ProviderKind::Cursor => inspect_cursor_home(home),
         ProviderKind::Grok => inspect_grok_home(home),
+        ProviderKind::Opencode => ProviderIdentity {
+            provider,
+            home_path: home.to_path_buf(),
+            login: crate::provider::opencode::home_ready(home).then(|| "configured".into()),
+            team: None,
+            plan: None,
+            model: crate::provider::opencode::inspect_model(home),
+            logged_in: crate::provider::opencode::home_ready(home),
+        },
     }
 }
 

@@ -799,7 +799,7 @@ fn summarize_one(
         ProviderKind::Codex => summarize_codex(account, path, ms),
         ProviderKind::Claude => summarize_claude(account, path, ms),
         ProviderKind::Cursor => summarize_cursor(account, path, ms),
-        ProviderKind::Grok => None,
+        ProviderKind::Grok | ProviderKind::Opencode => None,
     }?;
     Some((summary, path.to_path_buf()))
 }
@@ -844,7 +844,7 @@ fn scan_native_records(
             ProviderKind::Codex => discover_codex(home, file_limit, entries_left),
             ProviderKind::Claude => discover_claude(home, file_limit, entries_left),
             ProviderKind::Cursor => discover_cursor(home, file_limit, entries_left),
-            ProviderKind::Grok => Discovery {
+            ProviderKind::Grok | ProviderKind::Opencode => Discovery {
                 files: Vec::new(),
                 truncated: false,
                 entries_scanned: 0,
@@ -1073,7 +1073,7 @@ pub fn find_native_record(
         ProviderKind::Codex => discover_codex(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
         ProviderKind::Claude => discover_claude(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
         ProviderKind::Cursor => discover_cursor(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
-        ProviderKind::Grok => Discovery {
+        ProviderKind::Grok | ProviderKind::Opencode => Discovery {
             files: Vec::new(),
             truncated: false,
             entries_scanned: 0,
@@ -1094,7 +1094,7 @@ pub fn find_native_record(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            ProviderKind::Grok => String::new(),
+            ProviderKind::Grok | ProviderKind::Opencode => String::new(),
         };
         if uuid_id && filename_id != session_id {
             continue;

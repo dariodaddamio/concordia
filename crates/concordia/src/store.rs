@@ -29,6 +29,7 @@ pub enum ProviderKind {
     Claude,
     Cursor,
     Grok,
+    Opencode,
 }
 
 impl ProviderKind {
@@ -38,6 +39,7 @@ impl ProviderKind {
             Self::Claude => "claude",
             Self::Cursor => "cursor",
             Self::Grok => "grok",
+            Self::Opencode => "opencode",
         }
     }
 }
@@ -217,20 +219,26 @@ pub struct RoleConfig {
 }
 
 fn default_roles() -> std::collections::BTreeMap<String, RoleConfig> {
-    ["orchestrator", "implementer", "reviewer", "re-reviewer", "general"]
-        .into_iter()
-        .map(|name| {
-            (
-                name.to_owned(),
-                RoleConfig {
-                    provider: None,
-                    account: None,
-                    model: None,
-                    effort: Some("medium".into()),
-                },
-            )
-        })
-        .collect()
+    [
+        "orchestrator",
+        "implementer",
+        "reviewer",
+        "re-reviewer",
+        "general",
+    ]
+    .into_iter()
+    .map(|name| {
+        (
+            name.to_owned(),
+            RoleConfig {
+                provider: None,
+                account: None,
+                model: None,
+                effort: Some("medium".into()),
+            },
+        )
+    })
+    .collect()
 }
 
 fn default_trust() -> TrustMode {
@@ -364,9 +372,17 @@ mod role_tests {
         let roles = OrchestratorSettings::default().roles;
         assert_eq!(
             roles.keys().collect::<Vec<_>>(),
-            vec!["general", "implementer", "orchestrator", "re-reviewer", "reviewer"]
+            vec![
+                "general",
+                "implementer",
+                "orchestrator",
+                "re-reviewer",
+                "reviewer"
+            ]
         );
-        assert!(roles.values().all(|role| role.effort.as_deref() == Some("medium")));
+        assert!(roles
+            .values()
+            .all(|role| role.effort.as_deref() == Some("medium")));
     }
 
     #[test]

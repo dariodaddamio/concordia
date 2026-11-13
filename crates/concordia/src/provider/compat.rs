@@ -14,7 +14,7 @@ use crate::store::{ProviderKind, TrustMode};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -193,6 +193,14 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
             sandbox: false,
             known: true,
         },
+        ProviderKind::Opencode => Caps {
+            stream_json: false,
+            permission_mode: false,
+            plan_mode: false,
+            partial_messages: false,
+            sandbox: false,
+            known: true,
+        },
     };
     Some(caps)
 }
@@ -307,6 +315,7 @@ fn shim_target(provider: ProviderKind, bin: &Path) -> Option<String> {
             ))
         }
         ProviderKind::Grok => Some("grok".into()),
+        ProviderKind::Opencode => Some("opencode".into()),
     }
 }
 
@@ -564,6 +573,7 @@ fn plan_enforcement_error(provider: ProviderKind) -> String {
         ProviderKind::Cursor => ("Cursor", "--mode plan"),
         ProviderKind::Codex => ("Codex", "--sandbox read-only"),
         ProviderKind::Grok => ("Grok Build", "ACP permission mode"),
+        ProviderKind::Opencode => ("opencode", "ACP permission mode"),
     };
     format!(
         "{cli} {} can't enforce Plan mode (its help has no {flag}). Use a CLI that provides the current required interface.",
@@ -1166,7 +1176,7 @@ mod tests {
 #[cfg(test)]
 mod planning_tests {
     use super::*;
-    use crate::provider::turn::{ProviderTurnRequest, plan_provider_turn};
+    use crate::provider::turn::{plan_provider_turn, ProviderTurnRequest};
 
     #[test]
     fn a_planned_claude_turn_keeps_plan_and_refuses_missing_plan_support() {
@@ -1185,11 +1195,10 @@ mod planning_tests {
             compaction: Default::default(),
         };
         let plan = plan_provider_turn(&req).unwrap();
-        assert!(
-            plan.argv
-                .windows(2)
-                .any(|w| w == ["--output-format", "stream-json"])
-        );
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]));
         let caps = Caps {
             stream_json: false,
             plan_mode: false,
@@ -1201,16 +1210,14 @@ mod planning_tests {
         };
         let done = validate_caps(&plan, TrustMode::Plan, &caps);
         assert!(done.is_err());
-        assert!(
-            plan.argv
-                .windows(2)
-                .any(|w| w == ["--output-format", "stream-json"])
-        );
-        assert!(
-            plan.argv
-                .windows(2)
-                .any(|w| w == ["--permission-mode", "plan"])
-        );
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]));
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "plan"]));
         assert!(plan.argv.contains(&"--verbose".to_string()));
         assert_eq!(plan.argv.last().map(String::as_str), Some("hello"));
         assert_eq!(plan.prompt, "hello");

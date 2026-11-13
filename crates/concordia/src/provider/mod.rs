@@ -8,6 +8,7 @@ pub mod grok;
 pub mod interaction;
 pub mod launch;
 pub(crate) mod npm;
+pub mod opencode;
 pub mod recording;
 pub(crate) mod session_guard;
 pub mod stream_cards;
@@ -166,6 +167,7 @@ pub fn command_specs(kind: ProviderKind) -> &'static [CommandSpec] {
         ProviderKind::Claude => CLAUDE_COMMANDS,
         ProviderKind::Cursor => CURSOR_COMMANDS,
         ProviderKind::Grok => GROK_COMMANDS,
+        ProviderKind::Opencode => &[],
     }
 }
 
@@ -173,7 +175,7 @@ pub fn command_supported(kind: ProviderKind, name: &str) -> bool {
     match kind {
         ProviderKind::Codex => matches!(name, "/compact" | "/review"),
         ProviderKind::Claude => name != "/vim",
-        ProviderKind::Cursor | ProviderKind::Grok => true,
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => true,
     }
 }
 
@@ -188,7 +190,7 @@ pub fn command_unavailable_reason(kind: ProviderKind, name: &str) -> &'static st
         ProviderKind::Claude => {
             "the Claude Agent SDK stream does not expose this interactive terminal command"
         }
-        ProviderKind::Cursor | ProviderKind::Grok => {
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
             "the ACP agent has not advertised this command for the active session"
         }
     }
@@ -205,16 +207,12 @@ mod command_tests {
             (ProviderKind::Claude, "/mcp"),
             (ProviderKind::Cursor, "/auto-run"),
         ] {
-            assert!(
-                command_specs(kind)
-                    .iter()
-                    .any(|command| command.name == expected)
-            );
-            assert!(
-                command_specs(kind)
-                    .iter()
-                    .all(|command| !command.description.is_empty())
-            );
+            assert!(command_specs(kind)
+                .iter()
+                .any(|command| command.name == expected));
+            assert!(command_specs(kind)
+                .iter()
+                .all(|command| !command.description.is_empty()));
         }
     }
 }
@@ -254,6 +252,7 @@ impl LocateEnv {
             ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
             ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
             ProviderKind::Grok => "CONCORDIA_GROK_BIN",
+            ProviderKind::Opencode => "CONCORDIA_OPENCODE_BIN",
         };
         Self {
             override_path: std::env::var(override_var).ok(),
@@ -336,10 +335,21 @@ pub fn locate(kind: ProviderKind, env: &LocateEnv) -> Result<Located, NotFound> 
         ),
         ProviderKind::Grok => (
             "grok",
+            vec![env
+                .userprofile
+                .as_ref()
+                .map(|p| p.join(".grok/bin/grok.exe"))]
+            .into_iter()
+            .flatten()
+            .collect(),
+        ),
+        ProviderKind::Opencode => (
+            "opencode",
             vec![
-                env.userprofile
+                env.localappdata
                     .as_ref()
-                    .map(|p| p.join(".grok/bin/grok.exe")),
+                    .map(|p| p.join("opencode/opencode.exe")),
+                env.appdata.as_ref().map(|p| p.join("npm/opencode.cmd")),
             ]
             .into_iter()
             .flatten()
@@ -413,11 +423,11 @@ pub fn locate_real(kind: ProviderKind) -> Result<Located, NotFound> {
     locate(kind, &LocateEnv::from_process(kind))
 }
 
-pub use stream_cards::{CardStatus, StreamCard, format_card_line, upsert_card};
+pub use stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
 pub use turn::{
-    PlannedTurn, ProviderTurnRequest, RunningTurn, TurnOutcome, TurnProgress, plan_provider_turn,
-    run_provider_turn, run_provider_turn_with_owner, run_provider_turn_with_progress,
-    spawn_and_cancel_mock,
+    plan_provider_turn, run_provider_turn, run_provider_turn_with_owner,
+    run_provider_turn_with_progress, spawn_and_cancel_mock, PlannedTurn, ProviderTurnRequest,
+    RunningTurn, TurnOutcome, TurnProgress,
 };
 
 /// Explicit provider CLI path from the environment (custom installs, and the fake provider in
@@ -488,6 +498,11 @@ mod tests {
                     .unwrap()
                     .join("cursor-agent/agent.cmd"),
                 ProviderKind::Grok => e.userprofile.as_ref().unwrap().join(".grok/bin/grok.exe"),
+                ProviderKind::Opencode => e
+                    .localappdata
+                    .as_ref()
+                    .unwrap()
+                    .join("opencode/opencode.exe"),
             };
             let second = match kind {
                 ProviderKind::Codex => e.appdata.as_ref().unwrap().join("npm/codex.cmd"),
@@ -498,6 +513,7 @@ mod tests {
                     .unwrap()
                     .join("cursor-agent/cursor-agent.cmd"),
                 ProviderKind::Grok => e.userprofile.as_ref().unwrap().join(".grok/bin/grok.cmd"),
+                ProviderKind::Opencode => e.appdata.as_ref().unwrap().join("npm/opencode.cmd"),
             };
             fs::create_dir_all(first.parent().unwrap()).unwrap();
             fs::write(&first, "").unwrap();

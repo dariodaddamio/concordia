@@ -38,6 +38,7 @@ pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
         ProviderKind::Claude => "Claude",
         ProviderKind::Cursor => "Cursor",
         ProviderKind::Grok => "Grok Build",
+        ProviderKind::Opencode => "opencode",
     };
     let id = normalize_account_id(account);
     if id == provider.as_str() {
@@ -91,7 +92,10 @@ fn dir_logged_in(provider: ProviderKind, home: &Path) -> bool {
                 .unwrap_or(false)
         }
         ProviderKind::Cursor => cursor_home_ready(home),
-        ProviderKind::Grok => home.join("config.toml").is_file() && home.join("auth.json").is_file(),
+        ProviderKind::Grok => {
+            home.join("config.toml").is_file() && home.join("auth.json").is_file()
+        }
+        ProviderKind::Opencode => crate::provider::opencode::home_ready(home),
     }
 }
 
@@ -179,6 +183,17 @@ pub fn builtin_accounts() -> Vec<AccountDef> {
                     .unwrap_or_else(|_| home.join(".grok")),
             ),
             label: "Grok Build".into(),
+            custom: false,
+        },
+        AccountDef {
+            provider: ProviderKind::Opencode,
+            account: "opencode".into(),
+            home_path: Some(
+                std::env::var("AO_OPENCODE_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| home.join(".opencode")),
+            ),
+            label: "opencode".into(),
             custom: false,
         },
     ]

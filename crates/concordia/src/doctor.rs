@@ -813,6 +813,7 @@ fn provider_variable(kind: ProviderKind) -> &'static str {
         ProviderKind::Claude => "CONCORDIA_CLAUDE_BIN",
         ProviderKind::Cursor => "CONCORDIA_AGENT_BIN",
         ProviderKind::Grok => "CONCORDIA_GROK_BIN",
+        ProviderKind::Opencode => "CONCORDIA_OPENCODE_BIN",
     }
 }
 
@@ -1015,6 +1016,7 @@ pub fn format_not_found_turn_error(
         ProviderKind::Claude => "Claude Code",
         ProviderKind::Cursor => "Cursor agent",
         ProviderKind::Grok => "Grok Build",
+        ProviderKind::Opencode => "opencode",
     };
     format!(
         "{name} CLI was not found. Concordia looked in: {}. Run `concordia doctor`.",

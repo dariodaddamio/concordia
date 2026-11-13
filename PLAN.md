@@ -599,6 +599,16 @@ Rewrite requirements:
 
 ## Next build plan (2026-11-12, awaiting owner go)
 
+### N5 opencode and Claude base-URL profiles - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/provider/{opencode,turn_acp,claude,turn}.rs` | ok: 1, 4, 6, 10 | Reuse the existing ACP runner and keep provider authentication, sessions, approvals and environment ownership at the provider boundary. |
+| `crates/concordia/src/{store,accounts,connect,catalog,identity,models,native_input}.rs` | ok: 4, 5, 6 | Add one provider identity and account path so `/use`, model discovery and roles read the same provider kind. |
+| `crates/concordia/src/provider/interaction.rs`, `crates/concordia/src/provider/turn_acp.rs` | ok: 2, 4, 9 | Map OpenCode's documented ACP permission and elicitation messages through the existing interaction owner; no test-only transport branch. |
+| `crates/concordia/tests/install.rs` | ok: 4, 5, 9 | Keep the installer regression in the existing child-process test and provide its required isolated guard roots; no production test branch. |
+| `docs/provider-opencode.md`, `docs/how-concordia-connects-providers.md`, `docs/README.md`, `README.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Extend canonical provider catalogs and record confirmed behavior and known limits in place. |
+
 Decisions recorded on 2026-11-12:
 - Roles: users set a default orchestrator and default models (with effort) per role, such as
   implementer, reviewer, re-reviewer and general helper. The `agents` tool applies these defaults

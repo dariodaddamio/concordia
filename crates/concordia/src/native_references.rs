@@ -92,7 +92,9 @@ fn plaintext(value: &Value, provider: ProviderKind) -> Result<String, String> {
     let payload = match provider {
         ProviderKind::Codex => &value["payload"],
         ProviderKind::Claude => &value["message"],
-        ProviderKind::Cursor | ProviderKind::Grok => &value["params"]["update"],
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
+            &value["params"]["update"]
+        }
     };
     if payload.get("encrypted_content").is_some()
         || matches!(
@@ -232,7 +234,7 @@ fn tool_kind(value: &Value, provider: ProviderKind, call_id: &str) -> Option<boo
                 .collect();
             (matches.len() == 1).then(|| matches[0])
         }
-        ProviderKind::Cursor | ProviderKind::Grok => {
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
             let update = &value["params"]["update"];
             if update["toolCallId"] != call_id {
                 return None;

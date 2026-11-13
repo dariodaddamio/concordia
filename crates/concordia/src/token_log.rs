@@ -61,7 +61,10 @@ pub fn split(provider: ProviderKind, usage: &TurnUsage) -> (u64, u64, u64) {
     let cached = usage.cached.unwrap_or(0);
     let new_input = match provider {
         ProviderKind::Codex => input.saturating_sub(cached),
-        ProviderKind::Claude | ProviderKind::Cursor | ProviderKind::Grok => input,
+        ProviderKind::Claude
+        | ProviderKind::Cursor
+        | ProviderKind::Grok
+        | ProviderKind::Opencode => input,
     };
     (new_input, cached, usage.output.unwrap_or(0))
 }
@@ -69,7 +72,9 @@ pub fn split(provider: ProviderKind, usage: &TurnUsage) -> (u64, u64, u64) {
 /// Record one attributed turn.
 pub fn record(state_root: &Path, entry: &Entry) -> std::io::Result<()> {
     if entry.attribution.is_none() {
-        return Err(std::io::Error::other("usage entry requires account and run attribution"));
+        return Err(std::io::Error::other(
+            "usage entry requires account and run attribution",
+        ));
     }
     events::record_once(state_root, entry)
 }

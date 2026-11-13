@@ -1,8 +1,8 @@
 //! Native Cursor image inputs over ACP with explicit sessions and real permission responses.
 use super::*;
-use crate::provider::CardStatus;
 use crate::provider::interaction::InteractionConnection;
-use serde_json::{Value, json};
+use crate::provider::CardStatus;
+use serde_json::{json, Value};
 
 struct QuestionListener(tokio::task::JoinHandle<()>);
 
@@ -130,7 +130,10 @@ impl Connection {
         let method = value["method"].as_str().unwrap_or("");
         let interactive = matches!(
             method,
-            "session/request_permission" | "cursor/ask_question" | "cursor/create_plan"
+            "session/request_permission"
+                | "cursor/ask_question"
+                | "cursor/create_plan"
+                | "elicitation/create"
         );
         if value
             .pointer("/params/sessionId")
@@ -189,6 +192,25 @@ impl Connection {
             };
             request.invalidate();
             anyhow::ensure!(!self.handle.cancel_flag.load(Ordering::SeqCst), "cancelled");
+            let answer = if method == "elicitation/create" {
+                let mut content = serde_json::Map::new();
+                if let Some(items) = answer.pointer("/outcome/answers").and_then(Value::as_array) {
+                    for item in items {
+                        if let (Some(id), Some(choice)) = (
+                            item["questionId"].as_str(),
+                            item["selectedOptionIds"]
+                                .as_array()
+                                .and_then(|values| values.first())
+                                .and_then(Value::as_str),
+                        ) {
+                            content.insert(id.into(), json!(choice));
+                        }
+                    }
+                }
+                json!({"action":"accept","content":content})
+            } else {
+                answer
+            };
             self.write(json!({"jsonrpc":"2.0","id":value["id"],"result":answer}))
                 .await
         } else {
@@ -322,6 +344,14 @@ fn acp_model_id(id: &str, available: &[String]) -> Option<String> {
     Some(format!("{base}[{}]", params.join(",")))
 }
 
+fn model_config_value(provider: ProviderKind, model: &str) -> Value {
+    if provider == ProviderKind::Opencode {
+        json!(model)
+    } else {
+        json!({"value": model})
+    }
+}
+
 /// Trust flags are global options and must precede the `acp` subcommand. Plan mode is set per
 /// session over the protocol instead.
 fn acp_argv(provider: ProviderKind, print_argv: &[String]) -> Vec<String> {
@@ -431,7 +461,7 @@ pub(super) async fn run(
         available_commands: std::collections::HashSet::new(),
     };
     let result=async {
-        let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
+        let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{"auth":{"terminal":true},"elicitation":{"form":true},"session":{"compaction":true}},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
         conn.interactions.initialized_cursor(&init);
         anyhow::ensure!(init["protocolVersion"] == 1, "Installed ACP provider did not negotiate protocol version 1");
         if req.provider == ProviderKind::Grok {
@@ -468,8 +498,8 @@ pub(super) async fn run(
             let available:Vec<String>=session.pointer("/models/availableModels").and_then(Value::as_array).into_iter().flatten()
                 .filter_map(|m|m["modelId"].as_str().map(str::to_owned)).collect();
             let model=acp_model_id(model,&available).unwrap_or_else(||model.to_owned());
-            let (method, params) = if req.provider == ProviderKind::Grok {
-                ("session/set_config_option", json!({"sessionId":sid,"configId":"model","value":{"value":model}}))
+            let (method, params) = if matches!(req.provider, ProviderKind::Grok | ProviderKind::Opencode) {
+                ("session/set_config_option", json!({"sessionId":sid,"configId":"model","value":model_config_value(req.provider, &model)}))
             } else {
                 ("session/set_model", json!({"sessionId":sid,"modelId":model}))
             };
@@ -516,17 +546,15 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{acp_argv, acp_model_id, ask_server_config};
+    use super::{acp_argv, acp_model_id, ask_server_config, model_config_value};
     use crate::store::ProviderKind;
 
     #[test]
     fn question_server_is_registered_only_when_enabled() {
-        assert!(
-            ask_server_config("", "token", false)
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(ask_server_config("", "token", false)
+            .as_array()
+            .unwrap()
+            .is_empty());
         let enabled = ask_server_config("127.0.0.1:1234", "token", true);
         assert_eq!(enabled[0]["name"], "concordia-ask");
         assert_eq!(enabled[0]["env"][1]["value"], "token");
@@ -577,6 +605,18 @@ mod tests {
         );
         assert_eq!(map("grok-4.6[effort=low]"), "grok-4.6[effort=low]");
         assert_eq!(acp_model_id("unknown-model", &available), None);
+    }
+
+    #[test]
+    fn opencode_model_config_uses_the_acp_string_value() {
+        assert_eq!(
+            model_config_value(ProviderKind::Opencode, "deepseek/deepseek-chat"),
+            serde_json::json!("deepseek/deepseek-chat")
+        );
+        assert_eq!(
+            model_config_value(ProviderKind::Grok, "grok-4"),
+            serde_json::json!({"value": "grok-4"})
+        );
     }
 
     #[test]

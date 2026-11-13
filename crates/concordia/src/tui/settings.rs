@@ -189,17 +189,26 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             let rows = crate::store::get_settings(&app.state_root)
                 .roles
                 .into_iter()
-                .map(|(name, role)| row(
-                    &format!("role:{name}"),
-                    name,
-                    format!("{} · {} · {} · effort {}",
-                        role.provider.as_deref().unwrap_or("provider default"),
-                        role.account.as_deref().unwrap_or("account required"),
-                        role.model.as_deref().unwrap_or("model default"),
-                        role.effort.as_deref().unwrap_or("provider default")),
-                ))
+                .map(|(name, role)| {
+                    row(
+                        &format!("role:{name}"),
+                        name,
+                        format!(
+                            "{} · {} · {} · effort {}",
+                            role.provider.as_deref().unwrap_or("provider default"),
+                            role.account.as_deref().unwrap_or("account required"),
+                            role.model.as_deref().unwrap_or("model default"),
+                            role.effort.as_deref().unwrap_or("provider default")
+                        ),
+                    )
+                })
                 .collect();
-            app.show_picker(PickerKind::Settings, "Roles · edit in local settings".into(), rows, true);
+            app.show_picker(
+                PickerKind::Settings,
+                "Roles · edit in local settings".into(),
+                rows,
+                true,
+            );
         }
         "continuation" => {
             let next = !app.continuation.automatic();
@@ -412,6 +421,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
         ProviderKind::Claude => ".claude",
         ProviderKind::Cursor => ".cursor",
         ProviderKind::Grok => ".grok",
+        ProviderKind::Opencode => ".opencode",
     };
     for root in roots {
         if hooks {
@@ -434,7 +444,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                 ProviderKind::Codex => {
                     hook_rows(&root.join(".codex/hooks.json"), "Project", &mut rows)
                 }
-                ProviderKind::Grok => {}
+                ProviderKind::Grok | ProviderKind::Opencode => {}
             }
         } else {
             skill_rows(
@@ -466,7 +476,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                     );
                     rows.push(row("notice", "Native hook trust", "This inventory shows configured sources. Review native /hooks in this provider home; only native consent can enable untrusted hooks."));
                 }
-                ProviderKind::Grok => hook_rows(
+                ProviderKind::Grok | ProviderKind::Opencode => hook_rows(
                     &home.join("hooks.json"),
                     "User Â· selected account",
                     &mut rows,

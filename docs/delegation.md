@@ -3,7 +3,8 @@
 Agents initiate delegation through the always-on MCP `agents` tool. A parent supplies the task and
 may supply a role. Roles are stored in Concordia's orchestrator settings and contain a default
 provider, account, model and reasoning effort. An explicit provider or model in the request wins.
-The shipped roles are `orchestrator`, `implementer`, `reviewer`, `re-reviewer` and `general`.
+The shipped roles are `orchestrator`, `implementer`, `reviewer`, `re-reviewer` and `general`. Each
+role can use any connected provider, including opencode and a Claude Code base-URL profile.
 Each child inherits the parent's permission mode and keeps an explicit parent identity.
 
 The Agents view (Ctrl+G) groups children beneath the chat or agent that started them. Compact rows

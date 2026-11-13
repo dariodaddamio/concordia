@@ -701,10 +701,8 @@ pub fn context_observation(
             Some("native model does not match the selected model".into());
     } else if observation.native_turn_id.is_none() {
         observation.measurement = None;
-        observation.invalidation_reason = Some(
-            "native source does not identify the exact turn; capacity remains unknown"
-                .into(),
-        );
+        observation.invalidation_reason =
+            Some("native source does not identify the exact turn; capacity remains unknown".into());
     }
     let (mut check, current) = open_bound(root, binding)?;
     if current.file_identity != index.file_identity
@@ -1119,7 +1117,9 @@ pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
         let payload = match index.binding.provider {
             ProviderKind::Codex => &value["payload"],
             ProviderKind::Claude => &value["message"],
-            ProviderKind::Cursor | ProviderKind::Grok => &value["params"]["update"],
+            ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
+                &value["params"]["update"]
+            }
         };
         let content = &payload["content"];
         let rendered = if let Some(blocks) = content.as_array() {

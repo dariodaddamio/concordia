@@ -1,6 +1,6 @@
 # Concordia
 
-Concordia is a Windows-first native app that runs the official Codex, Claude Code, Cursor and Grok Build
+Concordia is a Windows-first native app that runs the official Codex, Claude Code, Cursor, Grok Build and opencode
 CLIs under your own accounts, with bounded handoff between them. It keeps one conversation
 navigable while each provider remains responsible for its own sessions, approvals and tools.
 It can also trigger configured cloud-hosted Grok Bot routines through their webhook and receive
@@ -33,7 +33,7 @@ will be available after the first release; see [the full installation guide](doc
 
 ```text
 concordia
-/use                 # choose or connect Codex, Claude Code, Cursor or Grok Build
+/use                 # choose or connect Codex, Claude Code, Cursor, Grok Build or opencode
 Ask your question and press Enter
 /usage               # inspect provider-reported usage
 /resume              # continue a recorded conversation

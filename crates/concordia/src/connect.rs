@@ -33,6 +33,7 @@ fn capitalized(p: ProviderKind) -> &'static str {
         ProviderKind::Claude => "Claude",
         ProviderKind::Cursor => "Cursor",
         ProviderKind::Grok => "Grok Build",
+        ProviderKind::Opencode => "opencode",
     }
 }
 
@@ -102,6 +103,7 @@ pub fn plan_login(
             }
         }
         ProviderKind::Grok => ("grok", "grok login", Some("GROK_HOME")),
+        ProviderKind::Opencode => ("opencode", "opencode auth login", Some("OPENCODE_HOME")),
     };
     if !has_bin(bin) {
         return Err(format!(
@@ -555,9 +557,14 @@ mod tests {
             )
             .unwrap(),
             ProviderKind::Grok => {
-                fs::write(home.join("config.toml"), "[models]\ndefault = \"grok-build\"\n").unwrap();
+                fs::write(
+                    home.join("config.toml"),
+                    "[models]\ndefault = \"grok-build\"\n",
+                )
+                .unwrap();
                 fs::write(home.join("auth.json"), "{}").unwrap();
             }
+            ProviderKind::Opencode => {}
         }
     }
 

@@ -1036,6 +1036,7 @@ impl App {
             ProviderKind::Claude => "Claude Code",
             ProviderKind::Cursor => "Cursor",
             ProviderKind::Grok => "Grok Build",
+            ProviderKind::Opencode => "opencode",
         }
     }
 

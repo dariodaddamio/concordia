@@ -9,7 +9,7 @@
 
 use crate::provider::turn::PlannedTurn;
 use crate::store::ProviderKind;
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
 /// Longest prompt passed in argv behind a batch shim (cmd.exe's limit is 8191 for the whole line).
@@ -136,7 +136,7 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
                 None => {}
             }
         }
-        ProviderKind::Grok => {
+        ProviderKind::Grok | ProviderKind::Opencode => {
             if plan.prompt.starts_with('-') {
                 bail!(
                     "this prompt starts with '-', which Grok Build would read as an option; reword it"

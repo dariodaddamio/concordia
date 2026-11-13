@@ -313,7 +313,9 @@ fn sync_mcp_for_account(
         ProviderKind::Claude => sync_claude_json(home, want, exe, state_root, account, write),
         ProviderKind::Codex => sync_codex_toml(home, want, exe, state_root, account, write),
         ProviderKind::Cursor => Outcome::Blocked("not supported for this provider".into()),
-        ProviderKind::Grok => Outcome::Blocked("Grok Build integrations are provider-owned".into()),
+        ProviderKind::Grok | ProviderKind::Opencode => {
+            Outcome::Blocked("ACP provider integrations are provider-owned".into())
+        }
     }
 }
 

@@ -128,7 +128,21 @@ pub fn refresh(provider: ProviderKind, account: &str) -> Result<RefreshedModels,
                 .map(|(id, name)| entry_named(id, name, ModelSource::Cached))
                 .collect::<Vec<_>>();
             if models.is_empty() {
-                return Err("Grok Build model metadata is unavailable; no listing was invented".into());
+                return Err(
+                    "Grok Build model metadata is unavailable; no listing was invented".into(),
+                );
+            }
+            models
+        }
+        ProviderKind::Opencode => {
+            let models = catalog::list_model_details(provider, &identity.home)
+                .into_iter()
+                .map(|(id, name)| entry_named(id, name, ModelSource::Cached))
+                .collect::<Vec<_>>();
+            if models.is_empty() {
+                return Err(
+                    "opencode model metadata is unavailable; no listing was invented".into(),
+                );
             }
             models
         }

@@ -15,7 +15,7 @@
 //! harness manifest identity, including a current hash for file manifests.
 
 use crate::store::{ProviderKind, TrustMode};
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -348,7 +348,7 @@ pub fn is_read_only_argv(provider: ProviderKind, argv: &[String]) -> bool {
         ProviderKind::Claude => pair(&["--permission-mode"], "plan"),
         ProviderKind::Cursor => pair(&["--mode"], "plan"),
         ProviderKind::Codex => pair(&["-s", "--sandbox"], "read-only"),
-        ProviderKind::Grok => pair(&["--always-approve"], "ACP permission mode"),
+        ProviderKind::Grok | ProviderKind::Opencode => pair(&[], "ACP permission mode"),
     }
 }
 

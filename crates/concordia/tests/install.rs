@@ -206,6 +206,9 @@ fn concordia_install_installs_this_exe_where_path_will_find_it() {
     let out = Command::new(CONCORDIA)
         .arg("install")
         .env("CONCORDIA_INSTALL_DIR", dir.path())
+        .env("CONCORDIA_TEST_GUARD", "1")
+        .env("CONCORDIA_TEST_HOME", dir.path().join("home"))
+        .env("CONCORDIA_STATE_DIR", dir.path().join("state"))
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
@@ -227,6 +230,9 @@ fn concordia_install_installs_this_exe_where_path_will_find_it() {
     let again = Command::new(&installed)
         .arg("install")
         .env("CONCORDIA_INSTALL_DIR", dir.path())
+        .env("CONCORDIA_TEST_GUARD", "1")
+        .env("CONCORDIA_TEST_HOME", dir.path().join("home"))
+        .env("CONCORDIA_STATE_DIR", dir.path().join("state"))
         .output()
         .unwrap();
     assert!(

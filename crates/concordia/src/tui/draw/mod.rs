@@ -130,10 +130,7 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         }
     }
     if let Some(cursor) = rename_cursor.filter(|_| {
-        !worker_input::active(app)
-            && !app.raster.active()
-            && app.picker.is_none()
-            && !app.key_sheet
+        !worker_input::active(app) && !app.raster.active() && app.picker.is_none() && !app.key_sheet
     }) {
         f.set_cursor_position(cursor);
     }
@@ -330,7 +327,13 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                 ),
                 Span::styled(e.help.clone(), Style::default().fg(Color::Indexed(245))),
                 Span::styled(
-                    if e.provider { "  provider" } else if e.custom { "  custom" } else { "" },
+                    if e.provider {
+                        "  provider"
+                    } else if e.custom {
+                        "  custom"
+                    } else {
+                        ""
+                    },
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
@@ -434,6 +437,7 @@ pub(super) fn provider_color(p: ProviderKind) -> Color {
         ProviderKind::Claude => Color::Indexed(215),
         ProviderKind::Cursor => Color::Indexed(111),
         ProviderKind::Grok => Color::Indexed(208),
+        ProviderKind::Opencode => Color::Indexed(141),
     }
 }
 
@@ -1361,13 +1365,33 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     };
     if picker.kind == PickerKind::GrokBotForm {
         if let Some(form) = &app.grok_bot_form {
-            let values = [&form.account, &form.routine_id, &form.name, &form.webhook_url];
-            let labels = ["Account", "Routine ID", "Display name", "Webhook URL (HTTPS)"];
+            let values = [
+                &form.account,
+                &form.routine_id,
+                &form.name,
+                &form.webhook_url,
+            ];
+            let labels = [
+                "Account",
+                "Routine ID",
+                "Display name",
+                "Webhook URL (HTTPS)",
+            ];
             for ((row, label), value) in picker.rows.iter_mut().take(4).zip(labels).zip(values) {
-                row.label = format!("{label}: {}", if value.is_empty() { "<empty>" } else { value });
+                row.label = format!(
+                    "{label}: {}",
+                    if value.is_empty() { "<empty>" } else { value }
+                );
             }
             if let Some(row) = picker.rows.get_mut(4) {
-                row.label = format!("Webhook key: {}", if form.key.is_empty() { "<empty>" } else { "••••••••" });
+                row.label = format!(
+                    "Webhook key: {}",
+                    if form.key.is_empty() {
+                        "<empty>"
+                    } else {
+                        "••••••••"
+                    }
+                );
             }
         }
     }
@@ -1482,11 +1506,25 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::default()
                 };
                 let mut head = if picker.kind == PickerKind::Agents {
-                    let status_color = if label.contains("●") { Color::Yellow } else if label.contains("×") { Color::Red } else { Color::Green };
+                    let status_color = if label.contains("●") {
+                        Color::Yellow
+                    } else if label.contains("×") {
+                        Color::Red
+                    } else {
+                        Color::Green
+                    };
                     if let Some((prefix, rest)) = label.split_once(' ') {
-                        vec![Span::styled(prefix.to_owned(), label_style), Span::styled(" ", label_style), Span::styled(rest.to_owned(), label_style.fg(status_color))]
-                    } else { vec![Span::styled(label.to_owned(), label_style)] }
-                } else { vec![Span::styled(label.to_owned(), label_style)] };
+                        vec![
+                            Span::styled(prefix.to_owned(), label_style),
+                            Span::styled(" ", label_style),
+                            Span::styled(rest.to_owned(), label_style.fg(status_color)),
+                        ]
+                    } else {
+                        vec![Span::styled(label.to_owned(), label_style)]
+                    }
+                } else {
+                    vec![Span::styled(label.to_owned(), label_style)]
+                };
                 if current {
                     head.push(Span::styled(
                         " \u{b7} current",

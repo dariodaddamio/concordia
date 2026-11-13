@@ -199,3 +199,6 @@ a per-account daily cap. Source:
 [`store.rs` (`same_provider_automatic`, `same_provider_terms_accepted`,
 `automatic_handoff_allowed`)](../crates/concordia/src/store.rs), and
 [`config.rs` (`Continuation`)](../crates/concordia/src/config.rs).
+OpenCode is available as an ACP provider. See [the opencode provider page](provider-opencode.md) for its confirmed native contract.
+
+Claude Code also accepts a user-owned base-URL profile. Concordia forwards `ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` from the user's environment or selected Claude `settings.json` `env` object. Concordia never stores `ANTHROPIC_API_KEY` or any other token. DeepSeek, Moonshot Kimi, and z.ai GLM are examples of services that document Claude-compatible endpoints. Check each service's current instructions before use. Do not add a `/v1` suffix unless that service explicitly requires it. Remove a leftover `ANTHROPIC_API_KEY` when it conflicts with the selected base URL.

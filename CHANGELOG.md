@@ -1,5 +1,10 @@
 # Changelog
 
+### Added (2026-11-12x)
+
+- Added the opencode ACP provider and Claude Code base-URL environment profiles. Concordia stores
+  no provider keys.
+
 ### Fixed (2026-11-12w)
 
 - Corrected Agents row status glyphs and selected-agent numbering. The existing picker regression

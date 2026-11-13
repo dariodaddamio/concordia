@@ -77,9 +77,10 @@ fn slash_palette_prefix_filter_does_not_disable_prompt_history() {
 #[test]
 fn reasoning_chunks_are_separated_only_at_reasoning_boundaries() {
     let mut ui = Ui::new();
-    ui.app.apply_progress(crate::provider::turn::TurnProgress::Thinking(
-        "first".into(),
-    ));
+    ui.app
+        .apply_progress(crate::provider::turn::TurnProgress::Thinking(
+            "first".into(),
+        ));
     ui.app
         .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
             "second".into(),
@@ -324,7 +325,12 @@ fn questions_are_selectable_preserve_drafts_and_pause_automatic_queued_work() {
     ui.key(KeyCode::Down, KeyModifiers::NONE);
     ui.key(KeyCode::Enter, KeyModifiers::NONE);
     assert!(ui.rx.try_recv().is_err());
-    assert!(ui.app.queue.items.iter().any(|item| item.contains("Full refactor")));
+    assert!(ui
+        .app
+        .queue
+        .items
+        .iter()
+        .any(|item| item.contains("Full refactor")));
     assert_eq!(ui.app.editor.text(), "unsent draft");
     assert_eq!(
         ui.app.native_session_id.as_deref(),
@@ -383,7 +389,12 @@ fn mouse_answers_and_force_send_wait_for_cancellation_and_dispatch_once() {
     let rect = ui.target("2. Change it");
     ui.click(rect);
     assert!(ui.rx.try_recv().is_err());
-    assert!(ui.app.queue.items.iter().any(|item| item.contains("Change it")));
+    assert!(ui
+        .app
+        .queue
+        .items
+        .iter()
+        .any(|item| item.contains("Change it")));
     assert!(ui.rx.try_recv().is_err());
     assert_eq!(ui.app.editor.text(), "draft stays here");
 }
@@ -485,4 +496,3 @@ fn run_status_sits_below_transcript_and_user_rows_have_background_and_completion
     assert_eq!(ui.app.view.scroll, 10);
     assert_eq!(ui.app.view.visible().start, first_visible);
 }
-

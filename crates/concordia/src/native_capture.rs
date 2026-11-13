@@ -437,11 +437,14 @@ fn tools(value: &Value, provider: ProviderKind) -> Vec<Tool> {
             .as_str()
             .into_iter()
             .collect::<Vec<_>>(),
-        ProviderKind::Cursor | ProviderKind::Grok => value["params"]["update"]["toolCallId"]
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => value["params"]
+            ["update"]["toolCallId"]
             .as_str()
             .into_iter()
             .collect(),
-        ProviderKind::Claude => unreachable!("Claude tool records handled above"),
+        ProviderKind::Claude => {
+            unreachable!("provider tool records handled above")
+        }
     };
     ids.into_iter()
         .filter_map(|id| {
@@ -467,7 +470,9 @@ fn unavailable_role(value: &Value, provider: ProviderKind, session: &str) -> Opt
     let payload = match provider {
         ProviderKind::Codex => &value["payload"],
         ProviderKind::Claude => &value["message"],
-        ProviderKind::Cursor | ProviderKind::Grok => &value["params"]["update"],
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
+            &value["params"]["update"]
+        }
     };
     let role = match provider {
         ProviderKind::Codex if value["type"] == "response_item" => payload["role"].as_str()?,

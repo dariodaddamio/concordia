@@ -32,6 +32,7 @@ fn cheap_model(provider: ProviderKind) -> String {
         ProviderKind::Codex => "gpt-5.6-luna",
         ProviderKind::Claude => "haiku",
         ProviderKind::Grok => "grok-build",
+        ProviderKind::Opencode => "opencode",
     }
     .to_string()
 }
@@ -52,6 +53,7 @@ fn mode(provider: ProviderKind) -> Mode {
         ProviderKind::Cursor => Mode::CursorAcp,
         ProviderKind::Grok => Mode::GrokAcp,
         ProviderKind::Codex | ProviderKind::Claude => Mode::Standard,
+        ProviderKind::Opencode => Mode::OpencodeAcp,
     }
 }
 

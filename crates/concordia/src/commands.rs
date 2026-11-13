@@ -271,8 +271,9 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
             false,
         )),
         "exit" | "quit" | "q" => Some((SlashCommand::Exit, false)),
-        "workers" | "worker" | "delegate" | "delegates" | "crew" | "worker-panel" | "scope" =>
-            Some((SlashCommand::Unknown(cmd), false)),
+        "workers" | "worker" | "delegate" | "delegates" | "crew" | "worker-panel" | "scope" => {
+            Some((SlashCommand::Unknown(cmd), false))
+        }
         other => Some((SlashCommand::Unknown(other.to_string()), false)),
     }
 }
@@ -287,6 +288,7 @@ pub fn parse_provider(s: &str) -> Option<ProviderKind> {
         "claude" => Some(ProviderKind::Claude),
         "cursor" | "agent" => Some(ProviderKind::Cursor),
         "grok" | "grok-build" => Some(ProviderKind::Grok),
+        "opencode" | "open-code" => Some(ProviderKind::Opencode),
         _ => None,
     }
 }
@@ -741,7 +743,10 @@ mod tests {
             account: "test",
             trust: TrustMode::Plan,
         };
-        assert_eq!(dispatch_slash(cmd("/provider-native"), &ctx).1, Vec::<String>::new());
+        assert_eq!(
+            dispatch_slash(cmd("/provider-native"), &ctx).1,
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -837,82 +842,82 @@ mod update_tests {
         assert_eq!(c("/delegate"), SlashCommand::Unknown("delegate".into()));
         assert_eq!(c("/crew list"), SlashCommand::Unknown("crew".into()));
         assert_eq!(c("/scope"), SlashCommand::Unknown("scope".into()));
-    /*
-        assert_eq!(
-            c("/workers add Codex-2"),
-            SlashCommand::WorkersAdd(Some("codex-2".into()))
-        );
-        assert_eq!(c("/workers add"), SlashCommand::WorkersAdd(None));
-        assert_eq!(
-            c("/workers rm codex-2"),
-            SlashCommand::WorkersRemove(Some("codex-2".into()))
-        );
-        assert_eq!(c("/crew list"), SlashCommand::CrewList);
-        assert_eq!(
-            c("/crew use office"),
-            SlashCommand::CrewUse("office".into())
-        );
-        assert_eq!(c("/crew clear"), SlashCommand::CrewClear);
-        assert_eq!(c("/delegate"), SlashCommand::DelegateHelp);
-        assert_eq!(c("/delegate help"), SlashCommand::DelegateHelp);
-        assert_eq!(c("/delegate graph"), SlashCommand::DelegateGraph);
-        assert_eq!(c("/delegate routes"), SlashCommand::DelegateRoutes(None));
-        assert_eq!(
-            c("/delegate routes 7"),
-            SlashCommand::DelegateRoutes(Some(7))
-        );
-        assert_eq!(
-            c("/delegate policy set primary:Native-Model backup"),
-            SlashCommand::DelegatePolicy("set primary:Native-Model backup".into())
-        );
-        assert_eq!(
-            c("/delegate after 1,2   Codex-2   Preserve  exact\nTASK"),
-            SlashCommand::DelegateAfter {
-                after: vec![1, 2],
-                target: "codex-2".into(),
-                task: "Preserve  exact\nTASK".into()
+        /*
+            assert_eq!(
+                c("/workers add Codex-2"),
+                SlashCommand::WorkersAdd(Some("codex-2".into()))
+            );
+            assert_eq!(c("/workers add"), SlashCommand::WorkersAdd(None));
+            assert_eq!(
+                c("/workers rm codex-2"),
+                SlashCommand::WorkersRemove(Some("codex-2".into()))
+            );
+            assert_eq!(c("/crew list"), SlashCommand::CrewList);
+            assert_eq!(
+                c("/crew use office"),
+                SlashCommand::CrewUse("office".into())
+            );
+            assert_eq!(c("/crew clear"), SlashCommand::CrewClear);
+            assert_eq!(c("/delegate"), SlashCommand::DelegateHelp);
+            assert_eq!(c("/delegate help"), SlashCommand::DelegateHelp);
+            assert_eq!(c("/delegate graph"), SlashCommand::DelegateGraph);
+            assert_eq!(c("/delegate routes"), SlashCommand::DelegateRoutes(None));
+            assert_eq!(
+                c("/delegate routes 7"),
+                SlashCommand::DelegateRoutes(Some(7))
+            );
+            assert_eq!(
+                c("/delegate policy set primary:Native-Model backup"),
+                SlashCommand::DelegatePolicy("set primary:Native-Model backup".into())
+            );
+            assert_eq!(
+                c("/delegate after 1,2   Codex-2   Preserve  exact\nTASK"),
+                SlashCommand::DelegateAfter {
+                    after: vec![1, 2],
+                    target: "codex-2".into(),
+                    task: "Preserve  exact\nTASK".into()
+                }
+            );
+            for invalid in [
+                "/delegate after",
+                "/delegate after 0 codex task",
+                "/delegate after 1,,2 codex task",
+                "/delegate graph typo",
+                "/delegate routes 0",
+                "/delegate routes invalid",
+                "/delegate routes 1 2",
+            ] {
+                assert!(matches!(c(invalid), SlashCommand::Invalid(_)));
             }
-        );
-        for invalid in [
-            "/delegate after",
-            "/delegate after 0 codex task",
-            "/delegate after 1,,2 codex task",
-            "/delegate graph typo",
-            "/delegate routes 0",
-            "/delegate routes invalid",
-            "/delegate routes 1 2",
-        ] {
-            assert!(matches!(c(invalid), SlashCommand::Invalid(_)));
-        }
-        assert_eq!(
-            c("/delegate stop Claude"),
-            SlashCommand::DelegateStop(Some("claude".into()))
-        );
-        assert_eq!(c("/delegate use"), SlashCommand::DelegateUse(None));
-        assert_eq!(
-            c("/delegate protocol ON"),
-            SlashCommand::DelegateProtocol(Some(true))
-        );
-        assert_eq!(
-            c("/delegate protocol"),
-            SlashCommand::DelegateProtocol(None)
-        );
-        // The task keeps its case, spacing inside and punctuation.
-        assert_eq!(
-            c("/delegate Codex-2   Fix the BUG in  src/a.rs, please"),
-            SlashCommand::Delegate {
-                target: "codex-2".into(),
-                task: "Fix the BUG in  src/a.rs, please".into()
-            }
-        );
-        assert_eq!(
-            c("/delegate auto"),
-            SlashCommand::Delegate {
-                target: "auto".into(),
-                task: String::new()
-            }
-        );
-    */
+            assert_eq!(
+                c("/delegate stop Claude"),
+                SlashCommand::DelegateStop(Some("claude".into()))
+            );
+            assert_eq!(c("/delegate use"), SlashCommand::DelegateUse(None));
+            assert_eq!(
+                c("/delegate protocol ON"),
+                SlashCommand::DelegateProtocol(Some(true))
+            );
+            assert_eq!(
+                c("/delegate protocol"),
+                SlashCommand::DelegateProtocol(None)
+            );
+            // The task keeps its case, spacing inside and punctuation.
+            assert_eq!(
+                c("/delegate Codex-2   Fix the BUG in  src/a.rs, please"),
+                SlashCommand::Delegate {
+                    target: "codex-2".into(),
+                    task: "Fix the BUG in  src/a.rs, please".into()
+                }
+            );
+            assert_eq!(
+                c("/delegate auto"),
+                SlashCommand::Delegate {
+                    target: "auto".into(),
+                    task: String::new()
+                }
+            );
+        */
     }
 
     #[test]
