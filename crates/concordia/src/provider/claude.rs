@@ -9,6 +9,7 @@ pub struct ClaudeTurnRequest<'a> {
     pub model: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
+    pub standing_context: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +100,10 @@ pub fn plan_claude_turn_with(
         TrustMode::Full => {
             argv.push("--dangerously-skip-permissions".into());
         }
+    }
+    if let Some(context) = req.standing_context.filter(|text| !text.is_empty()) {
+        argv.push("--append-system-prompt".into());
+        argv.push(context.to_owned());
     }
     if let Some(sid) = req
         .native_session_id

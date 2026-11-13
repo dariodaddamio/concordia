@@ -900,6 +900,28 @@ impl Delegates {
                 }
             };
             let images = message.images();
+            let standing_tools = if matches!(provider, ProviderKind::Claude | ProviderKind::Codex) {
+                crate::mcp::registered_tool_names()
+            } else {
+                Vec::new()
+            };
+            let standing = crate::provider::standing_context::render(
+                &crate::provider::standing_context::State {
+                    provider,
+                    account: &account,
+                    role: "worker",
+                    tools: &standing_tools,
+                    handoff_map: spec.prefix.as_deref(),
+                },
+            );
+            let standing_prefix = format!(
+                "{}{}",
+                crate::provider::standing_context::tag(&standing),
+                spec.prefix
+                    .as_deref()
+                    .map(|prefix| format!("\n{prefix}"))
+                    .unwrap_or_default()
+            );
             let req = ProviderTurnRequest {
                 images: &images,
                 provider,
@@ -910,7 +932,7 @@ impl Delegates {
                 // Always a fresh native session: never `resume --last`, never a foreign id.
                 native_session_id: None,
                 trust: spec.trust,
-                context_prefix: spec.prefix.as_deref(),
+                context_prefix: Some(&standing_prefix),
                 local_time: state_root
                     .as_deref()
                     .is_some_and(|root| crate::config::for_root(root).ui.time_header)

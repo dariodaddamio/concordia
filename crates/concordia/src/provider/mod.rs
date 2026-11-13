@@ -13,6 +13,7 @@ pub mod recording;
 pub(crate) mod session_guard;
 pub mod stream_cards;
 pub mod stream_json;
+pub mod standing_context;
 pub mod turn;
 
 use crate::store::ProviderKind;
@@ -658,6 +659,7 @@ mod tests {
                 model: None,
                 native_session_id: None,
                 trust: crate::store::TrustMode::Plan,
+                standing_context: None,
             },
             &env,
         );
@@ -669,6 +671,7 @@ mod tests {
                 model: None,
                 native_session_id: None,
                 trust: crate::store::TrustMode::Plan,
+                standing_context: None,
             },
             &env,
         );

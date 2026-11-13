@@ -10,6 +10,7 @@ pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
 use crate::provider::stream_cards::{classify_codex_event, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
+use crate::provider::standing_context;
 #[path = "turn_acp.rs"]
 mod acp;
 #[path = "turn_appserver.rs"]
@@ -135,6 +136,7 @@ pub struct PlannedTurn {
     pub env_remove: Vec<String>,
     pub cwd: String,
     pub provider: ProviderKind,
+    pub standing_context: Option<String>,
 }
 
 /// Inspect planner-owned options, excluding the final prompt and option values.
@@ -280,7 +282,7 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         trust,
         ..req.clone()
     };
-    let mut plan = plan_provider_turn_raw(req)?;
+    let plan = plan_provider_turn_raw(req)?;
     // Current structured/native controls stay explicit; unsupported observed interfaces fail.
     crate::provider::compat::validate_planned(&plan, req.trust)?;
     // A turn the gate made read-only must still be read-only, or it does not start.
@@ -295,8 +297,9 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
     let raw_prompt = document_message
         .as_ref()
         .map_or(req.prompt, |message| message.text.as_str());
-    let mut prompt = match req.context_prefix {
-        Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{raw_prompt}"),
+    let (standing_context, retrieval_prefix) = standing_context::extract(req.context_prefix);
+    let mut prompt = match (!retrieval_prefix.is_empty()).then_some(retrieval_prefix.as_str()) {
+        Some(prefix) => format!("{prefix}\n{raw_prompt}"),
         _ => raw_prompt.to_string(),
     };
     if req
@@ -327,6 +330,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 model: req.model,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
+            standing_context,
             })?;
             codex::assert_safe_argv(&plan.argv[..plan.argv.len() - 1])?;
             let mut env = Vec::new();
@@ -342,6 +346,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 prompt: prompt.clone(),
                 new_session_id: None,
                 provider: ProviderKind::Codex,
+                standing_context: standing_context.map(str::to_owned),
             })
         }
         ProviderKind::Claude => {
@@ -352,6 +357,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 model: req.model,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
+                standing_context,
             })?;
             Ok(PlannedTurn {
                 command: plan.command,
@@ -362,6 +368,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 prompt: prompt.clone(),
                 new_session_id: plan.new_session_id,
                 provider: ProviderKind::Claude,
+                standing_context: standing_context.map(str::to_owned),
             })
         }
         ProviderKind::Cursor => {
@@ -382,6 +389,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 prompt: prompt.clone(),
                 new_session_id: None,
                 provider: ProviderKind::Cursor,
+                standing_context: standing_context.map(str::to_owned),
             })
         }
         ProviderKind::Grok => {
@@ -402,6 +410,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 prompt: prompt.clone(),
                 new_session_id: None,
                 provider: ProviderKind::Grok,
+                standing_context: standing_context.map(str::to_owned),
             })
         }
         ProviderKind::Opencode => {
@@ -422,6 +431,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 prompt: prompt.clone(),
                 new_session_id: None,
                 provider: ProviderKind::Opencode,
+                standing_context: standing_context.map(str::to_owned),
             })
         }
     }
@@ -795,6 +805,14 @@ async fn run_provider_turn_inner(
         plan.argv.insert(at, id.clone());
         plan.argv.insert(at, "--resume".into());
         plan.new_session_id = Some(id);
+    }
+    if plan.provider == ProviderKind::Cursor {
+        if let Some(context) = plan.standing_context.as_deref() {
+            plan.prompt = format!("{context}\n{}", plan.prompt);
+            if let Some(prompt) = plan.argv.last_mut() {
+                *prompt = plan.prompt.clone();
+            }
+        }
     }
     let mut launch = prepare(&plan)?;
     if let Some(message) = documents {

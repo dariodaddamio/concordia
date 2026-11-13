@@ -1,5 +1,11 @@
 # Changelog
 
+### Added (2026-11-13k)
+
+- Give provider sessions a deterministic Concordia standing context through each provider's
+  supported system or developer channel, with a bounded fallback for ACP agents without that
+  capability. Record the provider channels and required live checks in the provider documentation.
+
 ### Added (2026-11-13j)
 
 - Add `concordia chat repair` with a dry run, dated task backups, content-aware repair and removal

@@ -212,6 +212,7 @@ mod tests {
                 env: vec![],
                 cwd: ".".into(),
                 provider: crate::store::ProviderKind::Codex,
+                standing_context: None,
             };
             let launch = crate::provider::launch::prepare(&plan).unwrap();
             assert_eq!(launch.program, node.to_string_lossy());

@@ -343,9 +343,7 @@ impl Session {
         self.journal()
             .iter()
             .filter(|e| e["kind"] == "start")
-            .map(|e| {
-                concordia::prompt_time::strip_header(e["prompt"].as_str().unwrap()).to_string()
-            })
+            .map(|e| visible_prompt(e["prompt"].as_str().unwrap()))
             .collect()
     }
 
@@ -477,6 +475,15 @@ impl Drop for Session {
             let _ = self.child.wait();
         }
     }
+}
+
+fn visible_prompt(prompt: &str) -> String {
+    let (_, prompt) = concordia::provider::standing_context::extract(Some(prompt));
+    let prompt = prompt
+        .strip_prefix("You are running inside Concordia, ")
+        .and_then(|rest| rest.find("\n[").map(|index| &rest[index + 1..]))
+        .unwrap_or(&prompt);
+    concordia::prompt_time::strip_header(prompt).to_owned()
 }
 
 #[test]

@@ -673,6 +673,14 @@ Going public:
 
 ## This slice
 
+### Q9 provider session context - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/src/provider/{standing_context,turn,claude,codex,turn_acp}.rs`, `crates/concordia/src/{mcp,tui/run,delegate}.rs` | ok: 1, 2, 4, 5, 6, 9, 10 | Keep one deterministic context renderer and deliver it through existing provider launch/session owners. Read tool names from the MCP registry and use tagged fallback text only when the provider lacks a durable channel. |
+| `crates/concordia/tests/control_plane.rs`, provider unit tests | ok: 5, 9, 10 | Prove launch arguments, bounded context construction and the no-duplicate tag rule at existing provider test owners. |
+| `docs/provider-session-context.md`, `docs/README.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Document the implemented channel per provider, live checks and build identity. |
+
 ### Q8 chat repair - anti-slop gate
 
 | path | tendency_check | justification |

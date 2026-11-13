@@ -163,6 +163,7 @@ mod tests {
             env: Vec::new(),
             cwd: ".".into(),
             provider,
+            standing_context: None,
         }
     }
 

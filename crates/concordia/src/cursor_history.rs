@@ -133,7 +133,7 @@ pub(super) fn open(root: &std::path::Path, binding: &Binding) -> Result<Source, 
             let command = crate::provider::cursor::find_agent_bin()?;
             let plan = crate::provider::PlannedTurn {
                 command, argv: vec!["acp".into()], env: Vec::new(), env_remove: Vec::new(), cwd: cwd.to_string_lossy().into_owned(),
-                prompt: "acp".into(), new_session_id: None, provider: crate::store::ProviderKind::Cursor,
+                prompt: "acp".into(), new_session_id: None, provider: crate::store::ProviderKind::Cursor, standing_context: None,
             };
             let launch = crate::provider::launch::prepare(&plan).map_err(|e|e.to_string())?;
         let mut command = crate::process_ui::tokio_command(&launch.program);

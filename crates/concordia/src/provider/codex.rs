@@ -13,6 +13,7 @@ pub struct TurnRequest<'a> {
     pub model: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
+    pub standing_context: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +65,10 @@ pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Res
             argv.push("--skip-git-repo-check".into());
             argv.push("--dangerously-bypass-approvals-and-sandbox".into());
         }
+    }
+    if let Some(context) = req.standing_context.filter(|text| !text.is_empty()) {
+        argv.push("-c".into());
+        argv.push(format!("developer_instructions={}", serde_json::to_string(context)?));
     }
     if let Some(sid) = req
         .native_session_id

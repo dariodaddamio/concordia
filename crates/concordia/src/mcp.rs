@@ -17,6 +17,12 @@ pub fn agents_dir(root: &Path) -> PathBuf {
     root.join("agents")
 }
 
+/// Names returned by this server's `tools/list` response. Callers use this registry when
+/// describing a session, so the standing context cannot drift from the registered surface.
+pub fn registered_tool_names() -> Vec<String> {
+    vec!["agents".into()]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AgentRecord {
     pub agent_id: String,

@@ -14,6 +14,15 @@
 
 use std::io::{Read, Write};
 
+fn visible_prompt(prompt: &str) -> String {
+    let (_, prompt) = concordia::provider::standing_context::extract(Some(prompt));
+    let prompt = prompt
+        .strip_prefix("You are running inside Concordia, ")
+        .and_then(|rest| rest.find("\n[").map(|index| &rest[index + 1..]))
+        .unwrap_or(&prompt);
+    concordia::prompt_time::strip_header(prompt).to_owned()
+}
+
 #[cfg(windows)]
 #[allow(clippy::zombie_processes)]
 fn maybe_probe_grandchild() {
@@ -992,15 +1001,13 @@ fn interaction(args: &[String]) {
         std::process::exit(3);
     }
     // Keep the raw provider prompt in the journal, but echo the user's text in the reply.
-    let reply = if concordia::prompt_time::strip_header(&prompt).trim() == "[mermaid]" {
+    let visible_prompt = visible_prompt(&prompt);
+    let reply = if visible_prompt.trim() == "[mermaid]" {
         "```mermaid\nflowchart LR\n A[Prompt] --> B[Provider]\n```".into()
-    } else if concordia::prompt_time::strip_header(&prompt).trim() == "[choices]" {
+    } else if visible_prompt.trim() == "[choices]" {
         "Which approach do you prefer?\n1. Small patch\n2. Full refactor".into()
     } else {
-        format!(
-            "FAKE REPLY: {}",
-            concordia::prompt_time::strip_header(&prompt)
-        )
+        format!("FAKE REPLY: {visible_prompt}")
     };
     if provider == "codex" && prompt.contains("[agents]") {
         emit(
@@ -1035,4 +1042,19 @@ fn interaction(args: &[String]) {
         }
     }
     journal("done");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_prompt;
+
+    #[test]
+    fn fake_reply_view_hides_standing_context_but_keeps_user_prompt() {
+        for prompt in [
+            "<concordia_standing_context>inside Concordia</concordia_standing_context>\n[Fri Nov 13 2026, 6:55am local]\nuser text",
+            "You are running inside Concordia, a native Windows app.\n[Fri Nov 13 2026, 6:55am local]\nuser text",
+        ] {
+            assert_eq!(visible_prompt(prompt), "user text");
+        }
+    }
 }

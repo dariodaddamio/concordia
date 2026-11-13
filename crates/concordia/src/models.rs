@@ -275,6 +275,7 @@ fn list_cursor(home: &Path) -> Result<Vec<ModelEntry>, String> {
         prompt: "models".into(),
         new_session_id: None,
         provider: ProviderKind::Cursor,
+        standing_context: None,
     };
     let launch = crate::provider::launch::prepare(&plan).map_err(|error| error.to_string())?;
     let mut command = crate::process_ui::command(&launch.program);

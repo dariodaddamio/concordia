@@ -30,6 +30,7 @@ fn codex_workspace_argv_is_stable() {
         model: Some("gpt-5.6-sol"),
         native_session_id: Some("sess-1"),
         trust: TrustMode::Edit,
+        standing_context: None,
     })
     .unwrap();
     assert_eq!(
@@ -64,6 +65,7 @@ fn codex_full_and_ask_trust_flags() {
         model: None,
         native_session_id: None,
         trust: TrustMode::Full,
+        standing_context: None,
     })
     .unwrap();
     assert!(full
@@ -78,12 +80,47 @@ fn codex_full_and_ask_trust_flags() {
         model: None,
         native_session_id: None,
         trust: TrustMode::Ask,
+        standing_context: None,
     })
     .unwrap();
     assert!(ask
         .argv
         .windows(2)
         .any(|w| w[0] == "-s" && w[1] == "read-only"));
+}
+
+#[test]
+fn standing_context_uses_native_claude_and_codex_channels_once() {
+    let cwd = PathBuf::from(".");
+    let context = "You are running inside Concordia. Use agents.";
+    let claude = plan_claude_turn(&ClaudeTurnRequest {
+        prompt: "hello",
+        cwd: &cwd,
+        config_dir: None,
+        model: None,
+        native_session_id: None,
+        trust: TrustMode::Edit,
+        standing_context: Some(context),
+    })
+    .unwrap();
+    assert_eq!(claude.argv.iter().filter(|arg| *arg == context).count(), 1);
+    assert!(claude.argv.windows(2).any(|w| w == ["--append-system-prompt", context]));
+
+    let codex = plan_turn_argv(&TurnRequest {
+        prompt: "hello",
+        cwd: &cwd,
+        codex_home: None,
+        model: None,
+        native_session_id: None,
+        trust: TrustMode::Edit,
+        standing_context: Some(context),
+    })
+    .unwrap();
+    assert_eq!(codex.argv.iter().filter(|arg| *arg == context).count(), 0);
+    assert!(codex
+        .argv
+        .iter()
+        .any(|arg| arg == r#"developer_instructions="You are running inside Concordia. Use agents.""#));
 }
 
 #[test]
@@ -166,6 +203,7 @@ fn claude_workspace_argv_and_resume() {
         model: Some("sonnet"),
         native_session_id: Some("sess-claude"),
         trust: TrustMode::Edit,
+        standing_context: None,
     })
     .unwrap();
     assert!(plan
@@ -313,6 +351,7 @@ fn claude_first_turn_names_a_session_and_later_turns_resume_it() {
             model: None,
             native_session_id: sid,
             trust: TrustMode::Edit,
+        standing_context: None,
         })
         .unwrap()
     };

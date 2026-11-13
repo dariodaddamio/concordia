@@ -17,6 +17,7 @@ Feature implementation is paused; purpose and scope are being settled with the o
 
 - [Architecture](architecture.md) and [directory map](directory-map.md).
 - [Provider connections](how-concordia-connects-providers.md), including [Grok Build](provider-grok-build.md), [opencode](provider-opencode.md), and [Grok Bot routines](provider-grok-bot.md).
+- [Provider session context](provider-session-context.md) records the durable context channel and live checks.
 - [Agents MCP](mcp.md) and [delegation](delegation.md).
 - [Native source pointers](native-memory.md).
 - [Prompt construction](how-concordia-builds-prompts.md).

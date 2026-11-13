@@ -1,5 +1,12 @@
 ## This slice
 
+### Q9 test regression - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/tests/support/fake_provider.rs | ok: 1, 4, 5, 9, 10 | Keep the fake provider's visible-reply projection at the fixture boundary; reuse the existing standing-context extractor and add only the regression test required by the failed UI journey. |
+| docs/agent/anti-slop-justifications.jsonl | ok: 1, 5, 10 | Record the narrow test-fixture scope without adding a production compatibility path. |
+
 ### Q4 updates, shortcuts and guided commands - anti-slop gate
 
 | path | tendency_check | justification |

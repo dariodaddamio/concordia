@@ -23,6 +23,9 @@ struct Connection {
     prompting: bool,
     bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ask_bridge::BridgeRequest>,
     available_commands: std::collections::HashSet<String>,
+    standing_context: Option<String>,
+    system_prompt_supported: bool,
+    last_compaction: Option<String>,
 }
 impl Connection {
     async fn emit(&self, event: TurnProgress) {
@@ -245,6 +248,27 @@ impl Connection {
                 .collect();
             return;
         }
+        if update["sessionUpdate"] == "compaction_update"
+            && update["status"] == "completed"
+            && !self.system_prompt_supported
+        {
+            let id = update["compactionId"].as_str().unwrap_or_default();
+            if should_reinject_context(
+                self.system_prompt_supported,
+                self.last_compaction.as_deref(),
+                id,
+            ) {
+                self.last_compaction = Some(id.to_owned());
+                if let (Some(session), Some(context)) =
+                    (self.session_id.as_deref(), self.standing_context.as_deref())
+                {
+                    let _ = self
+                        .write(json!({"jsonrpc":"2.0","id":9001,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":context}]}}))
+                        .await;
+                }
+            }
+            return;
+        }
         match update["sessionUpdate"].as_str().unwrap_or("") {
             "agent_message_chunk" => {
                 if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
@@ -298,6 +322,10 @@ impl Connection {
 /// started before ACP became the default cannot be loaded here. The caller continues it in print
 /// mode; nothing was prompted and nothing was shown.
 pub(super) const SESSION_NOT_IN_ACP: &str = "Cursor ACP has no session with this id";
+
+fn should_reinject_context(system_prompt_supported: bool, last: Option<&str>, id: &str) -> bool {
+    !system_prompt_supported && !id.is_empty() && last != Some(id)
+}
 
 fn ask_server_config(endpoint: &str, token: &str, enabled: bool) -> Value {
     if !enabled || endpoint.is_empty() {
@@ -461,6 +489,9 @@ pub(super) async fn run(
         prompting: false,
         bridge_rx,
         available_commands: std::collections::HashSet::new(),
+        standing_context: plan.standing_context.clone(),
+        system_prompt_supported: false,
+        last_compaction: None,
     };
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"protocolVersion":1,"clientCapabilities":{"auth":{"terminal":true},"elicitation":{"form":true},"session":{"compaction":true}},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}))).await??;
@@ -481,6 +512,15 @@ pub(super) async fn run(
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
             ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":mcp_servers}))
         }else{("session/new",json!({"cwd":plan.cwd,"mcpServers":mcp_servers}))};
+        let system_prompt_supported = plan.standing_context.is_some() && (init.pointer("/agentCapabilities/sessionCapabilities/systemPrompt").is_some()
+                || init.pointer("/capabilities/session/systemPrompt").is_some());
+        conn.system_prompt_supported = system_prompt_supported;
+        if let Some(context) = plan.standing_context.as_deref().filter(|_| {
+            init.pointer("/agentCapabilities/sessionCapabilities/systemPrompt").is_some()
+                || init.pointer("/capabilities/session/systemPrompt").is_some()
+        }) {
+            params["systemPrompt"] = json!({"mode":"append","content":[{"type":"text","text":context}]});
+        }
         if req.provider == ProviderKind::Grok && req.trust == TrustMode::Full {
             params["_meta"] = json!({"yoloMode": true});
         }
@@ -508,6 +548,11 @@ pub(super) async fn run(
             tokio::time::timeout(Duration::from_secs(12),conn.rpc(4,method,params)).await??;
         }
         conn.prompting = true;
+        if plan.standing_context.is_some()
+            && !system_prompt_supported
+        {
+            content.insert(0, json!({"type":"text","text":plan.standing_context.as_deref().unwrap()}));
+        }
         let result=conn.rpc(5,"session/prompt",json!({"sessionId":sid,"prompt":content})).await?;
         if result["stopReason"]=="cancelled"{conn.out.cancelled=true;}
         Ok::<(),anyhow::Error>(())
@@ -548,7 +593,10 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{acp_argv, acp_model_id, ask_server_config, model_config_value};
+    use super::{
+        acp_argv, acp_model_id, ask_server_config, model_config_value,
+        should_reinject_context,
+    };
     use crate::store::ProviderKind;
 
     #[test]
@@ -560,6 +608,14 @@ mod tests {
         let enabled = ask_server_config("127.0.0.1:1234", "token", true);
         assert_eq!(enabled[0]["name"], "concordia-ask");
         assert_eq!(enabled[0]["env"][1]["value"], "token");
+    }
+
+    #[test]
+    fn compaction_reinjects_once_only_when_no_system_channel_exists() {
+        assert!(should_reinject_context(false, None, "compact-1"));
+        assert!(!should_reinject_context(false, Some("compact-1"), "compact-1"));
+        assert!(!should_reinject_context(true, None, "compact-2"));
+        assert!(!should_reinject_context(false, None, ""));
     }
 
     #[test]
