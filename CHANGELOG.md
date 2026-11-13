@@ -1,5 +1,23 @@
 # Changelog
 
+### Fixed (2026-11-13v)
+
+- Refresh repeated Agent reports by identity and keep all row columns visible in narrow views.
+
+### Fixed (2026-11-13u)
+
+- Preserve full model names in Agent rows and retain each task's own status and origin.
+
+### Fixed (2026-11-13t)
+
+- Keep Agent rows aligned at 100 columns, right-align task durations and retain task history in
+  the detail card.
+
+### Fixed (2026-11-13r)
+
+- Match the Agents view to the reference layout with aligned agent columns, six-cell context
+  bars, grouped token counts, selectable detail panels and clean outside-run rows.
+
 ### Fixed (2026-11-13q)
 
 - Keep every connected account visible on Home, label unavailable usage explicitly and report

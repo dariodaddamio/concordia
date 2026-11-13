@@ -508,6 +508,35 @@ pub(super) fn classify_collab_tool_call(item: &serde_json::Value) -> Vec<StreamP
             {
                 detail.push(format!("Message: {message}"));
             }
+            for key in [
+                "role",
+                "model",
+                "effort",
+                "tokens_used",
+                "context_window",
+                "compaction_reference",
+                "tokens_remaining",
+                "turns",
+            ] {
+                if let Some(value) = state.and_then(|s| s.get(key)) {
+                    let name = key
+                        .split('_')
+                        .map(|part| {
+                            let mut chars = part.chars();
+                            chars.next().map_or_else(String::new, |first| {
+                                first.to_uppercase().collect::<String>() + chars.as_str()
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    detail.push(format!(
+                        "{name}: {}",
+                        value
+                            .as_str()
+                            .map_or_else(|| value.to_string(), str::to_owned)
+                    ));
+                }
+            }
             StreamPart::Card(StreamCard {
                 id: format!("native-agent:{id}"),
                 title: format!("agent {}", id.chars().take(12).collect::<String>()),

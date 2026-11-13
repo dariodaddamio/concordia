@@ -1026,7 +1026,7 @@ fn fresh_drafts_and_bottom_button_work_in_the_windows_terminal() {
     });
     s.paste("unfinished primary");
     s.until("primary draft saved", |s| s.draft() == "unfinished primary");
-    s.send("\x1b[B");
+    s.request(serde_json::json!({"op":"key","code":"Down"}));
     s.until("fresh prompt", |s| {
         !s.screen().contains("unfinished primary")
     });
@@ -1035,7 +1035,7 @@ fn fresh_drafts_and_bottom_button_work_in_the_windows_terminal() {
         s.draft() == "secondary draft"
             && s.recovery_data()["alternate_draft"] == "unfinished primary"
     });
-    s.send("\x1b[A");
+    s.request(serde_json::json!({"op":"key","code":"Up"}));
     s.until("primary restored", |s| s.draft() == "unfinished primary");
     s.send("\x1b[5~");
     s.until("transcript scrolled", |s| s.screen().contains("rows up"));
@@ -1833,6 +1833,48 @@ fn native_subagents_can_be_inspected_live_and_after_completion() {
         s.screen().contains("GRAPH_REVIEW_FINISHED")
     });
     assert_eq!(s.prompts().len(), 1);
+    s.send("\x1b");
+    s.exit();
+}
+
+#[test]
+#[ignore = "slow PTY journey; run with: cargo test -p concordia --test tui_journeys -- --ignored"]
+fn agents_reference_layout_supports_columns_selection_and_long_lists() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.submit("[agents] [agents-forty]");
+    s.until("forty synthetic agents reported", |s| {
+        s.screen().contains("Ctrl+G agents 40")
+    });
+    s.submit("[agents] [agents-forty]");
+    s.until("same agent identities refreshed", |s| {
+        s.screen().contains("Ctrl+G agents 40")
+    });
+    s.send("\x07");
+    s.until("reference rows visible", |s| {
+        let screen = s.screen();
+        screen.contains("Orchestrator")
+            && screen.contains("Claude Sonnet 5.5")
+            && screen.contains("633,883 / 1,000,000 tokens")
+            && screen.contains("65.5% of compaction reference")
+    });
+    let out = PathBuf::from(env!("CARGO_TARGET_DIR")).join("preview/x2-agents");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("check-1.txt"), s.screen()).unwrap();
+    let first = s.screen();
+    assert!(first.lines().any(|line| line.chars().filter(|c| matches!(c, '▮' | '▯')).count() >= 6));
+    std::fs::write(out.join("check-2.txt"), &first).unwrap();
+    assert!(first.contains("#0 Orchestrator") && first.contains("Inactive"));
+    assert!(first.contains("#1 · From Orchestrator") && first.contains("Completed"));
+    std::fs::write(out.join("check-4.txt"), &first).unwrap();
+    std::fs::write(out.join("check-5.txt"), &first).unwrap();
+    assert!(s.screen().lines().any(|line| line.contains("▮▮▮▮▮▮")));
+    s.send("\x1b[<0;70;8M\x1b[<0;70;8m");
+    s.until("mouse selects a row", |s| s.screen().contains("#1 Impl"));
+    std::fs::write(out.join("check-3.txt"), s.screen()).unwrap();
+    std::fs::write(out.join("check-7.txt"), s.screen()).unwrap();
     s.send("\x1b");
     s.exit();
 }

@@ -992,8 +992,71 @@ fn interaction(args: &[String]) {
         }
     }
     if provider == "codex" && prompt.contains("[agents]") {
+        let states = if prompt.contains("[agents-forty]") {
+            (0..40)
+                .map(|index| {
+                    let role = if index == 0 {
+                        "Orchestrator"
+                    } else if index % 3 == 0 {
+                        "Review"
+                    } else {
+                        "Impl"
+                    };
+                    let id = format!("agent-{index:02}");
+                    (
+                        id,
+                        json!({
+                            "status": "completed",
+                            "message": "synthetic agent complete",
+                            "role": role,
+                            "model": if index % 2 == 0 { "Claude Sonnet 5.5" } else { "GPT-6.1 Sol Fast" },
+                            "effort": if index % 3 == 0 { "medium" } else { "high" },
+                            "tokens_used": 633883,
+                            "context_window": 1000000,
+                            "compaction_reference": "65.5%",
+                            "tokens_remaining": 334117,
+                            "turns": 2
+                        }),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+        } else if prompt.contains("[agents-six]") {
+            [
+                ("orchestrator", "Orchestrator", "Claude Opus 5.5", "high"),
+                ("author", "Author", "Claude Opus 5.5", "high"),
+                ("impl", "Impl", "Claude Sonnet 5.5", "high"),
+                ("review", "Review", "GPT-6.1 Sol Fast", "medium"),
+                ("rereview", "Re-Review", "GPT-6.1 Sol Fast", "low"),
+                ("impl-two", "Impl", "Claude Haiku 5.5", "max"),
+                ("review-two", "Review", "GPT-6.1 Sol Fast", "xhigh"),
+            ]
+            .into_iter()
+            .map(|(id, role, model, effort)| {
+                (
+                    id.to_owned(),
+                    json!({
+                        "status": "completed",
+                        "message": "synthetic agent complete",
+                        "role": role,
+                        "model": model,
+                        "effort": effort,
+                        "tokens_used": 633883,
+                        "context_window": 1000000,
+                        "compaction_reference": "65.5%",
+                        "tokens_remaining": 334117,
+                        "turns": 2
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>()
+        } else {
+            serde_json::Map::from_iter([(
+                "child-reviewer".into(),
+                json!({"status":"running","message":null}),
+            )])
+        };
         emit(
-            json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"spawn-child","tool":"spawn_agent","sender_thread_id":"parent","receiver_thread_ids":["child-reviewer"],"prompt":"Inspect the graph parser","agents_states":{"child-reviewer":{"status":"running","message":null}},"status":"completed"}}),
+            json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"spawn-child","tool":"spawn_agent","sender_thread_id":"parent","receiver_thread_ids":states.keys().filter(|id| **id != "orchestrator").collect::<Vec<_>>(),"prompt":"Inspect the graph parser","agents_states":states,"status":"completed"}}),
         );
     }
     if prompt.contains("[wait]") {
@@ -1018,7 +1081,11 @@ fn interaction(args: &[String]) {
     } else {
         format!("FAKE REPLY: {visible_prompt}")
     };
-    if provider == "codex" && prompt.contains("[agents]") {
+    if provider == "codex"
+        && prompt.contains("[agents]")
+        && !prompt.contains("[agents-six]")
+        && !prompt.contains("[agents-forty]")
+    {
         emit(
             json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"wait-child","tool":"wait","sender_thread_id":"parent","receiver_thread_ids":["child-reviewer"],"agents_states":{"child-reviewer":{"status":"completed","message":"GRAPH_REVIEW_FINISHED"}},"status":"completed"}}),
         );

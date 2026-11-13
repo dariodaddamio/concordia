@@ -28,6 +28,16 @@ struct Entry {
     parent: Option<String>,
     kind: Kind,
     started: Instant,
+    finished: Option<Duration>,
+}
+
+#[derive(Clone)]
+struct TaskRecord {
+    title: String,
+    status: Status,
+    origin: String,
+    started: Instant,
+    finished: Option<Duration>,
 }
 
 #[derive(Default)]
@@ -35,11 +45,12 @@ pub(super) struct State {
     cards: Vec<(String, usize)>,
     launch_tools: Vec<String>,
     entries: HashMap<String, Entry>,
+    task_history: HashMap<String, Vec<TaskRecord>>,
     collapsed: HashSet<String>,
     other_runs_open: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Status {
     Running,
     Done,
@@ -78,6 +89,7 @@ struct Facts {
     used: Option<u64>,
     limit: Option<u64>,
     compaction: Option<f64>,
+    remaining: Option<u64>,
     turns: Option<u64>,
 }
 
@@ -103,6 +115,8 @@ fn facts(detail: Option<&str>) -> Facts {
         limit: fact_number(detail, "Context window").or_else(|| fact_number(detail, "Limit")),
         compaction: fact_value(detail, "Compaction reference")
             .and_then(|value| value.trim_end_matches('%').parse::<f64>().ok()),
+        remaining: fact_number(detail, "Tokens remaining")
+            .or_else(|| fact_number(detail, "Remaining")),
         turns: fact_number(detail, "Turns").or_else(|| fact_number(detail, "Tasks")),
     }
 }
@@ -127,7 +141,23 @@ fn context_bar(used: Option<u64>, limit: Option<u64>, width: usize) -> String {
 }
 
 fn formatted_number(value: Option<u64>) -> String {
-    value.map_or_else(|| "unknown".into(), |value| value.to_string())
+    value.map_or_else(|| "unknown".into(), group_digits)
+}
+
+fn group_digits(value: u64) -> String {
+    let digits = value.to_string();
+    let first = digits.len() % 3;
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    if first != 0 {
+        out.push_str(&digits[..first]);
+    }
+    for (index, chunk) in digits[first..].as_bytes().chunks(3).enumerate() {
+        if first != 0 || index != 0 {
+            out.push(',');
+        }
+        out.push_str(std::str::from_utf8(chunk).expect("digits are ASCII"));
+    }
+    out
 }
 
 fn task_title(detail: Option<&str>, fallback: &str) -> String {
@@ -147,6 +177,47 @@ fn task_title(detail: Option<&str>, fallback: &str) -> String {
     } else {
         title.chars().take(120).collect()
     }
+}
+
+fn task_titles(detail: Option<&str>, fallback: &str) -> Vec<String> {
+    let mut tasks = detail
+        .unwrap_or("")
+        .lines()
+        .filter_map(|line| {
+            let value = line
+                .strip_prefix("Task: ")
+                .or_else(|| line.strip_prefix("Task "))?;
+            let value = value.trim_start_matches(|c: char| c.is_ascii_digit());
+            let value = value.strip_prefix(": ").unwrap_or(value).trim();
+            let value = serde_json::from_str::<String>(value).unwrap_or_else(|_| value.into());
+            let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            (!value.is_empty()).then(|| value.chars().take(120).collect())
+        })
+        .collect::<Vec<_>>();
+    if tasks.is_empty() {
+        tasks.push(task_title(detail, fallback));
+    }
+    tasks
+}
+
+fn fixed_column(value: &str, width: usize) -> String {
+    let value = cut(value, width);
+    format!("{value:<width$}")
+}
+
+fn agent_label(depth: usize, status: Status, metadata: &Facts) -> String {
+    format!(
+        "{}{} {} {}{}{}{} {} {}",
+        "  ".repeat(depth),
+        status.icon(),
+        fixed_column(&metadata.role, 8),
+        fixed_column(&metadata.model, 20),
+        fixed_column(&metadata.effort, 6),
+        context_bar(metadata.used, metadata.limit, 6),
+        " ",
+        metadata.turns.map_or_else(|| "unknown".into(), |value| value.to_string()),
+        ""
+    )
 }
 
 pub(super) const GROUP_ID: &str = "agents-group:other";
@@ -568,6 +639,7 @@ impl State {
     pub fn rebuild(&mut self, messages: &[ChatLine]) {
         self.cards.clear();
         self.entries.clear();
+        self.task_history.clear();
         self.launch_tools.clear();
         for (index, message) in messages.iter().enumerate() {
             if let Some(card) = &message.card {
@@ -599,6 +671,49 @@ impl State {
         if !native && !untracked {
             return;
         }
+        let task_status = fact_value(card.detail.as_deref(), "State")
+            .map(|state| match state.as_str() {
+                "completed" | "finished" => Status::Done,
+                "errored" | "failed" | "interrupted" => Status::Error,
+                _ => Status::Running,
+            })
+            .unwrap_or_else(|| Status::from(card.status));
+        let origin = fact_value(card.detail.as_deref(), "Sender")
+            .map(|sender| {
+                format!(
+                    "From {}",
+                    if sender == "parent" { "Orchestrator" } else { &sender }
+                )
+            })
+            .unwrap_or_else(|| "From Orchestrator".into());
+        let now = Instant::now();
+        let history = self.task_history.entry(id.clone()).or_default();
+        for task in task_titles(card.detail.as_deref(), &card.title) {
+            if history.last().is_some_and(|record| record.title == task) {
+                let record = history.last_mut().expect("last task exists");
+                record.status = task_status;
+                record.origin = origin.clone();
+                if task_status != Status::Running && record.finished.is_none() {
+                    record.finished = Some(record.started.elapsed());
+                }
+            } else {
+                if let Some(previous) = history.last_mut() {
+                    if previous.finished.is_none() {
+                        previous.finished = Some(now.duration_since(previous.started));
+                    }
+                }
+                history.push(TaskRecord {
+                    title: task,
+                    status: task_status,
+                    origin: origin.clone(),
+                    started: now,
+                    finished: (task_status != Status::Running).then_some(Duration::ZERO),
+                });
+            }
+        }
+        if history.len() > 32 {
+            history.drain(..history.len() - 32);
+        }
         if let Some((_, old)) = self.cards.iter_mut().find(|(old, _)| old == id) {
             *old = index;
         } else {
@@ -623,8 +738,12 @@ impl State {
                 Kind::Native
             },
             started: Instant::now(),
+            finished: None,
         });
         entry.index = index;
+        if card.status != CardStatus::Running && entry.finished.is_none() {
+            entry.finished = Some(entry.started.elapsed());
+        }
     }
     pub fn count(&self) -> usize {
         self.entries.len()
@@ -638,6 +757,25 @@ impl State {
         }
     }
 
+    fn tasks_for(&self, id: &str, detail: Option<&str>, fallback: &str) -> Vec<TaskRecord> {
+        self.task_history
+            .get(id)
+            .cloned()
+            .filter(|tasks| !tasks.is_empty())
+            .unwrap_or_else(|| {
+                task_titles(detail, fallback)
+                    .into_iter()
+                    .map(|title| TaskRecord {
+                        title,
+                        status: Status::Running,
+                        origin: "From Orchestrator".into(),
+                        started: Instant::now(),
+                        finished: None,
+                    })
+                    .collect()
+            })
+    }
+
     fn rows(
         &self,
         messages: &[ChatLine],
@@ -646,29 +784,20 @@ impl State {
     ) -> Vec<PickerRow> {
         let mut children: HashMap<Option<&str>, Vec<(&Entry, &StreamCard)>> = HashMap::new();
         let mut all_entries = Vec::new();
-        for (index, line) in messages.iter().enumerate() {
-            let Some(card) = line.card.as_ref() else {
+        for (id, index) in &self.cards {
+            let Some(entry) = self.entries.get(id) else {
                 continue;
             };
-            let id = card.id.as_str();
-            let native = is_native_agent(id, &card.title, card.detail.as_deref().unwrap_or(""));
-            let untracked = untracked_run(card).is_some();
-            if !native && !untracked {
+            let Some(card) = messages.get(*index).and_then(|line| line.card.as_ref()) else {
                 continue;
+            };
+            let native = is_native_agent(&card.id, &card.title, card.detail.as_deref().unwrap_or(""));
+            let untracked = untracked_run(card).is_some();
+            if native || untracked {
+                let mut entry = entry.clone();
+                entry.index = *index;
+                all_entries.push(entry);
             }
-            let mut entry = self.entries.get(id).cloned().unwrap_or(Entry {
-                id: id.into(),
-                index,
-                parent: None,
-                kind: if untracked {
-                    Kind::Untracked
-                } else {
-                    Kind::Native
-                },
-                started: Instant::now(),
-            });
-            entry.index = index;
-            all_entries.push(entry);
         }
         let mut runs: Vec<(&Entry, &StreamCard, Run)> = Vec::new();
         for entry in &all_entries {
@@ -693,7 +822,12 @@ impl State {
             }
         }
         for rows in children.values_mut() {
-            rows.sort_by_key(|(entry, _)| entry.index);
+            rows.sort_by_key(|(entry, card)| {
+                (
+                    facts(card.detail.as_deref()).role != "Orchestrator",
+                    entry.index,
+                )
+            });
         }
         let mut out = Vec::new();
         fn add(
@@ -723,30 +857,8 @@ impl State {
                         task
                     }
                 };
-                let elapsed = if status == Status::Running {
-                    format_elapsed(entry.started.elapsed())
-                } else {
-                    String::new()
-                };
                 let metadata = facts(card.detail.as_deref());
-                let label = format!(
-                    "{}{} {} {}  {}  {}  {}  {}  {}",
-                    "  ".repeat(depth),
-                    disclosure,
-                    status.icon(),
-                    metadata.role,
-                    metadata.model,
-                    metadata.effort,
-                    context_bar(metadata.used, metadata.limit, 7),
-                    metadata
-                        .turns
-                        .map_or_else(|| "unknown".into(), |value| value.to_string()),
-                    if elapsed.is_empty() {
-                        "".into()
-                    } else {
-                        elapsed
-                    },
-                );
+                let label = format!("{}{}", disclosure, agent_label(depth, status, &metadata));
                 let detail = format!(
                     "{} · {} · {}",
                     title,
@@ -773,11 +885,16 @@ impl State {
         add(&mut out, &children, None, 0, &self.collapsed);
         out.extend(workers.iter().map(|job| PickerRow {
             id: format!("worker-agent:{}", job.id),
-            label: format!(
-                "  {} {} · {}",
-                if job.state.is_running() { "●" } else { "✓" },
-                task_title(Some(&job.task), &job.task),
-                format_elapsed(job.elapsed(Instant::now()))
+            label: agent_label(
+                0,
+                if job.state.is_running() { Status::Running } else { Status::Done },
+                &Facts {
+                    role: "Worker".into(),
+                    model: job.model.clone().unwrap_or_else(|| "unknown".into()),
+                    effort: "unknown".into(),
+                    turns: Some(1),
+                    ..Facts::default()
+                },
             ),
             detail: format!(
                 "{} · provider {} · model {}",
@@ -787,18 +904,24 @@ impl State {
             ),
         }));
         for record in crate::mcp::take_pending_records(state_root, 128) {
-            let (icon, word) = match record.status.as_str() {
-                "finished" => ("✓", "finished"),
-                "needs_attention" => ("?", "needs attention"),
-                "unreachable" => ("×", "unreachable"),
-                "waiting" | "starting" => ("●", "waiting for Grok Bot"),
-                _ => ("·", record.status.as_str()),
+            let status = match record.status.as_str() {
+                "finished" => Status::Done,
+                "needs_attention" | "unreachable" => Status::Error,
+                "waiting" | "starting" | "running" => Status::Running,
+                _ => Status::Error,
             };
             out.push(PickerRow {
                 id: format!("grok-agent:{}", record.agent_id),
-                label: format!(
-                    "  {icon} {word} · {}",
-                    task_title(Some(&record.task), "Grok Bot")
+                label: agent_label(
+                    0,
+                    status,
+                    &Facts {
+                        role: if record.role.is_empty() { "Grok Bot".into() } else { record.role.clone() },
+                        model: record.model.clone().unwrap_or_else(|| "Grok Bot".into()),
+                        effort: record.effort.clone().unwrap_or_else(|| "unknown".into()),
+                        turns: Some(1),
+                        ..Facts::default()
+                    },
                 ),
                 detail: format!(
                     "Grok Bot · {} · {}",
@@ -848,7 +971,8 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .min(rows.len().saturating_sub(1));
     let selected_row = rows.get(selected).cloned();
     let columns =
-        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
+        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).split(area);
+    app.areas.agents_list = Some(columns[1]);
     f.render_widget(Clear, area);
 
     let mut detail_lines = Vec::new();
@@ -863,7 +987,9 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     .native_agents
                     .entries
                     .get(&card.id)
-                    .map(|entry| format_elapsed(entry.started.elapsed()))
+                    .map(|entry| {
+                        format_elapsed(entry.finished.unwrap_or_else(|| entry.started.elapsed()))
+                    })
                     .unwrap_or_else(|| "unknown".into());
                 if let Some(run) = untracked_run(card) {
                     for (i, text) in untracked_detail(&run, status, &elapsed, row_number)
@@ -890,26 +1016,35 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let percentage = metadata
                     .compaction
                     .map_or_else(|| "unknown".into(), |value| format!("{value:.1}%"));
+                let status_text = format!(
+                    "{} {}",
+                    status.icon(),
+                    if status == Status::Done { "Inactive" } else { status.word() }
+                );
+                let header = format!("#{} {}", row_number, metadata.role);
+                let header_gap = usize::from(columns[0].width.saturating_sub(2))
+                    .saturating_sub(header.chars().count() + status_text.chars().count());
                 detail_lines.extend([
                     Line::from(vec![
                         Span::styled(
-                            format!("#{} {}", row_number, metadata.role),
+                            header,
                             Style::default()
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw(" "),
-                        Span::styled(
-                            format!("{} {}", status.icon(), status.word()),
-                            Style::default().fg(Color::Green),
-                        ),
+                        Span::raw(" ".repeat(header_gap)),
+                        Span::styled(status_text, Style::default().fg(Color::Green)),
                     ]),
                     Line::styled(
                         format!("{} · {}", metadata.model, metadata.effort),
                         Style::default().fg(Color::Gray),
                     ),
                     Line::from(format!("{used} / {limit} tokens")),
-                    Line::from(context_bar(metadata.used, metadata.limit, 28)),
+                    Line::from(context_bar(
+                        metadata.used,
+                        metadata.limit,
+                        usize::from(columns[0].width.saturating_sub(2)),
+                    )),
                     Line::styled(
                         format!("{percentage} of compaction reference"),
                         Style::default().fg(Color::Gray),
@@ -917,20 +1052,57 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     Line::styled(
                         format!(
                             "{} tokens remaining · last snapshot",
-                            metadata
-                                .limit
-                                .zip(metadata.used)
-                                .map(|(limit, used)| limit.saturating_sub(used))
-                                .map_or_else(|| "unknown".into(), |value| value.to_string())
+                            metadata.remaining.or_else(|| {
+                                metadata
+                                    .limit
+                                    .zip(metadata.used)
+                                    .map(|(limit, used)| limit.saturating_sub(used))
+                            })
+                            .map_or_else(|| "unknown".into(), group_digits)
                         ),
                         Style::default().fg(Color::Gray),
                     ),
                     Line::from(""),
                     Line::styled("Tasks", Style::default().add_modifier(Modifier::BOLD)),
-                    Line::from(format!("{} {}    {}", status.icon(), title, elapsed)),
-                    Line::styled("#1 · From Orchestrator", Style::default().fg(Color::Gray)),
-                    Line::styled(status.word().to_owned(), Style::default().fg(Color::Gray)),
                 ]);
+                let tasks = app
+                    .native_agents
+                    .tasks_for(&card.id, card.detail.as_deref(), &title);
+                let detail_width = usize::from(columns[0].width.saturating_sub(2));
+                for (task_index, task) in tasks.into_iter().enumerate() {
+                    let elapsed = task
+                        .finished
+                        .unwrap_or_else(|| task.started.elapsed());
+                    let elapsed = format_elapsed(elapsed);
+                    let prefix = format!("{} ", task.status.icon());
+                    let title_width = detail_width.saturating_sub(
+                        prefix.chars().count() + elapsed.chars().count() + 1,
+                    );
+                    let task_title = cut(&task.title, title_width);
+                    let padding = detail_width.saturating_sub(
+                        prefix.chars().count()
+                            + task_title.chars().count()
+                            + elapsed.chars().count(),
+                    );
+                    detail_lines.push(Line::from(vec![
+                        Span::raw(prefix),
+                        Span::raw(task_title),
+                        Span::raw(" ".repeat(padding)),
+                        Span::raw(elapsed),
+                    ]));
+                    detail_lines.push(Line::styled(
+                        format!("#{} · {}", task_index + 1, task.origin),
+                        Style::default().fg(Color::Gray),
+                    ));
+                    detail_lines.push(Line::styled(
+                        match task.status {
+                            Status::Done => "Completed",
+                            Status::Running => "Running",
+                            Status::Error => "Failed",
+                        },
+                        Style::default().fg(Color::Gray),
+                    ));
+                }
             }
         }
     };
@@ -947,7 +1119,8 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     .borders(Borders::ALL)
                     .title(" Agent details "),
             )
-            .wrap(ratatui::widgets::Wrap { trim: true }),
+            // Clip long values at the pane edge. Wrapping would move the card's columns.
+            ,
         columns[0],
     );
 
@@ -963,9 +1136,30 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             } else {
                 Style::default()
             };
+            let role_color = match row
+                .label
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "impl" => Color::Cyan,
+                "review" | "re-review" => Color::Yellow,
+                "author" => Color::Magenta,
+                _ => Color::Blue,
+            };
+            let role = row.label.split_whitespace().nth(1).unwrap_or_default();
+            let role_start = row.label.find(role).unwrap_or(0);
+            let role_end = role_start + role.len();
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{index:>2} "), style),
-                Span::styled(row.label.clone(), style),
+                Span::styled(row.label[..role_start].to_owned(), style),
+                Span::styled(
+                    row.label[role_start..role_end].to_owned(),
+                    style.fg(role_color),
+                ),
+                Span::styled(row.label[role_end..].to_owned(), style),
             ]))
         })
         .collect::<Vec<_>>();
@@ -982,6 +1176,9 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         columns[1],
         &mut state,
     );
+    if let Some(picker) = app.picker.as_mut() {
+        picker.state = state;
+    }
 }
 
 fn format_elapsed(duration: Duration) -> String {
@@ -989,7 +1186,7 @@ fn format_elapsed(duration: Duration) -> String {
     if secs < 60 {
         format!("{secs}s")
     } else {
-        format!("{}m{:02}s", secs / 60, secs % 60)
+        format!("{}m {:02}s", secs / 60, secs % 60)
     }
 }
 
@@ -1087,6 +1284,55 @@ mod tests {
         assert_eq!(unknown.role, "unknown");
         assert_eq!(unknown.model, "unknown");
         assert_eq!(context_bar(unknown.used, unknown.limit, 7), "▯▯▯▯▯▯▯");
+    }
+
+    #[test]
+    fn agent_rows_keep_long_models_and_each_task_state() {
+        let model = facts(Some(
+            "Role: Impl\nModel: GPT-6.1 Terra Codex\nEffort: high\nTurns: 2",
+        ));
+        assert!(agent_label(0, Status::Done, &model).contains("GPT-6.1 Terra Codex"));
+
+        let mut first = chat(
+            "native-agent:child",
+            "agent child",
+            "Task: \"failed task\"\nSender: parent\nState: failed",
+        );
+        first.card.as_mut().unwrap().status = CardStatus::Error;
+        let second = chat(
+            "native-agent:child",
+            "agent child",
+            "Task: \"successful task\"\nSender: parent\nState: completed",
+        );
+        let mut state = State::default();
+        state.rebuild(&[first, second]);
+        let tasks = state.task_history.get("native-agent:child").unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].status, Status::Error);
+        assert_eq!(tasks[1].status, Status::Done);
+        assert_eq!(tasks[0].origin, "From Orchestrator");
+        assert_eq!(tasks[1].origin, "From Orchestrator");
+    }
+
+    #[test]
+    fn repeated_agent_ids_render_as_one_latest_row() {
+        let first = chat(
+            "native-agent:child",
+            "agent child",
+            "Role: Impl\nModel: Claude Sonnet 5.5\nState: completed",
+        );
+        let second = chat(
+            "native-agent:child",
+            "agent child",
+            "Role: Review\nModel: GPT-6.1 Sol Fast\nState: completed",
+        );
+        let mut state = State::default();
+        state.rebuild(&[first.clone(), second.clone()]);
+        let root = tempfile::tempdir().unwrap();
+        let rows = state.rows(&[first, second], &[], root.path());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].label.contains("Review"));
+        assert!(rows[0].label.contains("GPT-6.1 Sol Fast"));
     }
 
     fn chat(id: &str, title: &str, detail: &str) -> ChatLine {

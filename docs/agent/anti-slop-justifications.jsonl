@@ -55,3 +55,12 @@
 | crates/concordia/src/tui/brand.rs, crates/concordia/src/tui/landing.rs | ok: 1, 4, 5, 10 | Fix the existing Home render owner with the configured docs URL and enough rows; keep bundled changelog headings and do not add a link or content subsystem. |
 | crates/concordia/src/tui/landing.rs | ok: 1, 4, 6 | Compact the existing account usage rows from the canonical UsageSnapshot so every account remains visible at the requested terminal size. |
 | crates/concordia/src/tui/native_agents.rs | ok: 1, 4, 6, 10 | Keep the existing Agents picker owner and show an explicit empty-state row instead of refusing to open the view. |
+
+### X2 Agents view reference match - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/native_agents.rs | ok: 1, 4, 5, 6, 10 | Correct the existing projection and renderer in place: fixed columns, six-cell context bars, grouped numbers, role styling, detail selection, clean outside-run rows, and per-task state records. No new agent store or provider parser. |
+| crates/concordia/src/tui/app/state.rs, crates/concordia/src/tui/input_dispatch.rs | ok: 1, 4, 5, 9 | Reuse the existing screen-area and picker selection path to make Agents clicks select rows; no second interaction registry. |
+| crates/concordia/tests/tui_journeys.rs | ok: 1, 5, 9 | Extend the real PTY journey harness for screen-level acceptance evidence; tests drive the user flow rather than expose test-only production interfaces. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing view correction through existing release metadata. |

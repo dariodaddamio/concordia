@@ -1158,6 +1158,28 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         return;
     }
     if app.picker.is_some() {
+        if app
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Agents)
+        {
+            if let Some(list) = app.areas.agents_list {
+                if m.kind == MouseEventKind::Down(MouseButton::Left)
+                    && contains(list, m.column, m.row)
+                {
+                    let picker = app.picker.as_ref().unwrap();
+                    let selected = picker.state.selected().unwrap_or(0);
+                    let visible = usize::from(list.height.saturating_sub(2)).max(1);
+                    let offset = selected.saturating_sub(visible.saturating_sub(1));
+                    let row = usize::from(m.row.saturating_sub(list.y + 1))
+                        + offset;
+                    if row < picker.filtered().len() {
+                        app.picker.as_mut().unwrap().state.select(Some(row));
+                    }
+                }
+            }
+            return;
+        }
         let max = app.update_rows.saturating_sub(app.update_view.max(1));
         if let Some(picker) = app.picker.as_mut().filter(|p| {
             matches!(

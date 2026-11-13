@@ -31,6 +31,7 @@ pub(in crate::tui) struct Areas {
     pub(in crate::tui) modal_close: Option<(Rect, modal::Target)>,
     pub(in crate::tui) input_text_w: usize,
     pub(in crate::tui) palette: Rect,
+    pub(in crate::tui) agents_list: Option<Rect>,
 }
 
 #[derive(Default)]
