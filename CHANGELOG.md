@@ -1,5 +1,11 @@
 # Changelog
 
+- Keep native window destruction from stopping Concordia's unrelated window loop.
+
+- Keep the main window open for its confirmation when any tab has a running turn or unsent work.
+
+- Keep closing a detached file window local to that window, including its unsaved-file prompt.
+
 - Keep file-pane raster previews and their error messages visible, show PDF page controls,
   prevent modal image repainting, and make `/terminal help` describe native provider sessions.
 

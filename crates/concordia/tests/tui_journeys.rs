@@ -11,9 +11,92 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{HWND, LPARAM};
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextW, PostMessageW, WM_CLOSE, WM_KEYDOWN,
+    WM_KEYUP,
+};
+#[cfg(windows)]
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    VK_ESCAPE,
+};
+
 const BIN: &str = env!("CARGO_BIN_EXE_concordia");
 const FAKE: &str = env!("CARGO_BIN_EXE_concordia-fake-provider");
 static JOURNEY_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(windows)]
+unsafe extern "system" fn collect_window(hwnd: HWND, data: LPARAM) -> i32 {
+    let pid = &mut *(data as *mut (u32, Vec<HWND>));
+    let mut owner = 0;
+    windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, &mut owner);
+    if owner == pid.0 {
+        pid.1.push(hwnd);
+    }
+    1
+}
+
+#[cfg(windows)]
+fn process_windows(pid: u32) -> Vec<HWND> {
+    let mut windows = (pid, Vec::new());
+    unsafe {
+        EnumWindows(
+            Some(collect_window),
+            (&mut windows as *mut (u32, Vec<HWND>)) as LPARAM,
+        );
+    }
+    windows
+        .1
+        .into_iter()
+        .filter(|hwnd| {
+            let mut class = [0u16; 64];
+            let len = unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW(
+                    *hwnd,
+                    class.as_mut_ptr(),
+                    class.len() as i32,
+                )
+            };
+            String::from_utf16_lossy(&class[..len as usize]) == "Concordia.Native.Cells"
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn close_window(hwnd: HWND) {
+    unsafe {
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+}
+
+#[cfg(windows)]
+fn escape_window(hwnd: HWND) {
+    unsafe {
+        PostMessageW(hwnd, WM_KEYDOWN, VK_ESCAPE as usize, 0);
+        PostMessageW(hwnd, WM_KEYUP, VK_ESCAPE as usize, 0);
+    }
+}
+
+#[cfg(windows)]
+fn detached_window(pid: u32) -> HWND {
+    let start = Instant::now();
+    loop {
+        let windows = process_windows(pid);
+        if let Some(hwnd) = windows.iter().find(|hwnd| {
+            let mut title = [0u16; 512];
+            let len = unsafe { GetWindowTextW(**hwnd, title.as_mut_ptr(), title.len() as i32) };
+            String::from_utf16_lossy(&title[..len as usize]).contains("| Concordia")
+        }) {
+            return *hwnd;
+        }
+        if start.elapsed() >= Duration::from_secs(2) {
+            panic!("detached window not found among {} windows", windows.len());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
 
 fn setup(root: &Path, provider: ProviderKind) {
     let profile = root.join("profile");
@@ -402,6 +485,13 @@ impl Session {
             .into()
     }
 
+    fn focused_tab(&self) -> String {
+        self.clone_request(serde_json::json!({"op":"snapshot"}))["focused_tab"]
+            .as_str()
+            .unwrap_or_default()
+            .into()
+    }
+
     fn clone_request(&self, mut value: Value) -> Value {
         let mut stream = self.control.try_clone().unwrap();
         value["token"] = Value::String(self.token.clone());
@@ -679,7 +769,7 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
         let preview_draft = s.draft();
         s.until("automatic image preview without a click", |s| {
             let screen = s.screen();
-            screen.contains("Image 1: diagram.png") && screen.contains('▀')
+            screen.contains("Image 1: diagram.png") && screen.contains('\u{2580}')
         });
         assert!(!s.screen().contains("Credits: not reported"));
         let screen = s.screen();
@@ -923,7 +1013,7 @@ fn workspace_files_complete_without_mentions_and_send_now_interrupts_then_sends_
         s.screen().contains("WORKSPACE_CODE_MARKER")
     });
     assert!(s.prompts().is_empty());
-    s.send("\x1b");
+    escape_window(detached_window(s.child.id()));
     s.submit("/close 1");
     s.until("file closed", |s| {
         !s.screen().contains("WORKSPACE_CODE_MARKER")
@@ -1733,6 +1823,147 @@ fn internal_file_panes_split_focus_close_and_never_dispatch_provider_work() {
     s.paste("draft after internal preview");
     s.until("chat remains usable", |s| {
         s.draft() == "draft after internal preview"
+    });
+    s.exit();
+}
+
+#[test]
+#[ignore = "detached native-window lifecycle journey; fake provider only"]
+fn detached_file_windows_close_locally_and_can_be_reopened() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    for (name, marker) in [
+        ("first.txt", "DETACHED_FIRST"),
+        ("second.txt", "DETACHED_SECOND"),
+        ("third.txt", "DETACHED_THIRD"),
+    ] {
+        std::fs::write(dir.path().join("workspace").join(name), format!("{marker}\n")).unwrap();
+    }
+    let artifact = PathBuf::from(env!("CARGO_TARGET_DIR")).join("preview/detached-window-close");
+    std::fs::create_dir_all(&artifact).unwrap();
+    let mut s = Session::launch(dir.path());
+    let root_windows = process_windows(s.child.id());
+    assert_eq!(root_windows.len(), 1, "expected one root native window");
+
+    s.submit("/open first.txt");
+    s.until("first detached file", |s| s.screen().contains("DETACHED_FIRST"));
+    s.request(serde_json::json!({
+        "op": "key",
+        "code": "d",
+        "modifiers": ["CTRL", "SHIFT"]
+    }));
+    s.until("first detached window", |s| process_windows(s.child.id()).len() == 2);
+    close_window(detached_window(s.child.id()));
+    s.until("title-bar close keeps Concordia alive", |s| {
+        process_windows(s.child.id()).len() == 1 && s.screen().contains("concordia")
+    });
+    std::fs::write(artifact.join("check-1.txt"), s.screen()).unwrap();
+
+    s.submit("/open first.txt");
+    s.until("file can be reopened", |s| s.screen().contains("DETACHED_FIRST"));
+    s.request(serde_json::json!({
+        "op": "key",
+        "code": "d",
+        "modifiers": ["CTRL", "SHIFT"]
+    }));
+    s.until("file can be detached again", |s| process_windows(s.child.id()).len() == 2);
+    close_window(detached_window(s.child.id()));
+    s.until("reopened detached file closes cleanly", |s| process_windows(s.child.id()).len() == 1);
+    std::fs::write(artifact.join("check-4.txt"), s.screen()).unwrap();
+
+    for name in ["first.txt", "second.txt", "third.txt"] {
+        s.submit(&format!("/open {name}"));
+        s.until("file opened for multi-window close", |s| {
+            s.screen().contains("DETACHED_")
+        });
+        s.request(serde_json::json!({
+            "op": "key",
+            "code": "d",
+            "modifiers": ["CTRL", "SHIFT"]
+        }));
+        s.until("multi-window detach", |s| process_windows(s.child.id()).len() >= 2);
+    }
+    s.until("three detached windows", |s| process_windows(s.child.id()).len() == 4);
+    while process_windows(s.child.id()).len() > 1 {
+        close_window(detached_window(s.child.id()));
+        s.until("one detached window closes", |s| process_windows(s.child.id()).len() >= 1);
+    }
+    assert_eq!(process_windows(s.child.id()).len(), 1);
+    std::fs::write(artifact.join("check-3.txt"), s.screen()).unwrap();
+
+    s.submit("/open second.txt");
+    s.until("unsaved file opened", |s| s.screen().contains("DETACHED_SECOND"));
+    s.send("x");
+    s.until("unsaved edit visible", |s| s.screen().contains("xDETACHED_SECOND"));
+    s.request(serde_json::json!({
+        "op": "key",
+        "code": "d",
+        "modifiers": ["CTRL", "SHIFT"]
+    }));
+    s.until("unsaved file detached", |s| process_windows(s.child.id()).len() == 2);
+    close_window(detached_window(s.child.id()));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(process_windows(s.child.id()).len(), 2, "save question must keep window open");
+    std::fs::write(artifact.join("check-2.txt"), s.screen()).unwrap();
+
+    escape_window(detached_window(s.child.id()));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(process_windows(s.child.id()).len(), 2, "cancel must keep window open");
+    std::fs::write(artifact.join("check-5.txt"), s.screen()).unwrap();
+    drop(s);
+}
+
+#[test]
+#[ignore = "native-window close guard journey; fake provider only"]
+fn main_window_close_checks_a_running_non_active_tab() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let artifact = PathBuf::from(env!("CARGO_TARGET_DIR")).join("preview/main-window-close-guard");
+    std::fs::create_dir_all(&artifact).unwrap();
+    let mut s = Session::launch(dir.path());
+
+    s.request(serde_json::json!({
+        "op": "key",
+        "code": "t",
+        "modifiers": ["CTRL"]
+    }));
+    s.until("second tab is active", |s| s.focused_tab() == "Home");
+    s.submit("[wait] keep running while another tab is selected");
+    s.until("second tab is running", |s| {
+        s.prompts().len() == 1
+            && s.screen()
+                .lines()
+                .any(|row| row.contains("Run command") && row.contains("Expand"))
+    });
+    s.request(serde_json::json!({
+        "op": "key",
+        "code": "1",
+        "modifiers": ["CTRL"]
+    }));
+    s.until("idle first tab is selected", |s| s.focused_tab() == "New chat");
+    s.request(serde_json::json!({
+        "op": "key",
+        "code": "F12",
+        "modifiers": ["CTRL"]
+    }));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        s.child.try_wait().unwrap().is_none(),
+        "main close exited while a non-active tab was running"
+    );
+    let screen = s.screen();
+    assert!(screen.contains("running turn"), "close guard screen:\n{screen}");
+    std::fs::write(artifact.join("check-5.txt"), screen).unwrap();
+    s.release();
+    s.until("gated turn completes", |s| {
+        s.journal().iter().any(|event| {
+            event["kind"] == "done"
+                && event["prompt"]
+                    .as_str()
+                    .is_some_and(|prompt| prompt.contains("keep running while another tab is selected"))
+        })
     });
     s.exit();
 }
@@ -2802,7 +3033,7 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
     s.request(serde_json::json!({"op":"resize","columns":120,"rows":40}));
     s.paste(&format!("\"{}\"", image.display()));
     s.until("attached image banner", |s| {
-        s.screen().contains("Image 1: wide.png") && s.screen().contains('▀')
+        s.screen().contains("Image 1: wide.png") && s.screen().contains('\u{2580}')
     });
     let banner = s.pixels("banner", magenta);
     assert_clean(&banner, "banner");

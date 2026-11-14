@@ -121,3 +121,18 @@
 | crates/concordia/src/attachments.rs, crates/concordia/src/tui/raster.rs | ok: 1, 2, 4, 5, 10 | Extend the existing bounded raster reader for SVG instead of routing documents through the image-only validator. |
 | crates/concordia/src/tui/{workspace.rs,workspace_edit.rs} | ok: 1, 4, 5, 6, 10 | Keep formatting in the existing file-read worker, use the existing pane scroll state for CSV rows and columns, and remove duplicate UI-thread formatting. |
 | crates/concordia/src/tui/{local_terminal.rs,app/pickers.rs,draw/mod.rs} | ok: 1, 4, 5, 6, 10 | Keep native launch and provider selection in their existing owners; use the same command path for every provider and expose unconnected native-login rows without adding a second terminal surface. |
+
+### Detached file-window close - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ----------- |
+| crates/concordia/src/tui/native_window.rs, crates/concordia/src/tui/input_stream.rs, crates/concordia/src/tui/run.rs | ok: 1, 4, 5, 10 | Preserve the native window owner and distinguish a close request from a root quit key at the existing event boundary; route the root request through the existing armed confirmation state. |
+| crates/concordia/src/tui/detached.rs, crates/concordia/src/tui/workspace.rs | ok: 1, 4, 5, 6, 10 | Route detached close and Ctrl+W through the existing file close and save-prompt owner; child HWND cleanup remains the existing sync/drop path. |
+| crates/concordia/tests/tui_journeys.rs, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 9, 10 | Keep screen-level lifecycle evidence and required release metadata without adding a test-only production branch. |
+
+### Main-window close guard correction - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/run.rs | ok: 1, 4, 5, 6, 10 | Extend the existing root close guard to read every open tab's existing close-confirmation state; no second state store or new shutdown path. |
+| crates/concordia/tests/tui_journeys.rs, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 9, 10 | Add one screen-driven regression journey and record the user-visible correction with the required build stamp. |

@@ -74,6 +74,13 @@ impl InputStream {
                                 super::native_window::NativeEvent::Event(event) => {
                                     Message::Event(event, Instant::now())
                                 }
+                                super::native_window::NativeEvent::Close => Message::Event(
+                                    Event::Key(crossterm::event::KeyEvent::new(
+                                        crossterm::event::KeyCode::F(12),
+                                        crossterm::event::KeyModifiers::CONTROL,
+                                    )),
+                                    Instant::now(),
+                                ),
                                 super::native_window::NativeEvent::MouseUp { event, x, y } => {
                                     Message::MouseUp(event, x, y, Instant::now())
                                 }

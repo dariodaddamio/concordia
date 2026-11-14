@@ -148,6 +148,7 @@ struct TestRequest {
 /// Signed cells belong to the captured mouse-up message, before terminal clamping.
 pub(super) enum NativeEvent {
     Event(Event),
+    Close,
     MouseUp { event: MouseEvent, x: i32, y: i32 },
     Attention(String),
 }
@@ -2422,6 +2423,11 @@ unsafe extern "system" fn window_proc(
     match message {
         SHUTDOWN => {
             DestroyWindow(hwnd);
+            // The owner requested this window's backend to stop. Post the quit
+            // message here, after destruction, so WM_DESTROY remains a local
+            // cleanup notification and cannot terminate an unrelated window
+            // loop that happens to share the process.
+            PostQuitMessage(0);
             return 0;
         }
         TEST_CONTROL => {
@@ -2430,7 +2436,6 @@ unsafe extern "system" fn window_proc(
         }
         WM_DESTROY => {
             KillTimer(hwnd, 1);
-            PostQuitMessage(0);
             return 0;
         }
         WM_ERASEBKGND => return 1,
@@ -2487,10 +2492,7 @@ unsafe extern "system" fn window_proc(
     let window = &mut *pointer;
     match message {
         WM_CLOSE => {
-            window.emit(Event::Key(KeyEvent::new(
-                KeyCode::F(12),
-                KeyModifiers::CONTROL,
-            )));
+            window.emit_native(NativeEvent::Close);
             0
         }
         WM_PAINT => {
@@ -2653,15 +2655,15 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
-            let mods = modifiers();
+            let mut mods = modifiers();
+            if message == WM_SYSKEYDOWN && lparam as usize & (1 << 29) != 0 {
+                mods |= KeyModifiers::ALT;
+            }
             let vk = wparam as u16;
             let repeating = (lparam as usize & (1 << 30)) != 0;
             if vk == VK_F4 && mods == KeyModifiers::ALT {
                 if !repeating {
-                    window.emit(Event::Key(KeyEvent::new(
-                        KeyCode::F(12),
-                        KeyModifiers::CONTROL,
-                    )));
+                    window.emit_native(NativeEvent::Close);
                 }
                 return 0;
             }

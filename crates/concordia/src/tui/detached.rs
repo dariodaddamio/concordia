@@ -1,7 +1,7 @@
 //! Separate native file windows share the root App and its document/save state.
 //! Only input crosses threads; document mutation and drawing stay on the root UI thread.
 use super::{input_stream::WakeHandle, native_window, workspace, App};
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::Terminal;
 use std::{
     collections::BTreeMap,
@@ -130,6 +130,13 @@ impl DetachedWindows {
                     changed = true;
                     continue;
                 }
+                Message::Input(key, native_window::NativeEvent::Close) => (
+                    key,
+                    Event::Key(crossterm::event::KeyEvent::new(
+                        KeyCode::Char('w'),
+                        KeyModifiers::CONTROL,
+                    )),
+                ),
                 Message::Input(key, native_window::NativeEvent::Event(event)) => (key, event),
                 Message::Input(key, native_window::NativeEvent::MouseUp { event, .. }) => {
                     (key, Event::Mouse(event))
@@ -140,12 +147,6 @@ impl DetachedWindows {
             };
             // Messages already queued when a child was docked cannot affect another view.
             if !self.windows.contains_key(&key) {
-                continue;
-            }
-            if matches!(event, Event::Key(key) if key.kind != KeyEventKind::Release && key.code == KeyCode::F(12) && key.modifiers.contains(KeyModifiers::CONTROL))
-            {
-                dispatch(key.0, key.1, None);
-                changed = true;
                 continue;
             }
             dispatch(key.0, key.1, Some(event));

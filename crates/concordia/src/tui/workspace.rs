@@ -1521,7 +1521,12 @@ pub(super) fn handle_window_event(app: &mut App, id: u32, event: Event) -> bool 
     app.workspace.focused = Some(id);
     let handled = match event {
         Event::Key(key) if key.kind != KeyEventKind::Release => {
-            if handle_key(app, &key) {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('w' | 'W'))
+            {
+                app.workspace.close(id);
+                true
+            } else if handle_key(app, &key) {
                 true
             } else if key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Char('c' | 'C'))

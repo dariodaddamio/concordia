@@ -625,6 +625,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             let mut tab_action = tabs::TabAction::Unhandled;
             let mut rename_tab = None;
             let mut notification_item = None;
+            let active_owner = tabs.tabs[active].id;
+            let any_tab_needs_close_confirmation = tabs
+                .tabs
+                .iter()
+                .any(|tab| tabs::TabState::needs_close_confirmation(&tab.app));
             {
                 let RunTab { app, turn_tx, .. } = &mut tabs.tabs[active];
                 app.tab_strip = labels;
@@ -774,7 +779,17 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     && key.code == KeyCode::F(12)
                                     && key.modifiers.contains(KeyModifiers::CONTROL) =>
                             {
-                                quit = true;
+                                let confirmed = close_armed.is_some_and(|(id, at)| {
+                                    id == active_owner && at.elapsed() < Duration::from_secs(3)
+                                });
+                                if any_tab_needs_close_confirmation && !confirmed {
+                                    close_armed = Some((active_owner, Instant::now()));
+                                    app.flash(
+                                        "This window has a running turn or unsent work. Close again to exit.",
+                                    );
+                                } else {
+                                    quit = true;
+                                }
                                 break;
                             }
                             Event::Key(key) if use_window => {
