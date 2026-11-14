@@ -112,3 +112,19 @@
 | crates/concordia/src/tui/app/pickers.rs | ok: 1, 4, 5, 10 | Complete the existing guided picker dispatch for its already-rendered terminal and title rows; keep local terminal and session title modules as the canonical action owners. |
 | docs/guided-commands.md | ok: 5, 10 | Add the four active delegate argument forms to the existing command table rather than creating another catalog. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+### Y5 Claude delivery and MCP status - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/mcp_registry.rs, crates/concordia/src/provider/turn.rs | ok: 1, 4, 5, 6, 10 | Reuse the single registry as the source of truth and project Claude's documented inline `--mcp-config` without writing provider homes or secret values. |
+| crates/concordia/src/tui/app/{slash,pickers}.rs, crates/concordia/src/doctor.rs | ok: 1, 4, 5, 10 | Read provider files through the existing parser and expose one status projection in the existing command and doctor owners. |
+| docs/mcp.md, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 10 | Record the supported launch boundary and the unshipped proxy boundary accurately. |
+
+### Y5 review repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/mcp_registry.rs, crates/concordia/src/provider/turn.rs | ok: 1, 4, 5, 6, 10 | Keep the registry as the single MCP state owner and project supported launch arguments without writing provider homes or secret values. |
+| crates/concordia/src/tui/app/{state,slash,pickers}.rs | ok: 1, 4, 5, 9 | Reuse the existing guided picker for import selection and keep UI state limited to the pending selection. |
+| crates/concordia/src/mcp.rs, crates/concordia/src/main.rs | ok: 1, 4, 7, 8 | Extend the existing MCP server with one narrow remote HTTP JSON-RPC bridge and preserve bounded request handling. |
+| crates/concordia/src/doctor.rs, docs/mcp.md, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 10 | Make status and documentation match the implemented provider capability and authentication projection. |

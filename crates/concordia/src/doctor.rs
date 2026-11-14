@@ -421,6 +421,7 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
     out.extend(check_unopenable_chats(&env.state_root));
     out.push(check_log(&env.state_root));
     out.push(check_config(&env.state_root));
+    out.extend(check_mcp(&env.state_root));
     out.push(check_user_commands(&env.state_root));
     out.extend(check_providers(env));
     out.extend(check_accounts(&env.state_root));
@@ -469,6 +470,19 @@ pub fn run(env: &Env<'_>) -> Vec<Check> {
         },
     });
     out
+}
+
+fn check_mcp(root: &Path) -> Vec<Check> {
+    let lines = crate::mcp_registry::provider_status_lines(root, Path::new("."));
+    if lines.len() == 1 && lines[0] == "MCP registry cannot be read" {
+        return vec![check(Level::Fail, "mcp", lines[0].clone())];
+    }
+    if lines.is_empty() {
+        vec![check(Level::Ok, "mcp", "no Concordia MCP servers configured")]
+    } else {
+        let level = if lines.iter().any(|line| line.contains("needs sign-in")) { Level::Warn } else { Level::Ok };
+        lines.into_iter().map(|line| check(level, "mcp", line)).collect()
+    }
 }
 
 fn check_unopenable_chats(root: &Path) -> Vec<Check> {

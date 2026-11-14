@@ -71,6 +71,13 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::Chat,
     },
     CommandSpec {
+        name: "mcp",
+        aliases: &[],
+        args: "",
+        help: "serve the Concordia MCP registry and remote tools",
+        command: Command::Mcp,
+    },
+    CommandSpec {
         name: "file-edit",
         aliases: &[],
         args: "FILE",

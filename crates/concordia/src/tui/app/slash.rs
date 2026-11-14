@@ -4,7 +4,7 @@ impl App {
     fn run_mcp_command(&mut self, args: &str) {
         let words: Vec<_> = args.split_whitespace().collect();
         if words.is_empty() {
-            for line in crate::mcp_registry::status_lines(&self.state_root, &self.cwd) {
+            for line in crate::mcp_registry::provider_status_lines(&self.state_root, &self.cwd) {
                 self.push_system(line);
             }
             if crate::mcp_registry::load(&self.state_root).map_or(true, |r| r.servers.is_empty()) {
@@ -13,6 +13,10 @@ impl App {
             return;
         }
         let action = words[0].to_ascii_lowercase();
+        if action == "import" {
+            self.begin_mcp_import();
+            return;
+        }
         let Some(name) = words.get(1).map(|s| (*s).to_owned()) else {
             self.push_system("/mcp add NAME stdio COMMAND [ARGS...] | /mcp remove NAME | /mcp on NAME | /mcp off NAME | /mcp import");
             return;
@@ -35,7 +39,6 @@ impl App {
                     return;
                 }
             }
-            "import" => { self.push_system("/mcp import is read-only discovery and needs a provider file target"); return; }
             _ => { self.push_system("/mcp add|remove|on|off|import"); return; }
         }
         match crate::mcp_registry::save(&self.state_root, &registry) {
@@ -208,14 +211,17 @@ impl App {
             let args = trimmed.strip_prefix("/mcp").unwrap_or_default().trim();
             if args.is_empty() {
                 let servers = crate::mcp_registry::load(&self.state_root).ok().map(|r| r.servers.len()).unwrap_or(0);
-                self.open_guided_command("/mcp", vec![
+                let mut choices = crate::mcp_registry::provider_status_lines(&self.state_root, &self.cwd).into_iter().map(|line| PickerRow { id: format!("mcp:status:{line}"), label: "MCP server status".into(), detail: line }).collect::<Vec<_>>();
+                choices.extend([
                     PickerRow { id: "mcp:add".into(), label: "Add a server".into(), detail: format!("validated against a command and argument array; adds one registry entry ({} detected); undo: /mcp remove NAME", servers) },
                     PickerRow { id: "mcp:toggle".into(), label: "Enable or disable a server".into(), detail: "validated against a detected server; changes delivery state only; undo: choose the previous state".into() },
                     PickerRow { id: "mcp:remove".into(), label: "Remove a server".into(), detail: "validated against a detected server; removes only the Concordia registry entry; undo: add it again".into() },
-                    PickerRow { id: "mcp:import".into(), label: "Inspect provider configuration".into(), detail: "read-only validation; changes nothing; undo: not needed".into() },
+                    PickerRow { id: "mcp:import".into(), label: "Import from provider configuration".into(), detail: "reads provider files without writing them, then offers each server for confirmation; undo: not needed".into() },
                 ]);
+                self.open_guided_command("/mcp", choices);
             } else {
-                self.push_command(line);
+                let safe_line = sanitize_mcp_command(line);
+                self.push_command(&safe_line);
                 self.run_mcp_command(args);
             }
             return true;
@@ -516,4 +522,21 @@ impl App {
         }
         true
     }
+}
+
+fn sanitize_mcp_command(line: &str) -> String {
+    let mut words = line.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+    let secret_flag = |word: &str| matches!(word.to_ascii_lowercase().as_str(), "--token" | "--access-token" | "--api-key" | "--apikey" | "--secret" | "--password" | "-t");
+    for index in 0..words.len() {
+        if secret_flag(&words[index]) {
+            if words[index].contains('=') {
+                let equals = words[index].find('=').unwrap();
+                words[index].truncate(equals + 1);
+                words[index].push_str("[redacted]");
+            } else if let Some(value) = words.get_mut(index + 1) {
+                *value = "[redacted]".into();
+            }
+        }
+    }
+    words.join(" ")
 }

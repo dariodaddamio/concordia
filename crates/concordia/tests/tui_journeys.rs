@@ -2176,6 +2176,47 @@ fn every_argument_command_opens_a_guided_panel_and_saves_screen_text() {
 }
 
 #[test]
+#[ignore = "Y5 MCP screen journey; fake providers only"]
+fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    std::fs::write(dir.path().join("profile/.claude/mcp.json"), r#"{"mcpServers":{"imported":{"command":"synthetic-mcp","args":["--stdio"]}}}"#).unwrap();
+    std::fs::write(dir.path().join("profile/.claude.json"), r#"{"mcpServers":{"claude-native":{"command":"synthetic-mcp","args":["--stdio"]}}}"#).unwrap();
+    std::fs::write(dir.path().join("profile/.codex/config.toml"), "[mcp_servers.codex-remote]\nurl=\"https://example.invalid/mcp\"\nbearer_token_env_var=\"Y5_MISSING\"\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("profile/.opencode")).unwrap();
+    std::fs::write(dir.path().join("profile/.opencode/opencode.json"), r#"{"mcp":{"open-native":{"type":"local","command":["synthetic-mcp","--stdio"]}}}"#).unwrap();
+    std::fs::write(dir.path().join("mcp.toml"), "[servers.synthetic]\nenabled=true\n[servers.synthetic.transport]\ntype=\"stdio\"\ncommand=\"synthetic-mcp\"\n[servers.needs-login]\nenabled=true\n[servers.needs-login.transport]\ntype=\"remote\"\nurl=\"https://example.invalid/mcp\"\n[servers.needs-login.transport.headers]\nAuthorization={env=\"Y5_MISSING\"}\n").unwrap();
+    let mut s = Session::launch(dir.path());
+    s.submit("/mcp import");
+    s.until("guided MCP import panel", |s| s.screen().contains("/mcp import") && s.screen().contains("Add imported from claude"));
+    let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"));
+    let out = target.join("preview/y5-mcp");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("check-2.txt"), s.screen()).unwrap();
+    s.send("\x1b");
+    s.until("import panel closed", |s| s.screen().contains("Message Concordia"));
+    s.submit("/mcp");
+    s.until("per-provider MCP status", |s| {
+        s.screen().contains("Claude Code")
+            && s.screen().contains("Codex")
+            && s.screen().contains("Cursor")
+            && s.screen().contains("delivered")
+            && s.screen().contains("needs sign-in")
+            && s.screen().contains("next: sign in")
+    });
+    std::fs::write(out.join("check-1.txt"), s.screen()).unwrap();
+    std::fs::write(out.join("check-3.txt"), s.screen()).unwrap();
+    s.send("\x1b");
+    s.submit("/doctor");
+    s.until("doctor MCP status", |s| s.screen().contains("mcp") && s.screen().contains("Claude Code"));
+    std::fs::write(out.join("check-5.txt"), s.screen()).unwrap();
+    assert!(!s.screen().contains("SECRET_CANARY"));
+    std::fs::write(out.join("check-4.txt"), "Synthetic stdio and HTTP proxy coverage is exercised by the MCP unit journey; live OAuth and provider delivery remain pending.").unwrap();
+    s.exit();
+}
+
+#[test]
 #[ignore = "isolated modal close/cancel input journey; fake providers only"]
 fn usage_screen_shows_paused_input_and_mouse_x_returns_to_chat_without_sending() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -1062,6 +1062,42 @@ impl App {
         self.footer_left = "type NAME COMMAND [ARGS...] · Enter previews and validates · Esc cancels with nothing changed".into();
     }
 
+    pub(in crate::tui) fn begin_mcp_import(&mut self) {
+        let entries = crate::mcp_registry::import_entries(&self.state_root);
+        if entries.is_empty() {
+            self.push_system("MCP import found no readable provider servers. Nothing changed.");
+            return;
+        }
+        let rows = entries.iter().enumerate().map(|(index, entry)| PickerRow {
+            id: format!("mcp:import:{index}"),
+            label: format!("Add {} from {}", entry.name, entry.provider),
+            detail: format!("read-only source {}; adds a registry reference with no provider-home write; undo: /mcp remove {}", entry.path.display(), entry.name),
+        }).collect();
+        self.mcp_import_entries = Some(entries);
+        self.show_picker(PickerKind::Guided, "/mcp import · Choose a provider server to add".into(), rows, false);
+        self.footer_left = "↑↓ choose · Enter adds the selected server · Esc cancels with nothing changed".into();
+    }
+
+    fn apply_mcp_import(&mut self, index: usize) {
+        let Some(entry) = self.mcp_import_entries.as_ref().and_then(|entries| entries.get(index)).cloned() else {
+            self.push_system("MCP import selection is no longer available. Nothing changed.");
+            return;
+        };
+        let mut registry = match crate::mcp_registry::load(&self.state_root) {
+            Ok(registry) => registry,
+            Err(_) => { self.push_system("MCP import could not read the local registry. Nothing changed."); return; }
+        };
+        if registry.servers.contains_key(&entry.name) {
+            self.push_system(format!("MCP import skipped {} because it already exists. Provider homes were not changed.", entry.name));
+            return;
+        }
+        registry.servers.insert(entry.name.clone(), crate::mcp_registry::Server { enabled: true, transport: entry.transport });
+        match crate::mcp_registry::save(&self.state_root, &registry) {
+            Ok(()) => self.push_system(format!("MCP import added {} from {}. Provider homes were not changed.", entry.name, entry.provider)),
+            Err(_) => self.push_system("MCP import could not save the local registry. Nothing changed."),
+        }
+    }
+
     pub(in crate::tui) fn finish_mcp_add_editor(&mut self, text: String) {
         let words = text.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
         if words.len() < 2 || words[0].chars().any(|c| c.is_control() || c.is_whitespace()) {
@@ -1254,7 +1290,10 @@ impl App {
                     "mcp:add:confirm" => self.apply_mcp_add(),
                     "mcp:toggle" => self.toggle_guided_mcp_server(),
                     "mcp:remove" => self.remove_guided_mcp_server(),
-                    "mcp:import" => self.push_system("Inspect provider configuration validated; no provider file was selected, so nothing changed. Undo: not needed."),
+                    "mcp:import" => self.begin_mcp_import(),
+                    id if id.starts_with("mcp:import:") => {
+                        if let Ok(index) = id["mcp:import:".len()..].parse::<usize>() { self.apply_mcp_import(index); }
+                    }
                     id if id.starts_with("native:") => {
                         let parts = id.split(':').collect::<Vec<_>>();
                         if let [_, account, action] = parts.as_slice() {

@@ -1,5 +1,26 @@
 # Changelog
 
+### Fixed (2026-11-13ao)
+
+- Repair JSONC URL imports, project HTTP(S) servers to provider launch projections, keep stdio
+  initialization and discovery in one process, and redact MCP command transcript entries.
+
+### Fixed (2026-11-13an)
+
+- Complete native MCP import discovery, show unresolved sign-in references honestly, proxy stdio
+  and HTTPS servers, and redact Credential Manager values from returned MCP data.
+
+### Fixed (2026-11-13am)
+
+- Repair MCP import routing, reject inline imported secrets, classify HTTPS upstreams as unsupported,
+  and route supported HTTP upstreams through Concordia with unwrapped tool results.
+
+### Added (2026-11-13al)
+
+- Repair Concordia-wide MCP delivery: Claude Code receives the registry per launch, provider MCP
+  files can be imported through a guided read-only panel, `/mcp` and `/doctor` show per-provider
+  status, and `concordia mcp` re-exports tools from registered remote HTTP MCP servers.
+
 ### Fixed (2026-11-13aj)
 
 - Make guided panels state their purpose, keep mouse selection aligned after scrolling, and require validated MCP server details with a preview before saving.
