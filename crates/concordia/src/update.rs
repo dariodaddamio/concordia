@@ -1455,6 +1455,24 @@ pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
+/// Leave native-window callers: start the new binary on its own and return at once.
+///
+/// A window process has detached its console, so its standard handles are no longer valid and
+/// cannot be inherited (`The handle is invalid`). The replacement opens its own window and needs
+/// neither those handles nor this process.
+pub fn relaunch_window(new_exe: &Path, cwd: &Path) -> Result<()> {
+    persist_concordia_exe_env(new_exe);
+    crate::process_ui::command(new_exe)
+        .current_dir(cwd)
+        .env("CONCORDIA_EXE", new_exe)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn {}", new_exe.display()))?;
+    Ok(())
+}
+
 fn run_cargo_build(
     cargo: &Path,
     root: &Path,

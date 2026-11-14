@@ -497,6 +497,10 @@ fn append_orphan_requests(
             remaining.push(choice);
             continue;
         }
+        // Work from a tab the user closed stays on disk and is not reopened or offered.
+        if super::super::recovery::is_dismissed(&recovery_root, &choice) {
+            continue;
+        }
         if inspected >= MAX_TABS {
             remaining.push(choice);
             continue;
