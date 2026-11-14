@@ -311,6 +311,7 @@ pub(crate) struct App {
     pub(in crate::tui) activity: activity::Activity,
     pub(in crate::tui) palette: Palette,
     pub(in crate::tui) key_sheet: bool,
+    pub(in crate::tui) key_sheet_scroll: usize,
     pub(in crate::tui) chatref: chatref::ChatRef,
     pub(in crate::tui) related_files: related_files::State,
     pub(in crate::tui) questions: questions::State,
@@ -506,11 +507,12 @@ impl App {
 
     /// Short title for the tab strip; the status and provider are drawn as icons beside it.
     pub(in crate::tui) fn tab_label(&self) -> String {
-        let title = if self.landing.is_some() {
-            "Home"
-        } else {
-            self.session_ui.title.as_deref().unwrap_or("New chat")
-        };
+        let title = self
+            .session_ui
+            .title
+            .as_deref()
+            .or_else(|| self.landing.as_ref().map(|_| "Home"))
+            .unwrap_or("New chat");
         title
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -1678,6 +1680,7 @@ impl App {
             activity: activity::Activity::default(),
             palette: Palette::default(),
             key_sheet: false,
+            key_sheet_scroll: 0,
             chatref: chatref::ChatRef::default(),
             related_files,
             questions: questions::State::default(),

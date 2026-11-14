@@ -256,14 +256,20 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
     f.render_widget(Paragraph::new(Line::from(spans)), row);
     // Drop feedback: a bar in the gap where the dragged tab will land.
     if let Some((_, slot)) = app.tab_drag {
-        let marker = match app.tab_hits.get(slot) {
-            Some(rect) => rect.x.saturating_sub(1),
-            None => app.tab_hits.last().map_or(row.x, |rect| rect.right()),
+        let marker = match slot {
+            0 => row.x,
+            _ => match app.tab_hits.get(slot) {
+                Some(rect) => rect.x.saturating_sub(1),
+                None => app.tab_hits.last().map_or(row.x, |rect| rect.right()),
+            },
         };
-        if marker < row.right() {
+        // The insertion slot after the final tab is outside the row's drawable cells when the
+        // strip reaches the window edge. Keep the feedback visible in the last cell in that case.
+        let marker = marker.min(row.right().saturating_sub(1));
+        if marker >= row.x && marker < row.right() {
             f.render_widget(
                 Paragraph::new(Span::styled(
-                    "┃",
+                    "|",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -288,7 +294,7 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
     )
 }
 
-fn draw_key_sheet(f: &mut Frame, app: &App) {
+fn draw_key_sheet(f: &mut Frame, app: &mut App) {
     let bindings: Vec<_> = crate::commands::command_registry()
         .iter()
         .filter_map(|c| c.key_binding.map(|key| (key, c.name, c.description)))
@@ -340,7 +346,7 @@ fn draw_key_sheet(f: &mut Frame, app: &App) {
     }
     lines.push(Line::from("  Icons"));
     for (group, rows) in crate::tui::icons::legend() {
-        lines.push(Line::from(format!("  {group}")));
+        lines.push(Line::from(format!("  {group}:")));
         for (glyph, meaning) in rows {
             lines.push(Line::from(format!("    {glyph}  {meaning}")));
         }
@@ -355,12 +361,21 @@ fn draw_key_sheet(f: &mut Frame, app: &App) {
         width.min(f.area().width),
         height.min(f.area().height),
     );
+    let inner_height = usize::from(area.height.saturating_sub(2));
+    let max_scroll = lines.len().saturating_sub(inner_height);
+    app.key_sheet_scroll = app.key_sheet_scroll.min(max_scroll);
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" shortcuts ")),
+        Paragraph::new(lines)
+            .scroll((app.key_sheet_scroll as u16, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" shortcuts ")
+                    .title_bottom(" Up/Down or PgUp/PgDn scroll "),
+            ),
         area,
     );
-    let _ = app;
 }
 
 /// Slash-command suggestions, floating just above the prompt box.

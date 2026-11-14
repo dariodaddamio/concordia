@@ -27,9 +27,11 @@ fn rename_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => return,
         KeyCode::Enter => {
-            if app.rename_session(&editor.text()) {
-                return;
+            let saved = app.rename_session(&editor.text());
+            if !saved {
+                app.rename_editor = Some(editor);
             }
+            return;
         }
         KeyCode::Char('a' | 'A') if ctrl && !alt => editor.select_all(),
         KeyCode::Char('v' | 'V') if ctrl && !alt => {
@@ -164,8 +166,15 @@ pub(super) fn handle_key(
         return false;
     }
     if app.key_sheet {
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1)) {
-            app.key_sheet = false;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1) => app.key_sheet = false,
+            KeyCode::Up => app.key_sheet_scroll = app.key_sheet_scroll.saturating_sub(1),
+            KeyCode::Down => app.key_sheet_scroll = app.key_sheet_scroll.saturating_add(1),
+            KeyCode::PageUp => app.key_sheet_scroll = app.key_sheet_scroll.saturating_sub(8),
+            KeyCode::PageDown => app.key_sheet_scroll = app.key_sheet_scroll.saturating_add(8),
+            KeyCode::Home => app.key_sheet_scroll = 0,
+            KeyCode::End => app.key_sheet_scroll = usize::MAX,
+            _ => {}
         }
         return false;
     }
@@ -192,10 +201,7 @@ pub(super) fn handle_key(
         && !landing::editing_goal(app);
     if (key.code == KeyCode::F(1) || idle_help) && key.modifiers.is_empty() {
         app.key_sheet = true;
-        return false;
-    }
-    if key.modifiers.is_empty() && app.picker.is_none() && key.code == KeyCode::F(2) {
-        app.open_provider_picker();
+        app.key_sheet_scroll = 0;
         return false;
     }
     // Native windows distinguish auto-repeat from a fresh press. Navigation and deletion

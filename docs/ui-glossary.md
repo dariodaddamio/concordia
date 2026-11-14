@@ -83,6 +83,10 @@ waiting, finished or failed status. Tool cards use separate icons for shell, fil
 search, web, MCP, agent, question and image operations. The glyph legend is the source for both F1
 and this document.
 
+Ctrl+O expands or collapses the last collapsed item in the latest message. Ctrl+Shift+O applies the
+same action to every expandable item in that message. Running tool cards show elapsed wall time;
+cards with a provider-reported timeout also show time remaining and the reported limit.
+
 | Icon group | Glyphs and meaning |
 | --- | --- |
 | Providers | `⚡` Codex, `✻` Claude Code, `➤` Cursor, `⊘` Grok, `◇` opencode |

@@ -1434,7 +1434,11 @@ fn two_tabs_draw_a_clickable_strip_on_the_top_row_above_the_header() {
     h.draw();
     let marker = h.app.tab_hits[2].x - 1;
     let top: Vec<char> = h.screen().lines().next().unwrap().chars().collect();
-    assert_eq!(top[usize::from(marker)], '┃', "{top:?}");
+    assert_eq!(top[usize::from(marker)], '|', "{top:?}");
+    h.app.tab_drag = Some((2, 0));
+    h.draw();
+    let top: Vec<char> = h.screen().lines().next().unwrap().chars().collect();
+    assert_eq!(top[0], '|', "{top:?}");
     h.app.tab_strip[1].status = icons::TabStatus::Running;
     h.app.tick_count = 1;
     h.app.tab_drag = None;

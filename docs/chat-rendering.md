@@ -1,6 +1,6 @@
 # Chat rendering and input
 
-Guide baseline: build `2026-11-08h`. See [verification](e2e-status.md) for the current build and checked scope.
+Guide baseline: build `2026-11-13ab`. See [verification](e2e-status.md) for the current build and checked scope.
 Build history belongs in [CHANGELOG.md](../CHANGELOG.md); scoped verification and its
 limits are in [verification](e2e-status.md), which also records cleanup closeout and historical retrieval.
 
@@ -83,7 +83,9 @@ expands inline by heading/gutter; Ctrl+O toggles activity. Short thinking shows 
 would hide nothing. Ctrl+E inspects raw tool output. Worked-for metadata shows duration, stop time
 and usage. No missing or provider-private encrypted reasoning is reconstructed.
 
-Tool titles retain recorded status, paths and expandable details; links keep their own actions.
+Ctrl+O expands or collapses the last collapsed item in the latest message. Ctrl+Shift+O applies the
+same action to every expandable item in that message. Tool titles retain recorded status, paths and
+expandable details; links keep their own actions.
 Diffs use reported hunk positions, syntax colors and subdued addition/removal backgrounds.
 Unavailable positions stay unnumbered. Codex patch enrichment uses successful bounded inputs from
 the exact native session/attempt. Ambiguous, failed or stale evidence stays unavailable; current

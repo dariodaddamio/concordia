@@ -1,5 +1,27 @@
 # Changelog
 
+### Fixed (2026-11-13af)
+
+- Show the tab drop marker before the first tab and finish Home-tab renames with Enter.
+
+### Fixed (2026-11-13ae)
+
+- Keep the tab drop marker visible at the end of the strip and show every F1 icon description without clipping.
+
+### Fixed (2026-11-13ad)
+
+- Keep renamed Home tab titles after switching tabs and make the F1 shortcut sheet scrollable in narrow windows.
+
+### Fixed (2026-11-13ac)
+
+- Make Ctrl+O target the last collapsed activity item, keep completed tab status icons visible,
+  make double-click and F2 rename tabs, and fit the complete F1 icon legend in the help sheet.
+
+### Fixed (2026-11-13ab)
+
+- Refined browser-style tab controls, expansion shortcuts, provider and tool icon legends, and
+  running tool timer display; native-window verification remains recorded in the journey suite.
+
 ### Fixed (2026-11-13aa)
 
 - Group Codex effort variants in `/model` while saving only an exact provider-reported model ID.

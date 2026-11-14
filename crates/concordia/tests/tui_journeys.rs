@@ -2634,6 +2634,108 @@ fn render_timing_with_a_long_transcript_in_two_tabs() {
     s.exit();
 }
 
+#[test]
+#[ignore = "X4 screen evidence; fake provider only"]
+fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/preview/X4");
+    std::fs::create_dir_all(&evidence).unwrap();
+    let mut s = Session::launch(dir.path());
+    s.request(serde_json::json!({"op":"resize","columns":140,"rows":45}));
+
+    s.submit("inspect fixture");
+    s.until("synthetic reply and tool card", |s| {
+        s.screen().contains("FAKE REPLY:") && s.screen().contains("Expand")
+    });
+    s.request(serde_json::json!({"op":"key","code":"o","modifiers":["CTRL"]}));
+    s.until("last tool item expanded", |s| {
+        s.screen().contains("command-tail")
+    });
+    std::fs::write(evidence.join("check-1.txt"), s.screen()).unwrap();
+    s.request(serde_json::json!({"op":"key","code":"o","modifiers":["CTRL","SHIFT"]}));
+    s.until("all activity items expanded", |s| s.screen().contains("tool-output-end"));
+    std::fs::write(evidence.join("check-5.txt"), s.screen()).unwrap();
+
+    for _ in 0..2 {
+        s.request(serde_json::json!({"op":"key","code":"t","modifiers":["CTRL"]}));
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    let tabs = s.screen();
+    assert!(tabs.lines().next().unwrap_or_default().contains("1"), "{tabs}");
+    s.request(serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL"]}));
+    s.request(serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL","SHIFT"]}));
+    s.request(serde_json::json!({"op":"key","code":"2","modifiers":["CTRL"]}));
+    s.request(serde_json::json!({"op":"key","code":"PageDown","modifiers":["CTRL","SHIFT"]}));
+    std::fs::write(evidence.join("check-2.txt"), s.screen()).unwrap();
+
+    let top = s.screen().lines().next().unwrap_or_default().to_string();
+    let second_x = top.find("2 ").unwrap_or(20) as u16 + 2;
+    s.request(serde_json::json!({"op":"mouse","kind":"down","x":2,"y":0}));
+    s.request(serde_json::json!({"op":"mouse","kind":"drag","x":100,"y":0}));
+    s.until("tab drop marker", |s| {
+        s.screen().lines().next().unwrap_or_default().contains('|')
+    });
+    let feedback = s.screen();
+    assert!(feedback.lines().next().unwrap_or_default().contains('|'), "{feedback}");
+    std::fs::write(evidence.join("check-3.txt"), &feedback).unwrap();
+    std::fs::write(evidence.join("check-3-final.txt"), feedback).unwrap();
+    s.request(serde_json::json!({"op":"mouse","kind":"up","x":100,"y":0}));
+    s.request(serde_json::json!({"op":"mouse","kind":"down","x":20,"y":0}));
+    s.request(serde_json::json!({"op":"mouse","kind":"drag","x":1,"y":0}));
+    s.until("first tab drop marker", |s| {
+        s.screen().lines().next().unwrap_or_default().starts_with('|')
+    });
+    std::fs::write(evidence.join("check-3-before-first.txt"), s.screen()).unwrap();
+    s.request(serde_json::json!({"op":"mouse","kind":"up","x":1,"y":0}));
+    s.request(serde_json::json!({"op":"mouse","kind":"down","x":second_x,"y":0}));
+    s.request(serde_json::json!({"op":"mouse","kind":"up","x":second_x,"y":0}));
+    s.request(serde_json::json!({"op":"mouse","kind":"down","x":second_x,"y":0}));
+    s.request(serde_json::json!({"op":"mouse","kind":"up","x":second_x,"y":0}));
+    s.paste("Renamed tab");
+    s.enter();
+    assert!(s.screen().contains("Renamed tab"), "{}", s.screen());
+    std::fs::write(evidence.join("check-3-renamed.txt"), s.screen()).unwrap();
+
+    s.submit("[wait]");
+    s.until("running tool elapsed timer", |s| {
+        s.screen().contains("Run command") && s.screen().contains("· 0:")
+    });
+    std::fs::write(evidence.join("check-6.txt"), s.screen()).unwrap();
+    std::fs::write(dir.path().join("gate"), "release").unwrap();
+    s.until("waiting tool released", |s| s.screen().contains("FAKE REPLY: [wait]"));
+
+    s.request(serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL"]}));
+    s.request(serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL","SHIFT"]}));
+    assert!(s.screen().contains("Renamed tab"), "renamed tab did not persist after switching: {}", s.screen());
+
+    s.request(serde_json::json!({"op":"resize","columns":80,"rows":30}));
+    s.request(serde_json::json!({"op":"key","code":"F1","modifiers":[]}));
+    s.until("shortcut and icon sheet", |s| {
+        let screen = s.screen();
+        screen.contains("Ctrl+O")
+            && screen.contains("Ctrl+Shift+PgUp")
+            && screen.contains("Up/Down or PgUp/PgDn scroll")
+    });
+    let legend_top = s.screen();
+    for _ in 0..6 {
+        s.request(serde_json::json!({"op":"key","code":"PageDown","modifiers":[]}));
+    }
+    s.until("scrolled icon legend", |s| {
+        let screen = s.screen();
+        screen.contains("failed while you were in another tab")
+            && screen.contains("image")
+    });
+    let legend_bottom = s.screen();
+    std::fs::write(evidence.join("check-4.txt"), &legend_top).unwrap();
+    std::fs::write(evidence.join("check-7.txt"), format!("TOP\n{legend_top}\nBOTTOM\n{legend_bottom}")).unwrap();
+    s.request(serde_json::json!({"op":"key","code":"F1","modifiers":[]}));
+    s.request(serde_json::json!({"op":"key","code":"w","modifiers":["CTRL"]}));
+    s.exit();
+}
+
 impl Session {
     /// Pixel snapshot of the window as Windows composited it, compared with a fresh paint.
     fn pixels(&self, label: &str, color: &str) -> Value {

@@ -613,8 +613,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     }
                 }
             }
-            // The tab in front has been seen; only background tabs keep a finished mark.
-            tabs.active_mut().app.tab_outcome = None;
             let labels: Vec<TabChip> = if tabs.has_multiple() {
                 tabs.tabs.iter().map(|t| t.app.tab_chip()).collect()
             } else {
