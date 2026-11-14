@@ -1,5 +1,22 @@
 # Changelog
 
+### Fixed (2026-11-13c)
+
+- An in-app update from the native window now reopens Concordia. The window process has no
+  console, so the old relaunch failed with `The handle is invalid` and the app only closed.
+
+### Fixed (2026-11-13b)
+
+- Closing a tab that holds a draft or queued work now keeps it closed on the next start. The saved
+  work stays on disk; Concordia no longer reopens it as a saved work tab, and editing the tab
+  after reopening it in the same session makes it restorable again.
+
+### Fixed (2026-11-13a)
+
+- `concordia.log` now records a `quit` line on a normal shutdown and an `exit after error` line
+  when Concordia stops on an error, so a session that was killed from outside is the one with
+  neither line.
+
 ### Fixed (2026-11-12r)
 
 - Finished Grok Bot routine setup in `/use` with a masked Credential Manager-backed key field,

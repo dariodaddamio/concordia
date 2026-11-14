@@ -160,6 +160,16 @@ async fn run_default_chat() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let result = run().await;
+    if let Err(error) = &result {
+        // A window started from a shortcut has no console, so stderr alone loses this.
+        concordia::logging::init(&default_store_root());
+        concordia::logging::error(&format!("exit after error: {error:#}"));
+    }
+    result
+}
+
+async fn run() -> Result<()> {
     if let Some(warning) = concordia::store::outside_profile_warning(&default_store_root()) {
         eprintln!("warn: {warning}");
     }

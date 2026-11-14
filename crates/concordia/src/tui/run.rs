@@ -357,6 +357,13 @@ fn confirm_and_close_tab(
         return;
     }
     tabs.active_mut().shut_down();
+    // The draft was just saved. Closing is the user's decision, so the next start must not
+    // reopen this tab as saved work; reopening it here and editing makes it offerable again.
+    if tabs.tabs.len() > 1 {
+        if let Some(lease) = &tabs.active().app.keep.lease {
+            let _ = lease.dismiss_current();
+        }
+    }
     tabs.close(true);
     *close_armed = None;
 }
@@ -1493,7 +1500,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     drop(tabs);
     drop(saved_window);
     input_result?;
+    // A session with a start line and no quit or error line was killed from outside.
+    crate::logging::info("quit");
     if let Some(path) = reexec {
+        if use_window {
+            crate::logging::info("relaunch after update");
+            return crate::update::relaunch_window(&path, &cwd);
+        }
         let code = crate::update::reexec_into(&path, &cwd)?;
         std::process::exit(code);
     }

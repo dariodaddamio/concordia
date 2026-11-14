@@ -33,6 +33,12 @@ Source:
 events to one line and runs local redaction before writing. Source:
 [`logging.rs` (`MAX_BYTES`, `disabled`, `append`)](../crates/concordia/src/logging.rs).
 
+Each chat session writes a `start` line, then a `quit` line on a normal shutdown, an
+`exit after error` line when it stops on an error, or a panic line. A `start` with none of those
+after it for the same `pid` means the process was ended from outside. Source:
+[`main.rs` (`main`)](../crates/concordia/src/main.rs) and
+[`tui/run.rs` (`run_chat_ui`)](../crates/concordia/src/tui/run.rs).
+
 ## Harness integrations
 
 `src/harness/` is an explicit adapter protocol for a user-owned local integration. A
