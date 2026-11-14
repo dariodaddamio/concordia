@@ -531,7 +531,7 @@ impl App {
             CommandOutcome::OpenDoctor => self.open_doctor(),
             CommandOutcome::ShowUsage => self.show_usage(false),
             CommandOutcome::ShowUsageRefresh => self.show_usage(true),
-            CommandOutcome::OpenUsage => { self.open_usage_picker(); self.guide_open_picker("/usage", "inspect provider-reported limits", "Esc closes without changing provider state"); },
+            CommandOutcome::OpenUsage => { self.open_usage_picker(); self.guide_open_picker("/usage", "inspect provider-reported limits", "Esc closes without changing provider state"); self.footer_left = super::usage_view::USAGE_FOOTER.into(); },
             CommandOutcome::CopyLastReply => match self.last_assistant_text() {
                 Some(t) => {
                     self.write_clipboard(&t);

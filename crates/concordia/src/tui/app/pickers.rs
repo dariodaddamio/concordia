@@ -1039,6 +1039,7 @@ impl App {
             filter: String::new(),
             state,
             usage_scroll: 0,
+            usage_cols: 1,
         });
         self.footer_left = if filterable {
             "↑↓ Enter · type to filter · Esc".into()

@@ -485,11 +485,22 @@ impl TranscriptView {
         (offset as u16, size as u16)
     }
 
-    pub fn drag_scroll_thumb(&mut self, offset: u16, track: u16) {
-        let (_, size) = self.scroll_thumb(track);
-        let travel = usize::from(track.saturating_sub(size));
+    /// Thumb offset and size in eighths of a cell, so the thumb can sit between cell rows.
+    pub fn scroll_thumb_eighths(&self, track: u16) -> (usize, usize) {
+        let track = usize::from(track) * 8;
+        let total = self.rows.len().max(1);
+        let size = (track * self.height / total).clamp(8.min(track.max(1)), track.max(1));
+        let max = total.saturating_sub(self.height);
+        let offset = (track.saturating_sub(size) * max.saturating_sub(self.scroll)) / max.max(1);
+        (offset, size)
+    }
+
+    /// Move the thumb's top to `offset` eighths of a cell from the top of the rail.
+    pub fn drag_scroll_thumb(&mut self, offset: usize, track: u16) {
+        let (_, size) = self.scroll_thumb_eighths(track);
+        let travel = (usize::from(track) * 8).saturating_sub(size);
         let max = self.rows.len().saturating_sub(self.height);
-        let top = usize::from(offset).min(travel) * max / travel.max(1);
+        let top = (offset.min(travel) * max + travel / 2) / travel.max(1);
         let target = max.saturating_sub(top);
         if target > self.scroll {
             self.scroll_up(target - self.scroll);

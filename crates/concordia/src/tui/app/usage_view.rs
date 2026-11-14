@@ -1,5 +1,9 @@
 use super::super::*;
 
+/// One footer for the usage page, however it was opened or refreshed.
+pub(in crate::tui) const USAGE_FOOTER: &str =
+    "←↑↓→ move · PgUp/PgDn scroll card · r refresh · t tokens · Esc";
+
 impl App {
     pub(in crate::tui) fn refresh_usage(&mut self) {
         let home = self.home_path.clone().or_else(|| {
@@ -168,6 +172,11 @@ impl App {
             picker.filter = old.filter;
             picker.state = old.state;
             picker.usage_scroll = old.usage_scroll;
+            picker.usage_cols = old.usage_cols;
+            // A background refresh must not swap the heading the panel was opened with.
+            if picker.kind == PickerKind::Usage {
+                picker.title = old.title;
+            }
         }
     }
     pub(in crate::tui) fn show_credit_details(&mut self, force: bool) {
@@ -261,6 +270,6 @@ impl App {
                 .collect()
         };
         self.show_picker(PickerKind::Usage, "usage".into(), rows, false);
-        self.footer_left = "↑↓ Enter · r refresh · t tokens · Esc".into();
+        self.footer_left = USAGE_FOOTER.into();
     }
 }

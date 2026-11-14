@@ -540,6 +540,7 @@ struct Window {
     blink: bool,
     wheel: i32,
     last_motion: Option<MouseEvent>,
+    last_sub_row: u8,
     surface: Option<Surface>,
     image_pixels: Vec<BitmapPixels>,
 }
@@ -880,6 +881,9 @@ impl Window {
     }
     unsafe fn mouse(&mut self, kind: MouseEventKind, x: i32, y: i32) {
         let (column, row) = self.coordinates(x, y);
+        let height = self.cell_height.max(1);
+        let sub_row = (y.rem_euclid(height) * 8 / height) as u8;
+        super::pointer::set_sub_row(sub_row);
         let event = MouseEvent {
             kind,
             column,
@@ -887,10 +891,13 @@ impl Window {
             modifiers: modifiers(),
         };
         if matches!(kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
-            if self.last_motion == Some(event) {
+            // A drag reports movement inside a cell too, so a scrollbar can follow the pixel.
+            let dragging = matches!(kind, MouseEventKind::Drag(_));
+            if self.last_motion == Some(event) && (!dragging || self.last_sub_row == sub_row) {
                 return;
             }
             self.last_motion = Some(event);
+            self.last_sub_row = sub_row;
         } else {
             self.last_motion = None;
         }
@@ -2324,6 +2331,7 @@ unsafe fn window_thread(
         blink: true,
         wheel: 0,
         last_motion: None,
+        last_sub_row: 0,
         surface: None,
         image_pixels: Vec::new(),
     });

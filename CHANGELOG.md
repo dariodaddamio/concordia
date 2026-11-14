@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (2026-11-14b)
+
+- The usage page moves between account cards with all four arrow keys, and keeps one heading and
+  footer while limits refresh in the background.
+- The chat scrollbar shows the hand pointer, and its thumb follows the mouse in eighths of a row
+  instead of jumping a whole row at a time.
+
 ### Fixed (2026-11-13c)
 
 - An in-app update from the native window now reopens Concordia. The window process has no

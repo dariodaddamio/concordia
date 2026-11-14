@@ -484,6 +484,28 @@ pub(super) fn handle_key(
             KeyCode::Char('r') if picker.kind == PickerKind::Model && picker.filter.is_empty() => {
                 app.refresh_model_picker()
             }
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+                if picker.kind == PickerKind::Usage =>
+            {
+                // The usage page is a grid of cards: move the way the arrow points.
+                let n = picker.filtered().len();
+                if n > 0 {
+                    let cols = picker.usage_cols.max(1);
+                    let i = picker.state.selected().unwrap_or(0).min(n - 1);
+                    let next = match key.code {
+                        KeyCode::Left => i.saturating_sub(1),
+                        KeyCode::Right => (i + 1).min(n - 1),
+                        KeyCode::Up if i >= cols => i - cols,
+                        KeyCode::Down if i + cols < n => i + cols,
+                        KeyCode::Down if i / cols < (n - 1) / cols => n - 1,
+                        _ => i,
+                    };
+                    if next != i {
+                        picker.state.select(Some(next));
+                        picker.usage_scroll = 0;
+                    }
+                }
+            }
             KeyCode::Up => {
                 let n = picker.filtered().len();
                 if n > 0 {
@@ -1300,8 +1322,9 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if let Drag::Scrollbar(grab) = app.drag {
         match m.kind {
             MouseEventKind::Drag(MouseButton::Left) => {
+                let at = usize::from(y.saturating_sub(rail.y)) * 8 + pointer::sub_row();
                 app.view
-                    .drag_scroll_thumb(y.saturating_sub(rail.y).saturating_sub(grab), rail.height);
+                    .drag_scroll_thumb(at.saturating_sub(usize::from(grab)), rail.height);
             }
             MouseEventKind::Up(MouseButton::Left) => app.drag = Drag::None,
             _ => {}
@@ -1309,16 +1332,17 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         return;
     }
     if m.kind == MouseEventKind::Down(MouseButton::Left) && contains(rail, x, y) {
-        let (offset, size) = app.view.scroll_thumb(rail.height);
-        let row = y - rail.y;
+        let (offset, size) = app.view.scroll_thumb_eighths(rail.height);
+        let at = usize::from(y - rail.y) * 8 + pointer::sub_row();
         app.view.clear_selection();
         app.file_click = None;
-        if row < offset {
+        if at < offset {
             app.view.scroll_up(app.view.page());
-        } else if row >= offset + size {
+        } else if at >= offset + size {
             app.view.scroll_down(app.view.page());
         } else {
-            app.drag = Drag::Scrollbar(row - offset);
+            // Remember where on the thumb the grab landed, in eighths of a cell.
+            app.drag = Drag::Scrollbar((at - offset) as u16);
         }
         return;
     }

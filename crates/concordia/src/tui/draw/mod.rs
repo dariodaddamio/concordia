@@ -1096,12 +1096,25 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .set_symbol("│")
                 .set_style(Style::default().fg(Color::Indexed(238)));
         }
-        let (offset, thumb_height) = app.view.scroll_thumb(inner.height);
-        let thumb_y = inner.y + offset;
-        for y in thumb_y..thumb_y.saturating_add(thumb_height).min(inner.bottom()) {
-            f.buffer_mut()[(rail.x, y)]
-                .set_symbol("┃")
-                .set_style(Style::default().fg(Color::Cyan));
+        // The thumb is placed in eighths of a cell, so it glides instead of jumping a row.
+        const LOWER: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+        let (start, size) = app.view.scroll_thumb_eighths(inner.height);
+        let end = start + size;
+        for (index, y) in (rail.y..rail.bottom()).enumerate() {
+            let (cell_top, cell_bottom) = (index * 8, index * 8 + 8);
+            let (top, bottom) = (start.max(cell_top), end.min(cell_bottom));
+            if bottom <= top {
+                continue;
+            }
+            let cell = &mut f.buffer_mut()[(rail.x, y)];
+            let thumb = Style::default().fg(Color::Cyan);
+            if bottom == cell_bottom {
+                cell.set_symbol(LOWER[bottom - top]).set_style(thumb);
+            } else {
+                // The thumb ends inside this cell: paint the uncovered lower part in reverse.
+                cell.set_symbol(LOWER[cell_bottom - bottom])
+                    .set_style(thumb.add_modifier(Modifier::REVERSED));
+            }
         }
     }
     // Paint the complete user block, including blank and trailing cells. Line styling alone
@@ -1638,6 +1651,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(frame, popup);
         let inner = Block::default().inner(popup);
         let cols = (inner.width / 54).max(1) as usize;
+        picker.usage_cols = cols;
         let rows = picker
             .filtered()
             .into_iter()

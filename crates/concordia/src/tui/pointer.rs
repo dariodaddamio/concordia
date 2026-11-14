@@ -2,6 +2,18 @@
 use super::*;
 use std::io::Write;
 
+/// Where inside its cell row the mouse is, in eighths from the top. The native window knows
+/// the pixel; a terminal host reports whole cells and leaves this at the middle.
+static SUB_ROW: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(4);
+
+pub(super) fn set_sub_row(eighths: u8) {
+    SUB_ROW.store(eighths.min(7), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(super) fn sub_row() -> usize {
+    usize::from(SUB_ROW.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 #[derive(Default)]
 pub(super) struct Pointer {
     shape: Option<&'static str>,
@@ -115,7 +127,7 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
         return "pointer";
     }
     if contains(app.areas.transcript_rail, x, y) || matches!(app.drag, Drag::Scrollbar(_)) {
-        return "default";
+        return "pointer";
     }
     if images::clickable(app, x, y) || questions::clickable(app, x, y) {
         return "pointer";

@@ -209,6 +209,8 @@ pub(in crate::tui) struct Picker {
     pub(in crate::tui) filter: String,
     pub(in crate::tui) state: ListState,
     pub(in crate::tui) usage_scroll: usize,
+    /// Cards per row on the usage page, recorded by the last draw for arrow-key movement.
+    pub(in crate::tui) usage_cols: usize,
 }
 
 pub(in crate::tui) struct DoctorUi {
