@@ -1,5 +1,28 @@
 # Changelog
 
+### Fixed (2026-11-13at)
+
+- Keep the command catalog current and route MCP stdio servers through Concordia's process helper.
+
+### Fixed (2026-11-13as)
+
+- Derive standing-context tool names from the active transport and require provider compaction
+  ordering in the context journey.
+
+### Fixed (2026-11-13ar)
+
+- Make the standing-context journey capture the provider compaction event and verify Claude's
+  single resend without duplicating Codex developer instructions.
+
+### Fixed (2026-11-13aq)
+
+- Emit provider-shaped compaction events in the standing-context journey and reinject Claude's
+  standing context once for each completed compaction boundary.
+
+### Fixed (2026-11-13ap)
+
+- Corrected the standing context to name the registered `ask_user` bridge and strengthened its provider journey checks.
+
 ### Fixed (2026-11-13ao)
 
 - Repair JSONC URL imports, project HTTP(S) servers to provider launch projections, keep stdio

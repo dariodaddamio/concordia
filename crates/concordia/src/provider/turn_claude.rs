@@ -489,6 +489,7 @@ pub(super) async fn run(
     let mut deferred_task_titles = HashMap::new();
     let mut deferred_task_tools = HashMap::new();
     let mut deferred_work_seen = false;
+    let mut last_compaction = None::<String>;
     let initialize_id = uuid::Uuid::new_v4().to_string();
     let initialize_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let result: anyhow::Result<()> = async {
@@ -574,6 +575,21 @@ pub(super) async fn run(
             }
             if value["type"] == "system" {
                 match value["subtype"].as_str() {
+                    Some("compact_boundary") => {
+                        let id = value
+                            .get("uuid")
+                            .and_then(Value::as_str)
+                            .or_else(|| value.pointer("/compact_metadata/user_message_id").and_then(Value::as_str))
+                            .unwrap_or("claude-compact-boundary");
+                        if crate::provider::standing_context::should_reinject_context(
+                            &mut last_compaction,
+                            id,
+                        ) {
+                            if let Some(context) = plan.standing_context.as_deref() {
+                                write_frame(&mut input, &user_message(context)).await?;
+                            }
+                        }
+                    }
                     Some("session_state_changed") => {
                         if let Some(state) = value["state"].as_str() {
                             if matches!(state, "running" | "idle") {
@@ -998,5 +1014,20 @@ async fn capture_context(
             },
             &crate::capacity::Compaction::Native,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn duplicate_compaction_boundaries_reinject_once_per_boundary() {
+        let mut last = None;
+        let mut reinjections = 0;
+        for id in ["compact-1", "compact-1", "compact-2"] {
+            if crate::provider::standing_context::should_reinject_context(&mut last, id) {
+                reinjections += 1;
+            }
+        }
+        assert_eq!(reinjections, 2);
     }
 }

@@ -1360,16 +1360,10 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         if let Some(scope) = scope_intent {
                             prefix.get_or_insert_with(String::new).push_str(&format!("\n[User-declared cooperative workspace scope]\n{scope}\nFollow these declared paths. Scheduler reservations grant no additional native permissions."));
                         }
-                        let mut standing_tools = if matches!(provider, ProviderKind::Claude | ProviderKind::Codex) {
-                            crate::mcp::registered_tool_names()
-                        } else {
-                            Vec::new()
-                        };
-                        if native_input != crate::native_input::Mode::Standard
-                            && matches!(provider, ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode)
-                        {
-                            standing_tools.push("question".into());
-                        }
+                        let standing_tools = crate::provider::standing_context::tools_for_transport(
+                            provider,
+                            native_input,
+                        );
                         let standing = crate::provider::standing_context::render(
                             &crate::provider::standing_context::State {
                                 provider,

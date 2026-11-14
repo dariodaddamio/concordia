@@ -852,6 +852,7 @@ fn main() {
 
 fn interaction(args: &[String]) {
     use serde_json::json;
+    use std::io::BufRead;
     let provider = if args.first().is_some_and(|a| a == "exec") {
         "codex"
     } else if args.first().is_some_and(|a| a == "-p") {
@@ -861,13 +862,23 @@ fn interaction(args: &[String]) {
     };
     let mut prompt = args.last().cloned().unwrap_or_default();
     let mut image_count = args.iter().filter(|a| *a == "--image").count();
+    let mut wire_frames = Vec::new();
     if args
         .windows(2)
         .any(|v| v == ["--input-format", "stream-json"])
     {
-        let mut input = String::new();
-        std::io::stdin().read_to_string(&mut input).unwrap();
-        let input: serde_json::Value = serde_json::from_str(&input).unwrap();
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        let mut line = String::new();
+        let input = loop {
+            line.clear();
+            assert!(input.read_line(&mut line).unwrap() > 0);
+            let frame: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            wire_frames.push(frame.clone());
+            if frame["type"] == "user" {
+                break frame;
+            }
+        };
         let content = input["message"]["content"].as_array().unwrap();
         prompt = content
             .iter()
@@ -894,6 +905,16 @@ fn interaction(args: &[String]) {
             }
         }
     };
+    for frame in &wire_frames {
+        if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(file, "{}", json!({"kind":"wire","provider":provider,"frame":frame})).unwrap();
+        }
+    }
     let emit = |event: serde_json::Value| {
         println!("{event}");
         let _ = std::io::stdout().flush();
@@ -1002,6 +1023,42 @@ fn interaction(args: &[String]) {
         emit(
             json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"spawn-child","tool":"spawn_agent","sender_thread_id":"parent","receiver_thread_ids":["child-reviewer"],"prompt":"Inspect the graph parser","agents_states":{"child-reviewer":{"status":"running","message":null}},"status":"completed"}}),
         );
+    }
+    let compaction_fixture = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| std::fs::read(cwd.join("provider-compaction.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let explicit_compaction = compaction_fixture.is_some();
+    if prompt.contains("[compaction]") || explicit_compaction {
+        let event = if provider == "claude" {
+            json!({"type":"system","subtype":"compact_boundary","uuid":"fixture-compaction"})
+        } else {
+            json!({"type":"turn/compaction_completed","compaction_id":"fixture-compaction"})
+        };
+        let event_count = compaction_fixture
+            .as_ref()
+            .and_then(|fixture| fixture["duplicate"].as_bool())
+            .map_or(1, |duplicate| if duplicate { 2 } else { 1 });
+        for _ in 0..event_count {
+            emit(event.clone());
+            journal("provider_compaction");
+        }
+        if provider == "claude" {
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let mut line = String::new();
+            if input.read_line(&mut line).unwrap_or(0) > 0 {
+                let frame: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .unwrap();
+                    writeln!(file, "{}", json!({"kind":"wire","provider":provider,"frame":frame})).unwrap();
+                }
+            }
+        }
     }
     if prompt.contains("[wait]") {
         let gate =

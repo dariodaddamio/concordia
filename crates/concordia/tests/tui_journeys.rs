@@ -786,12 +786,31 @@ fn acp_standing_context_is_sent_once_and_resent_once_after_compaction() {
                             prompt.iter().any(|part| {
                                 part["text"]
                                     .as_str()
-                                    .is_some_and(|text| text.contains("inside Concordia"))
+                                    .is_some_and(|text| {
+                                        text.contains("inside Concordia") && text.contains("ask_user")
+                                    })
                             })
                         })
             })
             .collect();
         assert_eq!(context_prompts.len(), 2, "{provider:?}: {calls}");
+        let mode = match provider {
+            ProviderKind::Cursor => concordia::native_input::Mode::CursorAcp,
+            ProviderKind::Grok => concordia::native_input::Mode::GrokAcp,
+            ProviderKind::Opencode => concordia::native_input::Mode::OpencodeAcp,
+            _ => unreachable!("ACP journey only uses ACP providers"),
+        };
+        let expected_tools = concordia::provider::standing_context::tools_for_transport(
+            provider, mode,
+        );
+        for tool in expected_tools {
+            assert!(
+                context_prompts.iter().all(|call| call["params"]["prompt"]
+                    .to_string()
+                    .contains(&tool)),
+                "{provider:?}: ACP standing context omitted registered tool {tool}: {calls}"
+            );
+        }
         assert!(messages.windows(2).all(|pair| {
             !(pair[0]["method"] == "session/prompt"
                 && pair[1]["method"] == "session/prompt"
@@ -827,8 +846,13 @@ fn cli_standing_context_is_sent_again_after_compaction() {
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
         let dir = tempfile::tempdir().unwrap();
         setup(dir.path(), provider);
+        std::fs::write(
+            dir.path().join("workspace/provider-compaction.json"),
+            "{\"event\":\"completed\",\"id\":\"fixture-compaction\",\"duplicate\":true}",
+        )
+        .unwrap();
         let mut session = Session::launch(dir.path());
-        session.submit("[compaction] first context check");
+        session.submit("first context check");
         session.until("first provider turn", |s| {
             s.journal().iter().any(|event| event["kind"] == "done")
         });
@@ -843,7 +867,39 @@ fn cli_standing_context_is_sent_again_after_compaction() {
             .filter(|event| event["kind"] == "start")
             .collect();
         assert_eq!(starts.len(), 2, "{provider:?}: {journal:?}");
-        assert!(journal.iter().any(|event| event["kind"] == "compaction"));
+        assert!(!journal.iter().any(|event| event["kind"] == "compaction"));
+        assert!(
+            journal
+                .iter()
+                .any(|event| event["kind"] == "provider_compaction"),
+            "{provider:?}: the fixture must emit a provider-shaped compaction event: {journal:?}"
+        );
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|event| event["kind"] == "provider_compaction")
+                .count(),
+            4,
+            "{provider:?}: each of two turns must emit the duplicated provider boundary"
+        );
+        let second_start = journal
+            .iter()
+            .position(|event| event["kind"] == "start")
+            .and_then(|first| {
+                journal[first + 1..]
+                    .iter()
+                    .position(|event| event["kind"] == "start")
+                    .map(|next| first + 1 + next)
+            })
+            .expect("two provider starts");
+        let first_compaction = journal
+            .iter()
+            .position(|event| event["kind"] == "provider_compaction")
+            .expect("provider compaction event");
+        assert!(
+            first_compaction < second_start,
+            "{provider:?}: second standing-context delivery was not after the provider event: {journal:?}"
+        );
         for start in starts {
             let prompt = start["prompt"].as_str().unwrap_or_default();
             let args = start["args"].to_string();
@@ -855,6 +911,16 @@ fn cli_standing_context_is_sent_again_after_compaction() {
                 prompt.contains("Registered Concordia tools:")
                     || args.contains("Registered Concordia tools:")
             );
+            assert!(
+                prompt.contains("agents") || args.contains("agents"),
+                "{provider:?} launch did not carry the registered agents tool: {start}"
+            );
+            for tool in concordia::mcp::registered_tool_names() {
+                assert!(
+                    prompt.contains(&tool) || args.contains(&tool),
+                    "{provider:?} launch did not carry registered tool {tool}: {start}"
+                );
+            }
         }
         let artifact = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/preview/y6-context")

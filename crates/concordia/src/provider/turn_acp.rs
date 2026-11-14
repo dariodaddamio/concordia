@@ -247,11 +247,10 @@ impl Connection {
         }
         if update["sessionUpdate"] == "compaction_update" && update["status"] == "completed" {
             let id = update["compactionId"].as_str().unwrap_or_default();
-            if should_reinject_context(
-                self.last_compaction.as_deref(),
+            if crate::provider::standing_context::should_reinject_context(
+                &mut self.last_compaction,
                 id,
             ) {
-                self.last_compaction = Some(id.to_owned());
                 if let (Some(session), Some(context)) =
                     (self.session_id.as_deref(), self.standing_context.as_deref())
                 {
@@ -315,10 +314,6 @@ impl Connection {
 /// started before ACP became the default cannot be loaded here. The caller continues it in print
 /// mode; nothing was prompted and nothing was shown.
 pub(super) const SESSION_NOT_IN_ACP: &str = "Cursor ACP has no session with this id";
-
-fn should_reinject_context(last: Option<&str>, id: &str) -> bool {
-    !id.is_empty() && last != Some(id)
-}
 
 fn standing_prompt_request(id: u64, session: &str, context: &str) -> Value {
     json!({
@@ -621,7 +616,7 @@ pub(super) async fn run(
 mod tests {
     use super::{
         acp_argv, acp_model_id, ask_server_config, model_config_value,
-        first_prompt_content, initial_context_delivery, should_reinject_context,
+        first_prompt_content, initial_context_delivery,
         standing_prompt_request,
     };
     use crate::store::ProviderKind;
@@ -642,18 +637,20 @@ mod tests {
         let mut last = None;
         let mut sends = 0;
         for id in ["compact-1", "compact-1", "compact-2"] {
-            if should_reinject_context(last, id) {
+            if crate::provider::standing_context::should_reinject_context(&mut last, id) {
                 sends += 1;
-                last = Some(id);
             }
         }
         assert_eq!(sends, 2);
-        assert!(!should_reinject_context(None, ""));
+        assert!(!crate::provider::standing_context::should_reinject_context(
+            &mut None,
+            ""
+        ));
     }
 
     #[test]
     fn every_acp_provider_transport_carries_standing_context_and_reinjects_after_compaction() {
-        let context = "You are running inside Concordia. Registered Concordia tools: agents, question.";
+        let context = "You are running inside Concordia. Registered Concordia tools: agents, ask_user.";
         for provider in [ProviderKind::Cursor, ProviderKind::Grok, ProviderKind::Opencode] {
             let launch = acp_argv(provider, &[]);
             assert!(!launch.is_empty(), "{provider:?} has no ACP launch arguments");

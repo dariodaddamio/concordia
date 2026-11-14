@@ -247,7 +247,7 @@ fn call_remote(root: &Path, params: &Value) -> Result<Value, String> {
 
 fn remote_request(transport: &crate::mcp_registry::Transport, request: Value) -> Result<Value, String> {
     if let crate::mcp_registry::Transport::Stdio { command, args, env } = transport {
-        let mut child = std::process::Command::new(command);
+        let mut child = crate::process_ui::command(command);
         child.args(args);
         for (key, reference) in env {
             let value = crate::mcp_registry::resolve_secret(reference).ok_or_else(|| "MCP credential is not available; sign in before using this server".to_string())?;
@@ -296,7 +296,7 @@ fn remote_request(transport: &crate::mcp_registry::Transport, request: Value) ->
 
 fn remote_sequence(transport: &crate::mcp_registry::Transport, requests: Vec<Value>) -> Result<Vec<Value>, String> {
     if let crate::mcp_registry::Transport::Stdio { command, args, env } = transport {
-        let mut child = std::process::Command::new(command);
+        let mut child = crate::process_ui::command(command);
         child.args(args);
         for (key, reference) in env {
             let value = crate::mcp_registry::resolve_secret(reference).ok_or_else(|| "MCP credential is not available; sign in before using this server".to_string())?;

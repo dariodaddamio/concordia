@@ -29,7 +29,7 @@ Ask your question and press Enter
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |
 | --- | --- | --- | --- |
-| `/terminal` | `[open\|hide\|close]` | open the local PowerShell terminal | everyday |
+| `/terminal` | `[open\|native\|hide\|close]` | open the local PowerShell terminal | everyday |
 | `/use` | `ACCOUNT\|add PROVIDER\|remove ACCOUNT` | switch, add or remove accounts | everyday |
 | `/model` | `[MODEL]` | choose the model | everyday |
 | `/rename` | `[TITLE]` | rename the current chat | advanced |

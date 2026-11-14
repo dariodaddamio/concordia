@@ -11,16 +11,38 @@ pub struct State<'a> {
     pub handoff_map: Option<&'a str>,
 }
 
+/// Return the Concordia tools exposed by the selected provider transport.
+/// The MCP catalog and the ACP question bridge are separate registrations.
+pub fn tools_for_transport(
+    provider: ProviderKind,
+    mode: crate::native_input::Mode,
+) -> Vec<String> {
+    if matches!(provider, ProviderKind::Claude | ProviderKind::Codex) {
+        crate::mcp::registered_tool_names()
+    } else if matches!(
+        (provider, mode),
+        (
+            ProviderKind::Cursor,
+            crate::native_input::Mode::CursorAcp
+        ) | (ProviderKind::Grok, crate::native_input::Mode::GrokAcp)
+            | (ProviderKind::Opencode, crate::native_input::Mode::OpencodeAcp)
+    ) {
+        vec!["ask_user".into()]
+    } else {
+        Vec::new()
+    }
+}
+
 pub fn render(state: &State<'_>) -> String {
     let tools = if state.tools.is_empty() {
         "none".to_owned()
     } else {
         state.tools.join(", ")
     };
-    let guidance = match (state.tools.iter().any(|tool| tool == "agents"), state.tools.iter().any(|tool| tool == "question")) {
-        (true, true) => " Use agents to delegate work and question to ask the user to choose or clarify.",
+    let guidance = match (state.tools.iter().any(|tool| tool == "agents"), state.tools.iter().any(|tool| tool == "ask_user")) {
+        (true, true) => " Use agents to delegate work and ask_user to ask the user to choose or clarify.",
         (true, false) => " Use agents to delegate work. Ask through the provider's native question surface when it provides one.",
-        (false, true) => " Use question to ask the user to choose or clarify.",
+        (false, true) => " Use ask_user to ask the user to choose or clarify.",
         (false, false) => " No Concordia tools are registered in this session.",
     };
     let handoff = state
@@ -44,6 +66,15 @@ pub fn tag(text: &str) -> String {
         return text.to_owned();
     }
     format!("<concordia_standing_context>{text}</concordia_standing_context>")
+}
+
+/// Return whether a completed provider compaction has not already been handled.
+pub(crate) fn should_reinject_context(last: &mut Option<String>, id: &str) -> bool {
+    if id.is_empty() || last.as_deref() == Some(id) {
+        return false;
+    }
+    *last = Some(id.to_owned());
+    true
 }
 
 pub fn extract(prefix: Option<&str>) -> (Option<&str>, String) {
@@ -74,7 +105,7 @@ mod tests {
 
     #[test]
     fn renders_recorded_identity_tools_and_handoff_under_budget() {
-        let tools = vec!["agents".into(), "question".into()];
+        let tools = vec!["agents".into(), "ask_user".into()];
         let text = render(&State {
             provider: ProviderKind::Claude,
             account: "acct-a",
@@ -84,7 +115,7 @@ mod tests {
         });
         assert!(text.split_whitespace().count() < 150);
         assert!(text.contains("inside Concordia"));
-        assert!(text.contains("agents, question"));
+        assert!(text.contains("agents, ask_user"));
         assert!(text.contains("source map 42"));
         assert_eq!(tag(&tag("identity")), tag("identity"));
     }

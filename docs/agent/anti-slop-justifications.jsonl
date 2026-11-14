@@ -128,3 +128,17 @@
 | crates/concordia/src/tui/app/{state,slash,pickers}.rs | ok: 1, 4, 5, 9 | Reuse the existing guided picker for import selection and keep UI state limited to the pending selection. |
 | crates/concordia/src/mcp.rs, crates/concordia/src/main.rs | ok: 1, 4, 7, 8 | Extend the existing MCP server with one narrow remote HTTP JSON-RPC bridge and preserve bounded request handling. |
 | crates/concordia/src/doctor.rs, docs/mcp.md, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 10 | Make status and documentation match the implemented provider capability and authentication projection. |
+### Y6 context and gate repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/provider/standing_context.rs, crates/concordia/src/tui/run.rs | ok: 1, 4, 5, 6, 10 | Correct the advertised bridge name at the existing standing-context owner and keep registered tool names derived from the active transport. |
+| crates/concordia/src/provider/turn_acp.rs, crates/concordia/tests/tui_journeys.rs | ok: 1, 4, 9, 10 | Strengthen the existing provider wire journey against the registered tool name and compaction resend boundary; no new production test interface is added. |
+| crates/concordia/src/provider/standing_context.rs, crates/concordia/tests/tui_journeys.rs | ok: 1, 4, 5, 6, 9 | Make transport tool selection one shared owner and have the journey derive expected names from that owner while preserving provider-event ordering evidence. |
+
+### Y6 second-pass check repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| README.md | ok: 5, 10 | Synchronize the generated command table with the existing `/terminal native` command; no new command surface. |
+| crates/concordia/src/mcp.rs | ok: 1, 4, 5, 10 | Route existing MCP child launches through the canonical process helper; no new process owner or transport behavior. |
